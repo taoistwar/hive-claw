@@ -1,0 +1,5 @@
+pub const NAME: &str = "HiveClaw";
+
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}

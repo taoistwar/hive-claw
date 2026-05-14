@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target
+**/target/
+
+# IDE / editor noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local environment (never commit secrets)
+.env
+.env.*
+
+# Log files
+*.log
+
+# Note: Cargo.lock IS committed for binary crates (this is a workspace of binaries).

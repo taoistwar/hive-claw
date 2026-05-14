@@ -1,0 +1,39 @@
+[package]
+name = "hiveclaw"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HiveClaw: OpenResponses-compatible placeholder agent for Hive offline analysis tasks"
+
+[[bin]]
+name = "hiveclaw"
+path = "src/main.rs"
+
+[lib]
+name = "hiveclaw"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+assert_cmd = { workspace = true }
+libc = "0.2"
+futures = { workspace = true }

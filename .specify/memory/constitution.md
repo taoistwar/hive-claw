@@ -1,45 +1,42 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: TEMPLATE (unratified) → 1.0.0
-Rationale: Initial ratification. All placeholder tokens replaced with concrete
-principles, standards, and governance. MAJOR version chosen because this is the
-first ratified version establishing the baseline contract.
+Version change: 1.0.0 → 1.1.0
+Rationale: MINOR bump. Adds a new mandatory "Technology Stack" section that
+locks the canonical implementation stack (Rust + gpui + axum + sled + SQLite)
+for all v1 work. No existing principle is removed or redefined; existing
+compliance gates remain valid.
 
-Modified principles (renames from template placeholders):
-  - [PRINCIPLE_1_NAME] → I. Code Quality & Maintainability
-  - [PRINCIPLE_2_NAME] → II. Test-First Development (NON-NEGOTIABLE)
-  - [PRINCIPLE_3_NAME] → III. User Experience Consistency
-  - [PRINCIPLE_4_NAME] → IV. Performance & Efficiency
-  - [PRINCIPLE_5_NAME] → V. Simplicity & YAGNI
-  - (added) VI. Observability & Structured Logging
+Modified principles: none (all six core principles unchanged).
 
 Added sections:
-  - Security Requirements (mandatory standards for input handling, secrets, auth)
-  - Performance Standards (response time, query, indexing rules)
-  - Development Workflow & Quality Gates (PR review, approvals, CI gates)
-  - Governance (amendment procedure, versioning, compliance review)
+  - Technology Stack (canonical languages, frameworks, datastores, deviation
+    procedure)
 
-Removed sections: none (template had only placeholders).
+Removed sections: none.
 
 Templates requiring updates:
-  - ✅ .specify/templates/plan-template.md — "Constitution Check" section is
-        intentionally generic (`[Gates determined based on constitution file]`)
-        and stays compatible. Technical Context already lists the <200ms p95
-        constraint as an example, matching Principle IV. No edit required.
-  - ✅ .specify/templates/spec-template.md — no constitution-specific section
-        names need updating; spec template is principle-agnostic.
-  - ✅ .specify/templates/tasks-template.md — already includes logging and
-        security hardening task categories; consistent with Principles II/VI
-        and Security Requirements. No edit required.
-  - ✅ .specify/templates/checklist-template.md — generic, principle-agnostic.
-  - ⚠ README.md — currently empty; project overview should be authored
-        separately. Not blocking constitutional adoption.
-  - ⚠ docs/quickstart.md — does not exist yet; create when first feature
-        introduces runtime guidance needs.
+  - ✅ .specify/templates/plan-template.md — Technical Context placeholders
+        (Language/Version, Primary Dependencies, Storage, Testing) now have
+        defined defaults from this section. Plans MAY still record version
+        pins but MUST NOT pick a different language or core framework
+        without Complexity Tracking.
+  - ✅ .specify/templates/spec-template.md — unaffected (spec template is
+        tech-agnostic by design).
+  - ✅ .specify/templates/tasks-template.md — unaffected (task categories
+        are tech-agnostic).
+  - ✅ .specify/templates/checklist-template.md — unaffected.
+  - ⚠ README.md — still empty; should now mention the Rust toolchain as
+        the prerequisite for contributors. Not blocking.
+  - ⚠ docs/quickstart.md — does not exist yet; will be authored alongside
+        the first implementation plan.
 
-Follow-up TODOs:
-  - None. Ratification date set to today (initial adoption).
+Prior version 1.0.0 history retained below for context.
+
+----
+Previous: TEMPLATE (unratified) → 1.0.0 (initial ratification, 2026-05-14)
+  Added principles I–VI; added Security Requirements, Performance Standards,
+  Development Workflow & Quality Gates, Governance.
 -->
 
 # hive-claw Constitution
@@ -193,6 +190,60 @@ Concrete, enforceable targets that elaborate Principle IV:
   tracked performance benchmark MUST NOT merge without explicit sign-off
   and a recorded justification.
 
+## Technology Stack
+
+The following stack is **canonical** for all v1 implementation work in this
+project. It exists to keep cognitive load, build infrastructure, and review
+expertise concentrated — not to discourage learning. Deviation requires an
+explicit Complexity Tracking entry in the relevant plan.
+
+- **Language**: Rust (stable channel). The MSRV (Minimum Supported Rust
+  Version) MUST be pinned in `rust-toolchain.toml` and bumped only in a
+  dedicated PR. No other application languages may be introduced for v1
+  feature work; small build / dev tooling scripts in shell or Python are
+  permitted at the workspace root.
+- **Project layout**: a single Cargo workspace at the repository root. Each
+  deployable unit (HiveClaw, HiveGUI) is its own workspace member crate.
+  A third workspace member (e.g., `hive-shared`) is permitted only when
+  Principle V's "second concrete caller" test is satisfied.
+- **Lint & format**: `cargo fmt` and `cargo clippy` (with `-D warnings` in CI)
+  are the project's enforced lint/format tools per Principle I.
+- **Desktop GUI (HiveGUI)**: **gpui** is the canonical UI framework. HiveGUI
+  MUST be built on gpui; no second UI framework may be introduced. Per
+  Principle V, gpui primitives MUST be used directly — wrappers are only
+  permitted when they encode a non-trivial invariant.
+- **HTTP / API (HiveClaw and any future service)**: **axum** is the canonical
+  HTTP server framework, running on the Tokio runtime. Request handlers MUST
+  use `axum`'s extractors and response types directly; no parallel HTTP
+  framework may be introduced.
+- **Embedded KV store**: **sled** is the canonical embedded key-value store
+  for local on-disk state that does not require relational queries (e.g.,
+  caches, simple session-scoped state, tool-local stores).
+- **Embedded relational store**: **SQLite** is the canonical embedded
+  relational store for any structured, queryable, or schema-evolving data.
+  Access MUST use a maintained Rust SQLite binding; schema changes MUST
+  be delivered via versioned, idempotent migrations.
+- **Async runtime**: **Tokio** (implied by axum and the broader Rust
+  async ecosystem). A second async runtime MUST NOT be introduced in v1.
+- **Testing**: `cargo test` for unit and integration tests; crate-level
+  contract tests live alongside the crate they test. Tests MUST run in CI
+  as part of the standard quality gates (see Development Workflow).
+
+**Deviation procedure**: a feature plan that requires a different language,
+GUI/HTTP framework, or datastore MUST record the deviation in its Plan's
+Complexity Tracking section with: (a) the specific need that the canonical
+stack cannot satisfy, (b) the alternative chosen, (c) the simpler approach
+considered and rejected, and (d) the maintenance / review-expertise impact.
+The amendment procedure under Governance applies if the deviation is
+intended to become permanent.
+
+**Rationale**: A single small, modern Rust stack matches the project's
+single-user local desktop posture (HiveGUI) and its embedded service
+posture (HiveClaw), satisfies Principle V (≤3 projects, no premature
+abstraction) and Principle IV (Rust's low overhead makes the < 200ms API
+budget trivial outside of agent reasoning paths), and minimises the
+review and tooling surface every contributor must master.
+
 ## Development Workflow & Quality Gates
 
 - **Branching**: feature work happens on feature branches. Direct commits
@@ -245,4 +296,4 @@ Concrete, enforceable targets that elaborate Principle IV:
   `CLAUDE.md` and any future `docs/quickstart.md`. Those files MUST cite,
   not contradict, this constitution.
 
-**Version**: 1.0.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-14
+**Version**: 1.1.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-14

@@ -1,6 +1,6 @@
 # 大数据离线分析 AI Agent - 技术设计文档
 
-**版本**: 1.0  
+**版本**: 2.0  
 **日期**: 2026-05-15  
 **状态**: 草稿
 
@@ -41,7 +41,7 @@
         │                       │                       │
         ▼                       ▼                       ▼
 ┌───────────────┐      ┌───────────────┐     ┌───────────────┐
-│ LDAP          │      │ GPT-4 API     │     │ Git Remote    │
+│ LDAP          │      │ GPT-4 API     │     │ GitHub        │
 │ (认证)        │      │ (云端)        │     │ (代码仓库)    │
 └───────────────┘      └───────────────┘     └───────────────┘
 ```
@@ -306,142 +306,618 @@ src/gui/
 ### 2.2 任务生成器模块
 
 #### 2.2.1 模板引擎
-```rust
-pub enum TaskTemplate {
-    SingleTableAggregation,  // 单表聚合
-    MultiTableJoin,          // 多表关联
-    IncrementalSync,         // 增量同步
-    FullSync,                // 全量同步
-    Deduplication,           // 去重清洗
-    SCD,                     // 缓慢变化维度
-    MetricCalculation,       // 指标计算
-}
 
-pub struct TaskGenerator {
-    template: TaskTemplate,
-    params: TaskParams,
-    ai_service: AIService,
-}
+**7 大核心模板**:
+
+| 模板 ID | 模板名称 | 描述 | 适用场景 |
+|---------|----------|------|----------|
+| TMPL-001 | 单表聚合 | 对单表按维度分组聚合 | 日报、周报、月报聚合 |
+| TMPL-002 | 多表关联 | 多表 JOIN 关联查询 | 宽表构建、数据整合 |
+| TMPL-003 | 增量同步 | 从 MySQL 增量同步数据 | MySQL→Hive 增量同步 |
+| TMPL-004 | 全量同步 | 从 MySQL 全量覆盖同步 | 维度表全量同步 |
+| TMPL-005 | 去重清洗 | 数据去重和清洗 | 重复数据清理 |
+| TMPL-006 | SCD | 缓慢变化维度处理 | 维度表 SCD Type2 |
+| TMPL-007 | 指标计算 | 业务指标计算 | UV、PV、留存率等 |
+
+**模板变量类型**:
+| 变量类型 | 示例 | 说明 |
+|----------|------|------|
+| 字符串 | `source_table`, `target_table` | 表名、字段名、别名 |
+| 数值 | `limit_count`, `threshold` | 阈值、限制数量 |
+| 枚举 | `sync_type` (incremental/full) | 增量/全量、频率等 |
+| 日期 | `partition_field`, `date_format` | 分区字段、日期格式 |
+| 数组 | `select_fields`, `group_by_fields` | 字段列表、条件列表 |
+| SQL 片段 | `where_clause`, `join_clause` | WHERE、JOIN 子句 |
+
+**模板嵌套**:
+```
+主模板：数据同步流程
+├── 子模板：增量同步 SQL 生成
+├── 子模板：数据质量检查
+└── 子模板：失败告警配置
 ```
 
-#### 2.2.2 AI 生成流程
+#### 2.2.2 AI 生成策略
+
+**AI+ 模板混合模式**:
 ```
 用户输入（自然语言 + 表单）
     │
     ▼
-Prompt 构建（Few-shot + RAG + CoT）
+解析用户意图 → 匹配模板类型
     │
     ▼
-GPT-4 API 调用
+AI 填充模板参数:
+- 从自然语言提取表名
+- 从自然语言提取字段映射
+- 从自然语言提取过滤条件
     │
     ▼
-SQL 解析和验证
+渲染模板生成 SQL
     │
-    ├── 语法正确 ──► 生成 Azkaban .job 脚本
+    ▼
+验证和修正
+```
+
+**Prompt 模板管理**:
+- 每个模板类型有独立的 Prompt 模板
+- Prompt 变更需要版本记录
+- 支持 A/B 测试不同 Prompt 效果
+- 支持回滚到历史版本
+
+**Few-shot 示例库**:
+| 模板类型 | 示例数量 | 难度分布 |
+|----------|----------|----------|
+| 单表聚合 | 10 | 简单 5、中等 3、困难 2 |
+| 多表关联 | 10 | 简单 3、中等 4、困难 3 |
+| 增量同步 | 8 | 简单 4、中等 2、困难 2 |
+| 全量同步 | 5 | 简单 3、中等 2 |
+| 去重清洗 | 7 | 简单 3、中等 3、困难 1 |
+| SCD | 5 | 中等 2、困难 3 |
+| 指标计算 | 10 | 简单 4、中等 4、困难 2 |
+
+**RAG 知识库检索**:
+- 表关系文档
+- 指标口径文档
+- SQL 案例库
+- 命名规范文档
+- FAQ 库
+- 数据质量标准
+
+#### 2.2.3 SQL 验证
+
+**验证流程**:
+```
+AI 生成 SQL
     │
-    └── 语法错误 ──► 自动修正重试
+    ▼
+1. 语法校验（HiveServer2 预编译）
+    │
+    ├── 通过 ──► 2. 元数据校验
+    │              │
+    │              ├── 通过 ──► 3. 业务规则校验
+    │              │              │
+    │              │              ├── 通过 ──► 4. 性能规则校验
+    │              │              │              │
+    │              │              │              ├── 通过 ──► 5. 安全规则校验
+    │              │              │              │              │
+    │              │              │              │              └── 通过 ──► 验证成功
+    │              │              │              │
+    │              │              │              └── 失败 ──► 性能优化建议
+    │              │              │
+    │              │              └── 失败 ──► 业务规则错误
+    │              │
+    │              └── 失败 ──► 元数据错误（表/字段不存在）
+    │
+    └── 失败 ──► 语法错误 ──► 触发修正流程
+```
+
+**验证规则管理**:
+| 类别 | 规则 ID | 规则描述 | Violation 级别 |
+|------|--------|----------|----------------|
+| 内置 | RULE-001 | 分区字段必须存在 | Error |
+| 内置 | RULE-002 | 目标表必须已存在 | Error |
+| 内置 | RULE-003 | SELECT 字段必须在源表中存在 | Error |
+| 业务 | RULE-101 | 增量同步必须有时间过滤条件 | Error |
+| 业务 | RULE-102 | 聚合必须包含 GROUP BY 字段 | Warning |
+| 性能 | RULE-201 | 避免 SELECT * | Warning |
+| 性能 | RULE-202 | 大表 JOIN 必须有索引 | Warning |
+| 安全 | RULE-301 | 敏感字段需要脱敏 | Error |
+| 安全 | RULE-302 | 禁止 DROP/TRUNCATE 操作 | Error |
+
+#### 2.2.4 错误修正
+
+**混合修正模式**:
+```
+语法错误
+    │
+    ▼
+判断错误类型:
+├── 简单语法错误 ──► 规则修正（固定替换规则）
+│                    如：关键字大小写、括号匹配
+│
+├── 复杂语法错误 ──► AI 自动修正
+│                    发送错误信息 + 原 SQL → AI 重试
+│
+└── AI 修正失败 ──► 用户确认修正
+                     显示修正建议，用户选择是否应用
+```
+
+**智能重试策略**:
+```
+第 1 次生成 → 验证失败
+    │
+    ▼
+分析错误类型 → 调整 Prompt（添加错误信息和修正指示）
+    │
+    ▼
+第 2 次生成 → 验证失败
+    │
+    ▼
+切换模型（GPT-4 → GPT-4o）或增加 Few-shot 示例
+    │
+    ▼
+第 3 次生成 → 验证失败
+    │
+    ▼
+放弃自动修正 → 显示错误详情和修正建议 → 用户处理
+```
+
+#### 2.2.5 生成历史
+
+**历史记录结构**:
+```json
+{
+  "id": "gen-20260515-001",
+  "timestamp": "2026-05-15T10:30:00Z",
+  "template_id": "TMPL-003",
+  "user_input": {
+    "natural_language": "每天从 MySQL 同步用户表到 Hive",
+    "form_params": {
+      "source_table": "mysql.user",
+      "target_table": "ods_user",
+      "sync_type": "incremental"
+    }
+  },
+  "ai_request": {
+    "model": "gpt-4o",
+    "prompt_version": "v2.1",
+    "tokens_used": 1250
+  },
+  "ai_response": {
+    "sql": "INSERT INTO TABLE...",
+    "explanation": "...",
+    "duration_ms": 3500
+  },
+  "validation": {
+    "passed": true,
+    "rules_checked": 10,
+    "warnings": []
+  },
+  "quality": {
+    "ai_self_score": 4.5,
+    "user_feedback": null,
+    "execution_success": true
+  },
+  "status": "used"
+}
 ```
 
 ### 2.3 元数据管理模块
 
-#### 2.3.1 MySQL 元数据库连接
+#### 2.3.1 MySQL 连接配置
+
+```toml
+[metastore]
+# 基本连接
+host = "mysql.example.com"
+port = 3306
+database = "hive"
+username = "hive"
+password = "hive-password"
+
+# 连接池
+pool_min_connections = 5
+pool_max_connections = 20
+pool_timeout_sec = 30
+
+# SSL 加密
+ssl_enabled = true
+ssl_ca_cert = "/path/to/ca.pem"
+ssl_client_cert = "/path/to/client.pem"
+ssl_client_key = "/path/to/client-key.pem"
+
+# 超时配置
+connect_timeout_sec = 10
+read_timeout_sec = 30
+write_timeout_sec = 30
+
+# 自动重连
+auto_reconnect = true
+max_reconnect_attempts = 3
+reconnect_delay_sec = 5
+
+# 多数据源
+[[metastore.sources]]
+name = "prod-cluster"
+host = "mysql-prod.example.com"
+database = "hive"
+is_default = true
+
+[[metastore.sources]]
+name = "dev-cluster"
+host = "mysql-dev.example.com"
+database = "hive"
+is_default = false
+```
+
+#### 2.3.2 元数据模型
+
 ```rust
-pub struct MetastoreClient {
-    pool: MySqlPool,
-    cache: MetaCache,
+// 数据库
+pub struct Database {
+    pub name: String,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub owner: Option<String>,
 }
 
-impl MetastoreClient {
-    // 直接查询 Hive Metastore 的 MySQL 表
-    pub async fn get_table(&self, db: &str, table: &str) -> Result<TableMeta>;
-    pub async fn get_partitions(&self, db: &str, table: &str) -> Result<Vec<Partition>>;
-    pub async fn get_fields(&self, db: &str, table: &str) -> Result<Vec<Field>>;
+// 表
+pub struct Table {
+    pub db_name: String,
+    pub name: String,
+    pub table_type: TableType,  // MANAGED_TABLE / EXTERNAL_TABLE
+    pub created_at: DateTime<Utc>,
+    pub last_access_time: Option<DateTime<Utc>>,
+    pub owner: Option<String>,
+    pub comment: Option<String>,
+    pub retention: i32,
+    pub is_partitioned: bool,
+}
+
+// 字段
+pub struct Column {
+    pub table_name: String,
+    pub name: String,
+    pub data_type: String,
+    pub comment: Option<String>,
+    pub position: i32,
+    pub is_nullable: bool,
+}
+
+// 分区
+pub struct Partition {
+    pub table_name: String,
+    pub name: String,
+    pub values: Vec<String>,
+    pub location: String,
+    pub created_at: DateTime<Utc>,
+}
+
+// 表关系
+pub struct TableRelation {
+    pub source_table: String,
+    pub target_table: String,
+    pub relation_type: RelationType,
+    pub join_columns: Vec<String>,
+    pub discovered_at: DateTime<Utc>,
+    pub confidence: f32,
 }
 ```
 
-#### 2.3.2 Hive Metastore 表结构
-```
-DBS (数据库表)
-TABLES (表信息表)
-COLUMNS_V2 (字段信息表)
-PARTITIONS (分区表)
-PARTITION_KEYS (分区键表)
-SDS (存储描述表)
+#### 2.3.3 缓存策略
+
+**双层缓存**:
+- 内存缓存：Rust HashMap + Arc（LRU + TTL）
+- 磁盘缓存：SQLite
+
+**缓存配置**:
+```rust
+pub struct CacheConfig {
+    // TTL 配置（按数据库隔离）
+    ttl_default: Duration,
+    ttl_by_database: HashMap<String, Duration>,
+    
+    // LRU 容量
+    max_entries: usize,
+    
+    // 预热配置
+    preload_databases: Vec<String>,
+}
 ```
 
-### 2.4 Azkaban API 模块
+#### 2.3.4 元数据同步
+
+**增量同步流程**:
+```
+手动触发同步
+    │
+    ▼
+读取 MySQL Metastore 表:
+- DBS (数据库)
+- TABLES (表信息)
+- COLUMNS_V2 (字段信息)
+- PARTITIONS (分区)
+- SDS (存储描述)
+    │
+    ▼
+增量对比:
+- 新表：标记为新增
+- 变更表：标记为变更
+- 删除表：标记为删除
+    │
+    ▼
+生成变更列表 → 用户确认 → 更新缓存
+```
+
+#### 2.3.5 表关系发现
+
+**SQL 解析发现**:
+```rust
+// 从 SQL 历史中提取表关系
+pub async fn extract_from_sql_history(
+    &self,
+    sql_history: &[String],
+) -> Result<Vec<TableRelation>> {
+    // 解析 SQL AST，提取 INSERT INTO target SELECT FROM source
+    // 构建表级血缘关系
+}
+```
+
+**血缘分析粒度**:
+| 粒度 | 描述 |
+|------|------|
+| 表级血缘 | 哪些表生成了当前表 |
+| 字段级血缘 | 哪些字段生成了当前字段 |
+| 任务级血缘 | 哪些任务依赖当前任务 |
+
+### 2.4 Azkaban 集成模块
 
 #### 2.4.1 API 封装
+
 ```rust
 pub struct AzkabanClient {
     base_url: String,
-    session_id: String,
+    session_id: Arc<RwLock<String>>,
     http_client: HttpClient,
+    credentials: AzkabanCredentials,
 }
 
-impl AzkabanClient {
-    pub async fn login(&self, username: &str, password: &str) -> Result<String>;
-    pub async fn upload_project(&self, project: &str, zip: Vec<u8>) -> Result<()>;
-    pub async fn execute_flow(&self, project: &str, flow: &str) -> Result<i64>;
-    pub async fn get_job_status(&self, exec_id: i64, job_id: &str) -> Result<JobStatus>;
+pub trait AzkabanApi {
+    // 用户认证
+    async fn login(&self) -> Result<String>;
+    
+    // 项目管理
+    async fn create_project(&self, name: &str, description: &str) -> Result<()>;
+    async fn delete_project(&self, name: &str) -> Result<()>;
+    async fn list_projects(&self) -> Result<Vec<ProjectInfo>>;
+    
+    // 任务上传
+    async fn upload_project(&self, name: &str, zip_data: Vec<u8>) -> Result<UploadResponse>;
+    
+    // 执行控制
+    async fn execute_flow(
+        &self,
+        project: &str,
+        flow: &str,
+        params: ExecutionParams,
+    ) -> Result<i64>;
+    
+    async fn cancel_flow(&self, exec_id: i64) -> Result<()>;
+    
+    // 状态查询
+    async fn get_flow_status(&self, exec_id: i64) -> Result<FlowStatus>;
+    async fn get_job_status(&self, exec_id: i64, job_id: &str) -> Result<JobStatus>;
+    
+    // 日志下载
+    async fn get_job_logs(&self, exec_id: i64, job_id: &str, offset: i32) -> Result<LogResponse>;
 }
 ```
 
-#### 2.4.2 .job 文件格式
+#### 2.4.2 任务文件格式
+
+**ZIP 包结构（扁平）**:
+```
+project-name.zip
+├── sync_user.job
+├── agg_order.job
+├── clean_log.job
+├── project.properties
+└── flow.yaml
+```
+
+**.job 文件格式**:
 ```properties
-# sample.job
+# sync_user.job
 type=command
-command=hive -e "INSERT INTO TABLE target SELECT * FROM source;"
+command=/path/to/sync_script.sh ${input_table} ${output_table}
+
+# 依赖配置
+dependencies=agg_order,clean_log
+
+# 自定义参数
+resource.queue=default
+mapreduce.queue.name=default
+
+# 失败策略
+failure.action=end
+```
+
+#### 2.4.3 执行参数
+
+```rust
+pub struct ExecutionParams {
+    pub flow_name: String,
+    pub job_props: HashMap<String, String>,
+    pub concurrent: bool,
+    pub max_concurrent: u32,
+    pub failure_action: FailureAction,
+    pub schedule: Option<ScheduleConfig>,
+}
+
+pub enum FailureAction {
+    End,      // 停止工作流
+    Continue, // 继续执行
+}
+
+pub struct ScheduleConfig {
+    pub cron: String,
+    pub timezone: String,
+}
+```
+
+#### 2.4.4 状态查询
+
+**状态粒度**:
+| 粒度 | 描述 |
+|------|------|
+| 工作流状态 | 整体执行状态 |
+| 任务状态 | 每个 job 的执行状态 |
+| 节点状态 | 节点的重试/跳过状态 |
+| 进度百分比 | 当前执行进度 |
+
+**状态枚举**:
+```rust
+pub enum FlowStatus {
+    Preparing, Running, Paused, Succeeded, Failed, Killed,
+}
+
+pub enum JobStatus {
+    Pending, Preparing, Running, Paused, Succeeded, Failed, Killed, Skipped,
+}
+```
+
+#### 2.4.5 错误重试
+
+**智能重试策略**:
+```rust
+pub async fn call_with_retry<F, T>(
+    client: &AzkabanClient,
+    f: F,
+) -> Result<T>
+where
+    F: Fn() -> Future<Output = Result<T>>,
+{
+    let mut retries = 0;
+    let mut delay = client.retry_config.base_delay_ms;
+    
+    loop {
+        match f().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                if retries >= client.retry_config.max_retries {
+                    return Err(e);
+                }
+                if !e.is_retryable() {
+                    return Err(e);
+                }
+                retries += 1;
+                delay = (delay * 2).min(client.retry_config.max_delay_ms);
+            }
+        }
+    }
+}
 ```
 
 ### 2.5 Git 集成模块
 
-#### 2.5.1 工作流
+#### 2.5.1 仓库配置
+
+```toml
+[git]
+git_dir = ".git"
+default_branch = "main"
+auto_init = true
+
+[[git.remotes]]
+name = "origin"
+url = "git@github.com:data-team/azkaban-jobs.git"
+is_default = true
 ```
-任务创建/修改
-    │
-    ▼
-git checkout -b <task-branch>
-    │
-    ▼
-git add <job-files>
-    │
-    ▼
-git commit -m "<auto-generated>"
-    │
-    ▼
-git push -u origin <branch>
-    │
-    ▼
-自动创建 Merge Request
+
+#### 2.5.2 分支管理
+
+**分支命名**: `{任务名}_{时间戳}`
+- 示例：`sync_user_20260515_103000`
+
+**分支操作流程**:
 ```
+创建分支 → 切换分支 → 提交改动 → Push → 创建 MR
+```
+
+#### 2.5.3 Commit 管理
+
+**AI 生成 Commit Message**:
+```
+分析变更内容 → 生成 Conventional Commits 格式 → 用户确认 → 执行 commit
+```
+
+#### 2.5.4 GitHub 集成
+
+**MR 自动化**:
+- 自动创建 Pull Request
+- AI 生成 MR 标题
+- AI 生成 MR 描述（任务描述、关联 ID、diff 摘要、测试结果、文件列表、检查清单）
+- 人工确认合并
+
+**认证方式**: SSH Key
 
 ### 2.6 数据质量模块
 
-#### 2.6.1 检查规则引擎
-```rust
-pub enum QualityRule {
-    NotNull { field: String },
-    Unique { field: String },
-    Range { field: String, min: f64, max: f64 },
-    Enum { field: String, values: Vec<String> },
-    Fluctuation { metric: String, threshold: f64 },
-    RowCount { threshold: f64 },
-}
+#### 2.6.1 检查类型
 
-pub struct QualityChecker {
-    rules: Vec<QualityRule>,
-}
-```
+| 检查类型 | 描述 | 配置参数 |
+|----------|------|----------|
+| 非空检查 | 字段是否为 NULL | 空值比例阈值 |
+| 唯一性检查 | 主键/业务键唯一 | 重复比例阈值 |
+| 值域检查 | 数值在合理范围 | min/max |
+| 枚举值检查 | 值在枚举列表内 | 有效值列表 |
+| 波动检查 | 环比/同比波动 | 波动阈值、基线天数 |
+| 行数检查 | 数据行数波动 | 行数阈值 |
+| 格式检查 | 日期/邮箱格式 | 正则表达式 |
+| 一致性检查 | 跨表数据一致 | 差异容忍度 |
+
+#### 2.6.2 问题分级
+
+| 级别 | 描述 | 处理要求 |
+|------|------|----------|
+| 阻塞 (Blocker) | 数据不可用 | 必须修复 |
+| 严重 (Critical) | 数据部分不可用 | 尽快修复 |
+| 一般 (Major) | 数据可降级使用 | 建议修复 |
+| 提示 (Minor) | 不影响使用 | 可选修复 |
+
+#### 2.6.3 检查执行
+
+**执行方式**: 独立质量检查任务
+
+**检查范围**: 分区检查（最新分区）
+
+**检查 SQL 生成**: SQL 模板
+
+#### 2.6.4 邮件告警
+
+**告警配置**:
+- 收件人列表
+- 邮件模板自定义
+- 告警触发条件
+- 告警聚合（多条问题合并邮件）
+- 免打扰时段设置
+
+#### 2.6.5 质量评分
+
+**评分体系**:
+- 表级质量评分
+- 字段级质量评分
+- 数据库级质量评分
+- 综合质量评分
 
 ### 2.7 更新服务模块
 
 #### 2.7.1 自动更新流程
+
 ```
-应用启动
-    │
-    ▼
-检查远程版本（GitHub Releases）
+应用启动 → 检查远程版本（GitHub Releases）
     │
     ├── 有新版本 ──► 下载更新包 ──► 提示用户重启安装
     │
@@ -453,6 +929,7 @@ pub struct QualityChecker {
 ## 三、数据设计
 
 ### 3.1 本地配置文件（config.toml）
+
 ```toml
 [azkaban]
 host = "http://azkaban.example.com"
@@ -471,8 +948,8 @@ host = "ldap.example.com"
 base_dn = "dc=example,dc=com"
 
 [git]
-remote = "git@gitlab.example.com:data-team/azkaban-jobs.git"
-branch_prefix = "azkaban-task/"
+remote = "git@github.com:data-team/azkaban-jobs.git"
+branch_prefix = "task/"
 
 [ai]
 provider = "openai"
@@ -481,23 +958,67 @@ api_key = "sk-xxx"
 
 [cache]
 metastore_ttl_seconds = 3600
+
+[quality]
+alert_email = "data-team@example.com"
+default_threshold = 0.05
 ```
 
-### 3.2 本地缓存结构
-```rust
-struct MetaCache {
-    tables: HashMap<String, TableMeta>,      // db.table -> TableMeta
-    last_sync: Option<DateTime<Utc>>,         // 最后同步时间
-}
+### 3.2 SQLite 缓存表结构
 
-struct AuditLog {
-    id: i64,
-    user: String,
-    action: String,
-    resource: String,
-    timestamp: DateTime<Utc>,
-    details: String,
-}
+```sql
+-- 数据库缓存
+CREATE TABLE cache_databases (
+    name TEXT PRIMARY KEY,
+    description TEXT,
+    location TEXT,
+    created_at INTEGER,
+    updated_at INTEGER
+);
+
+-- 表缓存
+CREATE TABLE cache_tables (
+    id INTEGER PRIMARY KEY,
+    db_name TEXT,
+    name TEXT,
+    table_type TEXT,
+    created_at INTEGER,
+    comment TEXT,
+    is_partitioned BOOLEAN,
+    UNIQUE(db_name, name)
+);
+
+-- 字段缓存
+CREATE TABLE cache_columns (
+    id INTEGER PRIMARY KEY,
+    table_id INTEGER,
+    name TEXT,
+    data_type TEXT,
+    comment TEXT,
+    position INTEGER,
+    FOREIGN KEY (table_id) REFERENCES cache_tables(id)
+);
+
+-- 版本快照
+CREATE TABLE metadata_versions (
+    version INTEGER PRIMARY KEY,
+    created_at INTEGER,
+    sync_type TEXT,
+    snapshot_path TEXT
+);
+
+-- 质量检查结果
+CREATE TABLE quality_results (
+    id INTEGER PRIMARY KEY,
+    check_time INTEGER,
+    table_name TEXT,
+    rule_id TEXT,
+    severity TEXT,
+    passed BOOLEAN,
+    actual_value REAL,
+    threshold REAL,
+    message TEXT
+);
 ```
 
 ---
@@ -506,58 +1027,52 @@ struct AuditLog {
 
 ### 4.1 内部接口
 
-#### 4.1.1 任务生成接口
 ```rust
+// 任务生成
 pub async fn generate_task(
     template: TaskTemplate,
     params: TaskParams,
     description: Option<String>,
 ) -> Result<TaskArtifact>;
 
-pub struct TaskArtifact {
-    job_script: String,
-    sql: String,
-    dependencies: Vec<String>,
-    dag_config: String,
-}
-```
-
-#### 4.1.2 元数据查询接口
-```rust
+// 元数据查询
 pub async fn list_databases() -> Result<Vec<String>>;
 pub async fn list_tables(db: &str) -> Result<Vec<String>>;
 pub async fn get_table_schema(db: &str, table: &str) -> Result<TableSchema>;
 pub async fn preview_data(db: &str, table: &str, limit: i32) -> Result<Vec<Row>>;
+
+// 质量检查
+pub async fn run_quality_checks(
+    table: &str,
+    partition: &str,
+    rules: Vec<QualityRule>,
+) -> Result<QualityReport>;
 ```
 
 ### 4.2 外部接口
 
-#### 4.2.1 Azkaban REST API
-- POST `/login` - 登录获取 session
-- POST `/upload` - 上传项目包
-- POST `/execute` - 执行工作流
-- GET `/status` - 查询任务状态
-
-#### 4.2.2 GPT-4 API
-- POST `/v1/chat/completions` - 生成 SQL 和任务脚本
+| 接口 | 端点 | 说明 |
+|------|------|------|
+| Azkaban Login | POST `/login` | 登录获取 session |
+| Azkaban Upload | POST `/upload` | 上传项目包 |
+| Azkaban Execute | POST `/executor` | 执行工作流 |
+| Azkaban Status | GET `/status` | 查询任务状态 |
+| Azkaban Logs | GET `/executor?ajax=fetchexeclog` | 下载日志 |
+| GPT-4 | POST `/v1/chat/completions` | AI 生成 |
+| GitHub | REST API | Git 操作 |
 
 ---
 
 ## 五、安全设计
 
-### 5.1 认证流程
+### 5.1 LDAP 认证
+
 ```
-用户打开 GUI
-    │
-    ▼
-LDAP 认证
-    │
-    ├── 成功 ──► 加载主界面
-    │
-    └── 失败 ──► 显示错误提示
+用户打开 GUI → LDAP 认证 → 成功加载主界面 / 失败显示错误
 ```
 
 ### 5.2 审计日志
+
 ```rust
 struct AuditEvent {
     timestamp: DateTime<Utc>,
@@ -568,12 +1083,7 @@ struct AuditEvent {
 }
 
 enum AuditAction {
-    Login,
-    CreateTask,
-    ModifyTask,
-    ExecuteTask,
-    DeleteTask,
-    SyncMetadata,
+    Login, CreateTask, ModifyTask, ExecuteTask, DeleteTask, SyncMetadata,
 }
 ```
 
@@ -582,13 +1092,15 @@ enum AuditAction {
 ## 六、性能设计
 
 ### 6.1 缓存策略
+
 | 数据类型 | 缓存位置 | TTL | 更新策略 |
 |----------|----------|-----|----------|
-| 元数据 | 本地内存 | 1 小时 | 手动同步刷新 |
+| 元数据 | 本地内存 + SQLite | 1 小时 | 手动同步刷新 |
 | AI 生成结果 | 本地磁盘 | 24 小时 | LRU 淘汰 |
 | 数据库连接 | 连接池 | 长连接 | 自动重连 |
 
 ### 6.2 并发控制
+
 - GUI 线程：主线程处理 UI 渲染
 - 后台线程：异步任务（AI 调用、数据库查询、API 请求）
 - 并发限制：最多 5 个并发任务执行
@@ -598,31 +1110,24 @@ enum AuditAction {
 ## 七、错误处理
 
 ### 7.1 错误分类
+
 ```rust
 pub enum AppError {
-    // AI 相关
     AIServiceUnavailable,
     AIGenerationFailed(String),
-    
-    // 数据库相关
     DatabaseConnectionFailed,
     QueryTimeout,
     MetadataSyncFailed,
-    
-    // Azkaban 相关
     AzkabanAPIError(String),
     TaskExecutionFailed,
-    
-    // Git 相关
     GitOperationFailed(String),
-    
-    // GUI 相关
     LDAPAuthFailed,
     UpdateCheckFailed,
 }
 ```
 
 ### 7.2 重试策略
+
 | 错误类型 | 重试次数 | 重试间隔 |
 |----------|----------|----------|
 | AI API 超时 | 3 次 | 指数退避 |
@@ -633,37 +1138,34 @@ pub enum AppError {
 
 ## 八、测试设计
 
-### 8.1 单元测试
-- 任务生成器单元测试
-- 元数据解析单元测试
-- SQL 语法验证单元测试
+### 8.1 测试类型
 
-### 8.2 集成测试
-- GUI 与后端服务集成测试
-- Azkaban API 集成测试
-- Git 集成测试
+| 测试类型 | 说明 |
+|----------|------|
+| 单元测试 | 核心函数和模块的单元测试 |
+| 集成测试 | 模块间集成测试 |
+| E2E 测试 | 端到端流程测试 |
+| AI 质量测试 | AI 生成准确率测试（目标>90%） |
 
-### 8.3 E2E 测试
-- 完整任务创建流程测试
-- 任务执行流程测试
+### 8.2 CI/CD
 
-### 8.4 AI 质量测试
-- 生成 SQL 准确率测试（目标>90%）
-- 模板匹配准确率测试
+- 工具：Jenkins
 
 ---
 
 ## 九、部署设计
 
-### 9.1 运行环境要求
+### 9.1 运行环境
+
 ```
 操作系统：Linux (Ubuntu 20.04+)
 内存：最低 2GB，推荐 4GB
 磁盘：最低 1GB 可用空间
-网络：需要访问 Hive、MySQL、Azkaban、GPT-4 API
+网络：需要访问 Hive、MySQL、Azkaban、GitHub、GPT-4 API
 ```
 
 ### 9.2 安装步骤
+
 ```bash
 # 1. 下载安装包
 wget https://releases.example.com/offline-analysis-agent-v1.0.tar.gz
@@ -673,7 +1175,6 @@ tar -xzf offline-analysis-agent-v1.0.tar.gz
 
 # 3. 配置
 cp config.example.toml config.toml
-# 编辑 config.toml 填入配置
 
 # 4. 运行
 ./offline-analysis-agent
@@ -697,3 +1198,4 @@ cp config.example.toml config.toml
 | 版本 | 日期 | 作者 | 变更说明 |
 |------|------|------|----------|
 | 1.0 | 2026-05-15 | AI Agent | 初始版本 |
+| 2.0 | 2026-05-15 | AI Agent | 整合所有模块详细规格 |

@@ -54,7 +54,7 @@ pub async fn send(
     url: &url::Url,
     mut req: OpenResponsesRequest,
     request_id: Uuid,
-) -> Result<impl Stream<Item = Result<StreamingEvent, ClientError>>, ClientError> {
+) -> Result<impl Stream<Item = Result<StreamingEvent, ClientError>> + Unpin, ClientError> {
     req.stream = true;
     let resp = client
         .post(super::endpoint(url))
@@ -77,7 +77,7 @@ pub async fn send(
 
     let events = resp.bytes_stream().eventsource();
 
-    Ok(events.filter_map(|event| async move {
+    let stream = events.filter_map(|event| async move {
         let ev = match event {
             Ok(ev) => ev,
             Err(e) => return Some(Err(ClientError::StreamingProtocol(e.to_string()))),
@@ -126,5 +126,7 @@ pub async fn send(
             // Forward-compat: unknown event types are ignored.
             _ => None,
         }
-    }))
+    });
+
+    Ok(Box::pin(stream))
 }

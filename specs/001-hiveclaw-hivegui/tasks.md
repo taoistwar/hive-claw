@@ -282,3 +282,166 @@ Stories integrate through the `HiveGuiApp` shell owned by US1; the two contribut
 - Commit after each task or logical group; keep zh-CN strings consolidated in `strings_zh.rs` so review can verify FR-012a in one place.
 - Stop at any checkpoint to validate the story independently against its Independent Test.
 - Avoid: vague tasks, same-file conflicts, cross-story dependencies that break story independence (the only sanctioned cross-story dependency is US4 → US3 for the shared tools model + view, and it is explicitly documented above).
+
+---
+
+## Phase 8: User Story 5 - Compose conversation turns with a text editor and file attachments (Priority: P1) 🎯 v1.1
+
+**Goal**: The conversation surface gets a real text input editor (replacing the placeholder Send button), plus a file-attach affordance that accepts multiple files per turn. Text and attached files travel to HiveClaw together inside the OpenResponses request as a content-item array. HiveClaw validates the new content-item shape at the boundary and the placeholder reply acknowledges each attachment's metadata.
+
+**Why this priority**: The current v1 conversation surface has no way to actually type a message — `ui/conversation.rs`'s Send button is a stub bound to no input element. That's a real v1 gap (FR-007 is unsatisfied in practice). The file-attachment capability is the user-requested extension on top of that fix. Treating both together avoids touching `ui/conversation.rs` twice.
+
+**Independent Test**: With HiveClaw running and HiveGUI open, the engineer (a) types a question in the conversation input, (b) clicks "添加文件" and selects one or more files (e.g., a `.hql` script), (c) clicks "发送", and observes — the user turn renders with the typed text plus a chip per attachment (filename + size), HiveClaw's placeholder reply lands containing the zh-CN attachment-acknowledgement text (`附件：query.hql (1.2 KiB, text/plain)`), and the send pipeline returns to idle. Repeating with an oversize file shows an actionable zh-CN error attached to that turn before any network call.
+
+### Authority updates (spec / data-model / contracts) — MUST land before any implementation tasks below
+
+These are documentation, not code. They are part of this task list because the spec-kit workflow forbids implementing requirements that don't exist in `spec.md`.
+
+- [X] T057 [US5] Update `specs/001-hiveclaw-hivegui/spec.md`:
+  - Add **FR-007a** (HiveGUI MUST present a typeable text-editor element bound to the send action; the send button MUST be disabled when the editor is empty AND no attachments are present).
+  - Add **FR-007b** (HiveGUI MUST allow the engineer to attach one or more files to a pending turn via a documented affordance; attachments MUST be inline-encoded into the OpenResponses content array as `input_file` items per the contract update in T059; per-file size limit `1 MiB`, total request payload limit `4 MiB`).
+  - Add **FR-003a** (HiveClaw MUST accept the OpenResponses content-array form on `POST /v1/responses` with content items of type `input_text`, `input_file` (with `file_data` only — no `file_id` in v1), and `input_image` (with `image_url` as a data: URI only)).
+  - Extend Edge Cases: oversize file rejected before send; total-size cap exceeded rejected before send; malformed `data:` URI rejected at HiveClaw with `400`; empty editor + zero attachments leaves send disabled.
+  - Carve out SC-006: SC-006's `< 200ms p95` budget applies to **text-only** requests (no `input_file` / `input_image` items in the content array). Requests carrying any attachment are governed by a new criterion below.
+  - Add **SC-007**: For requests containing one or more `input_file` / `input_image` items, HiveClaw's p95 (sync mode: total response time; streaming mode: time-to-first-event) MUST be `< 500ms` measured at HiveClaw's HTTP boundary, on payloads up to the documented `1 MiB`-per-file and `4 MiB`-total limits. The 500ms ceiling accounts for base64 decoding (~50–80ms for 4 MiB), MIME bookkeeping, and per-attachment metadata formatting in the stub reply.
+  - Add a corresponding contract-test obligation: T062 and T063 MUST assert SC-007 over 50 sequential requests, with the same warmup pattern used by T025/T026.
+  - Add a User Story 5 section mirroring this phase's Goal / Independent Test.
+- [X] T058 [US5] Update `specs/001-hiveclaw-hivegui/data-model.md`:
+  - Replace `TurnContent::UserText { text: String }` with `TurnContent::UserMessage { text: String, attachments: Vec<Attachment> }` (keep `AssistantText { buffer }` unchanged).
+  - Add a new `Attachment` entity: `id: AttachmentId`, `filename: String`, `mime: String`, `size_bytes: u64`, `payload: AttachmentPayload` (enum: `Inline { base64_data_uri: String }` in v1; `FileId { id: String }` reserved for v1.x).
+  - Add invariants: A1 — `attachments.len() ≤ 8` and `sum(size_bytes) ≤ 4 * 1024 * 1024`; A2 — `mime` MUST be present and parsed at attach time (sanitised, not trusted from disk); A3 — `payload.base64_data_uri` MUST start with `data:<mime>;base64,`.
+- [X] T059 [US5] Update `specs/001-hiveclaw-hivegui/contracts/openresponses-v1.md`:
+  - Document the content-array form: `input` MAY also be `[{ role, content: [<ContentItem>...] }]` where each `ContentItem` is one of `{type:"input_text", text:String}`, `{type:"input_file", filename:String, file_data:String}`, `{type:"input_image", image_url:String}`.
+  - Validation rules table additions:
+    - `content` array empty ⇒ `400` `"field 'content' must be non-empty when 'input' uses the array form"`.
+    - `content[].type` ∉ {`input_text`, `input_file`, `input_image`} ⇒ `400` with that message.
+    - `input_file.file_data` not a `data:<mime>;base64,<payload>` URI ⇒ `400` `"field 'file_data' must be a data: URI with base64 encoding"`.
+    - `input_file.file_data` base64 payload decodes to > 1 MiB ⇒ `413` `"file 'X' exceeds 1 MiB per-file limit"`.
+    - Total decoded attachment size > 4 MiB ⇒ `413` `"attachments exceed 4 MiB total limit"`.
+    - Whole request body (before parsing) > 8 MiB ⇒ `413` `"request body exceeds 8 MiB transport limit"`. This is the axum-extractor-layer cap and runs before any field validation.
+    - `input_image.image_url` not a `data:image/*;base64,...` URI ⇒ `400`.
+  - Stub-reply update: when one or more `input_file` / `input_image` items are present, the placeholder reply text MUST be `"HiveClaw 占位回复：已收到你的请求。附件：<filename> (<size>, <mime>)[, <filename> (<size>, <mime>)...]"`. Streaming mode concatenates the same string across deltas.
+  - Forward-compatibility note: `input_file.file_id` is reserved for v1.x; v1 MUST reject it with `400 "field 'file_id' is not supported in v1; use 'file_data'"`.
+- [X] T060 [US5] Update `specs/001-hiveclaw-hivegui/quickstart.md` §4 (Run HiveGUI):
+  - Document the new flow: type a message, click "添加文件", select files, click "发送".
+  - Document the failure modes: oversize file, total-cap breach.
+  - Show an example zh-CN reply containing attachment metadata.
+  - State explicitly that v1 does NOT enforce a MIME allow/deny-list; the engineer is trusted to attach what they need (matches the Out of scope clause at the end of this phase).
+- [X] T060a [US5] Update `specs/001-hiveclaw-hivegui/plan.md` so it reflects Phase 8's authority changes:
+  - **Technical Context → Primary Dependencies**: add `base64 = "0.22"` (HiveClaw, no features) and `mime_guess` (HiveGUI). Both new entries cite Decision #12 / #13 in research.md.
+  - **Technical Context → Performance Goals**: replace the SC-006 reference with the carved-out form added in T057: text-only requests follow SC-006 (`< 200ms p95`); attachment-bearing requests follow SC-007 (`< 500ms p95`). Note that both budgets are measured at HiveClaw's HTTP boundary.
+  - **Technical Context → Constraints**: append "Per-file 1 MiB / total 4 MiB attachment budget; axum body cap raised to 8 MiB (see contract update in T059)."
+  - **Technical Context → Storage**: append "Attachments are NOT persisted; they live only in the in-flight `POST /v1/responses` request and the engineer's HiveGUI session memory. The deferred sled / SQLite story stands unchanged."
+  - **Project Structure → Source Code**: list the new `crates/hiveclaw/src/openresponses/limits.rs` (constants) and confirm `crates/hivegui/src/model/conversation.rs` now carries the `Attachment` / `AttachmentPayload` types.
+  - **Post-Design Constitution Re-Check**: add a row for Principle V noting that the second Tokio runtime (HiveGUI) is necessary, not premature — it has a current consumer (T077 network dispatch). The "single Tokio runtime" guidance in plan.md continues to mean "single runtime per binary," not "single runtime per workspace."
+  - **Performance Standards** row: explicitly mark SC-006 + SC-007 against the same contract tests (T025/T026 for SC-006, T062/T063 for SC-007).
+- [X] T061 [US5] Update `crates/hivegui/src/ui/strings_zh.rs` with the new copy:
+  - `ATTACH_BUTTON = "添加文件"`, `ATTACHMENT_REMOVE = "移除"`, `EDITOR_PLACEHOLDER = "输入你的问题…"` (already exists — verify), `ERR_FILE_TOO_LARGE = "文件超过 1 MiB 限制：{filename}"`, `ERR_TOTAL_TOO_LARGE = "附件总大小超过 4 MiB 限制"`, `ERR_UNSUPPORTED_MIME = "不支持的文件类型：{mime}"`, `ATTACHMENT_CHIP_FMT = "{filename} ({size}, {mime})"`.
+  - Add `ERR_FILE_ALREADY_ATTACHED = "该文件已添加：{filename}"` for duplicate file validation.
+
+### Tests for User Story 5 ⚠️ (write before implementation, observe red)
+
+#### HiveClaw side
+
+- [X] T062 [P] [US5] Contract test `crates/hiveclaw/tests/contract_responses_attachments_sync.rs` — POST a content-array body with one `input_text` + one `input_file` (small text file, base64-encoded `data:text/plain;base64,...`); assert status 200, sync JSON shape unchanged, and the `output[0].content[0].text` contains `附件：` plus the filename and `text/plain`. Also assert SC-007: p95 total response time < 500ms across 50 sequential requests carrying a 256 KiB `input_file` on warm loopback (same warmup pattern as T025).
+- [X] T063 [P] [US5] Contract test `crates/hiveclaw/tests/contract_responses_attachments_streaming.rs` — same payload but `"stream": true`; assert concatenated deltas equal the final `response.completed` text AND contain `附件：` + filename. Also assert SC-007: p95 time-to-first-event < 500ms across 50 sequential requests carrying a 256 KiB `input_file` (same warmup pattern as T026).
+- [X] T064 [P] [US5] Contract test `crates/hiveclaw/tests/contract_responses_attachments_validation.rs` — one row per validation rule added in T059: empty content array → 400; unknown content type → 400; non-`data:` URI → 400; per-file oversize → 413 with `'X' exceeds 1 MiB`; total oversize → 413; bad `image_url` MIME → 400; `file_id` present → 400 with v1-not-supported message.
+
+#### HiveGUI side
+
+- [X] T065 [P] [US5] Unit test `crates/hivegui/tests/conversation_with_attachments.rs` — exercise `Conversation::send_user_message` (renamed/extended to take `(text, attachments)`): empty text + empty attachments returns a new `EmptyTurnError`; empty text + ≥1 attachment is permitted; attachment count > 8 returns `TooManyAttachmentsError`; pending-turn busy-check still holds (FR-008a invariant I4); turn renders `TurnContent::UserMessage` carrying both fields.
+- [X] T066 [P] [US5] Client test `crates/hivegui/tests/client_attachments_against_mock.rs` — feed `client::sync::send` a request carrying 1 `input_text` + 1 `input_file`; mock server asserts the outbound JSON has the content-array shape, the `input_file.file_data` decodes to the original bytes, and the response is parsed normally.
+
+### Implementation for User Story 5
+
+#### HiveClaw side
+
+- [X] T067 [US5] Extend `crates/hiveclaw/src/openresponses/mod.rs`:
+  - Add a `RequestContentItem` enum with variants `InputText { text }`, `InputFile { filename, file_data }`, `InputImage { image_url }`, tagged with `#[serde(tag = "type", rename_all = "snake_case")]`.
+  - Change `InputItem.content` to accept either `String` (legacy) or `Vec<RequestContentItem>`.
+  - Add `AttachmentMeta { filename, mime, size_bytes }` and bubble that out through `ValidatedRequest.attachments: Vec<AttachmentMeta>`.
+  - Add `ValidationError` variants for the new failure modes.
+- [X] T068 [US5] Implement the validation pass in `openresponses::validate()`:
+  - Parse `data:<mime>;base64,<payload>` URIs (small hand-rolled parser; do NOT pull a new dep).
+  - Base64-decode using `base64` (add to `crates/hiveclaw/Cargo.toml`; pin via workspace deps as `base64 = "0.22"`, no features).
+  - Enforce per-file `1 MiB` and total `4 MiB` budgets (constants live in `openresponses::limits`).
+  - Reject `file_id` field with the documented v1 message.
+  - Raise the axum body limit in `crates/hiveclaw/src/http/responses.rs:44` from the current `2 * 1024 * 1024` to `openresponses::limits::MAX_REQUEST_BYTES` (= `8 * 1024 * 1024`). Rationale: 4 MiB total decoded attachments × ~1.33 base64 expansion + JSON envelope ≈ 5.5 MiB on the wire; an 8 MiB cap leaves headroom without inviting abuse. Bodies above the cap MUST yield `413 PAYLOAD_TOO_LARGE` with the documented JSON envelope.
+- [X] T069 [US5] Update `crates/hiveclaw/src/openresponses/stub.rs`:
+  - `build_response` and `stream_chunks` take `attachments: &[AttachmentMeta]`.
+  - When non-empty, append `附件：<a.filename> (<format_size(a.size_bytes)>, <a.mime>)[, ...]` to the base placeholder text.
+  - `format_size` helper: `B` / `KiB` / `MiB` with one-decimal precision.
+- [X] T070 [US5] Update `crates/hiveclaw/src/http/responses.rs` to pass `validated.attachments` into the stub. Validation rejections that already exist keep their `400`; oversize rejections return `413 PAYLOAD_TOO_LARGE` per T059.
+
+#### HiveGUI side
+
+- [X] T071 [US5] Extend `crates/hivegui/src/model/conversation.rs`:
+  - Rename `TurnContent::UserText` → `TurnContent::UserMessage { text, attachments }`.
+  - Add `pub struct Attachment { id: AttachmentId, filename: String, mime: String, size_bytes: u64, payload: AttachmentPayload }` mirroring data-model.md §Attachment exactly.
+  - Add `pub enum AttachmentPayload { Inline { base64_data_uri: String } }` (the `FileId { id: String }` variant is reserved for v1.x per data-model.md A1/A3 and the contract's forward-compat note — do NOT add it in v1).
+  - Add `pub struct AttachmentId(pub Uuid)` to mirror the entity's id field.
+  - Update `send_user_message(text, attachments)` signature; add `EmptyTurnError` and `TooManyAttachmentsError` variants on `BusyError`/new `SendError`.
+  - Update `retry()` to copy both fields onto the new pending turn.
+  - All existing call sites compile against the new signature.
+- [X] T071a [US5] Sweep the `TurnContent::UserText` → `UserMessage` rename across every existing call site so v1's green tests stay green:
+  - `crates/hivegui/src/ui/conversation.rs:40` — pattern `TurnContent::UserText { text }` (rendering branch).
+  - `crates/hivegui/tests/conversation_sequential_send.rs` — 8 call sites of `conv.send_user_message("...".to_string())` (lines 13, 24, 25, 34, 56, 75, 98, 108, 116) and 1 `UserText` match at line 88. Update each `send_user_message(text)` to `send_user_message(text, vec![])` (or the empty-vec helper added in T072). Update the `UserText` match to `UserMessage { text, attachments: _ }`.
+  - `crates/hivegui/tests/client_unreachable_surfaces_failure.rs:40` — `send_user_message("hi".to_string())` → `send_user_message("hi".to_string(), vec![])`.
+  - `crates/hivegui/tests/state_persists_across_navigation.rs:13` — same one-line change.
+  - Confirm by running `cargo test -p hivegui` from a real-network machine: every test that was green before this phase started MUST be green after this task. Any new red is a regression, not progress.
+- [X] T072 [US5] Extend `crates/hivegui/src/client/mod.rs`:
+  - `OpenResponsesRequest` gains an `input` enum: `InputForm::Text(String)` (legacy fast path) or `InputForm::Items(Vec<InputItem>)` where `InputItem.content` is `Vec<RequestContentItem>` mirroring HiveClaw's wire types (duplicate, per Principle V — no internal-library coupling).
+  - Add a constructor `OpenResponsesRequest::from_user_turn(text, &[Attachment])` that picks `Text` when attachments are empty and `Items` otherwise (keeps the simple path on the wire).
+- [X] T073 [US5] Update `crates/hivegui/src/client/sync.rs` and `crates/hivegui/src/client/streaming.rs` to serialise the new form unchanged — they consume `OpenResponsesRequest` directly; no change beyond updated types.
+- [X] T074 [US5] Add a text-editor element to `crates/hivegui/src/ui/conversation.rs`:
+  - Implement a custom `TextInput` component in `crates/hivegui/src/ui/input.rs` with full keyboard support (text input, cursor movement, selection, copy/paste, home/end, etc.) and mouse interaction (click to position cursor, drag to select).
+  - Store the editor's `Entity<TextInput>` on `ConversationView`.
+  - Bind submit-on-Enter (Shift+Enter inserts a newline).
+  - The Send button reads the current editor value via the TextInput entity and dispatches via the conversation pipeline (T077 below).
+  - Add `unicode-segmentation = "1"` dependency to workspace for grapheme cluster handling in the text editor.
+- [X] T074a [US5] Update the pending input synchronisation:
+  - Move `pending_attachments` from `ConversationView` local state to the global `HiveGuiApp` pending_input mirror.
+  - Render pending attachment chips from the global pending_input state instead of the view's local state.
+- [X] T075 [US5] Add the attach affordance:
+  - "添加文件" button next to Send; on click, invokes `cx.prompt_for_paths(PathPromptOptions::open_file_multi())`.
+  - For each picked path: read up to 1 MiB, detect MIME (use the `mime_guess` crate), base64-encode, push an `Attachment` into the global `pending_input.attachments`.
+  - Reject per-file oversize, duplicate files (by filename), and total size cap before adding; show appropriate transient zh-CN errors.
+  - Render each pending attachment as a chip below the editor with a "移除" button that removes it from the global pending_input list.
+- [X] T075a [US5] Implement client-side window decoration in `crates/hivegui/src/ui/app.rs`:
+  - Add a custom titlebar at the top of the window with a distinct background colour.
+  - Implement window dragging via left-click-and-drag on the titlebar.
+  - Add double-click gesture to toggle maximise/restore on the titlebar.
+  - Add visible control buttons: minimise ("—"), maximise/restore ("□"), close ("✕").
+  - Set `window_decorations: Some(WindowDecorations::Server)` in the window options to request server-side decoration support with fallback to client-side when unavailable.
+- [X] T076 [US5] Update `ConversationView::render` to:
+  - Show attachment chips on each user turn (read from `TurnContent::UserMessage.attachments`).
+  - Keep Send disabled when both the editor is empty AND `pending_attachments` is empty (FR-007a).
+- [X] T077 [US5] Wire the actual network dispatch from the Send action:
+  - Use gpui's `cx.spawn` (or `cx.background_executor().spawn`) to run the async `client::streaming::send` or `client::sync::send` call; on each delta event, post a `cx.update_global` mutation that calls `Conversation::append_assistant_chunk` and `cx.refresh_windows()`; on completion call `record_assistant_reply`; on error call `record_failure`. This is the wiring noted as a TODO in the v1 conversation surface; it lands here because it has to exist before the new editor is useful.
+- [X] T078 [US5] Update `crates/hivegui/src/main.rs` so the gpui `App` owns a Tokio runtime handle (via `tokio::runtime::Builder::new_current_thread().enable_all().build()` driven from a background gpui executor task) and exposes it to views that need to spawn HTTP calls. Alternative: use `reqwest`'s default executor directly — record the choice in `research.md` Decision #11.
+
+### Polish for User Story 5
+
+- [X] T079 [P] [US5] Update `research.md` with Decision #11 (Tokio runtime ownership in HiveGUI) and Decision #12 (file-attachment encoding & limits), each in the Decision/Rationale/Alternatives format used by the other entries.
+- [X] T080 [P] [US5] Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. All three MUST pass.
+- [X] T082 [P] [US5] Fix streaming response Unpin issue: wrap the filter_map stream in `client/streaming.rs` with `Box::pin()` and update return type to `impl Stream<...> + Unpin` to satisfy futures::StreamExt::next()'s Unpin requirement.
+- [X] T083 [P] [US5] Fix text input sync issue: remove the logic that syncs from global pending_input back to editor in `ui/conversation.rs::render()`, to prevent user input from being cleared on every render cycle. The TextInput component now serves as the single source of truth for input, syncing out to pending_input via on_change callback.
+- [X] T081 [P] [US5] Manual walkthrough against the updated `quickstart.md`: open HiveGUI, type a question, attach a `.hql` file ≤ 1 MiB, send, observe attachment chip on user turn + zh-CN attachment-acknowledgement in the placeholder reply, observe Send re-enable after reply lands.
+
+**Checkpoint**: T062–T066 are red before the implementation tasks start and green after T077. Spec acceptance scenarios for User Story 5 (added in T057) pass. The conversation surface now supports the full text + file flow.
+
+### Dependencies for Phase 8
+
+- T057–T061 (authority updates + strings) MUST land before T062+. The TDD tests reference behaviour that is documented in the updated spec/contracts. T060a (plan.md update) sits in the same authority-update batch.
+- T071a MUST land immediately after T071 and before T072 — the rename is a breaking change to v1 test suites, and every subsequent HiveGUI task assumes the workspace compiles.
+- T067–T070 (HiveClaw side) and T071–T077 (HiveGUI side) can proceed in parallel after T057–T061 land. Each side is gated by its own tests in T062–T066.
+- T078 (Tokio runtime wiring) is a prerequisite for T077 — sequence them on the HiveGUI side.
+- T079–T081 (polish) wait until both sides are green.
+
+### Out of scope for User Story 5 (record for the next feature)
+
+- `POST /v1/files` upload endpoint + `input_file.file_id` referencing (deferred until file sizes > 1 MiB are needed).
+- MIME-type allow-list / deny-list enforcement beyond presence + well-formedness. v1 trusts the client-provided MIME after sanitisation; richer policy lands when the security review identifies a specific threat model.
+- Drag-and-drop attachment from outside HiveGUI (the v1 affordance is the platform file picker only).
+- Pasting an image from the clipboard into the editor (image input is accepted on the wire via `input_image`, but the v1 UI only routes through `prompt_for_paths`).
+- Persisting attachments across sessions (no persistent state in v1 per spec Assumption).

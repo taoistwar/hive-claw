@@ -12,18 +12,14 @@ use futures::stream::{self, Stream};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::openresponses::{self, ErrorEnvelope};
+use crate::openresponses::{self, limits, AttachmentMeta, ErrorEnvelope};
 
 const STREAM_CHUNK_DELAY: Duration = Duration::from_millis(8);
 
-/// `POST /v1/responses` handler. Validates Content-Type and body shape at
-/// the boundary, then branches on `stream` to either return a single JSON
-/// response or an SSE stream per `contracts/openresponses-v1.md`.
 pub async fn handle(req: Request) -> Response {
     let started = Instant::now();
     let request_id = extract_or_generate_request_id(req.headers());
 
-    // 1. Validate Content-Type.
     let ct_ok = req
         .headers()
         .get(header::CONTENT_TYPE)
@@ -40,21 +36,21 @@ pub async fn handle(req: Request) -> Response {
         );
     }
 
-    // 2. Read body.
-    let bytes = match axum::body::to_bytes(req.into_body(), 2 * 1024 * 1024).await {
+    let bytes = match axum::body::to_bytes(req.into_body(), limits::MAX_REQUEST_BYTES).await {
         Ok(b) => b,
         Err(_) => {
             return finish_error(
                 request_id,
-                StatusCode::BAD_REQUEST,
-                ErrorEnvelope::invalid_request("request body could not be read"),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ErrorEnvelope::invalid_request(
+                    "request body exceeds 8 MiB transport limit".to_string(),
+                ),
                 false,
                 started,
             );
         }
     };
 
-    // 3. Parse JSON.
     let parsed: openresponses::OpenResponsesRequest = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(_) => {
@@ -68,14 +64,18 @@ pub async fn handle(req: Request) -> Response {
         }
     };
 
-    // 4. Validate fields.
     let validated = match openresponses::validate(parsed) {
         Ok(v) => v,
         Err(e) => {
+            let status = if e.is_payload_too_large() {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
             return finish_error(
                 request_id,
-                StatusCode::BAD_REQUEST,
-                ErrorEnvelope::invalid_request(e.message.to_string()),
+                status,
+                ErrorEnvelope::invalid_request(e.message().to_string()),
                 false,
                 started,
             );
@@ -100,6 +100,7 @@ fn sync_response(
         &req.model,
         Utc::now().timestamp(),
         req.input_text.chars().count(),
+        &req.attachments,
     );
 
     info!(
@@ -109,6 +110,8 @@ fn sync_response(
         duration_ms = started.elapsed().as_millis() as u64,
         stream = false,
         status_code = 200,
+        attachment_count = req.attachments.len(),
+        attachments_bytes = total_attachment_bytes(&req.attachments),
     );
 
     let mut response = (StatusCode::OK, Json(body)).into_response();
@@ -127,16 +130,20 @@ fn streaming_response(
     let created = Utc::now().timestamp();
     let model = req.model.clone();
     let input_chars = req.input_text.chars().count();
+    let attachments = req.attachments.clone();
 
-    // Build owned data we capture into the async stream.
-    let chunks: Vec<String> = openresponses::stub::stream_chunks()
-        .into_iter()
-        .map(String::from)
-        .collect();
-    let final_response =
-        openresponses::stub::build_response(&response_id, &model, created, input_chars);
+    let chunks: Vec<String> = openresponses::stub::stream_chunks(&attachments);
+    let final_response = openresponses::stub::build_response(
+        &response_id,
+        &model,
+        created,
+        input_chars,
+        &attachments,
+    );
 
     let request_id_for_log = request_id.clone();
+    let attachment_count = attachments.len();
+    let attachments_bytes = total_attachment_bytes(&attachments);
 
     let stream = build_event_stream(response_id, model, created, chunks, final_response);
 
@@ -146,7 +153,6 @@ fn streaming_response(
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert("x-request-id", header_value(&request_id));
 
-    // Streaming responses log on dispatch; the full duration is best-effort.
     info!(
         request_id = %request_id_for_log,
         operation = "responses.create",
@@ -154,6 +160,8 @@ fn streaming_response(
         duration_ms = started.elapsed().as_millis() as u64,
         stream = true,
         status_code = 200,
+        attachment_count = attachment_count,
+        attachments_bytes = attachments_bytes,
     );
 
     response
@@ -271,4 +279,8 @@ fn extract_or_generate_request_id(headers: &HeaderMap) -> String {
 
 fn header_value(s: &str) -> HeaderValue {
     HeaderValue::from_str(s).unwrap_or_else(|_| HeaderValue::from_static("invalid"))
+}
+
+fn total_attachment_bytes(attachments: &[AttachmentMeta]) -> u64 {
+    attachments.iter().map(|a| a.size_bytes as u64).sum()
 }

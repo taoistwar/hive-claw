@@ -28,8 +28,42 @@ pub enum Author {
 
 #[derive(Debug, Clone)]
 pub enum TurnContent {
-    UserText { text: String },
-    AssistantText { buffer: String },
+    /// FR-007a + FR-007b: a user-authored turn carrying typed text and
+    /// zero or more file attachments. Either field may be empty
+    /// individually, but `Conversation::send_user_message` rejects
+    /// `text.is_empty() && attachments.is_empty()` with `SendError::Empty`.
+    UserMessage {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
+    AssistantText {
+        buffer: String,
+    },
+}
+
+/// A file attached to a user-authored conversation turn. v1 only
+/// constructs the `Inline` payload variant; `FileId` is reserved for v1.x.
+/// See `specs/001-hiveclaw-hivegui/data-model.md` §Attachment.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub id: AttachmentId,
+    pub filename: String,
+    pub mime: String,
+    pub size_bytes: u64,
+    pub payload: AttachmentPayload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct AttachmentId(pub Uuid);
+
+#[derive(Debug, Clone)]
+pub enum AttachmentPayload {
+    /// `data:<mime>;base64,<payload>` URI, ready for the wire's
+    /// `input_file.file_data` field.
+    Inline { base64_data_uri: String },
+    // `FileId { id: String }` — reserved for v1.x when a separate upload
+    // endpoint exists; intentionally not declared in v1 so no v1 caller
+    // can construct it.
 }
 
 #[derive(Debug, Clone)]
@@ -68,10 +102,41 @@ pub struct ConversationTurn {
     pub error: Option<TurnError>,
 }
 
+/// Maximum number of attachments allowed on a single user turn.
+/// Mirrors data-model.md invariant A1 and FR-007b.
+pub const MAX_ATTACHMENTS_PER_TURN: usize = 8;
+
+/// Per-turn total decoded attachment size budget (4 MiB).
+pub const TOTAL_ATTACHMENTS_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Per-file decoded attachment size budget (1 MiB). u64-typed so it
+/// can be compared directly against the per-attachment `size_bytes`.
+pub const PER_FILE_MAX_BYTES_U64: u64 = 1024 * 1024;
+
 #[derive(Debug, Error)]
 pub enum BusyError {
     #[error("conversation has a pending turn; wait for it to resolve before sending another")]
     Pending,
+}
+
+/// All ways `send_user_message` can refuse a turn. `Busy` mirrors the
+/// FR-008a single-pending-turn invariant; the rest enforce data-model A1.
+#[derive(Debug, Error)]
+pub enum SendError {
+    #[error("conversation has a pending turn; wait for it to resolve before sending another")]
+    Busy,
+    #[error("a user turn must have text or at least one attachment")]
+    Empty,
+    #[error("too many attachments on a single turn (max {MAX_ATTACHMENTS_PER_TURN})")]
+    TooManyAttachments,
+    #[error("total attachment size exceeds 4 MiB")]
+    TotalTooLarge,
+}
+
+impl From<BusyError> for SendError {
+    fn from(_: BusyError) -> Self {
+        SendError::Busy
+    }
 }
 
 #[derive(Debug, Error)]
@@ -122,17 +187,35 @@ impl Conversation {
         self.pending
     }
 
-    /// FR-008a: returns `BusyError` when another turn is already pending.
-    pub fn send_user_message(&mut self, text: String) -> Result<PendingTurnId, BusyError> {
+    /// FR-008a (single pending) + FR-007a/b (empty / count / size guards).
+    /// `text` is expected to already be sanitised via
+    /// `crate::model::sanitize_user_input`. The combination
+    /// `text.is_empty() && attachments.is_empty()` is rejected with
+    /// `SendError::Empty`. Returns the new pending-turn id on success.
+    pub fn send_user_message(
+        &mut self,
+        text: String,
+        attachments: Vec<Attachment>,
+    ) -> Result<PendingTurnId, SendError> {
         if self.pending.is_some() {
-            return Err(BusyError::Pending);
+            return Err(SendError::Busy);
+        }
+        if text.is_empty() && attachments.is_empty() {
+            return Err(SendError::Empty);
+        }
+        if attachments.len() > MAX_ATTACHMENTS_PER_TURN {
+            return Err(SendError::TooManyAttachments);
+        }
+        let total: u64 = attachments.iter().map(|a| a.size_bytes).sum();
+        if total > TOTAL_ATTACHMENTS_MAX_BYTES {
+            return Err(SendError::TotalTooLarge);
         }
         let turn_id = TurnId(Uuid::new_v4());
         let pending = PendingTurnId(turn_id.0);
         self.turns.push(ConversationTurn {
             id: turn_id,
             author: Author::User,
-            content: TurnContent::UserText { text },
+            content: TurnContent::UserMessage { text, attachments },
             status: TurnStatus::Pending,
             created_at: Utc::now(),
             completed_at: None,
@@ -265,8 +348,8 @@ impl Conversation {
         if !is_retryable {
             return Err(RetryError::NotRetryable);
         }
-        let text = match &self.turns[pos].content {
-            TurnContent::UserText { text } => text.clone(),
+        let (text, attachments) = match &self.turns[pos].content {
+            TurnContent::UserMessage { text, attachments } => (text.clone(), attachments.clone()),
             _ => return Err(RetryError::NotRetryable),
         };
         let new_id = TurnId(Uuid::new_v4());
@@ -274,7 +357,7 @@ impl Conversation {
         self.turns.push(ConversationTurn {
             id: new_id,
             author: Author::User,
-            content: TurnContent::UserText { text },
+            content: TurnContent::UserMessage { text, attachments },
             status: TurnStatus::Pending,
             created_at: Utc::now(),
             completed_at: None,

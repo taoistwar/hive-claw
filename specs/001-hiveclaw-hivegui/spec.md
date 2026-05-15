@@ -147,8 +147,56 @@ launch a tool to reach its dedicated working surface inside the client.
    the client and the engineer can return to the conversation or to the
    tool list without losing in-flight state.
 
+---
+
+### User Story 5 - Compose conversation turns with a text editor and file attachments (Priority: P1)
+
+A data engineer working on a Hive offline-analysis task wants to type
+a question into HiveGUI's conversation surface (instead of having only
+a stub Send button) and attach one or more files — typically a SQL/HQL
+script, a schema fragment, or a small sample data file — alongside the
+typed question so HiveClaw receives both the prose and the file content
+as the same conversation turn.
+
+**Why this priority**: The current conversation surface has a Send
+button bound to no input element, so FR-007 is unsatisfied in practice
+— the engineer cannot actually type anything. The file-attachment
+capability is the user-requested extension on top of that gap fix.
+Treating both together avoids touching the conversation UI twice.
+
+**Independent Test**: With HiveClaw running and HiveGUI open, the
+engineer types a question, clicks "添加文件" and picks a `.hql` script,
+clicks "发送", and observes the user turn rendering with both the typed
+text and an attachment chip (filename + size + MIME), HiveClaw's
+placeholder reply landing with the documented `附件：<filename> (<size>,
+<mime>)` zh-CN acknowledgement appended, and the send pipeline returning
+to idle. Repeating with a file larger than 1 MiB shows an actionable
+zh-CN error on the input surface **before** any network call is issued.
+
+**Acceptance Scenarios**:
+
+1. **Given** HiveGUI is open and connected to HiveClaw, **When** the
+   engineer types text into the conversation input and clicks "发送",
+   **Then** the typed text appears as a User turn marked as sent by the
+   engineer, and HiveClaw's reply appears below it in order.
+2. **Given** the engineer has typed text **and** attached one or more
+   files (each ≤ 1 MiB; total ≤ 4 MiB), **When** the engineer clicks
+   "发送", **Then** HiveGUI dispatches a single `POST /v1/responses`
+   request that carries the text as an `input_text` content item and
+   each file as an `input_file` content item (inline `data:` URI), and
+   HiveClaw's placeholder reply acknowledges each attachment by
+   filename, size, and MIME.
+3. **Given** the editor is empty **and** no files are attached, **When**
+   the engineer looks at the Send affordance, **Then** Send is disabled
+   and gives no apparent action on click.
+4. **Given** the engineer picks a file larger than 1 MiB, **When** the
+   file picker returns, **Then** HiveGUI rejects the file inline with a
+   zh-CN error before adding it to the pending attachments list, and
+   the engineer's typed text remains intact in the editor.
+
 ### Edge Cases
 
+- **Client-side window decoration on Linux**: On Linux (Wayland/X11), where server-side window decorations are not universally available, HiveGUI MUST render a custom client-side titlebar providing: (a) a draggable region for moving the window, (b) a double-click gesture to toggle maximise/restore, (c) visible controls for minimise, maximise/restore, and close. The titlebar MUST use a distinct background colour to avoid blending with the content area.
 - **HiveClaw unreachable at startup**: HiveGUI MUST start and present
   the helper-tool sections; the conversation surface MUST display a
   clear "agent unreachable" state with guidance, never a crash or blank
@@ -168,6 +216,27 @@ launch a tool to reach its dedicated working surface inside the client.
   engineer can move back and forth without losing context.
 - **Multiple HiveGUI windows pointing at the same HiveClaw**: behaviour
   is out of scope for v1 (single-window assumption); see Assumptions.
+- **Oversize file picked**: a file larger than the documented per-file
+  limit (1 MiB) MUST be rejected **before** any network call, with an
+  actionable zh-CN error attached to the input surface (not to the
+  conversation thread, since no turn has been sent yet).
+- **Duplicate file attachment**: when the engineer attempts to attach
+  the same file (by filename) more than once to the same pending turn,
+  the duplicate MUST be rejected with a zh-CN error before it is added
+  to the pending attachments list, and the prior attachments MUST remain
+  intact. Duplication is detected by exact filename match.
+- **Total attachment cap exceeded**: when the running sum of attached
+  file sizes would exceed the documented total cap (4 MiB), the
+  attempted attachment MUST be rejected with a zh-CN error and the
+  prior attachments MUST remain intact and pending.
+- **Malformed `data:` URI on the wire**: if HiveGUI ever sends an
+  `input_file.file_data` value that is not a `data:<mime>;base64,<payload>`
+  URI (or the payload fails to base64-decode), HiveClaw MUST reject the
+  whole request at the validation boundary with a `400` and the
+  documented JSON error envelope; the failed turn MUST surface a
+  retryable zh-CN error in the conversation thread.
+- **Empty editor + zero attachments**: the Send affordance MUST be
+  disabled. There is no path by which an empty turn reaches HiveClaw.
 
 ## Requirements *(mandatory)*
 
@@ -191,6 +260,20 @@ launch a tool to reach its dedicated working surface inside the client.
   implementation MAY return stub content, but the wire contract
   MUST match the specification so HiveGUI can consume it without
   agent-specific shims.
+- **FR-003a**: HiveClaw MUST accept the OpenResponses **content-array
+  form** on `POST /v1/responses`, where each `input` item's `content`
+  field is an array of typed content items. v1 MUST recognise three
+  content-item types: `input_text` (carrying `text: String`),
+  `input_file` (carrying `filename: String` and `file_data: String`
+  where `file_data` is a `data:<mime>;base64,<payload>` URI — `file_id`
+  is reserved for v1.x and MUST be rejected with the documented error),
+  and `input_image` (carrying `image_url: String` as a `data:image/*;
+  base64,<payload>` URI). Per-file decoded size MUST be ≤ 1 MiB and the
+  total decoded size across all attachments on a single request MUST be
+  ≤ 4 MiB; the raw HTTP body is independently capped at 8 MiB at the
+  transport layer. All these limits are enforced at the validation
+  boundary with the JSON error envelopes documented in
+  `contracts/openresponses-v1.md`.
 - **FR-004**: HiveClaw MUST emit structured logs for every conversation
   request it handles (request id, outcome, duration), per the project
   constitution's Observability principle.
@@ -208,6 +291,22 @@ launch a tool to reach its dedicated working surface inside the client.
 - **FR-007**: HiveGUI MUST let the engineer send a message to HiveClaw
   and display HiveClaw's reply in the same conversation thread, with
   speaker attribution and chronological ordering.
+- **FR-007a**: HiveGUI MUST present a typeable text-editor element on
+  the conversation surface, bound to the Send action. The Send action
+  MUST be disabled when the editor's text is empty (after sanitisation
+  per FR-011) **and** no file attachments are pending; it MUST be
+  enabled as soon as either condition becomes non-empty. Submit-on-Enter
+  is required; Shift+Enter inserts a literal newline.
+- **FR-007b**: HiveGUI MUST allow the engineer to attach one or more
+  files to a pending conversation turn via a documented affordance
+  ("添加文件"). Attachments MUST be inline-encoded into the outbound
+  OpenResponses `input` array as `input_file` content items per FR-003a;
+  per-file size limit is `1 MiB`, total limit is `4 MiB`, maximum
+  attachment count per turn is **8**. Oversize files, excess
+  attachments, and duplicate files (by exact filename match) MUST be
+  rejected before the turn is sent, with an actionable zh-CN error
+  rendered next to the input surface (not in the conversation thread,
+  which is reserved for sent turns).
 - **FR-008**: HiveGUI MUST show a visible in-progress indicator while
   a reply is pending, and a clear error state when a reply fails or
   HiveClaw is unreachable. When the underlying request to HiveClaw
@@ -307,9 +406,20 @@ launch a tool to reach its dedicated working surface inside the client.
 - **SC-005**: Both projects (HiveClaw, HiveGUI) build from a clean
   checkout with **zero manual edits** to source-controlled files.
 - **SC-006**: HiveClaw's `POST /v1/responses` meets, at p95 under
-  representative load: **< 200ms total response time** for synchronous
-  requests, and **< 200ms time-to-first-event** for streaming requests.
-  Total stream duration is not bounded by this criterion.
+  representative load on **text-only** requests (i.e., no `input_file`
+  or `input_image` content items): **< 200ms total response time** for
+  synchronous requests, and **< 200ms time-to-first-event** for
+  streaming requests. Total stream duration is not bounded by this
+  criterion. Requests carrying any attachment are governed by SC-007
+  below.
+- **SC-007**: For `POST /v1/responses` requests containing one or more
+  `input_file` / `input_image` content items, HiveClaw's p95 (sync mode:
+  total response time; streaming mode: time-to-first-event) MUST be
+  **< 500ms**, measured at HiveClaw's HTTP boundary, on payloads up to
+  the documented `1 MiB`-per-file and `4 MiB`-total limits. The 500ms
+  ceiling budgets base64 decoding (~50–80ms for 4 MiB), MIME bookkeeping,
+  and per-attachment metadata formatting in the stub reply, in addition
+  to the same baseline that SC-006 covers.
 
 ## Assumptions
 

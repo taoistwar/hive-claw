@@ -1,0 +1,481 @@
+# 大数据离线分析 AI Agent - 技术设计文档
+
+**版本**: 1.0  
+**日期**: 2026-05-15  
+**状态**: 草稿
+
+---
+
+## 一、架构概述
+
+### 1.1 系统架构图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        PC GUI (Rust + gpui)                      │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │ 创建向导    │ │ 任务管理    │ │ DAG 可视化  │ │SQL 编辑器 │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │ 执行历史    │ │ 日志查看    │ │ 数据预览    │ │ Git 集成  │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        应用服务层                                 │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │ 任务生成器  │ │ 元数据同步  │ │ AI 服务代理 │ │ Git 服务  │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │ Azkaban API │ │ 数据质量    │ │ 审计日志    │ │ 更新服务  │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
+┌───────────────┐      ┌───────────────┐     ┌───────────────┐
+│ Hive Cluster  │      │ MySQL         │     │ Azkaban       │
+│ (Hive 3.x)    │      │ (Metastore)   │     │ (3.x)         │
+└───────────────┘      └───────────────┘     └───────────────┘
+        │                       │                       │
+        ▼                       ▼                       ▼
+┌───────────────┐      ┌───────────────┐     ┌───────────────┐
+│ LDAP          │      │ GPT-4 API     │     │ Git Remote    │
+│ (认证)        │      │ (云端)        │     │ (代码仓库)    │
+└───────────────┘      └───────────────┘     └───────────────┘
+```
+
+---
+
+## 二、模块设计
+
+### 2.1 GUI 模块（Rust + gpui）
+
+#### 2.1.1 模块结构
+```
+src/gui/
+├── app.rs              # 应用入口和主窗口
+├── views/
+│   ├── wizard.rs       # 创建向导视图
+│   ├── task_list.rs    # 任务列表视图
+│   ├── dag_view.rs     # DAG 可视化视图
+│   ├── sql_editor.rs   # SQL 编辑器视图
+│   ├── history.rs      # 执行历史视图
+│   └── logs.rs         # 日志查看视图
+├── components/
+│   ├── button.rs       # 按钮组件
+│   ├── input.rs        # 输入框组件
+│   ├── table.rs        # 表格组件
+│   └── modal.rs        # 弹窗组件
+└── styles/
+    └── theme.rs        # 主题样式
+```
+
+#### 2.1.2 核心组件
+
+**创建向导**：
+- 步骤 1：选择任务模板（7 大模板）
+- 步骤 2：填写表单参数（表名、分区、增量/全量等）
+- 步骤 3：自然语言描述（AI 生成辅助）
+- 步骤 4：预览和确认
+
+**SQL 编辑器**：
+- 语法高亮（HiveQL）
+- 智能提示（表名、字段名自动补全）
+- 错误标记（语法错误实时提示）
+
+### 2.2 任务生成器模块
+
+#### 2.2.1 模板引擎
+```rust
+pub enum TaskTemplate {
+    SingleTableAggregation,  // 单表聚合
+    MultiTableJoin,          // 多表关联
+    IncrementalSync,         // 增量同步
+    FullSync,                // 全量同步
+    Deduplication,           // 去重清洗
+    SCD,                     // 缓慢变化维度
+    MetricCalculation,       // 指标计算
+}
+
+pub struct TaskGenerator {
+    template: TaskTemplate,
+    params: TaskParams,
+    ai_service: AIService,
+}
+```
+
+#### 2.2.2 AI 生成流程
+```
+用户输入（自然语言 + 表单）
+    │
+    ▼
+Prompt 构建（Few-shot + RAG + CoT）
+    │
+    ▼
+GPT-4 API 调用
+    │
+    ▼
+SQL 解析和验证
+    │
+    ├── 语法正确 ──► 生成 Azkaban .job 脚本
+    │
+    └── 语法错误 ──► 自动修正重试
+```
+
+### 2.3 元数据管理模块
+
+#### 2.3.1 MySQL 元数据库连接
+```rust
+pub struct MetastoreClient {
+    pool: MySqlPool,
+    cache: MetaCache,
+}
+
+impl MetastoreClient {
+    // 直接查询 Hive Metastore 的 MySQL 表
+    pub async fn get_table(&self, db: &str, table: &str) -> Result<TableMeta>;
+    pub async fn get_partitions(&self, db: &str, table: &str) -> Result<Vec<Partition>>;
+    pub async fn get_fields(&self, db: &str, table: &str) -> Result<Vec<Field>>;
+}
+```
+
+#### 2.3.2 Hive Metastore 表结构
+```
+DBS (数据库表)
+TABLES (表信息表)
+COLUMNS_V2 (字段信息表)
+PARTITIONS (分区表)
+PARTITION_KEYS (分区键表)
+SDS (存储描述表)
+```
+
+### 2.4 Azkaban API 模块
+
+#### 2.4.1 API 封装
+```rust
+pub struct AzkabanClient {
+    base_url: String,
+    session_id: String,
+    http_client: HttpClient,
+}
+
+impl AzkabanClient {
+    pub async fn login(&self, username: &str, password: &str) -> Result<String>;
+    pub async fn upload_project(&self, project: &str, zip: Vec<u8>) -> Result<()>;
+    pub async fn execute_flow(&self, project: &str, flow: &str) -> Result<i64>;
+    pub async fn get_job_status(&self, exec_id: i64, job_id: &str) -> Result<JobStatus>;
+}
+```
+
+#### 2.4.2 .job 文件格式
+```properties
+# sample.job
+type=command
+command=hive -e "INSERT INTO TABLE target SELECT * FROM source;"
+```
+
+### 2.5 Git 集成模块
+
+#### 2.5.1 工作流
+```
+任务创建/修改
+    │
+    ▼
+git checkout -b <task-branch>
+    │
+    ▼
+git add <job-files>
+    │
+    ▼
+git commit -m "<auto-generated>"
+    │
+    ▼
+git push -u origin <branch>
+    │
+    ▼
+自动创建 Merge Request
+```
+
+### 2.6 数据质量模块
+
+#### 2.6.1 检查规则引擎
+```rust
+pub enum QualityRule {
+    NotNull { field: String },
+    Unique { field: String },
+    Range { field: String, min: f64, max: f64 },
+    Enum { field: String, values: Vec<String> },
+    Fluctuation { metric: String, threshold: f64 },
+    RowCount { threshold: f64 },
+}
+
+pub struct QualityChecker {
+    rules: Vec<QualityRule>,
+}
+```
+
+### 2.7 更新服务模块
+
+#### 2.7.1 自动更新流程
+```
+应用启动
+    │
+    ▼
+检查远程版本（GitHub Releases）
+    │
+    ├── 有新版本 ──► 下载更新包 ──► 提示用户重启安装
+    │
+    └── 无新版本 ──► 正常运行
+```
+
+---
+
+## 三、数据设计
+
+### 3.1 本地配置文件（config.toml）
+```toml
+[azkaban]
+host = "http://azkaban.example.com"
+username = "your-username"
+password = "your-password"
+
+[hive_metastore]
+host = "mysql.example.com"
+port = 3306
+database = "hive"
+username = "hive"
+password = "hive-password"
+
+[ldap]
+host = "ldap.example.com"
+base_dn = "dc=example,dc=com"
+
+[git]
+remote = "git@gitlab.example.com:data-team/azkaban-jobs.git"
+branch_prefix = "azkaban-task/"
+
+[ai]
+provider = "openai"
+model = "gpt-4o"
+api_key = "sk-xxx"
+
+[cache]
+metastore_ttl_seconds = 3600
+```
+
+### 3.2 本地缓存结构
+```rust
+struct MetaCache {
+    tables: HashMap<String, TableMeta>,      // db.table -> TableMeta
+    last_sync: Option<DateTime<Utc>>,         // 最后同步时间
+}
+
+struct AuditLog {
+    id: i64,
+    user: String,
+    action: String,
+    resource: String,
+    timestamp: DateTime<Utc>,
+    details: String,
+}
+```
+
+---
+
+## 四、接口设计
+
+### 4.1 内部接口
+
+#### 4.1.1 任务生成接口
+```rust
+pub async fn generate_task(
+    template: TaskTemplate,
+    params: TaskParams,
+    description: Option<String>,
+) -> Result<TaskArtifact>;
+
+pub struct TaskArtifact {
+    job_script: String,
+    sql: String,
+    dependencies: Vec<String>,
+    dag_config: String,
+}
+```
+
+#### 4.1.2 元数据查询接口
+```rust
+pub async fn list_databases() -> Result<Vec<String>>;
+pub async fn list_tables(db: &str) -> Result<Vec<String>>;
+pub async fn get_table_schema(db: &str, table: &str) -> Result<TableSchema>;
+pub async fn preview_data(db: &str, table: &str, limit: i32) -> Result<Vec<Row>>;
+```
+
+### 4.2 外部接口
+
+#### 4.2.1 Azkaban REST API
+- POST `/login` - 登录获取 session
+- POST `/upload` - 上传项目包
+- POST `/execute` - 执行工作流
+- GET `/status` - 查询任务状态
+
+#### 4.2.2 GPT-4 API
+- POST `/v1/chat/completions` - 生成 SQL 和任务脚本
+
+---
+
+## 五、安全设计
+
+### 5.1 认证流程
+```
+用户打开 GUI
+    │
+    ▼
+LDAP 认证
+    │
+    ├── 成功 ──► 加载主界面
+    │
+    └── 失败 ──► 显示错误提示
+```
+
+### 5.2 审计日志
+```rust
+struct AuditEvent {
+    timestamp: DateTime<Utc>,
+    user: String,
+    action: AuditAction,
+    resource: String,
+    result: String,
+}
+
+enum AuditAction {
+    Login,
+    CreateTask,
+    ModifyTask,
+    ExecuteTask,
+    DeleteTask,
+    SyncMetadata,
+}
+```
+
+---
+
+## 六、性能设计
+
+### 6.1 缓存策略
+| 数据类型 | 缓存位置 | TTL | 更新策略 |
+|----------|----------|-----|----------|
+| 元数据 | 本地内存 | 1 小时 | 手动同步刷新 |
+| AI 生成结果 | 本地磁盘 | 24 小时 | LRU 淘汰 |
+| 数据库连接 | 连接池 | 长连接 | 自动重连 |
+
+### 6.2 并发控制
+- GUI 线程：主线程处理 UI 渲染
+- 后台线程：异步任务（AI 调用、数据库查询、API 请求）
+- 并发限制：最多 5 个并发任务执行
+
+---
+
+## 七、错误处理
+
+### 7.1 错误分类
+```rust
+pub enum AppError {
+    // AI 相关
+    AIServiceUnavailable,
+    AIGenerationFailed(String),
+    
+    // 数据库相关
+    DatabaseConnectionFailed,
+    QueryTimeout,
+    MetadataSyncFailed,
+    
+    // Azkaban 相关
+    AzkabanAPIError(String),
+    TaskExecutionFailed,
+    
+    // Git 相关
+    GitOperationFailed(String),
+    
+    // GUI 相关
+    LDAPAuthFailed,
+    UpdateCheckFailed,
+}
+```
+
+### 7.2 重试策略
+| 错误类型 | 重试次数 | 重试间隔 |
+|----------|----------|----------|
+| AI API 超时 | 3 次 | 指数退避 |
+| Azkaban API 失败 | 3 次 | 1 秒 |
+| 数据库查询超时 | 2 次 | 2 秒 |
+
+---
+
+## 八、测试设计
+
+### 8.1 单元测试
+- 任务生成器单元测试
+- 元数据解析单元测试
+- SQL 语法验证单元测试
+
+### 8.2 集成测试
+- GUI 与后端服务集成测试
+- Azkaban API 集成测试
+- Git 集成测试
+
+### 8.3 E2E 测试
+- 完整任务创建流程测试
+- 任务执行流程测试
+
+### 8.4 AI 质量测试
+- 生成 SQL 准确率测试（目标>90%）
+- 模板匹配准确率测试
+
+---
+
+## 九、部署设计
+
+### 9.1 运行环境要求
+```
+操作系统：Linux (Ubuntu 20.04+)
+内存：最低 2GB，推荐 4GB
+磁盘：最低 1GB 可用空间
+网络：需要访问 Hive、MySQL、Azkaban、GPT-4 API
+```
+
+### 9.2 安装步骤
+```bash
+# 1. 下载安装包
+wget https://releases.example.com/offline-analysis-agent-v1.0.tar.gz
+
+# 2. 解压
+tar -xzf offline-analysis-agent-v1.0.tar.gz
+
+# 3. 配置
+cp config.example.toml config.toml
+# 编辑 config.toml 填入配置
+
+# 4. 运行
+./offline-analysis-agent
+```
+
+---
+
+## 十、技术债务清单
+
+| ID | 债务项 | 优先级 | 计划重构时间 |
+|----|--------|--------|--------------|
+| TD001 | GUI 性能优化 | 低 | MVP 后 |
+| TD002 | 错误处理完善 | 低 | MVP 后 |
+| TD003 | 日志系统完善 | 低 | MVP 后 |
+| TD004 | 配置中心集成 | 低 | 后续迭代 |
+
+---
+
+## 修订历史
+
+| 版本 | 日期 | 作者 | 变更说明 |
+|------|------|------|----------|
+| 1.0 | 2026-05-15 | AI Agent | 初始版本 |

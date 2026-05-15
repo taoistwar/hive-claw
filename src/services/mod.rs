@@ -1,4 +1,4 @@
-//! 服务模块（Mock 占位）
+//! 服务模块
 
 pub mod metadata;
 pub mod generator;

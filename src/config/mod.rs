@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// 应用配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct AppConfig {
     pub azkaban: AzkabanConfig,
     pub hive_metastore: HiveMetastoreConfig,
@@ -17,7 +17,7 @@ pub struct AppConfig {
 }
 
 /// Azkaban 配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct AzkabanConfig {
     pub host: String,
     pub username: String,
@@ -25,7 +25,7 @@ pub struct AzkabanConfig {
 }
 
 /// Hive Metastore 配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct HiveMetastoreConfig {
     pub host: String,
     pub port: u16,
@@ -35,21 +35,22 @@ pub struct HiveMetastoreConfig {
 }
 
 /// LDAP 配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct LdapConfig {
     pub host: String,
     pub base_dn: String,
 }
 
 /// Git 配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct GitConfig {
     pub remote: String,
     pub branch_prefix: String,
+    pub username: String,
 }
 
 /// AI 配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct AiConfig {
     pub provider: String,
     pub model: String,
@@ -57,7 +58,7 @@ pub struct AiConfig {
 }
 
 /// 缓存配置
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct CacheConfig {
     pub metastore_ttl_seconds: u64,
 }
@@ -106,6 +107,7 @@ fn get_default_config() -> AppConfig {
         git: GitConfig {
             remote: String::new(),
             branch_prefix: String::from("task/"),
+            username: String::from("developer"),
         },
         ai: AiConfig {
             provider: String::from("openai"),

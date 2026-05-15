@@ -20,10 +20,18 @@ fn main() -> Result<()> {
 
     // 加载配置
     let config = config::load_config()?;
-    tracing::info!("Configuration loaded");
+    tracing::info!("Configuration loaded from config.toml");
 
-    // 启动 GUI 应用（TUI Mock）
-    gui::run_app(config)?;
+    // 启动 GUI 应用
+    match gui::run_app(config) {
+        Ok(_) => {
+            tracing::info!("Application exited normally");
+        }
+        Err(e) => {
+            tracing::error!("Application error: {}", e);
+            return Err(e);
+        }
+    }
 
     Ok(())
 }

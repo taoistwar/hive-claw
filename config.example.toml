@@ -1,0 +1,39 @@
+# Azkaban 配置
+[azkaban]
+host = "http://azkaban.example.com"
+username = "your-username"
+password = "your-password"
+
+# Hive Metastore 配置（MySQL）
+[hive_metastore]
+host = "mysql.example.com"
+port = 3306
+database = "hive"
+username = "hive"
+password = "hive-password"
+
+# LDAP 配置
+[ldap]
+host = "ldap.example.com"
+base_dn = "dc=example,dc=com"
+
+# Git 配置
+[git]
+remote = "git@github.com:data-team/azkaban-jobs.git"
+branch_prefix = "task/"
+username = "your-username"
+
+# AI 配置
+[ai]
+provider = "openai"
+model = "gpt-4o"
+api_key = "sk-your-api-key-here"
+
+# 缓存配置
+[cache]
+metastore_ttl_seconds = 3600
+
+# 数据质量配置（可选）
+[quality]
+alert_email = "data-team@example.com"
+default_threshold = 0.05

@@ -1,7 +1,7 @@
 [package]
 name = "offline-analysis-agent"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 rust-version = "1.95.0"
 
 [dependencies]
@@ -9,7 +9,7 @@ rust-version = "1.95.0"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP Client
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["json", "cookies"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -42,12 +42,16 @@ uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 async-trait = "0.1"
 
-# TUI for now (gpui will be added later)
+# GPUI - 桌面 GUI (实验性，需要图形环境)
+# 启用方法:
+# 1. 取消下面一行的注释
+# 2. 注释掉 ratatui 和 crossterm
+# 3. 安装系统依赖：libwayland-dev libxkbcommon-dev libgtk-3-dev libclang-dev
+# gpui = { git = "https://github.com/zed-industries/zed.git", branch = "main" }
+
+# TUI - 当前默认 GUI 方案 (跨平台，无需图形环境)
 ratatui = "0.24"
 crossterm = "0.27"
-
-[dev-dependencies]
-tokio-test = "0.4"
 
 [profile.release]
 lto = true

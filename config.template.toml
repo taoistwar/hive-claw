@@ -1,0 +1,43 @@
+[azkaban]
+# Azkaban Web 服务器地址
+host = "http://azkaban.example.com"
+# 登录凭据
+username = "your-username"
+password = "your-password"
+
+[hive_metastore]
+# Hive Metastore MySQL 连接
+host = "mysql.example.com"
+port = 3306
+database = "hive"
+username = "hive"
+password = "hive-password"
+
+[ldap]
+# LDAP 服务器配置（用于用户认证）
+host = "ldap.example.com"
+base_dn = "dc=example,dc=com"
+
+[git]
+# Azkaban 任务 Git 仓库
+remote = "git@github.com:data-team/azkaban-jobs.git"
+branch_prefix = "task/"
+username = "your-github-username"
+
+[ai]
+# AI 服务提供商：openai, anthropic, azure
+provider = "openai"
+# 模型名称
+model = "gpt-4o"
+# API Key
+api_key = "sk-your-api-key-here"
+
+[cache]
+# 元数据缓存 TTL（秒）
+metastore_ttl_seconds = 3600
+
+[quality]
+# 数据质量告警邮箱
+alert_email = "data-team@example.com"
+# 默认阈值（异常比例超过此值则告警）
+default_threshold = 0.05

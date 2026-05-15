@@ -2,7 +2,7 @@
 //! T1-T4 state-machine rules in `data-model.md`.
 
 use hivegui::model::conversation::{
-    AssistantReply, Author, BusyError, Conversation, RetryError, TurnContent, TurnError,
+    AssistantReply, Author, Conversation, RetryError, SendError, TurnContent, TurnError,
     TurnErrorKind, TurnStatus,
 };
 
@@ -10,7 +10,7 @@ use hivegui::model::conversation::{
 fn idle_conversation_accepts_send() {
     let mut conv = Conversation::new();
     assert!(!conv.is_busy());
-    let pending = conv.send_user_message("hello".to_string()).unwrap();
+    let pending = conv.send_user_message("hello".to_string(), vec![]).unwrap();
     assert!(conv.is_busy());
     assert_eq!(conv.turns().len(), 1);
     assert_eq!(conv.pending(), Some(pending));
@@ -21,9 +21,11 @@ fn idle_conversation_accepts_send() {
 #[test]
 fn second_send_while_pending_returns_busy() {
     let mut conv = Conversation::new();
-    let _ = conv.send_user_message("first".to_string()).unwrap();
-    let err = conv.send_user_message("second".to_string()).unwrap_err();
-    assert!(matches!(err, BusyError::Pending));
+    let _ = conv.send_user_message("first".to_string(), vec![]).unwrap();
+    let err = conv
+        .send_user_message("second".to_string(), vec![])
+        .unwrap_err();
+    assert!(matches!(err, SendError::Busy));
     // Only the first turn should be present.
     assert_eq!(conv.turns().len(), 1);
 }
@@ -31,7 +33,7 @@ fn second_send_while_pending_returns_busy() {
 #[test]
 fn record_assistant_reply_clears_pending_and_appends_turn() {
     let mut conv = Conversation::new();
-    let pending = conv.send_user_message("hi".to_string()).unwrap();
+    let pending = conv.send_user_message("hi".to_string(), vec![]).unwrap();
     conv.record_assistant_reply(
         pending,
         AssistantReply {
@@ -53,7 +55,7 @@ fn record_assistant_reply_clears_pending_and_appends_turn() {
 #[test]
 fn record_failure_marks_retryable_and_clears_pending() {
     let mut conv = Conversation::new();
-    let pending = conv.send_user_message("hi".to_string()).unwrap();
+    let pending = conv.send_user_message("hi".to_string(), vec![]).unwrap();
     conv.record_failure(
         pending,
         TurnError {
@@ -72,7 +74,7 @@ fn record_failure_marks_retryable_and_clears_pending() {
 #[test]
 fn retry_produces_new_pending_with_same_content() {
     let mut conv = Conversation::new();
-    let pending = conv.send_user_message("hi".to_string()).unwrap();
+    let pending = conv.send_user_message("hi".to_string(), vec![]).unwrap();
     let failed_id = conv.turns()[0].id;
     conv.record_failure(
         pending,
@@ -85,8 +87,9 @@ fn retry_produces_new_pending_with_same_content() {
     assert!(conv.is_busy());
     assert_eq!(conv.pending(), Some(new_pending));
     assert_eq!(conv.turns().len(), 2);
-    if let TurnContent::UserText { text } = &conv.turns()[1].content {
+    if let TurnContent::UserMessage { text, attachments } = &conv.turns()[1].content {
         assert_eq!(text, "hi");
+        assert!(attachments.is_empty());
     } else {
         panic!("expected user text on retry");
     }
@@ -95,7 +98,7 @@ fn retry_produces_new_pending_with_same_content() {
 #[test]
 fn retry_when_busy_returns_busy_error() {
     let mut conv = Conversation::new();
-    let pending = conv.send_user_message("a".to_string()).unwrap();
+    let pending = conv.send_user_message("a".to_string(), vec![]).unwrap();
     let failed_id = conv.turns()[0].id;
     conv.record_failure(
         pending,
@@ -105,7 +108,7 @@ fn retry_when_busy_returns_busy_error() {
         },
     );
     // Start a new fresh turn so the conversation is busy again.
-    let _ = conv.send_user_message("b".to_string()).unwrap();
+    let _ = conv.send_user_message("b".to_string(), vec![]).unwrap();
     let err = conv.retry(failed_id).unwrap_err();
     assert!(matches!(err, RetryError::Busy));
 }
@@ -113,7 +116,7 @@ fn retry_when_busy_returns_busy_error() {
 #[test]
 fn dismiss_failure_marks_non_retryable() {
     let mut conv = Conversation::new();
-    let pending = conv.send_user_message("hi".to_string()).unwrap();
+    let pending = conv.send_user_message("hi".to_string(), vec![]).unwrap();
     let failed_id = conv.turns()[0].id;
     conv.record_failure(
         pending,

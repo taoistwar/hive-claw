@@ -246,6 +246,95 @@ its plan will record the decision (sled vs SQLite) and add the dep then.
   abstraction.
 - *Pull in one but not the other*: same problem, half-measured.
 
+## 11. HiveGUI Tokio runtime ownership
+
+**Decision**: `crates/hivegui/src/main.rs` builds a multi-thread Tokio
+runtime via `tokio::runtime::Builder::new_multi_thread().enable_all()`
+**before** entering the gpui event loop, and keeps the runtime alive
+via `let _guard = rt.enter();` for the whole process lifetime. The
+runtime has 2 worker threads (`worker_threads(2)`) and a named thread
+prefix (`hivegui-http`) so SSE streams + reqwest calls dispatched from
+gpui view handlers via `AsyncApp::spawn` get a real Tokio context to
+await on.
+
+**Rationale**: `reqwest`'s async client requires a running Tokio
+runtime. gpui's `AsyncApp::spawn` runs on gpui's own executor; without
+an enclosing Tokio context, any `reqwest::Client::send().await` panics
+with "there is no reactor running, must be called from the context of
+a Tokio 1.x runtime." Building the runtime in `main` and entering its
+context covers every gpui-spawned future for the rest of the process.
+Multi-thread keeps streaming responses progressing while the gpui
+main thread renders.
+
+**Alternatives considered**:
+- *Use `tokio::runtime::current_thread`*: would block the gpui main
+  thread the moment any HTTP call awaits, freezing the UI.
+- *Use `reqwest::blocking::Client`*: would couple every HTTP call to
+  the gpui foreground thread and block its event loop until the
+  response lands — incompatible with SSE streaming.
+- *Use `reqwest`'s "default executor"*: there isn't one; `reqwest`'s
+  async surface always requires Tokio in context.
+
+## 12. File-attachment encoding & per-request limits
+
+**Decision**: v1 carries attachments inline as base64-encoded `data:`
+URIs inside the OpenResponses `input_file.file_data` field. Per-file
+decoded size is capped at **1 MiB**; per-request total at **4 MiB**;
+the raw axum body extractor is capped at **8 MiB** to leave headroom
+for base64 expansion (~1.33×) plus the JSON envelope. HiveClaw decodes
+inline via the `base64 = "0.22"` crate (`base64::engine::general_purpose::STANDARD`).
+No upload endpoint (`POST /v1/files`) and no `file_id` referencing in
+v1; both reserved for v1.x.
+
+**Rationale**: Inline base64 keeps the contract surface tiny — one
+endpoint, one form, one validation pass. The 1 MiB / 4 MiB cap fits
+HiveClaw's stated use cases (SQL/HQL scripts, schema fragments, small
+sample data, log excerpts), and the SC-007 < 500ms p95 budget is
+trivially within reach for that payload size (~50–80ms base64 decode
++ stub formatting). Adding a separate `POST /v1/files` upload endpoint
+would force a small in-memory file store, an id namespace, an
+eviction policy, and another contract test surface; none of that buys
+anything until files routinely exceed 1 MiB, which is not a current
+user need.
+
+**Alternatives considered**:
+- *Skip the 8 MiB axum cap and rely solely on field-level validation*:
+  would let a 100 MiB request waste 100 MiB of axum's buffer before
+  any field check runs; a defence-in-depth cap is cheaper.
+- *Use `base64-simd` for faster decode*: premature; `base64 = "0.22"`
+  decodes 4 MiB in ~10 ms on the target hardware, well under the
+  SC-007 budget.
+- *Tag attachments via multipart instead of base64-in-JSON*: would
+  break OpenResponses wire compatibility (FR-003) — the spec only
+  defines the JSON content-array form.
+
+## 13. MIME-type guessing in HiveGUI
+
+**Decision**: HiveGUI resolves `Attachment.mime` at attach time via
+`mime_guess::from_path(picked_path).first()`, falling back to
+`application/octet-stream` when guessing fails. v1 trusts the guessed
+MIME after sanitisation and does NOT enforce an allow/deny-list.
+
+**Rationale**: `mime_guess` ships a maintained extension→MIME table
+sized at ~1500 entries, is the de-facto Rust crate for this purpose,
+and gives an honest answer without reading file contents (which is
+exactly what we want — we are not doing content sniffing as a
+trust boundary). The fallback to `application/octet-stream` is the
+contractually-correct value when nothing matches, and HiveClaw's
+contract validation does not require a specific MIME — it only
+requires the field be present and well-formed inside the data: URI.
+
+**Alternatives considered**:
+- *Hand-roll a 20-entry extension→MIME map*: cheaper but starts
+  drifting the moment we encounter a `.parquet` / `.avro` / `.csv.gz`
+  case in the wild.
+- *Use the `infer` crate to sniff magic bytes*: heavier (reads file
+  prefix), and we don't need correctness against renamed files
+  — the engineer picked the file, they own its identity.
+- *Reject attachments where `mime_guess` returns nothing*: too
+  aggressive for v1; the `application/octet-stream` fallback is the
+  documented escape hatch in `Attachment::mime`'s contract.
+
 ## Open questions
 
 None. All Technical Context entries in `plan.md` are resolved by the

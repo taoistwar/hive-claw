@@ -14,10 +14,81 @@ use uuid::Uuid;
 #[derive(Debug, Serialize)]
 pub struct OpenResponsesRequest {
     pub model: String,
-    pub input: String,
+    pub input: InputForm,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     pub stream: bool,
+}
+
+/// `input` carries either a plain string (text-only path) or the
+/// content-item array form (FR-003a). HiveGUI picks the fast path when
+/// no attachments are present so the wire stays trivially compatible
+/// with the v1 baseline tests.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum InputForm {
+    Text(String),
+    Items(Vec<InputItem>),
+}
+
+#[derive(Debug, Serialize)]
+pub struct InputItem {
+    pub role: String,
+    pub content: Vec<RequestContentItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RequestContentItem {
+    InputText { text: String },
+    InputFile { filename: String, file_data: String },
+    InputImage { image_url: String },
+}
+
+impl OpenResponsesRequest {
+    /// Build the wire request from a user turn. When no attachments are
+    /// present we use the legacy string form — this keeps the existing
+    /// v1 mock tests (T029 / T030) intact.
+    pub fn from_user_turn(
+        model: impl Into<String>,
+        text: &str,
+        attachments: &[crate::model::conversation::Attachment],
+        stream: bool,
+    ) -> Self {
+        let model = model.into();
+        let input = if attachments.is_empty() {
+            InputForm::Text(text.to_string())
+        } else {
+            let mut content: Vec<RequestContentItem> = Vec::with_capacity(attachments.len() + 1);
+            if !text.is_empty() {
+                content.push(RequestContentItem::InputText {
+                    text: text.to_string(),
+                });
+            }
+            for a in attachments {
+                let file_data = match &a.payload {
+                    crate::model::conversation::AttachmentPayload::Inline { base64_data_uri } => {
+                        base64_data_uri.clone()
+                    }
+                };
+                content.push(RequestContentItem::InputFile {
+                    filename: a.filename.clone(),
+                    file_data,
+                });
+            }
+            InputForm::Items(vec![InputItem {
+                role: "user".to_string(),
+                content,
+            }])
+        };
+
+        OpenResponsesRequest {
+            model,
+            input,
+            instructions: None,
+            stream,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +132,7 @@ pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .user_agent(format!("hivegui/{}", env!("CARGO_PKG_VERSION")))
+        .no_proxy()
         .build()
         .expect("reqwest client should build with rustls-tls feature enabled")
 }

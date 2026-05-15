@@ -36,6 +36,25 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // T078: stand up a Tokio runtime BEFORE entering the gpui event loop
+    // so async HTTP calls dispatched from view handlers (via gpui's
+    // AsyncApp::spawn) can await reqwest futures, which require a Tokio
+    // context. We use a multi-thread runtime so SSE streams can make
+    // progress in the background while the gpui main thread renders.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .thread_name("hivegui-http")
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("hivegui: could not start Tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let _guard_rt = rt.enter();
+
     if let Err(e) = ui::app::run(cfg) {
         eprintln!("hivegui: ui crashed: {e:#}");
         return ExitCode::from(1);

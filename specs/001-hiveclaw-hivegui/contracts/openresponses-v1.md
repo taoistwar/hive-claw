@@ -49,10 +49,68 @@ the schemas below.
 ]
 ```
 
-v1 MUST accept either the string form or the array form. For the array
-form, v1 MUST extract the concatenation of every `content` field whose
-`role == "user"` and feed that to the stub. Other roles (e.g.,
-`"developer"`) are accepted but ignored by the placeholder.
+v1 MUST accept either the string form or the array form. For the
+string-content array form, v1 MUST extract the concatenation of every
+`content` field whose `role == "user"` and feed that to the stub.
+
+### `input` content-item array form (FR-003a)
+
+The `content` field of each `input` item MAY also be an **array of typed
+content items**, mirroring the OpenAI Responses API shape:
+
+```jsonc
+[
+  {
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": "解释这段 Hive SQL" },
+      { "type": "input_file",
+        "filename": "query.hql",
+        "file_data": "data:text/plain;base64,U0VMRUNUIC4uLg==" },
+      { "type": "input_image",
+        "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..." }
+    ]
+  }
+]
+```
+
+Recognised content-item types in v1:
+
+| `type` | Required fields | Notes |
+|---|---|---|
+| `input_text` | `text: String` (non-empty) | Concatenated into the text fed to the stub. |
+| `input_file` | `filename: String`, `file_data: String` | `file_data` MUST be a `data:<mime>;base64,<payload>` URI. `file_id` is **reserved for v1.x** and v1 MUST reject it (see validation table). |
+| `input_image` | `image_url: String` | MUST be a `data:image/<subtype>;base64,<payload>` URI. v1 accepts but does not interpret the bytes. |
+
+**Limits**:
+
+- Per `input_file` decoded payload: ≤ **1 MiB** (`1_048_576` bytes).
+- Total decoded payload across all `input_file` + `input_image` items
+  on a single request: ≤ **4 MiB** (`4_194_304` bytes).
+- Raw HTTP request body (before parsing, after gunzip if any): ≤ **8 MiB**
+  (`8_388_608` bytes). This transport-layer cap leaves headroom for the
+  base64 expansion of the 4 MiB attachment budget (~5.5 MiB on the
+  wire) plus the JSON envelope.
+
+### Stub-reply enrichment for attachment-bearing requests
+
+When the validated request carries one or more `input_file` /
+`input_image` content items, the placeholder reply text MUST become:
+
+```text
+HiveClaw 占位回复：已收到你的请求。附件：<filename> (<size>, <mime>)[, <filename> (<size>, <mime>)...]
+```
+
+`<size>` is formatted via the documented `format_size` helper (`B` /
+`KiB` / `MiB` with one-decimal precision; e.g., `1.2 KiB`, `512.0 KiB`,
+`1.0 MiB`). For `input_image` items, `<filename>` is rendered as
+`image` and `<mime>` is the parsed MIME from the data URI.
+
+In streaming mode, the concatenation of every emitted
+`response.output_text.delta` MUST still equal the final
+`response.completed`'s `output[0].content[0].text` — the enriched
+string is split deterministically into the same 3-or-more chunks the
+stub emits today.
 
 ### Validation rules (rejected at the axum extractor boundary)
 
@@ -64,6 +122,15 @@ form, v1 MUST extract the concatenation of every `content` field whose
 | `input` missing or empty | `400 Bad Request` | error.message: `"field 'input' is required and must be non-empty"` |
 | `stream` present but not boolean | `400 Bad Request` | error.message: `"field 'stream' must be a boolean"` |
 | `max_output_tokens` ≤ 0 | `400 Bad Request` | error.message: `"field 'max_output_tokens' must be a positive integer"` |
+| `content` array empty when using content-item form | `400 Bad Request` | error.message: `"field 'content' must be non-empty when 'input' uses the array form"` |
+| `content[].type` ∉ {`input_text`, `input_file`, `input_image`} | `400 Bad Request` | error.message: `"unknown content item type 'X'"` |
+| `input_file.file_id` present (v1) | `400 Bad Request` | error.message: `"field 'file_id' is not supported in v1; use 'file_data'"` |
+| `input_file.file_data` not a `data:<mime>;base64,<payload>` URI | `400 Bad Request` | error.message: `"field 'file_data' must be a data: URI with base64 encoding"` |
+| `input_file.file_data` payload not valid base64 | `400 Bad Request` | error.message: `"field 'file_data' payload is not valid base64"` |
+| `input_file.file_data` decodes to > 1 MiB | `413 Payload Too Large` | error.message: `"file 'X' exceeds 1 MiB per-file limit"` (where `X` is the `filename` field) |
+| Total decoded attachment size > 4 MiB | `413 Payload Too Large` | error.message: `"attachments exceed 4 MiB total limit"` |
+| Whole request body > 8 MiB at the transport layer | `413 Payload Too Large` | error.message: `"request body exceeds 8 MiB transport limit"` |
+| `input_image.image_url` not a `data:image/*;base64,...` URI | `400 Bad Request` | error.message: `"field 'image_url' must be a data:image/*;base64 URI"` |
 | Body content type ≠ application/json | `415 Unsupported Media Type` | error.message: `"Content-Type must be application/json"` |
 | Method ≠ POST | `405 Method Not Allowed` | (default axum body) |
 | Path ≠ /v1/responses | `404 Not Found` | (default axum body) |

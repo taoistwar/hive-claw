@@ -54,7 +54,7 @@ async fn streaming_client_yields_deltas_then_completed_then_terminates() {
         &url,
         OpenResponsesRequest {
             model: "openclaw:test".to_string(),
-            input: "hi".to_string(),
+            input: hivegui::client::InputForm::Text("hi".to_string()),
             instructions: None,
             stream: true,
         },

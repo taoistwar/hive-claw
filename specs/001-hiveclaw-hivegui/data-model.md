@@ -87,8 +87,13 @@ assistant-authored reply.
 
 **`TurnContent` variants**:
 
-- `TurnContent::UserText { text: String }` — engineer's submitted text,
-  already sanitised by `model::sanitize_user_input` per FR-011.
+- `TurnContent::UserMessage { text: String, attachments: Vec<Attachment> }`
+  — engineer's submitted turn. `text` is sanitised by
+  `model::sanitize_user_input` per FR-011. `attachments` carries zero or
+  more files attached via FR-007b; each entry is an `Attachment` (see
+  below). The two fields together describe the entire user turn —
+  either may be empty individually, but `Conversation::send_user_message`
+  rejects the case where **both** are empty (`EmptyTurnError`).
 - `TurnContent::AssistantText { buffer: String }` — assistant reply.
   For streaming turns the buffer grows as `response.output_text.delta`
   events arrive (FR-008 incremental render); for sync turns it is set
@@ -129,6 +134,55 @@ unreachable mid-conversation"):
   status starts at `Pending`. The assistant reply is appended as a
   SEPARATE `Author::Assistant` turn once the request resolves; the User
   turn moves to `Delivered` at the same moment.
+
+## Entity: `Attachment`
+
+Module: `crates/hivegui/src/model/conversation.rs`
+
+A file attached to a user-authored conversation turn (FR-007b). v1
+carries every attachment inline; the `FileId` variant is reserved for
+v1.x when a separate upload endpoint is added.
+
+**Fields**:
+
+| Field | Type sketch | Notes |
+|-------|-------------|-------|
+| `id` | `AttachmentId` (UUID v4) | Stable for the attachment's lifetime within a session. Logged but not echoed to HiveClaw on the wire. |
+| `filename` | `String` | User-facing filename (basename of the picked path), used in the placeholder reply's `附件：...` metadata. Sanitised: stripped of path separators and ASCII control chars. |
+| `mime` | `String` | RFC-6838 media type guessed from the file extension via `mime_guess`; sent on the wire as part of the `data:` URI. v1 trusts this field; richer policy is deferred. |
+| `size_bytes` | `u64` | Decoded byte length, not base64-encoded length. Used by invariant A1 and by the stub reply's `format_size` helper. |
+| `payload` | `AttachmentPayload` | The bytes themselves. v1 only constructs the `Inline` variant. |
+
+**`AttachmentPayload` variants**:
+
+- `AttachmentPayload::Inline { base64_data_uri: String }` — the full
+  `data:<mime>;base64,<payload>` URI, ready to drop into the
+  `input_file.file_data` field. Constructed at attach time by reading
+  the file (up to 1 MiB), base64-encoding, and prefixing the data: URI
+  header. Validated by invariant A3.
+- `AttachmentPayload::FileId { id: String }` — **reserved for v1.x**.
+  Not constructed in v1; the contract layer rejects it with the
+  documented `400` so a future HiveGUI can use this variant only after
+  the corresponding `POST /v1/files` upload endpoint exists.
+
+**Invariants**:
+
+- A1. **Count / total-size budget**: A `Conversation::send_user_message`
+  call with `attachments.len() > 8` MUST return `TooManyAttachmentsError`;
+  the sum of all `attachments[*].size_bytes` MUST be ≤ 4 MiB
+  (`4 * 1024 * 1024`). These limits are enforced **at attach time** in
+  the UI (so the engineer cannot pick a 9th file or a file that would
+  blow the cap) **and** at send time in the model (so programmatic
+  callers can't bypass the UI guard).
+- A2. **MIME sanitisation**: `mime` MUST be populated at attach time from
+  `mime_guess`; HiveGUI MUST NOT trust a MIME hint read from disk. The
+  attachment is dropped (with `ERR_UNSUPPORTED_MIME`) if `mime_guess`
+  cannot resolve a media type.
+- A3. **Data URI format**: `payload.base64_data_uri` MUST start with
+  `data:<mime>;base64,` matching the `mime` field, and the remainder
+  MUST be a valid base64 payload that decodes to `size_bytes` bytes.
+  The contract layer re-validates this when the request reaches
+  HiveClaw (defence in depth).
 
 ## Entity: `ToolSeries`
 

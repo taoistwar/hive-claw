@@ -24,7 +24,7 @@ async fn unreachable_hiveclaw_yields_retryable_failed_turn() {
         &url,
         OpenResponsesRequest {
             model: "openclaw:test".to_string(),
-            input: "hi".to_string(),
+            input: hivegui::client::InputForm::Text("hi".to_string()),
             instructions: None,
             stream: false,
         },
@@ -37,7 +37,7 @@ async fn unreachable_hiveclaw_yields_retryable_failed_turn() {
 
     // The conversation surface translates that into a retryable failure.
     let mut conv = Conversation::new();
-    let pending = conv.send_user_message("hi".to_string()).unwrap();
+    let pending = conv.send_user_message("hi".to_string(), vec![]).unwrap();
     conv.record_failure(
         pending,
         TurnError {

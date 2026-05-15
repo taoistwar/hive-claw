@@ -1,6 +1,24 @@
 pub mod conversation;
 pub mod tools;
 
+/// Format a byte count as a zh-CN-friendly size string: `B` / `KiB` /
+/// `MiB` with one-decimal precision. Mirrors HiveClaw's `format_size`
+/// (see `crates/hiveclaw/src/openresponses/stub.rs`) so the same chip
+/// label that HiveGUI renders client-side matches the metadata HiveClaw
+/// echoes back in the placeholder reply.
+pub fn format_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    let n = bytes as f64;
+    if n < KIB {
+        format!("{} B", bytes)
+    } else if n < MIB {
+        format!("{:.1} KiB", n / KIB)
+    } else {
+        format!("{:.1} MiB", n / MIB)
+    }
+}
+
 /// Sanitise raw text typed by the engineer before it crosses the
 /// HiveClaw boundary. Per FR-011: trim, normalise line endings, and
 /// reject control characters other than `\n`, `\t`.

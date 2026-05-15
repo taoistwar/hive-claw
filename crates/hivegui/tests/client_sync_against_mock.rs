@@ -43,7 +43,7 @@ async fn sync_client_parses_reply() {
         &url,
         OpenResponsesRequest {
             model: "openclaw:test".to_string(),
-            input: "hi".to_string(),
+            input: hivegui::client::InputForm::Text("hi".to_string()),
             instructions: None,
             stream: false,
         },

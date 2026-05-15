@@ -82,14 +82,43 @@ A native window opens with:
   each rendering a zh-CN empty-state message ("暂无工具" or similar
   — see `crates/hivegui/src/ui/strings_zh.rs` for the canonical copy).
 
-Type a message in the conversation area and press send. You should
-see:
+Type a message in the conversation editor (FR-007a) and press the
+**发送** button — or press **Enter** to submit (Shift+Enter inserts a
+literal newline). You should see:
 
 1. Your message appear in the thread, marked as sent by you.
 2. An in-progress indicator (FR-008).
 3. HiveClaw's placeholder reply appear below it within ~3 seconds
    (SC-002 budget).
 4. The send button re-enable only after the reply lands (FR-008a).
+
+### Attaching files (FR-007b)
+
+Click **添加文件** to attach one or more files to the next message.
+Each file is base64-encoded inline into the OpenResponses request as
+an `input_file` content item. v1 enforces three hard limits at the
+input surface (before any network call):
+
+- Per-file size: **1 MiB**. Larger files are rejected inline with
+  `文件超过 1 MiB 限制：<filename>`.
+- Total attachment size per turn: **4 MiB**. Exceeding the cap is
+  rejected inline with `附件总大小超过 4 MiB 限制`.
+- Maximum attachments per turn: **8**. Beyond the 8th, the 添加文件
+  affordance is disabled.
+
+A successful attach renders as a chip below the editor showing
+`filename (size, mime)`; click 移除 on a chip to drop it before sending.
+
+When the request lands, HiveClaw's placeholder reply is enriched with
+the documented attachment metadata. Example:
+
+```text
+HiveClaw 占位回复：已收到你的请求。附件：query.hql (1.2 KiB, text/plain), schema.json (4.0 KiB, application/json)
+```
+
+v1 does **not** enforce a MIME allow/deny-list. The engineer is
+trusted to attach what they need. A richer policy will be added when a
+specific threat model emerges.
 
 ## 5. Where are the logs?
 

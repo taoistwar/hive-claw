@@ -16,6 +16,7 @@ name = "hivegui"
 path = "src/lib.rs"
 
 [dependencies]
+base64 = { workspace = true }
 gpui = { workspace = true }
 # gpui_platform's `default` feature set is empty; enabling "wayland" + "x11"
 # turns on the corresponding backends in `gpui_linux` so `current_platform()`
@@ -23,6 +24,7 @@ gpui = { workspace = true }
 # Without these, WSL2 / Linux runs panic at `_ => unreachable!()` in
 # `gpui_linux/src/linux.rs` (the `"Wayland"` arm gets cfg'd out).
 gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+mime_guess = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 eventsource-stream = { workspace = true }
@@ -39,9 +41,11 @@ anyhow = { workspace = true }
 futures = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
+unicode-segmentation = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+base64 = { workspace = true }
 tower = { workspace = true }
 assert_cmd = { workspace = true }
 tokio = { workspace = true }

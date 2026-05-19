@@ -77,7 +77,7 @@ impl AzkabanService {
     }
 
     /// 登录 Azkaban
-    async fn login(&self) -> Result<()> {
+    pub async fn login(&self) -> Result<()> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or_else(|| anyhow::anyhow!("Client not initialized"))?;
 

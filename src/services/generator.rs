@@ -478,45 +478,221 @@ nodes:
     /// 生成默认 SQL
     fn generate_default_sql(&self, ctx: &GenerationContext) -> Result<String> {
         let sql = match ctx.template {
-            TaskTemplate::SingleTableAgg => {
-                format!(r#"-- Auto-generated SQL for {}
--- Template: Single Table Aggregation
-
-INSERT OVERWRITE TABLE {}
-SELECT
-    DATE(created_at) as event_date,
-    user_id,
-    COUNT(*) as event_count,
-    SUM(amount) as total_amount
-FROM {}
-WHERE dt = '${{hivevar:dt}}'
-GROUP BY DATE(created_at), user_id;
-"#,
-                    ctx.task_name,
-                    ctx.target_table,
-                    ctx.source_tables.first().unwrap_or(&"source_table".to_string()),
-                )
-            }
-            _ => {
-                format!(r#"-- Auto-generated SQL for {}
--- Template: {}
-
--- TODO: Implement your SQL logic here
--- Source tables: {}
--- Target table: {}
-
-SELECT * FROM {};
-"#,
-                    ctx.task_name,
-                    ctx.template,
-                    ctx.source_tables.join(", "),
-                    ctx.target_table,
-                    ctx.source_tables.first().unwrap_or(&"source_table".to_string()),
-                )
-            }
+            TaskTemplate::SingleTableAgg => self.gen_single_table_agg_sql(ctx)?,
+            TaskTemplate::MultiTableJoin => self.gen_multi_table_join_sql(ctx)?,
+            TaskTemplate::IncrementalSync => self.gen_incremental_sync_sql(ctx)?,
+            TaskTemplate::FullSync => self.gen_full_sync_sql(ctx)?,
+            TaskTemplate::Deduplication => self.gen_deduplication_sql(ctx)?,
+            TaskTemplate::SCD => self.gen_scd_sql(ctx)?,
+            TaskTemplate::MetricCalc => self.gen_metric_calc_sql(ctx)?,
         };
 
         Ok(sql)
+    }
+
+    /// 单表聚合 SQL
+    fn gen_single_table_agg_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let binding = "source_table".to_string();
+        let source = ctx.source_tables.first().unwrap_or(&binding);
+        Ok(format!(r#"-- Single Table Aggregation: {}
+-- Source: {} -> Target: {}
+
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}')
+SELECT
+    user_id,
+    DATE(created_at) as event_date,
+    COUNT(*) as event_count,
+    SUM(COALESCE(amount, 0)) as total_amount,
+    AVG(COALESCE(amount, 0)) as avg_amount,
+    MIN(created_at) as first_event_time,
+    MAX(created_at) as last_event_time
+FROM {}
+WHERE dt <= '${{hivevar:dt}}'
+  AND user_id IS NOT NULL
+GROUP BY user_id, DATE(created_at)
+HAVING COUNT(*) > 0;
+"#, ctx.task_name, source, ctx.target_table, ctx.target_table, source))
+    }
+
+    /// 多表关联 SQL
+    fn gen_multi_table_join_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let (source_a, source_b) = if ctx.source_tables.len() >= 2 {
+            (ctx.source_tables[0].clone(), ctx.source_tables[1].clone())
+        } else {
+            ("table_a".to_string(), "table_b".to_string())
+        };
+        Ok(format!(r#"-- Multi-Table Join: {}
+-- Sources: {} + {} -> Target: {}
+
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}')
+SELECT
+    a.user_id,
+    a.user_name,
+    b.order_id,
+    b.order_amount,
+    b.order_status,
+    b.created_at as order_time
+FROM (
+    SELECT user_id, user_name, email
+    FROM {}
+    WHERE dt = '${{hivevar:dt}}'
+      AND is_deleted = 0
+) a
+INNER JOIN (
+    SELECT order_id, user_id, order_amount, order_status, created_at
+    FROM {}
+    WHERE dt = '${{hivevar:dt}}'
+      AND order_status IN ('paid', 'shipped', 'completed')
+) b ON a.user_id = b.user_id
+WHERE a.user_id IS NOT NULL
+  AND b.order_id IS NOT NULL;
+"#, ctx.task_name, source_a, source_b, ctx.target_table, ctx.target_table, source_a, source_b))
+    }
+
+    /// 增量同步 SQL
+    fn gen_incremental_sync_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let binding = "source_table".to_string();
+        let source = ctx.source_tables.first().unwrap_or(&binding);
+        Ok(format!(r#"-- Incremental Sync: {}
+-- Source: {} -> Target: {}
+
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}')
+SELECT
+    s.*
+FROM {} s
+WHERE s.dt = '${{hivevar:dt}}'
+  AND s.updated_at >= (
+    SELECT COALESCE(MAX(updated_at), '1970-01-01 00:00:00')
+    FROM {} t
+    WHERE t.dt < '${{hivevar:dt}}'
+  )
+  AND s.is_deleted = 0;
+"#, ctx.task_name, source, ctx.target_table, source, ctx.target_table, source))
+    }
+
+    /// 全量同步 SQL
+    fn gen_full_sync_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let binding = "source_table".to_string();
+        let source = ctx.source_tables.first().unwrap_or(&binding);
+        Ok(format!(r#"-- Full Sync: {}
+-- Source: {} -> Target: {}
+
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}')
+SELECT
+    *
+FROM {}
+WHERE dt = '${{hivevar:dt}}'
+  AND is_deleted = 0;
+"#, ctx.task_name, source, ctx.target_table, ctx.target_table, source))
+    }
+
+    /// 去重清洗 SQL
+    fn gen_deduplication_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let binding = "source_table".to_string();
+        let source = ctx.source_tables.first().unwrap_or(&binding);
+        Ok(format!(r#"-- Deduplication: {}
+-- Source: {} -> Target: {}
+
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}')
+SELECT
+    t.*
+FROM (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY user_id, order_id, created_at
+            ORDER BY updated_at DESC
+        ) as rn
+    FROM {}
+    WHERE dt = '${{hivevar:dt}}'
+      AND user_id IS NOT NULL
+      AND order_id IS NOT NULL
+) t
+WHERE t.rn = 1;
+"#, ctx.task_name, source, ctx.target_table, ctx.target_table, source))
+    }
+
+    /// SCD Type 2 缓慢变化维 SQL
+    fn gen_scd_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let binding = "source_table".to_string();
+        let source = ctx.source_tables.first().unwrap_or(&binding);
+        Ok(format!(r#"-- SCD Type 2: {}
+-- Source: {} -> Target: {}
+
+-- Step 1: Close expired records
+UPDATE {}
+SET is_current = 0,
+    end_date = '${{hivevar:dt}}'
+WHERE user_id IN (
+    SELECT DISTINCT user_id
+    FROM {}
+    WHERE dt = '${{hivevar:dt}}'
+)
+AND is_current = 1;
+
+-- Step 2: Insert new records
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}')
+SELECT
+    ROW_NUMBER() OVER (ORDER BY user_id) as sk_user_id,
+    s.user_id,
+    s.user_name,
+    s.email,
+    s.phone,
+    s.city,
+    '${{hivevar:dt}}' as start_date,
+    '9999-12-31' as end_date,
+    1 as is_current,
+    s.created_at,
+    s.updated_at
+FROM {} s
+WHERE s.dt = '${{hivevar:dt}}'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM {} t
+    WHERE t.user_id = s.user_id
+      AND t.is_current = 1
+  );
+"#, ctx.task_name, source, ctx.target_table, ctx.target_table, source, source, ctx.target_table, source))
+    }
+
+    /// 指标计算 SQL
+    fn gen_metric_calc_sql(&self, ctx: &GenerationContext) -> Result<String> {
+        let binding = "source_table".to_string();
+        let source = ctx.source_tables.first().unwrap_or(&binding);
+        Ok(format!(r#"-- Metric Calculation: {}
+-- Source: {} -> Target: {}
+
+INSERT OVERWRITE TABLE {}
+PARTITION (dt = '${{hivevar:dt}}', metric_date = '${{hivevar:metric_date}}')
+SELECT
+    'dau' as metric_name,
+    COUNT(DISTINCT user_id) as metric_value,
+    COUNT(DISTINCT CASE WHEN is_new_user = 1 THEN user_id END) as new_users,
+    COUNT(DISTINCT CASE WHEN is_active = 1 THEN user_id END) as active_users
+FROM {}
+WHERE dt >= DATE_SUB('${{hivevar:metric_date}}', 1)
+  AND dt <= '${{hivevar:metric_date}}'
+  AND user_id IS NOT NULL
+
+UNION ALL
+
+SELECT
+    'gmv' as metric_name,
+    SUM(order_amount) as metric_value,
+    COUNT(*) as order_count,
+    AVG(order_amount) as avg_order_value
+FROM {}
+WHERE dt >= DATE_SUB('${{hivevar:metric_date}}', 1)
+  AND dt <= '${{hivevar:metric_date}}'
+  AND order_status IN ('paid', 'completed')
+  AND order_amount > 0;
+"#, ctx.task_name, source, ctx.target_table, ctx.target_table, source, source))
     }
 
     /// 验证生成的任务配置

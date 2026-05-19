@@ -1,0 +1,35 @@
+[package]
+name = "gateway"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "nanobot_main"
+path = "src/lib.rs"
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
+
+[dependencies]
+agent = { path = "../agent" }
+api = { path = "../api" }
+bus = { path = "../bus" }
+channels = { path = "../channels" }
+cli = { path = "../cli" }
+command = { path = "../command" }
+config = { path = "../config" }
+cron = { path = "../cron" }
+heartbeat = { path = "../heartbeat" }
+providers = { path = "../providers" }
+security = { path = "../security" }
+session = { path = "../session" }
+skills = { path = "../skills" }
+utils = { path = "../utils" }
+
+serde_json = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+env_logger = "0.11"

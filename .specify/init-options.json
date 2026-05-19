@@ -1,10 +1,9 @@
 {
-  "ai": "trae",
-  "ai_skills": true,
+  "ai": "opencode",
   "branch_numbering": "sequential",
-  "context_file": ".trae/rules/project_rules.md",
+  "context_file": "AGENTS.md",
   "here": true,
-  "integration": "trae",
+  "integration": "opencode",
   "script": "sh",
   "speckit_version": "0.8.10.dev0"
 }

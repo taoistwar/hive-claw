@@ -1,7 +1,7 @@
 use gpui::{div, prelude::*, px, rgb, Context, MouseButton, Window};
 
 use crate::model::tools::{ToolSeries, ToolSeriesKind};
-use crate::ui::app::{AppRoute, HiveGuiApp};
+use crate::ui::app::{AppRoute, HiveGuiAppState};
 use crate::ui::strings_zh;
 
 pub struct ToolsSectionView {
@@ -71,7 +71,7 @@ fn top_bar() -> impl IntoElement {
         .cursor_pointer()
         .child(format!("← {}", strings_zh::HOME_TITLE))
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
-            cx.update_global::<HiveGuiApp, _>(|app, _| app.route = AppRoute::Home);
+            cx.update_global::<HiveGuiAppState, _>(|app, _| app.route = AppRoute::Home);
             cx.refresh_windows();
         })
 }

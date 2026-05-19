@@ -1,7 +1,7 @@
 use gpui::{div, prelude::*, px, rgb, Context, MouseButton, Window};
 
 use crate::model::tools::ToolSeriesKind;
-use crate::ui::app::{AppRoute, HiveGuiApp};
+use crate::ui::app::{AppRoute, HiveGuiAppState};
 use crate::ui::strings_zh;
 
 pub struct HomeView;
@@ -38,6 +38,10 @@ impl Render for HomeView {
                 strings_zh::HOUR_PLUS_ONE_LABEL,
                 AppRoute::Tools(ToolSeriesKind::HourPlusOne),
             ))
+            .child(section_button(
+                "数据源管理",
+                AppRoute::DataSource,
+            ))
     }
 }
 
@@ -55,7 +59,7 @@ fn section_button(label: &'static str, target: AppRoute) -> impl IntoElement {
         .cursor_pointer()
         .child(label)
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            cx.update_global::<HiveGuiApp, _>(|app, _| app.route = target);
+            cx.update_global::<HiveGuiAppState, _>(|app, _| app.route = target);
             cx.refresh_windows();
         })
 }

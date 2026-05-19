@@ -1,6 +1,10 @@
 pub mod app;
 pub mod conversation;
+pub mod datasource_form;
+pub mod datasource_view;
 pub mod home;
 pub mod input;
 pub mod strings_zh;
+pub mod table_viewer;
 pub mod tools_section;
+pub mod tree_nav;

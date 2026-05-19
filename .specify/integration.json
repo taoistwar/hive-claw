@@ -2,14 +2,14 @@
   "version": "0.8.10.dev0",
   "integration_state_schema": 1,
   "installed_integrations": [
-    "trae"
+    "opencode"
   ],
   "integration_settings": {
-    "trae": {
+    "opencode": {
       "script": "sh",
-      "invoke_separator": "-"
+      "invoke_separator": "."
     }
   },
-  "integration": "trae",
-  "default_integration": "trae"
+  "integration": "opencode",
+  "default_integration": "opencode"
 }

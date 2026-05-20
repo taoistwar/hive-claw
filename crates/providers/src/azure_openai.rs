@@ -1,16 +1,9 @@
-//! HTTP-based Azure OpenAI provider.
+//! Azure OpenAI provider using the Responses API over raw HTTP.
 //!
-//! Port of `nanobot.providers.azure_openai_provider`, but using Azure's
-//! stable Chat Completions deployment endpoint instead of the Responses
-//! API (which is still GA-limited and harder to support without the
-//! Python SDK).  Endpoint shape:
-//!
-//! ```text
-//! {endpoint}/openai/deployments/{deployment}/chat/completions?api-version={ver}
-//! ```
-//!
-//! Authentication uses Azure's `api-key` header (not `Authorization:
-//! Bearer`) so the shared [`OpenAICompatProvider`] isn't a drop-in.
+//! Port of ``nanobot.providers.azure_openai_provider``. Uses ``reqwest``
+//! to POST to ``{endpoint}/openai/v1/responses``, mirroring the Python
+//! ``AsyncOpenAI(base_url="{endpoint}/openai/v1/").responses.create()``
+//! call.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -20,6 +13,9 @@ use log::warn;
 use serde_json::{json, Map, Value};
 
 use crate::provider::{ChatRequest, LLMProvider};
+use crate::responses::{
+    consume_events, convert_messages, convert_tools, parse_response_output, parse_sse_events,
+};
 use crate::retry::extract_retry_after_from_text;
 use crate::sanitize::{enforce_role_alternation, sanitize_empty_content};
 use crate::types::{GenerationSettings, LLMResponse, ToolChoice};
@@ -28,10 +24,10 @@ const DEFAULT_API_VERSION: &str = "2024-10-21";
 
 #[derive(Clone)]
 pub struct AzureOpenAIConfig {
-    /// Azure endpoint, e.g. `https://my-resource.openai.azure.com`.
+    /// Azure endpoint, e.g. ``https://my-resource.openai.azure.com``.
     pub endpoint: String,
     pub api_key: String,
-    /// Deployment name used when the caller doesn't specify `model`.
+    /// Deployment name used when the caller doesn't specify ``model``.
     pub default_deployment: String,
     pub api_version: String,
     pub extra_headers: HashMap<String, String>,
@@ -80,7 +76,7 @@ impl AzureOpenAIProvider {
             return Err("Azure OpenAI api_key is required");
         }
         if cfg.endpoint.is_empty() {
-            return Err("Azure OpenAI endpoint is required");
+            return Err("Azure OpenAI api_base is required");
         }
         let client = reqwest::Client::builder()
             .timeout(cfg.timeout)
@@ -98,16 +94,14 @@ impl AzureOpenAIProvider {
         self
     }
 
-    fn endpoint_url(&self, deployment: &str) -> String {
+    /// Responses API endpoint: ``{endpoint}/openai/v1/responses``
+    fn responses_url(&self) -> String {
         let base = self.cfg.endpoint.trim_end_matches('/');
-        format!(
-            "{base}/openai/deployments/{deployment}/chat/completions?api-version={ver}",
-            ver = self.cfg.api_version,
-        )
+        format!("{base}/openai/v1/responses")
     }
 
     fn supports_temperature(model: &str, reasoning_effort: Option<&str>) -> bool {
-        if reasoning_effort.is_some() {
+        if reasoning_effort.is_some() && reasoning_effort.unwrap_or("").to_lowercase() != "none" {
             return false;
         }
         let m = model.to_ascii_lowercase();
@@ -123,31 +117,47 @@ impl AzureOpenAIProvider {
         }
     }
 
-    fn build_body(&self, req: &ChatRequest, deployment: &str) -> Value {
+    fn build_body(&self, req: &ChatRequest, deployment: &str, stream: bool) -> Value {
         let reasoning = req.reasoning_effort.as_deref();
         let sanitized = sanitize_empty_content(&req.messages);
-        // Azure rejects prefill like the generic OpenAI-compat path.
         let messages = enforce_role_alternation(&sanitized);
+        let (instructions, input_items) = convert_messages(&messages);
 
         let mut body = Map::new();
-        // Azure's deployment-based URL already selects the model, but
-        // OpenAI's SDK still echoes the field — and some users rely on it
-        // to route through a proxy. Keep parity.
         body.insert("model".into(), Value::String(deployment.to_string()));
-        body.insert("messages".into(), Value::Array(messages));
+        body.insert(
+            "instructions".into(),
+            if instructions.is_empty() {
+                Value::Null
+            } else {
+                Value::String(instructions)
+            },
+        );
+        body.insert("input".into(), Value::Array(input_items));
+        body.insert("max_output_tokens".into(), json!(req.max_tokens.max(1)));
+        body.insert("store".into(), Value::Bool(false));
+        body.insert("stream".into(), Value::Bool(stream));
 
         if Self::supports_temperature(deployment, reasoning) {
             body.insert("temperature".into(), json!(req.temperature as f64));
         }
-        body.insert("max_tokens".into(), json!(req.max_tokens.max(1)));
 
         if let Some(r) = reasoning {
-            body.insert("reasoning_effort".into(), Value::String(r.to_string()));
+            if !r.is_empty() && r.to_lowercase() != "none" {
+                body.insert(
+                    "reasoning".into(),
+                    json!({"effort": r}),
+                );
+                body.insert(
+                    "include".into(),
+                    Value::Array(vec![Value::String("reasoning.encrypted_content".into())]),
+                );
+            }
         }
 
         if let Some(tools) = &req.tools {
             if !tools.is_empty() {
-                body.insert("tools".into(), Value::Array(tools.clone()));
+                body.insert("tools".into(), Value::Array(convert_tools(tools)));
                 body.insert(
                     "tool_choice".into(),
                     Self::tool_choice_to_value(req.tool_choice.as_ref()),
@@ -158,14 +168,10 @@ impl AzureOpenAIProvider {
         Value::Object(body)
     }
 
-    async fn send(
-        &self,
-        deployment: &str,
-        body: &Value,
-    ) -> Result<reqwest::Response, reqwest::Error> {
+    async fn send(&self, body: &Value, _stream: bool) -> Result<reqwest::Response, reqwest::Error> {
         let mut request = self
             .client
-            .post(self.endpoint_url(deployment))
+            .post(self.responses_url())
             .header("Content-Type", "application/json")
             .header("api-key", self.cfg.api_key.as_str());
         for (k, v) in &self.cfg.extra_headers {
@@ -200,6 +206,27 @@ impl AzureOpenAIProvider {
             ..Default::default()
         }
     }
+
+    fn handle_error(e: &reqwest::Error, body_text: Option<&str>) -> LLMResponse {
+        let msg = match body_text {
+            Some(b) if !b.trim().is_empty() => {
+                format!("Error: {}", b.trim().chars().take(500).collect::<String>())
+            }
+            _ => format!("Error calling Azure OpenAI: {e}"),
+        };
+        LLMResponse {
+            content: Some(msg),
+            finish_reason: "error".into(),
+            error_kind: if e.is_timeout() {
+                Some("timeout".into())
+            } else if e.is_connect() {
+                Some("connection".into())
+            } else {
+                None
+            },
+            ..Default::default()
+        }
+    }
 }
 
 #[async_trait]
@@ -218,25 +245,11 @@ impl LLMProvider for AzureOpenAIProvider {
             .as_deref()
             .unwrap_or(&self.cfg.default_deployment)
             .to_string();
-        let body = self.build_body(&req, &deployment);
+        let body = self.build_body(&req, &deployment, false);
 
-        let resp = match self.send(&deployment, &body).await {
+        let resp = match self.send(&body, false).await {
             Ok(r) => r,
-            Err(e) => {
-                let msg = format!("Error calling Azure OpenAI: {e}");
-                return LLMResponse {
-                    content: Some(msg),
-                    finish_reason: "error".into(),
-                    error_kind: if e.is_timeout() {
-                        Some("timeout".into())
-                    } else if e.is_connect() {
-                        Some("connection".into())
-                    } else {
-                        None
-                    },
-                    ..Default::default()
-                };
-            }
+            Err(e) => return Self::handle_error(&e, None),
         };
         let status = resp.status();
         let headers = resp.headers().clone();
@@ -250,11 +263,61 @@ impl LLMProvider for AzureOpenAIProvider {
             Err(e) => return LLMResponse::error(format!("Error reading body: {e}")),
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            return LLMResponse::error(format!("Error: malformed JSON: {text}"));
+            return LLMResponse::error(format!("Error: malformed JSON response from Azure OpenAI"));
         };
-        // Reuse the OpenAI-compat parser — Azure's /chat/completions
-        // returns the exact same shape.
-        crate::openai_compat::parse_response(&value)
+        parse_response_output(&value)
+    }
+
+    async fn chat_stream(
+        &self,
+        req: ChatRequest,
+        on_delta: Option<crate::provider::StreamDeltaCallback>,
+    ) -> LLMResponse {
+        let deployment = req
+            .model
+            .as_deref()
+            .unwrap_or(&self.cfg.default_deployment)
+            .to_string();
+        let body = self.build_body(&req, &deployment, true);
+
+        let resp = match self.send(&body, true).await {
+            Ok(r) => r,
+            Err(e) => return Self::handle_error(&e, None),
+        };
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            warn!("Azure OpenAI stream error {status}: {text}");
+            return Self::parse_error_response(status, &headers, &text);
+        }
+        let body_text = match resp.text().await {
+            Ok(t) => t,
+            Err(e) => return LLMResponse::error(format!("Error reading stream: {e}")),
+        };
+
+        let events = parse_sse_events(&body_text);
+        match consume_events(&events) {
+            Ok((content, tool_calls, finish_reason)) => {
+                if let Some(cb) = &on_delta {
+                    if !content.is_empty() {
+                        cb(content.clone());
+                    }
+                }
+                LLMResponse {
+                    content: (!content.is_empty()).then_some(content),
+                    tool_calls,
+                    finish_reason,
+                    ..Default::default()
+                }
+            }
+            Err(err) => LLMResponse {
+                content: Some(err.clone()),
+                finish_reason: "error".into(),
+                retry_after: extract_retry_after_from_text(Some(&err)),
+                ..Default::default()
+            },
+        }
     }
 }
 
@@ -263,16 +326,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_url_formats_correctly() {
+    fn responses_url_formats_correctly() {
         let cfg = AzureOpenAIConfig::new(
             "https://my-resource.openai.azure.com/",
             "key",
             "gpt-4o",
         );
         let p = AzureOpenAIProvider::new(cfg).unwrap();
-        let url = p.endpoint_url("gpt-5-chat");
-        assert!(url.contains("/openai/deployments/gpt-5-chat/chat/completions"));
-        assert!(url.contains("api-version=2024-10-21"));
+        let url = p.responses_url();
+        assert!(url.contains("/openai/v1/responses"));
     }
 
     #[test]
@@ -288,9 +350,9 @@ mod tests {
             reasoning_effort: Some("medium".into()),
             tool_choice: None,
         };
-        let body = p.build_body(&req, "o3");
+        let body = p.build_body(&req, "o3", false);
         assert!(body.get("temperature").is_none());
-        assert_eq!(body["reasoning_effort"], "medium");
+        assert_eq!(body["reasoning"]["effort"], "medium");
     }
 
     #[test]
@@ -306,7 +368,7 @@ mod tests {
             reasoning_effort: None,
             tool_choice: None,
         };
-        let body = p.build_body(&req, "gpt-4o");
+        let body = p.build_body(&req, "gpt-4o", false);
         assert_eq!(body["temperature"], 0.5);
     }
 
@@ -314,5 +376,30 @@ mod tests {
     fn missing_key_or_endpoint_is_rejected() {
         assert!(AzureOpenAIProvider::new(AzureOpenAIConfig::new("", "k", "d")).is_err());
         assert!(AzureOpenAIProvider::new(AzureOpenAIConfig::new("e", "", "d")).is_err());
+    }
+
+    #[test]
+    fn build_body_uses_responses_api_fields() {
+        let cfg = AzureOpenAIConfig::new("https://x/", "k", "gpt-4o");
+        let p = AzureOpenAIProvider::new(cfg).unwrap();
+        let req = ChatRequest {
+            messages: vec![
+                json!({"role":"system","content":"sys"}),
+                json!({"role":"user","content":"hi"}),
+            ],
+            tools: None,
+            model: None,
+            max_tokens: 200,
+            temperature: 0.7,
+            reasoning_effort: None,
+            tool_choice: None,
+        };
+        let body = p.build_body(&req, "gpt-4o", false);
+        assert_eq!(body["model"], "gpt-4o");
+        assert_eq!(body["instructions"], "sys");
+        assert!(body["input"].is_array());
+        assert_eq!(body["max_output_tokens"], 200);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], false);
     }
 }

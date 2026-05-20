@@ -15,6 +15,7 @@ use config::schema::{Config, ProviderConfig};
 use config::{get_config_path, paths::is_default_workspace, set_config_path};
 use providers::anthropic::{AnthropicConfig, AnthropicProvider};
 use providers::azure_openai::{AzureOpenAIConfig, AzureOpenAIProvider};
+use providers::bedrock::{BedrockConfig, BedrockProvider};
 use providers::openai_codex::{OpenAICodexConfig, OpenAICodexProvider};
 use providers::openai_compat::{OpenAICompatConfig, OpenAICompatProvider};
 use providers::registry::{Backend, ProviderSpec, find_by_model, find_by_name};
@@ -108,188 +109,6 @@ pub fn migrate_cron_store(cfg: &Config) {
     }
 }
 
-/// Resolve a [`ProviderSpec`] for the default model — honours the
-/// `"auto"` sentinel just like Python.
-pub fn resolve_spec(cfg: &Config) -> Option<&'static ProviderSpec> {
-    let defaults = &cfg.agents.defaults;
-    let configured = defaults.provider.trim();
-    if !configured.is_empty() && configured != "auto" {
-        if let Some(spec) = find_by_name(configured) {
-            return Some(spec);
-        }
-    }
-    find_by_model(&defaults.model)
-}
-
-/// Pull the [`ProviderConfig`] entry matching *spec* from the root config.
-pub fn provider_config_for<'a>(
-    cfg: &'a Config,
-    spec: Option<&ProviderSpec>,
-) -> Option<&'a ProviderConfig> {
-    let spec = spec?;
-    let p = &cfg.providers;
-    Some(match spec.name {
-        "custom" => &p.custom,
-        "azure_openai" => &p.azure_openai,
-        "anthropic" => &p.anthropic,
-        "openai" => &p.openai,
-        "openrouter" => &p.openrouter,
-        "deepseek" => &p.deepseek,
-        "groq" => &p.groq,
-        "zhipu" => &p.zhipu,
-        "dashscope" => &p.dashscope,
-        "vllm" => &p.vllm,
-        "ollama" => &p.ollama,
-        "lm_studio" => &p.lm_studio,
-        "ovms" => &p.ovms,
-        "gemini" => &p.gemini,
-        "moonshot" => &p.moonshot,
-        "minimax" => &p.minimax,
-        "minimax_anthropic" => &p.minimax_anthropic,
-        "mistral" => &p.mistral,
-        "stepfun" => &p.stepfun,
-        "xiaomi_mimo" => &p.xiaomi_mimo,
-        "aihubmix" => &p.aihubmix,
-        "siliconflow" => &p.siliconflow,
-        "volcengine" => &p.volcengine,
-        "volcengine_coding_plan" => &p.volcengine_coding_plan,
-        "byteplus" => &p.byteplus,
-        "byteplus_coding_plan" => &p.byteplus_coding_plan,
-        "openai_codex" => &p.openai_codex,
-        "github_copilot" => &p.github_copilot,
-        "qianfan" => &p.qianfan,
-        _ => return None,
-    })
-}
-
-fn resolve_api_base(
-    provider_spec: Option<&ProviderSpec>,
-    provider_config: Option<&ProviderConfig>,
-) -> Option<String> {
-    if let Some(pc) = provider_config {
-        if let Some(b) = &pc.api_base {
-            if !b.is_empty() {
-                return Some(b.clone());
-            }
-        }
-    }
-    if let Some(s) = provider_spec {
-        if !s.default_api_base.is_empty() {
-            return Some(s.default_api_base.to_string());
-        }
-    }
-    None
-}
-
-/// Build the right [`LLMProvider`] for the active config (Python
-/// `_make_provider`).
-pub fn make_provider(cfg: &Config) -> Result<Arc<dyn LLMProvider>, String> {
-    let model = cfg.agents.defaults.model.clone();
-    let provider_spec = resolve_spec(cfg);
-    let provider_config = provider_config_for(cfg, provider_spec);
-    let backend = provider_spec
-        .map(|s| s.backend)
-        .unwrap_or(Backend::OpenAICompat);
-
-    // ---- credential validation (mirror Python checks) ----
-    match backend {
-        Backend::AzureOpenAI => {
-            let ok = provider_config
-                .map(|p| {
-                    !p.api_key.as_deref().unwrap_or("").is_empty()
-                        && !p.api_base.as_deref().unwrap_or("").is_empty()
-                })
-                .unwrap_or(false);
-            if !ok {
-                return Err("Azure OpenAI requires api_key and api_base. \
-                     Set them in ~/.nanobot/config.json under providers.azureOpenai \
-                     and use `model` for the deployment name."
-                    .into());
-            }
-        }
-        Backend::OpenAICompat if !model.starts_with("bedrock/") => {
-            let has_key = provider_config
-                .and_then(|p| p.api_key.as_deref())
-                .map(|k| !k.is_empty())
-                .unwrap_or(false);
-            let exempt = provider_spec
-                .map(|s| s.is_oauth || s.is_local || s.is_direct)
-                .unwrap_or(false);
-            if !has_key && !exempt {
-                let name = provider_spec.map(|s| s.name).unwrap_or("");
-                return Err(format!(
-                    "No API key configured for provider '{name}'. Set one in \
-                     ~/.nanobot/config.json under the providers section."
-                ));
-            }
-        }
-        _ => {}
-    }
-
-    let generation = GenerationSettings::from_config(cfg);
-
-    let provider: Arc<dyn LLMProvider> = match backend {
-        Backend::OpenAICodex => {
-            let mut cx_cfg = OpenAICodexConfig::default();
-            cx_cfg.default_model = model;
-            let p = OpenAICodexProvider::new(cx_cfg).map_err(|e| format!("openai_codex: {e}"))?;
-            Arc::new(p)
-        }
-        Backend::GitHubCopilot => {
-            let p =
-                GitHubCopilotProvider::new(model).map_err(|e| format!("github_copilot: {e}"))?;
-            Arc::new(p)
-        }
-        Backend::AzureOpenAI => {
-            let pc = provider_config
-                .ok_or_else(|| "Azure OpenAI provider config missing".to_string())?;
-            let endpoint = pc.api_base.clone().unwrap_or_default();
-            let api_key = pc.api_key.clone().unwrap_or_default();
-            let cfg_az = AzureOpenAIConfig::new(endpoint, api_key, model.clone());
-            let p = AzureOpenAIProvider::new(cfg_az).map_err(|e| format!("azure_openai: {e}"))?;
-            Arc::new(p.with_generation(generation))
-        }
-        Backend::Anthropic => {
-            let mut ant = AnthropicConfig::new(model.clone());
-            if let Some(pc) = provider_config {
-                if let Some(k) = &pc.api_key {
-                    ant = ant.with_api_key(k.clone());
-                }
-                if let Some(headers) = &pc.extra_headers {
-                    for (k, v) in headers {
-                        ant = ant.with_extra_header(k, v);
-                    }
-                }
-            }
-            if let Some(base) = resolve_api_base(provider_spec, provider_config) {
-                ant = ant.with_api_base(base);
-            }
-            Arc::new(AnthropicProvider::new(ant).with_generation(generation))
-        }
-        Backend::OpenAICompat => {
-            let mut oc = OpenAICompatConfig::new(model.clone());
-            if let Some(pc) = provider_config {
-                if let Some(k) = &pc.api_key {
-                    oc = oc.with_api_key(k.clone());
-                }
-                if let Some(headers) = &pc.extra_headers {
-                    for (k, v) in headers {
-                        oc = oc.with_extra_header(k, v);
-                    }
-                }
-            }
-            if let Some(s) = provider_spec {
-                oc = oc.with_spec(s);
-            }
-            if let Some(base) = resolve_api_base(provider_spec, provider_config) {
-                oc = oc.with_api_base(base);
-            }
-            Arc::new(OpenAICompatProvider::new(oc).with_generation(generation))
-        }
-    };
-    Ok(provider)
-}
-
 /// Output of [`LoopBundle::build_agent_loop`].
 pub struct LoopBundle {
     pub bus: Arc<MessageBus>,
@@ -306,7 +125,7 @@ impl LoopBundle {
         cfg: &Config,
         cron: Option<Arc<::cron::CronService>>,
     ) -> Result<Self, String> {
-        let provider = make_provider(cfg)?;
+        let provider = providers::make_provider(cfg)?;
         let bus = Arc::new(MessageBus::new());
         let tf = ToolFactoryConfig::from_config(cfg);
         let deps = ToolFactoryDeps::new_with_cron(cron);

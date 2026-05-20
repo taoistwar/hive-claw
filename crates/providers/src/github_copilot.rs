@@ -408,6 +408,19 @@ impl LLMProvider for GitHubCopilotProvider {
         let inner = self.build_underlying(token);
         inner.chat(req).await
     }
+
+    async fn chat_stream(
+        &self,
+        req: ChatRequest,
+        on_delta: Option<crate::provider::StreamDeltaCallback>,
+    ) -> LLMResponse {
+        let token = match self.get_copilot_access_token().await {
+            Ok(t) => t,
+            Err(e) => return LLMResponse::error(e),
+        };
+        let inner = self.build_underlying(token);
+        inner.chat_stream(req, on_delta).await
+    }
 }
 
 #[cfg(test)]

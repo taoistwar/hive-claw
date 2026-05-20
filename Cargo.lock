@@ -3362,18 +3362,27 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 name = "hiveclaw"
 version = "0.1.0"
 dependencies = [
+ "agent",
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "axum",
  "base64 0.22.1",
+ "bus",
  "bytes",
  "chrono",
+ "cli",
+ "config",
+ "dirs 5.0.1",
  "eventsource-stream",
  "futures",
  "libc",
+ "log",
+ "providers",
  "reqwest",
  "serde",
  "serde_json",
+ "session",
  "thiserror 1.0.69",
  "tokio",
  "tower 0.4.13",
@@ -3381,32 +3390,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "hiveclaw_lib"
-version = "0.1.0"
-dependencies = [
- "agent",
- "api",
- "bus",
- "channels",
- "chrono",
- "cli",
- "command",
- "config",
- "cron 0.1.0",
- "env_logger",
- "heartbeat",
- "log",
- "providers",
- "security",
- "serde_json",
- "session",
- "skills",
- "thiserror 1.0.69",
- "tokio",
- "utils",
 ]
 
 [[package]]

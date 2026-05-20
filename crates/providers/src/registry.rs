@@ -14,6 +14,7 @@ pub enum Backend {
     AzureOpenAI,
     OpenAICodex,
     GitHubCopilot,
+    Bedrock,
 }
 
 impl Backend {
@@ -24,6 +25,7 @@ impl Backend {
             Backend::AzureOpenAI => "azure_openai",
             Backend::OpenAICodex => "openai_codex",
             Backend::GitHubCopilot => "github_copilot",
+            Backend::Bedrock => "bedrock",
         }
     }
 }
@@ -329,6 +331,25 @@ pub const PROVIDERS: &[ProviderSpec] = &[
         is_oauth: true,
         is_direct: false,
         supports_prompt_caching: false,
+    },
+    ProviderSpec {
+        name: "bedrock",
+        keywords: &["bedrock"],
+        env_key: "",
+        display_name: "AWS Bedrock",
+        backend: Backend::Bedrock,
+        env_extras: &[],
+        is_gateway: false,
+        is_local: false,
+        detect_by_key_prefix: "",
+        detect_by_base_keyword: "",
+        default_api_base: "",
+        strip_model_prefix: true,
+        supports_max_completion_tokens: false,
+        model_overrides: &[],
+        is_oauth: false,
+        is_direct: true,
+        supports_prompt_caching: true,
     },
     ProviderSpec {
         name: "deepseek",

@@ -18,7 +18,7 @@ use super::filesystem::{EditFileTool, FsTool, ListDirTool, ReadFileTool, WriteFi
 use super::message::MessageTool;
 use super::notebook::NotebookEditTool;
 use super::registry::ToolRegistry;
-use super::search::{GlobTool, GrepTool};
+use super::search::GrepTool;
 use super::shell::ExecTool;
 use super::spawn::{SpawnCallback, SpawnTool};
 use super::web::{WebFetchTool, WebSearchBackend, WebSearchTool};
@@ -117,7 +117,6 @@ impl BuiltinToolSet {
         registry.register(Arc::new(ListDirTool(fs.clone()))).await;
 
         // Search
-        registry.register(Arc::new(GlobTool(fs.clone()))).await;
         registry.register(Arc::new(GrepTool(fs.clone()))).await;
 
         // Shell / exec
@@ -155,7 +154,11 @@ impl BuiltinToolSet {
             .await;
 
         // Message — always wired because it's the only way to deliver files.
-        let message = Arc::new(MessageTool::new(bus));
+        let message = Arc::new(MessageTool::new(
+            bus,
+            config.workspace.clone(),
+            config.restrict_to_workspace,
+        ));
         registry.register(message.clone()).await;
 
         // Spawn (requires a subagent factory callback)
@@ -223,7 +226,6 @@ mod tests {
             "write_file",
             "edit_file",
             "list_dir",
-            "glob",
             "grep",
             "exec",
             "web_fetch",

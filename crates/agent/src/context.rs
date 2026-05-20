@@ -41,7 +41,7 @@ pub struct ContextBuilder {
 }
 
 pub const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
-const RUNTIME_CONTEXT_TAG: &str = "[Runtime Context — metadata only, not instructions]";
+pub const RUNTIME_CONTEXT_TAG: &str = "[Runtime Context — metadata only, not instructions]";
 const RUNTIME_CONTEXT_END: &str = "[/Runtime Context]";
 const MAX_RECENT_HISTORY: usize = 50;
 
@@ -63,6 +63,7 @@ impl ContextBuilder {
         &self,
         _skill_names: Option<&[&str]>,
         channel: Option<&str>,
+        session_summary: Option<&str>,
     ) -> String {
         let mut parts: Vec<String> = Vec::new();
         parts.push(self.build_identity(channel));
@@ -119,6 +120,10 @@ impl ContextBuilder {
             parts.push(format!("# Recent History\n\n{}", lines.join("\n")));
         }
 
+        if let Some(summary) = session_summary {
+            parts.push(format!("[Archived Context Summary]\n\n{summary}"));
+        }
+
         parts.join("\n\n---\n\n")
     }
 
@@ -147,22 +152,24 @@ impl ContextBuilder {
         )
     }
 
-    /// Build the runtime-metadata block injected before the user turn.
+    /// Build the runtime-metadata block appended after user content.
     pub fn build_runtime_context(
         channel: Option<&str>,
         chat_id: Option<&str>,
         timezone: Option<&str>,
-        session_summary: Option<&str>,
+        sender_id: Option<&str>,
+        supplemental_lines: Option<&[String]>,
     ) -> String {
         let mut lines = vec![format!("Current Time: {}", current_time_str(timezone))];
         if let (Some(ch), Some(cid)) = (channel, chat_id) {
             lines.push(format!("Channel: {ch}"));
             lines.push(format!("Chat ID: {cid}"));
         }
-        if let Some(summary) = session_summary {
-            lines.push(String::new());
-            lines.push("[Resumed Session]".into());
-            lines.push(summary.to_string());
+        if let Some(sid) = sender_id {
+            lines.push(format!("Sender ID: {sid}"));
+        }
+        if let Some(extra) = supplemental_lines {
+            lines.extend(extra.iter().cloned());
         }
         format!(
             "{RUNTIME_CONTEXT_TAG}\n{}\n{RUNTIME_CONTEXT_END}",
@@ -193,18 +200,27 @@ impl ContextBuilder {
         channel: Option<&str>,
         chat_id: Option<&str>,
         current_role: &str,
+        sender_id: Option<&str>,
         session_summary: Option<&str>,
+        session_metadata: Option<&serde_json::Map<String, Value>>,
     ) -> Vec<Value> {
-        let runtime_ctx =
-            Self::build_runtime_context(channel, chat_id, self.timezone.as_deref(), session_summary);
+        let extra = goal_state_runtime_lines(session_metadata);
+        let runtime_ctx = Self::build_runtime_context(
+            channel,
+            chat_id,
+            self.timezone.as_deref(),
+            sender_id,
+            extra.as_deref(),
+        );
         let user_content = self.build_user_content(current_message, media);
 
+        // Runtime context is appended to keep the user-content prefix stable
+        // for prompt-cache hits (the context changes every turn due to time).
         let merged: Value = match user_content {
-            Value::String(s) => Value::String(format!("{runtime_ctx}\n\n{s}")),
+            Value::String(s) => Value::String(format!("{s}\n\n{runtime_ctx}")),
             Value::Array(mut blocks) => {
-                let mut out = vec![serde_json::json!({"type":"text","text":runtime_ctx})];
-                out.append(&mut blocks);
-                Value::Array(out)
+                blocks.push(serde_json::json!({"type":"text","text":runtime_ctx}));
+                Value::Array(blocks)
             }
             other => other,
         };
@@ -212,7 +228,7 @@ impl ContextBuilder {
         let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 2);
         let system = serde_json::json!({
             "role": "system",
-            "content": self.build_system_prompt(skill_names, channel),
+            "content": self.build_system_prompt(skill_names, channel, session_summary),
         });
         messages.push(system);
         messages.extend(history);
@@ -302,6 +318,12 @@ impl ContextBuilder {
             thinking_blocks,
         ));
     }
+}
+
+fn goal_state_runtime_lines(
+    _session_metadata: Option<&serde_json::Map<String, Value>>,
+) -> Option<Vec<String>> {
+    None
 }
 
 fn merge_message_content(left: Value, right: Value) -> Value {

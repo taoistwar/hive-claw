@@ -137,6 +137,16 @@ pub trait Channel: Send + Sync {
     async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> {
         Ok(true)
     }
+
+    /// Return default config for onboard. Override in concrete channel
+    /// implementations to auto-populate config.json (matches Python's
+    /// `BaseChannel.default_config`).
+    fn default_config() -> serde_json::Map<String, Value>
+    where
+        Self: Sized,
+    {
+        serde_json::Map::new()
+    }
 }
 
 /// Default permission check shared between channels (matches Python's

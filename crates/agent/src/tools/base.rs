@@ -25,33 +25,41 @@ pub enum ToolExecError {
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Get the name of the tool.
-    /// 获取工具的名称。
     fn name(&self) -> &str;
     /// Get the description of the tool.
-    /// 获取工具的描述。
     fn description(&self) -> &str;
     /// Get the parameters schema for the tool.
-    /// 获取工具的参数模式。
     fn parameters(&self) -> Value;
 
     /// Whether this tool is side-effect free and safe to parallelize.
-    /// 该工具是否 无副作用 且可 安全并行化。
     fn read_only(&self) -> bool {
         false
     }
     /// Whether this tool must run alone even if concurrency is enabled.
-    /// 即使启用了并发功能，此工具是否仍必须单独运行。
     fn exclusive(&self) -> bool {
         false
     }
     /// Whether this tool can run alongside other concurrency-safe tools.
-    /// 该工具是否可以与其他并发安全工具一起运行。
     fn concurrency_safe(&self) -> bool {
         self.read_only() && !self.exclusive()
     }
 
+    /// --- Plugin metadata ---
+
+    /// Config section key for this tool's settings.
+    fn config_key(&self) -> &str {
+        ""
+    }
+    /// Whether this tool should be auto-discovered.
+    fn plugin_discoverable(&self) -> bool {
+        true
+    }
+    /// Execution scopes (e.g. "core", "webui").
+    fn scopes(&self) -> &[&str] {
+        &["core"]
+    }
+
     /// Execute the tool with the given parameters.
-    /// 使用给定的参数执行工具。
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError>;
 
     /// Apply safe schema-driven casts before validation.

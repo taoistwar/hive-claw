@@ -234,6 +234,12 @@ pub struct TreeNav {
     pub selected: Option<TreeSelection>,
     pub pending_action: Option<PendingAction>,
     scroll_handle: ScrollHandle,
+    pub error_modal: Option<ErrorModal>,
+}
+
+pub struct ErrorModal {
+    pub title: String,
+    pub message: String,
 }
 
 impl TreeNav {
@@ -246,6 +252,7 @@ impl TreeNav {
             selected: None,
             pending_action: None,
             scroll_handle: ScrollHandle::new(),
+            error_modal: None,
         }
     }
 
@@ -290,8 +297,7 @@ impl TreeNav {
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        tree.error = Some(SharedString::from(format!("加载数据源失败: {}", e)));
-                        cx.notify();
+                        tree.show_error("加载数据源失败".to_string(), format!("{}", e), cx);
                     }).ok();
                 }
             }
@@ -331,8 +337,7 @@ impl TreeNav {
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        tree.error = Some(SharedString::from(format!("解密失败: {}", e)));
-                        cx.notify();
+                        tree.show_error("解密失败".to_string(), format!("{}", e), cx);
                     }).ok();
                     return;
                 }
@@ -367,8 +372,7 @@ impl TreeNav {
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        tree.error = Some(SharedString::from(format!("加载数据库失败: {}", e)));
-                        cx.notify();
+                        tree.show_error("加载数据库失败".to_string(), format!("{}", e), cx);
                     }).ok();
                 }
             }
@@ -409,8 +413,7 @@ impl TreeNav {
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        tree.error = Some(SharedString::from(format!("解密失败: {}", e)));
-                        cx.notify();
+                        tree.show_error("解密失败".to_string(), format!("{}", e), cx);
                     }).ok();
                     return;
                 }
@@ -440,8 +443,7 @@ impl TreeNav {
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        tree.error = Some(SharedString::from(format!("加载表失败: {}", e)));
-                        cx.notify();
+                        tree.show_error("加载表失败".to_string(), format!("{}", e), cx);
                     }).ok();
                 }
             }
@@ -470,6 +472,20 @@ impl TreeNav {
         if let Some(store) = self.store.clone() {
             self.load_data_sources(store, cx);
         }
+    }
+
+    pub fn show_error(&mut self, title: String, message: String, cx: &mut Context<Self>) {
+        self.error_modal = Some(ErrorModal { title, message });
+        cx.notify();
+    }
+
+    pub fn dismiss_error(&mut self, cx: &mut Context<Self>) {
+        self.error_modal = None;
+        cx.notify();
+    }
+
+    pub fn take_error_modal(&mut self) -> Option<ErrorModal> {
+        self.error_modal.take()
     }
 }
 
@@ -538,15 +554,6 @@ impl Render for TreeNav {
                     .text_color(rgb(0x888888))
                     .child("加载中..."),
             );
-        } else if let Some(ref err) = self.error {
-            col = col.child(
-                div()
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .text_color(rgb(0xcc0000))
-                    .child(err.clone()),
-            );
         } else if self.nodes.is_empty() {
             col = col.child(
                 div()
@@ -565,7 +572,8 @@ impl Render for TreeNav {
                 .flex_col()
                 .flex_grow()
                 .overflow_y_scroll()
-                .track_scroll(&self.scroll_handle);
+                .track_scroll(&self.scroll_handle)
+                .gap(px(2.0));
 
             for (idx, node) in self.nodes.iter().enumerate() {
                 match node {
@@ -588,104 +596,96 @@ impl Render for TreeNav {
                         let ds_item = div()
                             .id(format!("ds-{id}"))
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .bg(bg)
+                            .cursor(CursorStyle::PointingHand)
+                            .child(
+                                div()
+                                    .w(px(16.0))
+                                    .child(if *expanded { icon_caret_down() } else { icon_caret_right() }),
+                            )
+                            .child(icon_data_source())
+                            .child(
+                                div()
+                                    .flex_grow()
+                                    .pl(px(6.0))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .child(name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(0x888888))
+                                            .child(addr),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .flex()
-                                    .items_center()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .bg(bg)
-                                    .cursor(CursorStyle::PointingHand)
+                                    .flex_col()
+                                    .gap(px(4.0))
                                     .child(
                                         div()
-                                            .w(px(16.0))
-                                            .child(if *expanded { icon_caret_down() } else { icon_caret_right() }),
+                                            .id(format!("ds-edit-{id}"))
+                                            .px(px(6.0))
+                                            .py(px(2.0))
+                                            .rounded(px(3.0))
+                                            .bg(rgb(0xffaa00))
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(0xffffff))
+                                            .cursor(CursorStyle::PointingHand)
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let this_for_edit = this.clone();
+                                                let id = *id;
+                                                move |_, _, cx| {
+                                                    this_for_edit.update(cx, |p, cx| {
+                                                        p.pending_action = Some(PendingAction::Edit(id));
+                                                        cx.notify();
+                                                    }).ok();
+                                                }
+                                            })
+                                            .child("编辑"),
                                     )
-                                    .child(icon_data_source())
                                     .child(
                                         div()
-                                            .flex_grow()
-                                            .pl(px(6.0))
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .child(name.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(rgb(0x888888))
-                                                    .child(addr),
-                                            ),
-                                    )
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let this_for_ds = this.clone();
-                                        let idx = idx;
-                                        let id = *id;
-                                        move |_, _, cx| {
-                                            this_for_ds.update(cx, |tree, cx| {
-                                                tree.toggle_data_source(idx, cx);
-                                                tree.select_item(TreeSelection::DataSource(id), cx);
-                                            }).ok();
-                                        }
-                                    }),
-                            );
-
-                        let ds_item = ds_item.child(
-                            div()
-                                .flex()
-                                .gap(px(4.0))
-                                .justify_end()
-                                .px(px(12.0))
-                                .py(px(4.0))
-                                .child(
-                                    div()
-                                        .id(format!("ds-edit-{id}"))
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded(px(3.0))
-                                        .bg(rgb(0xffaa00))
-                                        .text_size(px(11.0))
-                                        .text_color(rgb(0xffffff))
-                                        .cursor(CursorStyle::PointingHand)
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let this_for_edit = this.clone();
-                                            let id = *id;
-                                            move |_, _, cx| {
-                                                this_for_edit.update(cx, |p, cx| {
-                                                    p.pending_action = Some(PendingAction::Edit(id));
-                                                    cx.notify();
-                                                }).ok();
-                                            }
-                                        })
-                                        .child("编辑"),
-                                )
-                                .child(
-                                    div()
-                                        .id(format!("ds-delete-{id}"))
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded(px(3.0))
-                                        .bg(rgb(0xdd4444))
-                                        .text_size(px(11.0))
-                                        .text_color(rgb(0xffffff))
-                                        .cursor(CursorStyle::PointingHand)
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let this_for_delete = this.clone();
-                                            let id = *id;
-                                            move |_, _, cx| {
-                                                this_for_delete.update(cx, |p, cx| {
-                                                    p.pending_action = Some(PendingAction::Delete(id));
-                                                    cx.notify();
-                                                }).ok();
-                                            }
-                                        })
-                                        .child("删除"),
-                                ),
-                        );
+                                            .id(format!("ds-delete-{id}"))
+                                            .px(px(6.0))
+                                            .py(px(2.0))
+                                            .rounded(px(3.0))
+                                            .bg(rgb(0xdd4444))
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(0xffffff))
+                                            .cursor(CursorStyle::PointingHand)
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let this_for_delete = this.clone();
+                                                let id = *id;
+                                                move |_, _, cx| {
+                                                    this_for_delete.update(cx, |p, cx| {
+                                                        p.pending_action = Some(PendingAction::Delete(id));
+                                                        cx.notify();
+                                                    }).ok();
+                                                }
+                                            })
+                                            .child("删除"),
+                                    ),
+                            )
+                            .on_mouse_down(MouseButton::Left, {
+                                let this_for_ds = this.clone();
+                                let idx = idx;
+                                let id = *id;
+                                move |_, _, cx| {
+                                    this_for_ds.update(cx, |tree, cx| {
+                                        tree.toggle_data_source(idx, cx);
+                                        tree.select_item(TreeSelection::DataSource(id), cx);
+                                    }).ok();
+                                }
+                            });
 
                         list = list.child(ds_item);
 

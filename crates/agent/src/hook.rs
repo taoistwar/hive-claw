@@ -21,6 +21,8 @@ pub struct AgentHookContext {
     pub final_content: Option<String>,
     pub stop_reason: Option<String>,
     pub error: Option<String>,
+    pub streamed_content: bool,
+    pub streamed_reasoning: bool,
 }
 
 /// Summary entry for one tool invocation.
@@ -51,6 +53,8 @@ pub trait AgentHook: Send + Sync {
     async fn on_stream(&self, _ctx: &mut AgentHookContext, _delta: &str) {}
     async fn on_stream_end(&self, _ctx: &mut AgentHookContext, _resuming: bool) {}
     async fn before_execute_tools(&self, _ctx: &mut AgentHookContext) {}
+    async fn emit_reasoning(&self, _reasoning_content: Option<&str>) {}
+    async fn emit_reasoning_end(&self) {}
     async fn after_iteration(&self, _ctx: &mut AgentHookContext) {}
 
     fn finalize_content(
@@ -103,6 +107,16 @@ impl AgentHook for CompositeHook {
             h.before_execute_tools(ctx).await;
         }
     }
+    async fn emit_reasoning(&self, reasoning_content: Option<&str>) {
+        for h in &self.hooks {
+            h.emit_reasoning(reasoning_content).await;
+        }
+    }
+    async fn emit_reasoning_end(&self) {
+        for h in &self.hooks {
+            h.emit_reasoning_end().await;
+        }
+    }
     async fn after_iteration(&self, ctx: &mut AgentHookContext) {
         for h in &self.hooks {
             h.after_iteration(ctx).await;
@@ -118,6 +132,33 @@ impl AgentHook for CompositeHook {
             content = h.finalize_content(ctx, content);
         }
         content
+    }
+}
+
+/// Record tool names and the final message list for `AgentRunResult`.
+///
+/// The runner mutates `context.messages` in place across iterations, so the
+/// snapshot is refreshed on every `after_iteration` call; the last call
+/// reflects the end-of-turn state the SDK caller cares about.
+pub struct SDKCaptureHook {
+    pub tools_used: std::sync::Mutex<Vec<String>>,
+    pub messages: std::sync::Mutex<Vec<Value>>,
+}
+
+impl SDKCaptureHook {
+    pub fn new() -> Self {
+        Self {
+            tools_used: std::sync::Mutex::new(Vec::new()),
+            messages: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentHook for SDKCaptureHook {
+    async fn after_iteration(&self, ctx: &mut AgentHookContext) {
+        self.tools_used.lock().unwrap().extend(ctx.tool_calls.iter().map(|tc| tc.name.clone()));
+        *self.messages.lock().unwrap() = ctx.messages.clone();
     }
 }
 

@@ -62,6 +62,7 @@ impl MemoryStore {
                 "SOUL.md".into(),
                 "USER.md".into(),
                 "memory/MEMORY.md".into(),
+                "memory/.dream_cursor".into(),
             ],
         );
         let this = Self {
@@ -221,11 +222,21 @@ impl MemoryStore {
     }
 
     fn write_entries(&self, entries: &[Value]) -> std::io::Result<()> {
-        let mut f = File::create(&self.history_file)?;
-        for entry in entries {
-            writeln!(f, "{}", serde_json::to_string(entry).unwrap())?;
+        let tmp_path = self.history_file.with_extension("jsonl.tmp");
+        let write_result = (|| -> std::io::Result<()> {
+            let mut f = File::create(&tmp_path)?;
+            for entry in entries {
+                writeln!(f, "{}", serde_json::to_string(entry).unwrap())?;
+            }
+            f.flush()?;
+            f.sync_all()?;
+            std::fs::rename(&tmp_path, &self.history_file)?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
         }
-        Ok(())
+        write_result
     }
 
     // -- dream cursor --------------------------------------------------------
@@ -504,6 +515,17 @@ pub trait Consolidator: Send + Sync {
     /// Attempt token-based consolidation if the session exceeds its budget.
     /// Default: no-op.
     async fn maybe_consolidate_by_tokens(&self, _session_key: &str) {}
+
+    /// Hard-truncate an idle session under the consolidation lock.
+    /// Returns the summary text on success, `None` if the LLM failed,
+    /// or `Some("")` if there was nothing to archive.
+    async fn compact_idle_session(
+        &self,
+        _session_key: &str,
+        _max_suffix: usize,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// Nightly memory processor. Mirrors `nanobot.agent.memory.Dream`.

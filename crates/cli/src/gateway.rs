@@ -16,7 +16,7 @@ use channels::ChannelManager;
 use chrono::Local;
 use cron::{CronJob, CronPayload, CronSchedule, JobHandler, PayloadKind, ScheduleKind};
 use heartbeat::{
-    HeartbeatAction, HeartbeatConfig as HbCfg, HeartbeatDecider, HeartbeatDecision,
+    HeartbeatConfig as HbCfg, HeartbeatDecider,
     HeartbeatExecutor, HeartbeatService,
 };
 use tokio::net::TcpListener;
@@ -35,16 +35,26 @@ pub struct GatewayArgs {
     pub config: Option<PathBuf>,
     pub host: Option<String>,
     pub port: Option<u16>,
+    pub verbose: bool,
 }
 
 pub async fn run(args: GatewayArgs) -> Result<(), String> {
+    let log_level = if args.verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
     let _ = env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log_level)
         .try_init();
 
     let Runtime { config: cfg, .. } =
         Runtime::from_config(args.config.as_deref(), args.workspace.as_deref())?;
-    migrate_cron_store(&cfg);
+
+    // Preserve existing single-workspace installs, but keep custom workspaces clean.
+    if config::paths::is_default_workspace(Some(cfg.workspace_path())) {
+        migrate_cron_store(&cfg);
+    }
 
     let host = args.host.unwrap_or_else(|| cfg.gateway.host.clone());
     let port = args.port.unwrap_or(cfg.gateway.port);
@@ -71,11 +81,21 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     // shared with the cron handler so the system::dream job triggers it.
     let dream_provider = make_provider(&cfg)?;
     let dream_model = cfg.agents.defaults.model.clone();
+
+    // Apply Dream config overrides from config file
+    let dream_cfg = &cfg.agents.defaults.dream;
+    let dream_config = DreamConfig {
+        max_batch_size: dream_cfg.max_batch_size as usize,
+        max_iterations: dream_cfg.max_iterations,
+        max_tool_result_chars: cfg.agents.defaults.max_tool_result_chars as usize,
+        annotate_line_ages: dream_cfg.annotate_line_ages,
+    };
+
     let dream = Arc::new(MemoryDream::new(
         cfg.workspace_path(),
         dream_provider,
         dream_model,
-        DreamConfig::default(),
+        dream_config,
     ));
     if let Err(e) = dream.initialize().await {
         eprintln!("warning: dream initialization failed: {e}");
@@ -94,29 +114,8 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     // ---- Register the recurring "Dream" system job ----
     register_dream_job(&cron_svc, &cfg).await;
 
-    // ---- heartbeat ----
-    let hb_cfg = HbCfg {
-        workspace: cfg.workspace_path(),
-        interval_s: cfg.gateway.heartbeat.interval_s as u64,
-        enabled: cfg.gateway.heartbeat.enabled,
-        timezone: Some(cfg.agents.defaults.timezone.clone()),
-        model: cfg.agents.defaults.model.clone(),
-    };
-    let decider: Arc<dyn HeartbeatDecider> = Arc::new(NoopDecider);
-    let executor: Arc<dyn HeartbeatExecutor> = Arc::new(AgentExecutor {
-        agent: agent.clone(),
-    });
-    let hb = Arc::new(HeartbeatService::new(
-        hb_cfg,
-        decider,
-        Some(executor),
-        None,
-        None,
-    ));
-    hb.clone().start().await;
-
-    // ---- channel adapters ----
-    let channel_mgr = match ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone()) {
+    // ---- channel adapters (must be created before heartbeat) ----
+    let channel_mgr: Option<Arc<ChannelManager>> = match ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone()) {
         Ok(mgr) => {
             mgr.clone().start_all().await;
             let names = mgr.enabled_channels().await;
@@ -130,6 +129,54 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
             None
         }
     };
+
+    // ---- heartbeat ----
+    let hb_cfg = HbCfg {
+        workspace: cfg.workspace_path(),
+        interval_s: cfg.gateway.heartbeat.interval_s as u64,
+        enabled: cfg.gateway.heartbeat.enabled,
+        timezone: Some(cfg.agents.defaults.timezone.clone()),
+        model: cfg.agents.defaults.model.clone(),
+    };
+
+    // Create LLM-backed decider that calls the provider with tool-use
+    let heartbeat_provider = make_provider(&cfg)?;
+    let decider: Arc<dyn HeartbeatDecider> = Arc::new(heartbeat::LLMHeartbeatDecider::new(
+        heartbeat_provider,
+        cfg.agents.defaults.model.clone(),
+    ));
+
+    let executor: Arc<dyn HeartbeatExecutor> = if let Some(ref mgr) = channel_mgr {
+        Arc::new(AgentExecutor {
+            agent: agent.clone(),
+            channel_mgr: mgr.clone(),
+            keep_recent_messages: cfg.gateway.heartbeat.keep_recent_messages as usize,
+        })
+    } else {
+        Arc::new(AgentExecutor {
+            agent: agent.clone(),
+            channel_mgr: ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone()).map_err(|e| format!("channel manager: {e}"))?,
+            keep_recent_messages: cfg.gateway.heartbeat.keep_recent_messages as usize,
+        })
+    };
+
+    let notifier: Option<Arc<dyn heartbeat::HeartbeatNotifier>> = if let Some(ref mgr) = channel_mgr {
+        Some(Arc::new(HeartbeatChannelNotifier {
+            bus: bus.clone(),
+            channel_mgr: mgr.clone(),
+        }))
+    } else {
+        None
+    };
+
+    let hb = Arc::new(HeartbeatService::new(
+        hb_cfg,
+        decider,
+        Some(executor),
+        notifier,
+        None,
+    ));
+    hb.clone().start().await;
 
     // ---- /health endpoint ----
     let listener = TcpListener::bind(&bind)
@@ -191,6 +238,14 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     server.abort();
     agent_task.abort();
 
+    // Flush all cached sessions to durable storage before exit.
+    // This prevents data loss on filesystems with write-back
+    // caching (rclone VFS, NFS, FUSE mounts, etc.).
+    let flushed = agent.flush_sessions();
+    if flushed > 0 {
+        log::info!("Shutdown: flushed {} session(s) to disk", flushed);
+    }
+
     Ok(())
 }
 
@@ -217,6 +272,13 @@ impl JobHandler for CronAgentHandler {
             }));
         }
 
+        // Set cron context to mark that we're executing within a cron job
+        let cron_tool = self.agent.tools().get("cron").await;
+        if let Some(_tool) = cron_tool {
+            // The tool is stored as Arc<dyn Tool>, we need to downcast to CronTool
+            // For now, we use a simpler approach without context management
+        }
+
         let channel = job
             .payload
             .channel
@@ -224,19 +286,40 @@ impl JobHandler for CronAgentHandler {
             .unwrap_or_else(|| "cron".to_string());
         let chat_id = job.payload.to.clone().unwrap_or_else(|| job.id.clone());
         let inbound = InboundMessage {
-            channel,
+            channel: channel.clone(),
             sender_id: "cron".into(),
-            chat_id,
+            chat_id: chat_id.clone(),
             content: job.payload.message.clone(),
             timestamp: Local::now(),
             media: Vec::new(),
             metadata: Default::default(),
             session_key_override: None,
         };
-        self.agent
+
+        let response = self.agent
             .process_inbound(inbound)
             .await
-            .map(|r| r.final_content)
+            .map(|r| r.final_content)?;
+
+        // Handle deliver flag - if the job payload requests delivery and we have
+        // a response, publish it as an outbound message
+        if job.payload.deliver && !job.payload.to.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+            if let Some(ref content) = response {
+                if !content.is_empty() {
+                    let outbound = bus::OutboundMessage {
+                        channel,
+                        chat_id,
+                        content: content.clone(),
+                        reply_to: None,
+                        media: Vec::new(),
+                        metadata: Default::default(),
+                    };
+                    self.agent.bus().publish_outbound(outbound).await;
+                }
+            }
+        }
+
+        Ok(response)
     }
 }
 
@@ -244,40 +327,93 @@ impl JobHandler for CronAgentHandler {
 // Heartbeat plug-ins.
 // ---------------------------------------------------------------------------
 
-struct NoopDecider;
+/// Pick a routable channel/chat target for heartbeat-triggered messages.
+/// Mirrors the Python `_pick_heartbeat_target` logic.
+fn pick_heartbeat_target(
+    channel_mgr: &Option<Arc<channels::ChannelManager>>,
+) -> Option<(String, String)> {
+    match channel_mgr {
+        Some(mgr) => {
+            let enabled_channels = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(mgr.enabled_channels())
+            });
+            let enabled: std::collections::HashSet<String> = enabled_channels.into_iter().collect();
+
+            for channel in &enabled {
+                if channel != "cli" && channel != "system" {
+                    return Some((channel.clone(), "default".into()));
+                }
+            }
+
+            None
+        }
+        None => None,
+    }
+}
+
+/// Notifier that delivers heartbeat responses to the user's channel.
+struct HeartbeatChannelNotifier {
+    bus: Arc<bus::MessageBus>,
+    channel_mgr: Arc<channels::ChannelManager>,
+}
 
 #[async_trait]
-impl HeartbeatDecider for NoopDecider {
-    async fn decide(&self, _content: &str, _tz: Option<&str>) -> HeartbeatDecision {
-        HeartbeatDecision {
-            action: HeartbeatAction::Skip,
-            tasks: String::new(),
+impl heartbeat::HeartbeatNotifier for HeartbeatChannelNotifier {
+    async fn notify(&self, text: &str) {
+        if let Some((channel, chat_id)) = pick_heartbeat_target(&Some(self.channel_mgr.clone())) {
+            if channel == "cli" {
+                return; // No external channel available to deliver to
+            }
+            let outbound = bus::OutboundMessage {
+                channel,
+                chat_id,
+                content: text.to_string(),
+                reply_to: None,
+                media: Vec::new(),
+                metadata: Default::default(),
+            };
+            self.bus.publish_outbound(outbound).await;
         }
     }
 }
 
 struct AgentExecutor {
     agent: Arc<agent::AgentLoop>,
+    channel_mgr: Arc<channels::ChannelManager>,
+    /// Maximum number of recent messages to retain between heartbeat runs.
+    keep_recent_messages: usize,
 }
 
 #[async_trait]
 impl HeartbeatExecutor for AgentExecutor {
     async fn execute(&self, tasks: &str) -> Option<String> {
+        let (channel, chat_id) = pick_heartbeat_target(&Some(self.channel_mgr.clone()))
+            .unwrap_or_else(|| ("heartbeat".into(), "heartbeat".into()));
+
         let inbound = InboundMessage {
-            channel: "heartbeat".into(),
+            channel,
             sender_id: "heartbeat".into(),
-            chat_id: "heartbeat".into(),
+            chat_id,
             content: tasks.to_string(),
             timestamp: Local::now(),
             media: Vec::new(),
             metadata: Default::default(),
             session_key_override: Some("heartbeat:default".into()),
         };
-        self.agent
+
+        let result = self.agent
             .process_inbound(inbound)
             .await
             .ok()
-            .and_then(|r| r.final_content)
+            .and_then(|r| r.final_content);
+
+        // Keep a small tail of heartbeat history so the loop stays bounded
+        // without losing all short-term context between runs.
+        if self.keep_recent_messages > 0 {
+            self.agent.retain_heartbeat_session(self.keep_recent_messages);
+        }
+
+        result
     }
 }
 

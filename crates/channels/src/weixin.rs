@@ -1487,6 +1487,13 @@ impl Channel for WeixinChannel {
         self.running.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    fn default_config() -> serde_json::Map<String, Value> {
+        serde_json::to_value(&WeixinConfig::default())
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    }
+
     async fn login(self: Arc<Self>, force: bool) -> ChannelResult<bool> {
         if force {
             self.inner.lock().await.state.token.clear();

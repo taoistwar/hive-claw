@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio::time::sleep;
 
 use crate::retry::{is_transient_response, pick_delay};
+use crate::sanitize::{enforce_role_alternation, strip_image_content_inplace};
 use crate::types::{GenerationSettings, LLMResponse, ToolChoice};
 
 /// Request passed to [`LLMProvider::chat`].
@@ -106,12 +107,16 @@ pub trait LLMProvider: Send + Sync {
             req.reasoning_effort = defaults.reasoning_effort.clone();
         }
 
+        // Enforce role alternation to avoid provider errors (e.g., consecutive same-role messages)
+        req.messages = enforce_role_alternation(&req.messages);
+
         let delays: [u64; 3] = [1, 2, 4];
         let persistent = mode == RetryMode::Persistent;
         let mut attempt: u32 = 0;
         let mut last_error_key: Option<String> = None;
         let mut identical_count: u32 = 0;
         let mut last_response: Option<LLMResponse>;
+        let mut images_stripped = false;
 
         loop {
             attempt += 1;
@@ -135,6 +140,12 @@ pub trait LLMProvider: Send + Sync {
             last_response = Some(response.clone());
 
             if !is_transient_response(&response) {
+                // Non-transient error: try stripping images and retrying once
+                if !images_stripped && strip_image_content_inplace(&mut req.messages) {
+                    warn!("Non-transient LLM error with image content, retrying without images");
+                    images_stripped = true;
+                    continue;
+                }
                 return response;
             }
 
@@ -176,6 +187,107 @@ pub trait LLMProvider: Send + Sync {
         }
 
         last_response.unwrap_or_else(|| LLMResponse::error("LLM request failed"))
+    }
+
+    /// Wrapper for streaming chat with retry policy on transient errors.
+    async fn chat_stream_with_retry(
+        &self,
+        mut req: ChatRequest,
+        on_delta: Option<StreamDeltaCallback>,
+        mode: RetryMode,
+        on_retry_wait: Option<RetryWaitCallback>,
+    ) -> LLMResponse {
+        let defaults = self.generation();
+        if req.max_tokens == 0 {
+            req.max_tokens = defaults.max_tokens;
+        }
+        if !req.temperature.is_finite() {
+            req.temperature = defaults.temperature;
+        }
+        if req.reasoning_effort.is_none() {
+            req.reasoning_effort = defaults.reasoning_effort.clone();
+        }
+
+        // Enforce role alternation to avoid provider errors
+        req.messages = enforce_role_alternation(&req.messages);
+
+        let delays: [u64; 3] = [1, 2, 4];
+        let persistent = mode == RetryMode::Persistent;
+        let mut attempt: u32 = 0;
+        let mut last_error_key: Option<String> = None;
+        let mut identical_count: u32 = 0;
+        let mut last_response: Option<LLMResponse>;
+        let mut images_stripped = false;
+
+        loop {
+            attempt += 1;
+            let response = self.chat_stream(req.clone(), on_delta.clone()).await;
+            if response.finish_reason != "error" {
+                return response;
+            }
+
+            let key = response
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if !key.is_empty() && Some(&key) == last_error_key.as_ref() {
+                identical_count = identical_count.saturating_add(1);
+            } else {
+                last_error_key = if key.is_empty() { None } else { Some(key) };
+                identical_count = if last_error_key.is_some() { 1 } else { 0 };
+            }
+            last_response = Some(response.clone());
+
+            if !is_transient_response(&response) {
+                // Non-transient error: try stripping images and retrying once
+                if !images_stripped && strip_image_content_inplace(&mut req.messages) {
+                    warn!("Non-transient LLM error with image content, retrying without images");
+                    images_stripped = true;
+                    continue;
+                }
+                return response;
+            }
+
+            if persistent && identical_count >= PERSISTENT_IDENTICAL_ERROR_LIMIT {
+                warn!(
+                    "Stopping persistent retry after {identical_count} identical transient errors"
+                );
+                if let Some(cb) = on_retry_wait.as_ref() {
+                    (cb)(format!(
+                        "Persistent retry stopped after {identical_count} identical errors."
+                    ))
+                    .await;
+                }
+                return response;
+            }
+
+            if !persistent && attempt as usize > delays.len() {
+                warn!("LLM stream request failed after {attempt} retries, giving up");
+                if let Some(cb) = on_retry_wait.as_ref() {
+                    (cb)(format!(
+                        "Model stream request failed after {attempt} retries, giving up."
+                    ))
+                    .await;
+                }
+                break;
+            }
+
+            let base_delay = delays[(attempt as usize - 1).min(delays.len() - 1)];
+            let mut delay = pick_delay(&response).unwrap_or(base_delay as f64);
+            if persistent {
+                delay = delay.min(PERSISTENT_MAX_DELAY as f64);
+            }
+
+            warn!(
+                "LLM stream transient error (attempt {attempt}), retrying in {}s",
+                delay.round() as i64
+            );
+            sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
+        }
+
+        last_response.unwrap_or_else(|| LLMResponse::error("LLM stream request failed"))
     }
 }
 

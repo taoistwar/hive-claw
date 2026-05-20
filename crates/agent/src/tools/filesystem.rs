@@ -17,13 +17,14 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use serde_json::{Value, json};
 
 use super::base::{Tool, ToolExecError};
-use super::file_state;
+use super::file_state::{FileStateStore, FileStates, current_file_states};
 use super::sandbox::{PathError, resolve_path};
 
 static IGNORE_DIRS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
@@ -51,6 +52,8 @@ pub struct FsTool {
     pub workspace: Option<PathBuf>,
     pub allowed_dir: Option<PathBuf>,
     pub extra_allowed_dirs: Vec<PathBuf>,
+    explicit_file_states: Option<Arc<FileStates>>,
+    fallback_file_states: Arc<FileStates>,
 }
 
 impl FsTool {
@@ -63,7 +66,21 @@ impl FsTool {
             workspace,
             allowed_dir,
             extra_allowed_dirs,
+            explicit_file_states: None,
+            fallback_file_states: Arc::new(FileStates::new()),
         }
+    }
+
+    pub fn with_file_states(mut self, states: Option<Arc<FileStates>>) -> Self {
+        self.explicit_file_states = states;
+        self
+    }
+
+    fn file_states(&self) -> Arc<FileStates> {
+        if let Some(explicit) = &self.explicit_file_states {
+            return explicit.clone();
+        }
+        current_file_states(&self.fallback_file_states)
     }
 
     pub fn resolve(&self, path: &str) -> Result<PathBuf, PathError> {
@@ -123,6 +140,9 @@ impl Tool for ReadFileTool {
     fn read_only(&self) -> bool {
         true
     }
+    fn scopes(&self) -> &[&str] {
+        &["core", "subagent", "memory"]
+    }
 
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let Some(path) = string_param(&params, "path") else {
@@ -143,8 +163,8 @@ impl Tool for ReadFileTool {
         if !fp.is_file() {
             return Ok(Value::String(format!("Error: Not a file: {path}")));
         }
-        // Dedup: same (offset, limit) + unchanged content -> short stub.
-        if file_state::is_unchanged(&fp, offset, limit) {
+        let file_states = self.0.file_states();
+        if file_states.is_unchanged(&fp, offset, limit) {
             return Ok(Value::String(format!(
                 "[File unchanged since last read: {path}]"
             )));
@@ -209,7 +229,7 @@ impl Tool for ReadFileTool {
         } else {
             result.push_str(&format!("\n\n(End of file — {total} lines total)"));
         }
-        file_state::record_read(&fp, offset, limit);
+        file_states.record_read(&fp, offset, limit);
         Ok(Value::String(result))
     }
 }
@@ -238,6 +258,9 @@ impl Tool for WriteFileTool {
             "required":["path","content"],
         })
     }
+    fn scopes(&self) -> &[&str] {
+        &["core", "subagent", "memory"]
+    }
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let Some(path) = string_param(&params, "path") else {
             return Ok(Value::String("Error writing file: Unknown path".into()));
@@ -257,7 +280,7 @@ impl Tool for WriteFileTool {
         if let Err(e) = fs::write(&fp, content) {
             return Ok(Value::String(format!("Error writing file: {e}")));
         }
-        file_state::record_write(&fp);
+        self.0.file_states().record_write(&fp);
         Ok(Value::String(format!(
             "Successfully wrote {} characters to {}",
             content.len(),
@@ -294,6 +317,9 @@ impl Tool for EditFileTool {
             "required":["path","old_text","new_text"],
         })
     }
+    fn scopes(&self) -> &[&str] {
+        &["core", "subagent", "memory"]
+    }
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let Some(path) = string_param(&params, "path") else {
             return Ok(Value::String("Error editing file: Unknown path".into()));
@@ -315,7 +341,7 @@ impl Tool for EditFileTool {
                 if let Err(e) = fs::write(&fp, new_text) {
                     return Ok(Value::String(format!("Error editing file: {e}")));
                 }
-                file_state::record_write(&fp);
+                self.0.file_states().record_write(&fp);
                 return Ok(Value::String(format!(
                     "Successfully created {}",
                     fp.display()
@@ -342,14 +368,15 @@ impl Tool for EditFileTool {
             if let Err(e) = fs::write(&fp, new_text) {
                 return Ok(Value::String(format!("Error editing file: {e}")));
             }
-            file_state::record_write(&fp);
+            self.0.file_states().record_write(&fp);
             return Ok(Value::String(format!(
                 "Successfully edited {}",
                 fp.display()
             )));
         }
 
-        let warning = file_state::check_read(&fp);
+        let file_states = self.0.file_states();
+        let warning = file_states.check_read(&fp);
         let raw = match fs::read(&fp) {
             Ok(r) => r,
             Err(e) => return Ok(Value::String(format!("Error editing file: {e}"))),
@@ -397,7 +424,6 @@ impl Tool for EditFileTool {
         } else {
             vec![matches[0]]
         };
-        // Replace in reverse to keep earlier indices valid.
         for idx in selected.into_iter().rev() {
             let end = idx + norm_old.len();
             let mut real_end = end;
@@ -418,7 +444,7 @@ impl Tool for EditFileTool {
         if let Err(e) = fs::write(&fp, to_write) {
             return Ok(Value::String(format!("Error editing file: {e}")));
         }
-        file_state::record_write(&fp);
+        file_states.record_write(&fp);
         let msg = match warning {
             Some(w) => format!("{w}\nSuccessfully edited {}", fp.display()),
             None => format!("Successfully edited {}", fp.display()),
@@ -468,6 +494,9 @@ impl Tool for ListDirTool {
     }
     fn read_only(&self) -> bool {
         true
+    }
+    fn scopes(&self) -> &[&str] {
+        &["core", "subagent"]
     }
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let Some(path) = string_param(&params, "path") else {
@@ -584,8 +613,9 @@ mod tests {
         let _ = fs::remove_dir_all(&ws);
         fs::create_dir_all(&ws).unwrap();
         fs::write(ws.join("x.txt"), "foo bar baz").unwrap();
-        let tool = EditFileTool(make_fs(&ws));
-        let _ = file_state::record_read(ws.join("x.txt"), 1, None);
+        let fs = make_fs(&ws);
+        fs.file_states().record_read(ws.join("x.txt"), 1, None);
+        let tool = EditFileTool(fs);
         let res = tool
             .execute(json!({"path":"x.txt","old_text":"bar","new_text":"qux"}))
             .await

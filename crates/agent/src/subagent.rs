@@ -99,6 +99,8 @@ pub struct SubagentConfig {
     pub disabled_skills: HashSet<String>,
     /// Maximum iterations for each spawned subagent.
     pub max_iterations: u32,
+    /// Optional per-session LLM wall timeout override (seconds).
+    pub llm_wall_timeout_for_session: Option<Arc<dyn Fn(Option<&str>) -> Option<f64> + Send + Sync>>,
 }
 
 /// Manages background subagent execution.
@@ -145,6 +147,7 @@ impl SubagentManager {
         origin_channel: String,
         origin_chat_id: String,
         session_key: Option<String>,
+        origin_message_id: Option<String>,
     ) -> String {
         let task_id = Uuid::new_v4().to_string()[..8].to_string();
         let display_label = label.unwrap_or_else(|| {
@@ -181,6 +184,7 @@ impl SubagentManager {
         let origin_channel_c = origin_channel.clone();
         let origin_chat_id_c = origin_chat_id.clone();
         let session_key_c = session_key.clone();
+        let origin_message_id_c = origin_message_id.clone();
         let handle = tokio::spawn(async move {
             this.run_subagent(
                 &tid_for_task,
@@ -189,6 +193,7 @@ impl SubagentManager {
                 (&origin_channel_c, &origin_chat_id_c, session_key_c.as_deref()),
                 status,
                 tools,
+                origin_message_id_c.as_deref(),
             )
             .await;
 
@@ -224,6 +229,7 @@ impl SubagentManager {
         origin: (&str, &str, Option<&str>),
         status: Arc<Mutex<SubagentStatus>>,
         tools: ToolRegistry,
+        origin_message_id: Option<&str>,
     ) {
         info!("Subagent [{task_id}] starting task: {label}");
         let model = self
@@ -252,6 +258,8 @@ impl SubagentManager {
             Some("Task completed but no final response was generated.".into());
         spec.error_message = None;
         spec.fail_on_tool_error = true;
+        spec.session_key = origin.2.map(String::from);
+        spec.llm_timeout_s = self.config.llm_wall_timeout_for_session.as_ref().and_then(|f| f(origin.2));
 
         let result = self.runner.run(spec).await;
         {
@@ -267,14 +275,14 @@ impl SubagentManager {
                     s.tool_events = result.tool_events.clone();
                 }
                 let detail = format_partial_progress(&result);
-                self.announce_result(task_id, label, task, &detail, origin, "error").await;
+                self.announce_result(task_id, label, task, &detail, origin, "error", origin_message_id).await;
             }
             "error" => {
                 let detail = result
                     .error
                     .clone()
                     .unwrap_or_else(|| "Error: subagent execution failed.".into());
-                self.announce_result(task_id, label, task, &detail, origin, "error").await;
+                self.announce_result(task_id, label, task, &detail, origin, "error", origin_message_id).await;
             }
             _ => {
                 let final_result = result
@@ -282,7 +290,7 @@ impl SubagentManager {
                     .clone()
                     .unwrap_or_else(|| "Task completed but no final response was generated.".into());
                 info!("Subagent [{task_id}] completed successfully");
-                self.announce_result(task_id, label, task, &final_result, origin, "ok").await;
+                self.announce_result(task_id, label, task, &final_result, origin, "ok", origin_message_id).await;
             }
         }
     }
@@ -295,6 +303,7 @@ impl SubagentManager {
         result: &str,
         origin: (&str, &str, Option<&str>),
         status: &str,
+        origin_message_id: Option<&str>,
     ) {
         let (channel, chat_id, session_key) = origin;
         let status_text = if status == "ok" {
@@ -317,6 +326,9 @@ impl SubagentManager {
             "subagent_task_id".to_string(),
             Value::String(task_id.to_string()),
         );
+        if let Some(msg_id) = origin_message_id {
+            metadata.insert("origin_message_id".to_string(), Value::String(msg_id.to_string()));
+        }
 
         let msg = InboundMessage {
             channel: "system".into(),
@@ -333,7 +345,7 @@ impl SubagentManager {
     }
 
     fn build_subagent_prompt(&self) -> String {
-        let time_ctx = crate::context::ContextBuilder::build_runtime_context(None, None, None, None);
+        let time_ctx = crate::context::ContextBuilder::build_runtime_context(None, None, None, None, None);
         let skills_loader = crate::skills::SkillsLoader::new(
             self.config.workspace.clone(),
             Some(self.config.disabled_skills.clone()),

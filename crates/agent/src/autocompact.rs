@@ -20,6 +20,17 @@ pub trait Consolidator: Send + Sync {
     /// Summarize *messages* into a short text. Returns `None` when nothing
     /// should be injected into the next prompt.
     async fn archive(&self, messages: Vec<Value>) -> Option<String>;
+
+    /// Hard-truncate an idle session under the consolidation lock.
+    /// Returns the summary text on success, `None` if the LLM failed,
+    /// or `Some("")` if there was nothing to archive.
+    async fn compact_idle_session(
+        &self,
+        _session_key: &str,
+        _max_suffix: usize,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// Auto-compaction bookkeeping (TTL-based).
@@ -61,32 +72,7 @@ impl AutoCompact {
     }
 
     fn format_summary(text: &str, last_active: DateTime<Local>) -> String {
-        let idle = (Local::now() - last_active).num_minutes().max(0);
-        format!("Inactive for {idle} minutes.\nPrevious conversation summary: {text}")
-    }
-
-    fn split_unconsolidated(session: &Session) -> (Vec<Value>, Vec<Value>) {
-        let tail: Vec<Value> = session
-            .messages
-            .iter()
-            .skip(session.last_consolidated)
-            .cloned()
-            .collect();
-        if tail.is_empty() {
-            return (Vec::new(), Vec::new());
-        }
-        let mut probe = Session {
-            key: session.key.clone(),
-            messages: tail.clone(),
-            created_at: session.created_at,
-            updated_at: session.updated_at,
-            metadata: HashMap::new(),
-            last_consolidated: 0,
-        };
-        probe.retain_recent_legal_suffix(RECENT_SUFFIX_MESSAGES);
-        let kept = probe.messages;
-        let cut = tail.len().saturating_sub(kept.len());
-        (tail[..cut].to_vec(), kept)
+        format!("Previous conversation summary (last active {}):\n{}", last_active.to_rfc3339(), text)
     }
 
     /// Enqueue archival for idle sessions (except those with in-flight tasks).
@@ -139,67 +125,27 @@ impl AutoCompact {
     }
 
     async fn archive_inner(&self, key: &str) -> Result<(), String> {
-        let session_clone = {
-            let mut mgr = self.sessions.lock().await;
-            mgr.invalidate(key);
-            mgr.get_or_create(key)
-        };
-        let (archive_msgs, kept_msgs) = Self::split_unconsolidated(&session_clone);
-
-        if archive_msgs.is_empty() && kept_msgs.is_empty() {
-            let mut updated = session_clone;
-            updated.updated_at = Local::now();
-            self.sessions
-                .lock()
-                .await
-                .save(updated, false)
-                .map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-
-        let last_active = session_clone.updated_at;
-        let mut summary: Option<String> = None;
-        if !archive_msgs.is_empty() {
-            summary = self.consolidator.archive(archive_msgs.clone()).await;
-        }
-
-        let mut updated = session_clone;
+        let summary = self.consolidator.compact_idle_session(key, RECENT_SUFFIX_MESSAGES).await;
         if let Some(ref text) = summary {
             if !text.is_empty() && text != "(nothing)" {
-                self.inner
-                    .lock()
-                    .unwrap()
-                    .summaries
-                    .insert(key.to_string(), (text.clone(), last_active));
+                let mut mgr = self.sessions.lock().await;
+                let session = mgr.get_or_create(key);
+                let last_active = session.updated_at;
                 let mut entry = serde_json::Map::new();
                 entry.insert("text".into(), Value::String(text.clone()));
                 entry.insert(
                     "last_active".into(),
                     Value::String(last_active.to_rfc3339()),
                 );
-                updated
-                    .metadata
-                    .insert("_last_summary".into(), Value::Object(entry));
+                let mut session = session;
+                session.metadata.insert("_last_summary".into(), Value::Object(entry));
+                mgr.save(session, false).map_err(|e| e.to_string())?;
+                self.inner
+                    .lock()
+                    .unwrap()
+                    .summaries
+                    .insert(key.to_string(), (text.clone(), last_active));
             }
-        }
-        updated.messages = kept_msgs.clone();
-        updated.last_consolidated = 0;
-        updated.updated_at = Local::now();
-
-        self.sessions
-            .lock()
-            .await
-            .save(updated, false)
-            .map_err(|e| e.to_string())?;
-
-        if !archive_msgs.is_empty() {
-            info!(
-                "Auto-compact: archived {} (archived={}, kept={}, summary={})",
-                key,
-                archive_msgs.len(),
-                kept_msgs.len(),
-                summary.is_some()
-            );
         }
         Ok(())
     }
@@ -218,17 +164,13 @@ impl AutoCompact {
             session
         };
 
+        // Hot path: summary from in-memory dict (process hasn't restarted).
         if let Some((text, ts)) = self.inner.lock().unwrap().summaries.remove(key) {
-            session.metadata.remove("_last_summary");
             return (session, Some(Self::format_summary(&text, ts)));
         }
 
-        if let Some(meta) = session.metadata.remove("_last_summary") {
-            self.sessions
-                .lock()
-                .await
-                .save(session.clone(), false)
-                .ok();
+        // Cold path: summary persisted in session metadata (process restarted).
+        if let Some(meta) = session.metadata.get("_last_summary") {
             let text = meta
                 .get("text")
                 .and_then(|v| v.as_str())

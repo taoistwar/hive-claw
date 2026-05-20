@@ -9,6 +9,11 @@ use tracing::info;
 
 use crate::datasource::{ColumnInfo, DataSource, MysqlClient, Store, TableData, TableDataRequest};
 
+struct ErrorModal {
+    title: String,
+    message: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableTab {
     Columns,
@@ -49,6 +54,7 @@ struct OpenTable {
     table_data: Option<TableData>,
     loading: bool,
     error: Option<SharedString>,
+    error_modal: Option<ErrorModal>,
     where_clause: String,
     order_by: String,
     current_offset: i64,
@@ -83,6 +89,7 @@ impl OpenTable {
             table_data: None,
             loading: false,
             error: None,
+            error_modal: None,
             where_clause: String::new(),
             order_by: String::new(),
             current_offset: 0,
@@ -123,6 +130,14 @@ impl OpenTable {
                 None
             }
         })
+    }
+
+    fn show_error(&mut self, title: String, message: String) {
+        self.error_modal = Some(ErrorModal { title, message });
+    }
+
+    fn dismiss_error(&mut self) {
+        self.error_modal = None;
     }
 }
 
@@ -184,7 +199,7 @@ impl TableViewer {
                     this.update(cx, |v, cx| {
                         if let Some(t) = v.open_tables.get_mut(new_idx) {
                             t.loading = false;
-                            t.error = Some(SharedString::from(format!("解密失败: {}", e)));
+                            t.show_error("解密失败".to_string(), format!("{}", e));
                         }
                         cx.notify();
                     })
@@ -221,7 +236,7 @@ impl TableViewer {
                     this.update(cx, |v, cx| {
                         if let Some(t) = v.open_tables.get_mut(new_idx) {
                             t.loading = false;
-                            t.error = Some(SharedString::from(format!("加载列失败: {}", e)));
+                            t.show_error("加载列失败".to_string(), format!("{}", e));
                         }
                         cx.notify();
                     })
@@ -395,7 +410,7 @@ impl OpenTable {
                     this.update(cx, |v, cx| {
                         if let Some(t) = v.open_tables.get_mut(table_idx) {
                             t.loading = false;
-                            t.error = Some(SharedString::from(format!("解密失败: {}", e)));
+                            t.show_error("解密失败".to_string(), format!("{}", e));
                         }
                         cx.notify();
                     })
@@ -664,15 +679,6 @@ impl Render for TableViewer {
                     .text_color(rgb(0x888888))
                     .child("加载中..."),
             );
-        } else if let Some(ref err) = t.error {
-            col = col.child(
-                div()
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .text_color(rgb(0xcc0000))
-                    .child(err.clone()),
-            );
         } else {
             match t.active_tab {
                 TableTab::Columns => {
@@ -737,6 +743,93 @@ impl Render for TableViewer {
                         ),
                 );
             }
+        }
+
+        // Render error modal if present
+        if let Some(ref error_modal) = t.error_modal {
+            let title = error_modal.title.clone();
+            let message = error_modal.message.clone();
+            let table_idx = self.active_table_index;
+            let this_for_modal = this.clone();
+            col = col.child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .bg(rgb(0x000000))
+                    .opacity(0.3)
+                    .cursor(CursorStyle::PointingHand)
+                    .on_mouse_down(MouseButton::Left, {
+                        let this_for_bg = this.clone();
+                        move |_, _, cx| {
+                            this_for_bg.update(cx, |v, cx| {
+                                if let Some(t) = v.open_tables.get_mut(table_idx) {
+                                    t.dismiss_error();
+                                }
+                                cx.notify();
+                            }).ok();
+                        }
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(100.0))
+                            .left(px(50.0))
+                            .right(px(50.0))
+                            .max_w(px(500.0))
+                            .bg(rgb(0xffffff))
+                            .rounded(px(12.0))
+                            .shadow_lg()
+                            .border_1()
+                            .border_color(rgb(0xdddddd))
+                            .p(px(24.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.0))
+                                            .text_color(rgb(0xcc0000))
+                                            .child(title)
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(14.0))
+                                            .text_color(rgb(0x333333))
+                                            .child(message)
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .justify_end()
+                                            .child(
+                                                div()
+                                                    .id("close-error-modal")
+                                                    .px(px(16.0))
+                                                    .py(px(8.0))
+                                                    .rounded(px(6.0))
+                                                    .bg(rgb(0x4a90d9))
+                                                    .text_color(rgb(0xffffff))
+                                                    .text_size(px(13.0))
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .child("关闭")
+                                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                        this_for_modal.update(cx, |v, cx| {
+                                                            if let Some(t) = v.open_tables.get_mut(table_idx) {
+                                                                t.dismiss_error();
+                                                            }
+                                                            cx.notify();
+                                                        }).ok();
+                                                    })
+                                            )
+                                    )
+                            )
+                    ),
+            );
         }
 
         col

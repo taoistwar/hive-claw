@@ -218,6 +218,7 @@ impl Render for ConversationView {
                 .border_1()
                 .border_color(rgb(0xd0d0d0))
                 .text_color(rgb(0x111111))
+                .text_size(px(12.0))
                 .child(attach_label);
             if !attach_disabled {
                 b = b
@@ -247,6 +248,7 @@ impl Render for ConversationView {
                 } else {
                     rgb(0xffffff)
                 })
+                .text_size(px(12.0))
                 .child(strings_zh::SEND_BUTTON.to_string());
             if !send_disabled {
                 b = b
@@ -280,9 +282,16 @@ impl Render for ConversationView {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(12.0))
+            .px(px(12.0))
+            .pt(px(12.0))
+            .pb(px(12.0))
             .child(top_bar())
-            .child(turns_col)
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(turns_col)
+            )
             .children(indicator)
             .child(chip_row)
             .children(transient)
@@ -292,6 +301,7 @@ impl Render for ConversationView {
                     .flex()
                     .flex_row()
                     .gap(px(8.0))
+                    .pt(px(8.0))
                     .child(attach_button)
                     .child(send_button),
             )

@@ -96,3 +96,18 @@ pub fn build_one(
         available.join(", ")
     ))
 }
+
+/// Returns default configuration values for all known channels.
+/// Useful for generating initial config files or merging with user overrides.
+pub fn default_config() -> Value {
+    let mut map = serde_json::Map::new();
+    for (name, _) in known_channels() {
+        map.insert(
+            name.to_string(),
+            serde_json::json!({
+                "enabled": false,
+            }),
+        );
+    }
+    Value::Object(map)
+}

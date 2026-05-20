@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, CursorStyle, Entity, KeyBinding,
-    MouseButton, SharedString, Window, WindowBounds, WindowDecorations, WindowOptions,
+    App, Bounds, Context, CursorStyle, Entity, KeyBinding, MouseButton, SharedString, Window,
+    WindowBounds, WindowDecorations, WindowOptions, div, prelude::*, px, rgb, size,
 };
 
 use crate::client;
@@ -10,11 +10,15 @@ use crate::config::Config;
 use crate::datasource::Store;
 use crate::model::conversation::Conversation;
 use crate::model::tools::ToolSeriesKind;
-use crate::ui::input::{Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft, SelectRight, Submit};
+use crate::ui::input::{
+    Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft,
+    SelectRight, Submit,
+};
 use crate::ui::{
     conversation::{ConversationView, PendingInput},
     datasource_view::DataSourceView,
     home::HomeView,
+    sidebar_nav::SidebarNav,
     tools_section::ToolsSectionView,
 };
 
@@ -116,6 +120,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
 
 /// Root view: dispatches on `HiveGuiApp::route`.
 pub struct RootView {
+    sidebar: Entity<SidebarNav>,
     home: Entity<HomeView>,
     conversation: Entity<ConversationView>,
     day_plus_one: Entity<ToolsSectionView>,
@@ -125,6 +130,7 @@ pub struct RootView {
 
 impl RootView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let sidebar = cx.new(SidebarNav::new);
         let home = cx.new(HomeView::new);
         let conversation = cx.new(ConversationView::new);
         let day_plus_one = cx.new(|cx| ToolsSectionView::new(ToolSeriesKind::DayPlusOne, cx));
@@ -132,6 +138,7 @@ impl RootView {
         let store = cx.global::<HiveGuiAppState>().store.clone();
         let data_source = cx.new(|cx| DataSourceView::new(store, cx));
         RootView {
+            sidebar,
             home,
             conversation,
             day_plus_one,
@@ -163,7 +170,9 @@ impl Render for RootView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0xf7f7f7))
+            .border_b_2()
+            .border_color(rgb(0x6f5699))
+            .bg(rgb(0xffffff))
             .text_color(rgb(0x111111))
             .child(
                 div()
@@ -174,9 +183,9 @@ impl Render for RootView {
                     .justify_between()
                     .h(titlebar_height)
                     .px(px(8.0))
-                    .bg(rgb(0xe8e8e8))
+                    .bg(rgb(0xf0f0f7))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(rgb(0xd8d8e8))
                     .cursor(CursorStyle::OpenHand)
                     .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                         if event.click_count == 2 {
@@ -197,23 +206,37 @@ impl Render for RootView {
                             .child(window_button("□", |window, _, _| {
                                 window.zoom_window();
                             }))
-                            .child(window_button("✕", |_, _, cx| {
+                            .child(window_button("", |_, _, cx| {
                                 cx.quit();
                             })),
                     ),
             )
-            .child(div().flex_1().child(body))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .child(self.sidebar.clone())
+                    .child(div().flex_1().child(body)),
+            )
             .child(
                 div()
                     .id("statusbar")
                     .flex()
                     .items_center()
                     .h(statusbar_height)
-                    .px(px(12.0))
-                    .bg(rgb(0xe8e8e8))
+                    // .px(px(12.0))
+                    .bg(rgb(0x6f5699))
                     .border_t_1()
-                    .border_color(rgb(0xe0e0e0))
-                    .child(div().text_size(px(12.0)).child(format!("当前页面: {}", route.display_name()))),
+                    .border_color(rgb(0xd8d8e8))
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .text_size(px(12.0))
+                            .child(format!("当前页面：{}", route.display_name()))
+                            .text_color(rgb(0xffffff))
+                            .bg(rgb(0x44355d ))
+                    ),
             )
     }
 }

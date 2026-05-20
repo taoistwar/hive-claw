@@ -15,18 +15,16 @@ use bus::InboundMessage;
 use channels::ChannelManager;
 use chrono::Local;
 use cron::{CronJob, CronPayload, CronSchedule, JobHandler, PayloadKind, ScheduleKind};
-use heartbeat::{
-    HeartbeatConfig as HbCfg, HeartbeatDecider,
-    HeartbeatExecutor, HeartbeatService,
-};
+use heartbeat::{HeartbeatConfig as HbCfg, HeartbeatDecider, HeartbeatExecutor, HeartbeatService};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::oneshot;
 
 use crate::{
     LoopBundle,
-    runtime::{Runtime, make_provider, migrate_cron_store},
+    runtime::{Runtime, migrate_cron_store},
 };
+use providers::make_provider;
 
 /// Args for `nanobot gateway`.
 #[derive(Debug, Default, Clone)]
@@ -115,20 +113,21 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     register_dream_job(&cron_svc, &cfg).await;
 
     // ---- channel adapters (must be created before heartbeat) ----
-    let channel_mgr: Option<Arc<ChannelManager>> = match ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone()) {
-        Ok(mgr) => {
-            mgr.clone().start_all().await;
-            let names = mgr.enabled_channels().await;
-            if !names.is_empty() {
-                println!("channels enabled: {}", names.join(", "));
+    let channel_mgr: Option<Arc<ChannelManager>> =
+        match ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone()) {
+            Ok(mgr) => {
+                mgr.clone().start_all().await;
+                let names = mgr.enabled_channels().await;
+                if !names.is_empty() {
+                    println!("channels enabled: {}", names.join(", "));
+                }
+                Some(mgr)
             }
-            Some(mgr)
-        }
-        Err(e) => {
-            eprintln!("warning: channel manager init failed: {e}");
-            None
-        }
-    };
+            Err(e) => {
+                eprintln!("warning: channel manager init failed: {e}");
+                None
+            }
+        };
 
     // ---- heartbeat ----
     let hb_cfg = HbCfg {
@@ -155,12 +154,14 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     } else {
         Arc::new(AgentExecutor {
             agent: agent.clone(),
-            channel_mgr: ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone()).map_err(|e| format!("channel manager: {e}"))?,
+            channel_mgr: ChannelManager::new(Arc::new(cfg.clone()), (*bus).clone())
+                .map_err(|e| format!("channel manager: {e}"))?,
             keep_recent_messages: cfg.gateway.heartbeat.keep_recent_messages as usize,
         })
     };
 
-    let notifier: Option<Arc<dyn heartbeat::HeartbeatNotifier>> = if let Some(ref mgr) = channel_mgr {
+    let notifier: Option<Arc<dyn heartbeat::HeartbeatNotifier>> = if let Some(ref mgr) = channel_mgr
+    {
         Some(Arc::new(HeartbeatChannelNotifier {
             bus: bus.clone(),
             channel_mgr: mgr.clone(),
@@ -296,14 +297,22 @@ impl JobHandler for CronAgentHandler {
             session_key_override: None,
         };
 
-        let response = self.agent
+        let response = self
+            .agent
             .process_inbound(inbound)
             .await
             .map(|r| r.final_content)?;
 
         // Handle deliver flag - if the job payload requests delivery and we have
         // a response, publish it as an outbound message
-        if job.payload.deliver && !job.payload.to.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        if job.payload.deliver
+            && !job
+                .payload
+                .to
+                .as_ref()
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+        {
             if let Some(ref content) = response {
                 if !content.is_empty() {
                     let outbound = bus::OutboundMessage {
@@ -401,7 +410,8 @@ impl HeartbeatExecutor for AgentExecutor {
             session_key_override: Some("heartbeat:default".into()),
         };
 
-        let result = self.agent
+        let result = self
+            .agent
             .process_inbound(inbound)
             .await
             .ok()
@@ -410,7 +420,8 @@ impl HeartbeatExecutor for AgentExecutor {
         // Keep a small tail of heartbeat history so the loop stays bounded
         // without losing all short-term context between runs.
         if self.keep_recent_messages > 0 {
-            self.agent.retain_heartbeat_session(self.keep_recent_messages);
+            self.agent
+                .retain_heartbeat_session(self.keep_recent_messages);
         }
 
         result

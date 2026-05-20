@@ -37,6 +37,27 @@ pub struct OpenAICodexConfig {
     pub timeout: Duration,
 }
 
+impl OpenAICodexConfig {
+    pub fn new(default_model: impl Into<String>) -> Self {
+        Self {
+            default_model: default_model.into(),
+            ..Self::default()
+        }
+    }
+    pub fn with_codex_url(mut self, url: impl Into<String>) -> Self {
+        self.codex_url = url.into();
+        self
+    }
+    pub fn with_static_token(mut self, token: OAuthToken) -> Self {
+        self.static_token = Some(token);
+        self
+    }
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
 impl Default for OpenAICodexConfig {
     fn default() -> Self {
         Self {
@@ -104,7 +125,7 @@ impl OpenAICodexProvider {
         );
         headers.insert(
             HeaderName::from_static("user-agent"),
-            HeaderValue::from_static("nanobot (rust)"),
+            HeaderValue::from_static("nanobot (python)"),
         );
         headers.insert(
             HeaderName::from_static("accept"),
@@ -145,7 +166,7 @@ impl OpenAICodexProvider {
         };
 
         if let Some(effort) = req.reasoning_effort.as_deref() {
-            if !effort.is_empty() {
+            if effort.to_lowercase() != "none" {
                 body["reasoning"] = json!({"effort": effort});
             }
         }
@@ -255,8 +276,23 @@ fn strip_model_prefix(model: &str) -> String {
     model.to_string()
 }
 
+fn sort_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: std::collections::BTreeMap<_, _> =
+                map.iter().map(|(k, v)| (k.clone(), sort_value(v))).collect();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(arr) => {
+            Value::Array(arr.iter().map(sort_value).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 fn prompt_cache_key(messages: &[Value]) -> String {
-    let raw = serde_json::to_string(messages).unwrap_or_else(|_| "[]".into());
+    let sorted = messages.iter().map(sort_value).collect::<Vec<_>>();
+    let raw = serde_json::to_string(&sorted).unwrap_or_else(|_| "[]".into());
     let mut hasher = Sha256::new();
     hasher.update(raw.as_bytes());
     let digest = hasher.finalize();

@@ -20,11 +20,11 @@ pub mod agent_cmd;
 pub mod commands;
 pub mod gateway;
 pub mod onboard;
-pub mod provider_factory;
+pub mod provider_choice;
 pub mod runtime;
 pub mod status;
 
 pub use adapter::AgentLoopApi;
 pub use commands::{Cli, Command, dispatch};
-pub use provider_factory::{ProviderChoice, default_provider};
-pub use runtime::{LoopBundle, Runtime, make_provider, migrate_cron_store};
+pub use provider_choice::{ProviderChoice, default_provider};
+pub use runtime::{LoopBundle, Runtime, migrate_cron_store};

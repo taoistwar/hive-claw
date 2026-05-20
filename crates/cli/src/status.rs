@@ -14,7 +14,7 @@ use config::paths::get_workspace_path;
 use providers::PROVIDERS;
 use serde_json::Value;
 
-use crate::runtime::{Runtime, provider_config_for, resolve_spec};
+use crate::runtime::{Runtime};
 
 // ---------------------------------------------------------------------------
 // status
@@ -49,7 +49,7 @@ pub async fn status(workspace: Option<PathBuf>, config: Option<PathBuf>) -> Resu
         if spec.name == "custom" {
             continue;
         }
-        let pc = provider_config_for(&cfg, Some(spec));
+        let pc = providers::provider_config_for(&cfg, Some(spec));
         let has_key = pc
             .and_then(|p| p.api_key.as_deref())
             .map(|k| !k.is_empty())
@@ -74,7 +74,7 @@ pub async fn status(workspace: Option<PathBuf>, config: Option<PathBuf>) -> Resu
         println!("  {:<22} {}", spec.label(), mark);
     }
 
-    if let Some(spec) = resolve_spec(&cfg) {
+    if let Some(spec) = providers::resolve_spec(&cfg) {
         println!();
         println!("Selected provider for this model: {}", spec.label());
     } else {

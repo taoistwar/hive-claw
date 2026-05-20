@@ -12,6 +12,8 @@ pub mod types;
 
 pub mod anthropic;
 pub mod azure_openai;
+pub mod bedrock;
+pub mod factory;
 pub mod github_copilot;
 pub mod oauth;
 pub mod openai_codex;
@@ -27,6 +29,14 @@ pub use types::{FinishReason, GenerationSettings, LLMResponse, ToolCallRequest, 
 
 pub use anthropic::AnthropicProvider;
 pub use azure_openai::AzureOpenAIProvider;
+pub use bedrock::BedrockProvider;
+pub use factory::{
+    make_provider,
+    provider_config_for,
+    resolve_spec,
+    build_provider, detect_backend_and_build, env_api_base, env_api_key, env_region,
+    ProviderBuildConfig,
+};
 pub use github_copilot::{
     get_github_copilot_login_status, login_github_copilot, DeviceCodeInfo, DeviceFlow,
     GitHubCopilotProvider,

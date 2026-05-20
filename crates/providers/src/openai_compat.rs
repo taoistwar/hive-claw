@@ -202,6 +202,7 @@ pub struct OpenAICompatConfig {
     pub api_base: Option<String>,
     pub default_model: String,
     pub extra_headers: HashMap<String, String>,
+    pub extra_body: Option<Map<String, Value>>,
     pub spec: Option<&'static ProviderSpec>,
     pub timeout: Duration,
     pub session_affinity: String,
@@ -214,6 +215,7 @@ impl OpenAICompatConfig {
             api_base: None,
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
+            extra_body: None,
             spec: None,
             timeout: Duration::from_secs(120),
             session_affinity: uuid::Uuid::new_v4().simple().to_string(),
@@ -234,6 +236,10 @@ impl OpenAICompatConfig {
     }
     pub fn with_extra_header(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.extra_headers.insert(k.into(), v.into());
+        self
+    }
+    pub fn with_extra_body(mut self, body: Map<String, Value>) -> Self {
+        self.extra_body = Some(body);
         self
     }
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -402,6 +408,13 @@ impl OpenAICompatProvider {
                     "tool_choice".into(),
                     Self::tool_choice_to_value(req.tool_choice.as_ref()),
                 );
+            }
+        }
+
+        // Merge user-configured extra_body last so it can override defaults
+        if let Some(extra) = &self.cfg.extra_body {
+            for (k, v) in extra {
+                body.insert(k.clone(), v.clone());
             }
         }
 

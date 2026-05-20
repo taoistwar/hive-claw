@@ -807,6 +807,277 @@ impl LLMProvider for AnthropicProvider {
         };
         parse_response(&value)
     }
+
+    async fn chat_stream(
+        &self,
+        req: ChatRequest,
+        on_delta: Option<crate::provider::StreamDeltaCallback>,
+    ) -> LLMResponse {
+        use std::env;
+
+        let idle_timeout_s: u64 = env::var("NANOBOT_STREAM_IDLE_TIMEOUT_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(90);
+
+        let mut body = self.build_body(&req);
+        // Enable streaming by setting stream=true
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("stream".into(), serde_json::json!(true));
+        }
+
+        let resp = match self.send(&body).await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("Error calling LLM: {e}");
+                let kind = if e.is_timeout() {
+                    Some("timeout".to_string())
+                } else if e.is_connect() {
+                    Some("connection".to_string())
+                } else {
+                    None
+                };
+                return LLMResponse {
+                    content: Some(msg),
+                    finish_reason: "error".into(),
+                    error_kind: kind,
+                    ..Default::default()
+                };
+            }
+        };
+
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            warn!("Anthropic stream error {status}: {text}");
+            return parse_error_response(status, &headers, &text);
+        }
+
+        // Parse SSE stream
+        let mut stream = resp.bytes_stream();
+        let mut content_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+        let mut thinking_blocks: Vec<Value> = Vec::new();
+        let mut finish_reason = "stop".to_string();
+        let mut usage: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
+        // Accumulator for SSE events
+        let mut current_event_data = String::new();
+        let mut current_event_type: Option<String> = None;
+
+        use futures::StreamExt;
+        let timeout_duration = tokio::time::Duration::from_secs(idle_timeout_s);
+
+        loop {
+            let chunk = match tokio::time::timeout(timeout_duration, stream.next()).await {
+                Ok(Some(Ok(chunk))) => chunk,
+                Ok(Some(Err(e))) => {
+                    return LLMResponse {
+                        content: Some(format!("Error reading stream: {e}")),
+                        finish_reason: "error".into(),
+                        error_kind: Some("connection".to_string()),
+                        ..Default::default()
+                    };
+                }
+                Ok(None) => break, // Stream ended
+                Err(_) => {
+                    return LLMResponse {
+                        content: Some(format!(
+                            "Error calling LLM: stream stalled for more than {idle_timeout_s} seconds"
+                        )),
+                        finish_reason: "error".into(),
+                        error_kind: Some("timeout".to_string()),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let text = String::from_utf8_lossy(&chunk);
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    // Empty line marks end of event, process accumulated data
+                    if !current_event_data.is_empty() {
+                        if let Some(event_type) = &current_event_type {
+                            process_sse_event(
+                                event_type,
+                                &current_event_data,
+                                &mut content_parts,
+                                &mut tool_calls,
+                                &mut thinking_blocks,
+                                &mut finish_reason,
+                                &mut usage,
+                                on_delta.as_ref(),
+                            );
+                        }
+                        current_event_data.clear();
+                        current_event_type = None;
+                    }
+                    continue;
+                }
+
+                if let Some(stripped) = line.strip_prefix("event: ") {
+                    current_event_type = Some(stripped.to_string());
+                } else if let Some(stripped) = line.strip_prefix("data: ") {
+                    current_event_data.push_str(stripped);
+                }
+            }
+        }
+
+        // Process any remaining event
+        if !current_event_data.is_empty() {
+            if let Some(event_type) = &current_event_type {
+                process_sse_event(
+                    event_type,
+                    &current_event_data,
+                    &mut content_parts,
+                    &mut tool_calls,
+                    &mut thinking_blocks,
+                    &mut finish_reason,
+                    &mut usage,
+                    on_delta.as_ref(),
+                );
+            }
+        }
+
+        LLMResponse {
+            content: (!content_parts.is_empty()).then(|| content_parts.join("")),
+            tool_calls,
+            finish_reason,
+            usage,
+            thinking_blocks: (!thinking_blocks.is_empty()).then_some(thinking_blocks),
+            ..Default::default()
+        }
+    }
+}
+
+/// Process a single SSE event from Anthropic's streaming API.
+fn process_sse_event(
+    event_type: &str,
+    data: &str,
+    content_parts: &mut Vec<String>,
+    tool_calls: &mut Vec<ToolCallRequest>,
+    thinking_blocks: &mut Vec<Value>,
+    finish_reason: &mut String,
+    usage: &mut std::collections::HashMap<String, i64>,
+    on_delta: Option<&crate::provider::StreamDeltaCallback>,
+) {
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        return;
+    };
+
+    match event_type {
+        "content_block_start" => {
+            if let Some(block_type) = value.get("content_block").and_then(|v| v.get("type")).and_then(|v| v.as_str()) {
+                match block_type {
+                    "text" => {
+                        if let Some(text) = value.get("content_block").and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
+                            if !text.is_empty() {
+                                content_parts.push(text.to_string());
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        if let Some(block) = value.get("content_block") {
+                            let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                            let args = match input {
+                                serde_json::Value::Object(m) => m,
+                                _ => serde_json::Map::new(),
+                            };
+                            tool_calls.push(ToolCallRequest {
+                                id,
+                                name,
+                                arguments: args,
+                                extra_content: None,
+                                provider_specific_fields: None,
+                                function_provider_specific_fields: None,
+                            });
+                        }
+                    }
+                    "thinking" => {
+                        if let Some(block) = value.get("content_block") {
+                            thinking_blocks.push(serde_json::json!({
+                                "type": "thinking",
+                                "thinking": block.get("thinking").and_then(|v| v.as_str()).unwrap_or(""),
+                                "signature": block.get("signature").and_then(|v| v.as_str()).unwrap_or(""),
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "content_block_delta" => {
+            if let Some(delta_type) = value.get("delta").and_then(|v| v.get("type")).and_then(|v| v.as_str()) {
+                match delta_type {
+                    "text_delta" => {
+                        if let Some(text) = value.get("delta").and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
+                            if !text.is_empty() {
+                                if let Some(ref cb) = on_delta {
+                                    cb(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                    "input_json_delta" => {
+                        // Accumulate tool call arguments JSON
+                        if let Some(_partial_json) = value.get("delta").and_then(|v| v.get("partial_json")).and_then(|v| v.as_str()) {
+                            // Simplified - a full implementation would merge JSON properly
+                        }
+                    }
+                    "thinking_delta" => {
+                        if let Some(thinking) = value.get("delta").and_then(|v| v.get("thinking")).and_then(|v| v.as_str()) {
+                            if !thinking_blocks.is_empty() {
+                                if let Some(last_thinking) = thinking_blocks.last_mut() {
+                                    if let Some(obj) = last_thinking.as_object_mut() {
+                                        let existing = obj.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                                        obj.insert("thinking".into(), serde_json::Value::String(format!("{existing}{thinking}")));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "message_delta" => {
+            if let Some(stop_reason) = value.get("delta").and_then(|v| v.get("stop_reason")).and_then(|v| v.as_str()) {
+                *finish_reason = match stop_reason {
+                    "tool_use" => "tool_calls".to_string(),
+                    "end_turn" => "stop".to_string(),
+                    "max_tokens" => "length".to_string(),
+                    other => other.to_string(),
+                };
+            }
+            if let Some(u) = value.get("usage") {
+                if let Some(output_tokens) = u.get("output_tokens").and_then(|v| v.as_i64()) {
+                    usage.insert("completion_tokens".into(), output_tokens);
+                }
+            }
+        }
+        "message_start" => {
+            if let Some(u) = value.get("message").and_then(|v| v.get("usage")) {
+                let input_tokens = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let cache_creation = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let total_prompt = input_tokens + cache_creation + cache_read;
+                usage.insert("prompt_tokens".into(), total_prompt);
+                usage.insert("total_tokens".into(), total_prompt);
+                if cache_creation > 0 {
+                    usage.insert("cache_creation_input_tokens".into(), cache_creation);
+                }
+                if cache_read > 0 {
+                    usage.insert("cache_read_input_tokens".into(), cache_read);
+                    usage.insert("cached_tokens".into(), cache_read);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

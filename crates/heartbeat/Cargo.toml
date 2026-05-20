@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+providers = { path = "../providers" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

@@ -9,7 +9,7 @@ members = [
     "crates/command",
     "crates/config",
     "crates/cron",
-    "crates/gateway",
+    "crates/lib",
     "crates/heartbeat",
     "crates/providers",
     "crates/security",

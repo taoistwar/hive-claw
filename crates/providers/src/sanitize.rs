@@ -1,9 +1,18 @@
 //! Message sanitization utilities (role alternation, empty-content fixup,
 //! image stripping). Port of the static helpers in `nanobot.providers.base`.
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 const SYNTHETIC_USER_CONTENT: &str = "(conversation continued)";
+
+/// Placeholder text used to replace image_url blocks.
+fn image_placeholder_text(path: &str, empty: &str) -> String {
+    if path.is_empty() {
+        empty.to_string()
+    } else {
+        format!("[image: {path}]")
+    }
+}
 
 /// Sanitize message content: fix empty blocks, strip internal `_meta` fields.
 pub fn sanitize_empty_content(messages: &[Value]) -> Vec<Value> {
@@ -240,4 +249,95 @@ mod tests {
         let out = sanitize_empty_content(&msgs);
         assert_eq!(out[0]["content"], "(empty)");
     }
+
+    #[test]
+    fn inplace_strip_images() {
+        let mut msgs = vec![json!({
+            "role":"user",
+            "content":[
+                {"type":"text","text":"hello"},
+                {"type":"image_url","image_url":{"url":"http://example.com/img.png"},"_meta":{"path":"test.png"}}
+            ]
+        })];
+        let found = strip_image_content_inplace(&mut msgs);
+        assert!(found);
+        assert_eq!(msgs[0]["content"][1]["text"], "[image: test.png]");
+    }
+}
+
+/// Replace image_url blocks with text placeholder. Returns None if no images found.
+pub fn strip_image_content(messages: &[Value]) -> Option<Vec<Value>> {
+    let mut found = false;
+    let result: Vec<Value> = messages
+        .iter()
+        .map(|msg| {
+            let content = msg.get("content");
+            if let Some(Value::Array(blocks)) = content {
+                let new_content: Vec<Value> = blocks
+                    .iter()
+                    .map(|b| {
+                        if let Some(obj) = b.as_object() {
+                            if obj.get("type").and_then(|v| v.as_str()) == Some("image_url") {
+                                found = true;
+                                let path = obj
+                                    .get("_meta")
+                                    .and_then(|m| m.get("path"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let placeholder = image_placeholder_text(path, "[image omitted]");
+                                json!({"type": "text", "text": placeholder})
+                            } else {
+                                b.clone()
+                            }
+                        } else {
+                            b.clone()
+                        }
+                    })
+                    .collect();
+                let mut new_msg = msg.clone();
+                if let Some(obj) = new_msg.as_object_mut() {
+                    obj.insert("content".into(), Value::Array(new_content));
+                }
+                new_msg
+            } else {
+                msg.clone()
+            }
+        })
+        .collect();
+
+    if found {
+        Some(result)
+    } else {
+        None
+    }
+}
+
+/// Replace image_url blocks with text placeholder *in-place*.
+///
+/// Mutates the content lists of the original message dicts so that
+/// callers holding references to those dicts also see the stripped
+/// version. Returns true if any images were found and replaced.
+pub fn strip_image_content_inplace(messages: &mut Vec<Value>) -> bool {
+    let mut found = false;
+    for msg in messages.iter_mut() {
+        if let Some(content) = msg.get_mut("content") {
+            if let Value::Array(blocks) = content {
+                for b in blocks.iter_mut() {
+                    if let Some(obj) = b.as_object_mut() {
+                        if obj.get("type").and_then(|v| v.as_str()) == Some("image_url") {
+                            found = true;
+                            let path = obj
+                                .get("_meta")
+                                .and_then(|m| m.get("path"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let placeholder = image_placeholder_text(path, "[image omitted]");
+                            *b = json!({"type": "text", "text": placeholder});
+                        }
+                    }
+                }
+            }
+        }
+    }
+    found
 }

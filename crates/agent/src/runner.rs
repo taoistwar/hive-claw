@@ -11,6 +11,7 @@
 //! they would hook in; they can be added without changing the public API.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -33,6 +34,7 @@ use crate::tools::ToolRegistry;
 const DEFAULT_ERROR_MESSAGE: &str = "Sorry, I encountered an error calling the AI model.";
 const MAX_EMPTY_RETRIES: u32 = 2;
 const MAX_LENGTH_RECOVERIES: u32 = 3;
+const MAX_REPEAT_WORKSPACE_VIOLATIONS: u32 = 2;
 
 /// Callback invoked at iteration checkpoints (awaiting_tools / tools_completed / ...).
 pub type CheckpointCallback =
@@ -64,6 +66,7 @@ pub struct AgentRunSpec {
     pub provider_retry_mode: RetryMode,
     pub checkpoint_callback: Option<CheckpointCallback>,
     pub injection_callback: Option<InjectionCallback>,
+    pub llm_timeout_s: Option<f64>,
 }
 
 impl AgentRunSpec {
@@ -94,6 +97,7 @@ impl AgentRunSpec {
             provider_retry_mode: RetryMode::Standard,
             checkpoint_callback: None,
             injection_callback: None,
+            llm_timeout_s: None,
         }
     }
 }
@@ -148,6 +152,7 @@ impl AgentRunner {
         let mut stop_reason: String = "completed".into();
         let mut tool_events: Vec<ToolEvent> = Vec::new();
         let mut external_lookup_counts: HashMap<String, u32> = HashMap::new();
+        let mut workspace_violation_counts: HashMap<String, u32> = HashMap::new();
         let mut empty_retries: u32 = 0;
         let mut length_recoveries: u32 = 0;
         let mut max_iterations_hit = true;
@@ -206,7 +211,7 @@ impl AgentRunner {
 
                 hook.before_execute_tools(&mut ctx).await;
                 let (results, events, fatal) = self
-                    .execute_tools(&spec, &response.tool_calls, &mut external_lookup_counts)
+                    .execute_tools(&spec, &response.tool_calls, &mut external_lookup_counts, &mut workspace_violation_counts)
                     .await;
                 tool_events.extend(events.iter().cloned());
                 ctx.tool_events = events.clone();
@@ -404,7 +409,9 @@ impl AgentRunner {
         spec: &AgentRunSpec,
         calls: &[ToolCallRequest],
         external_lookup_counts: &mut HashMap<String, u32>,
+        workspace_violation_counts: &mut HashMap<String, u32>,
     ) -> (Vec<Value>, Vec<ToolEvent>, Option<String>) {
+        let hint = "\n\n[Analyze the error above and try a different approach.]";
         let mut results = Vec::with_capacity(calls.len());
         let mut events = Vec::with_capacity(calls.len());
         let mut fatal: Option<String> = None;
@@ -415,11 +422,11 @@ impl AgentRunner {
                 &args_value,
                 external_lookup_counts,
             ) {
-                results.push(Value::String(err.clone()));
+                results.push(Value::String(format!("{}{}", err, hint)));
                 events.push(ToolEvent {
                     name: tc.name.clone(),
                     status: "error".into(),
-                    detail: err,
+                    detail: truncate_text(&err, 120).to_string(),
                 });
                 continue;
             }
@@ -428,28 +435,44 @@ impl AgentRunner {
                 .tools
                 .execute(&tc.name, args_value)
                 .await;
-            let is_error = matches!(&result, Value::String(s) if s.starts_with("Error"));
-            let detail = truncate_text(
-                match &result {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                }
-                .as_str(),
-                200,
-            );
-            events.push(ToolEvent {
+            let raw_result = match &result {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let is_error = raw_result.starts_with("Error");
+            let detail = truncate_text(&raw_result, 200).to_string();
+            let mut event = ToolEvent {
                 name: tc.name.clone(),
                 status: if is_error { "error" } else { "ok" }.into(),
                 detail,
-            });
-            if is_error && spec.fail_on_tool_error {
-                fatal = Some(match &result {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                });
-                results.push(result);
-                break;
+            };
+            if is_error {
+                if let Some(classified) = self.classify_violation(
+                    &raw_result,
+                    &raw_result,
+                    &mut event,
+                    tc,
+                    workspace_violation_counts,
+                ) {
+                    let (payload, evt, _) = classified;
+                    if spec.fail_on_tool_error {
+                        if let Some(err_str) = payload.as_str() {
+                            fatal = Some(err_str.to_string());
+                        }
+                    }
+                    results.push(payload);
+                    events.push(evt);
+                    continue;
+                }
+                if spec.fail_on_tool_error {
+                    fatal = Some(raw_result.clone());
+                    results.push(Value::String(format!("{}{}", raw_result, hint)));
+                    events.push(event);
+                    break;
+                }
+                results.push(Value::String(format!("{}{}", raw_result, hint)));
             }
+            events.push(event);
             results.push(result);
         }
         (results, events, fatal)
@@ -498,3 +521,174 @@ struct NoopHook;
 
 #[async_trait]
 impl AgentHook for NoopHook {}
+
+const SSRF_MARKERS: &[&str] = &[
+    "internal/private url detected",
+    "private/internal address",
+    "private address",
+];
+
+const SSRF_BOUNDARY_NOTE: &str = concat!(
+    "This is a non-bypassable security boundary. Stop trying to access ",
+    "private/internal URLs. Do not retry with curl, wget, encoded IPs, ",
+    "alternate DNS, redirects, proxies, or another tool. Ask the user for ",
+    "local files, logs, screenshots, or an explicit safe public URL instead. ",
+    "If the user explicitly trusts this private URL, ask them to whitelist ",
+    "the exact IP/CIDR via tools.ssrfWhitelist.",
+);
+
+const WORKSPACE_VIOLATION_MARKERS: &[&str] = &[
+    "outside the configured workspace",
+    "outside allowed directory",
+    "working_dir is outside",
+    "working_dir could not be resolved",
+    "path outside working dir",
+    "path traversal detected",
+];
+
+impl AgentRunner {
+    fn is_ssrf_violation(text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let lowered = text.to_lowercase();
+        SSRF_MARKERS.iter().any(|m| lowered.contains(m))
+    }
+
+    fn is_workspace_violation(text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let lowered = text.to_lowercase();
+        if Self::is_ssrf_violation(&lowered) {
+            return true;
+        }
+        WORKSPACE_VIOLATION_MARKERS.iter().any(|m| lowered.contains(m))
+    }
+
+    fn classify_violation(
+        &self,
+        raw_text: &str,
+        soft_payload: &str,
+        event: &mut ToolEvent,
+        tool_call: &ToolCallRequest,
+        workspace_violation_counts: &mut HashMap<String, u32>,
+    ) -> Option<(Value, ToolEvent, Option<String>)> {
+        if Self::is_ssrf_violation(raw_text) {
+            warn!(
+                "Tool {} blocked by SSRF guard; returning non-retryable tool error: {}",
+                tool_call.name,
+                raw_text.replace('\n', " ").trim().chars().take(200).collect::<String>(),
+            );
+            event.detail = Self::event_detail("ssrf_violation: ", raw_text, 160);
+            let payload = Self::ssrf_soft_payload(raw_text);
+            return Some((Value::String(payload), event.clone(), None));
+        }
+
+        if Self::is_workspace_violation(raw_text) {
+            let args_value = Value::Object(tool_call.arguments.clone());
+            let escalation = repeated_workspace_violation_error(
+                &tool_call.name,
+                &args_value,
+                workspace_violation_counts,
+            );
+            event.detail = Self::event_detail("workspace_violation: ", raw_text, 160);
+            if let Some(escalated) = escalation {
+                warn!(
+                    "Tool {} hit workspace boundary repeatedly; escalating hint",
+                    tool_call.name,
+                );
+                event.detail = Self::event_detail("workspace_violation_escalated: ", raw_text, 160);
+                return Some((Value::String(escalated), event.clone(), None));
+            }
+            return Some((Value::String(soft_payload.to_string()), event.clone(), None));
+        }
+
+        None
+    }
+
+    fn ssrf_soft_payload(raw_text: &str) -> String {
+        let text = raw_text.trim();
+        let text = if text.is_empty() {
+            "Error: request blocked by SSRF guard"
+        } else {
+            text
+        };
+        format!("{}\n\n{}", text, SSRF_BOUNDARY_NOTE)
+    }
+
+    fn event_detail(prefix: &str, text: &str, limit: usize) -> String {
+        let combined = format!("{}{}", prefix, text.replace('\n', " ").trim());
+        combined.chars().take(limit).collect()
+    }
+}
+
+fn workspace_violation_signature(tool_name: &str, arguments: &Value) -> Option<String> {
+    let keys = ["path", "file_path", "target", "source", "destination"];
+    for key in &keys {
+        if let Some(val) = arguments.get(key).and_then(|v| v.as_str()) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(normalize_violation_target(trimmed));
+            }
+        }
+    }
+
+    if tool_name == "exec" || tool_name == "shell" {
+        if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
+            let cmd_trimmed = cmd.trim();
+            if !cmd_trimmed.is_empty() {
+                for part in cmd_trimmed.split_whitespace() {
+                    if part.starts_with('/') {
+                        return Some(normalize_violation_target(part));
+                    }
+                }
+            }
+        }
+        if let Some(cwd) = arguments.get("working_dir").and_then(|v| v.as_str()) {
+            let trimmed = cwd.trim();
+            if !trimmed.is_empty() {
+                return Some(normalize_violation_target(trimmed));
+            }
+        }
+    }
+
+    None
+}
+
+fn normalize_violation_target(raw: &str) -> String {
+    let normalized = match Path::new(raw).canonicalize() {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => raw.replace('\\', "/"),
+    };
+    format!("violation:{}", normalized.to_lowercase())
+}
+
+fn repeated_workspace_violation_error(
+    tool_name: &str,
+    arguments: &Value,
+    seen_counts: &mut HashMap<String, u32>,
+) -> Option<String> {
+    let signature = workspace_violation_signature(tool_name, arguments)?;
+    let count = *seen_counts.entry(signature.clone()).or_insert(0) + 1;
+    if count <= MAX_REPEAT_WORKSPACE_VIOLATIONS {
+        return None;
+    }
+    warn!(
+        "Escalating repeated workspace bypass attempt {} (attempt {})",
+        &signature[..signature.len().min(160)],
+        count,
+    );
+    let target = signature.splitn(2, "violation:").nth(1).unwrap_or(&signature);
+    Some(format!(
+        "Error: refusing repeated workspace-bypass attempts.\n\
+         You have tried to access '{}' (or an equivalent path) \
+         {} times in this turn. This is a hard policy boundary -- \
+         switching tools, shell tricks, working_dir overrides, symlinks, \
+         or base64 piping will NOT change the answer. Stop retrying. \
+         If the user genuinely needs this resource, tell them you cannot \
+         access it and ask how they want to proceed (e.g. copy the file \
+         into the workspace, or disable restrict_to_workspace for this run).",
+        target, count,
+    ))
+}

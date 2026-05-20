@@ -4,6 +4,7 @@ pub mod datasource_form;
 pub mod datasource_view;
 pub mod home;
 pub mod input;
+pub mod sidebar_nav;
 pub mod strings_zh;
 pub mod table_viewer;
 pub mod tools_section;

@@ -310,7 +310,7 @@ impl LoopBundle {
         let bus = Arc::new(MessageBus::new());
         let tf = ToolFactoryConfig::from_config(cfg);
         let deps = ToolFactoryDeps::new_with_cron(cron);
-        let builtin: BuiltinToolSet = BuiltinToolSet::default_tools(tf, bus.clone(), deps).await;
+        let builtin = BuiltinToolSet::default_tools(tf, bus.clone(), deps).await;
 
         let lc = LoopConfig::from_config(cfg);
         let sessions = Arc::new(Mutex::new(SessionManager::new(cfg.workspace_path())));

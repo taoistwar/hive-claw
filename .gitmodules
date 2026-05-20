@@ -1,0 +1,4 @@
+
+[submodule "nanobot"]
+	path = nanobot
+	url = git@github.com:taoistwar/nanobot.git

@@ -119,6 +119,9 @@ pub enum Command {
         host: Option<String>,
         #[arg(long)]
         port: Option<u16>,
+        /// Enable DEBUG-level log forwarding.
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
     },
 
     /// Channel adapter management (status / login).
@@ -237,12 +240,13 @@ pub async fn dispatch() -> Result<(), String> {
             )
             .await
         }
-        Command::Gateway { host, port } => {
+        Command::Gateway { host, port, verbose } => {
             gateway::run(GatewayArgs {
                 workspace: ws_path,
                 config: cfg_path,
                 host,
                 port,
+                verbose,
             })
             .await
         }

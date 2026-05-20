@@ -1,4 +1,6 @@
-//! Search tools: `glob` and `grep`. Port of `nanobot.agent.tools.search`.
+//! Search tools: `grep`. Port of `nanobot.agent.tools.search`.
+//!
+//! Note: `glob` tool was removed in the upstream Python codebase.
 
 use std::collections::HashMap;
 use std::fs;
@@ -102,27 +104,6 @@ fn iter_files(root: &Path) -> impl Iterator<Item = PathBuf> {
         .map(|e| e.path().to_path_buf())
 }
 
-fn iter_entries(root: &Path, include_files: bool, include_dirs: bool) -> Vec<PathBuf> {
-    WalkDir::new(root)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_entry(|e| {
-            !(e.depth() > 0
-                && e.file_type().is_dir()
-                && is_ignored_component(&e.file_name().to_string_lossy()))
-        })
-        .flatten()
-        .filter(|e| {
-            if e.path() == root {
-                return false;
-            }
-            let is_dir = e.file_type().is_dir();
-            (include_files && !is_dir) || (include_dirs && is_dir)
-        })
-        .map(|e| e.path().to_path_buf())
-        .collect()
-}
-
 fn display_path(target: &Path, root: &Path, workspace: Option<&Path>) -> String {
     if let Some(ws) = workspace {
         if let Ok(rel) = target.strip_prefix(ws) {
@@ -186,109 +167,6 @@ fn pagination_note(limit: Option<usize>, offset: usize, truncated: bool) -> Opti
 }
 
 // ---------------------------------------------------------------------------
-// glob
-// ---------------------------------------------------------------------------
-
-pub struct GlobTool(pub FsTool);
-
-#[async_trait]
-impl Tool for GlobTool {
-    fn name(&self) -> &str {
-        "glob"
-    }
-    fn description(&self) -> &str {
-        "Find files matching a glob pattern (e.g. '*.py', 'tests/**/test_*.py'). Results sorted by modification time (newest first). Skips .git, node_modules, __pycache__, and other noise dirs."
-    }
-    fn parameters(&self) -> Value {
-        json!({
-            "type":"object",
-            "properties":{
-                "pattern":{"type":"string","description":"Glob pattern to match, e.g. '*.py' or 'tests/**/test_*.py'","minLength":1},
-                "path":{"type":"string","description":"Directory to search from (default '.')"},
-                "head_limit":{"type":"integer","description":"Maximum number of matches to return (default 250, 0 = unlimited)","minimum":0},
-                "offset":{"type":"integer","description":"Skip the first N matching entries","minimum":0},
-                "entry_type":{"type":"string","enum":["files","dirs","both"],"description":"Whether to match files, directories, or both (default files)"},
-            },
-            "required":["pattern"],
-        })
-    }
-    fn read_only(&self) -> bool {
-        true
-    }
-    async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
-        let Some(pattern) = params.get("pattern").and_then(|v| v.as_str()) else {
-            return Ok(Value::String("Error: pattern required".into()));
-        };
-        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let head_limit = params.get("head_limit").and_then(|v| v.as_u64());
-        let offset = params
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-        let entry_type = params
-            .get("entry_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("files");
-        let limit: Option<usize> = match head_limit {
-            Some(0) => None,
-            Some(n) => Some(n as usize),
-            None => Some(DEFAULT_HEAD_LIMIT),
-        };
-        let root = match self.0.resolve(path) {
-            Ok(p) => p,
-            Err(e) => return Ok(Value::String(format!("Error: {e}"))),
-        };
-        if !root.exists() {
-            return Ok(Value::String(format!("Error: Path not found: {path}")));
-        }
-        if !root.is_dir() {
-            return Ok(Value::String(format!("Error: Not a directory: {path}")));
-        }
-        let Some(matcher) = compile_glob(pattern) else {
-            return Ok(Value::String(format!("Error: invalid glob '{pattern}'")));
-        };
-        let include_files = matches!(entry_type, "files" | "both");
-        let include_dirs = matches!(entry_type, "dirs" | "both");
-
-        let mut matches: Vec<(String, f64)> = Vec::new();
-        for entry in iter_entries(&root, include_files, include_dirs) {
-            let name = entry.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            let rel = entry
-                .strip_prefix(&root)
-                .unwrap_or(&entry)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if matcher.is_match(&rel) || matcher.is_match(name) {
-                let is_dir = entry.is_dir();
-                let mut display = display_path(&entry, &root, self.0.workspace.as_deref());
-                if is_dir {
-                    display.push('/');
-                }
-                matches.push((display, file_mtime_secs(&entry)));
-            }
-        }
-        if matches.is_empty() {
-            return Ok(Value::String(format!(
-                "No paths matched pattern '{pattern}' in {path}"
-            )));
-        }
-        matches.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-        let ordered: Vec<String> = matches.into_iter().map(|(n, _)| n).collect();
-        let (paged, truncated) = paginate(&ordered, limit, offset);
-        let mut result = paged.join("\n");
-        if let Some(note) = pagination_note(limit, offset, truncated) {
-            result.push_str("\n\n");
-            result.push_str(&note);
-        }
-        Ok(Value::String(result))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // grep
 // ---------------------------------------------------------------------------
 
@@ -323,6 +201,9 @@ impl Tool for GrepTool {
     }
     fn read_only(&self) -> bool {
         true
+    }
+    fn scopes(&self) -> &[&str] {
+        &["core", "subagent"]
     }
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let Some(pattern) = params.get("pattern").and_then(|v| v.as_str()) else {
@@ -631,19 +512,6 @@ mod tests {
 
     fn fs_tool(ws: &Path) -> FsTool {
         FsTool::new(Some(ws.to_path_buf()), Some(ws.to_path_buf()), Vec::new())
-    }
-
-    #[tokio::test]
-    async fn glob_finds_rs_files() {
-        let ws = setup("glob");
-        let tool = GlobTool(fs_tool(&ws));
-        let out = tool
-            .execute(json!({"pattern":"**/*.rs"}))
-            .await
-            .unwrap();
-        let out = out.as_str().unwrap();
-        assert!(out.contains("a.rs"));
-        assert!(out.contains("sub/c.rs"));
     }
 
     #[tokio::test]

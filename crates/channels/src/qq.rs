@@ -466,9 +466,14 @@ impl QQChannel {
     ) -> Result<bool, ChannelError> {
         let (data, filename) = match self.read_media_bytes(media_ref).await {
             Ok(t) => t,
-            Err(e) => {
-                warn!("QQ outbound media read error ref={media_ref} err={e}");
+            Err(ChannelError::Other(_)) => {
+                // File-not-found or validation error — non-retryable.
+                warn!("QQ outbound media read error ref={media_ref} err=file not found");
                 return Ok(false);
+            }
+            Err(e) => {
+                // Network / transport error — propagate for retry.
+                return Err(e);
             }
         };
         if data.is_empty() || filename.is_empty() {
@@ -476,7 +481,7 @@ impl QQChannel {
         }
         let file_type = guess_send_file_type(&filename);
         let file_data_b64 = B64.encode(&data);
-        let media_obj = self
+        let media_obj = match self
             .post_base64_file(
                 chat_id,
                 is_group,
@@ -485,7 +490,20 @@ impl QQChannel {
                 Some(&filename),
                 false,
             )
-            .await?;
+            .await
+        {
+            Ok(v) => v,
+            Err(e) if e.is_retryable() => {
+                // Network error during upload — propagate for retry.
+                warn!("QQ send media network error filename={} err={e}", filename);
+                return Err(e);
+            }
+            Err(e) => {
+                // API-level error — return False so send() can fallback to text.
+                error!("QQ send media failed filename={} err={e}", filename);
+                return Ok(false);
+            }
+        };
 
         let mut payload = json!({
             "msg_type": 7,
@@ -495,9 +513,17 @@ impl QQChannel {
         if let Some(id) = msg_id {
             payload["msg_id"] = Value::String(id.into());
         }
-        self.post_message(chat_id, is_group, payload).await?;
-        info!("QQ media sent: {filename}");
-        Ok(true)
+        match self.post_message(chat_id, is_group, payload).await {
+            Ok(_) => {
+                info!("QQ media sent: {filename}");
+                Ok(true)
+            }
+            Err(e) if e.is_retryable() => Err(e),
+            Err(e) => {
+                error!("QQ send media failed filename={} err={e}", filename);
+                Ok(false)
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -983,6 +1009,13 @@ impl Channel for QQChannel {
         self.running.load(Ordering::SeqCst)
     }
 
+    fn default_config() -> serde_json::Map<String, Value> {
+        serde_json::to_value(&QQConfig::default())
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    }
+
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.app_id.is_empty() || self.config.secret.is_empty() {
             error!("QQ app_id and secret not configured");
@@ -1036,7 +1069,37 @@ impl Channel for QQChannel {
                 .await
             {
                 Ok(true) => {}
-                Ok(false) | Err(_) => {
+                Ok(false) => {
+                    // API-level or non-network error — fallback to text.
+                    let filename = url::Url::parse(media_ref)
+                        .ok()
+                        .and_then(|u| {
+                            u.path_segments()
+                                .and_then(|s| s.last().map(|s| s.to_string()))
+                        })
+                        .or_else(|| {
+                            std::path::Path::new(media_ref)
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "file".into());
+                    let _ = self
+                        .send_text_only(
+                            &msg.chat_id,
+                            is_group,
+                            msg_id.as_deref(),
+                            &format!("[Attachment send failed: {filename}]"),
+                        )
+                        .await;
+                }
+                Err(e) if e.is_retryable() => {
+                    // Network / transport errors — propagate so
+                    // ChannelManager can apply retry policy.
+                    return Err(e);
+                }
+                Err(_) => {
+                    // Non-retryable error — fallback to text.
                     let filename = url::Url::parse(media_ref)
                         .ok()
                         .and_then(|u| {

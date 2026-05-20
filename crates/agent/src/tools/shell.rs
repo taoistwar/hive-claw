@@ -23,12 +23,19 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_OUTPUT_CHARS: usize = 10_000;
 
+const WORKSPACE_BOUNDARY_NOTE: &str =
+    "\n\nNote: this is a hard policy boundary, not a transient failure. \
+     Do NOT retry with shell tricks (symlinks, base64 piping, alternative \
+     tools, working_dir overrides). If the user genuinely needs this \
+     resource, tell them you cannot reach it under the current \
+     restrict_to_workspace policy and ask how to proceed.";
+
 static DEFAULT_DENY_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     [
         r"\brm\s+-[rf]{1,2}\b",
         r"\bdel\s+/[fq]\b",
         r"\brmdir\s+/s\b",
-        r"(?:^|[;&|]\s*)format\b",
+        r"(?:^|[;&|]\s*)format(?!=)\b",   // format (as standalone command only)
         r"\b(mkfs|diskpart)\b",
         r"\bdd\s+if=",
         r">\s*/dev/sd",
@@ -46,11 +53,28 @@ static DEFAULT_DENY_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
 });
 
 static WIN_PATH_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"[A-Za-z]:\\[^\s"'|><;]*"#).unwrap());
+    Lazy::new(|| Regex::new(r#"(?:[A-Za-z]:[^\s"'|><;]*|\\[^\s"'|><;]+(?:\\[^\s"'|><;]+)*)"#).unwrap());
 static POSIX_PATH_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?:^|[\s|>'"])(/[^\s"'>;|<]+)"#).unwrap());
 static HOME_PATH_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?:^|[\s|>'"])(~[^\s"'>;|<]*)"#).unwrap());
+    Lazy::new(|| Regex::new(r#"(?:^|[\s>'"])(~[^\s"'>;|<]*)"#).unwrap());
+
+/// Kernel device files safe as stdio redirect targets.
+const BENIGN_DEVICE_PATHS: &[&str] = &[
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/tty",
+];
+
+fn is_benign_device_path(path: &str) -> bool {
+    BENIGN_DEVICE_PATHS.contains(&path) || path.starts_with("/dev/fd/")
+}
 
 /// Shell execution tool.
 pub struct ExecTool {
@@ -111,19 +135,21 @@ impl ExecTool {
     fn guard_command(&self, command: &str, cwd: &Path) -> Option<String> {
         let cmd = command.trim();
         let lower = cmd.to_ascii_lowercase();
-        for pattern in &self.deny_patterns {
-            if pattern.is_match(&lower) {
-                return Some(
-                    "Error: Command blocked by safety guard (dangerous pattern detected)"
-                        .into(),
-                );
+
+        let explicitly_allowed = !self.allow_patterns.is_empty()
+            && self.allow_patterns.iter().any(|p| p.is_match(&lower));
+
+        if !explicitly_allowed {
+            for pattern in &self.deny_patterns {
+                if pattern.is_match(&lower) {
+                    return Some("Error: Command blocked by deny pattern filter".into());
+                }
+            }
+            if !self.allow_patterns.is_empty() {
+                return Some("Error: Command blocked by allowlist filter (not in allowlist)".into());
             }
         }
-        if !self.allow_patterns.is_empty()
-            && !self.allow_patterns.iter().any(|p| p.is_match(&lower))
-        {
-            return Some("Error: Command blocked by safety guard (not in allowlist)".into());
-        }
+
         if contains_internal_url(cmd) {
             return Some(
                 "Error: Command blocked by safety guard (internal/private URL detected)".into(),
@@ -132,7 +158,9 @@ impl ExecTool {
         if self.restrict_to_workspace {
             if cmd.contains("..\\") || cmd.contains("../") {
                 return Some(
-                    "Error: Command blocked by safety guard (path traversal detected)".into(),
+                    "Error: Command blocked by safety guard (path traversal detected)"
+                        .to_string()
+                        + WORKSPACE_BOUNDARY_NOTE,
                 );
             }
             let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
@@ -140,7 +168,13 @@ impl ExecTool {
                 .unwrap_or_else(|_| get_media_dir(None));
             for raw in extract_absolute_paths(cmd) {
                 let expanded = shellexpand(raw.trim());
+                if is_benign_device_path(&expanded.to_string_lossy()) {
+                    continue;
+                }
                 let p = std::fs::canonicalize(&expanded).unwrap_or(expanded);
+                if is_benign_device_path(&p.to_string_lossy()) {
+                    continue;
+                }
                 if !p.is_absolute() {
                     continue;
                 }
@@ -151,7 +185,9 @@ impl ExecTool {
                     continue;
                 }
                 return Some(
-                    "Error: Command blocked by safety guard (path outside working dir)".into(),
+                    "Error: Command blocked by safety guard (path outside working dir)"
+                        .to_string()
+                        + WORKSPACE_BOUNDARY_NOTE,
                 );
             }
         }
@@ -186,6 +222,7 @@ impl ExecTool {
                     env.insert(key.into(), v);
                 }
             }
+            env.insert("PYTHONUNBUFFERED".into(), "1".into());
             for k in &self.allowed_env_keys {
                 if let Ok(v) = std::env::var(k) {
                     env.insert(k.clone(), v);
@@ -206,6 +243,7 @@ impl ExecTool {
                 "TERM".into(),
                 std::env::var("TERM").unwrap_or_else(|_| "dumb".into()),
             );
+            env.insert("PYTHONUNBUFFERED".into(), "1".into());
             for k in &self.allowed_env_keys {
                 if let Ok(v) = std::env::var(k) {
                     env.insert(k.clone(), v);
@@ -267,7 +305,9 @@ impl Tool for ExecTool {
                 let root = std::fs::canonicalize(ws).unwrap_or_else(|_| ws.clone());
                 if requested != root && !requested.starts_with(&root) {
                     return Ok(Value::String(
-                        "Error: working_dir is outside the configured workspace".into(),
+                        "Error: working_dir is outside the configured workspace"
+                            .to_string()
+                            + WORKSPACE_BOUNDARY_NOTE,
                     ));
                 }
             }
@@ -306,7 +346,8 @@ impl Tool for ExecTool {
                 }
                 p.push_str(&self.path_append);
             } else {
-                command_str = format!("export PATH=\"$PATH:{}\"; {}", self.path_append, command_str);
+                env.insert("NANOBOT_PATH_APPEND".to_string(), self.path_append.clone());
+                command_str = format!("export PATH=\"$PATH:$NANOBOT_PATH_APPEND\"; {}", command_str);
             }
         }
 
@@ -416,7 +457,7 @@ mod tests {
             .execute(json!({"command":"rm -rf /"}))
             .await
             .unwrap();
-        assert!(res.as_str().unwrap().contains("dangerous pattern"));
+        assert!(res.as_str().unwrap().contains("blocked"));
     }
 
     #[tokio::test]

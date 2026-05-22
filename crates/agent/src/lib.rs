@@ -28,8 +28,8 @@ pub use autocompact::{AutoCompact, Consolidator as AutoCompactConsolidator};
 pub use context::ContextBuilder;
 pub use hook::{AgentHook, AgentHookContext, CompositeHook, ToolEvent};
 pub use loop_::{
-    AgentLoop, AgentRuntimeInfo, BuiltinPrefilter, CommandPrefilter, CommandRouter, LoopConfig,
-    ProviderSnapshot, StateTraceEntry, TurnContext, TurnState, UNIFIED_SESSION_KEY,
+    AgentLoop, AgentRuntimeInfo, BuiltinPrefilter, BuiltinToolSet, CommandPrefilter, CommandRouter, LoopConfig,
+    ProviderSnapshot, StateTraceEntry, ToolFactoryConfig, ToolFactoryDeps, TurnContext, TurnState, UNIFIED_SESSION_KEY,
     WebuiTurnCoordinator,
 };
 pub use memory::{Consolidator, Dream, DreamConfig, MemoryDream, MemoryStore, PromptSizeEstimate};

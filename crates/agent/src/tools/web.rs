@@ -380,6 +380,162 @@ impl WebSearchBackend for UnavailableBackend {
     }
 }
 
+// ---------------------------------------------------------------------------
+// DuckDuckGo HTML-scraping backend (port of _search_duckduckgo)
+// ---------------------------------------------------------------------------
+
+const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+const DDG_LITE_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
+
+static DDG_RESULT_A_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)<a\b[^>]*\bclass="[^"]*\bresult__a\b[^"]*"[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>"#)
+        .unwrap()
+});
+
+static DDG_SNIPPET_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)<a\b[^>]*\bclass="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</a>"#).unwrap()
+});
+
+static DDG_UDDG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[?&]uddg=([^&]+)").unwrap());
+
+/// DuckDuckGo HTML-scraping backend.
+pub struct DuckDuckGoBackend {
+    client: reqwest::Client,
+    timeout: Duration,
+}
+
+impl DuckDuckGoBackend {
+    pub fn new() -> Self {
+        Self::with_timeout(Duration::from_secs(10))
+    }
+
+    pub fn with_timeout(timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .user_agent(DEFAULT_USER_AGENT)
+            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS as usize))
+            .timeout(timeout)
+            .build()
+            .expect("reqwest client");
+        Self { client, timeout }
+    }
+
+    pub fn with_client(client: reqwest::Client, timeout: Duration) -> Self {
+        Self { client, timeout }
+    }
+
+    async fn fetch_html(&self, query: &str) -> Result<String, String> {
+        let do_post = |endpoint: &'static str| {
+            self.client
+                .post(endpoint)
+                .form(&[("q", query), ("b", ""), ("kl", ""), ("df", "")])
+                .header("Accept", "text/html,application/xhtml+xml")
+                .send()
+        };
+        match tokio::time::timeout(self.timeout + Duration::from_secs(2), do_post(DDG_HTML_ENDPOINT))
+            .await
+        {
+            Ok(Ok(resp)) if resp.status().is_success() => resp.text().await.map_err(|e| e.to_string()),
+            Ok(Ok(resp)) => {
+                log::warn!("DDG html endpoint returned {}, trying lite", resp.status());
+                let resp = do_post(DDG_LITE_ENDPOINT).await.map_err(|e| e.to_string())?;
+                resp.text().await.map_err(|e| e.to_string())
+            }
+            Ok(Err(e)) => {
+                log::warn!("DDG html endpoint error: {e}, trying lite");
+                let resp = do_post(DDG_LITE_ENDPOINT).await.map_err(|e| e.to_string())?;
+                resp.text().await.map_err(|e| e.to_string())
+            }
+            Err(_) => Err("DuckDuckGo request timed out".into()),
+        }
+    }
+}
+
+impl Default for DuckDuckGoBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn ddg_percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else if b == b'%' && i + 2 < bytes.len() {
+            let h = &bytes[i + 1..i + 3];
+            if let (Some(hi), Some(lo)) = (ddg_hex(h[0]), ddg_hex(h[1])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+            } else {
+                out.push(b);
+                i += 1;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn ddg_hex(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn ddg_unwrap_redirect(href: &str) -> String {
+    if let Some(cap) = DDG_UDDG_RE.captures(href) {
+        return ddg_percent_decode(&cap[1]);
+    }
+    if let Some(stripped) = href.strip_prefix("//") {
+        return format!("https://{stripped}");
+    }
+    href.to_string()
+}
+
+fn ddg_parse_results(html: &str, max: usize) -> Vec<WebSearchItem> {
+    let titles: Vec<(String, String)> = DDG_RESULT_A_RE
+        .captures_iter(html)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .collect();
+    let snippets: Vec<String> = DDG_SNIPPET_RE
+        .captures_iter(html)
+        .map(|c| c[1].to_string())
+        .collect();
+    titles
+        .into_iter()
+        .zip(snippets.into_iter().chain(std::iter::repeat(String::new())))
+        .take(max)
+        .map(|((href, title_html), snippet_html)| WebSearchItem {
+            title: strip_tags(&title_html),
+            url: ddg_unwrap_redirect(&href),
+            snippet: strip_tags(&snippet_html),
+        })
+        .filter(|it| !it.url.is_empty())
+        .collect()
+}
+
+#[async_trait]
+impl WebSearchBackend for DuckDuckGoBackend {
+    async fn search(&self, query: &str, count: u32) -> Result<Vec<WebSearchItem>, String> {
+        let html = self.fetch_html(query).await?;
+        let max = count.max(1) as usize;
+        let items = ddg_parse_results(&html, max);
+        if items.is_empty() {
+            log::debug!("DDG parse returned 0 results (html len={})", html.len());
+        }
+        Ok(items)
+    }
+}
+
 pub struct WebSearchTool {
     backend: Arc<dyn WebSearchBackend>,
 }

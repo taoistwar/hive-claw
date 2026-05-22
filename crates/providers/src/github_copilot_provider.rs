@@ -13,10 +13,10 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::oauth::{FileTokenStorage, OAuthToken};
-use crate::openai_compat::{OpenAICompatConfig, OpenAICompatProvider};
-use crate::provider::{ChatRequest, LLMProvider};
+use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
+use crate::base::{ChatRequest, LLMProvider};
 use crate::registry::find_by_name;
-use crate::types::{GenerationSettings, LLMResponse};
+use crate::base::{GenerationSettings, LLMResponse};
 
 pub const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -412,7 +412,7 @@ impl LLMProvider for GitHubCopilotProvider {
     async fn chat_stream(
         &self,
         req: ChatRequest,
-        on_delta: Option<crate::provider::StreamDeltaCallback>,
+        on_delta: Option<crate::base::StreamDeltaCallback>,
     ) -> LLMResponse {
         let token = match self.get_copilot_access_token().await {
             Ok(t) => t,

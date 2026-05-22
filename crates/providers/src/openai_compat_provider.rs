@@ -22,11 +22,11 @@ use log::warn;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::provider::{ChatRequest, LLMProvider};
+use crate::base::{ChatRequest, LLMProvider};
 use crate::registry::ProviderSpec;
-use crate::retry::extract_retry_after_from_text;
-use crate::sanitize::{enforce_role_alternation, sanitize_empty_content};
-use crate::types::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
+use crate::base::extract_retry_after_from_text;
+use crate::base::{enforce_role_alternation, sanitize_empty_content};
+use crate::base::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
 
 const ALLOWED_MSG_KEYS: &[&str] = &[
     "role",

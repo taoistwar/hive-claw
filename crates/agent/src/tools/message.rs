@@ -100,8 +100,8 @@ impl Tool for MessageTool {
     fn name(&self) -> &str {
         "message"
     }
-    fn description(&self) -> &str {
-        "Proactively send a message to a user/channel, optionally with file attachments. Use this for reminders, cross-channel delivery, or explicit proactive sends. Do not use this for the normal reply in the current chat: answer naturally instead. If channel/chat_id would target the current runtime conversation, do not call this tool unless the user explicitly asked you to proactively send an existing file attachment. When generate_image creates images in the current chat, use the message tool with the artifact paths in the media parameter to deliver the images to the user. For proactive attachment delivery, use the 'media' parameter with file paths. Do NOT use read_file to send files — that only reads content for your own analysis."
+    fn description(&self) -> String {
+        "Proactively send a message to a user/channel, optionally with file attachments. Use this for reminders, cross-channel delivery, or explicit proactive sends. Do not use this for the normal reply in the current chat: answer naturally instead. If channel/chat_id would target the current runtime conversation, do not call this tool unless the user explicitly asked you to proactively send an existing file attachment. When generate_image creates images in the current chat, use the message tool with the artifact paths in the media parameter to deliver the images to the user. For proactive attachment delivery, use the 'media' parameter with file paths. Do NOT use read_file to send files — that only reads content for your own analysis.".into()
     }
     fn parameters(&self) -> Value {
         json!({

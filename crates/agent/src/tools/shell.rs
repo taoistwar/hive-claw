@@ -265,8 +265,8 @@ impl Tool for ExecTool {
     fn name(&self) -> &str {
         "exec"
     }
-    fn description(&self) -> &str {
-        "Execute a shell command and return its output. Prefer read_file/write_file/edit_file over cat/echo/sed, and grep/glob over shell find/grep. Output is truncated at 10 000 chars; timeout defaults to 60s."
+    fn description(&self) -> String {
+        "Execute a shell command and return its output. Prefer read_file/write_file/edit_file over cat/echo/sed, and grep/glob over shell find/grep. Output is truncated at 10 000 chars; timeout defaults to 60s.".into()
     }
     fn parameters(&self) -> Value {
         json!({

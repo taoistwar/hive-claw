@@ -221,8 +221,8 @@ mod tests {
         fn name(&self) -> &str {
             self.name_
         }
-        fn description(&self) -> &str {
-            ""
+        fn description(&self) -> String {
+            "".into()
         }
         fn parameters(&self) -> Value {
             serde_json::json!({

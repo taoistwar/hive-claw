@@ -12,10 +12,10 @@ use async_trait::async_trait;
 use log::warn;
 use serde_json::{json, Map, Value};
 
-use crate::provider::{ChatRequest, LLMProvider, StreamDeltaCallback};
-use crate::retry::extract_retry_after_from_text;
-use crate::sanitize::sanitize_empty_content;
-use crate::types::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
+use crate::base::{ChatRequest, LLMProvider, StreamDeltaCallback};
+use crate::base::extract_retry_after_from_text;
+use crate::base::sanitize_empty_content;
+use crate::base::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
 
 // Model constants mirroring the Python module.
 static TEMPERATURE_UNSUPPORTED_MODEL_TOKENS: &[&str] = &["claude-opus-4-7"];

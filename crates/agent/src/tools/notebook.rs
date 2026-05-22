@@ -49,8 +49,8 @@ impl Tool for NotebookEditTool {
     fn name(&self) -> &str {
         "notebook_edit"
     }
-    fn description(&self) -> &str {
-        "Edit a Jupyter notebook (.ipynb) cell. Modes: replace (default), insert (after target), delete. cell_index is 0-based."
+    fn description(&self) -> String {
+        "Edit a Jupyter notebook (.ipynb) cell. Modes: replace (default), insert (after target), delete. cell_index is 0-based.".into()
     }
     fn parameters(&self) -> Value {
         json!({

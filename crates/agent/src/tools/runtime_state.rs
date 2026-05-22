@@ -1,8 +1,9 @@
 use std::any::Any;
+use std::collections::HashMap;
 
 use serde_json::Value;
 
-pub trait RuntimeState: Any {
+pub trait RuntimeState: Any + Send + Sync {
     fn model(&self) -> &str;
     fn max_iterations(&self) -> usize;
     fn current_iteration(&self) -> usize;
@@ -20,4 +21,11 @@ pub trait RuntimeState: Any {
     fn model_preset(&self) -> Option<&str>;
     fn active_preset(&self) -> Option<&str>;
     fn set_active_preset(&mut self, preset: Option<String>);
+
+    fn get_field(&self, key: &str) -> Option<Value>;
+    fn set_field(&mut self, key: &str, value: Value);
+    fn get_runtime_vars(&self) -> HashMap<String, Value>;
+    fn get_runtime_var(&self, key: &str) -> Option<Value>;
+    fn set_runtime_var(&mut self, key: &str, value: Value);
+    fn serialize_state(&self) -> Value;
 }

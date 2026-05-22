@@ -20,10 +20,10 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use crate::provider::{ChatRequest, LLMProvider};
-use crate::retry::extract_retry_after_from_text;
-use crate::sanitize::sanitize_empty_content;
-use crate::types::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
+use crate::base::{ChatRequest, LLMProvider};
+use crate::base::extract_retry_after_from_text;
+use crate::base::sanitize_empty_content;
+use crate::base::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
 
 const DEFAULT_API_VERSION: &str = "2023-06-01";
 
@@ -811,7 +811,7 @@ impl LLMProvider for AnthropicProvider {
     async fn chat_stream(
         &self,
         req: ChatRequest,
-        on_delta: Option<crate::provider::StreamDeltaCallback>,
+        on_delta: Option<crate::base::StreamDeltaCallback>,
     ) -> LLMResponse {
         use std::env;
 
@@ -961,7 +961,7 @@ fn process_sse_event(
     thinking_blocks: &mut Vec<Value>,
     finish_reason: &mut String,
     usage: &mut std::collections::HashMap<String, i64>,
-    on_delta: Option<&crate::provider::StreamDeltaCallback>,
+    on_delta: Option<&crate::base::StreamDeltaCallback>,
 ) {
     let Ok(value) = serde_json::from_str::<Value>(data) else {
         return;

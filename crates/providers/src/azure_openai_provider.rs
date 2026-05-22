@@ -12,13 +12,13 @@ use async_trait::async_trait;
 use log::warn;
 use serde_json::{json, Map, Value};
 
-use crate::provider::{ChatRequest, LLMProvider};
+use crate::base::{ChatRequest, LLMProvider};
 use crate::responses::{
     consume_events, convert_messages, convert_tools, parse_response_output, parse_sse_events,
 };
-use crate::retry::extract_retry_after_from_text;
-use crate::sanitize::{enforce_role_alternation, sanitize_empty_content};
-use crate::types::{GenerationSettings, LLMResponse, ToolChoice};
+use crate::base::extract_retry_after_from_text;
+use crate::base::{enforce_role_alternation, sanitize_empty_content};
+use crate::base::{GenerationSettings, LLMResponse, ToolChoice};
 
 const DEFAULT_API_VERSION: &str = "2024-10-21";
 
@@ -271,7 +271,7 @@ impl LLMProvider for AzureOpenAIProvider {
     async fn chat_stream(
         &self,
         req: ChatRequest,
-        on_delta: Option<crate::provider::StreamDeltaCallback>,
+        on_delta: Option<crate::base::StreamDeltaCallback>,
     ) -> LLMResponse {
         let deployment = req
             .model

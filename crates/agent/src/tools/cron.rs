@@ -104,8 +104,8 @@ impl Tool for CronTool {
     fn name(&self) -> &str {
         "cron"
     }
-    fn description(&self) -> &str {
-        "Schedule reminders and recurring tasks. Actions: add, list, remove."
+    fn description(&self) -> String {
+        "Schedule reminders and recurring tasks. Actions: add, list, remove.".into()
     }
     fn parameters(&self) -> Value {
         json!({

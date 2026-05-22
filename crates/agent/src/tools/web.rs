@@ -119,8 +119,8 @@ impl Tool for WebFetchTool {
     fn name(&self) -> &str {
         "web_fetch"
     }
-    fn description(&self) -> &str {
-        "Fetch a URL and extract readable text content. Output is capped at maxChars (default 50 000). May fail on login-walled or JS-heavy sites."
+    fn description(&self) -> String {
+        "Fetch a URL and extract readable text content. Output is capped at maxChars (default 50 000). May fail on login-walled or JS-heavy sites.".into()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -403,8 +403,8 @@ impl Tool for WebSearchTool {
     fn name(&self) -> &str {
         "web_search"
     }
-    fn description(&self) -> &str {
-        "Search the web. Returns titles, URLs, and snippets. count defaults to 5 (max 10). Use web_fetch to read a specific page in full."
+    fn description(&self) -> String {
+        "Search the web. Returns titles, URLs, and snippets. count defaults to 5 (max 10). Use web_fetch to read a specific page in full.".into()
     }
     fn parameters(&self) -> Value {
         json!({

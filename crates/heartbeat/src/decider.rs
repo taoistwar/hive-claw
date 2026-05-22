@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use log::warn;
 use providers::{
-    provider::{ChatRequest, LLMProvider, RetryMode},
+    base::{ChatRequest, LLMProvider, RetryMode},
     types::ToolCallRequest,
 };
 use serde_json::json;

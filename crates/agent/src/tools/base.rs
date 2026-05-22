@@ -27,7 +27,7 @@ pub trait Tool: Send + Sync {
     /// Get the name of the tool.
     fn name(&self) -> &str;
     /// Get the description of the tool.
-    fn description(&self) -> &str;
+    fn description(&self) -> String;
     /// Get the parameters schema for the tool.
     fn parameters(&self) -> Value;
 

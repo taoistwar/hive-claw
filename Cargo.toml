@@ -15,6 +15,7 @@ members = [
     "crates/session",
     "crates/skills",
     "crates/utils",
+    "crates/nanobot",
     "crates/hiveclaw",
     "crates/hivegui",
 ]

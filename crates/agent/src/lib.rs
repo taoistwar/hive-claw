@@ -10,14 +10,14 @@
 //! - [`runner`]: the core model/tool step loop
 //! - [`subagent`]: orchestration of background subagents
 //! - [`loop_`]: simplified end-to-end orchestration
+//! - [`model_presets`]: runtime model preset selection helpers
 
 pub mod autocompact;
 pub mod context;
-pub mod dream;
 pub mod hook;
 pub mod loop_;
 pub mod memory;
-pub mod prefilter;
+pub mod model_presets;
 pub mod progress_hook;
 pub mod runner;
 pub mod skills;
@@ -27,12 +27,19 @@ pub mod tools;
 pub use autocompact::{AutoCompact, Consolidator as AutoCompactConsolidator};
 pub use context::ContextBuilder;
 pub use hook::{AgentHook, AgentHookContext, CompositeHook, ToolEvent};
-pub use loop_::{AgentLoop, CommandPrefilter, LoopConfig};
-pub use prefilter::{AgentRuntimeInfo, BuiltinPrefilter};
-pub use dream::{DreamConfig, MemoryDream};
-pub use memory::{Consolidator, Dream, MemoryStore, PromptSizeEstimate};
+pub use loop_::{
+    AgentLoop, AgentRuntimeInfo, BuiltinPrefilter, CommandPrefilter, CommandRouter, LoopConfig,
+    ProviderSnapshot, StateTraceEntry, TurnContext, TurnState, UNIFIED_SESSION_KEY,
+    WebuiTurnCoordinator,
+};
+pub use memory::{Consolidator, Dream, DreamConfig, MemoryDream, MemoryStore, PromptSizeEstimate};
 pub use progress_hook::{ProgressHook, ProgressPayload};
 pub use runner::{AgentRunResult, AgentRunSpec, AgentRunner};
 pub use skills::{SkillEntry, SkillSource, SkillsLoader};
 pub use subagent::{SubagentConfig, SubagentManager, SubagentStatus};
 pub use tools::{PrepareCallResult, Tool, ToolExecError, ToolRegistry};
+pub use model_presets::{
+    ModelPresetConfig, PresetSnapshotLoader, build_runtime_preset_snapshot,
+    build_static_preset_snapshot, configured_model_presets, default_selection_signature,
+    make_preset_snapshot_loader, normalize_preset_name,
+};

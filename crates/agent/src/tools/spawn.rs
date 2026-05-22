@@ -68,8 +68,8 @@ impl Tool for SpawnTool {
     fn name(&self) -> &str {
         "spawn"
     }
-    fn description(&self) -> &str {
-        "Spawn a subagent to handle a task in the background. Use this for complex or time-consuming tasks that can run independently. The subagent will complete the task and report back when done."
+    fn description(&self) -> String {
+        "Spawn a subagent to handle a task in the background. Use this for complex or time-consuming tasks that can run independently. The subagent will complete the task and report back when done.".into()
     }
     fn parameters(&self) -> Value {
         json!({

@@ -1,4 +1,4 @@
 
 [submodule "nanobot"]
 	path = nanobot
-	url = git@github.com:taoistwar/nanobot.git
+	url = https://github.com/taoistwar/nanobot.git

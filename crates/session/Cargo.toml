@@ -11,3 +11,6 @@ log = { workspace = true }
 thiserror = { workspace = true }
 config = { path = "../config" }
 utils = { path = "../utils" }
+regex = { workspace = true }
+once_cell = "1"
+tokio = { workspace = true, features = ["sync"] }

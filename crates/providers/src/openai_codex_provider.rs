@@ -16,10 +16,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::oauth::{FileTokenStorage, OAuthToken};
-use crate::provider::{ChatRequest, LLMProvider};
+use crate::base::{ChatRequest, LLMProvider};
 use crate::responses::{consume_events, convert_messages, convert_tools, parse_sse_events};
-use crate::retry::extract_retry_after_from_text;
-use crate::types::{GenerationSettings, LLMResponse, ToolChoice};
+use crate::base::extract_retry_after_from_text;
+use crate::base::{GenerationSettings, LLMResponse, ToolChoice};
 
 pub const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 pub const DEFAULT_ORIGINATOR: &str = "nanobot";

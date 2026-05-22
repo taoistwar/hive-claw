@@ -177,8 +177,8 @@ impl Tool for GrepTool {
     fn name(&self) -> &str {
         "grep"
     }
-    fn description(&self) -> &str {
-        "Search file contents with a regex pattern. Default output_mode is files_with_matches; use 'content' for matching lines with context. Skips binary and files >2 MB."
+    fn description(&self) -> String {
+        "Search file contents with a regex pattern. Default output_mode is files_with_matches; use 'content' for matching lines with context. Skips binary and files >2 MB.".into()
     }
     fn parameters(&self) -> Value {
         json!({

@@ -123,8 +123,8 @@ impl Tool for ReadFileTool {
     fn name(&self) -> &str {
         "read_file"
     }
-    fn description(&self) -> &str {
-        "Read a text file. Output format: LINE_NUM| CONTENT. Use offset and limit for large files. Reads exceeding ~128K chars are truncated."
+    fn description(&self) -> String {
+        "Read a text file. Output format: LINE_NUM| CONTENT. Use offset and limit for large files. Reads exceeding ~128K chars are truncated.".into()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -245,8 +245,8 @@ impl Tool for WriteFileTool {
     fn name(&self) -> &str {
         "write_file"
     }
-    fn description(&self) -> &str {
-        "Write content to a file. Overwrites if the file already exists; creates parent directories as needed. For partial edits, prefer edit_file instead."
+    fn description(&self) -> String {
+        "Write content to a file. Overwrites if the file already exists; creates parent directories as needed. For partial edits, prefer edit_file instead.".into()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -302,8 +302,8 @@ impl Tool for EditFileTool {
     fn name(&self) -> &str {
         "edit_file"
     }
-    fn description(&self) -> &str {
-        "Edit a file by replacing old_text with new_text. Use read_file first to verify content. Set replace_all=true to replace all occurrences."
+    fn description(&self) -> String {
+        "Edit a file by replacing old_text with new_text. Use read_file first to verify content. Set replace_all=true to replace all occurrences.".into()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -478,8 +478,8 @@ impl Tool for ListDirTool {
     fn name(&self) -> &str {
         "list_dir"
     }
-    fn description(&self) -> &str {
-        "List the contents of a directory. Set recursive=true to explore nested structure. Common noise dirs (.git, node_modules, ...) are auto-ignored."
+    fn description(&self) -> String {
+        "List the contents of a directory. Set recursive=true to explore nested structure. Common noise dirs (.git, node_modules, ...) are auto-ignored.".into()
     }
     fn parameters(&self) -> Value {
         json!({

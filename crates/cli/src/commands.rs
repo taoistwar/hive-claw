@@ -364,8 +364,8 @@ fn provider_status(name: &str) -> Result<(), String> {
         }
         "openai-codex" | "openai_codex" | "codex" => {
             let storage = FileTokenStorage::new(
-                providers::openai_codex::TOKEN_FILENAME,
-                providers::openai_codex::TOKEN_APP_NAME,
+                providers::openai_codex_provider::TOKEN_FILENAME,
+                providers::openai_codex_provider::TOKEN_APP_NAME,
                 true,
             );
             match storage.load() {

@@ -11,13 +11,13 @@ use serde_json::Map;
 
 use config::schema::{Config, ProviderConfig};
 use config::{get_config_path, paths::is_default_workspace, set_config_path};
-use crate::anthropic::{AnthropicConfig, AnthropicProvider};
-use crate::azure_openai::{AzureOpenAIConfig, AzureOpenAIProvider};
-use crate::bedrock::{BedrockConfig, BedrockProvider};
-use crate::github_copilot::GitHubCopilotProvider;
-use crate::openai_codex::{OpenAICodexConfig, OpenAICodexProvider};
-use crate::openai_compat::{OpenAICompatConfig, OpenAICompatProvider};
-use crate::provider::LLMProvider;
+use crate::anthropic_provider::{AnthropicConfig, AnthropicProvider};
+use crate::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
+use crate::bedrock_provider::{BedrockConfig, BedrockProvider};
+use crate::github_copilot_provider::GitHubCopilotProvider;
+use crate::openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
+use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
+use crate::base::LLMProvider;
 use crate::registry::{Backend, ProviderSpec, find_by_name, find_by_model};
 use crate::GenerationSettings;
 

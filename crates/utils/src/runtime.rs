@@ -1,12 +1,20 @@
 //! Runtime-specific helpers and constants (port of `nanobot.utils.runtime`).
 
 use std::collections::HashMap;
+use std::path::Path;
 
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::Value;
 
 use crate::helpers::stringify_text_blocks;
 
 const MAX_REPEAT_EXTERNAL_LOOKUPS: u32 = 2;
+const MAX_REPEAT_WORKSPACE_VIOLATIONS: u32 = 2;
+
+static OUTSIDE_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?:^|[\s|>'"])((?:/[^\s"'>;|<]+)|(?:~[^\s"'>;|<]+))"#).unwrap()
+});
 
 pub const EMPTY_FINAL_RESPONSE_MESSAGE: &str =
     "I completed the tool steps but couldn't produce a final answer. \
@@ -123,6 +131,83 @@ pub fn repeated_external_lookup_error(
         "Error: repeated external lookup blocked. \
          Use the results you already have to answer, or try a meaningfully different source."
             .into(),
+    )
+}
+
+/// Workspace-boundary violations are soft errors, with per-target throttling.
+
+/// Normalize *raw* path so that equivalent spellings collide on the same key.
+fn normalize_violation_target(raw: &str) -> String {
+    let normalized = Path::new(raw)
+        .to_string_lossy()
+        .replace("\\", "/");
+    format!("violation:{}", normalized.to_lowercase())
+}
+
+/// Return a stable cross-tool signature for the outside-workspace target.
+pub fn workspace_violation_signature(tool_name: &str, arguments: &Value) -> Option<String> {
+    let get_str = |key: &str| -> Option<&str> {
+        arguments.get(key).and_then(Value::as_str).map(|s| s.trim()).filter(|s| !s.is_empty())
+    };
+    for key in ["path", "file_path", "target", "source", "destination"] {
+        if let Some(val) = get_str(key) {
+            return Some(normalize_violation_target(val));
+        }
+    }
+
+    if matches!(tool_name, "exec" | "shell") {
+        if let Some(cmd) = arguments.get("command").and_then(Value::as_str) {
+            let cmd = cmd.trim();
+            if !cmd.is_empty() {
+                if let Some(cap) = OUTSIDE_PATH_RE.captures(cmd) {
+                    if let Some(m) = cap.get(1) {
+                        return Some(normalize_violation_target(m.as_str()));
+                    }
+                }
+            }
+        }
+        if let Some(cwd) = arguments.get("working_dir").and_then(Value::as_str) {
+            let cwd = cwd.trim();
+            if !cwd.is_empty() {
+                return Some(normalize_violation_target(cwd));
+            }
+        }
+    }
+
+    None
+}
+
+/// Return an escalated error after repeated bypass attempts.
+pub fn repeated_workspace_violation_error(
+    tool_name: &str,
+    arguments: &Value,
+    seen_counts: &mut HashMap<String, u32>,
+) -> Option<String> {
+    let signature = workspace_violation_signature(tool_name, arguments)?;
+    let count = seen_counts.entry(signature.clone()).or_insert(0);
+    *count += 1;
+    if *count <= MAX_REPEAT_WORKSPACE_VIOLATIONS {
+        return None;
+    }
+    log::warn!(
+        "Escalating repeated workspace bypass attempt {} (attempt {})",
+        &signature.chars().take(160).collect::<String>(),
+        count,
+    );
+    let target = signature
+        .strip_prefix("violation:")
+        .unwrap_or(&signature);
+    Some(
+        format!(
+            "Error: refusing repeated workspace-bypass attempts.\n\
+             You have tried to access '{target}' (or an equivalent path) \
+             {count} times in this turn. This is a hard policy boundary -- \
+             switching tools, shell tricks, working_dir overrides, symlinks, \
+             or base64 piping will NOT change the answer. Stop retrying. \
+             If the user genuinely needs this resource, tell them you cannot \
+             access it and ask how they want to proceed (e.g. copy the file \
+             into the workspace, or disable restrict_to_workspace for this run)."
+        )
     )
 }
 

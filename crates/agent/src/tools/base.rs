@@ -63,10 +63,8 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError>;
 
     /// Apply safe schema-driven casts before validation.
-    /// 在验证之前应用安全的模式驱动转换。
     fn cast_params(&self, params: Value) -> Value {
         let schema = self.parameters();
-        // 获取 schema 的类型。
         let schema_type = schema
             .get("type")
             .and_then(|v| v.as_str())
@@ -104,6 +102,18 @@ pub trait Tool: Send + Sync {
                 "parameters": self.parameters(),
             },
         })
+    }
+
+    /// Whether this tool is enabled for the given context.
+    /// Mirrors Python `Tool.enabled(ctx)`.
+    fn enabled(&self, _ctx: &Value) -> bool {
+        true
+    }
+
+    /// Create a new instance of this tool type from config.
+    /// Mirrors Python `Tool.create(ctx)`.
+    fn create_instance(&self, _ctx: &Value) -> Option<Box<dyn Tool>> {
+        None
     }
 }
 

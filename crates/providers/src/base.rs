@@ -106,9 +106,13 @@ impl LLMResponse {
     }
 
     /// Tools execute only when `has_tool_calls` AND finish_reason is
-    /// `tool_calls` / `stop`. Refusal/content_filter/error paths are blocked.
+    /// `tool_calls` / `function_call` / `stop`. Refusal/content_filter/error paths are blocked.
     pub fn should_execute_tools(&self) -> bool {
-        self.has_tool_calls() && matches!(self.finish_reason.as_str(), "tool_calls" | "stop")
+        self.has_tool_calls()
+            && matches!(
+                self.finish_reason.as_str(),
+                "tool_calls" | "function_call" | "stop"
+            )
     }
 
     pub fn is_error(&self) -> bool {
@@ -445,6 +449,113 @@ pub fn strip_image_content_inplace(messages: &mut Vec<Value>) -> bool {
     found
 }
 
+/// Extract tool name from either OpenAI or Anthropic-style tool schemas.
+fn tool_name(tool: &Value) -> String {
+    if let Some(name) = tool.get("name").and_then(|v| v.as_str()) {
+        return name.to_string();
+    }
+    if let Some(fn_obj) = tool.get("function").and_then(|v| v.as_object()) {
+        if let Some(fname) = fn_obj.get("name").and_then(|v| v.as_str()) {
+            return fname.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Return cache marker indices: builtin/MCP boundary and tail index.
+fn tool_cache_marker_indices(tools: &[Value]) -> Vec<usize> {
+    if tools.is_empty() {
+        return vec![];
+    }
+
+    let tail_idx = tools.len() - 1;
+    let mut last_builtin_idx: Option<usize> = None;
+    for i in (0..=tail_idx).rev() {
+        if !tool_name(&tools[i]).starts_with("mcp_") {
+            last_builtin_idx = Some(i);
+            break;
+        }
+    }
+
+    let mut ordered_unique: Vec<usize> = Vec::with_capacity(2);
+    for idx in last_builtin_idx.into_iter().chain(Some(tail_idx)) {
+        if !ordered_unique.contains(&idx) {
+            ordered_unique.push(idx);
+        }
+    }
+    ordered_unique
+}
+
+/// Keep only provider-safe message keys and normalize assistant content.
+pub fn sanitize_request_messages(messages: &[Value], allowed_keys: &std::collections::HashSet<String>) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|msg| {
+            if let Some(obj) = msg.as_object() {
+                let clean: Map<String, Value> = obj
+                    .iter()
+                    .filter(|(k, _)| allowed_keys.contains(*k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut clean_val = Value::Object(clean);
+                if let Some(obj) = clean_val.as_object_mut() {
+                    if obj.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                        && !obj.contains_key("content")
+                    {
+                        obj.insert("content".into(), Value::Null);
+                    }
+                }
+                clean_val
+            } else {
+                msg.clone()
+            }
+        })
+        .collect()
+}
+
+/// Extract retry-after from HTTP headers (Retry-After, Retry-After-Ms).
+pub fn extract_retry_after_from_headers(headers: &Value) -> Option<f64> {
+    fn header_value(headers: &Value, name: &str) -> Option<String> {
+        if let Some(obj) = headers.as_object() {
+            if let Some(v) = obj.get(name) {
+                return Some(v.as_str()?.to_string());
+            }
+            let name_lower = name.to_lowercase();
+            for (k, v) in obj {
+                if k.to_lowercase() == name_lower {
+                    return Some(v.as_str()?.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    if let Some(retry_ms_str) = header_value(headers, "retry-after-ms") {
+        if let Ok(value) = retry_ms_str.parse::<f64>() {
+            if value > 0.0 {
+                return Some(value / 1000.0);
+            }
+        }
+    }
+
+    let retry_after_str = header_value(headers, "retry-after")?;
+    let retry_after_text = retry_after_str.trim();
+    if retry_after_text.is_empty() {
+        return None;
+    }
+
+    if retry_after_text
+        .parse::<f64>()
+        .is_ok()
+    {
+        if let Ok(seconds) = retry_after_text.parse::<f64>() {
+            return Some(to_retry_seconds(seconds, Some("s")));
+        }
+    }
+
+    None
+}
+
 // ===========================================================================
 // Retry helpers (merged from retry.rs)
 // ===========================================================================
@@ -463,6 +574,7 @@ const TRANSIENT_ERROR_MARKERS: &[&str] = &[
     "server error",
     "temporarily unavailable",
     "速率限制",
+    "访问量过大",
 ];
 
 const NON_RETRYABLE_429_TEXT: &[&str] = &[

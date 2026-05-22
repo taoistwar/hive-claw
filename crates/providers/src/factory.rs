@@ -7,19 +7,129 @@
 use std::env;
 use std::sync::Arc;
 
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 use config::schema::{Config, ProviderConfig};
 use config::{get_config_path, paths::is_default_workspace, set_config_path};
 use crate::anthropic_provider::{AnthropicConfig, AnthropicProvider};
 use crate::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
 use crate::bedrock_provider::{BedrockConfig, BedrockProvider};
+use crate::fallback_provider::{FallbackPreset, FallbackProvider, ProviderFactory};
 use crate::github_copilot_provider::GitHubCopilotProvider;
 use crate::openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
 use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
 use crate::base::LLMProvider;
 use crate::registry::{Backend, ProviderSpec, find_by_name, find_by_model};
 use crate::GenerationSettings;
+
+/// Snapshot of a built provider chain, including fallback windows and config signature.
+#[derive(Clone)]
+pub struct ProviderSnapshot {
+    pub provider: Arc<dyn LLMProvider>,
+    pub model: String,
+    pub context_window_tokens: u32,
+    pub signature: Vec<Value>,
+}
+
+/// Compute a signature for a single preset (model + provider + credentials + settings).
+fn preset_signature(
+    cfg: &Config,
+    model: &str,
+    provider_config: Option<&ProviderConfig>,
+    spec: Option<&ProviderSpec>,
+    max_tokens: u32,
+    temperature: f32,
+    reasoning_effort: Option<&str>,
+    context_window_tokens: u32,
+) -> Vec<Value> {
+    let provider_name = spec.map(|s| s.name.to_string()).unwrap_or_default();
+    let api_key = provider_config
+        .and_then(|p| p.api_key.as_deref())
+        .unwrap_or("")
+        .to_string();
+    let api_base = provider_config
+        .and_then(|p| p.api_base.as_deref())
+        .unwrap_or("")
+        .to_string();
+    let extra_headers = provider_config
+        .and_then(|p| p.extra_headers.as_ref())
+        .map(|h| {
+            let m: Map<String, Value> = h.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+            Value::Object(m)
+        })
+        .unwrap_or(Value::Null);
+    let extra_body = Value::Null;
+    let region = Value::Null;
+    let profile = Value::Null;
+
+    vec![
+        Value::String(model.to_string()),
+        Value::String(provider_name),
+        Value::String(api_key),
+        Value::String(api_base),
+        extra_headers,
+        extra_body,
+        region,
+        profile,
+        Value::Number(serde_json::Number::from(max_tokens)),
+        Value::Number(
+            serde_json::Number::from_f64(temperature as f64)
+                .unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap()),
+        ),
+        Value::String(reasoning_effort.unwrap_or("").to_string()),
+        Value::Number(serde_json::Number::from(context_window_tokens)),
+    ]
+}
+
+/// Return the config fields that affect the active provider chain.
+pub fn provider_signature(cfg: &Config) -> Vec<Value> {
+    let defaults = &cfg.agents.defaults;
+    let model = &defaults.model;
+    let spec = resolve_spec(cfg);
+    let provider_config = provider_config_for(cfg, spec);
+    let max_tokens = defaults.max_tokens;
+    let temperature = defaults.temperature;
+    let reasoning_effort = defaults.reasoning_effort.as_deref();
+    let context_window_tokens = defaults.context_window_tokens;
+
+    let mut sig = preset_signature(
+        cfg,
+        model,
+        provider_config,
+        spec,
+        max_tokens,
+        temperature,
+        reasoning_effort,
+        context_window_tokens,
+    );
+
+    sig.push(Value::Array(vec![]));
+
+    sig
+}
+
+/// Build a provider and return a ProviderSnapshot with fallback window calculation.
+pub fn build_provider_snapshot(cfg: &Config) -> Result<ProviderSnapshot, String> {
+    let defaults = &cfg.agents.defaults;
+    let model = defaults.model.clone();
+    let context_window = defaults.context_window_tokens;
+
+    let provider = make_provider(cfg)?;
+    let signature = provider_signature(cfg);
+
+    Ok(ProviderSnapshot {
+        provider,
+        model,
+        context_window_tokens: context_window,
+        signature,
+    })
+}
+
+/// Load config from path and build a ProviderSnapshot.
+pub fn load_provider_snapshot(config_path: Option<&str>) -> Result<ProviderSnapshot, String> {
+    let cfg = Config::from_config(config_path.map(|p| std::path::Path::new(p)));
+    build_provider_snapshot(&cfg)
+}
 
 /// High-level config for building any provider.
 #[derive(Debug, Clone, Default)]

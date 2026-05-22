@@ -1,18 +1,44 @@
-//! Periodic heartbeat service (port of `nanobot.heartbeat.service`).
-//!
-//! The Python version talks directly to an `LLMProvider`. In Rust we keep
-//! the same two-phase design (Phase 1 "decide", Phase 2 "execute") but
-//! abstract both over traits so this crate is provider-agnostic.
+//! Heartbeat service - periodic agent wake-up to check for tasks.
+//! Port of `nanobot.heartbeat.service`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use log::{info, warn};
+use log::{debug, info, warn};
+use providers::{
+    base::{ChatRequest, LLMProvider, RetryMode},
+    types::ToolCallRequest,
+};
+use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-
 use utils::evaluator::NotificationEvaluator;
+
+const HEARTBEAT_TOOL: serde_json::Value = serde_json::json!(
+    {
+        "type": "function",
+        "function": {
+            "name": "heartbeat",
+            "description": "Report heartbeat decision after reviewing tasks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["skip", "run"],
+                        "description": "skip = nothing to do, run = has active tasks"
+                    },
+                    "tasks": {
+                        "type": "string",
+                        "description": "Natural-language summary of active tasks (required for run)"
+                    }
+                },
+                "required": ["action"]
+            }
+        }
+    }
+);
 
 /// Possible outcomes of the Phase-1 "decide" call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,17 +54,9 @@ pub struct HeartbeatDecision {
     pub tasks: String,
 }
 
-/// Plug-in that inspects `HEARTBEAT.md` content and returns a decision.
-#[async_trait]
-pub trait HeartbeatDecider: Send + Sync {
-    async fn decide(&self, content: &str, timezone: Option<&str>) -> HeartbeatDecision;
-}
-
 /// Plug-in that executes a task and returns the resulting text.
 #[async_trait]
 pub trait HeartbeatExecutor: Send + Sync {
-    /// Execute `tasks`, returning the response body to forward to the user
-    /// (or `None` if nothing to report).
     async fn execute(&self, tasks: &str) -> Option<String>;
 }
 
@@ -56,7 +74,7 @@ pub struct HeartbeatService {
     timezone: Option<String>,
     model: String,
 
-    decider: Arc<dyn HeartbeatDecider>,
+    provider: Option<Arc<dyn LLMProvider>>,
     executor: Option<Arc<dyn HeartbeatExecutor>>,
     notifier: Option<Arc<dyn HeartbeatNotifier>>,
     evaluator: Option<Arc<dyn NotificationEvaluator>>,
@@ -70,30 +88,25 @@ struct State {
     task: Option<JoinHandle<()>>,
 }
 
-/// Builder-style configuration for [`HeartbeatService`].
-pub struct HeartbeatConfig {
-    pub workspace: PathBuf,
-    pub interval_s: u64,
-    pub enabled: bool,
-    pub timezone: Option<String>,
-    pub model: String,
-}
-
 impl HeartbeatService {
     pub fn new(
-        cfg: HeartbeatConfig,
-        decider: Arc<dyn HeartbeatDecider>,
+        workspace: PathBuf,
+        provider: Option<Arc<dyn LLMProvider>>,
+        model: String,
         executor: Option<Arc<dyn HeartbeatExecutor>>,
         notifier: Option<Arc<dyn HeartbeatNotifier>>,
         evaluator: Option<Arc<dyn NotificationEvaluator>>,
+        interval_s: u64,
+        enabled: bool,
+        timezone: Option<String>,
     ) -> Self {
         Self {
-            workspace: cfg.workspace,
-            interval_s: cfg.interval_s,
-            enabled: cfg.enabled,
-            timezone: cfg.timezone,
-            model: cfg.model,
-            decider,
+            workspace,
+            interval_s,
+            enabled,
+            timezone,
+            model,
+            provider,
             executor,
             notifier,
             evaluator,
@@ -109,7 +122,81 @@ impl HeartbeatService {
         std::fs::read_to_string(self.heartbeat_file()).ok()
     }
 
-    /// Start the heartbeat service.
+    async fn _decide(&self, content: &str) -> HeartbeatDecision {
+        let Some(provider) = &self.provider else {
+            warn!("No LLM provider configured for heartbeat");
+            return HeartbeatDecision {
+                action: HeartbeatAction::Skip,
+                tasks: String::new(),
+            };
+        };
+
+        let time_str = utils::helpers::current_time_str(self.timezone.as_deref());
+        let messages = vec![
+            json!({
+                "role": "system",
+                "content": "You are a heartbeat agent. Call the heartbeat tool to report your decision."
+            }),
+            json!({
+                "role": "user",
+                "content": format!(
+                    "Current Time: {time_str}\n\nReview the following HEARTBEAT.md and decide whether there are active tasks.\n\n{content}"
+                )
+            }),
+        ];
+
+        let req = ChatRequest {
+            messages,
+            tools: Some(vec![HEARTBEAT_TOOL.clone()]),
+            model: Some(self.model.clone()),
+            max_tokens: 512,
+            temperature: 0.0,
+            reasoning_effort: None,
+            tool_choice: None,
+        };
+
+        let response = provider.chat_with_retry(req, RetryMode::Standard, None).await;
+
+        if !response.should_execute_tools() {
+            if response.has_tool_calls() {
+                warn!(
+                    "Ignoring heartbeat tool calls under finish_reason='{}'",
+                    response.finish_reason
+                );
+            }
+            return HeartbeatDecision {
+                action: HeartbeatAction::Skip,
+                tasks: String::new(),
+            };
+        }
+
+        if let Some(tool_call) = response.tool_calls.first() {
+            let action = tool_call
+                .arguments
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("skip");
+            let tasks = tool_call
+                .arguments
+                .get("tasks")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let action = if action == "run" {
+                HeartbeatAction::Run
+            } else {
+                HeartbeatAction::Skip
+            };
+            HeartbeatDecision { action, tasks }
+        } else {
+            HeartbeatDecision {
+                action: HeartbeatAction::Skip,
+                tasks: String::new(),
+            }
+        }
+    }
+
     pub async fn start(self: Arc<Self>) {
         if !self.enabled {
             info!("Heartbeat disabled");
@@ -120,6 +207,7 @@ impl HeartbeatService {
             warn!("Heartbeat already running");
             return;
         }
+
         state.running = true;
         let interval = self.interval_s;
         let this = self.clone();
@@ -137,9 +225,8 @@ impl HeartbeatService {
         info!("Heartbeat started (every {interval}s)");
     }
 
-    /// Stop the heartbeat service.
-    pub async fn stop(&self) {
-        let mut state = self.state.lock().await;
+    pub fn stop(&self) {
+        let mut state = self.state.blocking_lock();
         state.running = false;
         if let Some(handle) = state.task.take() {
             handle.abort();
@@ -148,19 +235,17 @@ impl HeartbeatService {
 
     async fn tick(&self) {
         let Some(content) = self.read_heartbeat_file() else {
-            log::debug!("Heartbeat: HEARTBEAT.md missing or empty");
+            debug!("Heartbeat: HEARTBEAT.md missing or empty");
             return;
         };
         if content.is_empty() {
-            log::debug!("Heartbeat: HEARTBEAT.md empty");
+            debug!("Heartbeat: HEARTBEAT.md empty");
             return;
         }
 
         info!("Heartbeat: checking for tasks...");
-        let decision = self
-            .decider
-            .decide(&content, self.timezone.as_deref())
-            .await;
+        let decision = self._decide(&content).await;
+
         if decision.action != HeartbeatAction::Run {
             info!("Heartbeat: OK (nothing to report)");
             return;
@@ -174,6 +259,13 @@ impl HeartbeatService {
             return;
         };
         if response.is_empty() {
+            return;
+        }
+        if !self._is_deliverable(&response) {
+            info!(
+                "Heartbeat: suppressed non-deliverable response ({})",
+                &response[..response.len().min(80)]
+            );
             return;
         }
         let should_notify = utils::evaluator::evaluate_response(
@@ -192,13 +284,36 @@ impl HeartbeatService {
         }
     }
 
-    /// Manually trigger a heartbeat.
+    fn _is_deliverable(response: &str) -> bool {
+        let text = response.to_lowercase();
+
+        if text.contains("couldn't produce a final answer") {
+            return false;
+        }
+
+        let leaked_patterns = [
+            "heartbeat.md",
+            "awareness.md",
+            "judgment call:",
+            "decision logic",
+            "valid options are",
+            "my instructions",
+            "i am supposed to",
+            "strict heartbeat interpretation",
+        ];
+        if leaked_patterns.iter().any(|p| text.contains(p)) {
+            return false;
+        }
+
+        true
+    }
+
     pub async fn trigger_now(&self) -> Option<String> {
         let content = self.read_heartbeat_file()?;
         if content.is_empty() {
             return None;
         }
-        let decision = self.decider.decide(&content, self.timezone.as_deref()).await;
+        let decision = self._decide(&content).await;
         if decision.action != HeartbeatAction::Run {
             return None;
         }
@@ -211,44 +326,24 @@ impl HeartbeatService {
 mod tests {
     use super::*;
 
-    struct AlwaysSkip;
-    #[async_trait]
-    impl HeartbeatDecider for AlwaysSkip {
-        async fn decide(&self, _content: &str, _tz: Option<&str>) -> HeartbeatDecision {
-            HeartbeatDecision {
-                action: HeartbeatAction::Skip,
-                tasks: String::new(),
-            }
-        }
+    #[test]
+    fn is_deliverable_filters_runner_fallback() {
+        assert!(!HeartbeatService::_is_deliverable(
+            "I couldn't produce a final answer"
+        ));
     }
 
-    #[tokio::test]
-    async fn trigger_now_returns_none_when_skip() {
-        let dir = std::env::temp_dir().join(format!("hb-{}", rand_suffix()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("HEARTBEAT.md"), "x").unwrap();
-        let svc = HeartbeatService::new(
-            HeartbeatConfig {
-                workspace: dir,
-                interval_s: 60,
-                enabled: true,
-                timezone: None,
-                model: "test".into(),
-            },
-            Arc::new(AlwaysSkip),
-            None,
-            None,
-            None,
-        );
-        assert!(svc.trigger_now().await.is_none());
+    #[test]
+    fn is_deliverable_filters_leaked_reasoning() {
+        assert!(!HeartbeatService::_is_deliverable(
+            "Based on heartbeat.md I decided..."
+        ));
     }
 
-    fn rand_suffix() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_string()
+    #[test]
+    fn is_deliverable_accepts_normal_response() {
+        assert!(HeartbeatService::_is_deliverable(
+            "Database migration completed successfully."
+        ));
     }
 }

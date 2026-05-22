@@ -37,7 +37,177 @@ use crate::memory::Consolidator as ConsolidatorTrait;
 use crate::memory::Dream as DreamTrait;
 use crate::runner::{AgentRunResult, AgentRunSpec, AgentRunner};
 use crate::subagent::SubagentManager;
-use crate::tools::{BuiltinToolSet, CronTool, MessageTool, SpawnTool, ToolRegistry};
+use crate::tools::{CronTool, MessageTool, SpawnCallback, SpawnTool, ToolRegistry};
+
+// ============================================================================
+// Tool factory types (port of Python's _register_default_tools in loop.py)
+// ============================================================================
+
+use std::path::PathBuf;
+
+use bus::MessageBus;
+use config::Config;
+use crate::tools::filesystem::{EditFileTool, FsTool, ListDirTool, ReadFileTool, WriteFileTool};
+use crate::tools::message::MessageTool as MessageToolInner;
+use crate::tools::notebook::NotebookEditTool;
+use crate::tools::search::GrepTool;
+use crate::tools::shell::ExecTool;
+use crate::tools::web::{DuckDuckGoBackend, WebFetchTool, WebSearchBackend, WebSearchTool};
+
+/// Configuration for default tool set.
+#[derive(Clone)]
+pub struct ToolFactoryConfig {
+    pub workspace: PathBuf,
+    pub extra_allowed_dirs: Vec<PathBuf>,
+    pub restrict_to_workspace: bool,
+    pub exec_timeout_secs: u64,
+    pub exec_sandbox: String,
+    pub exec_path_append: String,
+    pub exec_allowed_env_keys: Vec<String>,
+    pub web_max_chars: usize,
+    pub web_proxy: Option<String>,
+    pub default_timezone: String,
+}
+
+impl ToolFactoryConfig {
+    pub fn new(workspace: PathBuf) -> Self {
+        Self {
+            workspace,
+            extra_allowed_dirs: Vec::new(),
+            restrict_to_workspace: false,
+            exec_timeout_secs: 60,
+            exec_sandbox: String::new(),
+            exec_path_append: String::new(),
+            exec_allowed_env_keys: Vec::new(),
+            web_max_chars: 0,
+            web_proxy: None,
+            default_timezone: "UTC".into(),
+        }
+    }
+
+    pub fn from_config(cfg: &Config) -> Self {
+        let mut tf = Self::new(cfg.workspace_path());
+        tf.restrict_to_workspace = cfg.tools.restrict_to_workspace;
+        tf.exec_timeout_secs = cfg.tools.exec.timeout as u64;
+        tf.exec_sandbox = cfg.tools.exec.sandbox.clone();
+        tf.exec_path_append = cfg.tools.exec.path_append.clone();
+        tf.exec_allowed_env_keys = cfg.tools.exec.allowed_env_keys.clone();
+        tf.web_proxy = cfg.tools.web.proxy.clone();
+        tf.default_timezone = cfg.agents.defaults.timezone.clone();
+        tf
+    }
+}
+
+/// Bundle of the registry and the context-bearing tools.
+pub struct BuiltinToolSet {
+    pub registry: ToolRegistry,
+    pub message: Arc<MessageToolInner>,
+    pub spawn: Option<Arc<SpawnTool>>,
+    pub cron: Option<Arc<CronTool>>,
+}
+
+/// Optional plug-ins that the factory cannot construct itself.
+#[derive(Default)]
+pub struct ToolFactoryDeps {
+    pub web_search: Option<Arc<dyn WebSearchBackend>>,
+    pub spawn_callback: Option<SpawnCallback>,
+    pub cron_service: Option<Arc<::cron::service::CronService>>,
+}
+
+impl ToolFactoryDeps {
+    pub fn new_with_cron(cron: Option<Arc<::cron::CronService>>) -> Self {
+        Self {
+            web_search: None,
+            spawn_callback: None,
+            cron_service: cron,
+        }
+    }
+}
+
+impl BuiltinToolSet {
+    pub async fn default_tools(
+        config: ToolFactoryConfig,
+        bus: Arc<MessageBus>,
+        deps: ToolFactoryDeps,
+    ) -> BuiltinToolSet {
+        let registry = ToolRegistry::new();
+        let allowed_dir = if config.restrict_to_workspace {
+            Some(config.workspace.clone())
+        } else {
+            None
+        };
+        let fs = FsTool::new(
+            Some(config.workspace.clone()),
+            allowed_dir.clone(),
+            config.extra_allowed_dirs.clone(),
+        );
+
+        registry.register(Arc::new(ReadFileTool(fs.clone()))).await;
+        registry.register(Arc::new(WriteFileTool(fs.clone()))).await;
+        registry.register(Arc::new(EditFileTool(fs.clone()))).await;
+        registry.register(Arc::new(ListDirTool(fs.clone()))).await;
+
+        registry.register(Arc::new(GrepTool(fs.clone()))).await;
+
+        let exec = ExecTool::new()
+            .with_working_dir(config.workspace.clone())
+            .with_timeout_secs(config.exec_timeout_secs)
+            .with_sandbox(config.exec_sandbox.clone())
+            .with_path_append(config.exec_path_append.clone())
+            .with_allowed_env_keys(config.exec_allowed_env_keys.clone())
+            .with_restrict_to_workspace(config.restrict_to_workspace);
+        registry.register(Arc::new(exec)).await;
+
+        registry
+            .register(Arc::new(WebFetchTool::new(
+                config.web_max_chars,
+                config.web_proxy.clone(),
+            )))
+            .await;
+
+        let search_backend = deps
+            .web_search
+            .clone()
+            .unwrap_or_else(|| Arc::new(DuckDuckGoBackend::new()));
+        registry
+            .register(Arc::new(WebSearchTool::new(search_backend)))
+            .await;
+
+        registry
+            .register(Arc::new(NotebookEditTool(fs.clone())))
+            .await;
+
+        let message = Arc::new(MessageToolInner::new(
+            bus,
+            config.workspace.clone(),
+            config.restrict_to_workspace,
+        ));
+        registry.register(message.clone()).await;
+
+        let spawn = if let Some(cb) = deps.spawn_callback {
+            let tool = Arc::new(SpawnTool::new(cb));
+            registry.register(tool.clone()).await;
+            Some(tool)
+        } else {
+            None
+        };
+
+        let cron = if let Some(svc) = deps.cron_service {
+            let tool = Arc::new(CronTool::new(svc, config.default_timezone.clone()));
+            registry.register(tool.clone()).await;
+            Some(tool)
+        } else {
+            None
+        };
+
+        BuiltinToolSet {
+            registry,
+            message,
+            spawn,
+            cron,
+        }
+    }
+}
 
 pub const UNIFIED_SESSION_KEY: &str = "unified:default";
 

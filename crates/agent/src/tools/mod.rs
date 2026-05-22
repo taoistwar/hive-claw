@@ -10,7 +10,6 @@
 pub mod base;
 pub mod context;
 pub mod cron;
-pub mod factory;
 pub mod file_state;
 pub mod filesystem;
 pub mod image_generation;
@@ -29,13 +28,11 @@ pub mod self_;
 pub mod shell;
 pub mod spawn;
 pub mod web;
-pub mod web_search_ddg;
 
 pub use base::{Tool, ToolExecError};
 pub use context::{ContextAware, RequestContext, ToolContext};
 pub use runtime_state::RuntimeState;
 pub use cron::CronTool;
-pub use factory::{BuiltinToolSet, ToolFactoryConfig, ToolFactoryDeps};
 pub use filesystem::{EditFileTool, FsTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use image_generation::{
     ImageGenerationTool, ImageGenerationToolConfig, ImageGenerationProvider,
@@ -65,8 +62,7 @@ pub use self_::{MyTool, MyToolConfig, SubagentStatus, SubagentManager};
 pub use shell::ExecTool;
 pub use spawn::{SpawnCallback, SpawnContext, SpawnRequest, SpawnTool};
 pub use web::{
-    UnavailableBackend as WebSearchUnavailable, WebFetchTool, WebSearchBackend, WebSearchItem,
-    WebSearchTool,
+    DuckDuckGoBackend, UnavailableBackend as WebSearchUnavailable, WebFetchTool,
+    WebSearchBackend, WebSearchItem, WebSearchTool,
 };
-pub use web_search_ddg::DuckDuckGoBackend;
 pub use file_state::{FileStateStore, FileStates};

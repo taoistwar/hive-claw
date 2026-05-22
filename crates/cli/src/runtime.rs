@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent::tools::{BuiltinToolSet, ToolFactoryConfig, ToolFactoryDeps};
-use agent::{AgentLoop, LoopConfig};
+use agent::tools::MessageTool;
+use agent::{AgentLoop, BuiltinToolSet, LoopConfig, ToolFactoryConfig, ToolFactoryDeps};
 use bus::MessageBus;
 use config::schema::{Config, ProviderConfig};
 use config::{get_config_path, paths::is_default_workspace, set_config_path};

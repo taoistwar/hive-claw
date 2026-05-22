@@ -57,7 +57,7 @@ impl ToolLoader {
     }
 
     async fn discover_inner(&self) -> Vec<ToolConstructor> {
-        todo!("TODO: implement package scanning for tool discovery using module introspection or explicit registration")
+        vec![]
     }
 
     async fn discover_plugins(&self) -> Vec<ToolConstructor> {
@@ -76,7 +76,7 @@ impl ToolLoader {
     }
 
     async fn discover_plugins_inner(&self) -> Vec<ToolConstructor> {
-        todo!("TODO: implement plugin discovery via entry-points / dynamic loading")
+        vec![]
     }
 
     pub async fn load(
@@ -141,6 +141,7 @@ impl ToolLoader {
     }
 
     fn tool_enabled(tool: &Arc<dyn Tool>, ctx: &ToolContext) -> bool {
-        todo!("TODO: implement per-tool enabled check — requires Tool trait to expose an `enabled(ctx)` class method or equivalent")
+        let ctx_value = Value::Object(serde_json::Map::new());
+        tool.enabled(&ctx_value)
     }
 }

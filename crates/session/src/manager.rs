@@ -8,11 +8,86 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 use log::{info, warn};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use config::{ensure_dir, get_legacy_sessions_dir};
 use utils::helpers::{find_legal_message_start, image_placeholder_text, safe_filename};
+
+const FILE_MAX_MESSAGES: usize = 2000;
+const SESSION_PREVIEW_MAX_CHARS: usize = 120;
+
+static MESSAGE_TIME_PREFIX_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\[Message Time: [^\]]+\]\n?").unwrap());
+static LOCAL_IMAGE_BREADCRUMB_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\[image: (?:/|~)[^\]]+\]\s*$").unwrap());
+static TOOL_CALL_ECHO_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(?:generate_image|message)\([^)]*\)\s*$").unwrap());
+
+/// Remove internal replay artifacts that the model may have copied before.
+fn sanitize_assistant_replay_text(content: &str) -> String {
+    let content = MESSAGE_TIME_PREFIX_RE.replace(content, "");
+    let lines: Vec<&str> = content
+        .lines()
+        .filter(|line| {
+            !LOCAL_IMAGE_BREADCRUMB_RE.is_match(line) && !TOOL_CALL_ECHO_RE.is_match(line)
+        })
+        .collect();
+    lines.join("\n").trim().to_string()
+}
+
+/// Return compact display text for session lists.
+fn text_preview(content: &str) -> String {
+    let cleaned = content.lines().next().unwrap_or("").trim();
+    if cleaned.len() > SESSION_PREVIEW_MAX_CHARS {
+        format!("{}...", &cleaned[..SESSION_PREVIEW_MAX_CHARS])
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Return display text for a message, scrubbing subagent announce bodies.
+fn message_preview_text(msg: &Value) -> String {
+    if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
+        if role == "assistant" {
+            if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+                if content.starts_with("[Subagent announce]") {
+                    return utils::subagent_channel_display::scrub_subagent_announce_body(content);
+                }
+            }
+        }
+    }
+    if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+        text_preview(content)
+    } else {
+        String::new()
+    }
+}
+
+/// Prepend `[Message Time: ...]` to user messages for relative-date reasoning.
+fn annotate_message_time(content: &str) -> String {
+    let now = Local::now();
+    let time_str = now.format("%Y-%m-%d %H:%M:%S %Z");
+    format!("[Message Time: {}]\n{}", time_str, content)
+}
+
+/// Rough estimate of token count for a message (4 chars ≈ 1 token for English).
+fn estimate_tokens_for_message(msg: &Value) -> usize {
+    let content = msg
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let base = content.len() / 4;
+    let tool_calls = msg
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len() * 20)
+        .unwrap_or(0);
+    let overhead = 10;
+    base + tool_calls + overhead
+}
 
 /// A conversation session (one per `channel:chat_id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +131,12 @@ impl Session {
     pub fn add_message(&mut self, role: &str, content: &str, extra: HashMap<String, Value>) {
         let mut msg = serde_json::Map::new();
         msg.insert("role".into(), Value::String(role.into()));
-        msg.insert("content".into(), Value::String(content.into()));
+        let final_content = if role == "user" {
+            annotate_message_time(content)
+        } else {
+            content.to_string()
+        };
+        msg.insert("content".into(), Value::String(final_content));
         msg.insert(
             "timestamp".into(),
             Value::String(Local::now().to_rfc3339()),
@@ -71,6 +151,18 @@ impl Session {
     /// Return unconsolidated messages for LLM input, aligned to a legal
     /// tool-call boundary.
     pub fn get_history(&self, max_messages: usize) -> Vec<Value> {
+        self.get_history_with_options(max_messages, None, false)
+    }
+
+    /// Return unconsolidated messages for LLM input with options.
+    /// - `max_tokens`: If set, truncate history when estimated token budget is exceeded.
+    /// - `include_timestamps`: Whether to include timestamp fields in the output.
+    pub fn get_history_with_options(
+        &self,
+        max_messages: usize,
+        max_tokens: Option<usize>,
+        include_timestamps: bool,
+    ) -> Vec<Value> {
         let unconsolidated = &self.messages[self.last_consolidated.min(self.messages.len())..];
         let sliced: Vec<&Value> = if unconsolidated.len() > max_messages {
             unconsolidated[unconsolidated.len() - max_messages..]
@@ -93,6 +185,53 @@ impl Session {
         let legal_start = find_legal_message_start(&sliced);
         if legal_start > 0 {
             sliced = sliced.split_off(legal_start);
+        }
+
+        // Filter empty assistant messages that have no tool_calls, reasoning_content, or thinking_blocks.
+        sliced.retain(|m| {
+            if m.get("role").and_then(Value::as_str) != Some("assistant") {
+                return true;
+            }
+            let has_content = m
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let has_tool_calls = m.get("tool_calls").map(|v| !v.is_null()).unwrap_or(false);
+            let has_reasoning = m
+                .get("reasoning_content")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            let has_thinking = m
+                .get("thinking_blocks")
+                .map(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+                .unwrap_or(false);
+            has_content || has_tool_calls || has_reasoning || has_thinking
+        });
+
+        // Apply token budget if specified.
+        if let Some(max_tok) = max_tokens {
+            let mut total_tokens: usize = 0;
+            let mut cutoff = sliced.len();
+            for (i, m) in sliced.iter().enumerate().rev() {
+                let tokens = estimate_tokens_for_message(m);
+                if total_tokens + tokens > max_tok {
+                    cutoff = i + 1;
+                    break;
+                }
+                total_tokens += tokens;
+            }
+            if cutoff < sliced.len() {
+                // Ensure we don't start mid-turn after token budget cutoff.
+                let mut start = cutoff;
+                while start < sliced.len()
+                    && sliced[start].get("role").and_then(Value::as_str) != Some("user")
+                {
+                    start += 1;
+                }
+                sliced = sliced[start..].to_vec();
+            }
         }
 
         // Rewrite media-bearing messages to include image breadcrumbs.
@@ -126,9 +265,20 @@ impl Session {
                 entry.insert("role".into(), role);
             }
             entry.insert("content".into(), new_content);
-            for key in ["tool_calls", "tool_call_id", "name", "reasoning_content"] {
+            for key in [
+                "tool_calls",
+                "tool_call_id",
+                "name",
+                "reasoning_content",
+                "thinking_blocks",
+            ] {
                 if let Some(v) = message.get(key) {
                     entry.insert(key.into(), v.clone());
+                }
+            }
+            if include_timestamps {
+                if let Some(ts) = message.get("timestamp") {
+                    entry.insert("timestamp".into(), ts.clone());
                 }
             }
             // Ensure we don't accidentally keep side metadata.

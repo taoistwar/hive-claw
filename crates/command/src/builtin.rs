@@ -200,17 +200,21 @@ fn reply(ctx: &CommandContext, content: String) -> OutboundMessage {
         channel: ctx.msg.channel.clone(),
         chat_id: ctx.msg.chat_id.clone(),
         content,
+        reply_to: None,
+        media: Vec::new(),
         metadata: ctx.msg.metadata.clone(),
     }
 }
 
 fn reply_text(ctx: &CommandContext, content: String) -> OutboundMessage {
     let mut metadata = ctx.msg.metadata.clone();
-    metadata.insert("render_as".into(), "text".into());
+    metadata.insert("render_as".into(), serde_json::Value::String("text".into()));
     OutboundMessage {
         channel: ctx.msg.channel.clone(),
         chat_id: ctx.msg.chat_id.clone(),
         content,
+        reply_to: None,
+        media: Vec::new(),
         metadata,
     }
 }
@@ -227,7 +231,7 @@ pub const NANOBOT_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn cmd_stop<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> {
     Box::pin(async move {
         let loop_ = ctx.loop_.clone()?;
-        let total = loop_.cancel_active_tasks(&ctx.msg.session_key).await;
+        let total = loop_.cancel_active_tasks(&ctx.msg.session_key()).await;
         let content = if total > 0 {
             format!("Stopped {total} task(s).")
         } else {

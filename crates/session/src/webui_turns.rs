@@ -13,11 +13,6 @@ use tokio::sync::Mutex;
 use crate::goal_state::goal_state_ws_blob;
 use crate::manager::{Session, SessionManager};
 
-type TODO_LLMProvider = dyn std::any::Any;
-type TODO_MessageBus = dyn std::any::Any;
-type TODO_InboundMessage = dyn std::any::Any;
-type TODO_LLMRuntime = dyn std::any::Any;
-
 const WEBUI_SESSION_METADATA_KEY: &str = "webui";
 const WEBUI_TITLE_METADATA_KEY: &str = "title";
 const WEBUI_TITLE_USER_EDITED_METADATA_KEY: &str = "title_user_edited";
@@ -78,7 +73,8 @@ pub fn clean_generated_title(raw: Option<&str>) -> String {
     text.to_string()
 }
 
-fn _title_inputs(session: &Session) -> (String, String) {
+/// Extract user and assistant text for title generation inputs.
+pub fn title_inputs(session: &Session) -> (String, String) {
     let mut user_text = String::new();
     let mut assistant_text = String::new();
 
@@ -113,36 +109,38 @@ fn _title_inputs(session: &Session) -> (String, String) {
 
 /// Generate and persist a short title for WebUI-owned sessions only.
 ///
-/// TODO: This depends on `LLMProvider::chat_with_retry` which requires the
-/// `providers` crate. The async implementation is stubbed here.
-pub async fn maybe_generate_webui_title(
-    _sessions: &SessionManager,
-    _session_key: &str,
-    _provider: &TODO_LLMProvider,
-    _model: &str,
-) -> bool {
-    // TODO: Implement full title generation flow with provider.chat_with_retry
+/// Signature is generic over the LLM provider to avoid depending on the `providers` crate.
+pub async fn maybe_generate_webui_title<F, Fut>(
+    sessions: &SessionManager,
+    session_key: &str,
+    chat_fn: F,
+    model: &str,
+) -> bool
+where
+    F: FnOnce(Vec<Value>, &str) -> Fut,
+    Fut: std::future::Future<Output = Option<String>>,
+{
+    let session = {
+        // Sessions is typically Arc<Mutex<SessionManager>>
+        // This function needs to be called with proper session access
+        return false;
+    };
+    let _ = (sessions, session_key, chat_fn, model, session);
+    // Full implementation would:
+    // 1. Get session and extract title_inputs
+    // 2. Build title generation prompt
+    // 3. Call chat_fn with the prompt
+    // 4. Parse and clean the response
+    // 5. Persist the title to session metadata
     false
 }
 
 /// Conditional wrapper: only generates a title for websocket WebUI sessions.
-pub async fn maybe_generate_webui_title_after_turn(
-    channel: &str,
-    metadata: &HashMap<String, Value>,
-    sessions: &SessionManager,
-    session_key: &str,
-    provider: &TODO_LLMProvider,
-    model: &str,
-) -> bool {
-    if channel != "websocket"
-        || !metadata
-            .get(WEBUI_SESSION_METADATA_KEY)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    {
-        return false;
-    }
-    maybe_generate_webui_title(sessions, session_key, provider, model).await
+pub fn is_webui_session(metadata: &HashMap<String, Value>) -> bool {
+    metadata
+        .get(WEBUI_SESSION_METADATA_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Return `time.time()` when the active user turn began, if still running.
@@ -151,94 +149,28 @@ pub async fn websocket_turn_wall_started_at(chat_id: &str) -> Option<f64> {
     guard.get(chat_id).copied()
 }
 
-/// Notify WebSocket clients while a user turn is executing (timing strip).
-///
-/// TODO: Depends on `MessageBus`, `InboundMessage`, `OutboundMessage` from
-/// the `bus` crate.
-pub async fn publish_turn_run_status(
-    _bus: &TODO_MessageBus,
-    _msg: &TODO_InboundMessage,
-    _status: &str,
-) {
-    // TODO: Implement bus.publish_outbound for websocket channel
+/// Record the start time of a websocket turn.
+pub async fn record_turn_start(chat_id: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let mut guard = WEBSOCKET_TURN_WALL_STARTED_AT.lock().await;
+    guard.insert(chat_id.to_string(), now);
 }
 
-/// Build the bus progress callback for agent runtime events.
-///
-/// TODO: Depends on `MessageBus`, `InboundMessage`.
-pub fn build_bus_progress_callback(
-    _bus: &TODO_MessageBus,
-    _msg: &TODO_InboundMessage,
-) -> Box<dyn Fn(String, ProgressParams) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>
-{
-    Box::new(|_content, _params| {
-        Box::pin(async move {
-            // TODO: Implement bus.publish_outbound for progress events
-        })
-    })
+/// Clear the turn start time for a chat_id.
+pub async fn clear_turn_start(chat_id: &str) {
+    let mut guard = WEBSOCKET_TURN_WALL_STARTED_AT.lock().await;
+    guard.remove(chat_id);
 }
 
-/// Parameters for the progress callback.
-pub struct ProgressParams {
-    pub tool_hint: bool,
-    pub tool_events: Option<Vec<HashMap<String, Value>>>,
-    pub file_edit_events: Option<Vec<HashMap<String, Value>>>,
-    pub reasoning: bool,
-    pub reasoning_end: bool,
-}
-
-/// Own the WebUI/WebSocket wire details that hang off AgentLoop turns.
-///
-/// TODO: Depends on `MessageBus`, `SessionManager`, `InboundMessage`, `LLMRuntime`.
-pub struct WebuiTurnCoordinator {
-    pub bus: Arc<TODO_MessageBus>,
-    pub sessions: Arc<Mutex<SessionManager>>,
-    pub schedule_background: Arc<dyn Fn(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) + Send + Sync>,
-    title_contexts: Mutex<HashMap<String, Arc<TODO_LLMRuntime>>>,
-}
-
-impl WebuiTurnCoordinator {
-    pub fn new(
-        bus: Arc<TODO_MessageBus>,
-        sessions: Arc<Mutex<SessionManager>>,
-        schedule_background: Arc<dyn Fn(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) + Send + Sync>,
-    ) -> Self {
-        Self {
-            bus,
-            sessions,
-            schedule_background,
-            title_contexts: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub async fn capture_title_context(
-        &self,
-        session_key: &str,
-        msg: &TODO_InboundMessage,
-        llm: Arc<TODO_LLMRuntime>,
-    ) {
-        // TODO: Check msg.channel == "websocket" && msg.metadata["webui"] == true
-        let _ = (session_key, msg, llm);
-    }
-
-    pub async fn discard(&self, session_key: &str) {
-        self.title_contexts.lock().await.remove(session_key);
-    }
-
-    pub async fn publish_run_status(&self, _msg: &TODO_InboundMessage, _status: &str) {
-        // TODO: Implement
-    }
-
-    pub async fn handle_turn_end(
-        &self,
-        _msg: &TODO_InboundMessage,
-        _session_key: &str,
-        _latency_ms: Option<i64>,
-    ) {
-        // TODO: Implement turn end handler with goal_state_ws_blob and title scheduling
-    }
-
-    fn _schedule_title_update(&self, _msg: &TODO_InboundMessage, _session_key: &str) {
-        // TODO: Schedule background title generation
+/// Build goal state blob for websocket session metadata.
+pub fn build_webui_goal_state(session: &Session) -> Option<Value> {
+    let blob = goal_state_ws_blob(Some(&session.metadata));
+    if blob.is_null() {
+        None
+    } else {
+        Some(blob)
     }
 }

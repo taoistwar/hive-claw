@@ -31,6 +31,7 @@ static LEGACY_RAW_MESSAGE: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Pure file I/O for memory files: MEMORY.md, history.jsonl, SOUL.md, USER.md.
+#[derive(Clone)]
 pub struct MemoryStore {
     pub workspace: PathBuf,
     pub max_history_entries: usize,

@@ -12,6 +12,7 @@ use cron::service::{CronService, RemoveOutcome};
 use cron::types::{CronJob, CronPayload, CronSchedule, ScheduleKind};
 
 use super::base::{Tool, ToolExecError};
+use super::context::RequestContext;
 
 #[derive(Clone, Default, Debug)]
 pub struct CronContext {
@@ -121,10 +122,11 @@ impl Tool for CronTool {
                 "deliver":{"type":"boolean","default":true,"description":"Deliver result to user channel"},
                 "job_id":{"type":"string","description":"REQUIRED when action='remove'"},
             },
-            "required":["action"],
         })
     }
-
+    fn set_tool_context(&self, ctx: &RequestContext) {
+        self.set_context(&ctx.channel, &ctx.chat_id);
+    }
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let action = params
             .get("action")

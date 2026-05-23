@@ -15,7 +15,7 @@ use console::{Style, Term};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use providers::PROVIDERS;
 
-use crate::commands::expand_tilde;
+use crate::runtime::expand_tilde;
 
 // ---------------------------------------------------------------------------
 // Result & Type Info
@@ -407,7 +407,7 @@ fn show_config_panel(display_name: &str, items: &[(String, String)]) {
             value
         ));
     }
-    let _ = term.write_line(&cyan.apply_to("\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}").to_string());
+    let _ = term.write_line(&cyan.apply_to("\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}").to_string());
 }
 
 fn show_section_header(title: &str, subtitle: &str) {

@@ -21,6 +21,4 @@ Thumbs.db
 *.log
 
 # Note: Cargo.lock IS committed for binary crates (this is a workspace of binaries).
-
-
 nanobot/

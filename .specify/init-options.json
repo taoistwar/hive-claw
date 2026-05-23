@@ -1,5 +1,6 @@
 {
   "ai": "opencode",
+  "ai_skills": true,
   "branch_numbering": "sequential",
   "context_file": "AGENTS.md",
   "here": true,

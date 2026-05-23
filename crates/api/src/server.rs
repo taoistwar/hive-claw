@@ -1,11 +1,4 @@
 //! axum-based HTTP server implementing the OpenAI-compatible endpoints.
-//!
-//! Ports `nanobot.api.server`:
-//! * `POST /v1/chat/completions` — accepts JSON *or* multipart/form-data,
-//!   returns a Chat Completions response (optionally as SSE when
-//!   `stream=true`).
-//! * `GET  /v1/models`            — advertises the single configured model.
-//! * `GET  /health`               — liveness probe.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -305,6 +298,10 @@ impl ApiServerConfig {
 }
 
 /// Shared mutable state held by axum handlers.
+///
+/// `session_locks` matches the Python server's per-session mutex map —
+/// an inbound request that reuses an already-busy `session_id` will
+/// serialise behind the earlier one.
 pub struct ServerState {
     pub agent: Arc<dyn ApiAgent>,
     pub config: ApiServerConfig,

@@ -63,6 +63,12 @@ pub struct CronPayload {
     pub channel: Option<String>,
     #[serde(default)]
     pub to: Option<String>,
+    /// Channel-specific metadata (e.g. Slack thread_ts).
+    #[serde(default)]
+    pub channel_meta: Option<serde_json::Value>,
+    /// Session key for session-scoped delivery.
+    #[serde(default)]
+    pub session_key: Option<String>,
 }
 
 /// Single execution record for a cron job.

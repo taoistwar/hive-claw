@@ -1434,6 +1434,7 @@ dependencies = [
 name = "config"
 version = "0.1.0"
 dependencies = [
+ "cron 0.1.0",
  "dirs 5.0.1",
  "log",
  "regex",
@@ -4606,33 +4607,6 @@ dependencies = [
  "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
-]
-
-[[package]]
-name = "nanobot"
-version = "0.1.0"
-dependencies = [
- "agent",
- "api",
- "bus",
- "channels",
- "chrono",
- "cli",
- "command",
- "config",
- "cron 0.1.0",
- "dirs 5.0.1",
- "env_logger",
- "heartbeat",
- "log",
- "providers",
- "security",
- "serde_json",
- "session",
- "skills",
- "thiserror 1.0.69",
- "tokio",
- "utils",
 ]
 
 [[package]]

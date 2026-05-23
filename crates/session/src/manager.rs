@@ -293,6 +293,7 @@ impl Session {
         self.messages.clear();
         self.last_consolidated = 0;
         self.updated_at = now();
+        self.metadata.remove("_last_summary");
     }
 
     /// Keep a legal recent suffix, mirroring `get_history` boundary rules.

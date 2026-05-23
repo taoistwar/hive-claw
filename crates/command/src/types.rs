@@ -33,6 +33,9 @@ pub trait Session: Send + Sync {
     fn last_consolidated(&self) -> usize;
     /// Number of messages currently in the history (used for `/status`).
     fn history_len(&self) -> usize;
+    /// Return the last `max_messages` messages as JSON values.
+    /// If `max_messages` is 0, return all messages.
+    fn get_history(&self, max_messages: usize) -> Vec<serde_json::Value>;
     /// Drain messages on top of `last_consolidated` and return them as a
     /// snapshot (used by `/new`).
     fn drain_after_consolidation(&self) -> Vec<serde_json::Value>
@@ -156,6 +159,14 @@ pub trait Loop: Send + Sync {
     fn context_window_tokens(&self) -> u32;
     fn provider_generation(&self) -> ProviderGenerationView;
     fn web_config(&self) -> Option<WebConfigView>;
+
+    // Model presets -------------------------------------------------------
+    /// Set of configured model preset names (e.g. "fast", "smart").
+    fn model_presets(&self) -> std::collections::HashSet<String>;
+    /// Currently active preset name, or `"default"` if none selected.
+    fn model_preset(&self) -> String;
+    /// Switch to a named preset. Returns an error string on failure.
+    fn set_model_preset(&self, name: &str) -> Result<(), String>;
 
     // Sub-object accessors -------------------------------------------------
     fn sessions(&self) -> Arc<dyn SessionManager>;

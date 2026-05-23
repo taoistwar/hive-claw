@@ -42,6 +42,11 @@ static RE_THOUGHT_CLOSE_END: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*</though
 static RE_CHANNEL_MARKER: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*<\|?channel\|?>\s*").unwrap());
 
+static RE_EXTRACT_THINK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<think>(.*?)</think>").unwrap());
+static RE_EXTRACT_THOUGHT: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<thought>(.*?)</thought>").unwrap());
+
 /// Remove thinking blocks, unclosed trailing tags, and tokenizer-level
 /// template leaks.
 pub fn strip_think(text: &str) -> String {
@@ -74,6 +79,140 @@ pub fn strip_think(text: &str) -> String {
     s = RE_THOUGHT_CLOSE_END.replace_all(&s, "").into_owned();
     s = RE_CHANNEL_MARKER.replace_all(&s, "").into_owned();
     s.trim().to_string()
+}
+
+/// Extract thinking content from inline `<think>` / `<thought>` blocks.
+///
+/// Returns `(thinking_text, cleaned_text)`. Only closed blocks are
+/// extracted; unclosed streaming prefixes are stripped from the cleaned
+/// text but not surfaced — [`strip_think`] handles that case.
+pub fn extract_think(text: &str) -> (Option<String>, String) {
+    let mut parts: Vec<String> = Vec::new();
+    for m in RE_EXTRACT_THINK.captures_iter(text) {
+        if let Some(inner) = m.get(1) {
+            let trimmed = inner.as_str().trim().to_string();
+            if !trimmed.is_empty() {
+                parts.push(trimmed);
+            }
+        }
+    }
+    for m in RE_EXTRACT_THOUGHT.captures_iter(text) {
+        if let Some(inner) = m.get(1) {
+            let trimmed = inner.as_str().trim().to_string();
+            if !trimmed.is_empty() {
+                parts.push(trimmed);
+            }
+        }
+    }
+    let thinking = if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    };
+    (thinking, strip_think(text))
+}
+
+/// Stateful inline `<think>` extractor for streaming buffers.
+///
+/// Streaming providers expose only a single content delta channel. When a
+/// model embeds reasoning in `<think>...</think>` blocks inside that
+/// channel, callers need to surface the reasoning incrementally as it
+/// arrives without re-emitting earlier text. This holds the "already
+/// emitted" cursor so the runner and the loop hook share one shape.
+pub struct IncrementalThinkExtractor {
+    emitted: String,
+}
+
+impl IncrementalThinkExtractor {
+    pub fn new() -> Self {
+        Self {
+            emitted: String::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.emitted.clear();
+    }
+
+    /// Emit any new thinking text found in `buf`.
+    ///
+    /// Returns `Some(new_text)` if anything was emitted this call, or `None`
+    /// otherwise. The caller is responsible for forwarding the new text to
+    /// whatever reasoning hook / callback mechanism they use.
+    pub fn feed(&mut self, buf: &str) -> Option<String> {
+        let (thinking, _) = extract_think(buf);
+        let thinking = thinking?;
+        if thinking == self.emitted {
+            return None;
+        }
+        let new = if thinking.len() > self.emitted.len() {
+            thinking[self.emitted.len()..].trim().to_string()
+        } else {
+            thinking.trim().to_string()
+        };
+        self.emitted = thinking;
+        if new.is_empty() {
+            None
+        } else {
+            Some(new)
+        }
+    }
+}
+
+/// Return `(reasoning_text, cleaned_content)` from one model response.
+///
+/// Single source of truth for "what reasoning did this response carry, and
+/// what answer text remains after we peel it out". Fallback order:
+///
+/// 1. Dedicated `reasoning_content` (DeepSeek-R1, Kimi, MiMo, OpenAI
+///    reasoning models, Bedrock).
+/// 2. Anthropic `thinking_blocks`.
+/// 3. Inline `<think>` / `<thought>` blocks in `content`.
+///
+/// Only one source contributes per response; lower-priority sources are
+/// ignored if a higher-priority one is present, but inline `<think>`
+/// tags are still stripped from `content` so they never leak into the
+/// final answer.
+pub fn extract_reasoning(
+    reasoning_content: Option<&str>,
+    thinking_blocks: Option<&[Value]>,
+    content: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    if let Some(rc) = reasoning_content {
+        if !rc.is_empty() {
+            let cleaned = content.map(|c| strip_think(c));
+            return (Some(rc.to_string()), cleaned);
+        }
+    }
+    if let Some(blocks) = thinking_blocks {
+        let parts: Vec<String> = blocks
+            .iter()
+            .filter_map(|tb| {
+                let obj = tb.as_object()?;
+                if obj.get("type").and_then(Value::as_str) != Some("thinking") {
+                    return None;
+                }
+                let thinking = obj.get("thinking").and_then(Value::as_str)?;
+                if thinking.is_empty() {
+                    None
+                } else {
+                    Some(thinking.to_string())
+                }
+            })
+            .collect();
+        let joined = if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        };
+        let cleaned = content.map(|c| strip_think(c));
+        return (joined, cleaned);
+    }
+    if let Some(c) = content {
+        let (thinking, cleaned) = extract_think(c);
+        return (thinking, if cleaned.is_empty() { None } else { Some(cleaned) });
+    }
+    (None, content.map(|s| s.to_string()))
 }
 
 // ---------------------------------------------------------------------------

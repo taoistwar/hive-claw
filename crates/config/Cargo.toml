@@ -10,3 +10,4 @@ regex = { workspace = true }
 dirs = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+cron = { path = "../cron" }

@@ -245,6 +245,8 @@ impl CronService {
                 deliver,
                 channel,
                 to,
+                channel_meta: None,
+                session_key: None,
             },
             state: CronJobState {
                 next_run_at_ms: compute_next_run(&schedule, now),

@@ -10,10 +10,22 @@
 //! * [`qq::QQChannel`] — QQ Bot Open Platform (REST + WebSocket gateway).
 
 pub mod base;
+pub mod dingtalk;
+pub mod discord;
+pub mod email;
+pub mod feishu;
 pub mod manager;
+pub mod matrix;
+pub mod mochat;
+pub mod msteams;
 pub mod qq;
 pub mod qq_gateway;
 pub mod registry;
+pub mod slack;
+pub mod telegram;
+pub mod wecom;
+pub mod websocket;
+pub mod whatsapp;
 pub mod weixin;
 
 pub use base::{

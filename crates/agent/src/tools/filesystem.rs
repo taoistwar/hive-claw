@@ -16,16 +16,95 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::{Value, json};
 
 use super::base::{Tool, ToolExecError};
-use super::file_state::{FileStateStore, FileStates, current_file_states};
+use super::file_state::{FileStates, current_file_states};
 use super::sandbox::{PathError, resolve_path};
+
+static BLOCKED_DEVICE_PATHS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    HashSet::from([
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/full",
+        "/dev/stdin",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/tty",
+        "/dev/console",
+        "/dev/fd/0",
+        "/dev/fd/1",
+        "/dev/fd/2",
+    ])
+});
+
+static PROC_FD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^/proc/\d+/fd/[012]$").unwrap()
+});
+
+static PROC_SELF_FD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^/proc/self/fd/[012]$").unwrap()
+});
+
+fn is_blocked_device<P: AsRef<Path>>(path: P) -> bool {
+    let raw = path.as_ref().to_string_lossy();
+
+    let resolved = fs::canonicalize(path.as_ref())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| raw.to_string());
+
+    if BLOCKED_DEVICE_PATHS.contains(raw.as_ref()) || BLOCKED_DEVICE_PATHS.contains(resolved.as_str()) {
+        return true;
+    }
+    if PROC_FD_RE.is_match(&raw) || PROC_SELF_FD_RE.is_match(&raw) {
+        return true;
+    }
+    if PROC_FD_RE.is_match(&resolved) || PROC_SELF_FD_RE.is_match(&resolved) {
+        return true;
+    }
+    if resolved.starts_with("/dev/") {
+        return true;
+    }
+    false
+}
+
+fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
+    if data.len() >= 8 && data[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+        return Some("image/png");
+    }
+    if data.len() >= 3 && data[..3] == [0xFF, 0xD8, 0xFF] {
+        return Some("image/jpeg");
+    }
+    if data.len() >= 6 && (&data[..6] == b"GIF87a" || &data[..6] == b"GIF89a") {
+        return Some("image/gif");
+    }
+    if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn mime_from_extension(path: &str) -> Option<&'static str> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".png") {
+        Some("image/png")
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if lower.ends_with(".gif") {
+        Some("image/gif")
+    } else if lower.ends_with(".webp") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
 
 static IGNORE_DIRS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     HashSet::from([
@@ -115,6 +194,8 @@ fn usize_param(params: &Value, key: &str, default: usize) -> usize {
 
 const READ_MAX_CHARS: usize = 128_000;
 const READ_DEFAULT_LIMIT: usize = 2000;
+const MAX_PDF_PAGES: usize = 20;
+const MARKDOWN_EXTS: &[&str] = &[".md", ".mdx", ".markdown"];
 
 pub struct ReadFileTool(pub FsTool);
 
@@ -124,7 +205,7 @@ impl Tool for ReadFileTool {
         "read_file"
     }
     fn description(&self) -> String {
-        "Read a text file. Output format: LINE_NUM| CONTENT. Use offset and limit for large files. Reads exceeding ~128K chars are truncated.".into()
+        "Read a file (text, image, or document). Text output format: LINE_NUM|CONTENT. Images return visual content for analysis. Supports PDF, DOCX, XLSX, PPTX documents. Use offset and limit for large text files. Reads exceeding ~128K chars are truncated.".into()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -133,6 +214,7 @@ impl Tool for ReadFileTool {
                 "path":{"type":"string","description":"The file path to read"},
                 "offset":{"type":"integer","description":"Line number to start reading from (1-indexed, default 1)","minimum":1,"default":1},
                 "limit":{"type":"integer","description":"Maximum number of lines to read (default 2000)","minimum":1},
+                "pages":{"type":"string","description":"Page range for PDF files, e.g. '1-5' (default: all, max 20 pages)"},
             },
             "required":["path"],
         })
@@ -153,16 +235,35 @@ impl Tool for ReadFileTool {
             .get("limit")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
+        let pages = params.get("pages").and_then(|v| v.as_str());
         let fp = match self.0.resolve(path) {
             Ok(p) => p,
             Err(e) => return Ok(Value::String(format!("Error: {e}"))),
         };
+
+        if is_blocked_device(&fp) {
+            return Ok(Value::String(format!(
+                "Error: Reading {} is blocked (device path that could hang or produce infinite output).",
+                fp.display()
+            )));
+        }
+
         if !fp.exists() {
             return Ok(Value::String(format!("Error: File not found: {path}")));
         }
         if !fp.is_file() {
             return Ok(Value::String(format!("Error: Not a file: {path}")));
         }
+
+        let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+        if ext == "pdf" {
+            return Ok(Value::String(read_pdf(&fp, pages)));
+        }
+        if matches!(ext.as_str(), "docx" | "xlsx" | "pptx") {
+            return Ok(Value::String(read_office_doc(&fp, &ext)));
+        }
+
         let file_states = self.0.file_states();
         if file_states.is_unchanged(&fp, offset, limit) {
             return Ok(Value::String(format!(
@@ -176,11 +277,26 @@ impl Tool for ReadFileTool {
         if raw.is_empty() {
             return Ok(Value::String(format!("(Empty file: {path})")));
         }
-        let text = match String::from_utf8(raw) {
+
+        let mime = detect_image_mime(&raw).or_else(|| mime_from_extension(path));
+        if let Some(m) = mime {
+            if m.starts_with("image/") {
+                return Ok(Value::String(build_image_response(&raw, m, &fp, path)));
+            }
+        }
+
+        let text = match String::from_utf8(raw.clone()) {
             Ok(s) => s.replace("\r\n", "\n"),
             Err(_) => {
+                let mime = detect_image_mime(&raw).or_else(|| mime_from_extension(path));
+                if let Some(m) = mime {
+                    if m.starts_with("image/") {
+                        return Ok(Value::String(build_image_response(&raw, m, &fp, path)));
+                    }
+                }
                 return Ok(Value::String(format!(
-                    "Error: Cannot read binary file {path}. Only UTF-8 text is supported by this tool.",
+                    "Error: Cannot read binary file {path} (MIME: {}). Only UTF-8 text and images are supported.",
+                    mime.unwrap_or("unknown")
                 )));
             }
         };
@@ -232,6 +348,542 @@ impl Tool for ReadFileTool {
         file_states.record_read(&fp, offset, limit);
         Ok(Value::String(result))
     }
+}
+
+fn read_pdf(fp: &Path, pages: Option<&str>) -> String {
+    // TODO: Full PDF extraction requires a library like `lopdf` or `pdf-extract`.
+    // Implementation plan:
+    // 1. Add `pdf-extract` or `lopdf` crate to Cargo.toml.
+    // 2. Parse page range string (e.g. "1-5") into 0-based start/end.
+    // 3. Use the library to open the PDF and extract text per page.
+    // 4. Respect MAX_PDF_PAGES limit (default 20 pages).
+    // 5. Format output as "--- Page N ---\n{text}" per page.
+    // 6. Handle continuation hints when document has more pages.
+    // 7. Truncate at READ_MAX_CHARS with a suffix note.
+    //
+    // For now, a simple heuristic: try reading raw bytes and looking for
+    // stream markers — this only works for very simple PDFs.
+    // A proper implementation needs a PDF parsing library.
+    let _ = fp;
+    let _ = pages;
+    let _ = MAX_PDF_PAGES;
+    "Error: PDF reading requires a PDF parsing library (e.g. pdf-extract or lopdf). Add the crate to Cargo.toml and implement read_pdf.".to_string()
+}
+
+fn read_office_doc(fp: &Path, ext: &str) -> String {
+    // TODO: Office document extraction requires parsing ZIP-based OOXML formats.
+    // Implementation plan:
+    // 1. Add `docx` crate for .docx, `calamine` for .xlsx, or write custom
+    //    ZIP + XML parsing for all three formats.
+    // 2. .docx: extract word/document.xml text nodes.
+    // 3. .xlsx: extract sheet data from xl/worksheets/*.xml.
+    // 4. .pptx: extract slide text from ppt/slides/*.xml.
+    // 5. Handle errors gracefully and return user-friendly messages.
+    // 6. Truncate at READ_MAX_CHARS.
+    //
+    // For now, return a helpful error message.
+    let _ = fp;
+    format!(
+        "Error: {} reading requires an Office document parsing library. Add the appropriate crate (e.g. docx for .docx, calamine for .xlsx) to Cargo.toml and implement read_office_doc.",
+        ext.to_uppercase()
+    )
+}
+
+fn build_image_response(raw: &[u8], mime: &str, fp: &Path, path: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let b64 = STANDARD.encode(raw);
+    format!(
+        "[IMAGE:{mime};base64,{b64}|path={}|label=(Image file: {})]",
+        fp.display(),
+        path
+    )
+}
+
+// ---------------------------------------------------------------------------
+// edit_file helpers: quote preservation, reindent, match finding, similarity
+// ---------------------------------------------------------------------------
+
+struct QuoteTable;
+
+impl QuoteTable {
+    fn normalize(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '\u{2018}' | '\u{2019}' => '\'',
+                '\u{201c}' | '\u{201d}' => '"',
+                _ => c,
+            })
+            .collect()
+    }
+
+    fn has_curly_double(s: &str) -> bool {
+        s.contains('\u{201c}') || s.contains('\u{201d}')
+    }
+
+    fn has_curly_single(s: &str) -> bool {
+        s.contains('\u{2018}') || s.contains('\u{2019}')
+    }
+
+    fn to_curly_double(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut opening = true;
+        for ch in s.chars() {
+            if ch == '"' {
+                out.push(if opening { '\u{201c}' } else { '\u{201d}' });
+                opening = !opening;
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    fn to_curly_single(s: &str) -> String {
+        let chars: Vec<char> = s.chars().collect();
+        let mut out = String::with_capacity(s.len());
+        let mut opening = true;
+        for (i, &ch) in chars.iter().enumerate() {
+            if ch != '\'' {
+                out.push(ch);
+                continue;
+            }
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            let next = if i + 1 < chars.len() { chars[i + 1] } else { ' ' };
+            if prev.is_alphanumeric() && next.is_alphanumeric() {
+                out.push('\u{2019}');
+                continue;
+            }
+            out.push(if opening { '\u{2018}' } else { '\u{2019}' });
+            opening = !opening;
+        }
+        out
+    }
+}
+
+fn preserve_quote_style(old_text: &str, actual_text: &str, new_text: &str) -> String {
+    if QuoteTable::normalize(old_text.trim()) != QuoteTable::normalize(actual_text.trim()) || old_text == actual_text {
+        return new_text.to_string();
+    }
+    let mut styled = new_text.to_string();
+    if QuoteTable::has_curly_double(actual_text) && styled.contains('"') {
+        styled = QuoteTable::to_curly_double(&styled);
+    }
+    if QuoteTable::has_curly_single(actual_text) && styled.contains('\'') {
+        styled = QuoteTable::to_curly_single(&styled);
+    }
+    styled
+}
+
+fn leading_ws(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    &line[..i]
+}
+
+fn reindent_like_match(old_text: &str, actual_text: &str, new_text: &str) -> String {
+    let old_lines: Vec<&str> = old_text.split('\n').collect();
+    let actual_lines: Vec<&str> = actual_text.split('\n').collect();
+    if old_lines.len() != actual_lines.len() {
+        return new_text.to_string();
+    }
+
+    let comparable: Vec<(&&str, &&str)> = old_lines
+        .iter()
+        .zip(actual_lines.iter())
+        .filter(|(o, a)| !o.trim().is_empty() && !a.trim().is_empty())
+        .collect();
+
+    if comparable.is_empty()
+        || comparable
+            .iter()
+            .any(|(o, a)| QuoteTable::normalize(o.trim()) != QuoteTable::normalize(a.trim()))
+    {
+        return new_text.to_string();
+    }
+
+    let old_ws = leading_ws(comparable[0].0);
+    let actual_ws = leading_ws(comparable[0].1);
+    if actual_ws == old_ws {
+        return new_text.to_string();
+    }
+
+    let delta = if !old_ws.is_empty() {
+        if !actual_ws.starts_with(old_ws) {
+            return new_text.to_string();
+        }
+        &actual_ws[old_ws.len()..]
+    } else {
+        actual_ws
+    };
+
+    if delta.is_empty() {
+        return new_text.to_string();
+    }
+
+    new_text
+        .split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                line.to_string()
+            } else {
+                format!("{}{}", delta, line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[derive(Debug, Clone)]
+struct MatchSpan {
+    start: usize,
+    end: usize,
+    text: String,
+    line: usize,
+}
+
+fn find_exact_matches(content: &str, old_text: &str) -> Vec<MatchSpan> {
+    let mut matches = Vec::new();
+    let mut start = 0;
+    while let Some(idx) = content[start..].find(old_text) {
+        let absolute = start + idx;
+        let end = absolute + old_text.len();
+        matches.push(MatchSpan {
+            start: absolute,
+            end,
+            text: content[absolute..end].to_string(),
+            line: content[..absolute].matches('\n').count() + 1,
+        });
+        start = end.max(absolute + 1);
+    }
+    matches
+}
+
+fn find_trim_matches(content: &str, old_text: &str, normalize_quotes: bool) -> Vec<MatchSpan> {
+    let old_lines: Vec<String> = old_text
+        .lines()
+        .map(|l| {
+            let s = l.trim().to_string();
+            if normalize_quotes {
+                QuoteTable::normalize(&s)
+            } else {
+                s
+            }
+        })
+        .collect();
+    if old_lines.is_empty() {
+        return Vec::new();
+    }
+
+    let content_lines: Vec<&str> = content.lines().collect();
+    if content_lines.len() < old_lines.len() {
+        return Vec::new();
+    }
+
+    let mut offsets = Vec::with_capacity(content_lines.len() + 1);
+    let mut pos = 0usize;
+    for line in content.lines() {
+        offsets.push(pos);
+        pos += line.len() + 1;
+    }
+    offsets.push(pos);
+
+    let stripped_old = &old_lines;
+    let mut matches = Vec::new();
+    let window_size = stripped_old.len();
+
+    for i in 0..=(content_lines.len() - window_size) {
+        let window: Vec<String> = content_lines[i..i + window_size]
+            .iter()
+            .map(|l| {
+                let s = l.trim().to_string();
+                if normalize_quotes {
+                    QuoteTable::normalize(&s)
+                } else {
+                    s
+                }
+            })
+            .collect();
+        if &window != stripped_old {
+            continue;
+        }
+
+        let start = offsets[i];
+        let mut end = offsets[i + window_size];
+        if content_lines[i + window_size - 1].ends_with('\n') || (i + window_size < content_lines.len()) {
+            end = end.saturating_sub(1);
+        }
+        matches.push(MatchSpan {
+            start,
+            end,
+            text: content[start..end].to_string(),
+            line: i + 1,
+        });
+    }
+    matches
+}
+
+fn find_quote_matches(content: &str, old_text: &str) -> Vec<MatchSpan> {
+    let norm_content = QuoteTable::normalize(content);
+    let norm_old = QuoteTable::normalize(old_text);
+    let mut matches = Vec::new();
+    let mut start = 0;
+    while let Some(idx) = norm_content[start..].find(&norm_old) {
+        let absolute = start + idx;
+        let end = absolute + old_text.len();
+        matches.push(MatchSpan {
+            start: absolute,
+            end,
+            text: content[absolute..end.min(content.len())].to_string(),
+            line: content[..absolute].matches('\n').count() + 1,
+        });
+        start = absolute + norm_old.len().max(1);
+    }
+    matches
+}
+
+fn find_all_matches(content: &str, old_text: &str) -> Vec<MatchSpan> {
+    let mut matches = find_exact_matches(content, old_text);
+    if !matches.is_empty() {
+        return matches;
+    }
+    matches = find_trim_matches(content, old_text, false);
+    if !matches.is_empty() {
+        return matches;
+    }
+    matches = find_trim_matches(content, old_text, true);
+    if !matches.is_empty() {
+        return matches;
+    }
+    find_quote_matches(content, old_text)
+}
+
+fn collapse_internal_whitespace(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn diagnose_near_match(old_text: &str, actual_text: &str) -> Vec<String> {
+    let mut hints = Vec::new();
+    if old_text.to_lowercase() == actual_text.to_lowercase() && old_text != actual_text {
+        hints.push("letter case differs".to_string());
+    }
+    if collapse_internal_whitespace(old_text) == collapse_internal_whitespace(actual_text) && old_text != actual_text {
+        hints.push("whitespace differs".to_string());
+    }
+    if old_text.trim_end_matches('\n') == actual_text.trim_end_matches('\n') && old_text != actual_text {
+        hints.push("trailing newline differs".to_string());
+    }
+    if QuoteTable::normalize(old_text) == QuoteTable::normalize(actual_text) && old_text != actual_text {
+        hints.push("quote style differs".to_string());
+    }
+    hints
+}
+
+fn best_window(old_text: &str, content: &str) -> (f64, usize, Vec<String>, Vec<String>) {
+    let lines: Vec<&str> = content.lines().collect();
+    let old_lines: Vec<&str> = old_text.lines().collect();
+    let window = old_lines.len().max(1);
+
+    let mut best_ratio = -1.0f64;
+    let mut best_start = 0;
+    let mut best_window_lines: Vec<String> = Vec::new();
+
+    for i in 0..lines.len().saturating_sub(window).saturating_add(1) {
+        let current: Vec<&str> = lines[i..(i + window).min(lines.len())].to_vec();
+        let ratio = similarity_ratio(&old_lines, &current);
+        if ratio > best_ratio {
+            best_ratio = ratio;
+            best_start = i;
+            best_window_lines = current.iter().map(|s| s.to_string()).collect();
+        }
+    }
+
+    let actual_text = best_window_lines.join("\n");
+    let hints = diagnose_near_match(old_text, &actual_text);
+    (best_ratio, best_start + 1, best_window_lines, hints)
+}
+
+fn similarity_ratio(a: &[&str], b: &[&str]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let matching = a.iter().zip(b.iter()).filter(|(x, y)| x == y).count();
+    let max_len = a.len().max(b.len());
+    if max_len == 0 {
+        return 1.0;
+    }
+    matching as f64 / max_len as f64
+}
+
+fn strip_trailing_ws(text: &str) -> String {
+    text.lines().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n")
+}
+
+fn file_not_found_msg(path: &str, fp: &Path) -> String {
+    let parent = fp.parent();
+    let mut suggestions: Vec<String> = Vec::new();
+    if let Some(p) = parent {
+        if p.is_dir() {
+            if let Ok(entries) = fs::read_dir(p) {
+                let mut siblings: Vec<String> = Vec::new();
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                        if let Some(name) = entry.file_name().to_str() {
+                            siblings.push(name.to_string());
+                        }
+                    }
+                }
+                let close = fuzzy_close_matches(fp.file_name().and_then(|n| n.to_str()).unwrap_or(""), &siblings, 3);
+                suggestions = close.into_iter().map(|s| p.join(s).display().to_string()).collect();
+            }
+        }
+    }
+    let mut parts = vec![format!("Error: File not found: {}", path)];
+    if !suggestions.is_empty() {
+        parts.push(format!("Did you mean: {}?", suggestions.join(", ")));
+    }
+    parts.join("\n")
+}
+
+fn fuzzy_close_matches(target: &str, candidates: &[String], n: usize) -> Vec<String> {
+    let mut scored: Vec<(f64, &String)> = candidates
+        .iter()
+        .map(|c| (similarity_str(target, c), c))
+        .filter(|(s, _)| *s >= 0.6)
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().take(n).map(|(_, c)| c.clone()).collect()
+}
+
+fn similarity_str(a: &str, b: &str) -> f64 {
+    if a == b {
+        return 1.0;
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let max_len = a_chars.len().max(b_chars.len());
+    if max_len == 0 {
+        return 1.0;
+    }
+    let mut matches = 0usize;
+    let mut i = 0;
+    let mut j = 0;
+    while i < a_chars.len() && j < b_chars.len() {
+        if a_chars[i] == b_chars[j] {
+            matches += 1;
+            i += 1;
+            j += 1;
+        } else {
+            j += 1;
+        }
+    }
+    matches as f64 / max_len as f64
+}
+
+fn not_found_msg(old_text: &str, content: &str, path: &str) -> String {
+    let (best_ratio, best_start, best_window_lines, hints) = best_window(old_text, content);
+    if best_ratio > 0.5 {
+        let diff = unified_diff(
+            &old_text.lines().collect::<Vec<_>>(),
+            &best_window_lines.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "old_text (provided)",
+            &format!("{} (actual, line {})", path, best_start),
+        );
+        let hint_text = if hints.is_empty() {
+            String::new()
+        } else {
+            format!("\nPossible cause: {}.", hints.join(", "))
+        };
+        return format!(
+            "Error: old_text not found in {}.{hint_text}\nBest match ({:.0}% similar) at line {}:\n{}",
+            path,
+            best_ratio * 100.0,
+            best_start,
+            diff
+        );
+    }
+
+    if hints.is_empty() {
+        format!("Error: old_text not found in {}. No similar text found. Verify the file content.", path)
+    } else {
+        format!(
+            "Error: old_text not found in {}. Possible cause: {}. Copy the exact text from read_file and try again.",
+            path,
+            hints.join(", ")
+        )
+    }
+}
+
+fn unified_diff(old: &[&str], new: &[&str], from: &str, to: &str) -> String {
+    let mut out = Vec::new();
+    out.push(format!("--- {}", from));
+    out.push(format!("+++ {}", to));
+
+    let mut i = 0;
+    let mut j = 0;
+    let mut hunk_old: Vec<&str> = Vec::new();
+    let mut hunk_new: Vec<&str> = Vec::new();
+    let mut old_start = 1;
+    let mut new_start = 1;
+
+    while i < old.len() || j < new.len() {
+        if i < old.len() && j < new.len() && old[i] == new[j] {
+            if !hunk_old.is_empty() || !hunk_new.is_empty() {
+                out.push(format!(
+                    "@@ -{},{} +{},{} @@",
+                    old_start,
+                    hunk_old.len(),
+                    new_start,
+                    hunk_new.len()
+                ));
+                for line in &hunk_old {
+                    out.push(format!("-{}", line));
+                }
+                for line in &hunk_new {
+                    out.push(format!("+{}", line));
+                }
+                hunk_old.clear();
+                hunk_new.clear();
+            }
+            out.push(format!(" {}", old[i]));
+            old_start = i + 2;
+            new_start = j + 2;
+            i += 1;
+            j += 1;
+        } else if i < old.len() && (j == new.len() || old.len() - i <= new.len() - j) {
+            hunk_old.push(old[i]);
+            i += 1;
+        } else {
+            hunk_new.push(new[j]);
+            j += 1;
+        }
+    }
+
+    if !hunk_old.is_empty() || !hunk_new.is_empty() {
+        out.push(format!(
+            "@@ -{},{} +{},{} @@",
+            old_start,
+            hunk_old.len(),
+            new_start,
+            hunk_new.len()
+        ));
+        for line in &hunk_old {
+            out.push(format!("-{}", line));
+        }
+        for line in &hunk_new {
+            out.push(format!("+{}", line));
+        }
+    }
+
+    if out.len() <= 2 {
+        return "(no diff)".to_string();
+    }
+    out.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +980,12 @@ impl Tool for EditFileTool {
         let new_text = string_param(&params, "new_text").unwrap_or("");
         let replace_all = bool_param(&params, "replace_all", false);
 
+        if path.ends_with(".ipynb") {
+            return Ok(Value::String(
+                "Error: This is a Jupyter notebook. Use the notebook_edit tool instead of edit_file.".into()
+            ));
+        }
+
         let fp = match self.0.resolve(path) {
             Ok(p) => p,
             Err(e) => return Ok(Value::String(format!("Error: {e}"))),
@@ -347,7 +1005,7 @@ impl Tool for EditFileTool {
                     fp.display()
                 )));
             }
-            return Ok(Value::String(format!("Error: File not found: {path}")));
+            return Ok(Value::String(file_not_found_msg(path, &fp)));
         }
 
         let size = fs::metadata(&fp).map(|m| m.len()).unwrap_or(0);
@@ -391,49 +1049,62 @@ impl Tool for EditFileTool {
             }
         };
         let norm_old = old_text.replace("\r\n", "\n");
-        let matches = find_all(&content, &norm_old);
-        if matches.is_empty() {
-            return Ok(Value::String(format!(
-                "Error: old_text not found in {path}. Re-read the file and copy the exact text."
-            )));
-        }
-        if matches.len() > 1 && !replace_all {
-            let preview: Vec<String> = matches
-                .iter()
-                .take(3)
-                .map(|idx| {
-                    let line = content[..*idx].matches('\n').count() + 1;
-                    format!("line {line}")
-                })
-                .collect();
-            let mut hint = preview.join(", ");
-            if matches.len() > 3 {
-                hint.push_str(", ...");
-            }
-            return Ok(Value::String(format!(
-                "Warning: old_text appears {} times at {}. Provide more context to make it unique, or set replace_all=true.",
-                matches.len(),
-                hint
-            )));
-        }
         let norm_new = new_text.replace("\r\n", "\n");
 
-        let mut new_content = content.clone();
-        let selected: Vec<usize> = if replace_all {
-            matches
+        let is_markdown = fp.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| {
+                let lower = e.to_lowercase();
+                MARKDOWN_EXTS.iter().any(|ext| lower == *ext.trim_start_matches('.'))
+            })
+            .unwrap_or(false);
+        let norm_new = if is_markdown {
+            norm_new
         } else {
-            vec![matches[0]]
+            strip_trailing_ws(&norm_new)
         };
-        for idx in selected.into_iter().rev() {
-            let end = idx + norm_old.len();
-            let mut real_end = end;
-            if norm_new.is_empty()
-                && !norm_old.ends_with('\n')
-                && new_content.as_bytes().get(real_end) == Some(&b'\n')
-            {
-                real_end += 1;
+
+        let matches = find_all_matches(&content, &norm_old);
+        if matches.is_empty() {
+            return Ok(Value::String(not_found_msg(&norm_old, &content, path)));
+        }
+        let count = matches.len();
+        if count > 1 && !replace_all {
+            let line_numbers: Vec<String> = matches.iter().take(3).map(|m| format!("line {}", m.line)).collect();
+            let mut preview = line_numbers.join(", ");
+            if matches.len() > 3 {
+                preview.push_str(", ...");
             }
-            new_content.replace_range(idx..real_end, &norm_new);
+            let location_hint = if preview.is_empty() {
+                String::new()
+            } else {
+                format!(" at {}", preview)
+            };
+            return Ok(Value::String(format!(
+                "Warning: old_text appears {} times{}. Provide more context to make it unique, or set replace_all=true.",
+                count,
+                location_hint
+            )));
+        }
+
+        let mut new_content = content.clone();
+        let selected: Vec<&MatchSpan> = if replace_all {
+            matches.iter().collect()
+        } else {
+            vec![&matches[0]]
+        };
+        for m in selected.into_iter().rev() {
+            let mut replacement = preserve_quote_style(&norm_old, &m.text, &norm_new);
+            replacement = reindent_like_match(&norm_old, &m.text, &replacement);
+
+            let mut end = m.end;
+            if replacement.is_empty()
+                && !m.text.ends_with('\n')
+                && content.as_bytes().get(end) == Some(&b'\n')
+            {
+                end += 1;
+            }
+            new_content.replace_range(m.start..end, &replacement);
         }
 
         let to_write = if uses_crlf {
@@ -451,20 +1122,6 @@ impl Tool for EditFileTool {
         };
         Ok(Value::String(msg))
     }
-}
-
-fn find_all(haystack: &str, needle: &str) -> Vec<usize> {
-    if needle.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut start = 0;
-    while let Some(idx) = haystack[start..].find(needle) {
-        let absolute = start + idx;
-        out.push(absolute);
-        start = absolute + needle.len().max(1);
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------

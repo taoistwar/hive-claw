@@ -64,6 +64,17 @@ fn known_channels() -> &'static [(&'static str, ChannelCtor)] {
     &[
         ("weixin", crate::weixin::build),
         ("qq", crate::qq::build),
+        ("dingtalk", crate::dingtalk::build),
+        ("discord", crate::discord::build),
+        ("email", crate::email::build),
+        ("matrix", crate::matrix::build),
+        ("mochat", crate::mochat::build),
+        ("msteams", crate::msteams::build),
+        ("slack", crate::slack::build),
+        ("telegram", crate::telegram::build),
+        ("wecom", crate::wecom::build),
+        ("websocket", crate::websocket::build),
+        ("whatsapp", crate::whatsapp::build),
     ]
 }
 

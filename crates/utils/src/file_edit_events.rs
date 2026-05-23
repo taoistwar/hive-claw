@@ -46,7 +46,7 @@ pub fn is_file_edit_tool(tool_name: Option<&str>) -> bool {
 }
 
 pub fn resolve_file_edit_path(
-    _tool: &dyn TODO_ToolResolver,
+    tool: Option<&dyn TODO_ToolResolver>,
     workspace: Option<&Path>,
     params: Option<&HashMap<String, Value>>,
 ) -> Option<PathBuf> {
@@ -55,9 +55,13 @@ pub fn resolve_file_edit_path(
     if raw_path.trim().is_empty() {
         return None;
     }
-    match workspace {
-        Some(ws) => Some(ws.join(raw_path)),
-        None => Some(PathBuf::from(raw_path)),
+    if let Some(resolver) = tool {
+        resolver.resolve_path(raw_path)
+    } else {
+        match workspace {
+            Some(ws) => Some(ws.join(raw_path)),
+            None => Some(PathBuf::from(raw_path)),
+        }
     }
 }
 
@@ -233,14 +237,14 @@ fn text_line_count(text: &str) -> i64 {
 pub fn prepare_file_edit_tracker(
     call_id: &str,
     tool_name: &str,
-    _tool: &dyn TODO_ToolResolver,
+    tool: Option<&dyn TODO_ToolResolver>,
     workspace: Option<&Path>,
     params: Option<&HashMap<String, Value>>,
 ) -> Option<FileEditTracker> {
     if !is_file_edit_tool(Some(tool_name)) {
         return None;
     }
-    let path = resolve_file_edit_path(_tool, workspace, params)?;
+    let path = resolve_file_edit_path(tool, workspace, params)?;
     let before = read_file_snapshot(&path);
     Some(FileEditTracker {
         call_id: call_id.to_string(),
@@ -567,33 +571,107 @@ impl StreamingFileEditTracker {
             return;
         }
 
+        if state.tracker.is_none() {
+            let call_id = state.call_id.as_deref().unwrap_or(&state.key);
+            let params = {
+                let mut p = HashMap::new();
+                p.insert("path".to_string(), Value::String(state.path.clone().unwrap()));
+                p
+            };
+            state.tracker = prepare_file_edit_tracker(
+                call_id,
+                &state.name,
+                None,
+                self.workspace.as_deref(),
+                Some(&params),
+            );
+            if state.tracker.is_none() {
+                return;
+            }
+        }
+
         let (added, deleted) = state.live_diff_counts();
         let now = std::time::Instant::now();
         if !state.should_emit(added, deleted, now) {
             return;
         }
         state.mark_emitted(added, deleted, now);
+        if let Some(tracker) = &state.tracker {
+            emit(vec![build_file_edit_live_event(tracker, added, deleted)]).await;
+        }
     }
 
-    pub async fn flush(&mut self, _emit: &EmitFn) {
-        // TODO: Flush pending events
+    pub async fn flush(&mut self, emit: &EmitFn) {
+        let mut events: Vec<HashMap<String, Value>> = Vec::new();
+        let now = std::time::Instant::now();
+        for state in self.states.values_mut() {
+            if state.tracker.is_none() {
+                continue;
+            }
+            let (added, deleted) = state.live_diff_counts();
+            if state.last_emitted_added == added
+                && state.last_emitted_deleted == deleted
+                && state.emitted_once
+            {
+                continue;
+            }
+            state.mark_emitted(added, deleted, now);
+            if let Some(ref tracker) = state.tracker {
+                events.push(build_file_edit_live_event(tracker, added, deleted));
+            }
+        }
+        if !events.is_empty() {
+            emit(events).await;
+        }
     }
 
-    pub fn apply_final_call_ids(&mut self, _final_tool_calls: &[&dyn TODO_ToolCall]) {
-        // TODO: Apply final call IDs to states
+    pub fn apply_final_call_ids(&mut self, final_tool_calls: &mut [&mut dyn TODO_ToolCall]) {
+        for tool_call in final_tool_calls.iter_mut() {
+            if let Some(canonical) = self.canonical_call_id_for(&**tool_call) {
+                tool_call.set_id(canonical);
+            }
+        }
     }
 
-    pub fn canonical_call_id_for(&self, _tool_call: &dyn TODO_ToolCall) -> Option<String> {
+    pub fn canonical_call_id_for(&mut self, tool_call: &dyn TODO_ToolCall) -> Option<String> {
+        for state in self.states.values_mut() {
+            if state.matches_final_tool_call(tool_call) {
+                return Some(
+                    state
+                        .call_id
+                        .clone()
+                        .or_else(|| state.tracker.as_ref().map(|t| t.call_id.clone()))
+                        .unwrap_or(state.key.clone()),
+                );
+            }
+        }
         None
     }
 
     pub async fn error_unmatched(
-        &self,
-        _final_tool_calls: &[&dyn TODO_ToolCall],
-        _error: &str,
-        _emit: &EmitFn,
+        &mut self,
+        final_tool_calls: &[&dyn TODO_ToolCall],
+        error: &str,
+        emit: &EmitFn,
     ) {
-        // TODO: Mark streamed edits as failed
+        let mut events: Vec<HashMap<String, Value>> = Vec::new();
+        for state in self.states.values_mut() {
+            if state.tracker.is_none() {
+                continue;
+            }
+            let matched = final_tool_calls
+                .iter()
+                .any(|tc| state.matches_final_tool_call(*tc));
+            if matched {
+                continue;
+            }
+            if let Some(ref tracker) = state.tracker {
+                events.push(build_file_edit_error_event(tracker, Some(error)));
+            }
+        }
+        if !events.is_empty() {
+            emit(events).await;
+        }
     }
 }
 
@@ -817,6 +895,7 @@ struct StreamingFileEditState {
     name: String,
     arguments: String,
     path: Option<String>,
+    tracker: Option<FileEditTracker>,
     content: StreamingJsonStringField,
     old_text: StreamingJsonStringField,
     new_text: StreamingJsonStringField,
@@ -839,6 +918,7 @@ impl StreamingFileEditState {
             name: String::new(),
             arguments: String::new(),
             path: None,
+            tracker: None,
             content: StreamingJsonStringField::new("content"),
             old_text: StreamingJsonStringField::new("old_text"),
             new_text: StreamingJsonStringField::new("new_text"),
@@ -938,6 +1018,34 @@ impl StreamingFileEditState {
         self.last_pending_deleted = deleted;
         self.last_pending_at = now;
     }
+
+    fn matches_final_tool_call(&mut self, tool_call: &dyn TODO_ToolCall) -> bool {
+        let call_id = tool_call.id();
+        let canonical = self
+            .call_id
+            .as_deref()
+            .or_else(|| self.tracker.as_ref().map(|t| t.call_id.as_str()))
+            .unwrap_or("");
+        if let (Some(cid), true) = (call_id, !canonical.is_empty()) {
+            if cid == canonical {
+                return true;
+            }
+        }
+        let name = tool_call.name();
+        if name != Some(&self.name) {
+            return false;
+        }
+        if let Some(arguments) = tool_call.arguments() {
+            if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                if self.path.is_none() {
+                    self.path = Some(path.to_string());
+                    return true;
+                }
+                return Some(path) == self.path.as_deref();
+            }
+        }
+        false
+    }
 }
 
 pub trait TODO_ToolResolver: Send + Sync {
@@ -947,4 +1055,6 @@ pub trait TODO_ToolResolver: Send + Sync {
 pub trait TODO_ToolCall: Send + Sync {
     fn id(&self) -> Option<&str>;
     fn name(&self) -> Option<&str>;
+    fn arguments(&self) -> Option<&HashMap<String, Value>>;
+    fn set_id(&mut self, id: String);
 }

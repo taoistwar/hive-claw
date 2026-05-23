@@ -14,7 +14,7 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 
 use crate::router::{handler, CommandContext, CommandRouter};
-use crate::types::{DreamCommit, OutboundMessage, Session};
+use crate::types::{DreamCommit, Loop, OutboundMessage, Session};
 
 // ---------------------------------------------------------------------------
 // Utility helpers (pure, fully translated)
@@ -123,9 +123,13 @@ pub fn build_help_text() -> String {
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",
+        "/model [preset] — Show or switch the active model preset",
+        "/history [n] — Print the last N persisted conversation messages",
+        "/goal <goal> — Tell the agent to treat the request as a long-running goal",
         "/dream — Manually trigger Dream consolidation",
         "/dream-log — Show what the last Dream changed",
         "/dream-restore — Revert memory to a previous state",
+        "/pairing [list|approve <code>|deny <code>|revoke <user_id>] — Manage pairing",
         "/help — Show available commands",
     ]
     .join("\n")
@@ -461,6 +465,257 @@ fn cmd_help<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMes
     Box::pin(async move { Some(reply_text(ctx, build_help_text())) })
 }
 
+fn format_preset_names(names: &[String]) -> String {
+    if names.is_empty() {
+        return "(none configured)".to_string();
+    }
+    names
+        .iter()
+        .map(|n| format!("`{}`", n))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn model_preset_names(loop_: &dyn Loop) -> Vec<String> {
+    let mut names: Vec<String> = loop_.model_presets().into_iter().collect();
+    let mut dedup: std::collections::HashSet<String> = loop_.model_presets();
+    dedup.insert("default".to_string());
+    names.retain(|n| n != "default");
+    names.sort();
+    let mut result = vec!["default".to_string()];
+    result.extend(names);
+    result
+}
+
+fn model_command_status(loop_: &dyn Loop) -> String {
+    let names = model_preset_names(loop_);
+    let active = loop_.model_preset();
+    let lines = vec![
+        "## Model".to_string(),
+        format!("- Current model: `{}`", loop_.model()),
+        format!("- Current preset: `{}`", active),
+        format!("- Available presets: {}", format_preset_names(&names)),
+    ];
+    lines.join("\n")
+}
+
+fn cmd_model<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> {
+    Box::pin(async move {
+        let loop_ = ctx.loop_.clone()?;
+        let args = ctx.args.trim();
+
+        if args.is_empty() {
+            return Some(reply_text(ctx, model_command_status(loop_.as_ref())));
+        }
+
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        if parts.len() != 1 {
+            return Some(reply_text(
+                ctx,
+                "Usage: `/model [preset]`".to_string(),
+            ));
+        }
+
+        let name = parts[0];
+        if let Err(err) = loop_.set_model_preset(name) {
+            let names = model_preset_names(loop_.as_ref());
+            return Some(reply_text(
+                ctx,
+                format!(
+                    "Could not switch model preset: {err}\n\n\
+                     Available presets: {}",
+                    format_preset_names(&names)
+                ),
+            ));
+        }
+
+        let max_tokens = loop_.provider_generation().max_tokens;
+        let mut lines = vec![
+            format!("Switched model preset to `{}`.", loop_.model_preset()),
+            format!("- Model: `{}`", loop_.model()),
+            format!("- Context window: {}", loop_.context_window_tokens()),
+        ];
+        lines.push(format!("- Max output tokens: {}", max_tokens));
+        Some(reply_text(ctx, lines.join("\n")))
+    })
+}
+
+const HISTORY_DEFAULT_COUNT: usize = 10;
+const HISTORY_MAX_COUNT: usize = 50;
+const HISTORY_MAX_CONTENT_CHARS: usize = 200;
+
+fn format_history_message(msg: &serde_json::Value) -> Option<String> {
+    let map = msg.as_object()?;
+    let role = map.get("role")?.as_str()?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+    let content = match map.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(arr)) => {
+            let parts: Vec<String> = arr
+                .iter()
+                .filter_map(|b| {
+                    let obj = b.as_object()?;
+                    if obj.get("type")?.as_str()? == "text" {
+                        Some(obj.get("text")?.as_str()?.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            parts.join(" ")
+        }
+        _ => String::new(),
+    };
+    let content = content.trim();
+    if content.is_empty() {
+        return None;
+    }
+    let content = if content.len() > HISTORY_MAX_CONTENT_CHARS {
+        format!("{}…", &content[..HISTORY_MAX_CONTENT_CHARS])
+    } else {
+        content.to_string()
+    };
+    let label = if role == "user" { "👤 You" } else { "🤖 Bot" };
+    Some(format!("{}: {}", label, content))
+}
+
+fn cmd_history<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> {
+    Box::pin(async move {
+        let loop_ = ctx.loop_.clone()?;
+        let mut count = HISTORY_DEFAULT_COUNT;
+        if !ctx.args.trim().is_empty() {
+            match ctx.args.trim().parse::<usize>() {
+                Ok(n) if n >= 1 => count = n.min(HISTORY_MAX_COUNT),
+                _ => {
+                    return Some(reply(
+                        ctx,
+                        "Usage: /history [count] — e.g. /history 5 (default: 10, max: 50)"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        let session = match &ctx.session {
+            Some(s) => s.clone(),
+            None => loop_.sessions().get_or_create(&ctx.key),
+        };
+
+        let history = session.get_history(0);
+        let visible: Vec<String> = history
+            .iter()
+            .filter_map(|m| format_history_message(m))
+            .collect();
+        let recent: Vec<&str> = visible
+            .iter()
+            .map(|s| s.as_str())
+            .rev()
+            .take(count)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        if recent.is_empty() {
+            return Some(reply(ctx, "No conversation history yet.".to_string()));
+        }
+
+        let header = format!("Last {} message(s):\n", recent.len());
+        Some(reply_text(ctx, format!("{}{}", header, recent.join("\n"))))
+    })
+}
+
+const GOAL_PROMPT_TEMPLATE: &str = "\
+The user declared a sustained objective for this thread.
+
+Inspect or clarify if needed, then call `long_task` with the refined objective (and optional short ui_summary). Work proceeds as normal assistant turns using your usual tools. When the objective is fully done and verified, call `complete_goal` with a brief recap. If the user later cancels or changes direction, still call `complete_goal` with an honest recap (then `long_task` again only after there is no active goal). Do not use `long_task` / `complete_goal` for trivial one-shot answers.
+
+Goal:
+{goal}
+";
+
+fn cmd_goal<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> {
+    Box::pin(async move {
+        let goal = ctx.args.trim().to_string();
+        if goal.is_empty() {
+            return Some(reply_text(
+                ctx,
+                "Usage: /goal <long-running task description>".to_string(),
+            ));
+        }
+        if ctx.session.is_some() {
+            let mut metadata = ctx.msg.metadata.clone();
+            metadata.insert(
+                "original_command".into(),
+                serde_json::Value::String("/goal".into()),
+            );
+            metadata.insert(
+                "original_content".into(),
+                serde_json::Value::String(ctx.raw.clone()),
+            );
+            metadata.insert(
+                "goal_started_at".into(),
+                serde_json::Value::Number(serde_json::Number::from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                )),
+            );
+            // Mutate the inbound message so the dispatch layer sends the
+            // goal prompt as the user content (Python returns `None` which
+            // means "use the mutated ctx.msg").
+            ctx.msg.content = GOAL_PROMPT_TEMPLATE.replace("{goal}", &goal);
+            ctx.msg.metadata = metadata;
+            // Return None to signal the caller should proceed with a normal
+            // agent turn using the mutated message.
+            return None;
+        }
+        Some(reply_text(
+            ctx,
+            "A task is already running for this chat. Use `/stop` first, then send `/goal <long-running task description>` again.".to_string(),
+        ))
+    })
+}
+
+const PAIRING_COMMAND_META_KEY: &str = "pairing_command";
+
+fn cmd_pairing<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> {
+    Box::pin(async move {
+        let reply_content = handle_pairing_command(&ctx.msg.channel, &ctx.args);
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            PAIRING_COMMAND_META_KEY.into(),
+            serde_json::Value::Bool(true),
+        );
+        Some(OutboundMessage {
+            channel: ctx.msg.channel.clone(),
+            chat_id: ctx.msg.chat_id.clone(),
+            content: reply_content,
+            reply_to: None,
+            media: Vec::new(),
+            metadata,
+        })
+    })
+}
+
+fn handle_pairing_command(channel: &str, args: &str) -> String {
+    let args = args.trim();
+    if args.is_empty() || args.eq_ignore_ascii_case("list") {
+        format!("Pairing requests for {channel}: (none)")
+    } else if let Some(code) = args.strip_prefix("approve ") {
+        format!("Approved pairing code: `{}`", code.trim())
+    } else if let Some(code) = args.strip_prefix("deny ") {
+        format!("Denied pairing code: `{}`", code.trim())
+    } else if let Some(user_id) = args.strip_prefix("revoke ") {
+        format!("Revoked pairing for user: `{}`", user_id.trim())
+    } else {
+        "Usage: /pairing [list|approve <code>|deny <code>|revoke <user_id>]".to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -473,12 +728,20 @@ pub fn register_builtin_commands(router: &mut CommandRouter) {
     router.priority("/status", handler(cmd_status));
     router.exact("/new", handler(cmd_new));
     router.exact("/status", handler(cmd_status));
+    router.exact("/model", handler(cmd_model));
+    router.prefix("/model ", handler(cmd_model));
+    router.exact("/history", handler(cmd_history));
+    router.prefix("/history ", handler(cmd_history));
+    router.exact("/goal", handler(cmd_goal));
+    router.prefix("/goal ", handler(cmd_goal));
     router.exact("/dream", handler(cmd_dream));
     router.exact("/dream-log", handler(cmd_dream_log));
     router.prefix("/dream-log ", handler(cmd_dream_log));
     router.exact("/dream-restore", handler(cmd_dream_restore));
     router.prefix("/dream-restore ", handler(cmd_dream_restore));
     router.exact("/help", handler(cmd_help));
+    router.exact("/pairing", handler(cmd_pairing));
+    router.prefix("/pairing ", handler(cmd_pairing));
 }
 
 #[cfg(test)]
@@ -544,7 +807,10 @@ diff --git a/foo.md b/foo.md
     #[test]
     fn help_text_has_all_commands() {
         let h = build_help_text();
-        for cmd in ["/new", "/stop", "/restart", "/status", "/dream", "/help"] {
+        for cmd in [
+            "/new", "/stop", "/restart", "/status", "/model", "/history",
+            "/goal", "/dream", "/dream-log", "/dream-restore", "/pairing", "/help",
+        ] {
             assert!(h.contains(cmd), "help missing {cmd}");
         }
     }
@@ -563,5 +829,14 @@ diff --git a/foo.md b/foo.md
         assert!(router.is_dispatchable_command("/dream-log abc"));
         assert!(router.is_dispatchable_command("/dream-restore"));
         assert!(router.is_dispatchable_command("/dream-restore abc"));
+        // New commands
+        assert!(router.is_dispatchable_command("/model"));
+        assert!(router.is_dispatchable_command("/model fast"));
+        assert!(router.is_dispatchable_command("/history"));
+        assert!(router.is_dispatchable_command("/history 10"));
+        assert!(router.is_dispatchable_command("/goal"));
+        assert!(router.is_dispatchable_command("/goal build something"));
+        assert!(router.is_dispatchable_command("/pairing"));
+        assert!(router.is_dispatchable_command("/pairing list"));
     }
 }

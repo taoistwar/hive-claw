@@ -17,27 +17,10 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 
 // ---------------------------------------------------------------------------
-// Bus events
+// Bus events (re-exported from the `bus` crate)
 // ---------------------------------------------------------------------------
 
-/// A message inbound from a channel (mirrors `nanobot.bus.events.InboundMessage`).
-#[derive(Debug, Clone, Default)]
-pub struct InboundMessage {
-    pub channel: String,
-    pub chat_id: String,
-    pub session_key: String,
-    pub content: String,
-    pub metadata: HashMap<String, String>,
-}
-
-/// A message going out to a channel (mirrors `nanobot.bus.events.OutboundMessage`).
-#[derive(Debug, Clone, Default)]
-pub struct OutboundMessage {
-    pub channel: String,
-    pub chat_id: String,
-    pub content: String,
-    pub metadata: HashMap<String, String>,
-}
+pub use bus::{InboundMessage, OutboundMessage};
 
 // ---------------------------------------------------------------------------
 // Session

@@ -209,7 +209,8 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     });
 
     // ---- agent bus loop ----
-    let agent_for_loop = agent.clone();
+    let agent_ref = agent.clone();
+    let agent_for_loop = Arc::try_unwrap(agent).expect("agent should have only one reference");
     let agent_task = tokio::spawn(async move { agent_for_loop.run().await });
 
     println!("nanobot gateway listening on http://{bind} (health endpoint)");

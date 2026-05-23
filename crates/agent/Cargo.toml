@@ -31,6 +31,7 @@ utils = { path = "../utils" }
 session = { path = "../session" }
 bus = { path = "../bus" }
 skills = { path = "../skills" }
+command = { path = "../command" }
 config = { path = "../config" }
 security = { path = "../security" }
 cron = { path = "../cron" }

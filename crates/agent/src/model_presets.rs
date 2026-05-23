@@ -36,24 +36,23 @@ pub fn configured_model_presets(
     result
 }
 
-/// Build a [`PresetSnapshotLoader`] from an optional custom loader.
+/// Build a [`PresetSnapshotLoader`] from an optional custom loader and a base provider.
 ///
 /// If `provider_snapshot_loader` is provided, it is wrapped into a closure
-/// that accepts the preset name. Otherwise the loader falls back to
-/// `build_provider_snapshot` (deferred to the caller / config).
-///
-/// # Arguments
-/// * `provider_snapshot_loader` — optional custom snapshot builder
-///
-/// Returns a `PresetSnapshotLoader` that can be called with a preset name.
+/// that accepts the preset name. Otherwise the loader returns fallback
+/// snapshots using the provided `base_provider` reference. Callers should
+/// provide a real loader for production use with per-preset providers.
 pub fn make_preset_snapshot_loader(
     provider_snapshot_loader: Option<Arc<dyn Fn(&str) -> ProviderSnapshot + Send + Sync>>,
+    base_provider: Arc<dyn LLMProvider>,
 ) -> PresetSnapshotLoader {
     match provider_snapshot_loader {
         Some(loader) => Arc::new(move |name| loader(name)),
-        None => Arc::new(|_name| {
-            // TODO: wire up build_provider_snapshot(config, preset_name=name)
-            panic!("build_provider_snapshot not yet implemented in Rust");
+        None => Arc::new(move |name| ProviderSnapshot {
+            provider: Arc::clone(&base_provider),
+            model: format!("preset/{name}"),
+            context_window_tokens: 65_536,
+            signature: 0,
         }),
     }
 }
@@ -152,15 +151,39 @@ pub fn normalize_preset_name(
 
 /// Minimal placeholder for the model preset config.
 ///
-/// In Python this is a Pydantic model (`ModelPresetConfig`). The real
-/// definition lives in the config crate and should be imported from there
-/// once the cross-crate dependency is wired up.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Port of `nanobot.config.schema.ModelPresetConfig` (Python Pydantic model).
+/// A named set of model + generation parameters for quick switching.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModelPresetConfig {
+    /// Model identifier (e.g. "anthropic/claude-opus-4-5").
     pub model: String,
+    /// Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection.
+    #[serde(default)]
+    pub provider: String,
+    /// Maximum output tokens.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// Context window size in tokens.
+    #[serde(default = "default_context_window")]
     pub context_window_tokens: u32,
-    // TODO: add remaining fields from nanobot.config.schema.ModelPresetConfig
-    // e.g. temperature, max_tokens, top_p, system prompt overrides, etc.
+    /// Sampling temperature.
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
+    /// Reasoning effort for reasoning models ("low", "medium", "high", "none").
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+fn default_max_tokens() -> u32 {
+    8192
+}
+
+fn default_context_window() -> u32 {
+    65_536
+}
+
+fn default_temperature() -> f64 {
+    0.1
 }
 
 /// Minimal placeholder for provider snapshots.
@@ -202,7 +225,11 @@ mod tests {
             "fast".to_string(),
             ModelPresetConfig {
                 model: "gpt-4o-mini".to_string(),
+                provider: "openai".to_string(),
+                max_tokens: 4096,
                 context_window_tokens: 8192,
+                temperature: 0.0,
+                reasoning_effort: None,
             },
         );
         let result = normalize_preset_name(Some("fast"), &presets);
@@ -239,12 +266,20 @@ mod tests {
             "smart".to_string(),
             ModelPresetConfig {
                 model: "gpt-4".to_string(),
+                provider: "openai".to_string(),
+                max_tokens: 8192,
                 context_window_tokens: 8192,
+                temperature: 0.7,
+                reasoning_effort: Some("high".to_string()),
             },
         );
         let default = ModelPresetConfig {
             model: "gpt-4o-mini".to_string(),
+            provider: "auto".to_string(),
+            max_tokens: 4096,
             context_window_tokens: 4096,
+            temperature: 0.1,
+            reasoning_effort: None,
         };
         let result = configured_model_presets(presets, default.clone());
         assert!(result.contains_key("smart"));

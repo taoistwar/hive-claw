@@ -321,6 +321,38 @@ impl Session {
         self.last_consolidated = (self.last_consolidated as isize - dropped).max(0) as usize;
         self.updated_at = now();
     }
+
+    /// Bound session message growth by archiving and trimming old prefixes.
+    ///
+    /// Port of Python `Session.enforce_file_cap`: when message count exceeds
+    /// `limit`, retains the recent legal suffix and invokes `on_archive`
+    /// with the dropped messages (minus already-consolidated ones).
+    pub fn enforce_file_cap<F>(&mut self, limit: usize, mut on_archive: F) -> bool
+    where
+        F: FnMut(&[Value]),
+    {
+        if limit == 0 || self.messages.len() <= limit {
+            return false;
+        }
+
+        let before = self.messages.clone();
+        let before_last_consolidated = self.last_consolidated;
+        let before_count = before.len();
+
+        self.retain_recent_legal_suffix(limit);
+
+        let dropped_count = before_count - self.messages.len();
+        if dropped_count == 0 {
+            return false;
+        }
+
+        let already_consolidated = before_last_consolidated.min(dropped_count);
+        let archive_chunk = &before[already_consolidated..dropped_count];
+        if !archive_chunk.is_empty() {
+            on_archive(archive_chunk);
+        }
+        true
+    }
 }
 
 /// Manages conversation sessions.

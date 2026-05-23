@@ -14,6 +14,7 @@ use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 use super::base::{Tool, ToolExecError};
+use super::context::RequestContext;
 
 /// Arguments delivered to the spawn callback.
 pub struct SpawnRequest {
@@ -100,5 +101,14 @@ impl Tool for SpawnTool {
         let fut = (self.callback)(req);
         let result = fut.await;
         Ok(Value::String(result))
+    }
+
+    fn set_tool_context(&self, ctx: &RequestContext) {
+        let session_key = ctx.session_key.clone()
+            .unwrap_or_else(|| format!("{}:{}", ctx.channel, ctx.chat_id));
+        let mut guard = self.context.lock().unwrap();
+        guard.origin_channel = ctx.channel.clone();
+        guard.origin_chat_id = ctx.chat_id.clone();
+        guard.session_key = session_key;
     }
 }

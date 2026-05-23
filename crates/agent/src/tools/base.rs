@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+use super::context::RequestContext;
 use super::schema::{resolve_json_schema_type, validate_json_schema_value};
 
 /// Error surfaced by [`Tool::execute`]. Rendered by the registry as a
@@ -61,6 +62,11 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given parameters.
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError>;
+
+    /// Update per-request context. Default: no-op.
+    /// Tools that need routing info (message, spawn, cron, etc.) use interior
+    /// mutability (Mutex/RwLock) to store context, so this takes `&self`.
+    fn set_tool_context(&self, _ctx: &RequestContext) {}
 
     /// Apply safe schema-driven casts before validation.
     fn cast_params(&self, params: Value) -> Value {

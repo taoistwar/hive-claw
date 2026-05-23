@@ -31,6 +31,7 @@ static LEGACY_RAW_MESSAGE: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Pure file I/O for memory files: MEMORY.md, history.jsonl, SOUL.md, USER.md.
+#[derive(Clone)]
 pub struct MemoryStore {
     pub workspace: PathBuf,
     pub max_history_entries: usize,
@@ -541,9 +542,8 @@ pub trait Dream: Send + Sync {
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use chrono::{Datelike, Local};
-use log::{debug, info, warn};
-use regex::Regex;
+use chrono::Datelike;
+use log::{debug, info};
 use serde_json::json;
 
 use providers::{ChatRequest, LLMProvider, RetryMode};

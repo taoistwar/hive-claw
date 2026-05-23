@@ -27,6 +27,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 
 use bus::{InboundMessage, MessageBus, OutboundMessage};
+pub use command::CommandRouter;
 use config::schema::{Config, ProviderRetryMode};
 use providers::{LLMProvider, RetryMode};
 use session::manager::SessionManager;
@@ -43,10 +44,6 @@ use crate::tools::{CronTool, MessageTool, SpawnCallback, SpawnTool, ToolRegistry
 // Tool factory types (port of Python's _register_default_tools in loop.py)
 // ============================================================================
 
-use std::path::PathBuf;
-
-use bus::MessageBus;
-use config::Config;
 use crate::tools::filesystem::{EditFileTool, FsTool, ListDirTool, ReadFileTool, WriteFileTool};
 use crate::tools::message::MessageTool as MessageToolInner;
 use crate::tools::notebook::NotebookEditTool;
@@ -514,21 +511,125 @@ pub struct ProviderSnapshot {
     pub signature: u64,
 }
 
-/// WebUI turn coordinator stub (TODO: full implementation deferred).
-pub struct WebuiTurnCoordinator;
-
-impl WebuiTurnCoordinator {
-    pub fn new() -> Self {
-        Self
-    }
+/// WebUI turn coordinator — manages WebSocket turn status, latency, and title context.
+///
+/// Port of Python's `WebuiTurnCoordinator`.
+pub struct WebuiTurnCoordinator {
+    bus: Arc<MessageBus>,
+    sessions: Arc<Mutex<session::manager::SessionManager>>,
+    _title_contexts: std::collections::HashMap<String, serde_json::Value>,
 }
 
-/// Command router stub (TODO: full implementation deferred).
-pub struct CommandRouter;
+impl WebuiTurnCoordinator {
+    pub fn new(
+        bus: Arc<MessageBus>,
+        sessions: Arc<Mutex<session::manager::SessionManager>>,
+    ) -> Self {
+        Self {
+            bus,
+            sessions,
+            _title_contexts: std::collections::HashMap::new(),
+        }
+    }
 
-impl CommandRouter {
-    pub fn new() -> Self {
-        Self
+    /// Capture LLM runtime context for later title generation.
+    pub fn capture_title_context(&mut self, session_key: &str, msg: &InboundMessage) {
+        if msg.channel == "websocket"
+            && msg.metadata
+                .get("webui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            self._title_contexts
+                .insert(session_key.to_string(), serde_json::Value::Bool(true));
+        }
+    }
+
+    /// Discard title context for a session.
+    pub fn discard(&mut self, session_key: &str) {
+        self._title_contexts.remove(session_key);
+    }
+
+    /// Publish turn run status ("running" / "idle") to the bus.
+    pub async fn publish_run_status(&self, msg: &InboundMessage, status: &str) {
+        if msg.channel != "websocket" {
+            return;
+        }
+        let mut meta = msg.metadata.clone();
+        meta.insert("_turn_status".into(), serde_json::Value::String(status.to_string()));
+        let content = format!(
+            "{{\"status\":\"{}\",\"session_key\":\"{}\"}}",
+            status,
+            msg.session_key()
+        );
+        self.bus
+            .publish_outbound(OutboundMessage {
+                channel: msg.channel.clone(),
+                chat_id: msg.chat_id.clone(),
+                content,
+                reply_to: None,
+                media: Vec::new(),
+                metadata: meta,
+            })
+            .await;
+    }
+
+    /// Handle turn end: publish empty message with goal_state.
+    pub async fn handle_turn_end(
+        &mut self,
+        msg: &InboundMessage,
+        session_key: &str,
+        latency_ms: Option<u64>,
+    ) {
+        if msg.channel != "websocket" {
+            return;
+        }
+
+        let mut turn_metadata: std::collections::HashMap<String, serde_json::Value> = msg.metadata.clone();
+        turn_metadata.insert("_turn_end".into(), serde_json::Value::Bool(true));
+
+        if let Some(latency) = latency_ms {
+            turn_metadata.insert("latency_ms".into(), serde_json::Value::Number(latency.into()));
+        }
+
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions.get_or_create(session_key);
+        let goal_blob = session::goal_state_ws_blob(Some(&session.metadata));
+        turn_metadata.insert("goal_state".into(), goal_blob);
+
+        self.bus
+            .publish_outbound(OutboundMessage {
+                channel: msg.channel.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: String::new(),
+                reply_to: None,
+                media: Vec::new(),
+                metadata: turn_metadata.clone(),
+            })
+            .await;
+
+        // Schedule title update if title context exists
+        let has_title_context = self._title_contexts.remove(session_key).is_some();
+        if has_title_context
+            && msg.metadata
+                .get("webui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            let mut title_meta = msg.metadata.clone();
+            title_meta.insert("_session_updated".into(), serde_json::Value::Bool(true));
+            title_meta.insert("_session_update_scope".into(), serde_json::Value::String("metadata".into()));
+            self.bus
+                .publish_outbound(OutboundMessage {
+                    channel: msg.channel.clone(),
+                    chat_id: msg.chat_id.clone(),
+                    content: String::new(),
+                    reply_to: None,
+                    media: Vec::new(),
+                    metadata: title_meta,
+                })
+                .await;
+        }
     }
 }
 
@@ -536,7 +637,7 @@ impl CommandRouter {
 pub struct AgentLoop {
     bus: Arc<MessageBus>,
     provider: Arc<dyn LLMProvider>,
-    runner: AgentRunner,
+    runner: std::sync::Mutex<Arc<AgentRunner>>,
     context: ContextBuilder,
     sessions: Arc<Mutex<SessionManager>>,
     tools: ToolRegistry,
@@ -550,15 +651,15 @@ pub struct AgentLoop {
     _provider_snapshot_loader: Option<Arc<dyn Fn() -> ProviderSnapshot + Send + Sync>>,
     _preset_snapshot_loader: Option<Arc<dyn Fn() -> ProviderSnapshot + Send + Sync>>,
     _runtime_model_publisher: Option<Arc<dyn Fn(&str, Option<&str>) + Send + Sync>>,
-    _provider_signature: Option<u64>,
+    _provider_signature: std::sync::Mutex<Option<u64>>,
     _default_selection_signature: Option<u64>,
     channels_config: Option<Value>,
     _image_generation_provider_configs: HashMap<String, Value>,
     cron_service: Option<Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
     restrict_to_workspace: bool,
     _start_time: f64,
-    _last_usage: HashMap<String, u64>,
-    _pending_turn_latency_ms: HashMap<String, u64>,
+    _last_usage: std::sync::Mutex<HashMap<String, u64>>,
+    _pending_turn_latency_ms: std::sync::Mutex<HashMap<String, u64>>,
     _extra_hooks: Vec<Arc<dyn crate::hook::AgentHook + Send + Sync>>,
     _webui_turns: Option<Arc<Mutex<WebuiTurnCoordinator>>>,
     _file_state_store: Option<Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
@@ -570,23 +671,23 @@ pub struct AgentLoop {
     _mcp_stacks: HashMap<String, Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
     _mcp_connected: std::sync::atomic::AtomicBool,
     _mcp_connecting: std::sync::atomic::AtomicBool,
-    _active_tasks: std::sync::Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>,
-    _background_tasks: Vec<tokio::task::JoinHandle<()>>,
-    _session_locks: HashMap<String, Arc<Mutex<()>>>,
-    _pending_queues: std::sync::Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<InboundMessage>>>,
+    _active_tasks: Arc<std::sync::Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
+    _background_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    _session_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    _pending_queues: Arc<std::sync::Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<InboundMessage>>>>,
     _concurrency_gate: Option<Arc<Semaphore>>,
     consolidator: Option<Arc<Mutex<dyn ConsolidatorTrait>>>,
     auto_compact: Option<Arc<Mutex<AutoCompactInner>>>,
     dream: Option<Arc<Mutex<dyn DreamTrait>>>,
     model_presets: HashMap<String, Value>,
-    _active_preset: Option<String>,
-    _runtime_vars: HashMap<String, Value>,
-    _current_iteration: u32,
+    _active_preset: std::sync::Mutex<Option<String>>,
+    _runtime_vars: std::sync::Mutex<HashMap<String, Value>>,
+    _current_iteration: std::sync::atomic::AtomicU32,
     commands: Option<Arc<Mutex<CommandRouter>>>,
     web_config: Option<Value>,
     exec_config: Option<Value>,
     tools_config: Option<Value>,
-    context_window_tokens: u32,
+    context_window_tokens: std::sync::atomic::AtomicU32,
     context_block_limit: Option<u32>,
     provider_retry_mode: RetryMode,
     tool_hint_max_length: usize,
@@ -599,7 +700,7 @@ impl AgentLoop {
         Self {
             bus: Arc::new(MessageBus::new()),
             provider: provider.clone(),
-            runner: AgentRunner::new(provider),
+            runner: std::sync::Mutex::new(Arc::new(AgentRunner::new(provider))),
             context: ContextBuilder::new(
                 config.workspace.clone(),
                 config.timezone.clone(),
@@ -615,7 +716,7 @@ impl AgentLoop {
             _provider_snapshot_loader: None,
             _preset_snapshot_loader: None,
             _runtime_model_publisher: None,
-            _provider_signature: None,
+            _provider_signature: std::sync::Mutex::new(None),
             _default_selection_signature: None,
             channels_config: None,
             _image_generation_provider_configs: HashMap::new(),
@@ -625,8 +726,8 @@ impl AgentLoop {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64(),
-            _last_usage: HashMap::new(),
-            _pending_turn_latency_ms: HashMap::new(),
+            _last_usage: std::sync::Mutex::new(HashMap::new()),
+            _pending_turn_latency_ms: std::sync::Mutex::new(HashMap::new()),
             _extra_hooks: Vec::new(),
             _webui_turns: None,
             _file_state_store: None,
@@ -638,23 +739,23 @@ impl AgentLoop {
             _mcp_stacks: HashMap::new(),
             _mcp_connected: std::sync::atomic::AtomicBool::new(false),
             _mcp_connecting: std::sync::atomic::AtomicBool::new(false),
-            _active_tasks: std::sync::Mutex::new(HashMap::new()),
-            _background_tasks: Vec::new(),
-            _session_locks: HashMap::new(),
-            _pending_queues: std::sync::Mutex::new(HashMap::new()),
+            _active_tasks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            _background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            _session_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            _pending_queues: Arc::new(std::sync::Mutex::new(HashMap::new())),
             _concurrency_gate: Some(Arc::new(Semaphore::new(3))),
             consolidator: None,
             auto_compact: None,
             dream: None,
             model_presets: HashMap::new(),
-            _active_preset: None,
-            _runtime_vars: HashMap::new(),
-            _current_iteration: 0,
+            _active_preset: std::sync::Mutex::new(None),
+            _runtime_vars: std::sync::Mutex::new(HashMap::new()),
+            _current_iteration: std::sync::atomic::AtomicU32::new(0),
             commands: None,
             web_config: None,
             exec_config: None,
             tools_config: None,
-            context_window_tokens: context_window,
+            context_window_tokens: std::sync::atomic::AtomicU32::new(context_window),
             context_block_limit: defaults.context_block_limit,
             provider_retry_mode: config.provider_retry_mode,
             tool_hint_max_length: 200,
@@ -724,7 +825,7 @@ impl AgentLoop {
     // ========================================================================
 
     pub fn current_iteration(&self) -> u32 {
-        self._current_iteration
+        self._current_iteration.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn tool_names(&self) -> impl std::future::Future<Output = Vec<String>> + '_ {
@@ -737,12 +838,12 @@ impl AgentLoop {
     //     LLMRuntime::new(self.provider.clone(), self.config.model.clone())
     // }
 
-    pub fn model_preset(&self) -> Option<&str> {
-        self._active_preset.as_deref()
+    pub fn model_preset(&self) -> Option<String> {
+        self._active_preset.lock().unwrap().clone()
     }
 
-    pub fn set_model_preset_name(&mut self, name: Option<String>) {
-        self._active_preset = name;
+    pub fn set_model_preset_name(&self, name: Option<String>) {
+        *self._active_preset.lock().unwrap() = name;
     }
 
     // ========================================================================
@@ -758,17 +859,16 @@ impl AgentLoop {
     }
 
     /// Swap model/provider for future turns without disturbing an active one.
-    pub fn apply_provider_snapshot(&mut self, snapshot: ProviderSnapshot, publish_update: bool) {
+    pub fn apply_provider_snapshot(&self, snapshot: ProviderSnapshot, publish_update: bool) {
         let old_model = self.config.model.clone();
-        self.provider = snapshot.provider;
-        self.config.model = Some(snapshot.model.clone());
-        self.context_window_tokens = snapshot.context_window_tokens;
-        self.runner = AgentRunner::new(self.provider.clone());
-        self._provider_signature = Some(snapshot.signature);
+        self.context_window_tokens
+            .store(snapshot.context_window_tokens, std::sync::atomic::Ordering::SeqCst);
+        *self.runner.lock().unwrap() = Arc::new(AgentRunner::new(snapshot.provider));
+        *self._provider_signature.lock().unwrap() = Some(snapshot.signature);
 
         if publish_update {
             if let Some(ref publisher) = self._runtime_model_publisher {
-                publisher(&snapshot.model, self._active_preset.as_deref());
+                publisher(&snapshot.model, self._active_preset.lock().unwrap().as_deref());
             }
         }
         info!(
@@ -778,7 +878,7 @@ impl AgentLoop {
     }
 
     /// TODO: refresh provider snapshot from config file
-    pub fn refresh_provider_snapshot(&mut self) {
+    pub fn refresh_provider_snapshot(&self) {
         if self._provider_snapshot_loader.is_none() {
             return;
         }
@@ -786,9 +886,11 @@ impl AgentLoop {
             Some(loader) => loader(),
             None => return,
         };
-        if Some(snapshot.signature) == self._provider_signature {
+        let current_sig = self._provider_signature.lock().unwrap();
+        if Some(snapshot.signature) == *current_sig {
             return;
         }
+        drop(current_sig);
         self.apply_provider_snapshot(snapshot, true);
     }
 
@@ -810,14 +912,14 @@ impl AgentLoop {
     }
 
     /// Resolve a preset by name and apply all runtime model dependents.
-    pub fn set_model_preset(&mut self, name: Option<String>, publish_update: bool) {
+    pub fn set_model_preset(&self, name: Option<String>, publish_update: bool) {
         if let Some(ref n) = name {
             if let Some(snapshot) = self.build_model_preset_snapshot(n) {
                 self.apply_provider_snapshot(snapshot, publish_update);
-                self._active_preset = name;
+                *self._active_preset.lock().unwrap() = name;
             }
         } else {
-            self._active_preset = None;
+            *self._active_preset.lock().unwrap() = None;
         }
     }
 
@@ -1016,15 +1118,16 @@ impl AgentLoop {
 
     /// Derive a token budget for session history replay from the context window.
     pub fn replay_token_budget(&self) -> u32 {
-        if self.context_window_tokens == 0 {
+        let ctx = self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst);
+        if ctx == 0 {
             return 0;
         }
         let reserved_output: u32 = 4096;
-        let budget = self.context_window_tokens.saturating_sub(reserved_output).saturating_sub(1024);
+        let budget = ctx.saturating_sub(reserved_output).saturating_sub(1024);
         if budget > 0 {
             budget
         } else {
-            std::cmp::max(128, self.context_window_tokens / 2)
+            std::cmp::max(128, ctx / 2)
         }
     }
 
@@ -1054,16 +1157,17 @@ impl AgentLoop {
         );
         spec.workspace = Some(self.config.workspace.clone());
         spec.session_key = session_key.map(String::from);
-        spec.context_window_tokens = Some(self.context_window_tokens);
+        spec.context_window_tokens = Some(self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst));
         spec.provider_retry_mode = self.provider_retry_mode;
 
-        self.runner.run(spec).await
+        let runner = self.runner.lock().unwrap().clone();
+        runner.run(spec).await
     }
 
     /// Process one inbound message and return the response.
     /// Uses the event-driven state machine (mirrors Python _process_message).
     pub async fn process_message(
-        &mut self,
+        &self,
         msg: InboundMessage,
         session_key: Option<String>,
     ) -> Result<Option<OutboundMessage>, String> {
@@ -1387,51 +1491,67 @@ impl AgentLoop {
     // ========================================================================
 
     /// Main service loop — blocks until the inbound lane closes.
-    pub async fn run(&self) {
-        self._running.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.connect_mcp().await;
+    ///
+    /// Takes [`Arc<Self>`] so spawned tasks can hold a reference to the loop
+    /// for concurrent message processing.
+    pub async fn run(self_arc: Arc<Self>) {
+        self_arc._running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self_arc.connect_mcp().await;
         info!(
             "Agent loop running (workspace={}, model={})",
-            self.config.workspace.display(),
-            self.config.model.as_deref().unwrap_or("<provider default>")
+            self_arc.config.workspace.display(),
+            self_arc.config.model.as_deref().unwrap_or("<provider default>")
         );
 
-        while self._running.load(std::sync::atomic::Ordering::SeqCst) {
+        let this = &*self_arc;
+        while this._running.load(std::sync::atomic::Ordering::SeqCst) {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                self.bus.consume_inbound(),
+                this.bus.consume_inbound(),
             )
             .await
             {
                 Ok(Some(msg)) => {
                     let raw = msg.content.trim().to_string();
                     // TODO: check if priority command
-                    let effective_key = self.effective_session_key(&msg);
+                    let effective_key = this.effective_session_key(&msg);
 
                     // If session has active pending queue, route there
-                    if self._pending_queues.lock().unwrap().contains_key(&effective_key) {
-                        // TODO: dispatch inline or queue
+                    if this._pending_queues.lock().unwrap().contains_key(&effective_key) {
                         let _raw = raw;
                         let _effective_key = effective_key;
                         continue;
                     }
 
-                    let gate = self._concurrency_gate.clone();
+                    let gate = this._concurrency_gate.clone();
                     let msg_clone = msg.clone();
+                    let self_clone = self_arc.clone();
 
-                    let handle = tokio::spawn(async move {
-                        if let Some(g) = gate {
-                            let _permit = g.acquire().await;
-                        }
-                        // TODO: actual dispatch
-                        let _msg = msg_clone;
-                    });
-                    self._active_tasks
-                        .lock()
-                        .unwrap()
-                        .entry(effective_key)
-                        .or_default()
-                        .push(handle);
+                    if let Some(ref gate_ref) = gate {
+                        let gate_owned = gate_ref.clone();
+                        let msg_clone2 = msg_clone.clone();
+                        let self_clone2 = self_clone.clone();
+                        let handle = tokio::spawn(async move {
+                            let _permit = gate_owned.acquire_owned().await;
+                            let _ = self_clone2.process_inbound(msg_clone2).await;
+                        });
+                        this._active_tasks
+                            .lock()
+                            .unwrap()
+                            .entry(effective_key)
+                            .or_default()
+                            .push(handle);
+                    } else {
+                        let handle = tokio::spawn(async move {
+                            let _ = self_clone.process_inbound(msg_clone).await;
+                        });
+                        this._active_tasks
+                            .lock()
+                            .unwrap()
+                            .entry(effective_key)
+                            .or_default()
+                            .push(handle);
+                    }
                 }
                 Ok(None) => break,
                 Err(_) => {
@@ -1538,7 +1658,8 @@ impl AgentLoop {
         spec.context_window_tokens = self.config.context_window_tokens;
         spec.provider_retry_mode = self.config.provider_retry_mode;
 
-        let result = self.runner.run(spec).await;
+        let runner = self.runner.lock().unwrap().clone();
+        let result = runner.run(spec).await;
 
         // Record the exchange so subsequent turns see it.
         if let Some(_content) = result.final_content.clone() {
@@ -1986,8 +2107,11 @@ impl AgentLoop {
 
     /// Drain pending background archives, then close MCP connections.
     pub async fn close_mcp(&mut self) {
-        for handle in self._background_tasks.drain(..) {
-            handle.abort();
+        {
+            let mut bg = self._background_tasks.lock().unwrap();
+            for handle in bg.drain(..) {
+                handle.abort();
+            }
         }
         self._mcp_stacks.clear();
         self._mcp_connected.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1999,7 +2123,7 @@ impl AgentLoop {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         let handle = tokio::spawn(future);
-        self._background_tasks.push(handle);
+        self._background_tasks.lock().unwrap().push(handle);
     }
 
     /// Stop the agent loop.

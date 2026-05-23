@@ -48,6 +48,7 @@ dependencies = [
  "bus",
  "chrono",
  "chrono-tz",
+ "command",
  "config",
  "cron 0.1.0",
  "dirs 5.0.1",
@@ -1384,6 +1385,7 @@ name = "command"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bus",
  "futures",
  "log",
  "serde_json",
@@ -4604,32 +4606,6 @@ dependencies = [
  "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
-]
-
-[[package]]
-name = "nanobot"
-version = "0.1.0"
-dependencies = [
- "agent",
- "api",
- "bus",
- "channels",
- "chrono",
- "cli",
- "command",
- "config",
- "cron 0.1.0",
- "env_logger",
- "heartbeat",
- "log",
- "providers",
- "security",
- "serde_json",
- "session",
- "skills",
- "thiserror 1.0.69",
- "tokio",
- "utils",
 ]
 
 [[package]]

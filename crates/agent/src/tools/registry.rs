@@ -8,6 +8,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use super::base::{Tool};
+use super::context::RequestContext;
 
 const ERROR_HINT: &str = "\n\n[Analyze the error above and try a different approach.]";
 
@@ -83,6 +84,18 @@ impl ToolRegistry {
 
     pub async fn tool_names(&self) -> Vec<String> {
         self.inner.read().await.tools.keys().cloned().collect()
+    }
+
+    /// Update context on all registered tools.
+    /// Port of Python: iterate `self.tools.tool_names` and call
+    /// `set_context` on tools implementing `ContextAware`. In Rust,
+    /// `set_tool_context` defaults to no-op, and context-aware tools
+    /// override it using interior mutability.
+    pub async fn set_all_tool_context(&self, ctx: &RequestContext) {
+        let tools = self.inner.read().await;
+        for tool in tools.tools.values() {
+            tool.set_tool_context(ctx);
+        }
     }
 
     /// Tool definitions with stable ordering (builtins then MCP, both

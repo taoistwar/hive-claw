@@ -116,6 +116,9 @@ impl Tool for MessageTool {
             "required":["content"],
         })
     }
+    fn set_tool_context(&self, ctx: &RequestContext) {
+        self.set_context(ctx);
+    }
     async fn execute(&self, params: Value) -> Result<Value, ToolExecError> {
         let content_raw = params
             .get("content")

@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use futures::StreamExt;
 use gpui::{
-    div, prelude::*, px, rgb, AsyncApp, Context, Entity, MouseButton, SharedString, Window,
+    div, prelude::*, px, rgb, AsyncApp, Context, Entity, MouseButton, SharedString, StatefulInteractiveElement, Window,
 };
 use uuid::Uuid;
 
@@ -57,8 +57,7 @@ impl Render for ConversationView {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .p(px(16.0))
-            .flex_grow();
+            .p(px(16.0));
 
         let snapshot: Vec<TurnSnapshot> = {
             let app = cx.global::<HiveGuiAppState>();
@@ -288,8 +287,9 @@ impl Render for ConversationView {
             .child(top_bar())
             .child(
                 div()
+                    .id("turns-scroll")
                     .flex_1()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
                     .child(turns_col)
             )
             .children(indicator)

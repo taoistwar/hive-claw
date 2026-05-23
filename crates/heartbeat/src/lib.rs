@@ -3,6 +3,6 @@
 pub mod service;
 
 pub use service::{
-    HeartbeatAction, HeartbeatDecision, HeartbeatExecutor,
-    HeartbeatNotifier, HeartbeatService,
+    HeartbeatAction, HeartbeatConfig, HeartbeatDecider, HeartbeatDecision, HeartbeatExecutor,
+    HeartbeatNotifier, HeartbeatService, LLMHeartbeatDecider,
 };

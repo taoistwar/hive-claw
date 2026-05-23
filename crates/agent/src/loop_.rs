@@ -43,10 +43,6 @@ use crate::tools::{CronTool, MessageTool, SpawnCallback, SpawnTool, ToolRegistry
 // Tool factory types (port of Python's _register_default_tools in loop.py)
 // ============================================================================
 
-use std::path::PathBuf;
-
-use bus::MessageBus;
-use config::Config;
 use crate::tools::filesystem::{EditFileTool, FsTool, ListDirTool, ReadFileTool, WriteFileTool};
 use crate::tools::message::MessageTool as MessageToolInner;
 use crate::tools::notebook::NotebookEditTool;

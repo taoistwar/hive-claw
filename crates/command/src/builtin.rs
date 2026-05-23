@@ -4,7 +4,7 @@
 //! (`nanobot.utils.helpers`, `nanobot.utils.restart`,
 //! `nanobot.utils.searchusage`, and the agent `Loop` itself). This module
 //! talks to all of those via the placeholder traits defined in
-//! [`crate::types`] — swap them out for real implementations when those
+//! [`router`] — swap them out for real implementations when those
 //! crates land.
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 
 use crate::router::{handler, CommandContext, CommandRouter};
-use crate::types::{DreamCommit, OutboundMessage, Session};
+use crate::router::{DreamCommit, OutboundMessage, Session};
 
 // ---------------------------------------------------------------------------
 // Utility helpers (pure, fully translated)

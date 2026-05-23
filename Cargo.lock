@@ -4619,6 +4619,7 @@ dependencies = [
  "command",
  "config",
  "cron 0.1.0",
+ "dirs 5.0.1",
  "env_logger",
  "heartbeat",
  "log",
@@ -7531,6 +7532,10 @@ dependencies = [
  "rustix 1.1.4",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "templates"
+version = "0.1.0"
 
 [[package]]
 name = "tendril"

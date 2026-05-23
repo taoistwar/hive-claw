@@ -1,29 +1,264 @@
 //! axum-based HTTP server implementing the OpenAI-compatible endpoints.
+//!
+//! Ports `nanobot.api.server`:
+//! * `POST /v1/chat/completions` — accepts JSON *or* multipart/form-data,
+//!   returns a Chat Completions response (optionally as SSE when
+//!   `stream=true`).
+//! * `GET  /v1/models`            — advertises the single configured model.
+//! * `GET  /health`               — liveness probe.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::extract::{FromRequest, Multipart, Request, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use futures::stream::{self, Stream, StreamExt};
 use log::{error, info, warn};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
 use uuid::Uuid;
 
-use crate::agent::{ApiAgent, ApiAnswer, ApiRequest};
-use crate::media::{FileSizeExceeded, MAX_FILE_SIZE, safe_filename, save_base64_data_url};
-use crate::types::{ChatCompletionRequest, ModelInfo, ModelsList, assistant_completion};
+// ===================================================================
+// Media upload helpers (from Python utils.media_decode + utils.helpers)
+// ===================================================================
+
+/// Hard cap on any single uploaded file (mirrors Python default).
+pub const MAX_FILE_SIZE: usize = 20 * 1024 * 1024;
+
+/// Raised when an upload exceeds [`MAX_FILE_SIZE`].
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct FileSizeExceeded(pub String);
+
+static UNSAFE_CHARS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[\\/:*?"<>|\u0000-\u001f]"#).unwrap());
+
+/// Sanitise a user-supplied filename so it's safe to write to disk.
+pub fn safe_filename(input: &str) -> String {
+    let input = input.trim();
+    if input.is_empty() {
+        return "upload.bin".into();
+    }
+    let base = input
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(input);
+    let cleaned = UNSAFE_CHARS.replace_all(base, "_").to_string();
+    let trimmed = cleaned.trim_start_matches('.').trim();
+    if trimmed.is_empty() {
+        "upload.bin".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+static DATA_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^data:([^;]+);base64,(.+)$").unwrap());
+
+/// Persist a `data:<mime>;base64,<payload>` URL to `media_dir` and
+/// return the full saved path.
+pub fn save_base64_data_url(url: &str, media_dir: &Path) -> Option<PathBuf> {
+    let caps = DATA_URL_RE.captures(url)?;
+    let mime = caps.get(1)?.as_str();
+    let payload = caps.get(2)?.as_str();
+
+    let bytes = STANDARD.decode(payload).ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_FILE_SIZE {
+        return None;
+    }
+
+    let ext = mime_guess::get_mime_extensions_str(mime)
+        .and_then(|exts| exts.first().copied())
+        .unwrap_or(match mime {
+            "image/jpeg" => "jpg",
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "bin",
+        });
+
+    let stem = Uuid::new_v4().simple().to_string();
+    let name = format!("{}.{ext}", &stem[..12]);
+    fs::create_dir_all(media_dir).ok()?;
+    let path = media_dir.join(name);
+    fs::write(&path, &bytes).ok()?;
+    Some(path)
+}
+
+// ===================================================================
+// Agent-facing interface
+// ===================================================================
+
+/// Parsed request ready to be executed by an agent backend.
+#[derive(Debug, Clone)]
+pub struct ApiRequest {
+    /// Raw user text, already flattened from JSON content blocks.
+    pub content: String,
+    /// Media files saved to disk during parsing (absolute paths).
+    pub media: Vec<PathBuf>,
+    /// Optional session identifier. Defaults to `default` when absent.
+    pub session_id: Option<String>,
+    /// Requested model. The server validates this against its configured
+    /// `model_name` before delegating, so the agent can ignore it.
+    pub model: Option<String>,
+    /// Routing info for session-key scoping. Defaults mimic Python:
+    /// `channel = "api"`, `chat_id = "default"`.
+    pub channel: String,
+    pub chat_id: String,
+}
+
+impl ApiRequest {
+    pub fn session_key(&self) -> String {
+        match self.session_id.as_deref() {
+            Some(id) if !id.is_empty() => format!("api:{id}"),
+            _ => "api:default".to_string(),
+        }
+    }
+}
+
+/// Terminal assistant answer. No tool events / usage here.
+#[derive(Debug, Clone, Default)]
+pub struct ApiAnswer {
+    pub content: String,
+}
+
+/// Trait alias for streaming sinks.
+pub trait StreamSink: Send {
+    fn on_delta(&mut self, delta: &str);
+}
+
+impl<F: FnMut(&str) + Send> StreamSink for F {
+    fn on_delta(&mut self, delta: &str) {
+        self(delta)
+    }
+}
+
+/// Asynchronous interface used by the HTTP handlers.
+#[async_trait]
+pub trait ApiAgent: Send + Sync {
+    /// Run a single non-streaming request.
+    async fn generate(&self, req: ApiRequest) -> Result<ApiAnswer, String>;
+
+    /// Optional streaming entry-point. The default implementation falls
+    /// back to [`Self::generate`] and emits the full answer as one delta.
+    async fn generate_stream(
+        &self,
+        req: ApiRequest,
+        on_delta: &mut dyn StreamSink,
+    ) -> Result<ApiAnswer, String> {
+        let answer = self.generate(req).await?;
+        if !answer.content.is_empty() {
+            on_delta.on_delta(&answer.content);
+        }
+        Ok(answer)
+    }
+}
+
+// ===================================================================
+// OpenAI-compatible JSON payload types
+// ===================================================================
+
+/// Incoming `POST /v1/chat/completions` body (JSON path).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionRequest {
+    #[serde(default)]
+    pub model: Option<String>,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub stream: bool,
+    /// Extension: non-standard field used by the Python server.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// One message in a chat completion request.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChatMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: Value,
+}
+
+/// `/v1/chat/completions` non-streaming response.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatCompletionResponse {
+    pub id: String,
+    pub object: &'static str,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<ChatCompletionChoice>,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatCompletionChoice {
+    pub index: u32,
+    pub message: ChatMessage,
+    pub finish_reason: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+/// `/v1/models` list payload.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelsList {
+    pub object: &'static str,
+    pub data: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub object: &'static str,
+    pub created: i64,
+    pub owned_by: &'static str,
+}
+
+/// Build a Chat Completions response shell for a plain assistant text reply.
+pub fn assistant_completion(id: String, model: String, content: String) -> ChatCompletionResponse {
+    ChatCompletionResponse {
+        id,
+        object: "chat.completion",
+        created: chrono::Utc::now().timestamp(),
+        model,
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".into(),
+                content: Value::String(content),
+            },
+            finish_reason: "stop",
+        }],
+        usage: Usage::default(),
+    }
+}
+
+// ===================================================================
+// Server config and state
+// ===================================================================
 
 const API_CHAT_ID: &str = "default";
 const API_CHANNEL: &str = "api";
@@ -70,10 +305,6 @@ impl ApiServerConfig {
 }
 
 /// Shared mutable state held by axum handlers.
-///
-/// `session_locks` matches the Python server's per-session mutex map —
-/// an inbound request that reuses an already-busy `session_id` will
-/// serialise behind the earlier one.
 pub struct ServerState {
     pub agent: Arc<dyn ApiAgent>,
     pub config: ApiServerConfig,
@@ -124,9 +355,9 @@ pub async fn serve(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
+// ===================================================================
 // Handlers
-// ---------------------------------------------------------------------------
+// ===================================================================
 
 async fn handle_health() -> Json<Value> {
     Json(json!({"status": "ok"}))
@@ -218,9 +449,9 @@ async fn handle_chat_completions(
     }
 }
 
-// ---------------------------------------------------------------------------
+// ===================================================================
 // Body parsing
-// ---------------------------------------------------------------------------
+// ===================================================================
 
 #[derive(Debug)]
 struct ParsedRequest {
@@ -407,9 +638,9 @@ async fn parse_multipart(request: Request) -> Result<ParsedRequest, ParseError> 
     })
 }
 
-// ---------------------------------------------------------------------------
+// ===================================================================
 // Response paths
-// ---------------------------------------------------------------------------
+// ===================================================================
 
 async fn non_stream_response(
     state: Arc<ServerState>,
@@ -464,11 +695,8 @@ async fn stream_response(
     let chunk_id = format!("chatcmpl-{}", &Uuid::new_v4().simple().to_string()[..12]);
     let timeout = state.config.request_timeout;
 
-    // Collect tokens under the session lock, then replay as SSE.
-    // (Real per-token streaming will arrive once the runner gains a
-    // delta callback; this mirrors Python's user-visible contract.)
     struct Collector(Vec<String>);
-    impl crate::agent::StreamSink for Collector {
+    impl StreamSink for Collector {
         fn on_delta(&mut self, d: &str) {
             self.0.push(d.to_string());
         }
@@ -489,8 +717,7 @@ async fn stream_response(
     };
     let mut chunks = sink.0;
 
-    // If the agent emitted no deltas (default impl didn't supply any),
-    // fall back to the final content as a single delta.
+    // If the agent emitted no deltas, fall back to the final content as a single delta.
     if chunks.is_empty() && !content.is_empty() {
         chunks.push(content);
     }
@@ -544,9 +771,9 @@ fn sse_chunk_event(
     Event::default().data(payload.to_string())
 }
 
-// ---------------------------------------------------------------------------
+// ===================================================================
 // Helpers
-// ---------------------------------------------------------------------------
+// ===================================================================
 
 fn error_json(status: StatusCode, message: &str, err_type: &str) -> Response {
     let body = json!({
@@ -563,13 +790,17 @@ fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
 }
 
+// ===================================================================
+// Tests
+// ===================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     struct Echo;
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl ApiAgent for Echo {
         async fn generate(&self, req: ApiRequest) -> Result<ApiAnswer, String> {
             Ok(ApiAnswer {
@@ -605,11 +836,11 @@ mod tests {
         let req = ChatCompletionRequest {
             model: None,
             messages: vec![
-                crate::types::ChatMessage {
+                ChatMessage {
                     role: "user".into(),
                     content: Value::String("a".into()),
                 },
-                crate::types::ChatMessage {
+                ChatMessage {
                     role: "user".into(),
                     content: Value::String("b".into()),
                 },
@@ -625,7 +856,7 @@ mod tests {
     async fn extract_json_content_rejects_remote_image_url() {
         let req = ChatCompletionRequest {
             model: None,
-            messages: vec![crate::types::ChatMessage {
+            messages: vec![ChatMessage {
                 role: "user".into(),
                 content: json!([
                     {"type":"text","text":"describe"},
@@ -645,7 +876,7 @@ mod tests {
     async fn extract_json_content_flattens_text_parts() {
         let req = ChatCompletionRequest {
             model: None,
-            messages: vec![crate::types::ChatMessage {
+            messages: vec![ChatMessage {
                 role: "user".into(),
                 content: json!([
                     {"type":"text","text":"hello"},
@@ -663,13 +894,11 @@ mod tests {
     #[tokio::test]
     async fn full_round_trip_over_tcp() {
         let state = make_state();
-        // Bind to an ephemeral port.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let router = build_router(state.clone());
         let server = tokio::spawn(async move { axum::serve(listener, router).await });
 
-        // /health
         let client = reqwest::Client::new();
         let health: Value = client
             .get(format!("http://{addr}/health"))
@@ -681,7 +910,6 @@ mod tests {
             .unwrap();
         assert_eq!(health["status"], "ok");
 
-        // /v1/models
         let models: Value = client
             .get(format!("http://{addr}/v1/models"))
             .send()
@@ -692,7 +920,6 @@ mod tests {
             .unwrap();
         assert_eq!(models["data"][0]["id"], "nanobot");
 
-        // /v1/chat/completions (non-streaming)
         let body = json!({
             "model": "nanobot",
             "messages": [{"role":"user","content":"ping"}]
@@ -709,7 +936,6 @@ mod tests {
         assert_eq!(chat["choices"][0]["message"]["content"], "echo: ping");
         assert_eq!(chat["object"], "chat.completion");
 
-        // /v1/chat/completions (wrong model)
         let bad_body = json!({
             "model": "other",
             "messages": [{"role":"user","content":"ping"}]
@@ -728,7 +954,107 @@ mod tests {
     #[test]
     fn sse_chunk_event_has_payload() {
         let ev = sse_chunk_event(Some("hi".into()), "m", "id", None);
-        // Event is opaque; hit its Debug to ensure it doesn't panic.
         let _ = format!("{ev:?}");
+    }
+
+    #[test]
+    fn session_key_defaults_when_unset() {
+        let req = ApiRequest {
+            content: "".into(),
+            media: vec![],
+            session_id: None,
+            model: None,
+            channel: "api".into(),
+            chat_id: "default".into(),
+        };
+        assert_eq!(req.session_key(), "api:default");
+        let with_id = ApiRequest {
+            session_id: Some("abc".into()),
+            ..req
+        };
+        assert_eq!(with_id.session_key(), "api:abc");
+    }
+
+    #[tokio::test]
+    async fn default_stream_replays_full_answer() {
+        struct Collector(Vec<String>);
+        impl StreamSink for Collector {
+            fn on_delta(&mut self, d: &str) {
+                self.0.push(d.to_string());
+            }
+        }
+        let agent = Echo;
+        let mut sink = Collector(Vec::new());
+        let req = ApiRequest {
+            content: "hi".into(),
+            media: vec![],
+            session_id: None,
+            model: None,
+            channel: "api".into(),
+            chat_id: "default".into(),
+        };
+        let ans = agent.generate_stream(req, &mut sink).await.unwrap();
+        assert_eq!(ans.content, "echo: hi");
+        assert_eq!(sink.0, vec!["echo: hi".to_string()]);
+    }
+
+    #[test]
+    fn safe_filename_strips_path_and_unsafe_chars() {
+        assert_eq!(safe_filename("../etc/passwd"), "passwd");
+        assert_eq!(safe_filename("C:\\bad<name>.jpg"), "bad_name_.jpg");
+        assert_eq!(safe_filename(""), "upload.bin");
+        assert_eq!(safe_filename("   "), "upload.bin");
+        assert_eq!(safe_filename(".hidden"), "hidden");
+    }
+
+    #[test]
+    fn save_base64_png_roundtrip() {
+        fn unique_dir(tag: &str) -> PathBuf {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let p = std::env::temp_dir().join(format!("rustbot_api_media_{tag}_{nanos}"));
+            fs::create_dir_all(&p).unwrap();
+            p
+        }
+        let dir = unique_dir("png");
+        let payload = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII=";
+        let url = format!("data:image/png;base64,{payload}");
+        let saved = save_base64_data_url(&url, &dir).unwrap();
+        assert!(saved.exists());
+        assert!(saved.extension().unwrap().to_str().unwrap().eq_ignore_ascii_case("png"));
+        let bytes = fs::read(&saved).unwrap();
+        assert!(bytes.len() > 10);
+    }
+
+    #[test]
+    fn save_rejects_non_data_url() {
+        fn unique_dir(tag: &str) -> PathBuf {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let p = std::env::temp_dir().join(format!("rustbot_api_media_{tag}_{nanos}"));
+            fs::create_dir_all(&p).unwrap();
+            p
+        }
+        let dir = unique_dir("reject");
+        assert!(save_base64_data_url("https://example.com/a.png", &dir).is_none());
+    }
+
+    #[test]
+    fn save_rejects_bad_base64() {
+        fn unique_dir(tag: &str) -> PathBuf {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let p = std::env::temp_dir().join(format!("rustbot_api_media_{tag}_{nanos}"));
+            fs::create_dir_all(&p).unwrap();
+            p
+        }
+        let dir = unique_dir("bad");
+        assert!(save_base64_data_url("data:image/png;base64,@@@", &dir).is_none());
     }
 }

@@ -181,7 +181,7 @@ pub async fn dispatch() -> Result<(), String> {
     let ws_path = cli.workspace.clone();
 
     match cli.command {
-        Command::version => {
+        Command::Version => {
             println!("nanobot {VERSION}");
             Ok(())
         }

@@ -775,7 +775,7 @@ pub struct AgentLoop {
     provider_snapshot_loader: Option<SnapshotLoaderFn>,
     preset_snapshot_loader: Option<PresetSnapshotLoaderFn>,
     runtime_model_publisher: Option<RuntimeModelPublisherFn>,
-    provider_signature: std::sync::Mutex<Option<u64>>,
+    provider_signature: tokio::sync::Mutex<Option<u64>>,
     default_selection_signature: Option<u64>,
     channels_config: Option<Value>,
     _image_generation_provider_configs: HashMap<String, Value>,
@@ -840,7 +840,7 @@ impl AgentLoop {
             provider_snapshot_loader: None,
             preset_snapshot_loader: None,
             runtime_model_publisher: None,
-            provider_signature: std::sync::Mutex::new(None),
+            provider_signature: tokio::sync::Mutex::new(None),
             default_selection_signature: None,
             channels_config: None,
             _image_generation_provider_configs: HashMap::new(),
@@ -988,7 +988,7 @@ impl AgentLoop {
         }
 
         let initial_sig = compute_config_signature(&cfg);
-        *self.provider_signature.lock().unwrap() = Some(initial_sig);
+        *self.provider_signature.lock().await = Some(initial_sig);
     }
 
     /// Initialize the model switch callback on the prefilter.
@@ -1112,7 +1112,7 @@ impl AgentLoop {
         self.context_window_tokens
             .store(snapshot.context_window_tokens, std::sync::atomic::Ordering::SeqCst);
         *self.runner.lock().unwrap() = Arc::new(AgentRunner::new(snapshot.provider.clone()));
-        *self.provider_signature.lock().unwrap() = Some(snapshot.signature);
+        *self.provider_signature.lock().await = Some(snapshot.signature);
 
         if let Some(dream) = &self.dream {
             let mut dream = dream.lock().await;
@@ -1152,7 +1152,7 @@ impl AgentLoop {
             None => return,
         };
 
-        let current_sig = self.provider_signature.lock().unwrap();
+        let current_sig = self.provider_signature.lock().await;
         if Some(snapshot.signature) == *current_sig {
             return;
         }
@@ -1202,7 +1202,9 @@ impl AgentLoop {
                 }
             };
 
-            if snapshot.signature != self.provider_signature.lock().unwrap().unwrap_or(0) {
+            let sig = self.provider_signature.lock().await;
+            if snapshot.signature != sig.unwrap_or(0) {
+                drop(sig);
                 self.apply_provider_snapshot(snapshot, true).await;
             }
         }

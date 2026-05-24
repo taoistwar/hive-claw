@@ -43,9 +43,8 @@ impl AgentLoopApi {
 impl ApiAgent for AgentLoopApi {
     async fn generate(&self, req: ApiRequest) -> Result<ApiAnswer, String> {
         let session_key = req.session_key();
-        let _permit = self
-            .acquire_session(&session_key)
-            .await
+        let semaphore = self.acquire_session(&session_key).await;
+        let _permit = semaphore
             .acquire()
             .await
             .map_err(|e| format!("session lock error: {e}"))?;

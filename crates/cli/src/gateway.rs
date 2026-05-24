@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use agent::{Dream, DreamConfig, MemoryDream};
+use agent::{AgentLoop, Dream, DreamConfig, MemoryDream};
 use async_trait::async_trait;
 use bus::InboundMessage;
 use channels::ChannelManager;
@@ -209,9 +209,8 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     });
 
     // ---- agent bus loop ----
-    let agent_ref = agent.clone();
-    let agent_for_loop = Arc::try_unwrap(agent).expect("agent should have only one reference");
-    let agent_task = tokio::spawn(async move { agent_for_loop.run().await });
+    let agent_for_loop = agent.clone();
+    let agent_task = tokio::spawn(async move { AgentLoop::run(agent_for_loop).await });
 
     println!("nanobot gateway listening on http://{bind} (health endpoint)");
     println!("workspace: {}", cfg.workspace_path().display());
@@ -236,7 +235,7 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
     }
     let _ = shutdown_tx.send(());
     cron_svc.stop().await;
-    hb.stop().await;
+    hb.stop();
     server.abort();
     agent_task.abort();
 
@@ -487,6 +486,8 @@ async fn register_dream_job(svc: &Arc<::cron::CronService>, cfg: &config::Config
             deliver: false,
             channel: None,
             to: None,
+            channel_meta: None,
+            session_key: None,
         },
         state: Default::default(),
         created_at_ms: 0,

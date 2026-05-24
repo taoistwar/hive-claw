@@ -97,73 +97,10 @@ pub fn save_base64_data_url(url: &str, media_dir: &Path) -> Option<PathBuf> {
 }
 
 // ===================================================================
-// Agent-facing interface
+// Agent-facing interface (re-exported from agent module)
 // ===================================================================
 
-/// Parsed request ready to be executed by an agent backend.
-#[derive(Debug, Clone)]
-pub struct ApiRequest {
-    /// Raw user text, already flattened from JSON content blocks.
-    pub content: String,
-    /// Media files saved to disk during parsing (absolute paths).
-    pub media: Vec<PathBuf>,
-    /// Optional session identifier. Defaults to `default` when absent.
-    pub session_id: Option<String>,
-    /// Requested model. The server validates this against its configured
-    /// `model_name` before delegating, so the agent can ignore it.
-    pub model: Option<String>,
-    /// Routing info for session-key scoping. Defaults mimic Python:
-    /// `channel = "api"`, `chat_id = "default"`.
-    pub channel: String,
-    pub chat_id: String,
-}
-
-impl ApiRequest {
-    pub fn session_key(&self) -> String {
-        match self.session_id.as_deref() {
-            Some(id) if !id.is_empty() => format!("api:{id}"),
-            _ => "api:default".to_string(),
-        }
-    }
-}
-
-/// Terminal assistant answer. No tool events / usage here.
-#[derive(Debug, Clone, Default)]
-pub struct ApiAnswer {
-    pub content: String,
-}
-
-/// Trait alias for streaming sinks.
-pub trait StreamSink: Send {
-    fn on_delta(&mut self, delta: &str);
-}
-
-impl<F: FnMut(&str) + Send> StreamSink for F {
-    fn on_delta(&mut self, delta: &str) {
-        self(delta)
-    }
-}
-
-/// Asynchronous interface used by the HTTP handlers.
-#[async_trait]
-pub trait ApiAgent: Send + Sync {
-    /// Run a single non-streaming request.
-    async fn generate(&self, req: ApiRequest) -> Result<ApiAnswer, String>;
-
-    /// Optional streaming entry-point. The default implementation falls
-    /// back to [`Self::generate`] and emits the full answer as one delta.
-    async fn generate_stream(
-        &self,
-        req: ApiRequest,
-        on_delta: &mut dyn StreamSink,
-    ) -> Result<ApiAnswer, String> {
-        let answer = self.generate(req).await?;
-        if !answer.content.is_empty() {
-            on_delta.on_delta(&answer.content);
-        }
-        Ok(answer)
-    }
-}
+pub use crate::agent::{ApiAgent, ApiAnswer, ApiRequest, StreamSink};
 
 // ===================================================================
 // OpenAI-compatible JSON payload types

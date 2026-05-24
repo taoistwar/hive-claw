@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use log::{error, warn};
+use log::warn;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;

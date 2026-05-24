@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
+use log::info;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -299,7 +299,7 @@ impl MyTool {
     }
 
     fn inspect_all(&self) -> String {
-        let state = &self.runtime_state;
+        let _state = &self.runtime_state;
         let mut parts: Vec<String> = Vec::new();
 
         let state_value = self.runtime_state.read().unwrap().serialize_state();

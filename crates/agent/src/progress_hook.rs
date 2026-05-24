@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use providers::ToolCallRequest;
 
-use crate::hook::{AgentHook, AgentHookContext, ToolEvent};
+use crate::hook::{AgentHook, AgentHookContext};
 
 type ProgressFn = Arc<dyn Fn(ProgressPayload) + Send + Sync>;
 type StreamFn = Arc<dyn Fn(String) + Send + Sync>;
@@ -34,9 +34,13 @@ pub struct ProgressHook {
     on_progress: Option<ProgressFn>,
     on_stream: Option<StreamFn>,
     on_stream_end: Option<StreamEndFn>,
+    #[allow(dead_code)]
     channel: String,
+    #[allow(dead_code)]
     chat_id: String,
+    #[allow(dead_code)]
     message_id: Option<String>,
+    #[allow(dead_code)]
     metadata: serde_json::Map<String, Value>,
     session_key: Option<String>,
     tool_hint_max_length: usize,
@@ -100,7 +104,7 @@ impl AgentHook for ProgressHook {
         );
     }
 
-    async fn on_stream(&self, ctx: &mut AgentHookContext, delta: &str) {
+    async fn on_stream(&self, _ctx: &mut AgentHookContext, delta: &str) {
         if self.on_stream.is_none() {
             return;
         }
@@ -137,7 +141,7 @@ impl AgentHook for ProgressHook {
         }
     }
 
-    async fn on_stream_end(&self, ctx: &mut AgentHookContext, resuming: bool) {
+    async fn on_stream_end(&self, _ctx: &mut AgentHookContext, resuming: bool) {
         {
             let mut open = self.reasoning_open.lock().await;
             if *open {

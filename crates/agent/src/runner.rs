@@ -23,9 +23,7 @@ use providers::{
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use utils::file_edit_events::{
-    is_file_edit_tool, StreamingFileEditTracker,
-};
+use utils::file_edit_events::StreamingFileEditTracker;
 use utils::helpers::{
     build_assistant_message, estimate_message_tokens, estimate_prompt_tokens,
     extract_reasoning, extract_think, find_legal_message_start, IncrementalThinkExtractor,
@@ -135,7 +133,7 @@ impl AgentRunSpec {
             llm_timeout_s: None,
             progress_callback: None,
             retry_wait_callback: None,
-            stream_progress_deltas: false,
+            stream_progress_deltas: true,
         }
     }
 }
@@ -812,7 +810,7 @@ impl AgentRunner {
                 // Fall through with the retry content
                 return self.handle_final_content(
                     &spec, &hook, messages, retry_clean, retry_response,
-                    empty_retries, length_recoveries,
+                    empty_retries, length_recoveries, iteration as u32,
                     injection_cycles, &mut had_injections, &mut usage,
                 ).await;
             }
@@ -843,7 +841,7 @@ impl AgentRunner {
             // Final content processing (delegated)
             return self.handle_final_content(
                 &spec, &hook, messages, clean, response,
-                empty_retries, length_recoveries,
+                empty_retries, length_recoveries, iteration as u32,
                 injection_cycles, &mut had_injections, &mut usage,
             ).await;
         }
@@ -887,8 +885,9 @@ impl AgentRunner {
         mut messages: Vec<Value>,
         clean: Option<String>,
         response: LLMResponse,
-        empty_retries: u32,
+        _empty_retries: u32,
         _length_recoveries: u32,
+        iteration: u32,
         mut injection_cycles: usize,
         had_injections: &mut bool,
         usage: &mut std::collections::HashMap<String, i64>,
@@ -1025,7 +1024,7 @@ impl AgentRunner {
             spec,
             serde_json::json!({
                 "phase": "final_response",
-                "iteration": 0,
+                "iteration": iteration,
                 "model": spec.model,
                 "assistant_message": assistant,
                 "completed_tool_results": [],
@@ -1041,9 +1040,6 @@ impl AgentRunner {
             ..Default::default()
         };
         await_hook_after_iteration(hook, &mut ctx).await;
-
-        // Consume empty_retries to silence unused_variable warning
-        let _ = empty_retries;
 
         AgentRunResult {
             final_content,
@@ -1156,7 +1152,7 @@ impl AgentRunner {
                     let edits = file_edits_ref.clone();
                     let event = serde_json::Value::Object(delta);
                     tokio::spawn(async move {
-                        let mut tracker = edits.lock().await;
+                        let tracker = edits.lock().await;
                         let _ = tracker.update(&event).await;
                     });
                 }))
@@ -1173,7 +1169,7 @@ impl AgentRunner {
             );
 
             let response = if wants_streaming {
-                let mut handle = tokio::spawn({
+                let handle = tokio::spawn({
                     let hook = hook.clone();
                     async move {
                         while let Some(delta) = delta_rx.recv().await {
@@ -1183,7 +1179,7 @@ impl AgentRunner {
                         }
                     }
                 });
-                let mut reasoning_handle = tokio::spawn({
+                let reasoning_handle = tokio::spawn({
                     let hook = hook.clone();
                     async move {
                         while let Some(delta) = reasoning_rx.recv().await {
@@ -1201,7 +1197,7 @@ impl AgentRunner {
                 // File edit tracker lifecycle: flush remaining events and wire up
                 // final call IDs (matches Python live_file_edits.flush() + apply_final_call_ids)
                 if let Some(ref edits) = live_file_edits {
-                    let mut tracker = edits.lock().await;
+                    let tracker = edits.lock().await;
                     tracker.flush().await;
                     if response.should_execute_tools() {
                         let tool_call_values: Vec<serde_json::Value> = response.tool_calls.iter()
@@ -1222,9 +1218,9 @@ impl AgentRunner {
                 // Progress-streaming mode: emit incremental clean content
                 // to progress_callback, reasoning via emit_reasoning.
                 let progress_cb = spec.progress_callback.clone().unwrap();
-                let mut handle = tokio::spawn({
+                let handle = tokio::spawn({
                     let reasoning_tx2 = reasoning_tx_for_progress.clone();
-                    let think_extractor = think_extractor.clone();
+                    let _think_extractor = think_extractor.clone();
                     let acc_ref = accumulator.clone();
                     async move {
                         let mut prev_clean_len = 0;
@@ -1268,11 +1264,16 @@ impl AgentRunner {
                         }
                     }
                 });
-                let mut reasoning_handle = tokio::spawn({
+                let reasoning_handle = tokio::spawn({
                     let hook = hook.clone();
                     async move {
+                        let mut reasoning_open = false;
                         while let Some(delta) = reasoning_rx.recv().await {
                             hook.emit_reasoning(Some(&delta)).await;
+                            reasoning_open = true;
+                        }
+                        if reasoning_open {
+                            hook.emit_reasoning_end().await;
                         }
                     }
                 });
@@ -1282,9 +1283,13 @@ impl AgentRunner {
                 handle.abort();
                 reasoning_handle.abort();
 
+                // Ensure reasoning is closed after stream ends (matches Python
+                // lines 733-734: if progress_state and progress_state.get("reasoning_open"))
+                hook.emit_reasoning_end().await;
+
                 // File edit tracker lifecycle: flush + apply_final_call_ids
                 if let Some(ref edits) = live_file_edits {
-                    let mut tracker = edits.lock().await;
+                    let tracker = edits.lock().await;
                     tracker.flush().await;
                     if response.should_execute_tools() {
                         let tool_call_values: Vec<serde_json::Value> = response.tool_calls.iter()

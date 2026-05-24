@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{mpsc, RwLock};
 
 use super::base::{Tool, ToolExecError};
 use super::registry::ToolRegistry;
@@ -797,7 +797,7 @@ impl McpSessionImpl {
             pending.insert(id, PendingRequest { tx });
         }
 
-        let serialized = serde_json::to_string(&message).map_err(|e| McpError {
+        let _serialized = serde_json::to_string(&message).map_err(|e| McpError {
             code: None,
             message: format!("Failed to serialize request: {}", e),
             is_transient: false,
@@ -869,7 +869,7 @@ impl McpSessionImpl {
                                     let mut pending_map = pending.write().await;
                                     if let Some(pending_req) = pending_map.remove(&id) {
                                         if let Some(error) = response.get("error") {
-                                            let code = error.get("code").and_then(|c| c.as_i64()).map(|c| c as i32);
+                                            let _code = error.get("code").and_then(|c| c.as_i64()).map(|c| c as i32);
                                             let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string();
                                             let _ = pending_req.tx.send(Err(message));
                                         } else if let Some(result) = response.get("result") {
@@ -1376,7 +1376,7 @@ fn build_http_client(headers: Option<&HashMap<String, String>>) -> reqwest::Clie
 }
 
 async fn process_sse_event(
-    event_type: &str,
+    _event_type: &str,
     event_data: &str,
     _message_id: &str,
     pending: &RwLock<HashMap<u64, PendingRequest>>,
@@ -1608,7 +1608,7 @@ async fn connect_single_server(
             cfg.tool_timeout,
         );
         let wrapper_name = wrapper.name().to_string();
-        registry.register(Arc::new(wrapper));
+        registry.register(Arc::new(wrapper)).await;
         debug!("MCP: registered tool '{}' from server '{}'", wrapper_name, name);
         registered_count += 1;
     }
@@ -1640,7 +1640,7 @@ async fn connect_single_server(
             for res_def in resources {
                 let wrapper = MCPResourceWrapper::new(session.clone(), name, res_def, cfg.tool_timeout);
                 let wrapper_name = wrapper.name().to_string();
-                registry.register(Arc::new(wrapper));
+                registry.register(Arc::new(wrapper)).await;
                 registered_count += 1;
                 debug!("MCP: registered resource '{}' from server '{}'", wrapper_name, name);
             }
@@ -1655,7 +1655,7 @@ async fn connect_single_server(
             for prompt_def in prompts {
                 let wrapper = MCPPromptWrapper::new(session.clone(), name, prompt_def, cfg.tool_timeout);
                 let wrapper_name = wrapper.name().to_string();
-                registry.register(Arc::new(wrapper));
+                registry.register(Arc::new(wrapper)).await;
                 registered_count += 1;
                 debug!("MCP: registered prompt '{}' from server '{}'", wrapper_name, name);
             }

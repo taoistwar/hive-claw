@@ -995,7 +995,7 @@ impl AgentLoop {
     ///
     /// This connects the `/model` command to the hotswap mechanism.
     /// Call this after setting the command prefilter.
-    pub fn setup_model_switch_callback(&self, prefilter: &mut BuiltinPrefilter) {
+    pub fn setup_model_switch_callback(&self, _prefilter: &mut BuiltinPrefilter) {
         let self_arc = Arc::new(());
         let _ = self_arc;
     }
@@ -1429,7 +1429,7 @@ impl AgentLoop {
     pub fn build_initial_messages(
         &self,
         msg: &InboundMessage,
-        session: &session::manager::Session,
+        _session: &session::manager::Session,
         history: &[Value],
         pending_summary: Option<&str>,
     ) -> Vec<Value> {
@@ -1459,8 +1459,8 @@ impl AgentLoop {
     pub async fn dispatch_command_inline(
         &self,
         msg: &InboundMessage,
-        key: &str,
-        raw: &str,
+        _key: &str,
+        _raw: &str,
     ) -> Option<OutboundMessage> {
         if let Some(ref prefilter) = self.command_prefilter {
             if let Some(reply) = (prefilter)(msg).await {
@@ -1476,8 +1476,6 @@ impl AgentLoop {
         }
         // No prefilter installed — the command will fall through to the
         // normal agent pipeline where the LLM can respond to it.
-        let _key = key;
-        let _raw = raw;
         None
     }
 
@@ -1536,6 +1534,7 @@ impl AgentLoop {
         pending_queue: Option<tokio::sync::mpsc::UnboundedReceiver<InboundMessage>>,
     ) -> AgentRunResult {
         self.sync_subagent_runtime_limits();
+        let _pending_queue = pending_queue;
 
         let model = self
             .config

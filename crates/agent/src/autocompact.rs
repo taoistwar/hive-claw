@@ -134,7 +134,7 @@ impl AutoCompact {
     /// Inspect an incoming session and inject a stored summary if one exists.
     pub async fn prepare_session(&self, session: Session, key: &str) -> (Session, Option<String>) {
         let is_archiving = self.inner.lock().unwrap().archiving.contains(key);
-        let mut session = if is_archiving || self.is_expired(Some(session.updated_at), Local::now())
+        let session = if is_archiving || self.is_expired(Some(session.updated_at), Local::now())
         {
             info!(
                 "Auto-compact: reloading session {key} (archiving={})",

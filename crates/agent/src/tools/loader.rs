@@ -1,7 +1,4 @@
-use std::path::PathBuf;
-
-use async_trait::async_trait;
-use log::{debug, error, warn};
+use log::{warn};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -11,6 +8,7 @@ use super::base::Tool;
 use super::context::ToolContext;
 use super::registry::ToolRegistry;
 
+#[allow(dead_code)]
 const SKIP_MODULES: &[&str] = &[
     "base", "schema", "registry", "context", "loader", "config",
     "file_state", "sandbox", "mcp", "__init__", "runtime_state",
@@ -140,7 +138,7 @@ impl ToolLoader {
         registered
     }
 
-    fn tool_enabled(tool: &Arc<dyn Tool>, ctx: &ToolContext) -> bool {
+    fn tool_enabled(tool: &Arc<dyn Tool>, _ctx: &ToolContext) -> bool {
         let ctx_value = Value::Object(serde_json::Map::new());
         tool.enabled(&ctx_value)
     }

@@ -136,7 +136,7 @@ pub struct DreamConfig {
     pub cron: Option<String>,
 
     /// Optional Dream-specific model override.
-    #[serde(default, alias = "model", alias = "model_override")]
+    #[serde(default, alias = "model", alias = "model_override", alias = "modelOverride")]
     pub model_override: Option<String>,
 
     /// Max history entries per run (>=1).
@@ -1034,18 +1034,18 @@ impl Config {
     }
 
     /// Return effective model params from a named preset or the implicit default.
-    pub fn resolve_preset(&self, name: Option<&str>) -> ModelPresetConfig {
+    pub fn resolve_preset(&self, name: Option<&str>) -> Result<ModelPresetConfig, ConfigError> {
         let name = match name {
             Some(n) => n,
             None => self.agents.defaults.model_preset.as_deref().unwrap_or("default"),
         };
         if name.is_empty() || name == "default" {
-            return self.resolve_default_preset();
+            return Ok(self.resolve_default_preset());
         }
         self.model_presets
             .get(name)
             .cloned()
-            .unwrap_or_else(|| self.resolve_default_preset())
+            .ok_or_else(|| ConfigError::PresetNotFound(name.to_string()))
     }
 
     /// Match provider config and its registry name. Returns (config, spec_name).
@@ -1054,7 +1054,7 @@ impl Config {
         model: Option<&str>,
         preset: Option<&ModelPresetConfig>,
     ) -> (Option<ProviderConfig>, Option<String>) {
-        let resolved = preset.map(|p| p.clone()).unwrap_or_else(|| self.resolve_preset(None));
+        let resolved = preset.map(|p| p.clone()).unwrap_or_else(|| self.resolve_preset(None).unwrap_or_else(|_| self.resolve_default_preset()));
         let forced = &resolved.provider;
 
         if forced != "auto" {

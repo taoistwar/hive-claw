@@ -64,10 +64,10 @@ pub struct CronPayload {
     #[serde(default)]
     pub to: Option<String>,
     /// Channel-specific metadata (e.g. Slack thread_ts).
-    #[serde(default)]
+    #[serde(default, alias = "channelMeta", rename = "channelMeta")]
     pub channel_meta: Option<serde_json::Value>,
     /// Session key for session-scoped delivery.
-    #[serde(default)]
+    #[serde(default, alias = "sessionKey", rename = "sessionKey")]
     pub session_key: Option<String>,
 }
 

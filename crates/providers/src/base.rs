@@ -841,15 +841,6 @@ pub trait LLMProvider: Send + Sync {
                 }
             }
         }
-        if let Some(cb) = on_tool_call_delta {
-            for tc in &response.tool_calls {
-                let mut delta = serde_json::Map::new();
-                delta.insert("call_id".into(), serde_json::Value::String(tc.id.clone()));
-                delta.insert("name".into(), serde_json::Value::String(tc.name.clone()));
-                delta.insert("arguments_delta".into(), serde_json::to_value(&tc.arguments).unwrap_or(serde_json::Value::Object(serde_json::Map::new())));
-                cb(delta);
-            }
-        }
         response
     }
 
@@ -904,18 +895,25 @@ pub trait LLMProvider: Send + Sync {
             last_response = Some(response.clone());
 
             if !is_transient_response(&response) {
-                // Non-transient error: try stripping images and retrying once
+                // Non-transient error: try stripping images and retrying once immediately
                 if !images_stripped && strip_image_content_inplace(&mut req.messages) {
                     warn!("Non-transient LLM error with image content, retrying without images");
                     images_stripped = true;
-                    continue;
+                    let result = self.chat(req.clone()).await;
+                    if result.finish_reason != "error" {
+                        // Permanently strip images from the original messages so
+                        // subsequent iterations do not repeat the error-retry cycle.
+                        strip_image_content_inplace(&mut req.messages);
+                    }
+                    return result;
                 }
                 return response;
             }
 
             if persistent && identical_count >= PERSISTENT_IDENTICAL_ERROR_LIMIT {
                 warn!(
-                    "Stopping persistent retry after {identical_count} identical transient errors"
+                    "Stopping persistent retry after {identical_count} identical transient errors: {}",
+                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
                 );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
@@ -927,7 +925,10 @@ pub trait LLMProvider: Send + Sync {
             }
 
             if !persistent && attempt as usize > delays.len() {
-                warn!("LLM request failed after {attempt} retries, giving up");
+                warn!(
+                    "LLM request failed after {attempt} retries, giving up: {}",
+                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
                         "Model request failed after {attempt} retries, giving up."
@@ -943,9 +944,15 @@ pub trait LLMProvider: Send + Sync {
                 delay = delay.min(PERSISTENT_MAX_DELAY as f64);
             }
 
+            let counter = if persistent && attempt as usize > delays.len() {
+                format!("{attempt}+")
+            } else {
+                format!("{attempt}/{}", delays.len())
+            };
             warn!(
-                "LLM transient error (attempt {attempt}), retrying in {}s",
-                delay.round() as i64
+                "LLM transient error (attempt {counter}), retrying in {}s: {}",
+                delay.round() as i64,
+                response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
             );
             sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
         }
@@ -1006,18 +1013,23 @@ pub trait LLMProvider: Send + Sync {
             last_response = Some(response.clone());
 
             if !is_transient_response(&response) {
-                // Non-transient error: try stripping images and retrying once
+                // Non-transient error: try stripping images and retrying once immediately
                 if !images_stripped && strip_image_content_inplace(&mut req.messages) {
                     warn!("Non-transient LLM error with image content, retrying without images");
                     images_stripped = true;
-                    continue;
+                    let result = self.chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone()).await;
+                    if result.finish_reason != "error" {
+                        strip_image_content_inplace(&mut req.messages);
+                    }
+                    return result;
                 }
                 return response;
             }
 
             if persistent && identical_count >= PERSISTENT_IDENTICAL_ERROR_LIMIT {
                 warn!(
-                    "Stopping persistent retry after {identical_count} identical transient errors"
+                    "Stopping persistent retry after {identical_count} identical transient errors: {}",
+                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
                 );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
@@ -1029,7 +1041,10 @@ pub trait LLMProvider: Send + Sync {
             }
 
             if !persistent && attempt as usize > delays.len() {
-                warn!("LLM stream request failed after {attempt} retries, giving up");
+                warn!(
+                    "LLM stream request failed after {attempt} retries, giving up: {}",
+                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
                         "Model stream request failed after {attempt} retries, giving up."
@@ -1045,9 +1060,15 @@ pub trait LLMProvider: Send + Sync {
                 delay = delay.min(PERSISTENT_MAX_DELAY as f64);
             }
 
+            let counter = if persistent && attempt as usize > delays.len() {
+                format!("{attempt}+")
+            } else {
+                format!("{attempt}/{}", delays.len())
+            };
             warn!(
-                "LLM stream transient error (attempt {attempt}), retrying in {}s",
-                delay.round() as i64
+                "LLM stream transient error (attempt {counter}), retrying in {}s: {}",
+                delay.round() as i64,
+                response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
             );
             sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
         }

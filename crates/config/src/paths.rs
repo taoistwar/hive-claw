@@ -74,6 +74,11 @@ pub fn get_logs_dir() -> PathBuf {
     get_runtime_subdir("logs")
 }
 
+/// WebUI-only persisted display threads directory.
+pub fn get_webui_dir() -> PathBuf {
+    get_runtime_subdir("webui")
+}
+
 /// Resolve and ensure the agent workspace path.
 ///
 /// Passing `None` returns the default `~/.nanobot/workspace`.

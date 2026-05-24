@@ -41,6 +41,13 @@ static RE_THOUGHT_CLOSE_START: Lazy<Regex> =
 static RE_THOUGHT_CLOSE_END: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*</thought>\s*$").unwrap());
 static RE_CHANNEL_MARKER: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*<\|?channel\|?>\s*").unwrap());
+/// Partial control tags that may appear at the end of a stream chunk.
+static RE_PARTIAL_CONTROL_TAG: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?m)(</?(?:t|th|thi|thin|think|tho|thou|thoug|though|thought)>?|<\|?(?:c|ch|cha|chan|chann|channe|channel)(?:\|?>?)?)\s*$"
+    )
+    .unwrap()
+});
 
 static RE_EXTRACT_THINK: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)<think>(.*?)</think>").unwrap());
@@ -78,7 +85,12 @@ pub fn strip_think(text: &str) -> String {
     s = RE_THOUGHT_CLOSE_START.replace_all(&s, "").into_owned();
     s = RE_THOUGHT_CLOSE_END.replace_all(&s, "").into_owned();
     s = RE_CHANNEL_MARKER.replace_all(&s, "").into_owned();
-    s.trim().to_string()
+    // Stream chunks may end in the middle of a control tag.
+    // Strip trailing partial control tags like </thi, <channe|, etc.
+    let partial_tag = RE_PARTIAL_CONTROL_TAG.replace_all(&s, "");
+    // Strip edge-case `<|` prefix at the start of the string.
+    let partial_tag = regex::Regex::new(r"^\s*<\|?$").unwrap().replace_all(&partial_tag, "");
+    partial_tag.trim().to_string()
 }
 
 /// Extract thinking content from inline `<think>` / `<thought>` blocks.

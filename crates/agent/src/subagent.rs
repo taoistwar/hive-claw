@@ -350,7 +350,7 @@ impl SubagentManager {
             self.config.workspace.clone(),
             Some(self.config.disabled_skills.clone()),
         );
-        let skills_summary = skills_loader.build_skills_summary(&HashSet::new());
+        let skills_summary = skills_loader.build_skills_summary(Some(&HashSet::new()));
         format!(
             "You are a focused background subagent.\n\n{time_ctx}\n\nWorkspace: {}\n\n{}",
             self.config.workspace.display(),

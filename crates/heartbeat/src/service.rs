@@ -279,7 +279,17 @@ impl HeartbeatService {
                 if !running {
                     break;
                 }
-                this.tick().await;
+                // Spawn tick() in a sub-task so that a panic is caught as
+                // a JoinError rather than aborting the entire loop.
+                let tick_task = tokio::spawn({
+                    let this = this.clone();
+                    async move {
+                        this.tick().await;
+                    }
+                });
+                if let Err(e) = tick_task.await {
+                    warn!("Heartbeat tick panicked: {e}");
+                }
             }
         });
         state.task = Some(handle);

@@ -78,6 +78,14 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("Environment variable '{0}' referenced in config is not set")]
     MissingEnvVar(String),
+    #[error("Model preset '{0}' not found")]
+    PresetNotFound(String),
+}
+
+/// Apply SSRF whitelist from config to the network security module.
+/// Port of Python `_apply_ssrf_whitelist`.
+pub fn apply_ssrf_whitelist(config: &crate::schema::Config) {
+    security::network::configure_ssrf_whitelist(&config.tools.ssrf_whitelist);
 }
 
 // ---------------------------------------------------------------------------

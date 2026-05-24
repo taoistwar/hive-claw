@@ -162,14 +162,14 @@ impl SkillsLoader {
     }
 
     /// Build a summary of all skills (name, description, path, availability).
-    pub fn build_skills_summary(&self, exclude: &HashSet<String>) -> String {
+    pub fn build_skills_summary(&self, exclude: Option<&HashSet<String>>) -> String {
         let all = self.list_skills(false);
         if all.is_empty() {
             return String::new();
         }
         let mut lines: Vec<String> = Vec::new();
         for entry in all {
-            if exclude.contains(&entry.name) {
+            if exclude.is_some_and(|ex| ex.contains(&entry.name)) {
                 continue;
             }
             let meta = self.skill_meta(&entry.name);
@@ -204,12 +204,10 @@ impl SkillsLoader {
                 let parsed_meta = parse_nanobot_metadata(meta.get("metadata"));
                 parsed_meta
                     .get("always")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
+                    .is_some_and(is_truthy)
                     || meta
                         .get("always")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
+                        .is_some_and(is_truthy)
             })
             .map(|e| e.name)
             .collect()
@@ -310,6 +308,17 @@ fn parse_nanobot_metadata(raw: Option<&Value>) -> HashMap<String, Value> {
     match payload {
         Value::Object(m) => m.into_iter().collect(),
         _ => HashMap::new(),
+    }
+}
+
+fn is_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_i64().is_some_and(|n| n != 0) || n.as_f64().is_some_and(|n| n != 0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
     }
 }
 

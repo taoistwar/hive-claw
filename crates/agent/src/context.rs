@@ -88,7 +88,7 @@ impl ContextBuilder {
         }
 
         let always_set: HashSet<String> = always.iter().cloned().collect();
-        let summary = self.skills.build_skills_summary(&always_set);
+        let summary = self.skills.build_skills_summary(Some(&always_set));
         if !summary.is_empty() {
             let rendered = render_template_str(
                 include_str!("prompts/skills_section.md.tpl"),

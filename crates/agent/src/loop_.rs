@@ -1163,7 +1163,7 @@ impl AgentLoop {
     /// Build model preset snapshot from config.
     pub fn build_model_preset_snapshot(&self, name: &str) -> Option<ProviderSnapshot> {
         let cfg = Config::from_config(None);
-        let preset = cfg.resolve_preset(Some(name));
+        let preset = cfg.resolve_preset(Some(name)).ok()?;
         ProviderSnapshot::from_preset(&preset, &cfg).ok()
     }
 

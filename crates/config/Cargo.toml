@@ -11,3 +11,4 @@ dirs = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 cron = { path = "../cron" }
+security = { path = "../security" }

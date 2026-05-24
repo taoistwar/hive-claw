@@ -252,7 +252,7 @@ impl CronTool {
 
         match self
             .service
-            .add_job(&name, schedule, message, deliver, Some(channel), Some(chat_id), delete_after)
+            .add_job(&name, schedule, message, deliver, Some(channel), Some(chat_id), delete_after, None, None)
             .await
         {
             Ok(job) => format!("Created job '{}' (id: {})", job.name, job.id),

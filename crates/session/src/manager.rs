@@ -39,31 +39,44 @@ fn sanitize_assistant_replay_text(content: &str) -> String {
 }
 
 /// Return compact display text for session lists.
-fn text_preview(content: &str) -> String {
-    let cleaned = content.lines().next().unwrap_or("").trim();
-    if cleaned.len() > SESSION_PREVIEW_MAX_CHARS {
-        format!("{}...", &cleaned[..SESSION_PREVIEW_MAX_CHARS])
+fn text_preview(content: &Value) -> String {
+    let text = if let Some(s) = content.as_str() {
+        s.to_string()
+    } else if let Some(blocks) = content.as_array() {
+        let parts: Vec<String> = blocks
+            .iter()
+            .filter_map(|block| {
+                if let Some(obj) = block.as_object() {
+                    if obj.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        return obj.get("text").and_then(|v| v.as_str()).map(String::from);
+                    }
+                }
+                None
+            })
+            .collect();
+        parts.join(" ")
     } else {
-        cleaned.to_string()
+        return String::new();
+    };
+    let text = sanitize_assistant_replay_text(&text);
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > SESSION_PREVIEW_MAX_CHARS {
+        let truncated: String = text.chars().take(SESSION_PREVIEW_MAX_CHARS - 1).collect();
+        format!("{}…", truncated.trim_end())
+    } else {
+        text
     }
 }
 
 /// Return display text for a message, scrubbing subagent announce bodies.
 fn message_preview_text(msg: &Value) -> String {
-    if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
-        if role == "assistant" {
-            if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                if content.starts_with("[Subagent announce]") {
-                    return utils::subagent_channel_display::scrub_subagent_announce_body(content);
-                }
-            }
+    let mut content = msg.get("content").cloned().unwrap_or(Value::Null);
+    if msg.get("injected_event").and_then(|v| v.as_str()) == Some("subagent_result") {
+        if let Some(s) = content.as_str() {
+            content = Value::String(utils::subagent_channel_display::scrub_subagent_announce_body(s));
         }
     }
-    if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-        text_preview(content)
-    } else {
-        String::new()
-    }
+    text_preview(&content)
 }
 
 /// Prepend `[Message Time: ...]` to user messages for relative-date reasoning.
@@ -131,12 +144,7 @@ impl Session {
     pub fn add_message(&mut self, role: &str, content: &str, extra: HashMap<String, Value>) {
         let mut msg = serde_json::Map::new();
         msg.insert("role".into(), Value::String(role.into()));
-        let final_content = if role == "user" {
-            annotate_message_time(content)
-        } else {
-            content.to_string()
-        };
-        msg.insert("content".into(), Value::String(final_content));
+        msg.insert("content".into(), Value::String(content.to_string()));
         msg.insert(
             "timestamp".into(),
             Value::String(Local::now().to_rfc3339()),
@@ -163,6 +171,7 @@ impl Session {
         max_tokens: Option<usize>,
         include_timestamps: bool,
     ) -> Vec<Value> {
+        let max_messages = if max_messages > 0 { max_messages } else { 120 };
         let unconsolidated = &self.messages[self.last_consolidated.min(self.messages.len())..];
         let sliced: Vec<&Value> = if unconsolidated.len() > max_messages {
             unconsolidated[unconsolidated.len() - max_messages..]
@@ -171,11 +180,20 @@ impl Session {
         } else {
             unconsolidated.iter().collect()
         };
-        // Avoid starting mid-turn when possible.
+
+        // Avoid starting mid-turn when possible, except for proactive
+        // assistant deliveries that the user may be replying to.
         let mut start = 0usize;
         for (i, m) in sliced.iter().enumerate() {
             if m.get("role").and_then(Value::as_str) == Some("user") {
                 start = i;
+                if i > 0 {
+                    if let Some(prev) = sliced.get(i - 1) {
+                        if prev.get("_channel_delivery").is_some() {
+                            start = i - 1;
+                        }
+                    }
+                }
                 break;
             }
         }
@@ -187,7 +205,10 @@ impl Session {
             sliced = sliced.split_off(legal_start);
         }
 
-        // Filter empty assistant messages that have no tool_calls, reasoning_content, or thinking_blocks.
+        // Skip messages with _command flag.
+        sliced.retain(|m| !m.get("_command").and_then(|v| v.as_bool()).unwrap_or(false));
+
+        // Filter empty assistant messages.
         sliced.retain(|m| {
             if m.get("role").and_then(Value::as_str) != Some("assistant") {
                 return true;
@@ -210,61 +231,50 @@ impl Session {
             has_content || has_tool_calls || has_reasoning || has_thinking
         });
 
-        // Apply token budget if specified.
-        if let Some(max_tok) = max_tokens {
-            let mut total_tokens: usize = 0;
-            let mut cutoff = sliced.len();
-            for (i, m) in sliced.iter().enumerate().rev() {
-                let tokens = estimate_tokens_for_message(m);
-                if total_tokens + tokens > max_tok {
-                    cutoff = i + 1;
-                    break;
-                }
-                total_tokens += tokens;
-            }
-            if cutoff < sliced.len() {
-                // Ensure we don't start mid-turn after token budget cutoff.
-                let mut start = cutoff;
-                while start < sliced.len()
-                    && sliced[start].get("role").and_then(Value::as_str) != Some("user")
-                {
-                    start += 1;
-                }
-                sliced = sliced[start..].to_vec();
-            }
-        }
-
-        // Rewrite media-bearing messages to include image breadcrumbs.
         let mut out: Vec<Value> = Vec::with_capacity(sliced.len());
-        for mut message in sliced {
-            let content = message
-                .get("content")
-                .cloned()
-                .unwrap_or(Value::String(String::new()));
-            let mut new_content = content.clone();
-            if let Some(media) = message.get("media").and_then(Value::as_array) {
-                if !media.is_empty() {
-                    if let Some(text) = content.as_str() {
-                        let breadcrumbs = media
-                            .iter()
-                            .filter_map(|v| v.as_str().filter(|s| !s.is_empty()))
-                            .map(|p| image_placeholder_text(Some(p)))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let merged = if text.is_empty() {
-                            breadcrumbs
-                        } else {
-                            format!("{text}\n{breadcrumbs}")
-                        };
-                        new_content = Value::String(merged);
+
+        for message in &sliced {
+            let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            let mut content = message.get("content").cloned().unwrap_or(Value::String(String::new()));
+
+            // Sanitize assistant replay text.
+            if role == "assistant" {
+                if let Some(s) = content.as_str() {
+                    content = Value::String(sanitize_assistant_replay_text(s));
+                }
+            }
+
+            // Synthesize image breadcrumbs from persisted media kwarg.
+            if role == "user" {
+                if let Some(media) = message.get("media").and_then(Value::as_array) {
+                    if !media.is_empty() {
+                        if let Some(text) = content.as_str() {
+                            let breadcrumbs: Vec<String> = media
+                                .iter()
+                                .filter_map(|v| v.as_str().filter(|s| !s.is_empty()))
+                                .map(|p| image_placeholder_text(Some(p)))
+                                .collect();
+                            let merged = if text.is_empty() {
+                                breadcrumbs.join("\n")
+                            } else {
+                                format!("{text}\n{}", breadcrumbs.join("\n"))
+                            };
+                            content = Value::String(merged);
+                        }
                     }
                 }
             }
-            let mut entry = serde_json::Map::new();
-            if let Some(role) = message.get("role").cloned() {
-                entry.insert("role".into(), role);
+
+            // Annotate user messages with persisted timestamp for relative-date reasoning.
+            if include_timestamps && role == "user" {
+                if let (Some(s), Some(ts)) = (content.as_str(), message.get("timestamp").and_then(|v| v.as_str())) {
+                    content = Value::String(format!("[Message Time: {ts}]\n{s}"));
+                }
             }
-            entry.insert("content".into(), new_content);
+
+            let mut entry = serde_json::Map::new();
+            entry.insert("role".into(), Value::String(role.to_string()));
+            entry.insert("content".into(), content);
             for key in [
                 "tool_calls",
                 "tool_call_id",
@@ -276,15 +286,58 @@ impl Session {
                     entry.insert(key.into(), v.clone());
                 }
             }
-            if include_timestamps {
-                if let Some(ts) = message.get("timestamp") {
-                    entry.insert("timestamp".into(), ts.clone());
-                }
-            }
-            // Ensure we don't accidentally keep side metadata.
-            let _ = message.as_object_mut();
             out.push(Value::Object(entry));
         }
+
+        // Apply token budget if specified.
+        if let Some(max_tok) = max_tokens {
+            if out.is_empty() {
+                return out;
+            }
+            let mut kept: Vec<Value> = Vec::new();
+            let mut used: usize = 0;
+            for message in out.iter().rev() {
+                let tokens = estimate_tokens_for_message(message);
+                if !kept.is_empty() && used + tokens > max_tok {
+                    break;
+                }
+                kept.push(message.clone());
+                used += tokens;
+            }
+            kept.reverse();
+
+            // Keep history aligned to the first visible user turn.
+            let first_user = kept.iter().position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+            if let Some(idx) = first_user {
+                kept = kept[idx..].to_vec();
+            } else {
+                // Recover nearest user turn from original output.
+                let recovered_user = sliced.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+                if let Some(idx) = recovered_user {
+                    // Re-build from idx.
+                    kept.clear();
+                    for message in &sliced[idx..] {
+                        let mut entry = serde_json::Map::new();
+                        entry.insert("role".into(), message.get("role").cloned().unwrap_or(Value::Null));
+                        entry.insert("content".into(), message.get("content").cloned().unwrap_or(Value::String(String::new())));
+                        for key in ["tool_calls", "tool_call_id", "name", "reasoning_content", "thinking_blocks"] {
+                            if let Some(v) = message.get(key) {
+                                entry.insert(key.into(), v.clone());
+                            }
+                        }
+                        kept.push(Value::Object(entry));
+                    }
+                }
+            }
+
+            // Keep a legal tool-call boundary at the front.
+            let legal = find_legal_message_start(&kept);
+            if legal > 0 {
+                kept = kept[legal..].to_vec();
+            }
+            return kept;
+        }
+
         out
     }
 
@@ -296,7 +349,7 @@ impl Session {
         self.metadata.remove("_last_summary");
     }
 
-    /// Keep a legal recent suffix, mirroring `get_history` boundary rules.
+    /// Keep a legal recent suffix constrained by a hard message cap.
     pub fn retain_recent_legal_suffix(&mut self, max_messages: usize) {
         if max_messages == 0 {
             self.clear();
@@ -305,21 +358,41 @@ impl Session {
         if self.messages.len() <= max_messages {
             return;
         }
-        let mut start_idx = self.messages.len() - max_messages;
-        while start_idx > 0
-            && self.messages[start_idx].get("role").and_then(Value::as_str) != Some("user")
-        {
-            start_idx -= 1;
+
+        let mut retained: Vec<Value> = self.messages[self.messages.len() - max_messages..].to_vec();
+
+        // Prefer starting at a user turn when one exists within the tail.
+        let first_user = retained.iter().position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+        if let Some(idx) = first_user {
+            retained = retained[idx..].to_vec();
+        } else {
+            // If the tail is assistant/tool-only, anchor to the latest user in
+            // the full session and take a capped forward window from there.
+            let latest_user = self.messages.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+            if let Some(idx) = latest_user {
+                let end = (idx + max_messages).min(self.messages.len());
+                retained = self.messages[idx..end].to_vec();
+            }
         }
-        let mut retained = self.messages.split_off(start_idx);
-        self.messages.clear();
+
+        // Mirror get_history(): avoid persisting orphan tool results at the front.
         let legal = find_legal_message_start(&retained);
         if legal > 0 {
-            retained = retained.split_off(legal);
+            retained = retained[legal..].to_vec();
         }
-        let dropped = (start_idx + legal) as isize;
+
+        // Hard-cap guarantee: never keep more than max_messages.
+        if retained.len() > max_messages {
+            retained = retained[retained.len() - max_messages..].to_vec();
+            let legal = find_legal_message_start(&retained);
+            if legal > 0 {
+                retained = retained[legal..].to_vec();
+            }
+        }
+
+        let dropped = self.messages.len() - retained.len();
         self.messages = retained;
-        self.last_consolidated = (self.last_consolidated as isize - dropped).max(0) as usize;
+        self.last_consolidated = self.last_consolidated.saturating_sub(dropped);
         self.updated_at = now();
     }
 
@@ -726,46 +799,19 @@ impl SessionManager {
             }
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let fallback_key = stem.replacen('_', ":", 1);
-            match fs::File::open(&path) {
-                Ok(f) => {
-                    let mut reader = BufReader::new(f);
-                    let mut line = String::new();
-                    let ok = reader.read_line(&mut line).is_ok();
-                    let line = line.trim().to_string();
-                    if ok && !line.is_empty() {
-                        if let Ok(data) = serde_json::from_str::<Value>(&line) {
-                            if data.get("_type").and_then(Value::as_str) == Some("metadata") {
-                                let key = data
-                                    .get("key")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string)
-                                    .unwrap_or(fallback_key.clone());
-                                sessions.push(serde_json::json!({
-                                    "key": key,
-                                    "created_at": data.get("created_at"),
-                                    "updated_at": data.get("updated_at"),
-                                    "path": path.display().to_string(),
-                                }));
-                                continue;
-                            }
-                        }
-                    }
-                    // Fallthrough to repair path.
+            match self._read_session_file_for_list(&path, &fallback_key) {
+                Some(info) => sessions.push(info),
+                None => {
                     if let Some(r) = self.repair(&fallback_key) {
                         sessions.push(serde_json::json!({
                             "key": r.key,
                             "created_at": r.created_at.to_rfc3339(),
                             "updated_at": r.updated_at.to_rfc3339(),
-                            "path": path.display().to_string(),
-                        }));
-                    }
-                }
-                Err(_) => {
-                    if let Some(r) = self.repair(&fallback_key) {
-                        sessions.push(serde_json::json!({
-                            "key": r.key,
-                            "created_at": r.created_at.to_rfc3339(),
-                            "updated_at": r.updated_at.to_rfc3339(),
+                            "title": r.metadata.get("title").and_then(|v| v.as_str()).map(String::from).unwrap_or_default(),
+                            "preview": r.messages.iter().filter_map(|m| {
+                                let t = message_preview_text(m);
+                                if t.is_empty() { None } else { Some(t) }
+                            }).next().unwrap_or_default(),
                             "path": path.display().to_string(),
                         }));
                     }
@@ -778,6 +824,65 @@ impl SessionManager {
             kb.cmp(ka)
         });
         sessions
+    }
+
+    fn _read_session_file_for_list(&self, path: &Path, fallback_key: &str) -> Option<Value> {
+        let f = fs::File::open(path).ok()?;
+        let mut reader = BufReader::new(f);
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+            return None;
+        }
+        let data: Value = serde_json::from_str(line.trim()).ok()?;
+        if data.get("_type").and_then(Value::as_str) != Some("metadata") {
+            return None;
+        }
+
+        let key = data
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(fallback_key.to_string());
+        let created_at = data.get("created_at").cloned();
+        let updated_at = data.get("updated_at").cloned();
+
+        let metadata = data.get("metadata").and_then(|v| v.as_object()).map(|m| {
+            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<HashMap<String, Value>>()
+        }).unwrap_or_default();
+
+        let title = metadata.get("title").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
+
+        // Read messages to find preview (prefer first user, fallback to first assistant).
+        let mut preview = String::new();
+        let mut fallback_preview = String::new();
+        for line in reader.lines() {
+            let Ok(line) = line else { continue };
+            let line = line.trim();
+            if line.is_empty() { continue };
+            let Ok(item) = serde_json::from_str::<Value>(line) else { continue };
+            if item.get("_type").and_then(Value::as_str) == Some("metadata") { continue };
+            let text = message_preview_text(&item);
+            if text.is_empty() { continue };
+            if item.get("role").and_then(Value::as_str) == Some("user") {
+                preview = text;
+                break;
+            }
+            if fallback_preview.is_empty() && item.get("role").and_then(Value::as_str) == Some("assistant") {
+                fallback_preview = text;
+            }
+        }
+        if preview.is_empty() {
+            preview = fallback_preview;
+        }
+
+        Some(serde_json::json!({
+            "key": key,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "title": title,
+            "preview": preview,
+            "path": path.display().to_string(),
+        }))
     }
 }
 

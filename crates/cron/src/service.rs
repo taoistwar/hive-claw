@@ -98,8 +98,8 @@ pub enum UpdateOutcome {
 
 /// Options for [`CronService::update_job`].
 ///
-/// Use `Option<Option<T>>` for `channel` / `to` so that callers can
-/// distinguish "leave unchanged" (`None`) from "set to null"
+/// Use `Option<Option<T>>` for `channel` / `to` / `channel_meta` / `session_key`
+/// so that callers can distinguish "leave unchanged" (`None`) from "set to null"
 /// (`Some(None)`).
 #[derive(Debug, Default)]
 pub struct UpdateJobOpts {
@@ -109,6 +109,8 @@ pub struct UpdateJobOpts {
     pub deliver: Option<bool>,
     pub channel: Option<Option<String>>,
     pub to: Option<Option<String>>,
+    pub channel_meta: Option<Option<serde_json::Value>>,
+    pub session_key: Option<Option<String>>,
     pub delete_after_run: Option<bool>,
 }
 
@@ -185,15 +187,20 @@ impl CronService {
     // -- Public API --------------------------------------------------------
 
     /// Start the cron service.
-    pub async fn start(&self) {
+    pub async fn start(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
         inner.running = true;
         inner.load_store();
+        if inner.store.is_none() {
+            inner.running = false;
+            return Err("Cron: refusing to start — store file is corrupt or unreadable".into());
+        }
         inner.recompute_next_runs();
         inner.save_store();
         let count = inner.store.as_ref().map(|s| s.jobs.len()).unwrap_or(0);
         inner.arm_timer();
         info!("Cron service started with {count} jobs");
+        Ok(())
     }
 
     /// Stop the cron service.
@@ -230,6 +237,8 @@ impl CronService {
         channel: Option<String>,
         to: Option<String>,
         delete_after_run: bool,
+        channel_meta: Option<serde_json::Value>,
+        session_key: Option<String>,
     ) -> Result<CronJob, CronError> {
         validate_schedule_for_add(&schedule)?;
         let now = now_ms();
@@ -245,8 +254,8 @@ impl CronService {
                 deliver,
                 channel,
                 to,
-                channel_meta: None,
-                session_key: None,
+                channel_meta,
+                session_key,
             },
             state: CronJobState {
                 next_run_at_ms: compute_next_run(&schedule, now),
@@ -480,14 +489,31 @@ impl Inner {
         if self.timer_active && self.store.is_some() {
             return;
         }
-        let (jobs, version) = match load_jobs_from_disk(&self.store_path) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Failed to load cron store: {e}");
-                (Vec::new(), 1)
+        match load_jobs_from_disk(&self.store_path) {
+            Ok((jobs, version)) => {
+                self.store = Some(CronStore { version, jobs });
             }
-        };
-        self.store = Some(CronStore { version, jobs });
+            Err(e) => {
+                if self.store_path.exists() {
+                    // Preserve the corrupt file for forensic recovery.
+                    let ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let backup = self.store_path.with_extension(format!(
+                        "json.corrupt-{ts}"
+                    ));
+                    if let Err(rename_err) = std::fs::rename(&self.store_path, &backup) {
+                        error!("Cron: failed to rename corrupt store: {rename_err}");
+                    } else {
+                        warn!("Cron: corrupt store preserved at {}", backup.display());
+                    }
+                }
+                error!("Cron: failed to load store: {e}");
+                // Store remains None; start() will refuse to continue.
+                return;
+            }
+        }
         self.merge_action();
     }
 

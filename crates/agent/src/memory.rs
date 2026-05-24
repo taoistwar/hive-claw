@@ -8,6 +8,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Local};
@@ -17,9 +18,13 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use utils::gitstore::GitStore;
-use utils::helpers::{ensure_dir, strip_think};
+use utils::helpers::{ensure_dir, strip_think, truncate_text};
 
 const DEFAULT_MAX_HISTORY: usize = 1000;
+
+const HISTORY_ENTRY_HARD_CAP: usize = 64_000;
+const RAW_ARCHIVE_MAX_CHARS: usize = 16_000;
+const ARCHIVE_SUMMARY_MAX_CHARS: usize = 8_000;
 
 static LEGACY_ENTRY_START: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\[(\d{4}-\d{2}-\d{2}[^\]]*)\]\s*").unwrap());
@@ -31,7 +36,6 @@ static LEGACY_RAW_MESSAGE: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Pure file I/O for memory files: MEMORY.md, history.jsonl, SOUL.md, USER.md.
-#[derive(Clone)]
 pub struct MemoryStore {
     pub workspace: PathBuf,
     pub max_history_entries: usize,
@@ -44,6 +48,8 @@ pub struct MemoryStore {
     cursor_file: PathBuf,
     dream_cursor_file: PathBuf,
     git: GitStore,
+    oversize_logged: AtomicBool,
+    corruption_logged: AtomicBool,
 }
 
 impl MemoryStore {
@@ -78,6 +84,8 @@ impl MemoryStore {
             cursor_file,
             dream_cursor_file,
             git,
+            oversize_logged: AtomicBool::new(false),
+            corruption_logged: AtomicBool::new(false),
         };
         this.maybe_migrate_legacy_history();
         this
@@ -127,14 +135,31 @@ impl MemoryStore {
     // -- history.jsonl -------------------------------------------------------
 
     /// Append `entry` to history.jsonl, returning the auto-incrementing cursor.
-    pub fn append_history(&self, entry: &str) -> std::io::Result<i64> {
+    ///
+    /// Entries are passed through `strip_think` to drop template-level leaks.
+    /// A defensive cap (*max_chars*, default `HISTORY_ENTRY_HARD_CAP`) is applied
+    /// as a final safety net.
+    pub fn append_history(&self, entry: &str, max_chars: Option<usize>) -> std::io::Result<i64> {
+        let limit = max_chars.unwrap_or(HISTORY_ENTRY_HARD_CAP);
         let cursor = self.next_cursor();
         let ts = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let raw = entry.trim_end().to_string();
+        let mut raw = entry.trim_end().to_string();
+        if raw.len() > limit {
+            if !self.oversize_logged.load(Ordering::Relaxed)
+                && self.oversize_logged.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+            {
+                log::warn!(
+                    "history entry exceeds {} chars ({}); truncating. Usually means a caller forgot its own cap; further occurrences suppressed.",
+                    limit,
+                    raw.len(),
+                );
+            }
+            raw = truncate_text(&raw, limit);
+        }
         let content = strip_think(&raw);
         if !raw.is_empty() && content.is_empty() {
             log::debug!(
-                "history entry {cursor} stripped to empty (likely template leak); persisting empty"
+                "history entry {cursor} stripped to empty (likely template leak); persisting empty content to avoid re-polluting context"
             );
         }
         let record = serde_json::json!({
@@ -157,6 +182,7 @@ impl MemoryStore {
                 return v + 1;
             }
         }
+        self.warn_corrupted_entries();
         if let Some(last) = self.read_last_entry() {
             if let Some(c) = valid_cursor(last.get("cursor")) {
                 return c + 1;
@@ -191,6 +217,28 @@ impl MemoryStore {
             let c = valid_cursor(Some(raw))?;
             Some((entry, c))
         })
+    }
+
+    fn warn_corrupted_entries(&self) {
+        let mut poisoned: Option<String> = None;
+        for entry in self.read_entries() {
+            if let Some(raw) = entry.get("cursor") {
+                if valid_cursor(Some(raw)).is_none() {
+                    poisoned = Some(raw.to_string());
+                    break;
+                }
+            }
+        }
+        if let Some(p) = poisoned {
+            if !self.corruption_logged.load(Ordering::Relaxed)
+                && self.corruption_logged.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+            {
+                log::warn!(
+                    "history.jsonl contains a non-int cursor ({}); dropping it. Usually caused by an external writer; further occurrences suppressed.",
+                    p,
+                );
+            }
+        }
     }
 
     fn read_entries(&self) -> Vec<Value> {
@@ -293,13 +341,14 @@ impl MemoryStore {
     }
 
     /// Fallback: dump raw messages to history.jsonl without LLM summarization.
-    pub fn raw_archive(&self, messages: &[Value]) -> std::io::Result<()> {
+    pub fn raw_archive(&self, messages: &[Value], max_chars: Option<usize>) -> std::io::Result<()> {
+        let limit = max_chars.unwrap_or(RAW_ARCHIVE_MAX_CHARS);
+        let formatted = truncate_text(&Self::format_messages(messages), limit);
         let text = format!(
-            "[RAW] {} messages\n{}",
+            "[RAW] {} messages\n{formatted}",
             messages.len(),
-            Self::format_messages(messages)
         );
-        self.append_history(&text)?;
+        self.append_history(&text, None)?;
         warn!(
             "Memory consolidation degraded: raw-archived {} messages",
             messages.len()
@@ -551,7 +600,6 @@ use log::{debug, info};
 use serde_json::json;
 
 use providers::{ChatRequest, LLMProvider, RetryMode};
-use utils::helpers::truncate_text;
 
 use crate::runner::{AgentRunSpec, AgentRunner};
 use crate::tools::{
@@ -955,10 +1003,9 @@ impl Dream for MemoryDream {
             .collect();
 
         let new_cursor = last_cursor_in_batch;
-        let _ = self.store.set_last_dream_cursor(new_cursor);
-        let _ = self.store.compact_history();
 
         if result.stop_reason == "completed" {
+            let _ = self.store.set_last_dream_cursor(new_cursor);
             info!(
                 "Dream done: {} change(s), cursor advanced to {}",
                 changelog.len(),
@@ -966,10 +1013,12 @@ impl Dream for MemoryDream {
             );
         } else {
             warn!(
-                "Dream incomplete ({}): cursor advanced to {}",
-                result.stop_reason, new_cursor
+                "Dream incomplete ({}): cursor NOT advanced, will retry next cron cycle",
+                result.stop_reason
             );
         }
+
+        let _ = self.store.compact_history();
 
         if !changelog.is_empty() && self.store.git().is_initialized() {
             let ts = batch
@@ -1014,8 +1063,8 @@ mod tests {
     fn append_and_read_unprocessed() {
         let ws = tmp();
         let store = MemoryStore::new(&ws, None);
-        let c1 = store.append_history("hello").unwrap();
-        let c2 = store.append_history("world").unwrap();
+        let c1 = store.append_history("hello", None).unwrap();
+        let c2 = store.append_history("world", None).unwrap();
         assert_eq!(c2, c1 + 1);
         let entries = store.read_unprocessed_history(c1);
         assert_eq!(entries.len(), 1);

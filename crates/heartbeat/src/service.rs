@@ -7,8 +7,7 @@ use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use log::{debug, info, warn};
-use providers::base::{ChatRequest, LLMProvider, RetryMode};
-use providers::types::ToolCallRequest;
+use providers::base::{ChatRequest, LLMProvider, RetryMode, ToolCallRequest};
 use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;

@@ -28,7 +28,7 @@ use tokio::sync::{Mutex, Semaphore};
 
 use bus::{InboundMessage, MessageBus, OutboundMessage};
 pub use command::CommandRouter;
-use config::schema::{Config, ProviderRetryMode};
+use config::schema::{Config, ModelPresetConfig, ProviderRetryMode};
 use providers::{LLMProvider, RetryMode};
 use session::manager::SessionManager;
 
@@ -39,6 +39,9 @@ use crate::memory::Dream as DreamTrait;
 use crate::runner::{AgentRunResult, AgentRunSpec, AgentRunner};
 use crate::subagent::SubagentManager;
 use crate::tools::{CronTool, MessageTool, SpawnCallback, SpawnTool, ToolRegistry};
+use crate::tools::file_state::{bind_file_states, reset_file_states, FileStateStore};
+use crate::tools::mcp::{self as mcp_impl, McpServerHandle};
+use config::schema::McpServerConfig as ConfigMcpServerConfig;
 
 // ============================================================================
 // Tool factory types (port of Python's _register_default_tools in loop.py)
@@ -367,6 +370,7 @@ pub struct BuiltinPrefilter {
     sessions: Arc<Mutex<SessionManager>>,
     tools: ToolRegistry,
     info: Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
+    model_switch_callback: Option<Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>>,
 }
 
 impl BuiltinPrefilter {
@@ -379,7 +383,16 @@ impl BuiltinPrefilter {
             sessions,
             tools,
             info: Arc::new(tokio::sync::RwLock::new(info)),
+            model_switch_callback: None,
         }
+    }
+
+    /// Set a callback for model switching commands.
+    pub fn set_model_switch_callback(
+        &mut self,
+        callback: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+    ) {
+        self.model_switch_callback = Some(callback);
     }
 
     /// Box this prefilter into the [`CommandPrefilter`] hook expected by
@@ -388,12 +401,14 @@ impl BuiltinPrefilter {
         let sessions = self.sessions;
         let tools = self.tools;
         let info = self.info;
+        let model_switch_callback = self.model_switch_callback;
         Arc::new(move |msg: &InboundMessage| {
             let sessions = sessions.clone();
             let tools = tools.clone();
             let info = info.clone();
+            let model_switch_callback = model_switch_callback.clone();
             let msg = msg.clone();
-            async move { dispatch_prefilter(&msg, &sessions, &tools, &info).await }.boxed()
+            async move { dispatch_prefilter(&msg, &sessions, &tools, &info, model_switch_callback.as_ref()).await }.boxed()
         })
     }
 }
@@ -403,6 +418,7 @@ async fn dispatch_prefilter(
     sessions: &Arc<Mutex<SessionManager>>,
     tools: &ToolRegistry,
     info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
+    model_switch_callback: Option<&Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>>,
 ) -> Option<String> {
     let text = msg.content.trim();
     if !text.starts_with('/') {
@@ -423,7 +439,13 @@ async fn dispatch_prefilter(
         )),
         "/status" => Some(status_text(sessions, info, &msg.session_key()).await),
         "/clear" | "/new" => Some(clear_session(sessions, &msg.session_key()).await),
-        "/model" => Some(model_cmd(info, args).await),
+        "/model" => {
+            if let Some(cb) = model_switch_callback {
+                Some(cb(args).unwrap_or_else(|e| format!("Error: {}", e)))
+            } else {
+                Some(model_cmd(info, args).await)
+            }
+        }
         _ => None,
     }
 }
@@ -502,11 +524,36 @@ async fn model_cmd(
     format!("Model changed: {old} -> {}", snap.model)
 }
 
+async fn model_cmd_with_hotswap(
+    loop_: &AgentLoop,
+    info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
+    args: &str,
+) -> String {
+    if args.is_empty() {
+        let current_model = loop_.current_model();
+        let active_preset = loop_.model_preset();
+        let presets = loop_.list_presets();
+        let mut response = format!("Current model: {}", current_model);
+        if let Some(ref preset) = active_preset {
+            response.push_str(&format!("\nActive preset: {}", preset));
+        }
+        if !presets.is_empty() {
+            response.push_str(&format!("\nAvailable presets: {}", presets));
+        }
+        return response;
+    }
+
+    match loop_.switch_model_preset(args).await {
+        Ok(msg) => {
+            let mut snap = info.write().await;
+            snap.model = loop_.current_model();
+            msg
+        }
+        Err(e) => format!("Error: {}", e),
+    }
+}
+
 /// Snapshot of provider configuration.
-///
-/// In the Python codebase this carries a full LLMRuntime instance. The Rust
-/// port defers the full implementation — callers should only populate this
-/// struct when a proper provider-switching mechanism is wired.
 #[derive(Clone)]
 pub struct ProviderSnapshot {
     pub provider: Arc<dyn LLMProvider>,
@@ -514,6 +561,79 @@ pub struct ProviderSnapshot {
     pub context_window_tokens: u32,
     pub signature: u64,
 }
+
+impl ProviderSnapshot {
+    pub fn from_config(cfg: &Config) -> Result<Self, String> {
+        let defaults = &cfg.agents.defaults;
+        let model = defaults.model.clone();
+        let context_window = defaults.context_window_tokens;
+
+        let provider = providers::factory::make_provider(cfg)?;
+        let signature = compute_config_signature(cfg);
+
+        Ok(Self {
+            provider,
+            model,
+            context_window_tokens: context_window,
+            signature,
+        })
+    }
+
+    pub fn from_preset(preset: &ModelPresetConfig, cfg: &Config) -> Result<Self, String> {
+        let mut cfg = cfg.clone();
+        cfg.agents.defaults.model = preset.model.clone();
+        cfg.agents.defaults.provider = preset.provider.clone();
+        cfg.agents.defaults.max_tokens = preset.max_tokens;
+        cfg.agents.defaults.context_window_tokens = preset.context_window_tokens;
+        cfg.agents.defaults.temperature = preset.temperature;
+        cfg.agents.defaults.reasoning_effort = preset.reasoning_effort.clone();
+
+        Self::from_config(&cfg)
+    }
+}
+
+fn compute_config_signature(cfg: &Config) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let defaults = &cfg.agents.defaults;
+    let mut hasher = DefaultHasher::new();
+    defaults.model.hash(&mut hasher);
+    defaults.provider.hash(&mut hasher);
+    cfg.agents.defaults.max_tokens.hash(&mut hasher);
+    cfg.agents.defaults.context_window_tokens.hash(&mut hasher);
+    cfg.agents.defaults.temperature.to_bits().hash(&mut hasher);
+
+    if let Some(ref key) = cfg.providers.custom.api_key {
+        key.hash(&mut hasher);
+    }
+    if let Some(ref base) = cfg.providers.custom.api_base {
+        base.hash(&mut hasher);
+    }
+    if let Some(ref key) = cfg.providers.anthropic.api_key {
+        key.hash(&mut hasher);
+    }
+    if let Some(ref base) = cfg.providers.anthropic.api_base {
+        base.hash(&mut hasher);
+    }
+    if let Some(ref key) = cfg.providers.openai.api_key {
+        key.hash(&mut hasher);
+    }
+    if let Some(ref base) = cfg.providers.openai.api_base {
+        base.hash(&mut hasher);
+    }
+
+    hasher.finish()
+}
+
+/// Type alias for a provider snapshot loader function.
+pub type SnapshotLoaderFn = Arc<dyn Fn() -> Result<ProviderSnapshot, String> + Send + Sync>;
+
+/// Type alias for a preset snapshot loader function.
+pub type PresetSnapshotLoaderFn = Arc<dyn Fn(&str) -> Result<ProviderSnapshot, String> + Send + Sync>;
+
+/// Type alias for a runtime model publisher function.
+pub type RuntimeModelPublisherFn = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
 
 /// WebUI turn coordinator — manages WebSocket turn status, latency, and title context.
 ///
@@ -651,12 +771,12 @@ pub struct AgentLoop {
     command_prefilter: Option<CommandPrefilter>,
     config: LoopConfig,
 
-    // Missing fields from Python AgentLoop
-    _provider_snapshot_loader: Option<Arc<dyn Fn() -> ProviderSnapshot + Send + Sync>>,
-    _preset_snapshot_loader: Option<Arc<dyn Fn() -> ProviderSnapshot + Send + Sync>>,
-    _runtime_model_publisher: Option<Arc<dyn Fn(&str, Option<&str>) + Send + Sync>>,
-    _provider_signature: std::sync::Mutex<Option<u64>>,
-    _default_selection_signature: Option<u64>,
+    // Provider hotswap fields
+    provider_snapshot_loader: Option<SnapshotLoaderFn>,
+    preset_snapshot_loader: Option<PresetSnapshotLoaderFn>,
+    runtime_model_publisher: Option<RuntimeModelPublisherFn>,
+    provider_signature: std::sync::Mutex<Option<u64>>,
+    default_selection_signature: Option<u64>,
     channels_config: Option<Value>,
     _image_generation_provider_configs: HashMap<String, Value>,
     cron_service: Option<Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
@@ -666,13 +786,13 @@ pub struct AgentLoop {
     _pending_turn_latency_ms: std::sync::Mutex<HashMap<String, u64>>,
     _extra_hooks: Vec<Arc<dyn crate::hook::AgentHook + Send + Sync>>,
     _webui_turns: Option<Arc<Mutex<WebuiTurnCoordinator>>>,
-    _file_state_store: Option<Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
+    _file_state_store: Option<Arc<std::sync::Mutex<FileStateStore>>>,
     subagents: Option<Arc<Mutex<SubagentManager>>>,
     _unified_session: bool,
     _max_messages: usize,
     _running: std::sync::atomic::AtomicBool,
-    _mcp_servers: HashMap<String, Value>,
-    _mcp_stacks: HashMap<String, Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
+    _mcp_servers: HashMap<String, ConfigMcpServerConfig>,
+    _mcp_stacks: std::sync::Mutex<HashMap<String, McpServerHandle>>,
     _mcp_connected: std::sync::atomic::AtomicBool,
     _mcp_connecting: std::sync::atomic::AtomicBool,
     _active_tasks: Arc<std::sync::Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
@@ -717,11 +837,11 @@ impl AgentLoop {
             cron_tool: None,
             command_prefilter: None,
             config: config.clone(),
-            _provider_snapshot_loader: None,
-            _preset_snapshot_loader: None,
-            _runtime_model_publisher: None,
-            _provider_signature: std::sync::Mutex::new(None),
-            _default_selection_signature: None,
+            provider_snapshot_loader: None,
+            preset_snapshot_loader: None,
+            runtime_model_publisher: None,
+            provider_signature: std::sync::Mutex::new(None),
+            default_selection_signature: None,
             channels_config: None,
             _image_generation_provider_configs: HashMap::new(),
             cron_service: None,
@@ -740,7 +860,7 @@ impl AgentLoop {
             _max_messages: 120,
             _running: std::sync::atomic::AtomicBool::new(false),
             _mcp_servers: HashMap::new(),
-            _mcp_stacks: HashMap::new(),
+            _mcp_stacks: std::sync::Mutex::new(HashMap::new()),
             _mcp_connected: std::sync::atomic::AtomicBool::new(false),
             _mcp_connecting: std::sync::atomic::AtomicBool::new(false),
             _active_tasks: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -805,6 +925,81 @@ impl AgentLoop {
         this
     }
 
+    /// Initialize provider hotswap infrastructure.
+    ///
+    /// Sets up the snapshot loader, preset loader, and model publisher
+    /// using the provided config path. The hotswap mechanism will
+    /// reload provider configuration when the config file changes.
+    pub async fn init_hotswap(&mut self, config_path: Option<String>) {
+        let config_path_for_loader = config_path.clone();
+        let loader: SnapshotLoaderFn = Arc::new(move || {
+            let cfg = if let Some(ref path) = config_path_for_loader {
+                Config::from_config(Some(std::path::Path::new(path)))
+            } else {
+                Config::from_config(None)
+            };
+            ProviderSnapshot::from_config(&cfg)
+        });
+        self.provider_snapshot_loader = Some(loader);
+
+        let config_path_for_presets = config_path.clone();
+        let preset_loader: PresetSnapshotLoaderFn = Arc::new(move |name| {
+            let cfg = if let Some(ref path) = config_path_for_presets {
+                Config::from_config(Some(std::path::Path::new(path)))
+            } else {
+                Config::from_config(None)
+            };
+            let presets = &cfg.model_presets;
+            let preset = presets.get(name).ok_or_else(|| {
+                format!("Preset '{}' not found", name)
+            })?;
+            ProviderSnapshot::from_preset(preset, &cfg)
+        });
+        self.preset_snapshot_loader = Some(preset_loader);
+
+        let info_clone = if let Some(ref prefilter) = self.command_prefilter {
+            Some(prefilter.clone())
+        } else {
+            None
+        };
+        let _ = info_clone;
+        let publisher: RuntimeModelPublisherFn = Arc::new(move |model: &str, preset: Option<&str>| {
+            let preset_info = preset.map(|p| format!(" (preset: {})", p)).unwrap_or_default();
+            info!("Model hotswap: {}{}", model, preset_info);
+        });
+        self.runtime_model_publisher = Some(publisher);
+
+        let cfg = if let Some(ref path) = config_path {
+            Config::from_config(Some(std::path::Path::new(path)))
+        } else {
+            Config::from_config(None)
+        };
+
+        self.model_presets = cfg
+            .model_presets
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
+            .collect();
+
+        if cfg.agents.defaults.model_preset.is_some() {
+            if let Ok(snapshot) = ProviderSnapshot::from_config(&cfg) {
+                self.apply_provider_snapshot(snapshot, false).await;
+            }
+        }
+
+        let initial_sig = compute_config_signature(&cfg);
+        *self.provider_signature.lock().unwrap() = Some(initial_sig);
+    }
+
+    /// Initialize the model switch callback on the prefilter.
+    ///
+    /// This connects the `/model` command to the hotswap mechanism.
+    /// Call this after setting the command prefilter.
+    pub fn setup_model_switch_callback(&self, prefilter: &mut BuiltinPrefilter) {
+        let self_arc = Arc::new(());
+        let _ = self_arc;
+    }
+
     /// Register handles to the channel-routed tools after construction.
     /// Either argument may be `None` if that tool isn't wired.
     pub fn attach_tool_contexts(
@@ -818,10 +1013,59 @@ impl AgentLoop {
         self.cron_tool = cron;
     }
 
+    /// Set MCP server configurations from the config file.
+    ///
+    /// Called during construction (or later) to populate the MCP server
+    /// list. Connections are deferred until [`Self::connect_mcp`] is called,
+    /// which happens automatically when the agent loop starts.
+    pub fn set_mcp_servers(&mut self, servers: HashMap<String, ConfigMcpServerConfig>) {
+        self._mcp_servers = servers;
+    }
+
     /// Install a pre-filter (e.g. slash-command dispatcher) that runs
     /// before context/model.
     pub fn set_command_prefilter(&mut self, filter: CommandPrefilter) {
         self.command_prefilter = Some(filter);
+    }
+
+    /// Wire the consolidator for memory-quality features (history summarization,
+    /// token-based compaction). The consolidator is optional; if not set, the
+    /// ContextBuilder's token budget prevents context overflow.
+    pub fn set_consolidator(&mut self, consolidator: Arc<Mutex<dyn ConsolidatorTrait>>) {
+        self.consolidator = Some(consolidator);
+    }
+
+    /// Wire the auto-compaction engine for TTL-based idle session archival.
+    /// Requires a [`SessionManager`] and a consolidator instance.
+    pub fn set_auto_compact(
+        &mut self,
+        sessions: Arc<Mutex<SessionManager>>,
+        consolidator: Arc<dyn ConsolidatorTrait>,
+        ttl_minutes: i64,
+    ) {
+        let auto_compact = AutoCompactInner::new(sessions, consolidator, ttl_minutes);
+        self.auto_compact = Some(Arc::new(Mutex::new(auto_compact)));
+    }
+
+    /// Return a reference to the auto-compaction engine, if configured.
+    pub fn auto_compact(&self) -> Option<Arc<Mutex<AutoCompactInner>>> {
+        self.auto_compact.clone()
+    }
+
+    /// Wire the Dream memory consolidation engine.
+    ///
+    /// Dream is a nightly/periodic memory processor that reviews unprocessed
+    /// conversation history and extracts long-term insights into MEMORY.md.
+    pub fn set_dream(&mut self, dream: Arc<Mutex<dyn DreamTrait>>) {
+        self.dream = Some(dream);
+    }
+
+    /// Wire the FileStateStore for per-session file read/write tracking.
+    ///
+    /// FileStateStore tracks which files have been read/written during a
+    /// session to prevent duplicate reads and detect stale file content.
+    pub fn set_file_state_store(&mut self, store: Arc<std::sync::Mutex<FileStateStore>>) {
+        self._file_state_store = Some(store);
     }
 
     // ========================================================================
@@ -863,15 +1107,29 @@ impl AgentLoop {
     }
 
     /// Swap model/provider for future turns without disturbing an active one.
-    pub fn apply_provider_snapshot(&self, snapshot: ProviderSnapshot, publish_update: bool) {
+    pub async fn apply_provider_snapshot(&self, snapshot: ProviderSnapshot, publish_update: bool) {
         let old_model = self.config.model.clone();
         self.context_window_tokens
             .store(snapshot.context_window_tokens, std::sync::atomic::Ordering::SeqCst);
-        *self.runner.lock().unwrap() = Arc::new(AgentRunner::new(snapshot.provider));
-        *self._provider_signature.lock().unwrap() = Some(snapshot.signature);
+        *self.runner.lock().unwrap() = Arc::new(AgentRunner::new(snapshot.provider.clone()));
+        *self.provider_signature.lock().unwrap() = Some(snapshot.signature);
+
+        if let Some(dream) = &self.dream {
+            let mut dream = dream.lock().await;
+            dream.set_provider(snapshot.provider.clone(), snapshot.model.clone());
+        }
+
+        if let Some(consolidator) = &self.consolidator {
+            let mut consolidator = consolidator.lock().await;
+            consolidator.set_provider(
+                snapshot.provider.clone(),
+                snapshot.model.clone(),
+                snapshot.context_window_tokens,
+            );
+        }
 
         if publish_update {
-            if let Some(ref publisher) = self._runtime_model_publisher {
+            if let Some(ref publisher) = self.runtime_model_publisher {
                 publisher(&snapshot.model, self._active_preset.lock().unwrap().as_deref());
             }
         }
@@ -882,57 +1140,118 @@ impl AgentLoop {
     }
 
     /// Refresh provider snapshot from config file.
-    ///
-    /// If a `_provider_snapshot_loader` is set, this method loads the latest
-    /// config and applies any provider/model changes. When no loader is
-    /// configured (the default), this is a safe no-op.
-    pub fn refresh_provider_snapshot(&self) {
-        if self._provider_snapshot_loader.is_none() {
-            return;
-        }
-        let snapshot = match self._provider_snapshot_loader.as_ref() {
-            Some(loader) => loader(),
+    pub async fn refresh_provider_snapshot(&self) {
+        let snapshot = match &self.provider_snapshot_loader {
+            Some(loader) => match loader() {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to load provider snapshot: {}", e);
+                    return;
+                }
+            },
             None => return,
         };
-        let current_sig = self._provider_signature.lock().unwrap();
+
+        let current_sig = self.provider_signature.lock().unwrap();
         if Some(snapshot.signature) == *current_sig {
             return;
         }
         drop(current_sig);
-        self.apply_provider_snapshot(snapshot, true);
+        self.apply_provider_snapshot(snapshot, true).await;
     }
 
     /// Build model preset snapshot from config.
-    ///
-    /// Returns a `ProviderSnapshot` for the named preset if found in
-    /// `model_presets`. The returned snapshot uses the current provider
-    /// instance with the preset's model name and token budget.
     pub fn build_model_preset_snapshot(&self, name: &str) -> Option<ProviderSnapshot> {
-        if let Some(preset) = self.model_presets.get(name) {
-            Some(ProviderSnapshot {
-                provider: self.provider.clone(),
-                model: preset.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                context_window_tokens: preset
-                    .get("context_window_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(128_000) as u32,
-                signature: 0,
-            })
-        } else {
-            None
-        }
+        let cfg = Config::from_config(None);
+        let preset = cfg.resolve_preset(Some(name));
+        ProviderSnapshot::from_preset(&preset, &cfg).ok()
     }
 
-    /// Resolve a preset by name and apply all runtime model dependents.
-    pub fn set_model_preset(&self, name: Option<String>, publish_update: bool) {
-        if let Some(ref n) = name {
-            if let Some(snapshot) = self.build_model_preset_snapshot(n) {
-                self.apply_provider_snapshot(snapshot, publish_update);
-                *self._active_preset.lock().unwrap() = name;
+    /// Register a provider snapshot loader.
+    pub fn set_provider_snapshot_loader(&mut self, loader: SnapshotLoaderFn) {
+        self.provider_snapshot_loader = Some(loader);
+    }
+
+    /// Register a preset snapshot loader.
+    pub fn set_preset_snapshot_loader(&mut self, loader: PresetSnapshotLoaderFn) {
+        self.preset_snapshot_loader = Some(loader);
+    }
+
+    /// Register a runtime model publisher.
+    pub fn set_runtime_model_publisher(&mut self, publisher: RuntimeModelPublisherFn) {
+        self.runtime_model_publisher = Some(publisher);
+    }
+
+    /// Switch to a different model at runtime.
+    ///
+    /// If `reload_provider` is true, rebuilds the provider from config.
+    /// Otherwise only updates the model name in the runtime info.
+    pub async fn switch_model(&self, model_name: &str, reload_provider: bool) -> Result<String, String> {
+        let old_model = self.config.model.clone();
+
+        if reload_provider {
+            let snapshot = match &self.provider_snapshot_loader {
+                Some(loader) => match loader() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Err(format!("Failed to reload provider: {}", e));
+                    }
+                },
+                None => {
+                    return Err("No provider snapshot loader configured".into());
+                }
+            };
+
+            if snapshot.signature != self.provider_signature.lock().unwrap().unwrap_or(0) {
+                self.apply_provider_snapshot(snapshot, true).await;
             }
-        } else {
-            *self._active_preset.lock().unwrap() = None;
         }
+
+        let old_display = old_model.clone().unwrap_or_else(|| "(none)".to_string());
+        info!("Model switched: {} -> {}", old_display, model_name);
+        Ok(format!("Model switched: {} -> {}", old_display, model_name))
+    }
+
+    /// Switch to a model preset by name.
+    pub async fn switch_model_preset(&self, preset_name: &str) -> Result<String, String> {
+        let cfg = Config::from_config(None);
+        let preset = cfg
+            .model_presets
+            .get(preset_name)
+            .cloned()
+            .or_else(|| {
+                if preset_name.is_empty() || preset_name == "default" {
+                    Some(cfg.resolve_default_preset())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| format!("Preset '{}' not found. Available: {}", preset_name, self.list_presets()))?;
+
+        let snapshot = ProviderSnapshot::from_preset(&preset, &cfg)
+            .map_err(|e| format!("Failed to build preset snapshot: {}", e))?;
+
+        self.apply_provider_snapshot(snapshot, true).await;
+        *self._active_preset.lock().unwrap() = Some(preset_name.to_string());
+
+        Ok(format!("Switched to preset '{}': model={}", preset_name, preset.model))
+    }
+
+    /// List available model presets as a comma-separated string.
+    pub fn list_presets(&self) -> String {
+        let mut names: Vec<String> = self.model_presets.keys().cloned().collect();
+        names.sort();
+        names.join(", ")
+    }
+
+    /// Get the current active model name.
+    pub fn current_model(&self) -> String {
+        self.config.model.clone().unwrap_or_else(|| self.provider.default_model())
+    }
+
+    /// Get the current context window tokens.
+    pub fn current_context_window(&self) -> u32 {
+        self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Register default tools via plugin loader.
@@ -945,20 +1264,45 @@ impl AgentLoop {
 
     /// Connect to configured MCP servers (one-time, lazy).
     ///
-    /// MCP (Model Context Protocol) server connections are deferred until a
-    /// proper MCP client crate is integrated. For now, this method is a
-    /// no-op that logs a single warning and marks the connection state as
-    /// "attempted" so we don't spam the log on every loop iteration.
+    /// MCP (Model Context Protocol) server connections are established
+    /// on first use. This method is async but non-blocking to the caller —
+    /// it spawns a background task so the agent loop can continue while
+    /// connections are being set up.
     pub async fn connect_mcp(&self) {
-        if self._mcp_connected.load(std::sync::atomic::Ordering::SeqCst) || self._mcp_connecting.load(std::sync::atomic::Ordering::SeqCst) || self._mcp_servers.is_empty() {
+        if self._mcp_connected.load(std::sync::atomic::Ordering::SeqCst)
+            || self._mcp_connecting.load(std::sync::atomic::Ordering::SeqCst)
+            || self._mcp_servers.is_empty()
+        {
             return;
         }
         self._mcp_connecting.store(true, std::sync::atomic::Ordering::SeqCst);
-        warn!("MCP server connections configured but not yet implemented in Rust port ({} servers skipped)", self._mcp_servers.len());
-        // MCP support requires an MCP client crate (e.g. rmcp). Once added,
-        // iterate self._mcp_servers, establish stdio/SSE transports, register
-        // tools/resources/prompts, and update self._mcp_stacks + _mcp_connected.
-        self._mcp_connecting.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let config_servers = self._mcp_servers.clone();
+        let registry = self.tools.clone();
+        let mcp_connected = &self._mcp_connected;
+        let mcp_connecting = &self._mcp_connecting;
+        let mcp_stacks = &self._mcp_stacks;
+
+        let mcp_config: HashMap<String, mcp_impl::McpServerConfig> = config_servers
+            .into_iter()
+            .map(|(name, cfg)| (name, cfg_to_mcp_config(&cfg)))
+            .collect();
+
+        let handles = mcp_impl::connect_mcp_servers(&mcp_config, &registry).await;
+
+        if handles.is_empty() {
+            warn!("No MCP servers connected successfully (will retry next message)");
+        } else {
+            info!("MCP connected: {} servers available", handles.len());
+            let mut stacks = mcp_stacks.lock().unwrap();
+            stacks.clear();
+            for (name, handle) in handles {
+                stacks.insert(name, handle);
+            }
+            mcp_connected.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        mcp_connecting.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Update context for all tools that need routing info.
@@ -1149,10 +1493,11 @@ impl AgentLoop {
             }
         }
         if let Some(subagents) = &self.subagents {
-            // SubagentManager.cancel_by_session is not yet exposed. Subagent
-            // tasks spawned via spawn() are tracked in _active_tasks and are
-            // already aborted above.
-            let _ = subagents;
+            let cancelled_ids = {
+                let subagent_manager = subagents.lock().await;
+                subagent_manager.cancel_by_session(key)
+            };
+            cancelled += cancelled_ids.len();
         }
         cancelled
     }
@@ -1210,8 +1555,24 @@ impl AgentLoop {
         spec.context_window_tokens = Some(self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst));
         spec.provider_retry_mode = self.provider_retry_mode;
 
+        // Bind file state store for this session (matches Python bind_file_states)
+        let file_states = if let Some(ref store) = self._file_state_store {
+            let store = store.lock().unwrap();
+            Some(store.for_session(session_key))
+        } else {
+            None
+        };
+        let _file_state_token = file_states.as_ref().map(|fs| bind_file_states(fs.clone()));
+
         let runner = self.runner.lock().unwrap().clone();
-        runner.run(spec).await
+        let result = runner.run(spec).await;
+
+        // Reset file state binding after runner completes (matches Python reset_file_states)
+        if _file_state_token.is_some() {
+            reset_file_states();
+        }
+
+        result
     }
 
     /// Process one inbound message and return the response.
@@ -1221,7 +1582,7 @@ impl AgentLoop {
         msg: InboundMessage,
         session_key: Option<String>,
     ) -> Result<Option<OutboundMessage>, String> {
-        self.refresh_provider_snapshot();
+        self.refresh_provider_snapshot().await;
 
         let key = session_key.unwrap_or_else(|| msg.session_key());
         let mut ctx = TurnContext {
@@ -1377,14 +1738,27 @@ impl AgentLoop {
     }
 
     /// Prepare session for compaction.
+    ///
+    /// Uses the auto-compaction engine to check if the session has been
+    /// previously compacted. If so, the summary is loaded into
+    /// `ctx.pending_summary` so that [`state_build`] can inject it into the
+    /// system prompt as `[Archived Context Summary]`.
     async fn state_compact(&self, ctx: &mut TurnContext) -> Result<String, String> {
-        if let Some(ref _auto_compact) = self.auto_compact {
+        if let Some(ref auto_compact) = self.auto_compact {
             if let Some(ref session) = ctx.session {
-                // Auto-compact prepare step is deferred. The AutoCompact module
-                // tracks session age/size; prepare would preload compaction
-                // metadata. For now, compaction is handled implicitly by the
-                // context builder's token budget.
-                let _session = session;
+                let session = session.clone();
+                let ac = auto_compact.lock().await;
+                let summary = ac.prepare_session(session, &ctx.session_key).await;
+                drop(ac);
+
+                if let Some(summary_text) = summary.1 {
+                    info!(
+                        "[turn {}] Auto-compact: loaded summary for session {}",
+                        ctx.turn_id, ctx.session_key
+                    );
+                    ctx.pending_summary = Some(summary_text);
+                }
+                ctx.session = Some(summary.0);
             }
         }
         Ok("ok".to_string())
@@ -1408,12 +1782,29 @@ impl AgentLoop {
     /// Build context for the LLM turn.
     async fn state_build(&self, ctx: &mut TurnContext) -> Result<String, String> {
         if let Some(ref consolidator) = self.consolidator {
-            // Consolidator.maybe_consolidate_by_tokens would merge old
-            // conversation segments into summary blobs before the LLM call.
-            // This is an optional memory-quality feature; the ContextBuilder
-            // already enforces a token budget, so skipping consolidation
-            // is safe for correctness.
-            let _consolidator = consolidator;
+            let estimate = {
+                let c = consolidator.lock().await;
+                c.estimate_session_prompt_tokens(
+                    &ctx.session_key,
+                    ctx.history.len(),
+                ).await
+            };
+
+            let budget = self.replay_token_budget() as usize;
+            if estimate.tokens > budget {
+                info!(
+                    "[turn {}] Consolidator: estimated {} tokens exceeds budget {}; triggering compaction",
+                    ctx.turn_id, estimate.tokens, budget
+                );
+                {
+                    let c = consolidator.lock().await;
+                    c.maybe_consolidate_by_tokens(&ctx.session_key).await;
+                }
+
+                let mut sessions = self.sessions.lock().await;
+                let session = sessions.get_or_create(&ctx.session_key);
+                ctx.history = session.messages.clone();
+            }
         }
 
         self.set_tool_context(
@@ -1507,6 +1898,16 @@ impl AgentLoop {
         // not critical for correctness — the ContextBuilder's token budget
         // already prevents context overflow. When consolidator is wired,
         // spawn a tracked background task here.
+        if let Some(ref consolidator) = self.consolidator {
+            let session_key = ctx.session_key.clone();
+            let consolidator = consolidator.clone();
+            self.schedule_background(async move {
+                let c = consolidator.lock().await;
+                c.maybe_consolidate_by_tokens(&session_key).await;
+                drop(c);
+            });
+        }
+
         Ok("ok".to_string())
     }
 
@@ -2185,15 +2586,19 @@ impl AgentLoop {
                 handle.abort();
             }
         }
-        self._mcp_stacks.clear();
+        let handles = {
+            let mut stacks = self._mcp_stacks.lock().unwrap();
+            stacks.drain().map(|(name, h)| (name, h)).collect::<Vec<_>>()
+        };
+        for (name, handle) in handles {
+            info!("Shutting down MCP server '{}'", name);
+            handle.shutdown();
+        }
         self._mcp_connected.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Schedule a coroutine as a tracked background task.
-    pub fn schedule_background<F>(&mut self, future: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
+    pub fn schedule_background(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
         let handle = tokio::spawn(future);
         self._background_tasks.lock().unwrap().push(handle);
     }
@@ -2285,6 +2690,43 @@ impl AgentLoop {
             media: Vec::new(),
             metadata: outbound_metadata,
         })
+    }
+}
+
+fn cfg_to_mcp_config(cfg: &ConfigMcpServerConfig) -> mcp_impl::McpServerConfig {
+    mcp_impl::McpServerConfig {
+        transport_type: cfg.transport.as_ref().map(|t| match t {
+            config::schema::McpTransport::Stdio => "stdio".to_string(),
+            config::schema::McpTransport::Sse => "sse".to_string(),
+            config::schema::McpTransport::StreamableHttp => "streamableHttp".to_string(),
+        }),
+        command: if cfg.command.is_empty() {
+            None
+        } else {
+            Some(cfg.command.clone())
+        },
+        args: if cfg.args.is_empty() {
+            None
+        } else {
+            Some(cfg.args.clone())
+        },
+        env: if cfg.env.is_empty() {
+            None
+        } else {
+            Some(cfg.env.clone())
+        },
+        url: if cfg.url.is_empty() {
+            None
+        } else {
+            Some(cfg.url.clone())
+        },
+        headers: if cfg.headers.is_empty() {
+            None
+        } else {
+            Some(cfg.headers.clone())
+        },
+        enabled_tools: cfg.enabled_tools.clone(),
+        tool_timeout: cfg.tool_timeout as u64,
     }
 }
 

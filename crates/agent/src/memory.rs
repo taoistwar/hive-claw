@@ -527,12 +527,16 @@ pub trait Consolidator: Send + Sync {
     ) -> Option<String> {
         None
     }
+
+    /// Update the provider and model used for consolidation.
+    fn set_provider(&mut self, _provider: Arc<dyn LLMProvider>, _model: String, _context_window_tokens: u32) {}
 }
 
 /// Nightly memory processor. Mirrors `nanobot.agent.memory.Dream`.
 #[async_trait]
 pub trait Dream: Send + Sync {
     async fn run(&self) -> bool;
+    fn set_provider(&mut self, provider: Arc<dyn LLMProvider>, model: String);
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +755,15 @@ impl MemoryDream {
             result.push('\n');
         }
         result
+    }
+}
+
+impl MemoryDream {
+    /// Update the provider and model used by Dream for memory consolidation.
+    pub fn set_provider(&mut self, provider: Arc<dyn LLMProvider>, model: String) {
+        self.provider = provider.clone();
+        self.model = model;
+        self.runner = AgentRunner::new(provider);
     }
 }
 
@@ -973,6 +986,12 @@ impl Dream for MemoryDream {
         }
 
         true
+    }
+
+    fn set_provider(&mut self, provider: Arc<dyn LLMProvider>, model: String) {
+        self.provider = provider.clone();
+        self.model = model;
+        self.runner = AgentRunner::new(provider);
     }
 }
 

@@ -358,25 +358,31 @@ impl SubagentManager {
         )
     }
 
-    /// Cancel all subagents for the given session. Returns count cancelled.
-    pub async fn cancel_by_session(&self, session_key: &str) -> usize {
-        let tasks = {
-            let mut inner = self.inner.lock().unwrap();
-            let ids: Vec<String> = inner
-                .session_tasks
-                .get(session_key)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-            ids.into_iter()
-                .filter_map(|tid| inner.running_tasks.remove(&tid))
-                .collect::<Vec<_>>()
-        };
+    /// Cancel all subagents for the given session. Returns the list of cancelled subagent IDs.
+    pub fn cancel_by_session(&self, session_key: &str) -> Vec<String> {
+        let mut inner = self.inner.lock().unwrap();
+        let ids: Vec<String> = inner
+            .session_tasks
+            .get(session_key)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let tasks: Vec<_> = ids.iter()
+            .filter_map(|tid| inner.running_tasks.remove(tid))
+            .collect();
+        // Clean up task_statuses for cancelled tasks
+        for tid in &ids {
+            inner.task_statuses.remove(tid);
+        }
+        // Clean up session_tasks entry
+        inner.session_tasks.remove(session_key);
+        // Drop the lock before aborting tasks
+        drop(inner);
         for t in &tasks {
             t.abort();
         }
-        tasks.len()
+        ids
     }
 
     pub fn running_count(&self) -> usize {

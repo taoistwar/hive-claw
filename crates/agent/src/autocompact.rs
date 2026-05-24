@@ -4,34 +4,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use chrono::{DateTime, Local};
 use log::{error, info};
 use serde_json::Value;
 
 use session::{Session, SessionManager};
 
+pub use crate::memory::Consolidator;
+
 const RECENT_SUFFIX_MESSAGES: usize = 8;
-
-/// Trait that produces a natural-language summary for a batch of archived
-/// messages. Abstracted so tests (and any LLM backend) can plug in.
-#[async_trait]
-pub trait Consolidator: Send + Sync {
-    /// Summarize *messages* into a short text. Returns `None` when nothing
-    /// should be injected into the next prompt.
-    async fn archive(&self, messages: Vec<Value>) -> Option<String>;
-
-    /// Hard-truncate an idle session under the consolidation lock.
-    /// Returns the summary text on success, `None` if the LLM failed,
-    /// or `Some("")` if there was nothing to archive.
-    async fn compact_idle_session(
-        &self,
-        _session_key: &str,
-        _max_suffix: usize,
-    ) -> Option<String> {
-        None
-    }
-}
 
 /// Auto-compaction bookkeeping (TTL-based).
 pub struct AutoCompact {

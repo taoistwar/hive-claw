@@ -400,6 +400,10 @@ impl LLMProvider for GitHubCopilotProvider {
         self.generation.clone()
     }
 
+    fn supports_progress_deltas(&self) -> bool {
+        true
+    }
+
     async fn chat(&self, req: ChatRequest) -> LLMResponse {
         let token = match self.get_copilot_access_token().await {
             Ok(t) => t,
@@ -413,13 +417,14 @@ impl LLMProvider for GitHubCopilotProvider {
         &self,
         req: ChatRequest,
         on_delta: Option<crate::base::StreamDeltaCallback>,
+        on_tool_call_delta: Option<crate::responses::ToolCallDeltaCallback>,
     ) -> LLMResponse {
         let token = match self.get_copilot_access_token().await {
             Ok(t) => t,
             Err(e) => return LLMResponse::error(e),
         };
         let inner = self.build_underlying(token);
-        inner.chat_stream(req, on_delta).await
+        inner.chat_stream(req, on_delta, on_tool_call_delta).await
     }
 }
 

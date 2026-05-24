@@ -56,6 +56,7 @@ pub struct SubagentStatus {
 pub trait SubagentManager: Send + Sync {
     fn tool_names(&self) -> Vec<String>;
     fn task_statuses(&self) -> HashMap<String, SubagentStatus>;
+    fn cancel_by_session(&self, session_key: &str) -> Vec<String>;
 }
 
 pub struct MyTool {

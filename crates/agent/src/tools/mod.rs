@@ -50,7 +50,7 @@ pub use mcp::{
     McpToolDefinition, McpResourceDefinition, McpPromptDefinition, McpPromptArgument,
     McpToolResult, McpResourceResult, McpPromptResult, McpContentBlock, McpResourceContent,
     McpPromptMessage, McpError, connect_mcp_servers, sanitize_name, normalize_schema_for_openai,
-    probe_http_url, normalize_windows_stdio_command,
+    probe_http_url, normalize_windows_stdio_command, McpServerHandle,
 };
 pub use message::{MessageContext, MessageTool};
 pub use notebook::NotebookEditTool;

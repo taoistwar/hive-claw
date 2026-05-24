@@ -761,6 +761,7 @@ impl BedrockProvider {
         tool_buffers: &mut HashMap<usize, Map<String, Value>>,
         reasoning_buffers: &mut HashMap<usize, Map<String, Value>>,
         state: &mut Map<String, Value>,
+        on_tool_call_delta: Option<&crate::responses::ToolCallDeltaCallback>,
     ) -> Option<String> {
         if let Some(data) = event.get("contentBlockStart").and_then(|v| v.as_object()) {
             let idx = data.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -789,6 +790,23 @@ impl BedrockProvider {
                     );
                     buf.insert("input".into(), Value::String(String::new()));
                     tool_buffers.insert(idx, buf);
+                    if let Some(ref cb) = on_tool_call_delta {
+                        let id = tool_use
+                            .get("toolUseId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = tool_use
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mut delta = serde_json::Map::new();
+                        delta.insert("call_id".into(), Value::String(id));
+                        delta.insert("name".into(), Value::String(name));
+                        delta.insert("arguments_delta".into(), Value::String(String::new()));
+                        cb(delta);
+                    }
                 }
             }
             return None;
@@ -983,6 +1001,10 @@ impl LLMProvider for BedrockProvider {
         self.generation.clone()
     }
 
+    fn supports_progress_deltas(&self) -> bool {
+        true
+    }
+
     async fn chat(&self, req: ChatRequest) -> LLMResponse {
         let (model_id, kwargs) = self.build_kwargs(&req);
         let url = self.converse_url(&model_id);
@@ -1028,6 +1050,7 @@ impl LLMProvider for BedrockProvider {
         &self,
         req: ChatRequest,
         on_delta: Option<StreamDeltaCallback>,
+        on_tool_call_delta: Option<crate::responses::ToolCallDeltaCallback>,
     ) -> LLMResponse {
         let (model_id, kwargs) = self.build_kwargs(&req);
         let url = self.converse_stream_url(&model_id);
@@ -1085,6 +1108,7 @@ impl LLMProvider for BedrockProvider {
                 &mut tool_buffers,
                 &mut reasoning_buffers,
                 &mut state,
+                on_tool_call_delta.as_ref(),
             ) {
                 if let Some(cb) = &on_delta {
                     cb(delta);

@@ -25,7 +25,7 @@ pub use artifacts::{
     store_generated_image_artifact,
 };
 pub use file_edit_events::{
-    FileEditTracker, FileSnapshot, StreamingFileEditTracker, TODO_ToolCall, TODO_ToolResolver,
+    FileEditTracker, FileSnapshot, StreamingFileEditTracker,
     build_file_edit_end_event, build_file_edit_error_event, build_file_edit_live_event,
     build_file_edit_pending_event, build_file_edit_start_event, display_file_edit_path,
     is_file_edit_tool, line_diff_stats, prepare_file_edit_tracker, read_file_snapshot,

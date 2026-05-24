@@ -800,6 +800,9 @@ pub type RetryWaitCallback =
 /// Callback invoked on each streaming content delta.
 pub type StreamDeltaCallback = std::sync::Arc<dyn Fn(String) + Send + Sync>;
 
+/// Callback invoked on each streaming tool call delta (from SSE parsing).
+pub use crate::responses::parsing::ToolCallDeltaCallback;
+
 const PERSISTENT_MAX_DELAY: u64 = 60;
 const PERSISTENT_IDENTICAL_ERROR_LIMIT: u32 = 10;
 const RETRY_HEARTBEAT_CHUNK: u64 = 30;
@@ -818,11 +821,17 @@ pub trait LLMProvider: Send + Sync {
     /// Single chat completion call. Concrete providers implement this.
     async fn chat(&self, req: ChatRequest) -> LLMResponse;
 
-    /// Streaming chat. Default: fallback to `chat` and emit one delta.
+    /// Whether this provider supports progress delta streaming. Default: false.
+    fn supports_progress_deltas(&self) -> bool {
+        false
+    }
+
+    /// Streaming chat completion. Concrete providers implement this.
     async fn chat_stream(
         &self,
         req: ChatRequest,
         on_delta: Option<StreamDeltaCallback>,
+        on_tool_call_delta: Option<ToolCallDeltaCallback>,
     ) -> LLMResponse {
         let response = self.chat(req).await;
         if let Some(cb) = on_delta {
@@ -830,6 +839,15 @@ pub trait LLMProvider: Send + Sync {
                 if !text.is_empty() {
                     cb(text);
                 }
+            }
+        }
+        if let Some(cb) = on_tool_call_delta {
+            for tc in &response.tool_calls {
+                let mut delta = serde_json::Map::new();
+                delta.insert("call_id".into(), serde_json::Value::String(tc.id.clone()));
+                delta.insert("name".into(), serde_json::Value::String(tc.name.clone()));
+                delta.insert("arguments_delta".into(), serde_json::to_value(&tc.arguments).unwrap_or(serde_json::Value::Object(serde_json::Map::new())));
+                cb(delta);
             }
         }
         response
@@ -940,6 +958,7 @@ pub trait LLMProvider: Send + Sync {
         &self,
         mut req: ChatRequest,
         on_delta: Option<StreamDeltaCallback>,
+        on_tool_call_delta: Option<ToolCallDeltaCallback>,
         mode: RetryMode,
         on_retry_wait: Option<RetryWaitCallback>,
     ) -> LLMResponse {
@@ -967,7 +986,7 @@ pub trait LLMProvider: Send + Sync {
 
         loop {
             attempt += 1;
-            let response = self.chat_stream(req.clone(), on_delta.clone()).await;
+            let response = self.chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone()).await;
             if response.finish_reason != "error" {
                 return response;
             }

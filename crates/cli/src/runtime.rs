@@ -137,7 +137,8 @@ impl LoopBundle {
         let message_handle = builtin.message.clone();
         let cron_handle = builtin.cron.clone();
 
-        let agent = AgentLoop::from_builtin(bus.clone(), provider, sessions, builtin, lc);
+        let mut agent = AgentLoop::from_builtin(bus.clone(), provider, sessions, builtin, lc);
+        agent.set_mcp_servers(cfg.tools.mcp_servers.clone());
         Ok(Self {
             bus,
             agent,

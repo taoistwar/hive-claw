@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 
 use crate::base::{ChatRequest, LLMProvider, StreamDeltaCallback};
 use crate::base::{GenerationSettings, LLMResponse};
+use crate::responses::ToolCallDeltaCallback;
 
 /// Circuit breaker tuned to match OpenAICompatProvider's Responses API breaker.
 const PRIMARY_FAILURE_THRESHOLD: u32 = 3;
@@ -317,6 +318,7 @@ impl FallbackProvider {
         &self,
         mut req: ChatRequest,
         tracking_delta: StreamDeltaCallback,
+        tracking_tool_call_delta: Option<ToolCallDeltaCallback>,
         has_streamed: &AtomicBool,
     ) -> LLMResponse {
         let primary_model = req
@@ -327,7 +329,7 @@ impl FallbackProvider {
         let primary_is_available = self.primary_available().await;
 
         if primary_is_available {
-            let response = self.primary.chat_stream(req.clone(), Some(Arc::clone(&tracking_delta))).await;
+            let response = self.primary.chat_stream(req.clone(), Some(Arc::clone(&tracking_delta)), tracking_tool_call_delta.clone()).await;
             if response.finish_reason != "error" {
                 self.state.primary_failures.store(0, Ordering::SeqCst);
                 let mut tripped = self.state.primary_tripped_at.lock().await;
@@ -407,7 +409,7 @@ impl FallbackProvider {
                 req.reasoning_effort = fallback.reasoning_effort.clone();
             }
 
-            let fallback_response = provider.chat_stream(req.clone(), Some(Arc::clone(&tracking_delta))).await;
+            let fallback_response = provider.chat_stream(req.clone(), Some(Arc::clone(&tracking_delta)), tracking_tool_call_delta.clone()).await;
 
             req.model = original_model;
             req.max_tokens = original_max_tokens;
@@ -468,6 +470,10 @@ impl LLMProvider for FallbackProvider {
         self.primary.generation()
     }
 
+    fn supports_progress_deltas(&self) -> bool {
+        self.primary.supports_progress_deltas()
+    }
+
     async fn chat(&self, req: ChatRequest) -> LLMResponse {
         if !self.has_fallbacks {
             return self.primary.chat(req).await;
@@ -479,9 +485,10 @@ impl LLMProvider for FallbackProvider {
         &self,
         req: ChatRequest,
         on_delta: Option<StreamDeltaCallback>,
+        on_tool_call_delta: Option<ToolCallDeltaCallback>,
     ) -> LLMResponse {
         if !self.has_fallbacks {
-            return self.primary.chat_stream(req, on_delta).await;
+            return self.primary.chat_stream(req, on_delta, on_tool_call_delta).await;
         }
 
         let has_streamed = Arc::new(AtomicBool::new(false));
@@ -499,6 +506,17 @@ impl LLMProvider for FallbackProvider {
             })
         };
 
-        self.try_with_fallback_stream(req, tracking_delta, &has_streamed).await
+        let tracking_tool_call_delta: ToolCallDeltaCallback = {
+            let has_streamed = Arc::clone(&has_streamed);
+            let on_tool_call_delta = on_tool_call_delta.clone();
+            Arc::new(move |delta: serde_json::Map<String, serde_json::Value>| {
+                has_streamed.store(true, Ordering::SeqCst);
+                if let Some(ref cb) = on_tool_call_delta {
+                    cb(delta);
+                }
+            })
+        };
+
+        self.try_with_fallback_stream(req, tracking_delta, Some(tracking_tool_call_delta), &has_streamed).await
     }
 }

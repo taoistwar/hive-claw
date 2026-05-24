@@ -704,16 +704,49 @@ pub struct McpServerStack {
     pub session: Arc<dyn McpSession>,
 }
 
+/// Handle that owns the transport channels for a connected MCP server.
+/// Dropping the handle (or calling [`shutdown`]) closes the transport
+/// channels so the spawned I/O tasks can exit cleanly.
+pub struct McpServerHandle {
+    pub name: String,
+    pub session: Arc<dyn McpSession>,
+    /// Dropping this sender closes the transport command channel,
+    /// signalling the background I/O task to exit.
+    _cmd_tx: Option<mpsc::Sender<String>>,
+}
+
+impl McpServerHandle {
+    pub fn new(
+        name: String,
+        session: Arc<dyn McpSession>,
+        cmd_tx: mpsc::Sender<String>,
+    ) -> Self {
+        Self {
+            name,
+            session,
+            _cmd_tx: Some(cmd_tx),
+        }
+    }
+
+    /// Signal the transport to shut down and consume the handle.
+    pub fn shutdown(mut self) {
+        self._cmd_tx.take();
+    }
+}
+
 pub async fn connect_mcp_servers(
     mcp_servers: &HashMap<String, McpServerConfig>,
     registry: &ToolRegistry,
-) -> HashMap<String, Arc<dyn McpSession>> {
-    let mut server_sessions: HashMap<String, Arc<dyn McpSession>> = HashMap::new();
+) -> HashMap<String, McpServerHandle> {
+    let mut handles: HashMap<String, McpServerHandle> = HashMap::new();
 
     for (name, cfg) in mcp_servers {
         match connect_single_server(name, cfg, registry).await {
-            Ok(session) => {
-                server_sessions.insert(name.clone(), session);
+            Ok((session, cmd_tx)) => {
+                handles.insert(
+                    name.clone(),
+                    McpServerHandle::new(name.clone(), session, cmd_tx),
+                );
             }
             Err(e) => {
                 error!("MCP server '{}': failed to connect: {}", name, e);
@@ -721,7 +754,7 @@ pub async fn connect_mcp_servers(
         }
     }
 
-    server_sessions
+    handles
 }
 
 // ---------- McpSessionImpl: concrete JSON-RPC MCP session ----------
@@ -1371,7 +1404,7 @@ async fn connect_single_server(
     name: &str,
     cfg: &McpServerConfig,
     registry: &ToolRegistry,
-) -> Result<Arc<dyn McpSession>, String> {
+) -> Result<(Arc<dyn McpSession>, mpsc::Sender<String>), String> {
     let transport_type = cfg.transport_type.clone().unwrap_or_else(|| {
         if cfg.command.is_some() {
             "stdio".into()
@@ -1636,6 +1669,5 @@ async fn connect_single_server(
         "MCP server '{}': connected, {} capabilities registered", name, registered_count
     );
 
-    let _ = cmd_tx;
-    Ok(session)
+    Ok((session, cmd_tx))
 }

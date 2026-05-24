@@ -770,6 +770,10 @@ impl LLMProvider for AnthropicProvider {
         self.generation.clone()
     }
 
+    fn supports_progress_deltas(&self) -> bool {
+        true
+    }
+
     async fn chat(&self, req: ChatRequest) -> LLMResponse {
         let body = self.build_body(&req);
         let resp = match self.send(&body).await {
@@ -812,6 +816,7 @@ impl LLMProvider for AnthropicProvider {
         &self,
         req: ChatRequest,
         on_delta: Option<crate::base::StreamDeltaCallback>,
+        on_tool_call_delta: Option<crate::responses::ToolCallDeltaCallback>,
     ) -> LLMResponse {
         use std::env;
 
@@ -909,6 +914,7 @@ impl LLMProvider for AnthropicProvider {
                                 &mut finish_reason,
                                 &mut usage,
                                 on_delta.as_ref(),
+                                on_tool_call_delta.as_ref(),
                             );
                         }
                         current_event_data.clear();
@@ -937,6 +943,7 @@ impl LLMProvider for AnthropicProvider {
                     &mut finish_reason,
                     &mut usage,
                     on_delta.as_ref(),
+                    on_tool_call_delta.as_ref(),
                 );
             }
         }
@@ -962,6 +969,7 @@ fn process_sse_event(
     finish_reason: &mut String,
     usage: &mut std::collections::HashMap<String, i64>,
     on_delta: Option<&crate::base::StreamDeltaCallback>,
+    on_tool_call_delta: Option<&crate::responses::ToolCallDeltaCallback>,
 ) {
     let Ok(value) = serde_json::from_str::<Value>(data) else {
         return;
@@ -988,13 +996,20 @@ fn process_sse_event(
                                 _ => serde_json::Map::new(),
                             };
                             tool_calls.push(ToolCallRequest {
-                                id,
-                                name,
+                                id: id.clone(),
+                                name: name.clone(),
                                 arguments: args,
                                 extra_content: None,
                                 provider_specific_fields: None,
                                 function_provider_specific_fields: None,
                             });
+                            if let Some(ref cb) = on_tool_call_delta {
+                                let mut delta = serde_json::Map::new();
+                                delta.insert("call_id".into(), serde_json::Value::String(id));
+                                delta.insert("name".into(), serde_json::Value::String(name));
+                                delta.insert("arguments_delta".into(), serde_json::Value::String(String::new()));
+                                cb(delta);
+                            }
                         }
                     }
                     "thinking" => {
@@ -1023,9 +1038,12 @@ fn process_sse_event(
                         }
                     }
                     "input_json_delta" => {
-                        // Accumulate tool call arguments JSON
-                        if let Some(_partial_json) = value.get("delta").and_then(|v| v.get("partial_json")).and_then(|v| v.as_str()) {
-                            // Simplified - a full implementation would merge JSON properly
+                        if let Some(partial_json) = value.get("delta").and_then(|v| v.get("partial_json")).and_then(|v| v.as_str()) {
+                            if let Some(ref cb) = on_tool_call_delta {
+                                let mut delta = serde_json::Map::new();
+                                delta.insert("arguments_delta".into(), serde_json::Value::String(partial_json.to_string()));
+                                cb(delta);
+                            }
                         }
                     }
                     "thinking_delta" => {

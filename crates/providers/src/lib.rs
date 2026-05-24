@@ -22,7 +22,7 @@ pub mod transcription;
 
 pub use base::{
     ChatRequest, FinishReason, GenerationSettings, LLMProvider, LLMResponse, RetryMode,
-    RetryWaitCallback, ToolCallRequest, ToolChoice, enforce_role_alternation,
+    RetryWaitCallback, StreamDeltaCallback, ToolCallRequest, ToolChoice, enforce_role_alternation,
     extract_retry_after_from_text, is_transient_response, pick_delay, sanitize_empty_content,
     strip_image_content, strip_image_content_inplace,
 };
@@ -46,8 +46,9 @@ pub use oauth::{FileTokenStorage, OAuthToken};
 pub use openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
 pub use openai_compat_provider::OpenAICompatProvider;
 pub use responses::{
-    consume_events, convert_messages as convert_responses_messages,
+    consume_events, consume_sse, convert_messages as convert_responses_messages,
     convert_tools as convert_responses_tools, parse_response_output, parse_sse_events,
+    ContentDeltaCallback, ToolCallDeltaCallback,
 };
 pub use transcription::{
     GroqTranscriptionProvider, OpenAITranscriptionProvider, TranscriptionProvider,

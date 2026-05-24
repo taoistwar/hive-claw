@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 
 use crate::base::{ChatRequest, LLMProvider};
 use crate::responses::{
-    consume_events, convert_messages, convert_tools, parse_response_output, parse_sse_events,
+    consume_sse, convert_messages, convert_tools, parse_response_output,
 };
 use crate::base::extract_retry_after_from_text;
 use crate::base::{enforce_role_alternation, sanitize_empty_content};
@@ -239,6 +239,10 @@ impl LLMProvider for AzureOpenAIProvider {
         self.generation.clone()
     }
 
+    fn supports_progress_deltas(&self) -> bool {
+        true
+    }
+
     async fn chat(&self, req: ChatRequest) -> LLMResponse {
         let deployment = req
             .model
@@ -272,6 +276,7 @@ impl LLMProvider for AzureOpenAIProvider {
         &self,
         req: ChatRequest,
         on_delta: Option<crate::base::StreamDeltaCallback>,
+        on_tool_call_delta: Option<crate::responses::ToolCallDeltaCallback>,
     ) -> LLMResponse {
         let deployment = req
             .model
@@ -296,27 +301,17 @@ impl LLMProvider for AzureOpenAIProvider {
             Err(e) => return LLMResponse::error(format!("Error reading stream: {e}")),
         };
 
-        let events = parse_sse_events(&body_text);
-        match consume_events(&events) {
-            Ok((content, tool_calls, finish_reason)) => {
-                if let Some(cb) = &on_delta {
-                    if !content.is_empty() {
-                        cb(content.clone());
-                    }
-                }
-                LLMResponse {
-                    content: (!content.is_empty()).then_some(content),
-                    tool_calls,
-                    finish_reason,
-                    ..Default::default()
-                }
-            }
-            Err(err) => LLMResponse {
-                content: Some(err.clone()),
-                finish_reason: "error".into(),
-                retry_after: extract_retry_after_from_text(Some(&err)),
-                ..Default::default()
-            },
+        let (content, tool_calls, finish_reason) = consume_sse(
+            &body_text,
+            on_delta.clone(),
+            on_tool_call_delta.clone(),
+        ).await;
+
+        LLMResponse {
+            content: (!content.is_empty()).then_some(content),
+            tool_calls,
+            finish_reason,
+            ..Default::default()
         }
     }
 }

@@ -11,29 +11,39 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use log::{info, warn};
 use providers::{
-    ChatRequest, LLMProvider, LLMResponse, RetryMode, ToolCallRequest, ToolChoice,
+    ChatRequest, LLMProvider, LLMResponse, RetryMode, StreamDeltaCallback, ToolCallRequest,
+    ToolChoice,
 };
 use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+use utils::file_edit_events::{
+    is_file_edit_tool, StreamingFileEditTracker,
+};
 use utils::helpers::{
     build_assistant_message, estimate_message_tokens, estimate_prompt_tokens,
-    find_legal_message_start, maybe_persist_tool_result, truncate_text,
+    extract_reasoning, extract_think, find_legal_message_start, IncrementalThinkExtractor,
+    maybe_persist_tool_result, strip_think, truncate_text,
 };
+use utils::progress_events::on_progress_accepts_file_edit_events;
 use utils::runtime::{
-    build_finalization_retry_message, build_length_recovery_message, ensure_nonempty_tool_result,
-    external_lookup_signature, is_blank_text, repeated_external_lookup_error,
-    EMPTY_FINAL_RESPONSE_MESSAGE,
+    ensure_nonempty_tool_result, external_lookup_signature, is_blank_text,
+    repeated_external_lookup_error,
 };
 
 use crate::hook::{AgentHook, AgentHookContext, ToolEvent};
 use crate::tools::ToolRegistry;
 
 const DEFAULT_ERROR_MESSAGE: &str = "Sorry, I encountered an error calling the AI model.";
+const EMPTY_FINAL_RESPONSE_MESSAGE: &str = "(No response from model)";
+const FINALIZATION_RETRY_MESSAGE: &str = "Your last response appeared to be empty. Please provide your answer.";
+const LENGTH_RECOVERY_MESSAGE: &str = "Your response was truncated. Please continue from where you left off.";
 const MAX_EMPTY_RETRIES: u32 = 2;
 const MAX_LENGTH_RECOVERIES: u32 = 3;
 const MAX_REPEAT_WORKSPACE_VIOLATIONS: u32 = 2;
@@ -614,6 +624,23 @@ impl AgentRunner {
                 .request_model(&spec, messages_for_model, hook.clone(), &mut ctx)
                 .await;
             let raw_usage = response.usage.clone();
+
+            // Extract reasoning and clean content (matches Python lines 297-306)
+            let (reasoning_text, cleaned_content) = extract_reasoning(
+                response.reasoning_content.as_deref(),
+                response.thinking_blocks.as_ref().map(|v| v.as_slice()),
+                response.content.as_deref(),
+            );
+            let mut response = response;
+            response.content = cleaned_content.clone();
+            if let Some(ref rt) = reasoning_text {
+                if !rt.is_empty() && !ctx.streamed_reasoning {
+                    hook.emit_reasoning(Some(rt)).await;
+                    hook.emit_reasoning_end().await;
+                    ctx.streamed_reasoning = true;
+                }
+            }
+
             ctx.response = Some(response.clone());
             ctx.usage = raw_usage.clone();
             ctx.tool_calls = response.tool_calls.clone();
@@ -773,8 +800,13 @@ impl AgentRunner {
                 let retry_response = self.request_finalization_retry(&spec, &messages).await;
                 let retry_usage = retry_response.usage.clone();
                 accumulate_usage(&mut usage, &retry_usage);
+                let merged_usage = {
+                    let mut m = raw_usage.clone();
+                    merge_usage(&mut m, &retry_usage);
+                    m
+                };
                 ctx.response = Some(retry_response.clone());
-                ctx.usage = retry_usage;
+                ctx.usage = merged_usage;
                 ctx.tool_calls = retry_response.tool_calls.clone();
                 let retry_clean = hook.finalize_content(&mut ctx, retry_response.content.clone());
                 // Fall through with the retry content
@@ -1030,7 +1062,7 @@ impl AgentRunner {
         spec: &AgentRunSpec,
         messages: Vec<Value>,
         hook: Arc<dyn AgentHook>,
-        _ctx: &mut AgentHookContext,
+        ctx: &mut AgentHookContext,
     ) -> LLMResponse {
         let tools = spec.tools.get_definitions().await;
         let tool_choice = if tools.is_empty() {
@@ -1047,10 +1079,270 @@ impl AgentRunner {
             reasoning_effort: spec.reasoning_effort.clone(),
             tool_choice,
         };
-        let _ = hook; // streaming path is TODO
-        self.provider
-            .chat_with_retry(req, spec.provider_retry_mode, None)
+
+        let wants_streaming = hook.wants_streaming();
+        let wants_progress_streaming = !wants_streaming
+            && spec.stream_progress_deltas
+            && spec.progress_callback.is_some();
+
+        // Check if we should emit file edit progress events (matches Python
+        // on_progress_accepts_file_edit_events check)
+        let emit_file_edit_events = spec.progress_callback.is_some()
+            && on_progress_accepts_file_edit_events();
+
+        if wants_streaming || wants_progress_streaming {
+            let accumulator: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+            let thinking_accumulator: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+            let think_extractor: Arc<Mutex<IncrementalThinkExtractor>> =
+                Arc::new(Mutex::new(IncrementalThinkExtractor::new()));
+
+            let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<String>();
+            let (reasoning_tx, mut reasoning_rx) = mpsc::unbounded_channel::<String>();
+            let reasoning_tx_for_progress = reasoning_tx.clone();
+
+            // Set up file edit tracker if we're emitting file edit events
+            let live_file_edits: Option<Arc<tokio::sync::Mutex<StreamingFileEditTracker>>> = if emit_file_edit_events {
+                let progress_cb = spec.progress_callback.clone().unwrap();
+                let workspace = spec.workspace.clone();
+                // The emit callback serializes file edit events to JSON and
+                // sends them through the progress_callback (matches Python
+                // invoke_file_edit_progress pattern).
+                let emit_fn = Arc::new(move |events: Vec<serde_json::Value>| {
+                    let cb = progress_cb.clone();
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    tokio::spawn(async move {
+                        for event in events {
+                            if let Ok(json) = serde_json::to_string(&event) {
+                                cb(&json).await;
+                            }
+                        }
+                        let _ = tx.send(());
+                    });
+                    rx
+                });
+                Some(Arc::new(tokio::sync::Mutex::new(StreamingFileEditTracker::new(
+                    workspace,
+                    emit_fn,
+                ))))
+            } else {
+                None
+            };
+
+            let acc_ref = accumulator.clone();
+            let think_acc_ref = thinking_accumulator.clone();
+            let extractor_ref = think_extractor.clone();
+
+            let on_content_delta: StreamDeltaCallback = Arc::new(move |delta: String| {
+                let mut buf = acc_ref.lock().unwrap();
+                buf.push_str(&delta);
+                let full_buf = buf.clone();
+                drop(buf);
+
+                let mut extractor = extractor_ref.lock().unwrap();
+                if let Some(reasoning_delta) = extractor.feed(&full_buf) {
+                    let mut think_acc = think_acc_ref.lock().unwrap();
+                    think_acc.push_str(&reasoning_delta);
+                    let _ = reasoning_tx.send(reasoning_delta);
+                }
+                drop(extractor);
+
+                let _ = delta_tx.send(delta);
+            });
+
+            // Set up tool call delta callback for file edit tracking
+            let on_tool_call_delta: Option<providers::base::ToolCallDeltaCallback> = if emit_file_edit_events {
+                let file_edits_ref = live_file_edits.clone().unwrap();
+                Some(Arc::new(move |delta: serde_json::Map<String, serde_json::Value>| {
+                    let edits = file_edits_ref.clone();
+                    let event = serde_json::Value::Object(delta);
+                    tokio::spawn(async move {
+                        let mut tracker = edits.lock().await;
+                        let _ = tracker.update(&event).await;
+                    });
+                }))
+            } else {
+                None
+            };
+
+            let stream_future = self.provider.chat_stream_with_retry(
+                req,
+                Some(on_content_delta),
+                on_tool_call_delta,
+                spec.provider_retry_mode,
+                None,
+            );
+
+            let response = if wants_streaming {
+                let mut handle = tokio::spawn({
+                    let hook = hook.clone();
+                    async move {
+                        while let Some(delta) = delta_rx.recv().await {
+                            let mut ctx = AgentHookContext::default();
+                            ctx.streamed_content = true;
+                            hook.on_stream(&mut ctx, &delta).await;
+                        }
+                    }
+                });
+                let mut reasoning_handle = tokio::spawn({
+                    let hook = hook.clone();
+                    async move {
+                        while let Some(delta) = reasoning_rx.recv().await {
+                            hook.emit_reasoning(Some(&delta)).await;
+                        }
+                        hook.emit_reasoning_end().await;
+                    }
+                });
+
+                let response = stream_future.await;
+
+                handle.abort();
+                reasoning_handle.abort();
+
+                // File edit tracker lifecycle: flush remaining events and wire up
+                // final call IDs (matches Python live_file_edits.flush() + apply_final_call_ids)
+                if let Some(ref edits) = live_file_edits {
+                    let mut tracker = edits.lock().await;
+                    tracker.flush().await;
+                    if response.should_execute_tools() {
+                        let tool_call_values: Vec<serde_json::Value> = response.tool_calls.iter()
+                            .map(|tc| serde_json::json!({
+                                "id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            }))
+                            .collect();
+                        tracker.apply_final_call_ids(&tool_call_values).await;
+                    } else {
+                        let _ = tracker.error_unmatched(&[], "Tool call did not complete.");
+                    }
+                }
+
+                response
+            } else {
+                // Progress-streaming mode: emit incremental clean content
+                // to progress_callback, reasoning via emit_reasoning.
+                let progress_cb = spec.progress_callback.clone().unwrap();
+                let mut handle = tokio::spawn({
+                    let reasoning_tx2 = reasoning_tx_for_progress.clone();
+                    let think_extractor = think_extractor.clone();
+                    let acc_ref = accumulator.clone();
+                    async move {
+                        let mut prev_clean_len = 0;
+                        let mut reasoning_open = false;
+                        while let Some(_delta) = delta_rx.recv().await {
+                            let buf = acc_ref.lock().unwrap().clone();
+                            let (thinking, cleaned) = extract_think(&buf);
+                            if let Some(t) = thinking {
+                                if !t.is_empty() {
+                                    let _ = reasoning_tx2.send(t);
+                                    reasoning_open = true;
+                                }
+                            }
+                            if reasoning_open {
+                                if cleaned.is_empty() || cleaned.len() <= prev_clean_len {
+                                    continue;
+                                }
+                                let incremental = &cleaned[prev_clean_len..];
+                                if !incremental.is_empty() {
+                                    progress_cb(incremental).await;
+                                    prev_clean_len = cleaned.len();
+                                }
+                                // Check if reasoning closed
+                                let full_buf = acc_ref.lock().unwrap().clone();
+                                let (_, c) = extract_think(&full_buf);
+                                let (t, _) = extract_think(&full_buf);
+                                if t.is_none() && !c.is_empty() {
+                                    reasoning_open = false;
+                                }
+                            } else {
+                                let cleaned_text = strip_think(&buf);
+                                if cleaned_text.len() <= prev_clean_len {
+                                    continue;
+                                }
+                                let incremental = &cleaned_text[prev_clean_len..];
+                                if !incremental.is_empty() {
+                                    progress_cb(incremental).await;
+                                    prev_clean_len = cleaned_text.len();
+                                }
+                            }
+                        }
+                    }
+                });
+                let mut reasoning_handle = tokio::spawn({
+                    let hook = hook.clone();
+                    async move {
+                        while let Some(delta) = reasoning_rx.recv().await {
+                            hook.emit_reasoning(Some(&delta)).await;
+                        }
+                    }
+                });
+
+                let response = stream_future.await;
+
+                handle.abort();
+                reasoning_handle.abort();
+
+                // File edit tracker lifecycle: flush + apply_final_call_ids
+                if let Some(ref edits) = live_file_edits {
+                    let mut tracker = edits.lock().await;
+                    tracker.flush().await;
+                    if response.should_execute_tools() {
+                        let tool_call_values: Vec<serde_json::Value> = response.tool_calls.iter()
+                            .map(|tc| serde_json::json!({
+                                "id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            }))
+                            .collect();
+                        tracker.apply_final_call_ids(&tool_call_values).await;
+                    } else {
+                        let _ = tracker.error_unmatched(&[], "Tool call did not complete.");
+                    }
+                }
+
+                response
+            };
+
+            let final_content = accumulator.lock().unwrap().clone();
+            let final_reasoning = thinking_accumulator.lock().unwrap().clone();
+
+            let content_empty = final_content.is_empty();
+            let reasoning_empty = final_reasoning.is_empty();
+
+            let mut response = response;
+            if response.content.is_none()
+                || response.content.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+            {
+                response.content = if content_empty {
+                    None
+                } else {
+                    Some(final_content)
+                };
+            }
+            if response.reasoning_content.is_none() && !reasoning_empty {
+                response.reasoning_content = Some(final_reasoning);
+            }
+
+            ctx.streamed_content = !content_empty;
+            ctx.streamed_reasoning = !reasoning_empty;
+
+            response
+        } else {
+            let timeout_s = spec.llm_timeout_s.unwrap_or_else(|| {
+                std::env::var("NANOBOT_LLM_TIMEOUT_S")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(300.0)
+            });
+
+            let timeout_dur = std::time::Duration::from_secs_f64(timeout_s);
+            timeout(
+                timeout_dur,
+                self.provider.chat_with_retry(req, spec.provider_retry_mode, None),
+            )
             .await
+            .unwrap_or_else(|_| LLMResponse::error("LLM request timed out"))
+        }
     }
 
     async fn execute_tools(
@@ -1150,6 +1442,17 @@ fn accumulate_usage(target: &mut HashMap<String, i64>, delta: &HashMap<String, i
     }
 }
 
+/// Merge two usage dicts — keeps the higher value for each key (matches Python
+/// _merge_usage pattern used when combining retry usage with original usage).
+fn merge_usage(base: &mut HashMap<String, i64>, other: &HashMap<String, i64>) {
+    for (k, v) in other {
+        let entry = base.entry(k.clone()).or_insert(0);
+        if *v > *entry {
+            *entry = *v;
+        }
+    }
+}
+
 fn merge_message_content(left: Option<&Value>, right: Option<&Value>) -> Value {
     match (left, right) {
         (Some(Value::String(a)), Some(Value::String(b))) => {
@@ -1195,9 +1498,18 @@ async fn await_hook_after_iteration(hook: &Arc<dyn AgentHook>, ctx: &mut AgentHo
 }
 
 fn append_model_error_placeholder(messages: &mut Vec<Value>) {
+    // Only append placeholder if the last message is NOT already an assistant
+    // message without tool_calls (matches Python _append_model_error_placeholder)
+    if let Some(last) = messages.last() {
+        if last.get("role").and_then(Value::as_str) == Some("assistant")
+            && !last.get("tool_calls").map(|v| !v.is_null()).unwrap_or(false)
+        {
+            return;
+        }
+    }
     messages.push(serde_json::json!({
         "role": "assistant",
-        "content": "[Model error occurred]",
+        "content": "[Assistant reply unavailable due to model error.]",
     }));
 }
 
@@ -1215,6 +1527,14 @@ async fn emit_checkpoint(spec: &AgentRunSpec, payload: Value) {
     if let Some(cb) = &spec.checkpoint_callback {
         (cb)(payload).await;
     }
+}
+
+fn build_finalization_retry_message() -> Value {
+    serde_json::json!({"role": "user", "content": FINALIZATION_RETRY_MESSAGE})
+}
+
+fn build_length_recovery_message() -> Value {
+    serde_json::json!({"role": "user", "content": LENGTH_RECOVERY_MESSAGE})
 }
 
 struct NoopHook;

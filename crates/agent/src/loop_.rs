@@ -2024,11 +2024,11 @@ impl AgentLoop {
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    // Timeout — check for expired sessions
-                    // Auto-compact expired session cleanup is deferred. The
-                    // AutoCompact module would evict stale heartbeat sessions
-                    // here, but the session manager handles retention via
-                    // retain_heartbeat_session() on explicit calls.
+                    // Timeout — check for expired sessions (matches Python
+                    // self.auto_compact.check_expired(...))
+                    // AutoCompact.check_expired requires Arc<Self> + spawner + active set,
+                    // which is complex to construct in the main loop. The session manager
+                    // handles cleanup via retain_heartbeat_session() on explicit calls.
                 }
             }
         }

@@ -1350,6 +1350,102 @@ impl AgentRunner {
         }
     }
 
+    /// Partition tool calls into batches for concurrent execution (matches
+    /// Python _partition_tool_batches).
+    async fn partition_tool_batches(
+        &self,
+        spec: &AgentRunSpec,
+        tool_calls: &[ToolCallRequest],
+    ) -> Vec<Vec<ToolCallRequest>> {
+        if !spec.concurrent_tools {
+            return tool_calls.iter().map(|tc| vec![tc.clone()]).collect();
+        }
+
+        let mut batches: Vec<Vec<ToolCallRequest>> = Vec::new();
+        let mut current: Vec<ToolCallRequest> = Vec::new();
+        for tc in tool_calls {
+            let tool = spec.tools.get(&tc.name).await;
+            let can_batch = tool.as_ref().map_or(false, |t| t.concurrency_safe());
+            if can_batch {
+                current.push(tc.clone());
+                continue;
+            }
+            if !current.is_empty() {
+                batches.push(std::mem::take(&mut current));
+            }
+            batches.push(vec![tc.clone()]);
+        }
+        if !current.is_empty() {
+            batches.push(current);
+        }
+        batches
+    }
+
+    /// Execute a single tool call and return the result, event, and optional fatal error.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_single_tool(
+        &self,
+        spec: &AgentRunSpec,
+        tc: &ToolCallRequest,
+        external_lookup_counts: &mut HashMap<String, u32>,
+        workspace_violation_counts: &mut HashMap<String, u32>,
+    ) -> (Value, ToolEvent, Option<String>) {
+        let hint = "\n\n[Analyze the error above and try a different approach.]";
+        let args_value = Value::Object(tc.arguments.clone());
+        if let Some(err) = repeated_external_lookup_error(
+            &tc.name,
+            &args_value,
+            external_lookup_counts,
+        ) {
+            return (
+                Value::String(format!("{}{}", err, hint)),
+                ToolEvent {
+                    name: tc.name.clone(),
+                    status: "error".into(),
+                    detail: truncate_text(&err, 120).to_string(),
+                },
+                None,
+            );
+        }
+        let _ = external_lookup_signature(&tc.name, &args_value);
+        let result = spec
+            .tools
+            .execute(&tc.name, args_value)
+            .await;
+        let raw_result = match &result {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let is_error = raw_result.starts_with("Error");
+        let detail = truncate_text(&raw_result, 200).to_string();
+        let mut event = ToolEvent {
+            name: tc.name.clone(),
+            status: if is_error { "error" } else { "ok" }.into(),
+            detail,
+        };
+        if is_error {
+                if let Some((payload, evt, fatal_opt)) = self.classify_violation(
+                    &raw_result,
+                    &raw_result,
+                    &mut event,
+                    tc,
+                    workspace_violation_counts,
+                ) {
+                    if let Some(f) = &fatal_opt {
+                        if spec.fail_on_tool_error {
+                            return (payload.clone(), evt, Some(f.clone()));
+                        }
+                    }
+                    return (payload, evt, None);
+                }
+                if spec.fail_on_tool_error {
+                    return (Value::String(format!("{}{}", raw_result, hint)), event, Some(raw_result.clone()));
+                }
+                return (Value::String(format!("{}{}", raw_result, hint)), event, None);
+            }
+        (result, event, None)
+    }
+
     async fn execute_tools(
         &self,
         spec: &AgentRunSpec,
@@ -1357,69 +1453,55 @@ impl AgentRunner {
         external_lookup_counts: &mut HashMap<String, u32>,
         workspace_violation_counts: &mut HashMap<String, u32>,
     ) -> (Vec<Value>, Vec<ToolEvent>, Option<String>) {
-        let hint = "\n\n[Analyze the error above and try a different approach.]";
+        let batches = self.partition_tool_batches(spec, calls).await;
         let mut results = Vec::with_capacity(calls.len());
         let mut events = Vec::with_capacity(calls.len());
         let mut fatal: Option<String> = None;
-        for tc in calls {
-            let args_value = Value::Object(tc.arguments.clone());
-            if let Some(err) = repeated_external_lookup_error(
-                &tc.name,
-                &args_value,
-                external_lookup_counts,
-            ) {
-                results.push(Value::String(format!("{}{}", err, hint)));
-                events.push(ToolEvent {
-                    name: tc.name.clone(),
-                    status: "error".into(),
-                    detail: truncate_text(&err, 120).to_string(),
-                });
-                continue;
-            }
-            let _ = external_lookup_signature(&tc.name, &args_value);
-            let result = spec
-                .tools
-                .execute(&tc.name, args_value)
-                .await;
-            let raw_result = match &result {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            let is_error = raw_result.starts_with("Error");
-            let detail = truncate_text(&raw_result, 200).to_string();
-            let mut event = ToolEvent {
-                name: tc.name.clone(),
-                status: if is_error { "error" } else { "ok" }.into(),
-                detail,
-            };
-            if is_error {
-                if let Some(classified) = self.classify_violation(
-                    &raw_result,
-                    &raw_result,
-                    &mut event,
-                    tc,
-                    workspace_violation_counts,
-                ) {
-                    let (payload, evt, _) = classified;
-                    if spec.fail_on_tool_error {
-                        if let Some(err_str) = payload.as_str() {
-                            fatal = Some(err_str.to_string());
-                        }
+
+        for batch in batches {
+            if spec.concurrent_tools && batch.len() > 1 {
+                // Execute batch concurrently (matches Python asyncio.gather)
+                let mut futures = Vec::new();
+                for tc in &batch {
+                    let self_ref = self;
+                    let spec_ref = spec.clone();
+                    let tc_clone = tc.clone();
+                    futures.push(async move {
+                        self_ref.execute_single_tool(
+                            &spec_ref,
+                            &tc_clone,
+                            &mut HashMap::new(),
+                            &mut HashMap::new(),
+                        ).await
+                    });
+                }
+                let batch_results = futures::future::join_all(futures).await;
+                for (result, event, fatal_opt) in batch_results {
+                    if let Some(f) = fatal_opt {
+                        fatal = Some(f);
                     }
-                    results.push(payload);
-                    events.push(evt);
-                    continue;
-                }
-                if spec.fail_on_tool_error {
-                    fatal = Some(raw_result.clone());
-                    results.push(Value::String(format!("{}{}", raw_result, hint)));
+                    results.push(result);
                     events.push(event);
-                    break;
                 }
-                results.push(Value::String(format!("{}{}", raw_result, hint)));
+            } else {
+                // Sequential execution
+                for tc in &batch {
+                    let (result, event, fatal_opt) = self.execute_single_tool(
+                        spec, tc, external_lookup_counts, workspace_violation_counts,
+                    ).await;
+                    if let Some(f) = fatal_opt {
+                        fatal = Some(f);
+                        results.push(result);
+                        events.push(event);
+                        break;
+                    }
+                    results.push(result);
+                    events.push(event);
+                }
             }
-            events.push(event);
-            results.push(result);
+            if fatal.is_some() {
+                break;
+            }
         }
         (results, events, fatal)
     }
@@ -1452,9 +1534,7 @@ fn accumulate_usage(target: &mut HashMap<String, i64>, delta: &HashMap<String, i
 fn merge_usage(base: &mut HashMap<String, i64>, other: &HashMap<String, i64>) {
     for (k, v) in other {
         let entry = base.entry(k.clone()).or_insert(0);
-        if *v > *entry {
-            *entry = *v;
-        }
+        *entry += v;
     }
 }
 

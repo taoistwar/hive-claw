@@ -66,7 +66,51 @@
 - 字符集：utf8mb4
 - 引擎：InnoDB
 
-### 4. 前端 UI 组件库
+### 4. 缓存选择
+
+**Decision**: Redis 7+
+
+**Rationale**:
+- 高性能内存缓存，支持丰富数据结构
+- 支持 TTL（过期时间），适合会话管理
+- 持久化支持（RDB/AOF），可选数据持久化
+- Rust 生态成熟（redis、bb8-redis crate）
+- 符合宪法 v1.3.0 要求
+
+**Alternatives Considered**:
+- Memcached: 功能单一，不支持持久化
+- 本地内存缓存：不支持分布式部署
+- sled (嵌入式): 已被宪法弃用
+
+**Implementation**:
+- 使用 `redis` crate 或 `bb8-redis` 连接池
+- 缓存策略：cache-aside（旁路缓存）
+- 会话数据：必须设置 TTL（24 小时）
+- 登录失败锁定：使用 Redis INCR + EXPIRE
+
+### 5. 对象存储选择
+
+**Decision**: Rustfs (S3 兼容)
+
+**Rationale**:
+- S3 协议兼容，生态丰富
+- 支持本地部署（Rustfs）和云服务（AWS S3）
+- Rust 支持良好（aws-sdk-s3, object_store）
+- 适合文件上传、备份、静态资源
+- 符合宪法 v1.3.0 要求
+
+**Alternatives Considered**:
+- 本地文件系统：不支持分布式，已被宪法禁止
+- MinIO: S3 兼容，但 Rustfs 更轻量
+- 云存储服务：锁定风险，运维复杂
+
+**Implementation**:
+- 使用 `aws-sdk-s3` crate 或 `object_store` crate
+- 本地开发：使用 Rustfs 或 MinIO
+- 生产环境：可切换到 AWS S3 或其他 S3 兼容服务
+- 存储内容：管理员头像、导出文件等
+
+### 6. 前端 UI 组件库
 
 **Decision**: Ant Design
 

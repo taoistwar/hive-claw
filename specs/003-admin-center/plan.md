@@ -7,13 +7,13 @@
 
 ## Summary
 
-构建管理中心系统，采用前后端分离架构。后端使用 Rust (hiveweb crate) 提供 RESTful API，前端使用 React + TypeScript 构建管理界面。系统支持管理员登录、管理员账号管理（增删改查、禁用/启用）、角色权限控制（普通管理员、系统管理员、超级管理员）和仪表盘概览功能。数据库使用 MySQL 8.0+。
+构建管理中心系统，采用前后端分离架构。后端使用 Rust (hiveweb crate) 提供 RESTful API，前端使用 React + TypeScript 构建管理界面。系统支持管理员登录、管理员账号管理（增删改查、禁用/启用）、角色权限控制（普通管理员、系统管理员、超级管理员）和仪表盘概览功能。技术栈：MySQL 8.0+ (数据库)、Redis 7+ (缓存)、Rustfs (S3 对象存储)。
 
 ## Technical Context
 
 **Language/Version**: Rust 1.75+ (backend), TypeScript 5.x (frontend)  
-**Primary Dependencies**: axum (API), React (web), tokio (async runtime), mysql_async/SQLx (MySQL client)  
-**Storage**: MySQL 8.0+ (InnoDB 引擎)  
+**Primary Dependencies**: axum (API), React (web), tokio (async runtime), SQLx (MySQL client), redis (Redis client)  
+**Storage**: MySQL 8.0+ (InnoDB 引擎), Redis 7+ (缓存), Rustfs/S3 (对象存储)  
 **Testing**: cargo test (Rust), Vitest + Testing Library (React)  
 **Target Platform**: Linux server (backend), Web browser (frontend)  
 **Project Type**: Web application (前后端分离)  
@@ -32,7 +32,7 @@
 ✅ **Principle V - Simplicity & YAGNI**: 仅使用 axum + React，不引入过度抽象，状态管理优先使用 React hooks
 ✅ **Principle VI - Observability & Structured Logging**: 登录操作、权限变更、敏感操作记录结构化日志
 ✅ **Security Requirements**: 密码加密存储、输入验证、会话管理、登录失败锁定
-✅ **Technology Stack**: Rust + axum (后端), TypeScript + React (前端), MySQL (存储) - 符合宪法规定
+✅ **Technology Stack**: Rust + axum (后端), TypeScript + React (前端), MySQL (数据库), Redis (缓存), Rustfs/S3 (对象存储) - 符合宪法 v1.3.0 规定
 
 **Gate Result**: PASS - 所有宪法检查通过，无违例
 

@@ -1,42 +1,30 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 → 1.1.0
-Rationale: MINOR bump. Adds a new mandatory "Technology Stack" section that
-locks the canonical implementation stack (Rust + gpui + axum + sled + SQLite)
-for all v1 work. No existing principle is removed or redefined; existing
-compliance gates remain valid.
+Version change: 1.1.0 → 1.2.0
+Rationale: MINOR bump. Adds React as the canonical frontend UI framework,
+introducing a dual-UI architecture (gpui for desktop + React for web). This
+expands the Technology Stack section but does not remove or redefine any
+existing principle.
 
-Modified principles: none (all six core principles unchanged).
+Modified principles: none.
 
 Added sections:
-  - Technology Stack (canonical languages, frameworks, datastores, deviation
-    procedure)
+  - React (in Technology Stack) as the canonical web frontend framework
 
 Removed sections: none.
 
 Templates requiring updates:
   - ✅ .specify/templates/plan-template.md — Technical Context placeholders
-        (Language/Version, Primary Dependencies, Storage, Testing) now have
-        defined defaults from this section. Plans MAY still record version
-        pins but MUST NOT pick a different language or core framework
-        without Complexity Tracking.
+        updated to reflect dual-framework architecture.
   - ✅ .specify/templates/spec-template.md — unaffected (spec template is
         tech-agnostic by design).
-  - ✅ .specify/templates/tasks-template.md — unaffected (task categories
-        are tech-agnostic).
-  - ✅ .specify/templates/checklist-template.md — unaffected.
-  - ⚠ README.md — still empty; should now mention the Rust toolchain as
-        the prerequisite for contributors. Not blocking.
-  - ⚠ docs/quickstart.md — does not exist yet; will be authored alongside
-        the first implementation plan.
+  - ✅ .specify/templates/tasks-template.md — Path Conventions updated to
+        reflect web app structure (backend/ + frontend/).
+  - ⚠ README.md — should mention React toolchain for web contributors.
+  - ⚠ docs/quickstart.md — does not exist yet.
 
-Prior version 1.0.0 history retained below for context.
-
-----
-Previous: TEMPLATE (unratified) → 1.0.0 (initial ratification, 2026-05-14)
-  Added principles I–VI; added Security Requirements, Performance Standards,
-  Development Workflow & Quality Gates, Governance.
+Prior version 1.1.0 history retained above.
 -->
 
 # hive-claw Constitution
@@ -197,21 +185,35 @@ project. It exists to keep cognitive load, build infrastructure, and review
 expertise concentrated — not to discourage learning. Deviation requires an
 explicit Complexity Tracking entry in the relevant plan.
 
-- **Language**: Rust (stable channel). The MSRV (Minimum Supported Rust
-  Version) MUST be pinned in `rust-toolchain.toml` and bumped only in a
-  dedicated PR. No other application languages may be introduced for v1
+- **Language (backend)**: Rust (stable channel). The MSRV (Minimum Supported
+  Rust Version) MUST be pinned in `rust-toolchain.toml` and bumped only in a
+  dedicated PR. No other application languages may be introduced for backend
   feature work; small build / dev tooling scripts in shell or Python are
   permitted at the workspace root.
-- **Project layout**: a single Cargo workspace at the repository root. Each
-  deployable unit (HiveClaw, HiveGUI) is its own workspace member crate.
-  A third workspace member (e.g., `hive-shared`) is permitted only when
-  Principle V's "second concrete caller" test is satisfied.
-- **Lint & format**: `cargo fmt` and `cargo clippy` (with `-D warnings` in CI)
-  are the project's enforced lint/format tools per Principle I.
-- **Desktop GUI (HiveGUI)**: **gpui** is the canonical UI framework. HiveGUI
-  MUST be built on gpui; no second UI framework may be introduced. Per
-  Principle V, gpui primitives MUST be used directly — wrappers are only
-  permitted when they encode a non-trivial invariant.
+- **Language (frontend)**: TypeScript (strict mode) with React as the UI
+  framework. The TypeScript version SHOULD be pinned in `package.json` or
+  equivalent. JavaScript-only code is PROHIBITED for new frontend work.
+- **Project layout**: a single Cargo workspace at the repository root for
+  Rust backend crates. Each deployable unit (HiveClaw, HiveGUI) is its own
+  workspace member crate. Frontend web projects live as separate npm packages
+  (e.g., `web/`, `packages/*`) outside the Cargo workspace. A shared library
+  workspace member (e.g., `hive-shared`) is permitted only when Principle V's
+  "second concrete caller" test is satisfied.
+- **Lint & format (Rust)**: `cargo fmt` and `cargo clippy` (with
+  `-D warnings` in CI) are the project's enforced lint/format tools per
+  Principle I.
+- **Lint & format (TypeScript)**: ESLint and Prettier (or Biome) are the
+  enforced tools; configuration MUST be committed to the repository.
+- **Desktop GUI (HiveGUI)**: **gpui** is the canonical desktop UI framework.
+  HiveGUI MUST be built on gpui; no second desktop UI framework may be
+  introduced. Per Principle V, gpui primitives MUST be used directly —
+  wrappers are only permitted when they encode a non-trivial invariant.
+- **Web Frontend**: **React** (with TypeScript) is the canonical web UI
+  framework. Per Principle V, React primitives (components, hooks, context)
+  MUST be used directly — wrappers are only permitted when they encode a
+  non-trivial invariant. State management SHOULD use React's built-in hooks
+  (useState, useContext, useReducer) before introducing external state
+  management libraries.
 - **HTTP / API (HiveClaw and any future service)**: **axum** is the canonical
   HTTP server framework, running on the Tokio runtime. Request handlers MUST
   use `axum`'s extractors and response types directly; no parallel HTTP
@@ -225,9 +227,12 @@ explicit Complexity Tracking entry in the relevant plan.
   be delivered via versioned, idempotent migrations.
 - **Async runtime**: **Tokio** (implied by axum and the broader Rust
   async ecosystem). A second async runtime MUST NOT be introduced in v1.
-- **Testing**: `cargo test` for unit and integration tests; crate-level
+- **Testing (Rust)**: `cargo test` for unit and integration tests; crate-level
   contract tests live alongside the crate they test. Tests MUST run in CI
-  as part of the standard quality gates (see Development Workflow).
+  as part of the standard quality gates.
+- **Testing (TypeScript/React)**: Vitest or Jest for unit tests; Testing
+  Library for React component tests. Tests MUST run in CI as part of the
+  standard quality gates.
 
 **Deviation procedure**: a feature plan that requires a different language,
 GUI/HTTP framework, or datastore MUST record the deviation in its Plan's
@@ -237,12 +242,13 @@ considered and rejected, and (d) the maintenance / review-expertise impact.
 The amendment procedure under Governance applies if the deviation is
 intended to become permanent.
 
-**Rationale**: A single small, modern Rust stack matches the project's
-single-user local desktop posture (HiveGUI) and its embedded service
-posture (HiveClaw), satisfies Principle V (≤3 projects, no premature
-abstraction) and Principle IV (Rust's low overhead makes the < 200ms API
-budget trivial outside of agent reasoning paths), and minimises the
-review and tooling surface every contributor must master.
+**Rationale**: A dual-stack architecture (Rust+gpui for desktop +
+TypeScript+React for web) covers both local-desktop and browser-based
+delivery modes. Each stack is the smallest viable choice for its surface:
+Rust + gpui for the performance-critical desktop client, TypeScript + React
+for the widely-accessible web client. This satisfies Principle V (no
+premature abstraction within each stack) and Principle IV (Rust's low
+overhead, React's rendering efficiency).
 
 ## Development Workflow & Quality Gates
 
@@ -256,7 +262,7 @@ review and tooling surface every contributor must master.
   - Auth, security, or cryptography changes additionally require the
     Security Requirements review described above.
 - **CI gates** (all MUST pass before merge):
-  1. Linting and formatting.
+  1. Linting and formatting (Rust and TypeScript).
   2. Type checking (where applicable).
   3. Unit, integration, and contract test suites.
   4. Secret scanning.
@@ -296,4 +302,4 @@ review and tooling surface every contributor must master.
   `CLAUDE.md` and any future `docs/quickstart.md`. Those files MUST cite,
   not contradict, this constitution.
 
-**Version**: 1.1.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-14
+**Version**: 1.2.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-25

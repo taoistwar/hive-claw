@@ -1,9 +1,11 @@
 [package]
 name = "hiveweb"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "HiveClaw Admin Center - Backend API service"
-license = "MIT"
 
 [dependencies]
 # Web framework
@@ -11,34 +13,34 @@ axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "uuid"] }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono"] }
 
 # Redis
-redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+redis = { workspace = true }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Authentication
-jsonwebtoken = "9"
-bcrypt = "0.15"
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
 
 # Object storage (S3 compatible)
-aws-sdk-s3 = "1"
+aws-sdk-s3 = { workspace = true }
 
 # Error handling
-thiserror = "1"
-anyhow = "1"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Utilities
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-dotenvy = "0.15"
+chrono = { workspace = true }
+uuid = { workspace = true }
+dotenvy = { workspace = true }
 
 # CORS
 tower-http = { version = "0.5", features = ["cors"] }

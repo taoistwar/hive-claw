@@ -18,6 +18,7 @@ members = [
     "crates/utils",
     "crates/hiveclaw",
     "crates/hivegui",
+    "crates/hiveweb",
 ]
 # `default-members` keeps `cargo build` / `cargo test` (no args) scoped to
 # HiveClaw, so the service side stays iterable on machines without the
@@ -80,11 +81,18 @@ assert_cmd = "2"
 
 # Data source management (HiveGUI)
 mysql_async = "0.34"
-sqlx = { version = "0.8", default-features = false, features = ["derive", "runtime-tokio", "sqlite", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["derive", "runtime-tokio-native-tls", "sqlite", "mysql", "chrono"] }
 chacha20poly1305 = "0.10"
 zeroize = "1"
 dirs = "5"
 syntect = "5"
+
+# Admin center (hiveweb)
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+jsonwebtoken = "9"
+bcrypt = "0.15"
+aws-sdk-s3 = "1"
+dotenvy = "0.15"
 
 
 regex = "1"

@@ -1,0 +1,55 @@
+[package]
+name = "hiveweb"
+version = "0.1.0"
+edition = "2021"
+description = "HiveClaw Admin Center - Backend API service"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "uuid"] }
+
+# Redis
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Authentication
+jsonwebtoken = "9"
+bcrypt = "0.15"
+
+# Object storage (S3 compatible)
+aws-sdk-s3 = "1"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dotenvy = "0.15"
+
+# CORS
+tower-http = { version = "0.5", features = ["cors"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "create-super-admin"
+path = "src/bin/create_super_admin.rs"

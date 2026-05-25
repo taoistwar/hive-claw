@@ -1,6 +1,6 @@
 # Quick Start: 管理中心
 
-**Created**: 2026-05-25  
+**Created**: 2026-05-25
 **Feature**: 管理中心 (003-admin-center)
 
 ## Prerequisites
@@ -9,6 +9,7 @@
 - Node.js 18+ (使用 `nvm install 18`)
 - npm 或 yarn
 - Git
+- MySQL 8.0+
 
 ## Installation
 
@@ -31,7 +32,11 @@ cargo build
 
 # 配置环境变量（可选，使用默认配置可跳过）
 cp .env.example .env
-# 编辑 .env 文件，配置数据库路径、JWT 密钥等
+# 编辑 .env 文件，配置数据库连接
+# DATABASE_URL="mysql://user:password@localhost:3306/hiveweb"
+
+# 创建 MySQL 数据库
+mysql -u root -p -e "CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
 # 运行数据库迁移
 cargo run --bin migrate
@@ -305,16 +310,30 @@ Authorization: Bearer <token>
 
 ### 后端启动失败
 
-**问题**: 数据库迁移失败
+**问题**: 数据库连接失败
 ```
-Error: database "admins" does not exist
+Error: Access denied for user 'hiveweb'@'localhost'
 ```
 
 **解决**:
 ```bash
-# 确保数据库文件存在
-mkdir -p ~/.local/share/hiveweb
-cargo run --bin migrate
+# 检查 MySQL 用户权限
+mysql -u root -p -e "SHOW GRANTS FOR 'hiveweb'@'localhost';"
+
+# 重新授权
+mysql -u root -p -e "GRANT ALL PRIVILEGES ON hiveweb.* TO 'hiveweb'@'localhost';"
+mysql -u root -p -e "FLUSH PRIVILEGES;"
+```
+
+**问题**: 数据库不存在
+```
+Error: Unknown database 'hiveweb'
+```
+
+**解决**:
+```bash
+# 创建数据库
+mysql -u root -p -e "CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 ```
 
 **问题**: 端口被占用
@@ -369,7 +388,7 @@ HIVWEB_HOST=127.0.0.1
 HIVWEB_PORT=3000
 
 # 数据库配置
-DATABASE_URL=sqlite://~/.local/share/hiveweb/admins.db
+DATABASE_URL=mysql://user:password@localhost:3306/hiveweb
 
 # JWT 配置
 JWT_SECRET=your-secret-key-change-in-production

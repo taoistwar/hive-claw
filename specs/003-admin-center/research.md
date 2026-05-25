@@ -1,6 +1,6 @@
 # Research: 管理中心
 
-**Created**: 2026-05-25  
+**Created**: 2026-05-25
 **Feature**: 管理中心 (003-admin-center)
 
 ## Technical Decisions
@@ -46,23 +46,25 @@
 
 ### 3. 数据库选择
 
-**Decision**: SQLite (嵌入式) + 支持未来迁移到 MySQL
+**Decision**: MySQL 8.0+
 
 **Rationale**:
-- 零配置，简化部署
-- 单文件数据库，易于备份
-- 性能足够支持 100+ 管理员
-- 通过 SQLx 支持未来迁移到 MySQL
+- 生产环境标准，成熟稳定
+- 支持并发访问和水平扩展
+- InnoDB 引擎提供事务支持
+- 完善的备份和恢复机制
+- 符合企业级应用需求
 
 **Alternatives Considered**:
-- MySQL: 需要独立部署，增加运维成本
-- PostgreSQL: 功能强大但过度复杂
-- sled: 适合 KV 场景，不适合关系型查询
+- SQLite: 嵌入式，不适合并发访问
+- PostgreSQL: 功能强大但运维复杂度略高
+- MariaDB: MySQL 分支，兼容性良好
 
 **Implementation**:
 - 使用 SQLx 进行数据库操作（编译时 SQL 验证）
-- 表结构设计考虑未来 MySQL 兼容性
-- 迁移脚本使用 SQLx migrate
+- 连接池配置：max_connections = 20
+- 字符集：utf8mb4
+- 引擎：InnoDB
 
 ### 4. 前端 UI 组件库
 

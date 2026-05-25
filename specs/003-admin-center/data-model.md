@@ -1,6 +1,6 @@
 # Data Model: 管理中心
 
-**Created**: 2026-05-25  
+**Created**: 2026-05-25
 **Feature**: 管理中心 (003-admin-center)
 
 ## Entities
@@ -96,37 +96,35 @@ Super: {
 
 ## Database Schema
 
-### SQL DDL (SQLite)
+### SQL DDL (MySQL 8.0+)
 
 ```sql
 -- 管理员表
 CREATE TABLE admins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone TEXT NOT NULL UNIQUE,
-    nickname TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    role INTEGER NOT NULL DEFAULT 1,  -- 1=Normal, 2=System, 3=Super
-    status INTEGER NOT NULL DEFAULT 1, -- 1=Active, 0=Disabled
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    phone VARCHAR(11) NOT NULL UNIQUE,
+    nickname VARCHAR(20) NOT NULL,
+    password_hash VARCHAR(60) NOT NULL,
+    role TINYINT NOT NULL DEFAULT 1 COMMENT '1=Normal, 2=System, 3=Super',
+    status TINYINT NOT NULL DEFAULT 1 COMMENT '1=Active, 0=Disabled',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_login_at DATETIME
-);
-
-CREATE INDEX idx_admins_phone ON admins(phone);
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    last_login_at DATETIME DEFAULT NULL,
+    INDEX idx_phone (phone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='管理员表';
 
 -- 登录记录表
 CREATE TABLE login_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_id INTEGER NOT NULL,
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    admin_id BIGINT NOT NULL,
     login_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    ip_address TEXT NOT NULL,
-    success INTEGER NOT NULL, -- 1=true, 0=false
-    failure_reason TEXT,
-    FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_login_records_admin_id ON login_records(admin_id);
-CREATE INDEX idx_login_records_login_at ON login_records(login_at);
+    ip_address VARCHAR(45) NOT NULL COMMENT 'IPv4 or IPv6',
+    success TINYINT(1) NOT NULL COMMENT '1=true, 0=false',
+    failure_reason VARCHAR(50) DEFAULT NULL COMMENT 'WRONG_PASSWORD, ACCOUNT_DISABLED, etc.',
+    INDEX idx_admin_id (admin_id),
+    INDEX idx_login_at (login_at),
+    CONSTRAINT fk_login_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录记录表';
 ```
 
 ## State Transitions
@@ -219,6 +217,32 @@ fn check_permission(role: Role, operation: &str) -> bool {
 ```sql
 -- 初始化超级管理员（通过脚本生成，非直接 SQL）
 -- 实际数据由 create-super-admin 二进制文件插入
+```
+
+## MySQL Configuration
+
+### 连接池配置
+```rust
+use sqlx::mysql::MySqlPoolOptions;
+
+let pool = MySqlPoolOptions::new()
+    .max_connections(20)
+    .min_connections(5)
+    .connect_timeout(Duration::from_secs(30))
+    .idle_timeout(Duration::from_secs(600))
+    .connect(&database_url)
+    .await?;
+```
+
+### 数据库初始化
+```bash
+# 创建数据库
+mysql -u root -p -e "CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 创建用户（可选）
+mysql -u root -p -e "CREATE USER 'hiveweb'@'localhost' IDENTIFIED BY 'password';"
+mysql -u root -p -e "GRANT ALL PRIVILEGES ON hiveweb.* TO 'hiveweb'@'localhost';"
+mysql -u root -p -e "FLUSH PRIVILEGES;"
 ```
 
 ## Rust Structs

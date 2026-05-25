@@ -1,9 +1,15 @@
 # Feature Specification: 管理中心
 
-**Feature Branch**: `003-admin-center`  
-**Created**: 2026-05-25  
-**Status**: Draft  
+**Feature Branch**: `003-admin-center`
+**Created**: 2026-05-25
+**Status**: Draft
 **Input**: User description: 添加管理中心项目，它是前后端分离：后端 hiveweb crate 和前端 web。需要包含以下功能：登录（管理员账户登录）、管理员账号管理（增删改查、禁用/启用，字段包括 ID、手机号、昵称、状态、注册时间、最后登录时间，登录时更新最后登录时间）、管理员角色分级（普通管理员、系统管理员、超级管理员）、仪表盘（系统概览）
+
+## Clarifications
+
+### Session 2026-05-25
+
+- Q: 数据库选择？ → A: MySQL（生产环境标准，支持并发和水平扩展）
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -140,4 +146,5 @@
 - 超级管理员在系统初始化时创建（通过脚本或配置文件）
 - 不支持管理员自行注册，只能由现有管理员添加
 - 不支持在线密码重置，需联系其他管理员手动重置
-- 系统部署在 Linux 服务器上，使用 SQLite 或 MySQL 存储数据
+- 系统部署在 Linux 服务器上，使用 MySQL 存储数据
+- MySQL 版本：8.0+，使用 InnoDB 引擎

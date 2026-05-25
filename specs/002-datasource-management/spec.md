@@ -7,7 +7,10 @@
 
 ## Clarifications
 
-### Session 2026-05-15 (3)
+### Session 2026-05-25
+
+- Q: nanobot 的角色？ → A: nanobot 是通用 AI Agent 运行时，hiveclaw 的 response API 内部使用移植好的 nanobot
+- Q: 数据源管理执行路径？ → A: hivegui 直接连接 MySQL，response API 仅用于 AI 对话功能
 
 - Q: SQLite 数据库文件存放路径？ → A: `~/.local/share/hivegui/datasources.db` (XDG DATA_HOME)
 - Q: contracts/datasource-api.md 处理？ → A: 删除该文件，无 HTTP API 则无需契约

@@ -4,6 +4,15 @@ use hivegui::{config::Config, logging, ui, version};
 use tracing::info;
 
 fn main() -> ExitCode {
+    // Force X11 backend on WSL2/Wayland environments where the compositor
+    // only provides text_input_v1 (not v3). GPUI's Wayland backend requires
+    // text_input_v3 for IME. X11 uses XIM which fcitx supports properly.
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
+        // SAFETY: This is safe as long as no other threads are accessing env
+        // vars at this point, which is guaranteed since we're in main() before
+        // any threads are spawned.
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
     let cfg = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {

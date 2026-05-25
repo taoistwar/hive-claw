@@ -199,16 +199,37 @@ impl Render for RootView {
                         div()
                             .flex()
                             .flex_row()
-                            .gap(px(4.0))
-                            .child(window_button("—", |window, _, _| {
-                                window.minimize_window();
-                            }))
-                            .child(window_button("□", |window, _, _| {
-                                window.zoom_window();
-                            }))
-                            .child(window_button("", |_, _, cx| {
-                                cx.quit();
-                            })),
+                            .h_full()
+                            .child(window_button(
+                                "―",
+                                gpui::rgba(0x0000001a),  // 10% 透明度的黑色
+                                gpui::rgba(0x00000026),  // 15% 透明度的黑色
+                                rgb(0x111111),
+                                rgb(0x111111),
+                                |window, _, _| {
+                                    window.minimize_window();
+                                }
+                            ))
+                            .child(window_button(
+                                "□",
+                                gpui::rgba(0x0000001a),  // 10% 透明度的黑色
+                                gpui::rgba(0x00000026),  // 15% 透明度的黑色
+                                rgb(0x111111),
+                                rgb(0x111111),
+                                |window, _, _| {
+                                    window.zoom_window();
+                                }
+                            ))
+                            .child(window_button(
+                                "✕",
+                                gpui::rgba(0xff5f57ff),  // 关闭按钮红色
+                                gpui::rgba(0xff3b30ff),  // 点击时更深的红色
+                                rgb(0x111111),
+                                rgb(0xffffff),
+                                |_, _, cx| {
+                                    cx.quit();
+                                }
+                            )),
                     ),
             )
             .child(
@@ -242,24 +263,34 @@ impl Render for RootView {
 }
 
 fn window_button(
-    label: &str,
+    icon: &'static str,
+    hover_color: gpui::Rgba,
+    active_color: gpui::Rgba,
+    text_color: gpui::Rgba,
+    hover_text_color: gpui::Rgba,
     on_click: impl Fn(&mut Window, &gpui::MouseDownEvent, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    let label = SharedString::from(label);
+    let id = SharedString::from(format!("window-button-{}", icon));
     div()
-        .id(label.clone())
-        .w(px(30.0))
-        .h(px(24.0))
+        .id(id)
+        .w(px(46.0))
+        .h(px(32.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
-        .text_size(px(14.0))
-        .text_color(rgb(0x555555))
+        .text_size(px(12.0))
+        .text_color(text_color)
         .cursor(CursorStyle::PointingHand)
-        .hover(|style| style.bg(rgb(0xe8e8e8)))
-        .active(|style| style.bg(rgb(0xd8d8d8)))
-        .child(label)
+        .hover(|style| {
+            style
+                .bg(hover_color)
+                .text_color(hover_text_color)
+        })
+        .active(|style| {
+            style
+                .bg(active_color)
+        })
+        .child(icon)
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
             on_click(window, event, cx);
         })

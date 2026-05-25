@@ -644,6 +644,7 @@ impl Render for TreeNav {
                                                 let this_for_edit = this.clone();
                                                 let id = *id;
                                                 move |_, _, cx| {
+                                                    cx.stop_propagation();
                                                     this_for_edit.update(cx, |p, cx| {
                                                         p.pending_action = Some(PendingAction::Edit(id));
                                                         cx.notify();
@@ -666,6 +667,7 @@ impl Render for TreeNav {
                                                 let this_for_delete = this.clone();
                                                 let id = *id;
                                                 move |_, _, cx| {
+                                                    cx.stop_propagation();
                                                     this_for_delete.update(cx, |p, cx| {
                                                         p.pending_action = Some(PendingAction::Delete(id));
                                                         cx.notify();

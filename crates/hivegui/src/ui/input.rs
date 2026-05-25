@@ -370,9 +370,15 @@ impl EntityInputHandler for TextInput {
         self.marked_range.clone()
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         eprintln!("[TextInput] unmark_text");
         self.marked_range = None;
+        // 当用户完成输入法输入（unmark_text）时，触发 on_change 回调
+        if let Some(ref cb) = self.on_change {
+            let text = self.content.to_string();
+            cb(&text);
+        }
+        cx.notify();
     }
 
     fn replace_text_in_range(
@@ -423,10 +429,8 @@ impl EntityInputHandler for TextInput {
                 pos..pos
             });
 
-        if let Some(ref cb) = self.on_change {
-            let text = self.content.to_string();
-            cb(&text);
-        }
+        // 注意：在标记文本（输入法输入）时，不调用 on_change 回调，
+        // 只有在 unmark_text 或 commit 时才会调用
         cx.notify();
     }
 

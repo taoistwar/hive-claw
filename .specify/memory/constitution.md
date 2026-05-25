@@ -1,30 +1,29 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.1.0 → 1.2.0
-Rationale: MINOR bump. Adds React as the canonical frontend UI framework,
-introducing a dual-UI architecture (gpui for desktop + React for web). This
-expands the Technology Stack section but does not remove or redefine any
-existing principle.
+Version change: 1.2.0 → 1.3.0
+Rationale: MINOR bump. Expands Technology Stack section to specify canonical
+choices for database (MySQL), object storage (Rustfs/S3), and caching (Redis).
+This provides clearer guidance for v1 implementation.
 
 Modified principles: none.
 
 Added sections:
-  - React (in Technology Stack) as the canonical web frontend framework
+  - Database (MySQL 8.0+)
+  - Object Storage (Rustfs/S3)
+  - Cache (Redis)
 
-Removed sections: none.
+Removed sections:
+  - Embedded KV store (sled) - replaced by Redis for distributed caching
+  - Embedded relational store (SQLite) - replaced by MySQL for production
 
 Templates requiring updates:
   - ✅ .specify/templates/plan-template.md — Technical Context placeholders
-        updated to reflect dual-framework architecture.
-  - ✅ .specify/templates/spec-template.md — unaffected (spec template is
-        tech-agnostic by design).
-  - ✅ .specify/templates/tasks-template.md — Path Conventions updated to
-        reflect web app structure (backend/ + frontend/).
-  - ⚠ README.md — should mention React toolchain for web contributors.
-  - ⚠ docs/quickstart.md — does not exist yet.
+        updated to reflect MySQL, Redis, Rustfs choices.
+  - ⚠ specs/003-admin-center/plan.md — already uses MySQL, should add Redis
+  - ⚠ specs/003-admin-center/research.md — should add Redis section
 
-Prior version 1.1.0 history retained above.
+Prior version 1.2.0 history retained above.
 -->
 
 # hive-claw Constitution
@@ -218,13 +217,20 @@ explicit Complexity Tracking entry in the relevant plan.
   HTTP server framework, running on the Tokio runtime. Request handlers MUST
   use `axum`'s extractors and response types directly; no parallel HTTP
   framework may be introduced.
-- **Embedded KV store**: **sled** is the canonical embedded key-value store
-  for local on-disk state that does not require relational queries (e.g.,
-  caches, simple session-scoped state, tool-local stores).
-- **Embedded relational store**: **SQLite** is the canonical embedded
-  relational store for any structured, queryable, or schema-evolving data.
-  Access MUST use a maintained Rust SQLite binding; schema changes MUST
-  be delivered via versioned, idempotent migrations.
+- **Database**: **MySQL 8.0+** (InnoDB engine) is the canonical relational
+  database for all production data. Schema changes MUST use versioned,
+  idempotent migrations; access MUST use SQLx (with compile-time SQL
+  verification) or a maintained Rust MySQL client. Connection pooling is
+  MANDATORY (recommended: SQLx pool, max_connections tuned per workload).
+- **Object Storage**: **Rustfs** (S3-compatible) is the canonical object
+  storage for file uploads, backups, and static assets. The Rust `aws-sdk-s3`
+  crate or `object_store` crate SHOULD be used for S3 interoperability.
+  Direct filesystem storage is PROHIBITED for new features unless explicitly
+  justified for local development only.
+- **Cache**: **Redis 7+** is the canonical cache and session store for
+  production workloads. Use the `redis` or `bb8-redis` crate for connection
+  pooling. Caching strategies (cache-aside, write-through, etc.) MUST be
+  documented in the relevant plan. Session data MUST expire (TTL required).
 - **Async runtime**: **Tokio** (implied by axum and the broader Rust
   async ecosystem). A second async runtime MUST NOT be introduced in v1.
 - **Testing (Rust)**: `cargo test` for unit and integration tests; crate-level
@@ -242,13 +248,10 @@ considered and rejected, and (d) the maintenance / review-expertise impact.
 The amendment procedure under Governance applies if the deviation is
 intended to become permanent.
 
-**Rationale**: A dual-stack architecture (Rust+gpui for desktop +
-TypeScript+React for web) covers both local-desktop and browser-based
-delivery modes. Each stack is the smallest viable choice for its surface:
-Rust + gpui for the performance-critical desktop client, TypeScript + React
-for the widely-accessible web client. This satisfies Principle V (no
-premature abstraction within each stack) and Principle IV (Rust's low
-overhead, React's rendering efficiency).
+**Rationale**: A modern, production-ready stack: Rust+gpui for desktop,
+TypeScript+React for web, MySQL for relational data, Redis for caching,
+and Rustfs (S3) for object storage. Each choice balances performance,
+scalability, and maintainability while keeping the stack focused.
 
 ## Development Workflow & Quality Gates
 
@@ -302,4 +305,4 @@ overhead, React's rendering efficiency).
   `CLAUDE.md` and any future `docs/quickstart.md`. Those files MUST cite,
   not contradict, this constitution.
 
-**Version**: 1.2.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-25
+**Version**: 1.3.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-25

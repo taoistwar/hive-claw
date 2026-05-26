@@ -14,6 +14,7 @@ const AdminPage: React.FC = () => {
     pagination,
     modalVisible,
     editingAdmin,
+    searchParams,
     fetchAdmins,
     handleCreate,
     handleUpdate,
@@ -23,6 +24,9 @@ const AdminPage: React.FC = () => {
     openEditModal,
     closeModal,
     setPagination,
+    setSearchParams,
+    handleSearch,
+    handleReset,
   } = useAdmin();
 
   useEffect(() => {
@@ -60,6 +64,10 @@ const AdminPage: React.FC = () => {
         onEdit={openEditModal}
         onDelete={handleDelete}
         onToggleStatus={handleToggleStatus}
+        searchParams={searchParams}
+        onSearchParamsChange={setSearchParams}
+        onSearch={handleSearch}
+        onReset={handleReset}
       />
 
       <AdminForm

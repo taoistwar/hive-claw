@@ -73,6 +73,10 @@ describe('a11y — SC-008 gate', () => {
         onEdit={() => undefined}
         onDelete={() => undefined}
         onToggleStatus={() => undefined}
+        searchParams={{}}
+        onSearchParamsChange={() => undefined}
+        onSearch={() => undefined}
+        onReset={() => undefined}
       />,
     );
     await expectNoCriticalA11yViolations(container);

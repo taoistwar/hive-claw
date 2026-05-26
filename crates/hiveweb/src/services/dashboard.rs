@@ -4,19 +4,25 @@ use serde::Serialize;
 use sqlx::{FromRow, MySqlPool};
 
 /// Stats payload per spec FR-014 (revised 2026-05-26):
-/// `total_admins` / `online_admins` / `today_logins`.
+/// `totalAdmins` / `activeAdmins` / `todayLogins` / `disabledAdmins`.
 #[derive(Debug, Serialize)]
 pub struct DashboardStats {
     /// All rows in `admins`.
+    #[serde(rename = "totalAdmins")]
     pub total_admins: i64,
     /// `status = 1` AND `last_login_at` within the last 24h.
+    #[serde(rename = "activeAdmins")]
     pub online_admins: i64,
     /// Successful login_records on the server's current local date.
+    #[serde(rename = "todayLogins")]
     pub today_logins: i64,
+    /// `status = 0` (disabled admins).
+    #[serde(rename = "disabledAdmins")]
+    pub disabled_admins: i64,
 }
 
 pub async fn get_stats(pool: &MySqlPool) -> Result<DashboardStats> {
-    let row = sqlx::query_as::<_, (i64, i64, i64)>(
+    let row = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         r#"
         SELECT
             (SELECT COUNT(*) FROM admins) AS total_admins,
@@ -27,7 +33,8 @@ pub async fn get_stats(pool: &MySqlPool) -> Result<DashboardStats> {
             (SELECT COUNT(*) FROM login_records
               WHERE success = 1
                 AND login_at >= CURDATE()
-                AND login_at <  CURDATE() + INTERVAL 1 DAY) AS today_logins
+                AND login_at <  CURDATE() + INTERVAL 1 DAY) AS today_logins,
+            (SELECT COUNT(*) FROM admins WHERE status = 0) AS disabled_admins
         "#,
     )
     .fetch_one(pool)
@@ -37,6 +44,7 @@ pub async fn get_stats(pool: &MySqlPool) -> Result<DashboardStats> {
         total_admins: row.0,
         online_admins: row.1,
         today_logins: row.2,
+        disabled_admins: row.3,
     })
 }
 

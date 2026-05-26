@@ -26,11 +26,14 @@ async fn t026f_dashboard_stats_shape_matches_spec() -> anyhow::Result<()> {
     assert_eq!(status, 200, "/dashboard/stats must return 200 for Super, got {status}: {body}");
     let data = &body["data"];
     assert!(data.is_object(), "expected object payload, got {body}");
-    // Spec FR-014 (post-2026-05-26): total_admins, online_admins, today_logins.
-    for key in ["total_admins", "online_admins", "today_logins"] {
+    // Wire format: camelCase (DashboardStats serde renames; see
+    // services/dashboard.rs). `activeAdmins` is the spec FR-014
+    // "online_admins" (status=1 AND last_login_at within 24h) field;
+    // `disabledAdmins` is an additional convenience field the frontend uses.
+    for key in ["totalAdmins", "activeAdmins", "todayLogins", "disabledAdmins"] {
         assert!(
             data[key].is_number(),
-            "spec FR-014 requires integer field `{key}` in stats payload; got {body}"
+            "stats payload must include integer field `{key}`; got {body}"
         );
     }
     Ok(())

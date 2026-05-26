@@ -48,6 +48,20 @@ pub struct ListAdminsQuery {
     offset: u32,
     #[serde(default = "default_limit")]
     limit: u32,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    status: Option<i8>,
+    #[serde(default)]
+    role: Option<i8>,
+    #[serde(default)]
+    created_at_start: Option<String>,
+    #[serde(default)]
+    created_at_end: Option<String>,
+    #[serde(default)]
+    last_login_start: Option<String>,
+    #[serde(default)]
+    last_login_end: Option<String>,
 }
 
 fn default_offset() -> u32 {
@@ -96,7 +110,17 @@ pub async fn list_admins(
             .into_response();
     }
 
-    let (admins, total) = match admin::list_admins(&state.pool, query.offset, query.limit).await {
+    let filter = admin::AdminFilter {
+        search: query.search.clone(),
+        status: query.status,
+        role: query.role,
+        created_at_start: query.created_at_start.clone(),
+        created_at_end: query.created_at_end.clone(),
+        last_login_start: query.last_login_start.clone(),
+        last_login_end: query.last_login_end.clone(),
+    };
+
+    let (admins, total) = match admin::list_admins(&state.pool, query.offset, query.limit, &filter).await {
         Ok(result) => result,
         Err(e) => {
             tracing::error!("Database error: {}", e);

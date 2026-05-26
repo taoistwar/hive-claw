@@ -12,7 +12,7 @@ export interface Admin {
 }
 
 export interface AdminListResponse {
-  admins: Admin[];
+  items: Admin[];
   total: number;
 }
 
@@ -30,12 +30,23 @@ export interface UpdateAdminData {
   status: number;
 }
 
+export interface AdminSearchParams {
+  search?: string;
+  status?: number;
+  role?: number;
+  created_at_start?: string;
+  created_at_end?: string;
+  last_login_start?: string;
+  last_login_end?: string;
+}
+
 export const getAdmins = async (
   offset: number,
-  limit: number
+  limit: number,
+  params?: AdminSearchParams
 ): Promise<AdminListResponse> => {
   const response = await apiClient.get('/admins', {
-    params: { offset, limit },
+    params: { offset, limit, ...params },
   });
   return response.data;
 };

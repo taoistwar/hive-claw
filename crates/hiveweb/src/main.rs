@@ -12,7 +12,14 @@ mod utils;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env file if it exists, but don't fail if it doesn't
-    let _ = dotenvy::dotenv_override()?;
+    match dotenvy::dotenv_override() {
+        Ok(path) => {
+            println!("[ENV] Loaded .env from: {}", path.display());
+        }
+        Err(_) => {
+            println!("[ENV] No .env file found, using environment variables");
+        }
+    }
 
     // Initialize logging
     tracing_subscriber::fmt()

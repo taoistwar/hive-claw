@@ -9,6 +9,7 @@ import {
   toggleAdminStatus,
   CreateAdminData,
   UpdateAdminData,
+  AdminSearchParams,
 } from '../services/admin';
 
 const DEFAULT_PAGE_SIZE = 10;
@@ -19,6 +20,7 @@ interface UseAdminReturn {
   pagination: { current: number; pageSize: number; total: number };
   modalVisible: boolean;
   editingAdmin: Admin | null;
+  searchParams: AdminSearchParams;
   fetchAdmins: (page?: number) => Promise<void>;
   handleCreate: (data: CreateAdminData) => Promise<void>;
   handleUpdate: (data: UpdateAdminData) => Promise<void>;
@@ -30,6 +32,9 @@ interface UseAdminReturn {
   setPagination: React.Dispatch<
     React.SetStateAction<{ current: number; pageSize: number; total: number }>
   >;
+  setSearchParams: React.Dispatch<React.SetStateAction<AdminSearchParams>>;
+  handleSearch: (params: AdminSearchParams) => Promise<void>;
+  handleReset: () => void;
 }
 
 export const useAdmin = (): UseAdminReturn => {
@@ -42,28 +47,44 @@ export const useAdmin = (): UseAdminReturn => {
   });
   const [modalVisible, setModalVisible] = useState(false);
   const [editingAdmin, setEditingAdmin] = useState<Admin | null>(null);
+  const [searchParams, setSearchParams] = useState<AdminSearchParams>({});
 
-  const fetchAdmins = useCallback(async (page?: number) => {
-    const currentPage = page ?? pagination.current;
+  const doFetch = useCallback(async (page: number, params: AdminSearchParams) => {
     setLoading(true);
     try {
-      const offset = (currentPage - 1) * pagination.pageSize;
-      const response = await getAdmins(offset, pagination.pageSize);
-      setAdmins(response.admins);
-      setPagination((prev) => ({ ...prev, current: currentPage, total: response.total }));
+      const offset = (page - 1) * pagination.pageSize;
+      const response = await getAdmins(offset, pagination.pageSize, params);
+      setAdmins(response.items);
+      setPagination((prev) => ({ ...prev, current: page, total: response.total }));
     } catch (error: any) {
       message.error(error.response?.data?.message || '获取管理员列表失败');
     } finally {
       setLoading(false);
     }
-  }, [pagination.pageSize, pagination.current]);
+  }, [pagination.pageSize]);
+
+  const fetchAdmins = useCallback(async (page?: number) => {
+    const currentPage = page ?? pagination.current;
+    doFetch(currentPage, searchParams);
+  }, [pagination.current, searchParams, doFetch]);
+
+  const handleSearch = useCallback(async (params: AdminSearchParams) => {
+    setPagination((prev) => ({ ...prev, current: 1 }));
+    doFetch(1, params);
+  }, [doFetch]);
+
+  const handleReset = useCallback(() => {
+    setSearchParams({});
+    setPagination((prev) => ({ ...prev, current: 1 }));
+    doFetch(1, {});
+  }, [doFetch]);
 
   const handleCreate = async (data: CreateAdminData) => {
     try {
       await createAdmin(data);
       message.success('添加管理员成功');
       setModalVisible(false);
-      fetchAdmins();
+      doFetch(pagination.current, searchParams);
     } catch (error: any) {
       message.error(error.response?.data?.message || '添加管理员失败');
       throw error;
@@ -77,7 +98,7 @@ export const useAdmin = (): UseAdminReturn => {
       message.success('更新管理员成功');
       setModalVisible(false);
       setEditingAdmin(null);
-      fetchAdmins();
+      doFetch(pagination.current, searchParams);
     } catch (error: any) {
       message.error(error.response?.data?.message || '更新管理员失败');
       throw error;
@@ -88,7 +109,7 @@ export const useAdmin = (): UseAdminReturn => {
     try {
       await deleteAdmin(id);
       message.success('删除管理员成功');
-      fetchAdmins();
+      doFetch(pagination.current, searchParams);
     } catch (error: any) {
       message.error(error.response?.data?.message || '删除管理员失败');
     }
@@ -98,7 +119,7 @@ export const useAdmin = (): UseAdminReturn => {
     try {
       await toggleAdminStatus(id, status);
       message.success(status === 1 ? '已启用' : '已禁用');
-      fetchAdmins();
+      doFetch(pagination.current, searchParams);
     } catch (error: any) {
       message.error(error.response?.data?.message || '操作失败');
     }
@@ -125,6 +146,7 @@ export const useAdmin = (): UseAdminReturn => {
     pagination,
     modalVisible,
     editingAdmin,
+    searchParams,
     fetchAdmins,
     handleCreate,
     handleUpdate,
@@ -134,5 +156,8 @@ export const useAdmin = (): UseAdminReturn => {
     openEditModal,
     closeModal,
     setPagination,
+    setSearchParams,
+    handleSearch,
+    handleReset,
   };
 };

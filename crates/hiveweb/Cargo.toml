@@ -28,6 +28,7 @@ bcrypt = { workspace = true }
 
 # Object storage (S3 compatible)
 aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
@@ -43,10 +44,13 @@ uuid = { workspace = true }
 dotenvy = { workspace = true }
 
 # CORS
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+mime = "0.3"
 
 [[bin]]
 name = "migrate"
@@ -55,3 +59,7 @@ path = "src/bin/migrate.rs"
 [[bin]]
 name = "create-super-admin"
 path = "src/bin/create_super_admin.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"

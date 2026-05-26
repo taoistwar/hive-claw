@@ -1,0 +1,87 @@
+//! Contract tests for /api/auth/* (T026a, T026b).
+//!
+//! Phase 2.5 RED: these tests assert the contract documented in
+//! `specs/003-admin-center/contracts/api.md` and `quickstart.md`. They will
+//! fail until backend infra is available AND the contract is fully met.
+
+mod common;
+
+use serde_json::json;
+
+#[tokio::test]
+async fn t026a_login_returns_token_on_valid_credentials() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+
+    let (status, body) = common::post_json(
+        &app,
+        "/api/auth/login",
+        json!({ "phone": "13800138000", "password": "admin123" }),
+    )
+    .await?;
+
+    assert_eq!(status, 200, "expected 200 OK for valid login, got {status}: {body}");
+    assert_eq!(body["code"], 0, "expected code=0 on success");
+    assert!(body["data"]["token"].is_string(), "expected token string in response");
+    assert!(body["data"]["admin"].is_object(), "expected admin object in response");
+    Ok(())
+}
+
+#[tokio::test]
+async fn t026a_login_rejects_wrong_password() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+
+    let (status, body) = common::post_json(
+        &app,
+        "/api/auth/login",
+        json!({ "phone": "13800138000", "password": "not-the-real-password" }),
+    )
+    .await?;
+
+    assert!(
+        status.is_client_error(),
+        "expected 4xx for wrong password, got {status}: {body}"
+    );
+    assert_eq!(body["code"], 1001, "expected error code 1001 (wrong password)");
+    Ok(())
+}
+
+#[tokio::test]
+async fn t026a_login_locks_after_five_failures() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+
+    for _ in 0..5 {
+        let _ = common::post_json(
+            &app,
+            "/api/auth/login",
+            json!({ "phone": "13800138000", "password": "wrong" }),
+        )
+        .await?;
+    }
+
+    let (status, body) = common::post_json(
+        &app,
+        "/api/auth/login",
+        json!({ "phone": "13800138000", "password": "wrong" }),
+    )
+    .await?;
+
+    assert!(status.is_client_error(), "expected 4xx after lockout, got {status}: {body}");
+    assert_eq!(body["code"], 1003, "expected error code 1003 (account locked)");
+    Ok(())
+}
+
+#[tokio::test]
+async fn t026b_me_requires_token() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+    let (status, _) = common::get(&app, "/api/auth/me", None).await?;
+    assert_eq!(status, 401, "unauthenticated /me must return 401");
+    Ok(())
+}
+
+#[tokio::test]
+async fn t026b_me_rejects_invalid_token() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+    let (status, body) = common::get(&app, "/api/auth/me", Some("not-a-real-jwt")).await?;
+    assert_eq!(status, 401, "invalid token must return 401, got {status}: {body}");
+    Ok(())
+}

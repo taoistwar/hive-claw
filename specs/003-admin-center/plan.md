@@ -11,14 +11,14 @@
 
 ## Technical Context
 
-**Language/Version**: Rust 1.75+ (backend), TypeScript 5.x (frontend)  
-**Primary Dependencies**: axum (API), React (web), tokio (async runtime), SQLx (MySQL client), redis (Redis client)  
-**Storage**: MySQL 8.0+ (InnoDB 引擎), Redis 7+ (缓存), Rustfs/S3 (对象存储)  
-**Testing**: cargo test (Rust), Vitest + Testing Library (React)  
-**Target Platform**: Linux server (backend), Web browser (frontend)  
-**Project Type**: Web application (前后端分离)  
-**Performance Goals**: API p95 < 200ms, 支持 100+ 管理员账号，仪表盘加载 < 3 秒  
-**Constraints**: 密码加密存储，会话管理安全，角色权限隔离 100% 准确  
+**Language/Version**: Rust 1.85+ (backend), TypeScript 5.x (frontend)
+**Primary Dependencies**: axum (API), React (web), tokio (async runtime), SQLx (MySQL client), redis (Redis client)
+**Storage**: MySQL 8.0+ (InnoDB 引擎), Redis 7+ (缓存), Rustfs/S3 (对象存储)
+**Testing**: cargo test (Rust), Vitest + Testing Library (React)
+**Target Platform**: Linux server (backend), Web browser (frontend)
+**Project Type**: Web application (前后端分离)
+**Performance Goals**: API p95 < 200ms, 支持 100+ 管理员账号，仪表盘加载 < 3 秒
+**Constraints**: 密码加密存储，会话管理安全，角色权限隔离 100% 准确
 **Scale/Scope**: 100+ 管理员账号，日登录次数 1000+，会话有效期 24 小时
 
 ## Constitution Check
@@ -26,15 +26,15 @@
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
 ✅ **Principle I - Code Quality & Maintainability**: 将通过 cargo fmt, cargo clippy, ESLint, Prettier 保证代码质量
-✅ **Principle II - Test-First Development**: 将为登录、权限验证、管理员 CRUD 操作编写测试
-✅ **Principle III - User Experience Consistency**: 统一错误提示格式、统一的 UI 组件库、一致的权限控制
-✅ **Principle IV - Performance & Efficiency**: API p95 < 200ms，数据库查询使用索引，无 N+1 查询
+⚠ **Principle II - Test-First Development**: 当前实现先于测试完成；Phase 2.5 通过 T026a–T026m 追溯补红灯测试。详见 Complexity Tracking 偏离 1。
+⚠ **Principle III - User Experience Consistency**: a11y（键盘导航 / WCAG 2.1 AA / axe-core）补充至 FR-020；Phase 7 通过 T094–T095 落实。详见 Complexity Tracking 偏离 2。
+✅ **Principle IV - Performance & Efficiency**: API p95 < 200ms，数据库查询使用索引，无 N+1 查询；SC-002/003/005 由 T098–T101 提供测量证据
 ✅ **Principle V - Simplicity & YAGNI**: 仅使用 axum + React，不引入过度抽象，状态管理优先使用 React hooks
-✅ **Principle VI - Observability & Structured Logging**: 登录操作、权限变更、敏感操作记录结构化日志
+⚠ **Principle VI - Observability & Structured Logging**: request_id / JSON 日志 / PII 遮码补充至 FR-021、FR-022；Phase 7 通过 T092、T093 落实。详见 Complexity Tracking 偏离 3。
 ✅ **Security Requirements**: 密码加密存储、输入验证、会话管理、登录失败锁定
 ✅ **Technology Stack**: Rust + axum (后端), TypeScript + React (前端), MySQL (数据库), Redis (缓存), Rustfs/S3 (对象存储) - 符合宪法 v1.3.0 规定
 
-**Gate Result**: PASS - 所有宪法检查通过，无违例
+**Gate Result**: CONDITIONAL PASS — 三项原则（II/III/VI）以追溯任务补齐，详见 Complexity Tracking。Phase 2.5 红灯任务完成前不得宣布 Principle II 合规。
 
 ## Project Structure
 
@@ -107,7 +107,7 @@ web/
 └── vite.config.ts
 ```
 
-**Structure Decision**: 
+**Structure Decision**:
 - 后端：`crates/hiveweb/` - Rust workspace crate，使用 axum 提供 REST API
 - 前端：`web/` - 独立的 npm 包，使用 Vite + React + TypeScript
 - 数据库：MySQL 8.0+，使用连接池管理
@@ -117,7 +117,33 @@ web/
 
 > **Fill ONLY if Constitution Check has violations that must be justified**
 
-无需填写 - Constitution Check 全部通过，无违例项
+### 偏离 1 — Principle II (Test-First, NON-NEGOTIABLE)
+
+| 项 | 内容 |
+| --- | --- |
+| 现状 | 实现代码（T027–T091）先于测试编写完成；最初的 tasks.md L11 声明 "Tests are OPTIONAL"，未生成测试任务 |
+| 偏离类型 | 流程偏离（顺序违反 Red → Green → Refactor） |
+| 触发原因 | 任务模板默认未启用测试；MVP 优先交付期内未触发测试补全闭环 |
+| 风险 | 回归保护薄弱；契约 / RBAC 等关键路径缺乏自动化验证；后续重构置信度低 |
+| 缓解方案 | 追溯补测试：Phase 2.5（T026a–T026m）13 项契约 + 集成 + 组件红灯测试；测试必须以"先红灯—后绑定到已存在实现并通过"路径落地 |
+| 退出条件 | 全部 T026a–T026m 在 CI 中先观察到失败、随后通过；Principle II 状态由 ⚠ 回到 ✅ |
+| 替代方案（已否决） | (a) 完整推翻已实现代码并重新 TDD — 工作量大且与现有产出冲突；(b) 维持 Tests Optional 并永久豁免 — 直接违反宪法 NON-NEGOTIABLE 条款 |
+
+### 偏离 2 — Principle III (a11y 未在初版 spec 体现)
+
+| 项 | 内容 |
+| --- | --- |
+| 现状 | 初版 spec.md 未提及键盘导航 / 对比度 / ARIA；实现使用 Ant Design 默认能力但未验证 |
+| 缓解方案 | spec.md FR-020 与 SC-008；Phase 7 T094（axe-core 自动检测）、T095（ARIA 与焦点顺序审查） |
+| 退出条件 | T094 在 CI 中无 critical / serious 违规 |
+
+### 偏离 3 — Principle VI (结构化日志 / PII 未在初版 spec 体现)
+
+| 项 | 内容 |
+| --- | --- |
+| 现状 | 初版 spec 仅泛泛要求"日志"；当前 T083 已引入 tracing，但未规定 request_id / JSON 格式 / 手机号遮码 |
+| 缓解方案 | spec.md FR-021、FR-022、SC-009；Phase 7 T092（request_id 中间件 + JSON 日志 + 遮码）、T093（审计日志） |
+| 退出条件 | T092、T093 完成且 SC-009 达标 |
 
 ## Phase 0: Research
 
@@ -216,7 +242,7 @@ web/
 详见 [quickstart.md](file:///home/developer/agent/hive-claw/specs/003-admin-center/quickstart.md)
 
 **开发环境搭建**:
-1. 安装 Rust (1.75+), Node.js (18+), MySQL 8.0+
+1. 安装 Rust (1.85+), Node.js (18+), MySQL 8.0+
 2. 克隆仓库并切换到 003-admin-center 分支
 3. 创建 MySQL 数据库：`CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
 4. 后端：配置 DATABASE_URL，运行迁移 `cargo run --bin migrate`

@@ -51,9 +51,11 @@
 - `failure_reason`: Option<String> (失败原因，成功时为空)
 
 **Constraints**:
-- admin_id 外键约束（级联删除）
-- login_at 索引（用于按时间查询）
-- failure_reason 仅在 success=false 时有值
+- admin_id 外键约束：**ON DELETE SET NULL**（保留登录历史用于审计；删除管理员后该记录仍可查，admin_id 置为 NULL）
+- 已删除管理员的快照字段 `admin_phone_snapshot` 与 `admin_nickname_snapshot`（VARCHAR）在写入登录记录时复制，便于审计读取已删除管理员的信息
+- login_at 索引（用于按时间查询，DESC 排序以加速仪表盘 `ORDER BY login_at DESC LIMIT 10`）
+- failure_reason 仅在 success=false 时有值；取值为枚举：WRONG_PASSWORD / ACCOUNT_DISABLED / ACCOUNT_LOCKED / OTHER
+- 登录记录保留期：至少 90 天（与 spec FR-022 一致）
 
 **Relationships**:
 - 多对一：LoginRecord -> Admin (多条记录属于一个管理员)
@@ -94,6 +96,8 @@ Super: {
 }
 ```
 
+**UX 约定**: 当 `allowed_operations` 不包含某操作时，前端必须**不渲染**对应控件（hidden），不得仅 disabled。后端权限检查为权威，对越权请求统一返回 403 + 错误码 2001。
+
 ## Database Schema
 
 ### SQL DDL (MySQL 8.0+)
@@ -113,18 +117,20 @@ CREATE TABLE admins (
     INDEX idx_phone (phone)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='管理员表';
 
--- 登录记录表
+-- 登录记录表（审计用，保留 90+ 天）
 CREATE TABLE login_records (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    admin_id BIGINT NOT NULL,
+    admin_id BIGINT NULL,
+    admin_phone_snapshot VARCHAR(11) NOT NULL,
+    admin_nickname_snapshot VARCHAR(20) NOT NULL,
     login_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ip_address VARCHAR(45) NOT NULL COMMENT 'IPv4 or IPv6',
     success TINYINT(1) NOT NULL COMMENT '1=true, 0=false',
-    failure_reason VARCHAR(50) DEFAULT NULL COMMENT 'WRONG_PASSWORD, ACCOUNT_DISABLED, etc.',
+    failure_reason VARCHAR(50) DEFAULT NULL COMMENT 'WRONG_PASSWORD | ACCOUNT_DISABLED | ACCOUNT_LOCKED | OTHER',
     INDEX idx_admin_id (admin_id),
-    INDEX idx_login_at (login_at),
-    CONSTRAINT fk_login_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录记录表';
+    INDEX idx_login_at (login_at DESC),
+    CONSTRAINT fk_login_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录记录表（审计用，保留 90+ 天）';
 ```
 
 ## State Transitions

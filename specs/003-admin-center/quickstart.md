@@ -5,7 +5,7 @@
 
 ## Prerequisites
 
-- Rust 1.75+ (使用 `rustup install stable`)
+- Rust 1.85+ (使用 `rustup install stable`)
 - Node.js 18+ (使用 `nvm install 18`)
 - npm 或 yarn
 - Git
@@ -225,7 +225,7 @@ Authorization: Bearer <token>
 **Request**:
 ```json
 {
-  "phone": "13900139000",
+  "phone": "18810154696",
   "nickname": "New Admin",
   "password": "password123",
   "role": 1
@@ -239,7 +239,7 @@ Authorization: Bearer <token>
 ```json
 {
   "nickname": "Updated Nickname",
-  "phone": "13900139000",
+  "phone": "18810154696",
   "status": 1
 }
 ```

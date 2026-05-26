@@ -3,6 +3,7 @@ pub mod admin;
 pub mod dashboard;
 
 // 004 Agent Runtime
+pub mod agent;
 pub mod capability;
 pub mod category;
 pub mod function;
@@ -79,15 +80,23 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
             .allow_origin(origins)
     };
 
-    // ---- 004 Runtime state (step 9 — empty pool; further wiring in main.rs setup) ----
+    // ---- 004 Runtime state (steps 6+9; plan §Startup Initialization Order) ----
     let pool_inst = InstancePool::new(PoolConfig::from_env());
     let invoker = Arc::new(Invoker::new(pool_inst.clone()));
+    let llm_path = std::env::var("LLM_PRESETS_PATH").unwrap_or_else(|_| "./llm_presets.toml".to_string());
+    let llm = match LlmRegistry::load_from_path(&llm_path) {
+        Ok(reg) => reg,
+        Err(e) => {
+            tracing::warn!(error = %e, "LlmRegistry load failed; using empty registry");
+            Arc::new(LlmRegistry::new())
+        }
+    };
     let runtime_state = RuntimeState {
         capabilities: Arc::new(CapabilityRegistry::new()),
         pool: pool_inst,
         invoker,
         workflows: Arc::new(WorkflowExecutor::new()),
-        llm: Arc::new(LlmRegistry::new()),
+        llm,
     };
 
     let state = AppState { pool, redis, s3, runtime_state };
@@ -124,6 +133,7 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(tag::router())
         .merge(capability::router())
         .merge(runtime::router())
+        .merge(agent::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 

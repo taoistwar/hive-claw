@@ -11,6 +11,7 @@ import {
   BookOutlined,
   FolderOutlined,
   TagsOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 
@@ -66,6 +67,11 @@ const AppLayout: React.FC = () => {
               key: '/tags',
               icon: <TagsOutlined />,
               label: 'Tags',
+            },
+            {
+              key: '/agents',
+              icon: <RobotOutlined />,
+              label: 'Agents',
             },
           ]
         : []),

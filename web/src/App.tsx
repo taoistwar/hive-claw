@@ -9,6 +9,7 @@ import ToolPage from './pages/ToolPage'
 import SkillPage from './pages/SkillPage'
 import CategoryPage from './pages/CategoryPage'
 import TagPage from './pages/TagPage'
+import AgentPage from './pages/AgentPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 
@@ -28,6 +29,7 @@ function App() {
               <Route path="skills" element={<SkillPage />} />
               <Route path="categories" element={<CategoryPage />} />
               <Route path="tags" element={<TagPage />} />
+              <Route path="agents" element={<AgentPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

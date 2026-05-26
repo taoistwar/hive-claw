@@ -4,6 +4,7 @@
 //! MVP：providers crate 集成留 TODO（actual primary+fallback provider construction）；
 //! 本 commit 只完成 toml 解析 + default 标记校验 + Agent.model_preset 存在性校验。
 
+use providers::{Backend, LLMProvider, ProviderBuildConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -135,5 +136,48 @@ impl LlmRegistry {
         let mut v: Vec<PresetEntry> = self.presets.values().cloned().collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
+    }
+
+    /// 把 preset 的 **primary** provider 实例化（T128 MVP — FallbackProvider 链留待后续）。
+    pub fn build_primary(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+        let entry = self.resolve(preset_name)?;
+        let Some(first) = entry.providers_raw.first() else {
+            return Err(LlmAdapterError::Parse(format!(
+                "preset {} 缺 providers[]",
+                entry.name
+            )));
+        };
+        let backend = match first.kind.as_str() {
+            "anthropic" => Backend::Anthropic,
+            "azure_openai" => Backend::AzureOpenAI,
+            "bedrock" => Backend::Bedrock,
+            "github_copilot" => Backend::GitHubCopilot,
+            "openai_codex" => Backend::OpenAICodex,
+            "openai_compat" | "openai" => Backend::OpenAICompat,
+            other => {
+                return Err(LlmAdapterError::Parse(format!(
+                    "未知 provider kind: {other}"
+                )))
+            }
+        };
+        let api_key = first
+            .api_key_env
+            .as_deref()
+            .and_then(|env_name| std::env::var(env_name).ok());
+        let model = first.model.clone().unwrap_or_default();
+        let cfg = ProviderBuildConfig {
+            model: model.clone(),
+            api_key,
+            api_base: first.base_url.clone(),
+            extra_headers: None,
+            extra_body: None,
+            region: None,
+            profile: None,
+        };
+        let provider = providers::build_provider(backend, cfg).map_err(LlmAdapterError::Parse)?;
+        Ok((provider, model))
     }
 }

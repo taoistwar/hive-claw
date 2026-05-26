@@ -23,14 +23,14 @@ use uuid::Uuid;
 
 pub const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
+/// The correlation id for the current HTTP request. Stored in `Request`
+/// extensions so any handler can pull it via `Extension<RequestId>`.
+///
+/// The inner field is `pub` to support that ergonomic access; it is not
+/// currently read inside this crate, hence `#[allow(dead_code)]`.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RequestId(pub String);
-
-impl RequestId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 pub async fn request_id_middleware(mut request: Request<Body>, next: Next) -> Response {
     let incoming = request

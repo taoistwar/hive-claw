@@ -4,4 +4,4 @@ pub mod role;
 
 pub use admin::Admin;
 pub use login_record::LoginRecord;
-pub use role::{Role, RolePermission};
+pub use role::Role;

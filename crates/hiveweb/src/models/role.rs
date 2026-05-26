@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,32 +80,6 @@ impl Role {
     pub fn has_permission(&self, permission: &str) -> bool {
         let allowed = self.allowed_operations();
         allowed.contains(&permission)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RolePermission {
-    pub role: Role,
-    pub permissions: HashSet<String>,
-}
-
-impl RolePermission {
-    pub fn for_role(role: Role) -> Self {
-        let permissions: HashSet<String> = role
-            .allowed_operations()
-            .into_iter()
-            .map(String::from)
-            .collect();
-
-        Self { role, permissions }
-    }
-
-    pub fn has_permission(&self, permission: &str) -> bool {
-        self.permissions.contains(permission)
-    }
-
-    pub fn can_manage_role(&self, target_role: Role) -> bool {
-        self.role.can_modify_role(&target_role)
     }
 }
 

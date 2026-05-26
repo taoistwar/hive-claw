@@ -50,12 +50,6 @@ pub async fn create_login_record(
     Ok(record)
 }
 
-pub async fn get_failed_attempts(redis: &RedisClient, phone: &str) -> Result<i64> {
-    let key = format!("{}{}", LOGIN_FAILED_KEY_PREFIX, phone);
-    let mut conn = redis.get_multiplexed_async_connection().await?;
-    let count: Option<i64> = conn.get(&key).await?;
-    Ok(count.unwrap_or(0))
-}
 
 pub async fn is_account_locked(redis: &RedisClient, phone: &str) -> Result<bool> {
     // Redis TTL semantics:

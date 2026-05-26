@@ -25,6 +25,10 @@ use std::time::Duration;
 pub struct AppState {
     pub pool: MySqlPool,
     pub redis: RedisClient,
+    /// Not read in the admin-center scope; retained for the file-upload
+    /// feature on the roadmap and to keep `AppState` boot-time symmetric
+    /// with the production `main.rs`.
+    #[allow(dead_code)]
     pub s3: Client,
 }
 

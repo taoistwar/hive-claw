@@ -7,7 +7,6 @@ use axum::{
 
 use crate::utils::error::AppError;
 use crate::utils::jwt::verify_token;
-use crate::utils::jwt::Claims;
 
 pub async fn auth_middleware(mut request: Request<Body>, next: Next) -> Response {
     let auth_header = request
@@ -35,8 +34,4 @@ pub async fn auth_middleware(mut request: Request<Body>, next: Next) -> Response
 
     request.extensions_mut().insert(claims);
     next.run(request).await
-}
-
-pub fn extract_claims(request: &Request<Body>) -> Option<&Claims> {
-    request.extensions().get::<Claims>()
 }

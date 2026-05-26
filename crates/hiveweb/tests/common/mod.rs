@@ -76,21 +76,20 @@ impl SeededAdmin {
 
 impl Drop for SeededAdmin {
     fn drop(&mut self) {
-        // Best-effort cleanup. Tests should also call `cleanup()` explicitly
-        // in async contexts; this Drop is the safety net.
-        let pool = self.pool.clone();
-        let id = self.id;
-        tokio::task::block_in_place(|| {
-            let handle = tokio::runtime::Handle::try_current().ok();
-            if let Some(h) = handle {
-                h.block_on(async move {
-                    let _ = sqlx::query("DELETE FROM admins WHERE id = ?")
-                        .bind(id)
-                        .execute(&pool)
-                        .await;
-                });
-            }
-        });
+        // Fire-and-forget cleanup. `block_in_place` would require the
+        // multi-threaded runtime, which `#[tokio::test]` doesn't use by
+        // default. Each seeded admin has a unique random phone so leftover
+        // rows don't cause cross-test conflicts.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let pool = self.pool.clone();
+            let id = self.id;
+            handle.spawn(async move {
+                let _ = sqlx::query("DELETE FROM admins WHERE id = ?")
+                    .bind(id)
+                    .execute(&pool)
+                    .await;
+            });
+        }
     }
 }
 
@@ -162,8 +161,27 @@ pub async fn post_json_auth(
     token: &str,
     payload: Value,
 ) -> Result<(StatusCode, Value)> {
+    json_with_method_and_auth(app, "POST", path, token, payload).await
+}
+
+pub async fn patch_json_auth(
+    app: &Router,
+    path: &str,
+    token: &str,
+    payload: Value,
+) -> Result<(StatusCode, Value)> {
+    json_with_method_and_auth(app, "PATCH", path, token, payload).await
+}
+
+async fn json_with_method_and_auth(
+    app: &Router,
+    method: &str,
+    path: &str,
+    token: &str,
+    payload: Value,
+) -> Result<(StatusCode, Value)> {
     let req = Request::builder()
-        .method("POST")
+        .method(method)
         .uri(path)
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {}", token))

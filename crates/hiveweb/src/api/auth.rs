@@ -9,6 +9,7 @@ use crate::models::Admin;
 use crate::services::{admin, auth as auth_service};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::{create_token, Claims};
+use crate::utils::logging::mask_phone;
 use crate::utils::password::verify_password;
 
 #[derive(Deserialize)]
@@ -101,15 +102,28 @@ pub async fn login(
 
         let remaining = 5 - failed_count;
 
-        let _ = auth_service::create_login_record(
+        if let Err(e) = auth_service::create_login_record(
             &state.pool,
             admin.id,
+            &admin.phone,
             &admin.nickname,
             ip_address,
             false,
-            Some("wrong_password"),
+            Some("WRONG_PASSWORD"),
         )
-        .await;
+        .await
+        {
+            tracing::error!("Failed to persist failed-login record: {}", e);
+        }
+
+        tracing::info!(
+            admin_id = admin.id,
+            phone = %mask_phone(&admin.phone),
+            outcome = "wrong_password",
+            operation = "login",
+            remaining = remaining,
+            "admin login failed"
+        );
 
         if remaining <= 0 {
             return AppError::AccountLocked(
@@ -129,14 +143,27 @@ pub async fn login(
 
     let _ = admin::update_last_login(&state.pool, admin.id).await;
 
-    let _ = auth_service::create_login_record(
+    if let Err(e) = auth_service::create_login_record(
         &state.pool,
         admin.id,
+        &admin.phone,
         &admin.nickname,
         ip_address,
         true,
         None,
-    ).await;
+    )
+    .await
+    {
+        tracing::error!("Failed to persist successful-login record: {}", e);
+    }
+
+    tracing::info!(
+        admin_id = admin.id,
+        phone = %mask_phone(&admin.phone),
+        outcome = "success",
+        operation = "login",
+        "admin login success"
+    );
 
     let token = match create_token(admin.id, admin.role) {
         Ok(token) => token,

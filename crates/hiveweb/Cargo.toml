@@ -63,3 +63,7 @@ path = "src/bin/create_super_admin.rs"
 [[bin]]
 name = "seed"
 path = "src/bin/seed.rs"
+
+[[bin]]
+name = "seed-bench"
+path = "src/bin/seed_bench.rs"

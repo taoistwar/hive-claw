@@ -36,6 +36,10 @@ const MIGRATIONS: &[Migration] = &[
         version: "V005__login_records_idx_login_at_desc",
         sql: include_str!("../../migrations/V005__login_records_idx_login_at_desc.sql"),
     },
+    Migration {
+        version: "V006__audit_logs",
+        sql: include_str!("../../migrations/V006__audit_logs.sql"),
+    },
 ];
 
 #[tokio::main]

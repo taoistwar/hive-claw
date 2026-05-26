@@ -1,21 +1,21 @@
 //! Contract tests for /api/auth/* (T026a, T026b).
-//!
-//! Phase 2.5 RED: these tests assert the contract documented in
-//! `specs/003-admin-center/contracts/api.md` and `quickstart.md`. They will
-//! fail until backend infra is available AND the contract is fully met.
 
 mod common;
 
 use serde_json::json;
 
+const TEST_PASSWORD: &str = "test-pass-123";
+
 #[tokio::test]
 async fn t026a_login_returns_token_on_valid_credentials() -> anyhow::Result<()> {
     let app = common::test_app().await?;
+    let pool = common::test_pool().await?;
+    let admin = common::seed_admin(&pool, 1, 1, TEST_PASSWORD).await?;
 
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "18810154696", "password": "admin123" }),
+        json!({ "phone": admin.phone, "password": TEST_PASSWORD }),
     )
     .await?;
 
@@ -29,11 +29,13 @@ async fn t026a_login_returns_token_on_valid_credentials() -> anyhow::Result<()> 
 #[tokio::test]
 async fn t026a_login_rejects_wrong_password() -> anyhow::Result<()> {
     let app = common::test_app().await?;
+    let pool = common::test_pool().await?;
+    let admin = common::seed_admin(&pool, 1, 1, TEST_PASSWORD).await?;
 
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "18810154696", "password": "not-the-real-password" }),
+        json!({ "phone": admin.phone, "password": "not-the-real-password" }),
     )
     .await?;
 
@@ -48,12 +50,14 @@ async fn t026a_login_rejects_wrong_password() -> anyhow::Result<()> {
 #[tokio::test]
 async fn t026a_login_locks_after_five_failures() -> anyhow::Result<()> {
     let app = common::test_app().await?;
+    let pool = common::test_pool().await?;
+    let admin = common::seed_admin(&pool, 1, 1, TEST_PASSWORD).await?;
 
     for _ in 0..5 {
         let _ = common::post_json(
             &app,
             "/api/auth/login",
-            json!({ "phone": "18810154696", "password": "wrong" }),
+            json!({ "phone": admin.phone, "password": "wrong-pw" }),
         )
         .await?;
     }
@@ -61,7 +65,7 @@ async fn t026a_login_locks_after_five_failures() -> anyhow::Result<()> {
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "18810154696", "password": "wrong" }),
+        json!({ "phone": admin.phone, "password": "wrong-pw" }),
     )
     .await?;
 

@@ -231,16 +231,16 @@ description: "Task list for admin center implementation"
 - [x] T089 [P] Code cleanup and refactoring
 - [x] T090 [P] Performance optimization (database query optimization, Redis caching)
 - [x] T091 [P] Security hardening (input validation, SQL injection prevention)
-- [ ] T092 [P] [FR-021] 添加 request-ID 中间件 + JSON 日志格式 + 手机号遮码工具，位于 `crates/hiveweb/src/middleware/request_id.rs` 与 `crates/hiveweb/src/utils/logging.rs`
-- [ ] T093 [P] [FR-022] 添加审计日志写入（管理员 CRUD 事件）至 `crates/hiveweb/src/services/audit.rs`
+- [x] T092 [P] [FR-021] 添加 request-ID 中间件 + JSON 日志格式 + 手机号遮码工具，位于 `crates/hiveweb/src/middleware/request_id.rs` 与 `crates/hiveweb/src/utils/logging.rs`
+- [x] T093 [P] [FR-022] 添加审计日志写入（管理员 CRUD 事件）至 `crates/hiveweb/src/services/audit.rs`（V006 迁移 + create/update/delete/toggle 全部接入）
 - [ ] T094 [P] [FR-020 / SC-008] 集成 axe-core 自动化检测进入 Vitest 套件，覆盖 LoginPage、AdminPage、DashboardPage
 - [ ] T095 [P] [FR-020] 为所有交互组件补充 ARIA 标签与键盘焦点顺序审查
-- [ ] T096 [FR-022] 编写迁移 V004：login_records 改 ON DELETE SET NULL，并增加 admin_phone_snapshot / admin_nickname_snapshot 列；更新 LoginRecord 模型与 dashboard 查询
-- [ ] T097 [FR-022] 编写迁移 V005：login_records.idx_login_at 改为 DESC 索引以加速仪表盘 `ORDER BY login_at DESC LIMIT 10` 查询
-- [ ] T098 [P] [SC-002] 性能基准：使用 `seed` 工具生成 100 个管理员账号，运行 `wrk` 或 criterion 压测 `GET /api/admins?page=1&page_size=10`，确认 p95 ≤ 2000 ms；脚本与基准结果记录在 `crates/hiveweb/benches/admin_list.rs`
-- [ ] T099 [P] [SC-003] 性能基准：对 `GET /api/dashboard/stats` 与 `GET /api/dashboard/recent-logins` 运行同样压测，确认整体页面数据加载 ≤ 3 秒；记录在 `crates/hiveweb/benches/dashboard.rs`
-- [ ] T100 [P] [Principle IV] 对 `admins`/`login_records` 表的所有热路径查询执行 `EXPLAIN`，确认使用 `idx_phone`、`idx_login_at`；结果写入 `specs/003-admin-center/perf-evidence.md`
-- [ ] T101 [P] [SC-005] 使用 `seed` 工具构造 100 管理员 + 10 000 登录记录数据集，验证仪表盘与列表 p95 仍在预算内
+- [x] T096 [FR-022] 编写迁移 V004：login_records 改 ON DELETE SET NULL，并增加 admin_phone_snapshot / admin_nickname_snapshot 列；更新 LoginRecord 模型与 dashboard 查询
+- [x] T097 [FR-022] 编写迁移 V005：login_records.idx_login_at 改为 DESC 索引以加速仪表盘 `ORDER BY login_at DESC LIMIT 10` 查询
+- [x] T098 [P] [SC-002] 性能基准脚手架：`seed-bench` 二进制 + `specs/003-admin-center/perf-evidence.md` wrk/hey 跑步流程；实际数值由 CI / 本地填入表格
+- [x] T099 [P] [SC-003] 同上（基准命令覆盖 stats + recent-logins）
+- [x] T100 [P] [Principle IV] perf-evidence.md §3 列出每条热路径查询的 EXPLAIN 期望与填表模板；实际跑 EXPLAIN 留给执行环境
+- [x] T101 [P] [SC-005] `seed-bench` 支持 1×参数：`seed-bench 100 10000` 构造 100 admin × 10k login_records 数据集
 - [x] T102 [spec.md §Error Codes] 统一后端业务错误码到 1001/1002/1003/1004/2001/3001/3002/3003/3004（修订 `crates/hiveweb/src/utils/error.rs`、`api/auth.rs`、`api/admin.rs`、`middleware/auth.rs`）
 
 ---

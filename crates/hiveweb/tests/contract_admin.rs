@@ -115,7 +115,7 @@ async fn t026e_patch_status_validates_payload() -> anyhow::Result<()> {
     let pool = common::test_pool().await?;
     let super_admin = common::seed_admin(&pool, 3 /* Super */, 1, "test-pass-123").await?;
 
-    let (status, _) = common::post_json_auth(
+    let (status, _) = common::patch_json_auth(
         &app,
         "/api/admins/9999/status",
         &super_admin.token()?,

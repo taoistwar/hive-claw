@@ -37,7 +37,7 @@ async fn t026i_disable_super_admin_path_returns_status_code() -> anyhow::Result<
     let other_super = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
 
     // Try to disable one of the multiple active super admins.
-    let (status, body) = common::post_json_auth(
+    let (status, body) = common::patch_json_auth(
         &app,
         &format!("/api/admins/{}/status", other_super.id),
         &actor.token()?,

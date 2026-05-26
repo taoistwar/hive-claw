@@ -10,8 +10,27 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn can_manage_admins(&self) -> bool {
+    /// 仅查看（列表 / 详情）— spec §US3 AS-1：所有角色都可以看到管理员列表。
+    /// 操作类按钮由 UI 按更细的 capability 隐藏；后端在 GET 上不应拒绝。
+    pub fn can_view_admins(&self) -> bool {
+        true
+    }
+
+    /// 写操作的总开关（创建 / 编辑 / 切换状态）— spec §US3 AS-2/AS-3。
+    /// System 与 Super 都可以；Normal 不可。
+    pub fn can_modify_admins(&self) -> bool {
         matches!(self, Role::System | Role::Super)
+    }
+
+    /// 删除管理员账号 — spec §US3 AS-3。仅 Super 可以。
+    pub fn can_delete_admins(&self) -> bool {
+        matches!(self, Role::Super)
+    }
+
+    /// 兼容旧 API：等价于 `can_modify_admins()`。新代码请直接使用更细的方法。
+    #[deprecated(note = "Use can_view_admins / can_modify_admins / can_delete_admins instead")]
+    pub fn can_manage_admins(&self) -> bool {
+        self.can_modify_admins()
     }
 
     pub fn can_view_dashboard(&self) -> bool {

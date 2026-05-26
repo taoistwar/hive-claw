@@ -64,7 +64,7 @@ pub async fn create_admin(
         return Err(anyhow::anyhow!("Phone number already exists"));
     }
 
-    let admin = sqlx::query_as::<_, Admin>(
+    let result = sqlx::query(
         r#"
         INSERT INTO admins (phone, nickname, password_hash, role, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, 1, NOW(), NOW())
@@ -74,8 +74,14 @@ pub async fn create_admin(
     .bind(nickname)
     .bind(password_hash)
     .bind(role)
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
+
+    let id = result.last_insert_id() as i64;
+    let admin = sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
 
     Ok(admin)
 }
@@ -86,16 +92,22 @@ pub async fn update_admin(
     nickname: &str,
     role: i8,
 ) -> Result<Admin> {
-    let admin = sqlx::query_as::<_, Admin>(
+    let result = sqlx::query(
         "UPDATE admins SET nickname = ?, role = ?, updated_at = NOW() WHERE id = ?",
     )
     .bind(nickname)
     .bind(role)
     .bind(id)
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
 
-    Ok(admin)
+    if result.rows_affected() == 0 {
+        return Err(anyhow::anyhow!("Admin not found"));
+    }
+
+    get_admin_by_id(pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Admin not found after update"))
 }
 
 pub async fn delete_admin(pool: &MySqlPool, id: i64) -> Result<()> {
@@ -142,13 +154,13 @@ pub async fn toggle_admin_status(
         }
     }
 
-    let admin = sqlx::query_as::<_, Admin>(
-        "UPDATE admins SET status = ?, updated_at = NOW() WHERE id = ?",
-    )
-    .bind(status)
-    .bind(id)
-    .fetch_one(pool)
-    .await?;
+    sqlx::query("UPDATE admins SET status = ?, updated_at = NOW() WHERE id = ?")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
 
-    Ok(admin)
+    get_admin_by_id(pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Admin not found after status update"))
 }

@@ -7,9 +7,11 @@ use serde::Deserialize;
 use crate::api::AppState;
 use crate::models::{Admin, Role};
 use crate::services::admin;
+use crate::services::audit::{self, Operation};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
 use crate::utils::password::hash_password;
+use crate::utils::validation::{validate_nickname, validate_phone};
 
 #[derive(serde::Serialize)]
 pub struct AdminPublic {
@@ -88,7 +90,8 @@ pub async fn list_admins(
         }
     };
 
-    if !caller_role.can_manage_admins() {
+    // spec §US3 AS-1：所有已认证角色都可以查看列表；操作类按钮在前端按 capability 隐藏。
+    if !caller_role.can_view_admins() {
         return AppError::InsufficientPermission("Insufficient permissions".to_string())
             .into_response();
     }
@@ -140,9 +143,18 @@ pub async fn create_admin(
         }
     };
 
-    if !caller_role.can_manage_admins() {
+    // spec §US3 AS-2/AS-3：仅 System 与 Super 可以创建。
+    if !caller_role.can_modify_admins() {
         return AppError::InsufficientPermission("Insufficient permissions".to_string())
             .into_response();
+    }
+
+    // Boundary validation — spec.md §Assumptions + data-model.md §Admin.
+    if let Err(e) = validate_phone(&req.phone) {
+        return e.into_response();
+    }
+    if let Err(e) = validate_nickname(&req.nickname) {
+        return e.into_response();
     }
 
     let target_role = match Role::try_from(req.role) {
@@ -180,6 +192,16 @@ pub async fn create_admin(
         }
     };
 
+    let _ = audit_event(
+        &state.pool,
+        &claims,
+        Operation::Create,
+        Some(new_admin.id),
+        &new_admin.phone,
+        serde_json::json!({ "role": new_admin.role, "nickname": new_admin.nickname }),
+    )
+    .await;
+
     ApiResponse::success(new_admin.into())
 }
 
@@ -197,9 +219,14 @@ pub async fn update_admin(
         }
     };
 
-    if !caller_role.can_manage_admins() {
+    // spec §US3 AS-2/AS-3：仅 System 与 Super 可以修改。
+    if !caller_role.can_modify_admins() {
         return AppError::InsufficientPermission("Insufficient permissions".to_string())
             .into_response();
+    }
+
+    if let Err(e) = validate_nickname(&req.nickname) {
+        return e.into_response();
     }
 
     let target_role = match Role::try_from(req.role) {
@@ -217,6 +244,16 @@ pub async fn update_admin(
         Err(_) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
     };
 
+    let _ = audit_event(
+        &state.pool,
+        &claims,
+        Operation::Update,
+        Some(updated_admin.id),
+        &updated_admin.phone,
+        serde_json::json!({ "nickname": updated_admin.nickname, "role": updated_admin.role }),
+    )
+    .await;
+
     ApiResponse::success(updated_admin.into())
 }
 
@@ -233,13 +270,29 @@ pub async fn delete_admin(
         }
     };
 
-    if !caller_role.can_manage_admins() {
+    // spec §US3 AS-3：仅 Super 可以删除（System 看不到该按钮，后端也必须拒绝）。
+    if !caller_role.can_delete_admins() {
         return AppError::InsufficientPermission("Insufficient permissions".to_string())
             .into_response();
     }
 
+    // Snapshot target identity *before* the delete so audit has phone to log.
+    let target = admin::get_admin_by_id(&state.pool, id).await.ok().flatten();
+    let target_phone = target.as_ref().map(|t| t.phone.clone()).unwrap_or_default();
+
     match admin::delete_admin(&state.pool, id).await {
-        Ok(_) => ApiResponse::success(()),
+        Ok(_) => {
+            let _ = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Delete,
+                Some(id),
+                &target_phone,
+                serde_json::json!({}),
+            )
+            .await;
+            ApiResponse::success(())
+        }
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not found") {
@@ -268,7 +321,8 @@ pub async fn toggle_admin_status(
         }
     };
 
-    if !caller_role.can_manage_admins() {
+    // spec §US3 AS-2/AS-3：System 与 Super 都可以禁用/启用。
+    if !caller_role.can_modify_admins() {
         return AppError::InsufficientPermission("Insufficient permissions".to_string())
             .into_response();
     }
@@ -278,7 +332,19 @@ pub async fn toggle_admin_status(
     }
 
     match admin::toggle_admin_status(&state.pool, id, req.status).await {
-        Ok(admin) => ApiResponse::success(admin.into()),
+        Ok(admin) => {
+            let op = if req.status == 1 { Operation::Enable } else { Operation::Disable };
+            let _ = audit_event(
+                &state.pool,
+                &claims,
+                op,
+                Some(admin.id),
+                &admin.phone,
+                serde_json::json!({ "new_status": req.status }),
+            )
+            .await;
+            ApiResponse::success(admin.into())
+        }
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not found") {
@@ -293,9 +359,40 @@ pub async fn toggle_admin_status(
     }
 }
 
+/// Write one audit row. Operator's phone is resolved via the claims;
+/// failures are logged but do not abort the response (audit-best-effort
+/// for now — promoting to mandatory requires the change of contract that
+/// FR-022 hints at).
+async fn audit_event(
+    pool: &sqlx::MySqlPool,
+    claims: &Claims,
+    op: Operation,
+    target_id: Option<i64>,
+    target_phone: &str,
+    detail: serde_json::Value,
+) -> anyhow::Result<()> {
+    let operator = admin::get_admin_by_id(pool, claims.admin_id).await?;
+    let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
+    if let Err(e) = audit::record(
+        pool,
+        claims.admin_id,
+        &operator_phone,
+        target_id,
+        target_phone,
+        op,
+        Some(detail),
+    )
+    .await
+    {
+        tracing::error!("Failed to write audit log: {}", e);
+        return Err(e);
+    }
+    Ok(())
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admins", axum::routing::get(list_admins).post(create_admin))
         .route("/admins/:id", axum::routing::get(get_admin).put(update_admin).delete(delete_admin))
-        .route("/admins/:id/status", axum::routing::put(toggle_admin_status))
+        .route("/admins/:id/status", axum::routing::patch(toggle_admin_status))
 }

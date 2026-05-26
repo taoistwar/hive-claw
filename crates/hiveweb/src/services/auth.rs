@@ -9,46 +9,45 @@ const LOGIN_FAILED_KEY_PREFIX: &str = "login_failed:";
 const MAX_LOGIN_ATTEMPTS: i64 = 5;
 const LOCK_DURATION_SECONDS: usize = 900;
 
+/// Insert a login_records row (post-V004 schema: snapshot columns,
+/// no auto-return).
+///
+/// Returns the inserted row. Callers should propagate errors rather than
+/// swallowing with `let _ = ...` so silent persistence failures cannot hide
+/// audit gaps.
 pub async fn create_login_record(
     pool: &MySqlPool,
     admin_id: i64,
+    admin_phone: &str,
     admin_nickname: &str,
     ip_address: &str,
     success: bool,
     failure_reason: Option<&str>,
 ) -> Result<LoginRecord> {
-    let record = sqlx::query_as::<_, LoginRecord>(
+    let result = sqlx::query(
         r#"
-        INSERT INTO login_records (admin_id, admin_nickname, login_at, ip_address, success, failure_reason)
-        VALUES (?, ?, NOW(), ?, ?, ?)
+        INSERT INTO login_records
+            (admin_id, admin_phone_snapshot, admin_nickname_snapshot,
+             login_at, ip_address, success, failure_reason)
+        VALUES (?, ?, ?, NOW(), ?, ?, ?)
         "#,
     )
     .bind(admin_id)
+    .bind(admin_phone)
     .bind(admin_nickname)
     .bind(ip_address)
     .bind(success)
     .bind(failure_reason)
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
+
+    let id = result.last_insert_id() as i64;
+    let record = sqlx::query_as::<_, LoginRecord>("SELECT * FROM login_records WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
 
     Ok(record)
-}
-
-pub async fn get_recent_logins(pool: &MySqlPool, limit: u32) -> Result<Vec<LoginRecord>> {
-    let records = sqlx::query_as::<_, LoginRecord>(
-        r#"
-        SELECT lr.*, a.nickname as admin_nickname
-        FROM login_records lr
-        JOIN admins a ON a.id = lr.admin_id
-        ORDER BY lr.login_at DESC
-        LIMIT ?
-        "#,
-    )
-    .bind(limit as i64)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(records)
 }
 
 pub async fn get_failed_attempts(redis: &RedisClient, phone: &str) -> Result<i64> {

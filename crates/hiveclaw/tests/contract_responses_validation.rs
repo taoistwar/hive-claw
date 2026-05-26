@@ -9,7 +9,7 @@ async fn spawn_app() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, http::router()).await;
+        let _ = axum::serve(listener, http::router_stub()).await;
     });
     format!("http://{addr}")
 }
@@ -104,7 +104,7 @@ async fn rejects_non_json_content_type() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, http::router()).await;
+        let _ = axum::serve(listener, http::router_stub()).await;
     });
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))

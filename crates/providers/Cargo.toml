@@ -1,0 +1,22 @@
+[package]
+name = "providers"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+config = { path = "../config" }
+utils = { path = "../utils" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+regex = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+once_cell = "1"
+base64 = { workspace = true }

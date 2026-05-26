@@ -7,9 +7,18 @@ license.workspace = true
 repository.workspace = true
 description = "HiveGUI: desktop client for HiveClaw with Day+1 / Hour+1 helper tool sections"
 
+[profile.dev]
+debug = true
+opt-level = 0
+
+[profile.test]
+debug = true
+
 [[bin]]
 name = "hivegui"
 path = "src/main.rs"
+
+
 
 [lib]
 name = "hivegui"
@@ -42,6 +51,12 @@ futures = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
 unicode-segmentation = { workspace = true }
+mysql_async = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "chrono"] }
+chacha20poly1305 = { workspace = true }
+zeroize = { workspace = true }
+dirs = { workspace = true }
+syntect = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }

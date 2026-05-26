@@ -1,6 +1,11 @@
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use hiveclaw::{config::Config, http, logging, version};
+use hiveclaw::agent_backend::AgentBackend;
+use hiveclaw::config::Config;
+use hiveclaw::http;
+use hiveclaw::logging;
+use hiveclaw::version;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::info;
@@ -46,7 +51,9 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
         version = version::version(),
     );
 
-    let app = http::router();
+    let agent = AgentBackend::build(&cfg).await?;
+    let app = http::router(Arc::new(agent));
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

@@ -1,42 +1,29 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 → 1.1.0
-Rationale: MINOR bump. Adds a new mandatory "Technology Stack" section that
-locks the canonical implementation stack (Rust + gpui + axum + sled + SQLite)
-for all v1 work. No existing principle is removed or redefined; existing
-compliance gates remain valid.
+Version change: 1.2.0 → 1.3.0
+Rationale: MINOR bump. Expands Technology Stack section to specify canonical
+choices for database (MySQL), object storage (Rustfs/S3), and caching (Redis).
+This provides clearer guidance for v1 implementation.
 
-Modified principles: none (all six core principles unchanged).
+Modified principles: none.
 
 Added sections:
-  - Technology Stack (canonical languages, frameworks, datastores, deviation
-    procedure)
+  - Database (MySQL 8.0+)
+  - Object Storage (Rustfs/S3)
+  - Cache (Redis)
 
-Removed sections: none.
+Removed sections:
+  - Embedded KV store (sled) - replaced by Redis for distributed caching
+  - Embedded relational store (SQLite) - replaced by MySQL for production
 
 Templates requiring updates:
   - ✅ .specify/templates/plan-template.md — Technical Context placeholders
-        (Language/Version, Primary Dependencies, Storage, Testing) now have
-        defined defaults from this section. Plans MAY still record version
-        pins but MUST NOT pick a different language or core framework
-        without Complexity Tracking.
-  - ✅ .specify/templates/spec-template.md — unaffected (spec template is
-        tech-agnostic by design).
-  - ✅ .specify/templates/tasks-template.md — unaffected (task categories
-        are tech-agnostic).
-  - ✅ .specify/templates/checklist-template.md — unaffected.
-  - ⚠ README.md — still empty; should now mention the Rust toolchain as
-        the prerequisite for contributors. Not blocking.
-  - ⚠ docs/quickstart.md — does not exist yet; will be authored alongside
-        the first implementation plan.
+        updated to reflect MySQL, Redis, Rustfs choices.
+  - ⚠ specs/003-admin-center/plan.md — already uses MySQL, should add Redis
+  - ⚠ specs/003-admin-center/research.md — should add Redis section
 
-Prior version 1.0.0 history retained below for context.
-
-----
-Previous: TEMPLATE (unratified) → 1.0.0 (initial ratification, 2026-05-14)
-  Added principles I–VI; added Security Requirements, Performance Standards,
-  Development Workflow & Quality Gates, Governance.
+Prior version 1.2.0 history retained above.
 -->
 
 # hive-claw Constitution
@@ -197,37 +184,61 @@ project. It exists to keep cognitive load, build infrastructure, and review
 expertise concentrated — not to discourage learning. Deviation requires an
 explicit Complexity Tracking entry in the relevant plan.
 
-- **Language**: Rust (stable channel). The MSRV (Minimum Supported Rust
-  Version) MUST be pinned in `rust-toolchain.toml` and bumped only in a
-  dedicated PR. No other application languages may be introduced for v1
+- **Language (backend)**: Rust (stable channel). The MSRV (Minimum Supported
+  Rust Version) MUST be pinned in `rust-toolchain.toml` and bumped only in a
+  dedicated PR. No other application languages may be introduced for backend
   feature work; small build / dev tooling scripts in shell or Python are
   permitted at the workspace root.
-- **Project layout**: a single Cargo workspace at the repository root. Each
-  deployable unit (HiveClaw, HiveGUI) is its own workspace member crate.
-  A third workspace member (e.g., `hive-shared`) is permitted only when
-  Principle V's "second concrete caller" test is satisfied.
-- **Lint & format**: `cargo fmt` and `cargo clippy` (with `-D warnings` in CI)
-  are the project's enforced lint/format tools per Principle I.
-- **Desktop GUI (HiveGUI)**: **gpui** is the canonical UI framework. HiveGUI
-  MUST be built on gpui; no second UI framework may be introduced. Per
-  Principle V, gpui primitives MUST be used directly — wrappers are only
-  permitted when they encode a non-trivial invariant.
+- **Language (frontend)**: TypeScript (strict mode) with React as the UI
+  framework. The TypeScript version SHOULD be pinned in `package.json` or
+  equivalent. JavaScript-only code is PROHIBITED for new frontend work.
+- **Project layout**: a single Cargo workspace at the repository root for
+  Rust backend crates. Each deployable unit (HiveClaw, HiveGUI) is its own
+  workspace member crate. Frontend web projects live as separate npm packages
+  (e.g., `web/`, `packages/*`) outside the Cargo workspace. A shared library
+  workspace member (e.g., `hive-shared`) is permitted only when Principle V's
+  "second concrete caller" test is satisfied.
+- **Lint & format (Rust)**: `cargo fmt` and `cargo clippy` (with
+  `-D warnings` in CI) are the project's enforced lint/format tools per
+  Principle I.
+- **Lint & format (TypeScript)**: ESLint and Prettier (or Biome) are the
+  enforced tools; configuration MUST be committed to the repository.
+- **Desktop GUI (HiveGUI)**: **gpui** is the canonical desktop UI framework.
+  HiveGUI MUST be built on gpui; no second desktop UI framework may be
+  introduced. Per Principle V, gpui primitives MUST be used directly —
+  wrappers are only permitted when they encode a non-trivial invariant.
+- **Web Frontend**: **React** (with TypeScript) is the canonical web UI
+  framework. Per Principle V, React primitives (components, hooks, context)
+  MUST be used directly — wrappers are only permitted when they encode a
+  non-trivial invariant. State management SHOULD use React's built-in hooks
+  (useState, useContext, useReducer) before introducing external state
+  management libraries.
 - **HTTP / API (HiveClaw and any future service)**: **axum** is the canonical
   HTTP server framework, running on the Tokio runtime. Request handlers MUST
   use `axum`'s extractors and response types directly; no parallel HTTP
   framework may be introduced.
-- **Embedded KV store**: **sled** is the canonical embedded key-value store
-  for local on-disk state that does not require relational queries (e.g.,
-  caches, simple session-scoped state, tool-local stores).
-- **Embedded relational store**: **SQLite** is the canonical embedded
-  relational store for any structured, queryable, or schema-evolving data.
-  Access MUST use a maintained Rust SQLite binding; schema changes MUST
-  be delivered via versioned, idempotent migrations.
+- **Database**: **MySQL 8.0+** (InnoDB engine) is the canonical relational
+  database for all production data. Schema changes MUST use versioned,
+  idempotent migrations; access MUST use SQLx (with compile-time SQL
+  verification) or a maintained Rust MySQL client. Connection pooling is
+  MANDATORY (recommended: SQLx pool, max_connections tuned per workload).
+- **Object Storage**: **Rustfs** (S3-compatible) is the canonical object
+  storage for file uploads, backups, and static assets. The Rust `aws-sdk-s3`
+  crate or `object_store` crate SHOULD be used for S3 interoperability.
+  Direct filesystem storage is PROHIBITED for new features unless explicitly
+  justified for local development only.
+- **Cache**: **Redis 7+** is the canonical cache and session store for
+  production workloads. Use the `redis` or `bb8-redis` crate for connection
+  pooling. Caching strategies (cache-aside, write-through, etc.) MUST be
+  documented in the relevant plan. Session data MUST expire (TTL required).
 - **Async runtime**: **Tokio** (implied by axum and the broader Rust
   async ecosystem). A second async runtime MUST NOT be introduced in v1.
-- **Testing**: `cargo test` for unit and integration tests; crate-level
+- **Testing (Rust)**: `cargo test` for unit and integration tests; crate-level
   contract tests live alongside the crate they test. Tests MUST run in CI
-  as part of the standard quality gates (see Development Workflow).
+  as part of the standard quality gates.
+- **Testing (TypeScript/React)**: Vitest or Jest for unit tests; Testing
+  Library for React component tests. Tests MUST run in CI as part of the
+  standard quality gates.
 
 **Deviation procedure**: a feature plan that requires a different language,
 GUI/HTTP framework, or datastore MUST record the deviation in its Plan's
@@ -237,12 +248,10 @@ considered and rejected, and (d) the maintenance / review-expertise impact.
 The amendment procedure under Governance applies if the deviation is
 intended to become permanent.
 
-**Rationale**: A single small, modern Rust stack matches the project's
-single-user local desktop posture (HiveGUI) and its embedded service
-posture (HiveClaw), satisfies Principle V (≤3 projects, no premature
-abstraction) and Principle IV (Rust's low overhead makes the < 200ms API
-budget trivial outside of agent reasoning paths), and minimises the
-review and tooling surface every contributor must master.
+**Rationale**: A modern, production-ready stack: Rust+gpui for desktop,
+TypeScript+React for web, MySQL for relational data, Redis for caching,
+and Rustfs (S3) for object storage. Each choice balances performance,
+scalability, and maintainability while keeping the stack focused.
 
 ## Development Workflow & Quality Gates
 
@@ -256,7 +265,7 @@ review and tooling surface every contributor must master.
   - Auth, security, or cryptography changes additionally require the
     Security Requirements review described above.
 - **CI gates** (all MUST pass before merge):
-  1. Linting and formatting.
+  1. Linting and formatting (Rust and TypeScript).
   2. Type checking (where applicable).
   3. Unit, integration, and contract test suites.
   4. Secret scanning.
@@ -296,4 +305,4 @@ review and tooling surface every contributor must master.
   `CLAUDE.md` and any future `docs/quickstart.md`. Those files MUST cite,
   not contradict, this constitution.
 
-**Version**: 1.1.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-14
+**Version**: 1.3.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-25

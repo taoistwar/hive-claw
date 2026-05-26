@@ -6,7 +6,6 @@ use gpui::{
     Focusable, MouseButton, PaintQuad, Pixels, Point, ShapedLine, SharedString, UTF16Selection,
     UnderlineStyle, Window,
 };
-use unicode_segmentation::UnicodeSegmentation;
 
 actions!(
     input,
@@ -35,6 +34,9 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    /// All ranges are stored in **UTF-16 code unit offsets** as required by GPUI's
+    /// `EntityInputHandler` trait. This avoids conversion errors with multi-byte
+    /// characters like Chinese/Japanese/Korean text.
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -106,7 +108,7 @@ impl TextInput {
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.move_to(0, cx);
-        self.select_to(self.content.len(), cx);
+        self.select_to(self.content_utf16_len(), cx);
     }
 
     pub fn home(&mut self, cx: &mut Context<Self>) {
@@ -114,7 +116,7 @@ impl TextInput {
     }
 
     pub fn end(&mut self, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        self.move_to(self.content_utf16_len(), cx);
     }
 
     pub fn backspace(&mut self, cx: &mut Context<Self>) {
@@ -122,7 +124,8 @@ impl TextInput {
             let prev = self.previous_boundary(self.cursor_offset());
             self.select_to(prev, cx);
         }
-        self.replace_text_in_range(None, "", cx);
+        self.replace_text_internal(None, "");
+        cx.notify();
     }
 
     pub fn delete(&mut self, cx: &mut Context<Self>) {
@@ -130,7 +133,8 @@ impl TextInput {
             let next = self.next_boundary(self.cursor_offset());
             self.select_to(next, cx);
         }
-        self.replace_text_in_range(None, "", cx);
+        self.replace_text_internal(None, "");
+        cx.notify();
     }
 
     fn on_mouse_down(
@@ -169,24 +173,24 @@ impl TextInput {
 
     pub fn paste(&mut self, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), cx);
+            self.replace_text_internal(None, &text.replace('\n', " "));
+            cx.notify();
         }
     }
 
     pub fn copy(&mut self, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
+            let range = self.utf16_range_to_string(&self.selected_range);
+            cx.write_to_clipboard(ClipboardItem::new_string(range));
         }
     }
 
     pub fn cut(&mut self, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
-            self.replace_text_in_range(None, "", cx);
+            let range = self.utf16_range_to_string(&self.selected_range);
+            cx.write_to_clipboard(ClipboardItem::new_string(range));
+            self.replace_text_internal(None, "");
+            cx.notify();
         }
     }
 
@@ -219,7 +223,7 @@ impl TextInput {
             return 0;
         }
         if position.y > bounds.bottom() {
-            return self.content.len();
+            return self.content_utf16_len();
         }
         line.closest_index_for_x(position.x - bounds.left())
     }
@@ -237,78 +241,95 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Previous grapheme boundary in **UTF-16 offset** space.
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .as_str()
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+        let mut utf16_pos = 0;
+        let mut prev = 0;
+        for ch in self.content.chars() {
+            let char_len = ch.len_utf16();
+            if utf16_pos > 0 && utf16_pos >= offset {
+                return prev;
+            }
+            prev = utf16_pos;
+            utf16_pos += char_len;
+        }
+        prev
     }
 
+    /// Next grapheme boundary in **UTF-16 offset** space.
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .as_str()
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+        let total = self.content_utf16_len();
+        let mut utf16_pos = 0;
+        for ch in self.content.chars() {
+            let char_len = ch.len_utf16();
+            let next_pos = utf16_pos + char_len;
+            if utf16_pos == offset || (utf16_pos < offset && next_pos >= offset) {
+                return next_pos;
+            }
+            utf16_pos = next_pos;
+        }
+        total
     }
 
-    fn replace_text_in_range(
+    /// Convert a UTF-8 byte offset to a UTF-16 code unit offset.
+    fn utf8_to_utf16_offset(&self, utf8_offset: usize) -> usize {
+        self.content[..utf8_offset.min(self.content.len())]
+            .chars()
+            .map(|c| c.len_utf16())
+            .sum()
+    }
+
+    /// Convert a UTF-16 code unit offset to a UTF-8 byte offset.
+    fn utf16_to_utf8_offset(&self, utf16_offset: usize) -> usize {
+        let mut utf8_pos = 0;
+        let mut utf16_pos = 0;
+        for ch in self.content.chars() {
+            if utf16_pos >= utf16_offset {
+                break;
+            }
+            utf16_pos += ch.len_utf16();
+            utf8_pos += ch.len_utf8();
+        }
+        utf8_pos
+    }
+
+    /// Get the total UTF-16 length of the content.
+    fn content_utf16_len(&self) -> usize {
+        self.content.chars().map(|c| c.len_utf16()).sum()
+    }
+
+    /// Extract a substring given a UTF-16 range.
+    fn utf16_range_to_string(&self, range: &Range<usize>) -> String {
+        let start = self.utf16_to_utf8_offset(range.start);
+        let end = self.utf16_to_utf8_offset(range.end);
+        self.content[start..end].to_string()
+    }
+
+    /// Replace text at the current selection or marked range.
+    /// `new_text` is the string to insert.
+    fn replace_text_internal(
         &mut self,
         range_utf16: Option<Range<usize>>,
         new_text: &str,
-        cx: &mut Context<Self>,
     ) {
         let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+            .clone()
+            .unwrap_or_else(|| self.selected_range.clone());
+
+        let start = self.utf16_to_utf8_offset(range.start);
+        let end = self.utf16_to_utf8_offset(range.end);
 
         self.content =
-            (self.content[..range.start].to_owned() + new_text + &self.content[range.end..]).into();
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+            (self.content[..start].to_owned() + new_text + &self.content[end..]).into();
+
+        let new_cursor = range.start + new_text.encode_utf16().count();
+        self.selected_range = new_cursor..new_cursor;
         self.marked_range.take();
+
         if let Some(ref cb) = self.on_change {
             let text = self.content.to_string();
             cb(&text);
         }
-        cx.notify();
-    }
-
-    fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-        utf8_offset
-    }
-
-    fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        for ch in self.content.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-        utf16_offset
-    }
-
-    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
-    }
-
-    fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
     }
 }
 
@@ -316,13 +337,16 @@ impl EntityInputHandler for TextInput {
     fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
+        adjusted_range: &mut Option<Range<usize>>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let range = self.range_from_utf16(&range_utf16);
-        actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        let total = self.content_utf16_len();
+        let start = range_utf16.start.min(total);
+        let end = range_utf16.end.min(total);
+        let actual = start..end;
+        adjusted_range.replace(actual.clone());
+        Some(self.utf16_range_to_string(&actual))
     }
 
     fn selected_text_range(
@@ -332,7 +356,7 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
         Some(UTF16Selection {
-            range: self.range_to_utf16(&self.selected_range),
+            range: self.selected_range.clone(),
             reversed: self.selection_reversed,
         })
     }
@@ -342,13 +366,19 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.marked_range
-            .as_ref()
-            .map(|range| self.range_to_utf16(range))
+        eprintln!("[TextInput] marked_text_range: {:?}", self.marked_range);
+        self.marked_range.clone()
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        eprintln!("[TextInput] unmark_text");
         self.marked_range = None;
+        // 当用户完成输入法输入（unmark_text）时，触发 on_change 回调
+        if let Some(ref cb) = self.on_change {
+            let text = self.content.to_string();
+            cb(&text);
+        }
+        cx.notify();
     }
 
     fn replace_text_in_range(
@@ -358,20 +388,8 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        self.content =
-            (self.content[..range.start].to_owned() + new_text + &self.content[range.end..]).into();
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
-        self.marked_range.take();
-        if let Some(ref cb) = self.on_change {
-            let text = self.content.to_string();
-            cb(&text);
-        }
+        eprintln!("[TextInput] replace_text_in_range: range={:?}, text={:?}, len={}", range_utf16, new_text, new_text.len());
+        self.replace_text_internal(range_utf16, new_text);
         cx.notify();
     }
 
@@ -383,24 +401,36 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        eprintln!("[TextInput] replace_and_mark_text_in_range: range={:?}, text={:?}, sel={:?}", range_utf16, new_text, new_selected_range_utf16);
         let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
+            .clone()
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        let start = self.utf16_to_utf8_offset(range.start);
+        let end = self.utf16_to_utf8_offset(range.end);
+
         self.content =
-            (self.content[..range.start].to_owned() + new_text + &self.content[range.end..]).into();
+            (self.content[..start].to_owned() + new_text + &self.content[end..]).into();
+
+        let new_text_utf16_len = new_text.encode_utf16().count();
+
         if !new_text.is_empty() {
-            self.marked_range = Some(range.start..range.start + new_text.len());
+            self.marked_range = Some(range.start..range.start + new_text_utf16_len);
         } else {
             self.marked_range = None;
         }
+
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+            .map(|r| range.start + r.start..range.start + r.end)
+            .unwrap_or_else(|| {
+                let pos = range.start + new_text_utf16_len;
+                pos..pos
+            });
+
+        // 注意：在标记文本（输入法输入）时，不调用 on_change 回调，
+        // 只有在 unmark_text 或 commit 时才会调用
         cx.notify();
     }
 
@@ -412,14 +442,18 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
-        let range = self.range_from_utf16(&range_utf16);
+        // ShapedLine.x_for_index expects a byte index in the shaped text.
+        // Since our shaped line is built from the content with char-count runs,
+        // the index should match UTF-16 offset when using proper shaping.
+        let start = self.utf16_to_utf8_offset(range_utf16.start);
+        let end = self.utf16_to_utf8_offset(range_utf16.end);
         Some(Bounds::from_corners(
             Point::new(
-                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.left() + last_layout.x_for_index(start),
                 bounds.top(),
             ),
             Point::new(
-                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.left() + last_layout.x_for_index(end),
                 bounds.bottom(),
             ),
         ))
@@ -433,8 +467,11 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
+        // x_for_index returns x position for given byte index
+        // We need to find the UTF-16 offset corresponding to that byte index
         let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
-        Some(self.offset_to_utf16(utf8_index))
+        // Convert byte index to UTF-16
+        Some(self.utf8_to_utf16_offset(utf8_index))
     }
 }
 
@@ -500,8 +537,22 @@ impl Element for TextInputElement {
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
+        let cursor_utf16 = input.cursor_offset();
         let style = window.text_style();
+
+        // Convert UTF-16 offset to byte index for ShapedLine methods.
+        let utf16_to_utf8 = |s: &str, utf16_offset: usize| -> usize {
+            let mut utf8_pos = 0;
+            let mut utf16_pos = 0;
+            for ch in s.chars() {
+                if utf16_pos >= utf16_offset {
+                    break;
+                }
+                utf16_pos += ch.len_utf16();
+                utf8_pos += ch.len_utf8();
+            }
+            utf8_pos
+        };
 
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), hsla(0., 0., 0., 0.2))
@@ -509,37 +560,48 @@ impl Element for TextInputElement {
             (content, style.color)
         };
 
+        // GPUI TextRun.len expects the count of Unicode scalar values (Rust chars).
+        let text_char_count = display_text.chars().count();
         let run = gpui::TextRun {
-            len: display_text.len(),
+            len: text_char_count,
             font: style.font(),
             color: text_color,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            vec![
-                gpui::TextRun {
-                    len: marked_range.start,
+
+        let marked_range = input.marked_range.clone();
+        let runs = if let Some(marked_range) = marked_range.as_ref() {
+            let start = utf16_to_utf8(&display_text, marked_range.start);
+            let end = utf16_to_utf8(&display_text, marked_range.end);
+            let before_chars = display_text[..start].chars().count();
+            let marked_chars = display_text[start..end].chars().count();
+            let after_chars = text_char_count - before_chars - marked_chars;
+
+            let mut result_runs: Vec<gpui::TextRun> = Vec::new();
+            if before_chars > 0 {
+                result_runs.push(gpui::TextRun {
+                    len: before_chars,
                     ..run.clone()
-                },
-                gpui::TextRun {
-                    len: marked_range.end - marked_range.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                gpui::TextRun {
-                    len: display_text.len() - marked_range.end,
+                });
+            }
+            result_runs.push(gpui::TextRun {
+                len: marked_chars,
+                underline: Some(UnderlineStyle {
+                    color: Some(run.color),
+                    thickness: px(1.0),
+                    wavy: false,
+                }),
+                ..run.clone()
+            });
+            if after_chars > 0 {
+                result_runs.push(gpui::TextRun {
+                    len: after_chars,
                     ..run
-                },
-            ]
-            .into_iter()
-            .filter(|r| r.len > 0)
-            .collect()
+                });
+            }
+            result_runs
         } else {
             vec![run]
         };
@@ -547,9 +609,13 @@ impl Element for TextInputElement {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line = window
             .text_system()
-            .shape_line(display_text, font_size, &runs, None);
+            .shape_line(display_text.clone(), font_size, &runs, None);
 
-        let cursor_pos = line.x_for_index(cursor);
+        // x_for_index expects byte index, convert from UTF-16
+        let cursor_byte = utf16_to_utf8(&display_text, cursor_utf16);
+        let cursor_pos = line.x_for_index(cursor_byte);
+        let sel_start_byte = utf16_to_utf8(&display_text, selected_range.start);
+        let sel_end_byte = utf16_to_utf8(&display_text, selected_range.end);
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
@@ -566,11 +632,11 @@ impl Element for TextInputElement {
                 Some(fill(
                     Bounds::from_corners(
                         Point::new(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.left() + line.x_for_index(sel_start_byte),
                             bounds.top(),
                         ),
                         Point::new(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.left() + line.x_for_index(sel_end_byte),
                             bounds.bottom(),
                         ),
                     ),

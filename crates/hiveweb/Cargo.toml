@@ -1,0 +1,69 @@
+[package]
+name = "hiveweb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HiveClaw Admin Center - Backend API service"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono"] }
+
+# Redis
+redis = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Authentication
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
+
+# Object storage (S3 compatible)
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+dotenvy = { workspace = true }
+
+# CORS
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+mime = "0.3"
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "create-super-admin"
+path = "src/bin/create_super_admin.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[[bin]]
+name = "seed-bench"
+path = "src/bin/seed_bench.rs"

@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use futures::StreamExt;
 use gpui::{
-    div, prelude::*, px, rgb, AsyncApp, Context, Entity, MouseButton, SharedString, Window,
+    div, prelude::*, px, rgb, AsyncApp, Context, Entity, MouseButton, SharedString, StatefulInteractiveElement, Window,
 };
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ use crate::model::conversation::{
     Attachment, AttachmentId, AttachmentPayload, Author, PendingTurnId, TurnContent, TurnError,
     TurnErrorKind, TurnStatus, MAX_ATTACHMENTS_PER_TURN, TOTAL_ATTACHMENTS_MAX_BYTES,
 };
-use crate::ui::app::{AppRoute, HiveGuiApp};
+use crate::ui::app::{AppRoute, HiveGuiAppState};
 use crate::ui::input::TextInput;
 use crate::ui::strings_zh;
 
@@ -39,12 +39,12 @@ impl ConversationView {
 impl Render for ConversationView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = {
-            let app = cx.global::<HiveGuiApp>();
+            let app = cx.global::<HiveGuiAppState>();
             app.conversation.read(cx).is_busy()
         };
 
         let pending = cx
-            .global::<HiveGuiApp>()
+            .global::<HiveGuiAppState>()
             .pending_input
             .lock()
             .map(|p| p.clone())
@@ -57,11 +57,10 @@ impl Render for ConversationView {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .p(px(16.0))
-            .flex_grow();
+            .p(px(16.0));
 
         let snapshot: Vec<TurnSnapshot> = {
-            let app = cx.global::<HiveGuiApp>();
+            let app = cx.global::<HiveGuiAppState>();
             app.conversation
                 .read(cx)
                 .turns()
@@ -148,7 +147,7 @@ impl Render for ConversationView {
         // Sync editor text to the global pending_input mirror
         {
             let content = self.editor_input.read(cx).content().to_string();
-            if let Ok(mut p) = cx.global::<HiveGuiApp>().pending_input.lock() {
+            if let Ok(mut p) = cx.global::<HiveGuiAppState>().pending_input.lock() {
                 if p.text != content {
                     p.text = content;
                 }
@@ -218,6 +217,7 @@ impl Render for ConversationView {
                 .border_1()
                 .border_color(rgb(0xd0d0d0))
                 .text_color(rgb(0x111111))
+                .text_size(px(12.0))
                 .child(attach_label);
             if !attach_disabled {
                 b = b
@@ -247,6 +247,7 @@ impl Render for ConversationView {
                 } else {
                     rgb(0xffffff)
                 })
+                .text_size(px(12.0))
                 .child(strings_zh::SEND_BUTTON.to_string());
             if !send_disabled {
                 b = b
@@ -280,9 +281,17 @@ impl Render for ConversationView {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(12.0))
+            .px(px(12.0))
+            .pt(px(12.0))
+            .pb(px(12.0))
             .child(top_bar())
-            .child(turns_col)
+            .child(
+                div()
+                    .id("turns-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(turns_col)
+            )
             .children(indicator)
             .child(chip_row)
             .children(transient)
@@ -292,6 +301,7 @@ impl Render for ConversationView {
                     .flex()
                     .flex_row()
                     .gap(px(8.0))
+                    .pt(px(8.0))
                     .child(attach_button)
                     .child(send_button),
             )
@@ -307,7 +317,7 @@ fn top_bar() -> impl IntoElement {
         .cursor_pointer()
         .child(format!("← {}", strings_zh::HOME_TITLE))
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
-            cx.update_global::<HiveGuiApp, _>(|app, _| app.route = AppRoute::Home);
+            cx.update_global::<HiveGuiAppState, _>(|app, _| app.route = AppRoute::Home);
             cx.refresh_windows();
         })
 }
@@ -348,7 +358,7 @@ impl From<&crate::model::conversation::ConversationTurn> for TurnSnapshot {
 
 fn retry_turn(turn_id: crate::model::conversation::TurnId, cx: &mut gpui::App) {
     let Some((pending, model, text, attachments, url, http)) =
-        cx.update_global::<HiveGuiApp, _>(|app: &mut HiveGuiApp, cx| {
+        cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, cx| {
             let url = app.config.hiveclaw_url.clone();
             let http = app.http.clone();
             let (pending, text, attachments) = app.conversation.update(
@@ -389,15 +399,15 @@ fn spawn_send(cx: &mut gpui::App) {
     // by walking the app's `Conversation` model — the editor text +
     // attachments are *moved* into the model the moment we successfully
     // call `send_user_message`. Until that call, we read them from the
-    // active ConversationView through `cx.update_global<HiveGuiApp>`
+    // active ConversationView through `cx.update_global<HiveGuiAppState>`
     // which routes back to the view via a callback hook.
     //
     // v1.1 simplification: the send pipeline reads `editor_text` and
-    // `pending_attachments` directly off `HiveGuiApp` via a small
+    // `pending_attachments` directly off `HiveGuiAppState` via a small
     // `pending_input` mirror that the view keeps in sync on every
-    // render. See `HiveGuiApp::pending_input`.
+    // render. See `HiveGuiAppState::pending_input`.
     let Some((text, attachments)) =
-        cx.update_global::<HiveGuiApp, _>(|app: &mut HiveGuiApp, _cx| {
+        cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, _cx| {
             let p = app.pending_input.lock().ok()?.clone();
             Some((p.text, p.attachments))
         })
@@ -405,11 +415,11 @@ fn spawn_send(cx: &mut gpui::App) {
         return;
     };
 
-    let url = cx.global::<HiveGuiApp>().config.hiveclaw_url.clone();
-    let http = cx.global::<HiveGuiApp>().http.clone();
+    let url = cx.global::<HiveGuiAppState>().config.hiveclaw_url.clone();
+    let http = cx.global::<HiveGuiAppState>().http.clone();
     let model = "openclaw:hiveclaw-placeholder-v1".to_string();
 
-    let pending = cx.update_global::<HiveGuiApp, _>(|app: &mut HiveGuiApp, cx| {
+    let pending = cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, cx| {
         let r = app.conversation.update(
             cx,
             |conv: &mut crate::model::conversation::Conversation, _| {
@@ -452,8 +462,8 @@ fn spawn_request(
                         match ev {
                             Ok(streaming::StreamingEvent::Created { .. }) => {}
                             Ok(streaming::StreamingEvent::Delta { delta, .. }) => {
-                                cx.update_global::<HiveGuiApp, _>(
-                                    |app: &mut HiveGuiApp, cx| {
+                                cx.update_global::<HiveGuiAppState, _>(
+                                    |app: &mut HiveGuiAppState, cx| {
                                         app.conversation.update(cx, |conv: &mut crate::model::conversation::Conversation, _| {
                                             conv.append_assistant_chunk(pending, &delta);
                                         });
@@ -462,8 +472,8 @@ fn spawn_request(
                                 cx.update(|cx| cx.refresh_windows());
                             }
                             Ok(streaming::StreamingEvent::Completed { full_text, .. }) => {
-                                cx.update_global::<HiveGuiApp, _>(
-                                    |app: &mut HiveGuiApp, cx| {
+                                cx.update_global::<HiveGuiAppState, _>(
+                                    |app: &mut HiveGuiAppState, cx| {
                                         app.conversation.update(cx, |conv: &mut crate::model::conversation::Conversation, _| {
                                             conv.record_assistant_reply(
                                                 pending,
@@ -494,7 +504,7 @@ fn spawn_request(
 
 async fn record_failure(cx: &mut AsyncApp, pending: PendingTurnId, err: client::ClientError) {
     let (kind, message_zh) = classify_error(&err);
-    cx.update_global::<HiveGuiApp, _>(|app: &mut HiveGuiApp, cx| {
+    cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, cx| {
         app.conversation.update(
             cx,
             |conv: &mut crate::model::conversation::Conversation, _| {
@@ -606,7 +616,7 @@ async fn ingest_attachment(cx: &AsyncApp, path: PathBuf) -> Result<(), IngestErr
         payload: AttachmentPayload::Inline { base64_data_uri },
     };
 
-    let result = cx.update_global::<HiveGuiApp, _>(|app: &mut HiveGuiApp, _cx| {
+    let result = cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, _cx| {
         let mut p = match app.pending_input.lock() {
             Ok(p) => p,
             Err(_) => return IngestResult::LockFailed,
@@ -650,7 +660,7 @@ async fn ingest_attachment(cx: &AsyncApp, path: PathBuf) -> Result<(), IngestErr
 }
 
 fn set_transient_error(cx: &AsyncApp, msg: String) {
-    cx.update_global::<HiveGuiApp, _>(|app: &mut HiveGuiApp, _cx| {
+    cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, _cx| {
         if let Ok(mut p) = app.pending_input.lock() {
             p.transient_error = Some(msg);
         }
@@ -659,7 +669,7 @@ fn set_transient_error(cx: &AsyncApp, msg: String) {
 }
 
 fn remove_pending_attachment_global(idx: usize, cx: &mut gpui::App) {
-    cx.update_global::<HiveGuiApp, _>(|app, _cx| {
+    cx.update_global::<HiveGuiAppState, _>(|app, _cx| {
         if let Ok(mut p) = app.pending_input.lock() {
             if idx < p.attachments.len() {
                 p.attachments.remove(idx);
@@ -671,7 +681,7 @@ fn remove_pending_attachment_global(idx: usize, cx: &mut gpui::App) {
 
 /// Mirror of the user's currently-pending input. The view writes into it
 /// on every keystroke / attach, and `spawn_send` drains it. Mirroring
-/// to `HiveGuiApp` (not the view) keeps the send dispatch decoupled
+/// to `HiveGuiAppState` (not the view) keeps the send dispatch decoupled
 /// from view-mutation lifetimes.
 #[derive(Default, Clone)]
 pub struct PendingInput {

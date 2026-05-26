@@ -31,6 +31,17 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
+log = { workspace = true }
+async-trait = { workspace = true }
+dirs = { workspace = true }
+
+# nanobot crates
+agent = { path = "../agent" }
+cli = { path = "../cli" }
+config = { path = "../config" }
+bus = { path = "../bus" }
+session = { path = "../session" }
+providers = { path = "../providers" }
 
 [dev-dependencies]
 reqwest = { workspace = true }

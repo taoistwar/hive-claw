@@ -335,10 +335,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ## Phase 9: User Story 7 — Category / Tag（P3）
 
-- [ ] T133 [P] [US7] Category service + API `crates/hiveweb/src/services/category.rs` + `api/category.rs`
-- [ ] T134 [P] [US7] Tag service + API `crates/hiveweb/src/services/tag.rs` + `api/tag.rs`：删除时检查 taggings 引用
-- [ ] T135 [P] [US7] `web/src/services/category.ts` + `web/src/services/tag.ts`
-- [ ] T136 [P] [US7] `web/src/pages/CategoryPage.tsx`（树形）+ `web/src/pages/TagPage.tsx`
+- [x] T133 [P] [US7] Category service + API `crates/hiveweb/src/services/category.rs` + `api/category.rs`
+- [x] T134 [P] [US7] Tag service + API `crates/hiveweb/src/services/tag.rs` + `api/tag.rs`：删除时检查 taggings 引用
+- [x] T135 [P] [US7] `web/src/services/category.ts` + `web/src/services/tag.ts`
+- [x] T136 [P] [US7] `web/src/pages/CategoryPage.tsx`（树形）+ `web/src/pages/TagPage.tsx`
 
 **Checkpoint**：T044 转绿。
 

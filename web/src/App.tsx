@@ -7,6 +7,8 @@ import PluginPage from './pages/PluginPage'
 import FunctionPage from './pages/FunctionPage'
 import ToolPage from './pages/ToolPage'
 import SkillPage from './pages/SkillPage'
+import CategoryPage from './pages/CategoryPage'
+import TagPage from './pages/TagPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 
@@ -24,6 +26,8 @@ function App() {
               <Route path="functions" element={<FunctionPage />} />
               <Route path="tools" element={<ToolPage />} />
               <Route path="skills" element={<SkillPage />} />
+              <Route path="categories" element={<CategoryPage />} />
+              <Route path="tags" element={<TagPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

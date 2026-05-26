@@ -82,11 +82,15 @@ pub async fn list_admins(
 ) -> ApiResponse<PaginatedResponse<AdminPublic>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
-        Err(_) => return AppError::Forbidden("Invalid role".to_string()).into_response(),
+        Err(_) => {
+            return AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response()
+        }
     };
 
     if !caller_role.can_manage_admins() {
-        return AppError::Forbidden("Insufficient permissions".to_string()).into_response();
+        return AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response();
     }
 
     let (admins, total) = match admin::list_admins(&state.pool, query.offset, query.limit).await {
@@ -113,7 +117,7 @@ pub async fn get_admin(
 ) -> ApiResponse<AdminPublic> {
     let admin = match admin::get_admin_by_id(&state.pool, id).await {
         Ok(Some(admin)) => admin,
-        Ok(None) => return AppError::NotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -130,11 +134,15 @@ pub async fn create_admin(
 ) -> ApiResponse<AdminPublic> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
-        Err(_) => return AppError::Forbidden("Invalid role".to_string()).into_response(),
+        Err(_) => {
+            return AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response()
+        }
     };
 
     if !caller_role.can_manage_admins() {
-        return AppError::Forbidden("Insufficient permissions".to_string()).into_response();
+        return AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response();
     }
 
     let target_role = match Role::try_from(req.role) {
@@ -143,7 +151,8 @@ pub async fn create_admin(
     };
 
     if !caller_role.can_modify_role(&target_role) {
-        return AppError::Forbidden("Cannot assign this role".to_string()).into_response();
+        return AppError::InsufficientPermission("Cannot assign this role".to_string())
+            .into_response();
     }
 
     let password_hash = match hash_password(&req.password) {
@@ -163,7 +172,8 @@ pub async fn create_admin(
         Ok(admin) => admin,
         Err(e) => {
             if e.to_string().contains("already exists") {
-                return AppError::Conflict("Phone number already exists".to_string()).into_response();
+                return AppError::PhoneAlreadyExists("Phone number already exists".to_string())
+                    .into_response();
             }
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -181,11 +191,15 @@ pub async fn update_admin(
 ) -> ApiResponse<AdminPublic> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
-        Err(_) => return AppError::Forbidden("Invalid role".to_string()).into_response(),
+        Err(_) => {
+            return AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response()
+        }
     };
 
     if !caller_role.can_manage_admins() {
-        return AppError::Forbidden("Insufficient permissions".to_string()).into_response();
+        return AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response();
     }
 
     let target_role = match Role::try_from(req.role) {
@@ -194,12 +208,13 @@ pub async fn update_admin(
     };
 
     if !caller_role.can_modify_role(&target_role) {
-        return AppError::Forbidden("Cannot assign this role".to_string()).into_response();
+        return AppError::InsufficientPermission("Cannot assign this role".to_string())
+            .into_response();
     }
 
     let updated_admin = match admin::update_admin(&state.pool, id, &req.nickname, req.role).await {
         Ok(admin) => admin,
-        Err(_) => return AppError::NotFound("Admin not found".to_string()).into_response(),
+        Err(_) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
     };
 
     ApiResponse::success(updated_admin.into())
@@ -212,11 +227,15 @@ pub async fn delete_admin(
 ) -> ApiResponse<()> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
-        Err(_) => return AppError::Forbidden("Invalid role".to_string()).into_response(),
+        Err(_) => {
+            return AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response()
+        }
     };
 
     if !caller_role.can_manage_admins() {
-        return AppError::Forbidden("Insufficient permissions".to_string()).into_response();
+        return AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response();
     }
 
     match admin::delete_admin(&state.pool, id).await {
@@ -224,9 +243,9 @@ pub async fn delete_admin(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not found") {
-                AppError::NotFound(msg).into_response()
+                AppError::AdminNotFound(msg).into_response()
             } else if msg.contains("super admin") {
-                AppError::Forbidden(msg).into_response()
+                AppError::CannotDeleteSuperAdmin(msg).into_response()
             } else {
                 tracing::error!("Database error: {}", e);
                 AppError::Internal("Service unavailable".to_string()).into_response()
@@ -243,11 +262,15 @@ pub async fn toggle_admin_status(
 ) -> ApiResponse<AdminPublic> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
-        Err(_) => return AppError::Forbidden("Invalid role".to_string()).into_response(),
+        Err(_) => {
+            return AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response()
+        }
     };
 
     if !caller_role.can_manage_admins() {
-        return AppError::Forbidden("Insufficient permissions".to_string()).into_response();
+        return AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response();
     }
 
     if req.status != 0 && req.status != 1 {
@@ -259,9 +282,9 @@ pub async fn toggle_admin_status(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not found") {
-                AppError::NotFound(msg).into_response()
+                AppError::AdminNotFound(msg).into_response()
             } else if msg.contains("last active super admin") {
-                AppError::Forbidden(msg).into_response()
+                AppError::CannotDisableLastSuperAdmin(msg).into_response()
             } else {
                 tracing::error!("Database error: {}", e);
                 AppError::Internal("Service unavailable".to_string()).into_response()

@@ -241,6 +241,7 @@ description: "Task list for admin center implementation"
 - [ ] T099 [P] [SC-003] 性能基准：对 `GET /api/dashboard/stats` 与 `GET /api/dashboard/recent-logins` 运行同样压测，确认整体页面数据加载 ≤ 3 秒；记录在 `crates/hiveweb/benches/dashboard.rs`
 - [ ] T100 [P] [Principle IV] 对 `admins`/`login_records` 表的所有热路径查询执行 `EXPLAIN`，确认使用 `idx_phone`、`idx_login_at`；结果写入 `specs/003-admin-center/perf-evidence.md`
 - [ ] T101 [P] [SC-005] 使用 `seed` 工具构造 100 管理员 + 10 000 登录记录数据集，验证仪表盘与列表 p95 仍在预算内
+- [x] T102 [spec.md §Error Codes] 统一后端业务错误码到 1001/1002/1003/1004/2001/3001/3002/3003/3004（修订 `crates/hiveweb/src/utils/error.rs`、`api/auth.rs`、`api/admin.rs`、`middleware/auth.rs`）
 
 ---
 

@@ -59,14 +59,18 @@ pub async fn login(
     };
 
     if is_locked {
-        return AppError::Forbidden("Account locked due to too many failed login attempts. Try again in 15 minutes".to_string()).into_response();
+        return AppError::AccountLocked(
+            "Account locked due to too many failed login attempts. Try again in 15 minutes"
+                .to_string(),
+        )
+        .into_response();
     }
 
     let admin = match admin::find_admin_by_phone(&state.pool, &req.phone).await {
         Ok(Some(admin)) => admin,
         Ok(None) => {
             let _ = auth_service::increment_failed_attempts(&state.redis, &req.phone).await;
-            return AppError::Unauthorized("Invalid phone or password".to_string()).into_response();
+            return AppError::WrongPassword("Invalid phone or password".to_string()).into_response();
         }
         Err(e) => {
             tracing::error!("Database error: {}", e);
@@ -75,7 +79,7 @@ pub async fn login(
     };
 
     if admin.status == 0 {
-        return AppError::Forbidden("Account has been disabled".to_string()).into_response();
+        return AppError::AccountDisabled("Account has been disabled".to_string()).into_response();
     }
 
     let password_valid = match verify_password(&req.password, &admin.password_hash) {
@@ -96,11 +100,6 @@ pub async fn login(
         };
 
         let remaining = 5 - failed_count;
-        let msg = if remaining <= 0 {
-            "Account locked due to too many failed login attempts. Try again in 15 minutes".to_string()
-        } else {
-            format!("Invalid phone or password. {} attempts remaining", remaining)
-        };
 
         let _ = auth_service::create_login_record(
             &state.pool,
@@ -109,9 +108,21 @@ pub async fn login(
             ip_address,
             false,
             Some("wrong_password"),
-        ).await;
+        )
+        .await;
 
-        return AppError::Unauthorized(msg).into_response();
+        if remaining <= 0 {
+            return AppError::AccountLocked(
+                "Account locked due to too many failed login attempts. Try again in 15 minutes"
+                    .to_string(),
+            )
+            .into_response();
+        }
+        return AppError::WrongPassword(format!(
+            "Invalid phone or password. {} attempts remaining",
+            remaining
+        ))
+        .into_response();
     }
 
     let _ = auth_service::reset_failed_attempts(&state.redis, &req.phone).await;
@@ -153,7 +164,7 @@ pub async fn get_current_user(
 ) -> ApiResponse<AdminPublic> {
     let admin = match admin::get_admin_by_id(&state.pool, claims.admin_id).await {
         Ok(Some(admin)) => admin,
-        Ok(None) => return AppError::NotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();

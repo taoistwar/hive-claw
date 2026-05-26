@@ -59,9 +59,14 @@ pub async fn get_failed_attempts(redis: &RedisClient, phone: &str) -> Result<i64
 }
 
 pub async fn is_account_locked(redis: &RedisClient, phone: &str) -> Result<bool> {
+    // Redis TTL semantics:
+    //   -2 → key does not exist
+    //   -1 → key exists but has no expiry (counter is still being accumulated below the lockout threshold)
+    //   >0 → seconds remaining until expiry (account is locked)
+    // Must use a signed type so the negative sentinels survive the wire decode.
     let key = format!("{}{}", LOGIN_FAILED_KEY_PREFIX, phone);
     let mut conn = redis.get_multiplexed_async_connection().await?;
-    let ttl: usize = conn.ttl(&key).await?;
+    let ttl: i64 = conn.ttl(&key).await?;
     Ok(ttl > 0)
 }
 

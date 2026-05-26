@@ -15,11 +15,12 @@ vi.mock('../../hooks/useAuth', () => ({
 
 const sampleAdmin: Admin = {
   id: 1,
-  phone: '13800138000',
+  phone: '18810154696',
   nickname: 'Super',
   role: 3,
   status: 1,
   created_at: '2026-05-25T10:00:00Z',
+  updated_at: '2026-05-25T10:00:00Z',
   last_login_at: '2026-05-26T08:00:00Z',
 };
 

@@ -294,8 +294,8 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 - [ ] T116 [P] [US5] Agent service `crates/hiveweb/src/services/agent.rs`：CRUD + tree + depth 校验（违反 → 5006）+ main protection（DELETE → 5001；非 Super 修改 → 2001）+ dangerous capability 授予的 Super 校验 + model_preset 存在性校验（启动加载的 preset 集合；未命中 → 5007 `ModelPresetUnknown`）
 - [ ] T117 [P] [US5] Agent API `crates/hiveweb/src/api/agent.rs`：含 `GET /api/agents/model-presets`
-- [ ] T118 [US5] `runtime/agent.rs`：把 Agent 的 tools/skills/permissions 组装为 `agent::AgentRunner` 的 context（system_prompt = Agent.system_prompt + 拼接的 Skill markdown；ToolRegistry 子集 = Agent.tools）
-- [ ] T119 [US5] `runtime/agent.rs::route()`：把 `route_to_subagent(agent_id, reason)` 注册为一个特殊 Tool；hard-rule 检查 depth、loop 跳次（`AGENT_MAX_HOPS`）、capability denial；越界返回 SSE error 而非 LLM 自决
+- [x] T118 [US5] `runtime/orchestrator.rs`：每 hop build_agent_context (tools/skills/perms/children) + build_tools_schema (OpenAI function-calling) — replaces stub `runtime/agent.rs`
+- [x] T119 [US5] `runtime/orchestrator.rs::run_session` + `handle_route_tool`: route_to_subagent special tool + child-only routing + visited[] cycle detection + AGENT_MAX_HOPS guard; capability denial 已由 dispatcher 层 4030 处理
 - [ ] T120 [US5] `runtime/llm.rs::load_presets()`：解析 `llm_presets.toml`，调用 `providers::make_provider` 构造 primary，再用 `providers::FallbackProvider::new` 套上 fallback 链；标记 default
 - [ ] T121 [P] [US5] `web/src/services/agent.ts`
 - [ ] T122 [P] [US5] `web/src/components/AgentTree.tsx`：层级树展示，含 depth 限制提示
@@ -321,11 +321,11 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
   - **事件类型**（6 种）：`token` / `tool_call` / `tool_result` / `routed` / `fallback_used` / `done`（`error` 与 `done` 互斥作为流终点）
   - **会话所有权校验**（FR-027 v7）：JWT.admin_id == session.admin_id；不匹配 → 403；Super 例外但仍走显式判定
   - **并发限制**（CHK232）：bypass `RateLimit` 中间件；用独立计数器：同一 admin 同时活跃 SSE 流 > `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN`（默认 2）→ 立即返 429 + code 4291
-- [ ] T128 [US6] `runtime/agent.rs::run_session()`：把 chat 历史 + 用户最新消息喂给 `AgentRunner`，event-loop 推送 SSE 事件；中断断开时 user message 已 persist
+- [x] T128 [US6] `runtime/orchestrator::run_session()`：history+user msg 多 hop loop + 6 SSE 事件；user msg 流前 persist；assistant 由 finalize 写入；中断时 assistant 不入库
 - [ ] T129 [P] [US6] `web/src/services/chat.ts`：EventSource wrapper（解析 token / tool_call / routed / done / error）
 - [ ] T130 [P] [US6] `web/src/components/ChatStream.tsx`：6 SSE 事件渲染（`token` 增量、`tool_call`/`tool_result` 卡片对、`routed` 切换分隔条、`fallback_used` 模型切换提示、`done` 终态、`error` 错误展示）；"正在思考…" 占位（提交后到首事件之间）；30s 无响应超时降级；SSE 中途断开 → "连接中断 + 重新发送" 按钮（user 消息已 persist，assistant 中断内容不写库）
 - [ ] T131 [US6] `web/src/pages/ChatPage.tsx`：会话列表 + 当前对话区域
-- [ ] T132 [P] [US6] cron 任务 `crates/hiveweb/src/bin/chat_retention.rs`：按 `CHAT_RETENTION_DAYS` 删超期 session（级联清 message）
+- [x] T132 [P] [US6] cron 任务 `crates/hiveweb/src/bin/chat_retention.rs`：按 `CHAT_RETENTION_DAYS` 删超期 session（级联清 message）；注册为 `chat-retention` bin target
 - [ ] T161 [P] [US6] [SC-008] axe 检测 `web/src/components/__tests__/a11y_chat.test.tsx`：覆盖 ChatPage / ChatStream，0 critical/serious
 - [ ] T163 [P] [US6] Integration test `crates/hiveweb/tests/it_sse_concurrency.rs`：同一 admin 启 3 个 SSE 流（`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN=2`），第 3 次必返 429 + code 4291；关闭其中 1 个后第 3 个能成功建立
 
@@ -351,17 +351,17 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [ ] T139 [P] [SC-008] a11y 总集回归：CI 整合 T157+T158+T159+T160+T161 + Category/Tag 页面，0 critical/serious 跨所有页面（每个 US 内的 a11y 任务已分散到各自 Phase 末尾）
 - [ ] T140 [P] [SC-004] perf bench host_call dispatch：`crates/hiveweb/benches/host_call.rs`，目标 p95 ≤ 5 ms
 - [ ] T141 [P] [SC-005] perf bench Plugin call 命中池：`crates/hiveweb/benches/plugin_invoke.rs`，命中 p95 ≤ 50 ms，冷启动 ≤ 300 ms
-- [ ] T142 [P] [Principle IV] EXPLAIN 关键查询（plugins FULLTEXT + agents tree + chat_messages by session）→ 写入 `specs/004-agent-runtime/perf-evidence.md`
+- [x] T142 [P] [Principle IV] EXPLAIN 关键查询 + 结构化路径分析 → `specs/004-agent-runtime/perf-evidence.md`（criterion 微基准 T140/T141/T153–T156 留待后续）
 - [ ] T153 [P] [SC-001] Plugin 上传性能基准 `crates/hiveweb/benches/plugin_upload.rs`：1 MB Plugin 上传（入库 + S3 PUT）端到端 p95 ≤ 5 秒；结果写入 perf-evidence.md
 - [ ] T154 [P] [SC-002] Plugin 列表 + 三维检索基准 `crates/hiveweb/benches/plugin_list.rs`：500 条 Plugin 数据集下 list + filter + FULLTEXT search 各 p95 ≤ 1 秒
 - [ ] T155 [P] [SC-003] Workflow 保存 + 校验基准 `crates/hiveweb/benches/workflow_save.rs`：50 节点 DAG 的 PUT graph（含 cycle detection + mapping 校验）p95 ≤ 1 秒
 - [ ] T156 [P] [SC-006] Agent 路由决策端到端基准 `crates/hiveweb/benches/agent_route.rs`：含 1 次 LLM 决策调用的路由 p95 ≤ 1.5 秒（mock LLM provider 固定 800ms 响应以隔离 LLM 外部延迟）
 - [x] T143 ~~更新 quickstart.md~~ — 已在 analyze 整改阶段直接落地（ModelPreset 下拉、Skill markdown 步骤）
 - [x] T144 ~~修订 contracts/api.md Skills~~ — 已在 analyze 整改阶段直接落地（markdown 模式、+ 4094 OptimisticLockConflict、+ 5008 BuiltinSkillProtected）
-- [ ] T145 [P] 添加 audit log 保留 cron `crates/hiveweb/src/bin/audit_retention.rs`：默认保留 **90 天**（可配 `AUDIT_RETENTION_DAYS` env，与 spec FR-022 对齐），每日扫描清理超期 `runtime_audit_logs` 行
-- [ ] T146 [P] 文档化危险 capability 授予流程到 `specs/004-agent-runtime/SECURITY.md`
-- [ ] T147 [P] 在 `web/src/pages/DashboardPage.tsx` 加 runtime 概览卡片（active plugins / today's host_calls / failed calls）
-- [ ] T148 [P] CHANGELOG 更新 + tasks.md 标记所有完成项
+- [x] T145 [P] 添加 audit log 保留 cron `crates/hiveweb/src/bin/audit_retention.rs`：默认保留 **90 天**（可配 `AUDIT_RETENTION_DAYS` env，与 spec FR-022 对齐），每日扫描清理超期 `runtime_audit_logs` 行；注册为 `audit-retention` bin
+- [x] T146 [P] 文档化危险 capability 授予流程 → `specs/004-agent-runtime/SECURITY.md`（含 capability auth chain / 上传 pipeline / SSE 所有权 / 9 known gaps）
+- [x] T147 [P] 在 `web/src/pages/DashboardPage.tsx` 加 RuntimePoolCard（in_use / idle / created_total / cache_misses + reset_failures alert thresholds）
+- [x] T148 [P] CHANGELOG 更新 + tasks.md 标记 → `specs/004-agent-runtime/CHANGELOG.md`
 
 ---
 

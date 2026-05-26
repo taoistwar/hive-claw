@@ -84,3 +84,11 @@ path = "src/bin/seed.rs"
 [[bin]]
 name = "seed-bench"
 path = "src/bin/seed_bench.rs"
+
+[[bin]]
+name = "audit-retention"
+path = "src/bin/audit_retention.rs"
+
+[[bin]]
+name = "chat-retention"
+path = "src/bin/chat_retention.rs"

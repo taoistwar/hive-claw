@@ -1,7 +1,13 @@
 import Dashboard from '../components/Dashboard';
+import { RuntimePoolCard } from '../components/RuntimePoolCard';
 
 const DashboardPage: React.FC = () => {
-  return <Dashboard />;
+  return (
+    <div>
+      <Dashboard />
+      <RuntimePoolCard />
+    </div>
+  );
 };
 
 export default DashboardPage;

@@ -17,7 +17,7 @@ pub mod pool;
 pub mod workflow;
 
 pub use capability::{CapabilityRegistry, CAPABILITIES};
-pub use invoker::{Invoker, InvocationCtx, InvokerError};
+pub use invoker::{HostInvocationCtx, Invoker, InvokerError};
 pub use llm::{LlmAdapterError, LlmPresetName, LlmRegistry, PresetEntry};
 pub use pool::{InstancePool, PerPluginMetrics, PluginPool, PoolConfig, PoolMetrics};
 pub use workflow::{WorkflowError, WorkflowExecutor};

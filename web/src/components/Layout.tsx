@@ -13,6 +13,7 @@ import {
   TagsOutlined,
   RobotOutlined,
   PartitionOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 
@@ -78,6 +79,11 @@ const AppLayout: React.FC = () => {
               key: '/workflows',
               icon: <PartitionOutlined />,
               label: 'Workflows',
+            },
+            {
+              key: '/chat',
+              icon: <MessageOutlined />,
+              label: 'Chat',
             },
           ]
         : []),

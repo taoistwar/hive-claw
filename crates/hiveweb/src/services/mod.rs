@@ -14,3 +14,4 @@ pub mod skill;
 pub mod tag;
 pub mod tool;
 pub mod workflow;
+pub mod chat;

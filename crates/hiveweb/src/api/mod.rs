@@ -10,6 +10,7 @@ pub mod function;
 pub mod plugin;
 pub mod runtime;
 pub mod skill;
+pub mod chat;
 pub mod tag;
 pub mod tool;
 pub mod workflow;
@@ -136,6 +137,7 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(runtime::router())
         .merge(agent::router())
         .merge(workflow::router())
+        .merge(chat::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 

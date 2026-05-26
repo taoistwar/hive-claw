@@ -7,6 +7,7 @@ pub mod capability;
 pub mod category;
 pub mod function;
 pub mod plugin;
+pub mod runtime;
 pub mod skill;
 pub mod tag;
 pub mod tool;
@@ -122,6 +123,7 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(category::router())
         .merge(tag::router())
         .merge(capability::router())
+        .merge(runtime::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 

@@ -20,16 +20,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::models::Plugin as PluginRow;
-use crate::runtime::capability::{self, CapabilityRegistry, DispatchCtx};
+use crate::runtime::capability::{self, CapabilityRegistry, DispatchCtx, DispatcherDeps};
 use crate::runtime::pool::{InstancePool, PoolError, PooledPlugin};
 use crate::services::runtime_audit::{self, AuditRecord};
 use crate::utils::error::AppError;
 
 /// 单次 host_call 时由 invoker 注入到 Plugin host_context 的上下文。
-/// 包含调用元信息 + 全局共享句柄（pool / registry）。
+/// 包含调用元信息 + 全局共享 dispatcher deps（pool / s3 / registry）。
 pub struct HostInvocationCtx {
-    pub pool: MySqlPool,
-    pub registry: Arc<CapabilityRegistry>,
+    pub deps: DispatcherDeps,
     pub dispatch: DispatchCtx,
 }
 
@@ -50,7 +49,7 @@ pub fn host_call(
     let envelope: String = plugin.memory_get_val(&inputs[0])?;
     let ctx = plugin.host_context::<Arc<HostInvocationCtx>>()?.clone();
     let result = tokio::runtime::Handle::current().block_on(async move {
-        capability::dispatch(&ctx.pool, &ctx.registry, &ctx.dispatch, &envelope).await
+        capability::dispatch(&ctx.deps, &ctx.dispatch, &envelope).await
     });
     let handle = plugin.memory_new(&result)?;
     if !outputs.is_empty() {
@@ -110,6 +109,11 @@ impl Invoker {
         input_json: String,
         dispatch_ctx: DispatchCtx,
     ) -> Result<String, InvokerError> {
+        let deps = DispatcherDeps {
+            pool: db_pool.clone(),
+            s3: s3.clone(),
+            registry,
+        };
         let t0 = Instant::now();
 
         // 1. resolve plugin row
@@ -147,8 +151,7 @@ impl Invoker {
 
         // 4. assemble host context for this invocation
         let host_ctx = Arc::new(HostInvocationCtx {
-            pool: db_pool.clone(),
-            registry,
+            deps,
             dispatch: dispatch_ctx,
         });
 

@@ -8,10 +8,12 @@
 //!   Plugin host_call(envelope) -> 解析 -> 鉴权 (Agent.permissions) ->
 //!   未知 capability 返 4045 -> handler -> audit -> 返回 envelope。
 
+use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::runtime::capabilities;
@@ -135,13 +137,28 @@ async fn load_agent_permissions(pool: &MySqlPool, agent_id: i64) -> Result<HashS
     Ok(rows.into_iter().map(|(c,)| c).collect())
 }
 
+/// Dispatcher 调用所需的宿主资源句柄（pool / s3 / registry）
+#[derive(Clone)]
+pub struct DispatcherDeps {
+    pub pool: MySqlPool,
+    pub s3: S3Client,
+    pub registry: Arc<CapabilityRegistry>,
+}
+
+impl std::fmt::Debug for DispatcherDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DispatcherDeps").finish_non_exhaustive()
+    }
+}
+
 /// Dispatcher 主入口。返回的 JSON 字符串会被 Plugin 侧解码成 ReplyEnvelope。
 pub async fn dispatch(
-    pool: &MySqlPool,
-    registry: &CapabilityRegistry,
+    deps: &DispatcherDeps,
     ctx: &DispatchCtx,
     envelope_str: &str,
 ) -> String {
+    let pool = &deps.pool;
+    let registry = &deps.registry;
     let t0 = Instant::now();
     let request_id = ctx.request_id.as_deref();
 
@@ -230,6 +247,27 @@ pub async fn dispatch(
     }
 
     // 3. handler dispatch
+    // helper closure: 把 Result<T:Serialize, String> 转成 (ReplyEnvelope, outcome, err_msg)
+    fn to_reply<T: Serialize>(
+        r: Result<T, String>,
+    ) -> (ReplyEnvelope, &'static str, Option<String>) {
+        match r {
+            Ok(v) => (
+                ReplyEnvelope::ok(serde_json::to_value(v).unwrap_or(Value::Null)),
+                "success",
+                None,
+            ),
+            Err(e) => (ReplyEnvelope::err(4000, e.clone()), "error", Some(e)),
+        }
+    }
+    fn args_err(label: &str, e: serde_json::Error) -> (ReplyEnvelope, &'static str, Option<String>) {
+        (
+            ReplyEnvelope::err(4000, format!("{label} args: {e}")),
+            "error",
+            Some("invalid args".to_string()),
+        )
+    }
+
     let (reply, outcome, err_msg) = match cap_name.as_str() {
         TIME_NOW => (ReplyEnvelope::ok(capabilities::utility::time_now()), "success", None),
         LOG_EMIT => match serde_json::from_value(envelope.args.clone()) {
@@ -238,48 +276,43 @@ pub async fn dispatch(
                     capabilities::utility::log_emit(args, Some(ctx.plugin_id), Some(ctx.agent_id));
                 (ReplyEnvelope::ok(data), "success", None)
             }
-            Err(e) => (
-                ReplyEnvelope::err(4000, format!("log.emit args: {e}")),
-                "error",
-                Some("invalid args".to_string()),
-            ),
+            Err(e) => args_err("log.emit", e),
         },
         FS_READ => match serde_json::from_value(envelope.args.clone()) {
-            Ok(args) => match capabilities::fs::fs_read(args).await {
-                Ok(reply) => (
-                    ReplyEnvelope::ok(serde_json::to_value(reply).unwrap_or(Value::Null)),
-                    "success",
-                    None,
-                ),
-                Err(e) => (ReplyEnvelope::err(4000, e.clone()), "error", Some(e)),
-            },
-            Err(e) => (
-                ReplyEnvelope::err(4000, format!("fs.read args: {e}")),
-                "error",
-                Some("invalid args".to_string()),
-            ),
+            Ok(args) => to_reply(capabilities::fs::fs_read(args).await),
+            Err(e) => args_err("fs.read", e),
         },
         FS_WRITE => match serde_json::from_value(envelope.args.clone()) {
-            Ok(args) => match capabilities::fs::fs_write(args).await {
-                Ok(reply) => (
-                    ReplyEnvelope::ok(serde_json::to_value(reply).unwrap_or(Value::Null)),
-                    "success",
-                    None,
-                ),
-                Err(e) => (ReplyEnvelope::err(4000, e.clone()), "error", Some(e)),
-            },
-            Err(e) => (
-                ReplyEnvelope::err(4000, format!("fs.write args: {e}")),
-                "error",
-                Some("invalid args".to_string()),
-            ),
+            Ok(args) => to_reply(capabilities::fs::fs_write(args).await),
+            Err(e) => args_err("fs.write", e),
         },
-        // 已注册但尚未实现的 capability — 返回 501 占位（仍记 audit denied）
-        _ => (
+        NETWORK_HTTP => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(capabilities::network_http::http_request(args).await),
+            Err(e) => args_err("network.http", e),
+        },
+        S3_READ => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(capabilities::s3::s3_read(&deps.s3, args).await),
+            Err(e) => args_err("s3.read", e),
+        },
+        S3_WRITE => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(capabilities::s3::s3_write(&deps.s3, args).await),
+            Err(e) => args_err("s3.write", e),
+        },
+        SECRET_GET => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(capabilities::secret::secret_get(args)),
+            Err(e) => args_err("secret.get", e),
+        },
+        // db.query / db.execute / llm.invoke 待 US5 接入 named_queries.toml + providers
+        DB_QUERY | DB_EXECUTE | LLM_INVOKE => (
             ReplyEnvelope::err(
                 5001,
-                format!("capability {cap_name} 已声明但 handler 尚未实现 (US4 后续 commit)"),
+                format!("capability {cap_name} 已声明但 handler 尚未配置（待 US5）"),
             ),
+            "error",
+            Some("handler unimplemented".to_string()),
+        ),
+        _ => (
+            ReplyEnvelope::err(5001, format!("unknown handler for {cap_name}")),
             "error",
             Some("handler unimplemented".to_string()),
         ),

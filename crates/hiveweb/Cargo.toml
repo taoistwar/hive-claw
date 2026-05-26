@@ -56,6 +56,7 @@ sha2 = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 toml = "0.8"
+reqwest = { workspace = true }
 
 # Internal workspace crates reused by Agent Runtime
 agent = { path = "../agent" }

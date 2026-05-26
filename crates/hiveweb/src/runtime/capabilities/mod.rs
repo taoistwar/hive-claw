@@ -4,6 +4,10 @@
 //! Handler 不直接做权限检查；调用前 dispatcher 已通过 Agent.permissions 过滤。
 
 pub mod fs;
+pub mod network_http;
+pub mod s3;
+pub mod secret;
 pub mod utility;
 
-// 待实现：network_http / s3 / db / llm / secret —— 在 US4 后续 commit 中添加
+// db.query / db.execute / llm.invoke 待 US5 阶段接 named_queries.toml +
+// providers::FallbackProvider 后再补；dispatcher 当前返 5001 占位。

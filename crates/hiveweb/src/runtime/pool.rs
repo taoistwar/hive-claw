@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use crate::models::Plugin as PluginRow;
 use crate::storage::s3;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PoolMetrics {
     pub in_use: u64,
     pub idle: u64,
@@ -27,7 +27,7 @@ pub struct PoolMetrics {
     pub reset_failures: u64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PerPluginMetrics {
     pub plugin_id: i64,
     pub identifier: String,

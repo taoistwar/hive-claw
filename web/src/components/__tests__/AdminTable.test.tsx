@@ -40,18 +40,26 @@ const baseProps = {
   onEdit: vi.fn(),
   onDelete: vi.fn(),
   onToggleStatus: vi.fn(),
+  searchParams: {},
+  onSearchParamsChange: vi.fn(),
+  onSearch: vi.fn(),
+  onReset: vi.fn(),
 };
 
 describe('AdminTable', () => {
   it('renders the columns mandated by FR-010 (ID, phone, nickname, status, created, last login)', () => {
     userRef.current = { role: 3 };
     render(<AdminTable {...baseProps} />);
-    expect(screen.getByText(/ID|编号/)).toBeInTheDocument();
-    expect(screen.getByText(/手机号/)).toBeInTheDocument();
-    expect(screen.getByText(/昵称/)).toBeInTheDocument();
-    expect(screen.getByText(/状态/)).toBeInTheDocument();
-    expect(screen.getByText(/注册时间|创建时间/)).toBeInTheDocument();
-    expect(screen.getByText(/最后登录/)).toBeInTheDocument();
+    // 文本可能同时出现在表头和 filter Form.Item label 中，因此用
+    // getAllByText 而非 getByText（后者 ≥2 命中即抛错）。
+    const expectPresent = (re: RegExp) =>
+      expect(screen.getAllByText(re).length).toBeGreaterThan(0);
+    expectPresent(/ID|编号/);
+    expectPresent(/手机号/);
+    expectPresent(/昵称/);
+    expectPresent(/状态/);
+    expectPresent(/注册时间|创建时间/);
+    expectPresent(/最后登录/);
   });
 
   it('hides action buttons entirely for Normal admins (spec §US3 AS-1, hidden-not-disabled convention)', () => {

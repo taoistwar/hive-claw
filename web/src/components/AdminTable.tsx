@@ -1,10 +1,12 @@
-import { Table, Button, Popconfirm, Tag, Typography } from 'antd';
-import { EditOutlined, DeleteOutlined, StopOutlined, CheckOutlined } from '@ant-design/icons';
+import { Table, Button, Popconfirm, Tag, Typography, Form, Input, Select, Space, DatePicker } from 'antd';
+import { EditOutlined, DeleteOutlined, StopOutlined, CheckOutlined, SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { Admin } from '../services/admin';
+import { Admin, AdminSearchParams } from '../services/admin';
 import { useAuth } from '../hooks/useAuth';
+import dayjs from 'dayjs';
 
 const { Text } = Typography;
+const { RangePicker } = DatePicker;
 
 const ROLE_MAP: Record<number, { label: string; color: string }> = {
   1: { label: '普通管理员', color: 'blue' },
@@ -20,6 +22,10 @@ interface AdminTableProps {
   onEdit: (admin: Admin) => void;
   onDelete: (id: number) => void;
   onToggleStatus: (id: number, status: number) => void;
+  searchParams: AdminSearchParams;
+  onSearchParamsChange: (params: AdminSearchParams) => void;
+  onSearch: () => void;
+  onReset: () => void;
 }
 
 const AdminTable: React.FC<AdminTableProps> = ({
@@ -30,8 +36,40 @@ const AdminTable: React.FC<AdminTableProps> = ({
   onEdit,
   onDelete,
   onToggleStatus,
+  searchParams,
+  onSearchParamsChange,
+  onSearch,
+  onReset,
 }) => {
   const { user } = useAuth();
+  const [form] = Form.useForm();
+
+  const handleSearch = () => {
+    const values = form.getFieldsValue();
+    const params: AdminSearchParams = {
+      search: values.search || undefined,
+      status: values.status,
+      role: values.role,
+    };
+
+    if (values.created_at_range && values.created_at_range.length === 2) {
+      params.created_at_start = values.created_at_range[0].format('YYYY-MM-DD');
+      params.created_at_end = values.created_at_range[1].add(1, 'day').format('YYYY-MM-DD');
+    }
+
+    if (values.last_login_range && values.last_login_range.length === 2) {
+      params.last_login_start = values.last_login_range[0].format('YYYY-MM-DD');
+      params.last_login_end = values.last_login_range[1].add(1, 'day').format('YYYY-MM-DD');
+    }
+
+    onSearchParamsChange(params);
+    onSearch(params);
+  };
+
+  const handleResetSearch = () => {
+    form.resetFields();
+    onReset();
+  };
 
   const columns: ColumnsType<Admin> = [
     {
@@ -148,20 +186,83 @@ const AdminTable: React.FC<AdminTableProps> = ({
   ];
 
   return (
-    <Table<Admin>
-      columns={columns}
-      dataSource={admins}
-      rowKey="id"
-      loading={loading}
-      pagination={{
-        current: pagination.current,
-        pageSize: pagination.pageSize,
-        total: pagination.total,
-        showSizeChanger: false,
-        showTotal: (total) => `共 ${total} 条`,
-        onChange: onPaginationChange,
-      }}
-    />
+    <div>
+      <Form
+        form={form}
+        layout="inline"
+        onFinish={handleSearch}
+        style={{ marginBottom: 16 }}
+        aria-label="管理员筛选"
+      >
+        <Form.Item name="search" label="搜索">
+          <Input
+            placeholder="搜索手机号/昵称/ID"
+            allowClear
+            style={{ width: 200 }}
+            aria-label="搜索手机号、昵称或 ID"
+          />
+        </Form.Item>
+        <Form.Item name="status" label="状态">
+          <Select
+            placeholder="状态"
+            allowClear
+            style={{ width: 100 }}
+            aria-label="按状态筛选"
+          >
+            <Select.Option value={1}>启用</Select.Option>
+            <Select.Option value={0}>禁用</Select.Option>
+          </Select>
+        </Form.Item>
+        <Form.Item name="role" label="角色">
+          <Select
+            placeholder="角色"
+            allowClear
+            style={{ width: 130 }}
+            aria-label="按角色筛选"
+          >
+            <Select.Option value={1}>普通管理员</Select.Option>
+            <Select.Option value={2}>系统管理员</Select.Option>
+            <Select.Option value={3}>超级管理员</Select.Option>
+          </Select>
+        </Form.Item>
+        <Form.Item name="created_at_range" label="创建时间">
+          <RangePicker
+            placeholder={['创建时间起', '创建时间止']}
+            aria-label="按创建时间筛选"
+          />
+        </Form.Item>
+        <Form.Item name="last_login_range" label="最后登录">
+          <RangePicker
+            placeholder={['登录时间起', '登录时间止']}
+            aria-label="按最后登录时间筛选"
+          />
+        </Form.Item>
+        <Form.Item>
+          <Space>
+            <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+              搜索
+            </Button>
+            <Button onClick={handleResetSearch} icon={<ReloadOutlined />}>
+              重置
+            </Button>
+          </Space>
+        </Form.Item>
+      </Form>
+      <Table<Admin>
+        columns={columns}
+        dataSource={admins}
+        rowKey="id"
+        loading={loading}
+        pagination={{
+          current: pagination.current,
+          pageSize: pagination.pageSize,
+          total: pagination.total,
+          showSizeChanger: false,
+          showTotal: (total) => `共 ${total} 条`,
+          onChange: onPaginationChange,
+        }}
+      />
+    </div>
   );
 };
 

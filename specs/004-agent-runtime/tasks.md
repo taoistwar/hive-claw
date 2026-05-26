@@ -37,12 +37,12 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **Purpose**: workspace 依赖、迁移目录、配置文件骨架。
 
-- [ ] T001 [P] 添加后端依赖到 `crates/hiveweb/Cargo.toml`：`extism = "1"`、`http-body-util`（已加测试）、`once_cell`、`jsonschema = "0.17"`、`regex`
-- [ ] T002 [P] 添加 workspace 依赖：`crates/hiveweb` 在 `[dependencies]` 中引用 `agent = { path = "../agent" }`、`providers = { path = "../providers" }`、`skills = { path = "../skills" }`
-- [ ] T003 [P] 添加前端依赖到 `web/package.json`：`reactflow ^11`、`monaco-editor ^0.45` (用于 system_prompt 编辑) 、`@monaco-editor/react`
-- [ ] T004 [P] 创建配置文件骨架 `crates/hiveweb/llm_presets.toml.example`，含 `default = "cheap-fast"` + 一两个示例 preset（primary + fallback）
-- [ ] T005 [P] 创建 examples 目录 `examples/plugins/README.md`，说明 Rust PDK 编写 + 编译流程
-- [ ] T149 [P] 创建 `crates/hiveweb/.env.example` 集中声明 004 新增 env var（在 003 已有基础上），共 15 项：
+- [x] T001 [P] 添加后端依赖到 `crates/hiveweb/Cargo.toml`：`extism = "1"`、`http-body-util`（已加测试）、`once_cell`、`jsonschema = "0.17"`、`regex`
+- [x] T002 [P] 添加 workspace 依赖：`crates/hiveweb` 在 `[dependencies]` 中引用 `agent = { path = "../agent" }`、`providers = { path = "../providers" }`、`skills = { path = "../skills" }`
+- [x] T003 [P] 添加前端依赖到 `web/package.json`：`reactflow ^11`、`monaco-editor ^0.45` (用于 system_prompt 编辑) 、`@monaco-editor/react`
+- [x] T004 [P] 创建配置文件骨架 `crates/hiveweb/llm_presets.toml.example`，含 `default = "cheap-fast"` + 一两个示例 preset（primary + fallback）
+- [x] T005 [P] 创建 examples 目录 `examples/plugins/README.md`，说明 Rust PDK 编写 + 编译流程
+- [x] T149 [P] 创建 `crates/hiveweb/.env.example` 集中声明 004 新增 env var（在 003 已有基础上），共 15 项：
   - **Plugin 上传 & 调用**：`PLUGIN_MAX_BYTES=16777216`、`PLUGIN_CALL_TIMEOUT_MS=30000`、`PLUGIN_CALL_MAX_MEMORY_MB=128`、`PLUGIN_CALL_FUEL=10000000000`
   - **Instance Pool**：`PLUGIN_POOL_MAX_PER_PLUGIN=8`、`PLUGIN_POOL_MAX_TOTAL=64`、`PLUGIN_POOL_IDLE_TIMEOUT_SEC=600`、`PLUGIN_POOL_ACQUIRE_TIMEOUT_MS=5000`
   - **Agent / Chat**：`AGENT_MAX_HOPS=5`、`CHAT_RETENTION_DAYS=30`、`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN=2`
@@ -59,50 +59,50 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 数据库迁移（V008..V018）
 
-- [ ] T006 [P] 创建 V008 capabilities 表 `crates/hiveweb/migrations/V008__capabilities.sql`（按 data-model §V008）
-- [ ] T007 [P] 创建 V009 categories 表 `crates/hiveweb/migrations/V009__categories.sql`
-- [ ] T008 [P] 创建 V010 tags + taggings 表 `crates/hiveweb/migrations/V010__tags.sql`
-- [ ] T009 [P] 创建 V011 plugins 表 `crates/hiveweb/migrations/V011__plugins.sql`（含 FULLTEXT 索引）
-- [ ] T010 [P] 创建 V012 functions 表 `crates/hiveweb/migrations/V012__functions.sql`
-- [ ] T011 [P] 创建 V013 workflows + nodes + edges 表 `crates/hiveweb/migrations/V013__workflows.sql`
-- [ ] T012 [P] 创建 V014 tools + skills 表 `crates/hiveweb/migrations/V014__tools_skills.sql`（注意 skills 是 markdown 模式）
-- [ ] T013 [P] 创建 V015 agents + agent_tools + agent_skills + agent_permissions 表 `crates/hiveweb/migrations/V015__agents.sql`（含 model_preset 列）
-- [ ] T014 [P] 创建 V016 chat_sessions + chat_messages 表 `crates/hiveweb/migrations/V016__chat.sql`（chat_sessions 含 `admin_phone_snapshot` / `admin_nickname_snapshot` 快照列，admin 删除后保留发起者追溯，data-model 不变量 #12）
-- [ ] T015 [P] 创建 V017 runtime_audit_logs 表 `crates/hiveweb/migrations/V017__runtime_audit_logs.sql`
-- [ ] T016 [P] 创建 V018 seed main agent + 5 内置 function（kind=1） `crates/hiveweb/migrations/V018__seed.sql`
-- [ ] T017 在 `crates/hiveweb/src/bin/migrate.rs` 中注册 V008–V018 entries（不可并行：修改同一文件）
+- [x] T006 [P] 创建 V008 capabilities 表 `crates/hiveweb/migrations/V008__capabilities.sql`（按 data-model §V008）
+- [x] T007 [P] 创建 V009 categories 表 `crates/hiveweb/migrations/V009__categories.sql`
+- [x] T008 [P] 创建 V010 tags + taggings 表 `crates/hiveweb/migrations/V010__tags.sql`
+- [x] T009 [P] 创建 V011 plugins 表 `crates/hiveweb/migrations/V011__plugins.sql`（含 FULLTEXT 索引）
+- [x] T010 [P] 创建 V012 functions 表 `crates/hiveweb/migrations/V012__functions.sql`
+- [x] T011 [P] 创建 V013 workflows + nodes + edges 表 `crates/hiveweb/migrations/V013__workflows.sql`
+- [x] T012 [P] 创建 V014 tools + skills 表 `crates/hiveweb/migrations/V014__tools_skills.sql`（注意 skills 是 markdown 模式）
+- [x] T013 [P] 创建 V015 agents + agent_tools + agent_skills + agent_permissions 表 `crates/hiveweb/migrations/V015__agents.sql`（含 model_preset 列）
+- [x] T014 [P] 创建 V016 chat_sessions + chat_messages 表 `crates/hiveweb/migrations/V016__chat.sql`（chat_sessions 含 `admin_phone_snapshot` / `admin_nickname_snapshot` 快照列，admin 删除后保留发起者追溯，data-model 不变量 #12）
+- [x] T015 [P] 创建 V017 runtime_audit_logs 表 `crates/hiveweb/migrations/V017__runtime_audit_logs.sql`
+- [x] T016 [P] 创建 V018 seed main agent + 5 内置 function（kind=1） `crates/hiveweb/migrations/V018__seed.sql`
+- [x] T017 在 `crates/hiveweb/src/bin/migrate.rs` 中注册 V008–V018 entries（不可并行：修改同一文件）
 
 ### Models（与 V008..V018 行映射）
 
-- [ ] T018 [P] Capability/Category/Tag 模型 `crates/hiveweb/src/models/capability.rs`、`models/category.rs`、`models/tag.rs`
-- [ ] T019 [P] Plugin 模型 `crates/hiveweb/src/models/plugin.rs`（含 `deleted_at`、`sha256`、`s3_key`）
-- [ ] T020 [P] Function 模型 `crates/hiveweb/src/models/function.rs`（含 kind、plugin_id、schemas JSON）
-- [ ] T021 [P] Workflow/WorkflowNode/WorkflowEdge 模型 `crates/hiveweb/src/models/workflow.rs`
-- [ ] T022 [P] Tool 模型 `crates/hiveweb/src/models/tool.rs`
-- [ ] T023 [P] Skill 模型（markdown 模式：content + frontmatter）`crates/hiveweb/src/models/skill.rs`
-- [ ] T024 [P] Agent 模型 `crates/hiveweb/src/models/agent.rs`（含 model_preset、parent_agent_id、depth）
-- [ ] T025 [P] ChatSession/ChatMessage 模型 `crates/hiveweb/src/models/chat.rs`
-- [ ] T026 [P] RuntimeAuditLog 模型 `crates/hiveweb/src/models/runtime_audit_log.rs`
+- [x] T018 [P] Capability/Category/Tag 模型 `crates/hiveweb/src/models/capability.rs`、`models/category.rs`、`models/tag.rs`
+- [x] T019 [P] Plugin 模型 `crates/hiveweb/src/models/plugin.rs`（含 `deleted_at`、`sha256`、`s3_key`）
+- [x] T020 [P] Function 模型 `crates/hiveweb/src/models/function.rs`（含 kind、plugin_id、schemas JSON）
+- [x] T021 [P] Workflow/WorkflowNode/WorkflowEdge 模型 `crates/hiveweb/src/models/workflow.rs`
+- [x] T022 [P] Tool 模型 `crates/hiveweb/src/models/tool.rs`
+- [x] T023 [P] Skill 模型（markdown 模式：content + frontmatter）`crates/hiveweb/src/models/skill.rs`
+- [x] T024 [P] Agent 模型 `crates/hiveweb/src/models/agent.rs`（含 model_preset、parent_agent_id、depth）
+- [x] T025 [P] ChatSession/ChatMessage 模型 `crates/hiveweb/src/models/chat.rs`
+- [x] T026 [P] RuntimeAuditLog 模型 `crates/hiveweb/src/models/runtime_audit_log.rs`
 
 ### Runtime 骨架（不依赖具体 capability handler）
 
-- [ ] T027 [P] Capability 静态注册表骨架 `crates/hiveweb/src/runtime/capability.rs`（定义 `Capability` struct、`CapabilityRegistry`、未实现具体 handler；列出 11 个 capability name 常量）
-- [ ] T028 [P] Instance Pool 骨架 `crates/hiveweb/src/runtime/pool.rs`（`PluginPool` + `PluginGuard`，归还前 `Plugin::reset()` 调用占位，未接 Extism）
-- [ ] T029 [P] Plugin 调用 invoker 骨架 `crates/hiveweb/src/runtime/invoker.rs`（resolve plugin → acquire from pool → invoke → audit；先 stub `invoke()` 返回 unimplemented）
-- [ ] T030 [P] Workflow 执行器骨架 `crates/hiveweb/src/runtime/workflow.rs`（拓扑 BFS + tokio::join_all 的接口，先 stub）
-- [ ] T031 [P] Agent 编排骨架 `crates/hiveweb/src/runtime/agent.rs`（接 `crates/agent::AgentRunner` 占位）
-- [ ] T032 [P] LLM adapter `crates/hiveweb/src/runtime/llm.rs`（启动期读 `llm_presets.toml` → 构造 `HashMap<LlmPresetName, Arc<dyn LLMProvider>>`；提供 `provider_for(&Agent)`）
-- [ ] T033 在 `crates/hiveweb/src/runtime/mod.rs` 暴露上述子模块，并 `pub use` 关键类型
-- [ ] T034 在 `crates/hiveweb/src/lib.rs` 增加 `pub mod runtime;`
-- [ ] T035 扩展 `AppState`（`crates/hiveweb/src/api/mod.rs`）含 `runtime_state: Arc<RuntimeState>`，启动期**严格按 plan §Startup Initialization Order 的 12 步顺序**注入：env → migrations → capability registry upsert → builtin function upsert → custom function 索引 → llm_presets 加载 → ToolRegistry 装配 → SubagentManager/MemoryStore → Pool 空池 → router → 后台任务 → HTTP listen；任一前置失败 panic 退出码 1
+- [x] T027 [P] Capability 静态注册表骨架 `crates/hiveweb/src/runtime/capability.rs`（定义 `Capability` struct、`CapabilityRegistry`、未实现具体 handler；列出 11 个 capability name 常量）
+- [x] T028 [P] Instance Pool 骨架 `crates/hiveweb/src/runtime/pool.rs`（`PluginPool` + `PluginGuard`，归还前 `Plugin::reset()` 调用占位，未接 Extism）
+- [x] T029 [P] Plugin 调用 invoker 骨架 `crates/hiveweb/src/runtime/invoker.rs`（resolve plugin → acquire from pool → invoke → audit；先 stub `invoke()` 返回 unimplemented）
+- [x] T030 [P] Workflow 执行器骨架 `crates/hiveweb/src/runtime/workflow.rs`（拓扑 BFS + tokio::join_all 的接口，先 stub）
+- [x] T031 [P] Agent 编排骨架 `crates/hiveweb/src/runtime/agent.rs`（接 `crates/agent::AgentRunner` 占位）
+- [x] T032 [P] LLM adapter `crates/hiveweb/src/runtime/llm.rs`（启动期读 `llm_presets.toml` → 构造 `HashMap<LlmPresetName, Arc<dyn LLMProvider>>`；提供 `provider_for(&Agent)`）
+- [x] T033 在 `crates/hiveweb/src/runtime/mod.rs` 暴露上述子模块，并 `pub use` 关键类型
+- [x] T034 在 `crates/hiveweb/src/lib.rs` 增加 `pub mod runtime;`
+- [x] T035 扩展 `AppState`（`crates/hiveweb/src/api/mod.rs`）含 `runtime_state: Arc<RuntimeState>`，启动期**严格按 plan §Startup Initialization Order 的 12 步顺序**注入：env → migrations → capability registry upsert → builtin function upsert → custom function 索引 → llm_presets 加载 → ToolRegistry 装配 → SubagentManager/MemoryStore → Pool 空池 → router → 后台任务 → HTTP listen；任一前置失败 panic 退出码 1
 
 ### Reactflow + Monaco 资源接入（前端）
 
-- [ ] T036 [P] 在 `web/src/main.tsx` 注册 react-flow 样式与 Monaco worker；新建 `web/src/utils/reactflow.ts` 公共配置
+- [x] T036 [P] 在 `web/src/main.tsx` 注册 react-flow 样式与 Monaco worker；新建 `web/src/utils/reactflow.ts` 公共配置
 
 ### 跨切：乐观锁（spec §Edge Cases 并发编辑）
 
-- [ ] T150 创建 `crates/hiveweb/src/services/optimistic_lock.rs`：提供 `check_and_bump(table, id, client_updated_at) -> Result<(), AppError::OptimisticLockConflict>` helper；返回 4094 错误码
+- [x] T150 创建 `crates/hiveweb/src/services/optimistic_lock.rs`：提供 `check_and_bump(table, id, client_updated_at) -> Result<(), AppError::OptimisticLockConflict>` helper；返回 4094 错误码
 - [ ] T151 在 Plugin/Workflow/Tool/Skill/Agent service 的 update 路径（T070/T108/T082/T083/T116）调用 `optimistic_lock::check_and_bump`；client 必须在 PUT 请求体携带 `updated_at`，service 层校验后再执行 UPDATE
 - [ ] T152 在 Plugin/Workflow/Tool/Skill/Agent API（T071/T109/T085/T086/T117）的 PUT handler 中反序列化 `updated_at` 字段并传给 service
 

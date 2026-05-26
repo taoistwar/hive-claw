@@ -19,19 +19,38 @@ use tracing::Level;
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::rate_limit::{rate_limit_middleware, RateLimitState};
 use crate::middleware::request_id::request_id_middleware;
+use crate::runtime::{
+    CapabilityRegistry, InstancePool, Invoker, LlmRegistry, PoolConfig, RuntimeState,
+    WorkflowExecutor,
+};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
     pub redis: RedisClient,
-    /// Not read in the admin-center scope; retained for the file-upload
-    /// feature on the roadmap and to keep `AppState` boot-time symmetric
-    /// with the production `main.rs`.
-    #[allow(dead_code)]
     pub s3: Client,
+    /// 004 Agent Runtime — capability registry / instance pool / invoker / workflow / llm
+    pub runtime_state: RuntimeState,
 }
 
+/// 启动期严格 12 步顺序（plan §Startup Initialization Order）：
+///   1. env / dotenv —— 由 main.rs 完成（DATABASE_URL/JWT_SECRET 等 fail-fast）
+///   2. DB migrations —— `cargo run --bin migrate`
+///   3. capability registry upsert —— 启动期 INSERT ... ON DUPLICATE KEY UPDATE
+///   4. builtin function upsert —— FR-010 v5 的 5 个 builtin（kind=1）
+///   5. custom function 索引 —— 拉 DB 全部 kind=2，构 Arc<HashMap<identifier, FunctionDef>>
+///   6. llm_presets.toml 加载 —— LlmRegistry::load_from_path()
+///   7. ToolRegistry 装配 —— builtin + custom + workflow-wrap，注册到 agent::ToolRegistry
+///   8. SubagentManager / MemoryStore 初始化
+///   9. Instance Pool 空池
+///  10. HTTP Router 装配（middleware → API group）
+///  11. 后台任务启动（retention cron / pool idle reaper）
+///  12. HTTP server listen
+///
+/// 当前 create_router 完成 9 + 10；3..8 + 11 在 main.rs 的 setup 阶段调用具体
+/// services（Phase 3..7 实现后接入）。
 pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router {
     let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
 
@@ -50,7 +69,18 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
             .allow_origin(origins)
     };
 
-    let state = AppState { pool, redis, s3 };
+    // ---- 004 Runtime state (step 9 — empty pool; further wiring in main.rs setup) ----
+    let pool_inst = InstancePool::new(PoolConfig::from_env());
+    let invoker = Arc::new(Invoker::new(pool_inst.clone()));
+    let runtime_state = RuntimeState {
+        capabilities: Arc::new(CapabilityRegistry::new()),
+        pool: pool_inst,
+        invoker,
+        workflows: Arc::new(WorkflowExecutor::new()),
+        llm: Arc::new(LlmRegistry::new()),
+    };
+
+    let state = AppState { pool, redis, s3, runtime_state };
 
     // Rate-limit window is per-IP. Defaults: 100 req / 60 s.
     // Tune via env vars RATE_LIMIT_MAX and RATE_LIMIT_WINDOW_SECS.

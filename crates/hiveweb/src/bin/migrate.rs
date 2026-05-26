@@ -44,6 +44,51 @@ const MIGRATIONS: &[Migration] = &[
         version: "V007__admins_idx_created_at",
         sql: include_str!("../../migrations/V007__admins_idx_created_at.sql"),
     },
+    // ---------- 004 Agent Runtime ----------
+    Migration {
+        version: "V008__capabilities",
+        sql: include_str!("../../migrations/V008__capabilities.sql"),
+    },
+    Migration {
+        version: "V009__categories",
+        sql: include_str!("../../migrations/V009__categories.sql"),
+    },
+    Migration {
+        version: "V010__tags",
+        sql: include_str!("../../migrations/V010__tags.sql"),
+    },
+    Migration {
+        version: "V011__plugins",
+        sql: include_str!("../../migrations/V011__plugins.sql"),
+    },
+    Migration {
+        version: "V012__functions",
+        sql: include_str!("../../migrations/V012__functions.sql"),
+    },
+    Migration {
+        version: "V013__workflows",
+        sql: include_str!("../../migrations/V013__workflows.sql"),
+    },
+    Migration {
+        version: "V014__tools_skills",
+        sql: include_str!("../../migrations/V014__tools_skills.sql"),
+    },
+    Migration {
+        version: "V015__agents",
+        sql: include_str!("../../migrations/V015__agents.sql"),
+    },
+    Migration {
+        version: "V016__chat",
+        sql: include_str!("../../migrations/V016__chat.sql"),
+    },
+    Migration {
+        version: "V017__runtime_audit_logs",
+        sql: include_str!("../../migrations/V017__runtime_audit_logs.sql"),
+    },
+    Migration {
+        version: "V018__seed",
+        sql: include_str!("../../migrations/V018__seed.sql"),
+    },
 ];
 
 #[tokio::main]

@@ -46,6 +46,22 @@ dotenvy = { workspace = true }
 # CORS
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
+# Agent Runtime (004) — WASM plugin runtime + JSON schema validation
+extism = "1"
+jsonschema = "0.17"
+regex = { workspace = true }
+once_cell = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+toml = "0.8"
+
+# Internal workspace crates reused by Agent Runtime
+agent = { path = "../agent" }
+providers = { path = "../providers" }
+skills = { path = "../skills" }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }

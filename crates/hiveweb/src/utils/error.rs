@@ -29,6 +29,26 @@ pub mod codes {
     pub const NOT_FOUND: u16 = 4040;
     pub const CONFLICT: u16 = 4090;
     pub const INTERNAL: u16 = 5000;
+
+    // ----- 004 Agent Runtime（contracts/api.md §Errors） -----
+    pub const CAPABILITY_DENIED_RUNTIME: u16 = 4030;
+    /// 实现期发现 003 NOT_FOUND=4040 已占用，004 contracts/api.md 原写 4040；
+    /// 改用 4045 以避免 u16 业务码冲突。contracts/api.md 同步更新。
+    pub const CAPABILITY_UNKNOWN: u16 = 4045;
+    pub const TAG_IN_USE: u16 = 4091;
+    pub const DAG_CYCLE: u16 = 4092;
+    pub const RESOURCE_IN_USE: u16 = 4093;
+    pub const OPTIMISTIC_LOCK_CONFLICT: u16 = 4094;
+    pub const SSE_CONCURRENCY_EXCEEDED: u16 = 4291;
+    pub const CANNOT_DELETE_MAIN_AGENT: u16 = 5001;
+    pub const SCHEMA_MISMATCH: u16 = 5002;
+    pub const CAPABILITY_DENIED_CHAT: u16 = 5003;
+    pub const PLUGIN_INVOCATION_TIMEOUT: u16 = 5004;
+    pub const WORKFLOW_MAPPING_INVALID: u16 = 5005;
+    pub const AGENT_DEPTH_EXCEEDED: u16 = 5006;
+    pub const MODEL_PRESET_UNKNOWN: u16 = 5007;
+    pub const BUILTIN_SKILL_PROTECTED: u16 = 5008;
+    pub const POOL_BUSY: u16 = 5009;
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +105,22 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         codes::NOT_FOUND => StatusCode::NOT_FOUND,
         codes::CONFLICT => StatusCode::CONFLICT,
         codes::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR,
+        // 004 — contracts/api.md §Errors HTTP 映射
+        codes::CAPABILITY_DENIED_RUNTIME => StatusCode::FORBIDDEN,
+        codes::TAG_IN_USE
+        | codes::DAG_CYCLE
+        | codes::RESOURCE_IN_USE
+        | codes::OPTIMISTIC_LOCK_CONFLICT => StatusCode::CONFLICT,
+        codes::SSE_CONCURRENCY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
+        codes::CANNOT_DELETE_MAIN_AGENT
+        | codes::CAPABILITY_DENIED_CHAT
+        | codes::BUILTIN_SKILL_PROTECTED => StatusCode::FORBIDDEN,
+        codes::SCHEMA_MISMATCH
+        | codes::WORKFLOW_MAPPING_INVALID
+        | codes::AGENT_DEPTH_EXCEEDED
+        | codes::MODEL_PRESET_UNKNOWN => StatusCode::UNPROCESSABLE_ENTITY,
+        codes::PLUGIN_INVOCATION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
+        codes::POOL_BUSY => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -111,6 +147,24 @@ pub enum AppError {
     NotFound(String),
     Conflict(String),
     Internal(String),
+
+    // ----- 004 Agent Runtime（contracts/api.md §Errors） -----
+    CapabilityDeniedRuntime(String),
+    CapabilityUnknown(String),
+    TagInUse(String),
+    DagCycle(String),
+    ResourceInUse(String),
+    OptimisticLockConflict(String),
+    SseConcurrencyExceeded(String),
+    CannotDeleteMainAgent(String),
+    SchemaMismatch(String),
+    CapabilityDeniedChat(String),
+    PluginInvocationTimeout(String),
+    WorkflowMappingInvalid(String),
+    AgentDepthExceeded(String),
+    ModelPresetUnknown(String),
+    BuiltinSkillProtected(String),
+    PoolBusy(String),
 }
 
 impl AppError {
@@ -129,6 +183,23 @@ impl AppError {
             AppError::NotFound(_) => codes::NOT_FOUND,
             AppError::Conflict(_) => codes::CONFLICT,
             AppError::Internal(_) => codes::INTERNAL,
+            // 004 Agent Runtime
+            AppError::CapabilityDeniedRuntime(_) => codes::CAPABILITY_DENIED_RUNTIME,
+            AppError::CapabilityUnknown(_) => codes::CAPABILITY_UNKNOWN,
+            AppError::TagInUse(_) => codes::TAG_IN_USE,
+            AppError::DagCycle(_) => codes::DAG_CYCLE,
+            AppError::ResourceInUse(_) => codes::RESOURCE_IN_USE,
+            AppError::OptimisticLockConflict(_) => codes::OPTIMISTIC_LOCK_CONFLICT,
+            AppError::SseConcurrencyExceeded(_) => codes::SSE_CONCURRENCY_EXCEEDED,
+            AppError::CannotDeleteMainAgent(_) => codes::CANNOT_DELETE_MAIN_AGENT,
+            AppError::SchemaMismatch(_) => codes::SCHEMA_MISMATCH,
+            AppError::CapabilityDeniedChat(_) => codes::CAPABILITY_DENIED_CHAT,
+            AppError::PluginInvocationTimeout(_) => codes::PLUGIN_INVOCATION_TIMEOUT,
+            AppError::WorkflowMappingInvalid(_) => codes::WORKFLOW_MAPPING_INVALID,
+            AppError::AgentDepthExceeded(_) => codes::AGENT_DEPTH_EXCEEDED,
+            AppError::ModelPresetUnknown(_) => codes::MODEL_PRESET_UNKNOWN,
+            AppError::BuiltinSkillProtected(_) => codes::BUILTIN_SKILL_PROTECTED,
+            AppError::PoolBusy(_) => codes::POOL_BUSY,
         }
     }
 
@@ -146,7 +217,23 @@ impl AppError {
             | AppError::BadRequest(m)
             | AppError::NotFound(m)
             | AppError::Conflict(m)
-            | AppError::Internal(m) => m,
+            | AppError::Internal(m)
+            | AppError::CapabilityDeniedRuntime(m)
+            | AppError::CapabilityUnknown(m)
+            | AppError::TagInUse(m)
+            | AppError::DagCycle(m)
+            | AppError::ResourceInUse(m)
+            | AppError::OptimisticLockConflict(m)
+            | AppError::SseConcurrencyExceeded(m)
+            | AppError::CannotDeleteMainAgent(m)
+            | AppError::SchemaMismatch(m)
+            | AppError::CapabilityDeniedChat(m)
+            | AppError::PluginInvocationTimeout(m)
+            | AppError::WorkflowMappingInvalid(m)
+            | AppError::AgentDepthExceeded(m)
+            | AppError::ModelPresetUnknown(m)
+            | AppError::BuiltinSkillProtected(m)
+            | AppError::PoolBusy(m) => m,
         }
     }
 

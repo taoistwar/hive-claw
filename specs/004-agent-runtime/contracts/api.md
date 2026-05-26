@@ -404,7 +404,7 @@ data: {"code": 5003, "message": "Capability denied: llm.invoke"}
 | Code | HTTP | 内部含义 | 用户可见消息（zh-CN，前端展示文本必须用此版本） |
 | --- | --- | --- | --- |
 | 4030 | 403 | Capability denied（运行时；写在 audit + 返回给 caller） | `当前 Agent 未授权调用能力「{capability}」` |
-| 4040 | 400 | Capability unknown（plugin 调用了不存在的 capability） | `Plugin 试图调用未知能力「{capability}」` |
+| 4045 | 400 | Capability unknown（plugin 调用了不存在的 capability；原 4040，因与 003 NOT_FOUND 冲突改 4045） | `Plugin 试图调用未知能力「{capability}」` |
 | 4091 | 409 | Tag in use（删除阻塞） | `标签被 {N} 个对象引用，无法删除` |
 | 4092 | 409 | DAG cycle detected | `工作流中存在环，请检查节点 {node_keys} 之间的连线` |
 | 4093 | 409 | Plugin/Workflow/Function/Agent in use（删除阻塞） | `{resource_type} 被 {N} 个对象引用，无法删除` |

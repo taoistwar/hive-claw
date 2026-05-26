@@ -170,7 +170,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端服务层 + API
 
-- [ ] T070 [US1] Plugin service `crates/hiveweb/src/services/plugin.rs`：
+- [x] T070 [US1] Plugin service `crates/hiveweb/src/services/plugin.rs`：
   - **upload**：校验 WASM magic bytes (`\0asm`) → 校验大小 ≤ `PLUGIN_MAX_BYTES` → 扫 imports 段拒绝非宿主注册的 host function（FR-005 v7）→ 计算 sha256 → S3 put → DB insert
   - **update metadata only**：仅允许改 name/description/category/tags/author/repository_url；走乐观锁（client 携带 updated_at，不一致返 4094）
   - **soft delete with reference check**（spec SC-009 v7 race window 防护）：
@@ -180,17 +180,17 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
     - 任何引用 → ROLLBACK + 4093
     - 否则 UPDATE plugins SET deleted_at = NOW() + COMMIT
   - **加载前 sha256 重校验**（FR-029 v7）：从 S3 GET WASM 后重算 sha256 比对 DB；不一致 → 拒绝实例化 + audit + tracing::error 通知运维
-- [ ] T071 [US1] Plugin API `crates/hiveweb/src/api/plugin.rs`：`GET/POST/PUT/DELETE /api/plugins`，multipart upload 处理；三维检索 SQL（FULLTEXT + category + tags JOIN）
-- [ ] T072 [P] [US1] 在 `crates/hiveweb/src/storage/s3.rs` 增加 `put_wasm(key, bytes) -> Result<()>` 与 `delete_wasm(key)` 帮助函数
-- [ ] T073 [US1] 把 plugin 路由 mount 到 `crates/hiveweb/src/api/mod.rs::create_router`
+- [x] T071 [US1] Plugin API `crates/hiveweb/src/api/plugin.rs`：`GET/POST/PUT/DELETE /api/plugins`，multipart upload 处理；三维检索 SQL（FULLTEXT + category + tags JOIN）
+- [x] T072 [P] [US1] 在 `crates/hiveweb/src/storage/s3.rs` 增加 `put_wasm(key, bytes) -> Result<()>` 与 `delete_wasm(key)` 帮助函数
+- [x] T073 [US1] 把 plugin 路由 mount 到 `crates/hiveweb/src/api/mod.rs::create_router`
 
 ### 前端
 
-- [ ] T074 [P] [US1] `web/src/services/plugin.ts`：CRUD + multipart upload + 三维检索
-- [ ] T075 [P] [US1] `web/src/components/PluginUploader.tsx`：文件选取 / sha256 预览 / 大小校验
-- [ ] T076 [P] [US1] `web/src/components/PluginFilters.tsx`：category 树 + tags 多选 + search
-- [ ] T077 [US1] `web/src/pages/PluginPage.tsx`：列表 + 抽屉编辑 + 引用阻塞确认对话框
-- [ ] T078 [US1] `web/src/hooks/usePlugins.ts`：分页 + filter 状态
+- [x] T074 [P] [US1] `web/src/services/plugin.ts`：CRUD + multipart upload + 三维检索
+- [x] T075 [P] [US1] `web/src/components/PluginUploader.tsx`：文件选取 / sha256 预览 / 大小校验
+- [x] T076 [P] [US1] `web/src/components/PluginFilters.tsx`：category 树 + tags 多选 + search（MVP：search + category_id + tag_ids，US7 后替换为树形 Select / 多选标签）
+- [x] T077 [US1] `web/src/pages/PluginPage.tsx`：列表 + 抽屉编辑 + 引用阻塞确认对话框
+- [x] T078 [US1] `web/src/hooks/usePlugins.ts`：分页 + filter 状态
 - [ ] T157 [P] [US1] [SC-008] axe 检测 `web/src/components/__tests__/a11y_plugin.test.tsx`：覆盖 PluginPage / PluginUploader / PluginFilters，0 critical/serious
 
 **Checkpoint**：Plugin CRUD + 检索 + 软删除可独立演示。T037 / T058 / T059 / T063 / T157 应该转绿。

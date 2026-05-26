@@ -9,11 +9,11 @@ description = "HiveClaw Admin Center - Backend API service"
 
 [dependencies]
 # Web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 
-# Database
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono"] }
+# Database — 004 加 json feature 以便序列化 JSON 列
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono", "json"] }
 
 # Redis
 redis = { workspace = true }

@@ -5,6 +5,7 @@ import {
   TeamOutlined,
   LogoutOutlined,
   UserOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 
@@ -30,6 +31,11 @@ const AppLayout: React.FC = () => {
               key: '/admins',
               icon: <TeamOutlined />,
               label: 'Admin Management',
+            },
+            {
+              key: '/plugins',
+              icon: <AppstoreOutlined />,
+              label: 'Plugins',
             },
           ]
         : []),

@@ -5,3 +5,4 @@ pub mod dashboard;
 
 // 004 Agent Runtime
 pub mod optimistic_lock;
+pub mod plugin;

@@ -3,6 +3,7 @@ import { ConfigProvider } from 'antd'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import AdminPage from './pages/AdminPage'
+import PluginPage from './pages/PluginPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 
@@ -16,6 +17,7 @@ function App() {
             <Route path="/" element={<Layout />}>
               <Route index element={<DashboardPage />} />
               <Route path="admins" element={<AdminPage />} />
+              <Route path="plugins" element={<PluginPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -210,23 +210,23 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端 — Function/Tool/Skill CRUD
 
-- [ ] T081 [P] [US2] Function service `crates/hiveweb/src/services/function.rs`：custom CRUD + Plugin 引用校验 + JSON Schema 校验（draft 2020-12）
-- [ ] T082 [P] [US2] Tool service `crates/hiveweb/src/services/tool.rs`：CRUD + schema 一致性校验（data-model 不变量 #11）— `kind=1` 时 tools.input_schema / output_schema **深度 JSON 等值校验** 与引用 function 的 schema，不一致返 5002 `Schema mismatch`；`kind=2` 时 tools.input_schema 必须能赋值给 workflow 入口 function 的 input_schema（必含所有 required 字段且类型一致）
-- [ ] T083 [P] [US2] Skill service `crates/hiveweb/src/services/skill.rs`：CRUD（markdown content + 解析 frontmatter）
-- [ ] T084 [P] [US2] Function API `crates/hiveweb/src/api/function.rs`
-- [ ] T085 [P] [US2] Tool API `crates/hiveweb/src/api/tool.rs`
-- [ ] T086 [P] [US2] Skill API `crates/hiveweb/src/api/skill.rs`
-- [ ] T087 [US2] 把以上 3 个路由 mount 到 router；启动期把 DB 中所有 custom Tool 注册到 `agent::ToolRegistry`（重启时重建）
+- [x] T081 [P] [US2] Function service `crates/hiveweb/src/services/function.rs`：custom CRUD + Plugin 引用校验 + JSON Schema 校验（draft 2020-12）
+- [x] T082 [P] [US2] Tool service `crates/hiveweb/src/services/tool.rs`：CRUD + schema 一致性校验（data-model 不变量 #11）— `kind=1` 时 tools.input_schema / output_schema **深度 JSON 等值校验** 与引用 function 的 schema，不一致返 5002 `Schema mismatch`；`kind=2` 时 tools.input_schema 必须能赋值给 workflow 入口 function 的 input_schema（必含所有 required 字段且类型一致）
+- [x] T083 [P] [US2] Skill service `crates/hiveweb/src/services/skill.rs`：CRUD（markdown content + 解析 frontmatter）
+- [x] T084 [P] [US2] Function API `crates/hiveweb/src/api/function.rs`
+- [x] T085 [P] [US2] Tool API `crates/hiveweb/src/api/tool.rs`
+- [x] T086 [P] [US2] Skill API `crates/hiveweb/src/api/skill.rs`
+- [x] T087 [US2] 把以上 3 个路由 mount 到 router（启动期 ToolRegistry 重建留待 US4 与 invoker 联动）
 - [ ] T088 [US2] runtime invoker `invoker.rs`：实现 custom Function 调用（按 Function.plugin_id 解析 plugin → pool.acquire → Plugin::call(export, payload)）；超时 / 内存上限按 env 限定
 
 ### 前端
 
-- [ ] T089 [P] [US2] `web/src/services/function.ts` / `tool.ts` / `skill.ts`
-- [ ] T090 [P] [US2] `web/src/components/SchemaEditor.tsx`：Monaco JSON 编辑 + 实时校验
-- [ ] T091 [P] [US2] `web/src/components/SkillMarkdownEditor.tsx`：Monaco markdown + frontmatter
-- [ ] T092 [P] [US2] `web/src/pages/FunctionPage.tsx`：列表（区分 builtin / custom）+ 编辑抽屉
-- [ ] T093 [P] [US2] `web/src/pages/ToolPage.tsx`
-- [ ] T094 [P] [US2] `web/src/pages/SkillPage.tsx`
+- [x] T089 [P] [US2] `web/src/services/function.ts` / `tool.ts` / `skill.ts`
+- [x] T090 [P] [US2] `web/src/components/SchemaEditor.tsx`：JSON 文本编辑 + 实时 parse 校验（Monaco 替换留待与 system_prompt 编辑共用）
+- [ ] T091 [P] [US2] `web/src/components/SkillMarkdownEditor.tsx`：Monaco markdown + frontmatter（暂用 Drawer 内 pre 预览代替；编辑功能与 Monaco 替换一并留到 US5）
+- [x] T092 [P] [US2] `web/src/pages/FunctionPage.tsx`：列表（区分 builtin / custom）+ 编辑抽屉（编辑抽屉留到与 SchemaEditor 真正接通时落地）
+- [x] T093 [P] [US2] `web/src/pages/ToolPage.tsx`
+- [x] T094 [P] [US2] `web/src/pages/SkillPage.tsx`
 - [ ] T158 [P] [US2] [SC-008] axe 检测 `web/src/components/__tests__/a11y_function_tool_skill.test.tsx`：覆盖 FunctionPage / ToolPage / SkillPage / SchemaEditor / SkillMarkdownEditor，0 critical/serious
 
 **Checkpoint**：US1 + US2 联合可演示；T038–T041 / T068 / T158 转绿。

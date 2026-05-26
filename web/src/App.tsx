@@ -4,6 +4,9 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import AdminPage from './pages/AdminPage'
 import PluginPage from './pages/PluginPage'
+import FunctionPage from './pages/FunctionPage'
+import ToolPage from './pages/ToolPage'
+import SkillPage from './pages/SkillPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 
@@ -18,6 +21,9 @@ function App() {
               <Route index element={<DashboardPage />} />
               <Route path="admins" element={<AdminPage />} />
               <Route path="plugins" element={<PluginPage />} />
+              <Route path="functions" element={<FunctionPage />} />
+              <Route path="tools" element={<ToolPage />} />
+              <Route path="skills" element={<SkillPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

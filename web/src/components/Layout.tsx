@@ -6,6 +6,9 @@ import {
   LogoutOutlined,
   UserOutlined,
   AppstoreOutlined,
+  FunctionOutlined,
+  ToolOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 
@@ -36,6 +39,21 @@ const AppLayout: React.FC = () => {
               key: '/plugins',
               icon: <AppstoreOutlined />,
               label: 'Plugins',
+            },
+            {
+              key: '/functions',
+              icon: <FunctionOutlined />,
+              label: 'Functions',
+            },
+            {
+              key: '/tools',
+              icon: <ToolOutlined />,
+              label: 'Tools',
+            },
+            {
+              key: '/skills',
+              icon: <BookOutlined />,
+              label: 'Skills',
             },
           ]
         : []),

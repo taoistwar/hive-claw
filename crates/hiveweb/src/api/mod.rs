@@ -3,7 +3,10 @@ pub mod admin;
 pub mod dashboard;
 
 // 004 Agent Runtime
+pub mod function;
 pub mod plugin;
+pub mod skill;
+pub mod tool;
 
 use axum::{
     http::HeaderValue,
@@ -110,6 +113,9 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(admin::router())
         .merge(dashboard::router())
         .merge(plugin::router())
+        .merge(function::router())
+        .merge(tool::router())
+        .merge(skill::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 

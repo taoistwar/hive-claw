@@ -92,6 +92,7 @@ redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
 jsonwebtoken = "9"
 bcrypt = "0.15"
 aws-sdk-s3 = "1"
+aws-config = "1"
 dotenvy = "0.15"
 
 

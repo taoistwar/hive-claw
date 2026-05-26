@@ -11,7 +11,8 @@ mod utils;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv()?;
+    // Load .env file if it exists, but don't fail if it doesn't
+    let _ = dotenvy::dotenv_override()?;
 
     // Initialize logging
     tracing_subscriber::fmt()
@@ -28,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let port = std::env::var("HIVWEB_PORT")
         .unwrap_or_else(|_| "3000".to_string())
         .parse::<u16>()?;
+    println!("Host: {}, Port: {}", host, port);
 
     // Initialize database connection pool
     let database_url = std::env::var("DATABASE_URL")

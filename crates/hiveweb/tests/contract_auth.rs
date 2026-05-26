@@ -15,7 +15,7 @@ async fn t026a_login_returns_token_on_valid_credentials() -> anyhow::Result<()> 
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "13800138000", "password": "admin123" }),
+        json!({ "phone": "18810154696", "password": "admin123" }),
     )
     .await?;
 
@@ -33,7 +33,7 @@ async fn t026a_login_rejects_wrong_password() -> anyhow::Result<()> {
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "13800138000", "password": "not-the-real-password" }),
+        json!({ "phone": "18810154696", "password": "not-the-real-password" }),
     )
     .await?;
 
@@ -53,7 +53,7 @@ async fn t026a_login_locks_after_five_failures() -> anyhow::Result<()> {
         let _ = common::post_json(
             &app,
             "/api/auth/login",
-            json!({ "phone": "13800138000", "password": "wrong" }),
+            json!({ "phone": "18810154696", "password": "wrong" }),
         )
         .await?;
     }
@@ -61,7 +61,7 @@ async fn t026a_login_locks_after_five_failures() -> anyhow::Result<()> {
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "13800138000", "password": "wrong" }),
+        json!({ "phone": "18810154696", "password": "wrong" }),
     )
     .await?;
 

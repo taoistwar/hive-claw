@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: docker.m.daocloud.io/mysql:8.0
     container_name: hiveweb-mysql
     restart: unless-stopped
     environment:
@@ -23,7 +23,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: docker.m.daocloud.io/redis:7-alpine
     container_name: hiveweb-redis
     restart: unless-stopped
     ports:
@@ -38,7 +38,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: docker.m.daocloud.io/minio/minio:latest
     container_name: hiveweb-minio
     restart: unless-stopped
     environment:
@@ -57,7 +57,7 @@ services:
       retries: 10
 
   minio-init:
-    image: minio/mc:latest
+    image: docker.m.daocloud.io/minio/mc:latest
     container_name: hiveweb-minio-init
     depends_on:
       minio:

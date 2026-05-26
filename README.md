@@ -22,7 +22,7 @@
 
 ### 前置条件
 
-1. Rust 1.75+ (`rustup install stable`)
+1. Rust 1.85+ (`rustup install stable`)
 2. Node.js 18+ (`nvm install 18`)
 3. MySQL 8.0+
 4. Redis 7+
@@ -52,7 +52,7 @@ cargo run --bin migrate
 
 # 创建初始超级管理员
 cargo run --bin create-super-admin -- \
-  --phone "13800138000" \
+  --phone "18810154696" \
   --password "admin123" \
   --nickname "Super Admin"
 

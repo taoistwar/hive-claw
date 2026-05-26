@@ -2,12 +2,12 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv()?;
+    dotenvy::dotenv_override()?;
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = sqlx::MySqlPool::connect(&database_url).await?;
 
-    let phone = "13800138000";
+    let phone = "18810154696";
     let password = "admin123";
     let nickname = "超级管理员";
 

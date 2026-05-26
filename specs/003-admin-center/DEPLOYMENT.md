@@ -108,11 +108,13 @@ To roll back, restore the prior database snapshot — migrations are forward-onl
 After migrating, create the initial super admin (role = 3):
 
 ```bash
-cargo run --bin create_super_admin -- \
-  --phone 13800138000 \
+cargo run --bin create-super-admin -- \
+  --phone 18810154696 \
   --password 'change-me-now' \
   --nickname 'Super Admin'
 ```
+
+> 提示：二进制名使用连字符 `create-super-admin`（与文件名 `create_super_admin.rs` 不同；后者是 Rust 标识符风格，前者是 `[[bin]] name` 字段）。
 
 Re-running with the same phone is rejected (uniqueness). To seed test data, use `cargo run --bin seed`.
 
@@ -222,7 +224,7 @@ curl -fsS https://admin.example.com/api/health
 # 2. Login (returns JWT)
 curl -fsS -X POST https://admin.example.com/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"phone":"13800138000","password":"<new-password>"}'
+  -d '{"phone":"18810154696","password":"<new-password>"}'
 
 # 3. Authenticated request
 TOKEN=...   # from previous response

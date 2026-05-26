@@ -1,6 +1,6 @@
 # API Contracts: 管理中心
 
-**Created**: 2026-05-25  
+**Created**: 2026-05-25
 **Feature**: 管理中心 (003-admin-center)
 
 ## Overview
@@ -101,7 +101,7 @@ Content-Type: application/json
 **Request Body**:
 ```json
 {
-  "phone": "13800138000",
+  "phone": "18810154696",
   "password": "admin123"
 }
 ```
@@ -119,7 +119,7 @@ Content-Type: application/json
     "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiaWF0IjoxNjE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
     "admin": {
       "id": 1,
-      "phone": "13800138000",
+      "phone": "18810154696",
       "nickname": "Super Admin",
       "role": 3,
       "status": 1,
@@ -210,7 +210,7 @@ Authorization: Bearer <access_token>
   "code": 0,
   "data": {
     "id": 1,
-    "phone": "13800138000",
+    "phone": "18810154696",
     "nickname": "Super Admin",
     "role": 3,
     "status": 1
@@ -249,7 +249,7 @@ Authorization: Bearer <access_token>
     "admins": [
       {
         "id": 1,
-        "phone": "13800138000",
+        "phone": "18810154696",
         "nickname": "Super Admin",
         "role": 3,
         "status": 1,
@@ -361,7 +361,7 @@ Authorization: Bearer <access_token>
   "code": 0,
   "data": {
     "id": 1,
-    "phone": "13800138000",
+    "phone": "18810154696",
     "nickname": "Super Admin",
     "role": 3,
     "status": 1,

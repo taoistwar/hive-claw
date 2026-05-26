@@ -40,7 +40,7 @@ const MIGRATIONS: &[Migration] = &[
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    dotenvy::dotenv_override().ok();
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 

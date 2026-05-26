@@ -15,7 +15,7 @@ async fn t026g_lockout_engages_after_five_failures_and_expires_after_fifteen_min
         let (status, _) = common::post_json(
             &app,
             "/api/auth/login",
-            json!({ "phone": "13800138000", "password": format!("bad-{attempt}") }),
+            json!({ "phone": "18810154696", "password": format!("bad-{attempt}") }),
         )
         .await?;
         assert!(
@@ -28,7 +28,7 @@ async fn t026g_lockout_engages_after_five_failures_and_expires_after_fifteen_min
     let (status, body) = common::post_json(
         &app,
         "/api/auth/login",
-        json!({ "phone": "13800138000", "password": "admin123" }),
+        json!({ "phone": "18810154696", "password": "admin123" }),
     )
     .await?;
     assert!(status.is_client_error(), "6th attempt must be rejected, got {status}");

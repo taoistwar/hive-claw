@@ -218,7 +218,7 @@ fn check_permission(role: Role, operation: &str) -> bool {
 创建 `login_records` 表（初始 schema：`admin_id NOT NULL` + `ON DELETE CASCADE`；后续由 V004 修订）。
 
 ### V003__seed_super_admin.sql
-占位 no-op。初始超级管理员通过 `cargo run --bin create_super_admin` 命令使用 bcrypt 加密后插入，不在 SQL 迁移内完成。
+占位 no-op。初始超级管理员通过 `cargo run --bin create-super-admin` 命令使用 bcrypt 加密后插入，不在 SQL 迁移内完成。（注意：二进制名带连字符，文件名 `create_super_admin.rs` 带下划线。）
 
 ### V004__login_records_set_null_and_snapshots.sql
 （T096）将 `login_records.admin_id` 改为 NULL-able 并把外键 `ON DELETE CASCADE` 改为 `ON DELETE SET NULL`；新增 `admin_phone_snapshot` 与 `admin_nickname_snapshot` 列，用于审计在管理员删除后仍可读到当时的手机号 / 昵称（FR-022 90 天保留）。

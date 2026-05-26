@@ -43,7 +43,7 @@ cargo run --bin migrate
 
 # 创建初始超级管理员
 cargo run --bin create-super-admin -- \
-  --phone "13800138000" \
+  --phone "18810154696" \
   --password "admin123" \
   --nickname "Super Admin"
 
@@ -75,7 +75,7 @@ npm run dev
 打开浏览器访问：http://localhost:5173
 
 使用初始超级管理员账号登录：
-- 手机号：13800138000
+- 手机号：18810154696
 - 密码：admin123
 
 ## Project Structure
@@ -143,7 +143,7 @@ npm run build
 **Request**:
 ```json
 {
-  "phone": "13800138000",
+  "phone": "18810154696",
   "password": "admin123"
 }
 ```
@@ -157,7 +157,7 @@ npm run build
     "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "admin": {
       "id": 1,
-      "phone": "13800138000",
+      "phone": "18810154696",
       "nickname": "Super Admin",
       "role": 3,
       "status": 1
@@ -181,7 +181,7 @@ Authorization: Bearer <token>
   "code": 0,
   "data": {
     "id": 1,
-    "phone": "13800138000",
+    "phone": "18810154696",
     "nickname": "Super Admin",
     "role": 3,
     "status": 1
@@ -207,7 +207,7 @@ Authorization: Bearer <token>
     "admins": [
       {
         "id": 1,
-        "phone": "13800138000",
+        "phone": "18810154696",
         "nickname": "Super Admin",
         "role": 3,
         "status": 1,

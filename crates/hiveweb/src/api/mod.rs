@@ -3,6 +3,7 @@ pub mod admin;
 pub mod dashboard;
 
 // 004 Agent Runtime
+pub mod capability;
 pub mod category;
 pub mod function;
 pub mod plugin;
@@ -120,6 +121,7 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(skill::router())
         .merge(category::router())
         .merge(tag::router())
+        .merge(capability::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 

@@ -6,7 +6,7 @@ VALUES (1, 'main', '入口 Agent', '系统的入口 Agent；不可删除',
 
 -- 2. capabilities 元数据
 INSERT IGNORE INTO capabilities (name, description, is_dangerous) VALUES
-  ('network.http',  'HTTP/HTTPS access (allowlisted hosts; SSRF-blocked)', 1),
+  ('network.http',  'HTTP/HTTPS access (allowlisted hosts, SSRF-blocked)', 1),
   ('fs.read',       '/tmp/plugin/ 内文件读', 0),
   ('fs.write',      '/tmp/plugin/ 内文件写', 0),
   ('s3.read',       'Rustfs 桶 GET', 0),

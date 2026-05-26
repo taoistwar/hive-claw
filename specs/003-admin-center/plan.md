@@ -145,6 +145,17 @@ web/
 | 缓解方案 | spec.md FR-021、FR-022、SC-009；Phase 7 T092（request_id 中间件 + JSON 日志 + 遮码）、T093（审计日志） |
 | 退出条件 | T092、T093 完成且 SC-009 达标 |
 
+### 偏离 4 — Principle IV / POST /api/auth/login 超 200 ms 预算
+
+| 项 | 内容 |
+| --- | --- |
+| 现状 | 实测 p95 ≈ 884 ms，超过 Principle IV 的 < 200 ms 预算（perf-evidence.md §2.1/2.3） |
+| 偏离类型 | 不可压缩的加密成本 |
+| 触发原因 | spec FR-016 强制 bcrypt；data-model.md 指定 cost=12，单次哈希 ≈ 400 ms（与并发无关） |
+| 风险 | 极端情况下登录吞吐 ≈ 8 req/s/core；正常业务场景每个管理员每天登录数次，不构成瓶颈 |
+| 替代方案（已否决） | (a) 降低 bcrypt cost — 弱化暴力破解防御，与 FR-016 精神冲突；(b) 切 Argon2id — 切换密码哈希算法需要无密码迁移路径，本期不开 |
+| 退出条件 | 永久接受偏离。需要在 perf-evidence.md / SLO 文档中明示登录端点的延迟为加密成本，区别于普通 CRUD 端点的 < 200 ms 预算 |
+
 ## Phase 0: Research
 
 ### Research Tasks

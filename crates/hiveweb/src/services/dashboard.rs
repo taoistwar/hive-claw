@@ -25,7 +25,9 @@ pub async fn get_stats(pool: &MySqlPool) -> Result<DashboardStats> {
                 AND last_login_at IS NOT NULL
                 AND last_login_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS online_admins,
             (SELECT COUNT(*) FROM login_records
-              WHERE success = 1 AND DATE(login_at) = CURDATE()) AS today_logins
+              WHERE success = 1
+                AND login_at >= CURDATE()
+                AND login_at <  CURDATE() + INTERVAL 1 DAY) AS today_logins
         "#,
     )
     .fetch_one(pool)

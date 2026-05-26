@@ -52,7 +52,17 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
 
     let state = AppState { pool, redis, s3 };
 
-    let rate_limit_state = RateLimitState::new(100, Duration::from_secs(60));
+    // Rate-limit window is per-IP. Defaults: 100 req / 60 s.
+    // Tune via env vars RATE_LIMIT_MAX and RATE_LIMIT_WINDOW_SECS.
+    let rl_max: u64 = std::env::var("RATE_LIMIT_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let rl_window: u64 = std::env::var("RATE_LIMIT_WINDOW_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+    let rate_limit_state = RateLimitState::new(rl_max, Duration::from_secs(rl_window));
 
     let tracing_layer = TraceLayer::new_for_http()
         .make_span_with(DefaultMakeSpan::new().level(Level::INFO))

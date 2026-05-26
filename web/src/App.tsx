@@ -10,6 +10,7 @@ import SkillPage from './pages/SkillPage'
 import CategoryPage from './pages/CategoryPage'
 import TagPage from './pages/TagPage'
 import AgentPage from './pages/AgentPage'
+import WorkflowPage from './pages/WorkflowPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 
@@ -30,6 +31,7 @@ function App() {
               <Route path="categories" element={<CategoryPage />} />
               <Route path="tags" element={<TagPage />} />
               <Route path="agents" element={<AgentPage />} />
+              <Route path="workflows" element={<WorkflowPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

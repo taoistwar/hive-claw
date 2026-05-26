@@ -102,9 +102,9 @@ description: "Task list for admin center implementation"
 
 ### Frontend component tests (Vitest + Testing Library)
 
-- [ ] T026k [P] Component test: LoginForm 表单校验 + 错误展示 在 `web/src/components/__tests__/LoginForm.test.tsx`
-- [ ] T026l [P] Component test: PermissionGuard 隐藏/重定向逻辑 在 `web/src/components/__tests__/PermissionGuard.test.tsx`
-- [ ] T026m [P] Component test: AdminTable 分页与角色按钮可见性 在 `web/src/components/__tests__/AdminTable.test.tsx`
+- [x] T026k [P] Component test: LoginForm 表单校验 + 错误展示 在 `web/src/components/__tests__/LoginForm.test.tsx`（4/4 通过）
+- [x] T026l [P] Component test: PermissionGuard 隐藏/重定向逻辑 在 `web/src/components/__tests__/PermissionGuard.test.tsx`（4/4 通过）
+- [x] T026m [P] Component test: AdminTable 分页与角色按钮可见性 在 `web/src/components/__tests__/AdminTable.test.tsx`（5/5 通过）
 
 **Checkpoint**: 所有 T026a–T026m 必须先以红灯状态提交（CI 标记失败），随后实现任务方可开始。
 

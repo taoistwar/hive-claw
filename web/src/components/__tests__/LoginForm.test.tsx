@@ -33,7 +33,7 @@ beforeEach(() => {
 describe('LoginForm', () => {
   it('rejects empty fields with required-field messages (spec §US1 AS-4)', async () => {
     renderForm();
-    const submit = screen.getByRole('button', { name: /登录|login/i });
+    const submit = screen.getByRole('button', { name: /登\s*录|login/i });
     await userEvent.click(submit);
     expect(await screen.findByText(/请输入手机号/)).toBeInTheDocument();
     expect(await screen.findByText(/请输入密码/)).toBeInTheDocument();
@@ -46,7 +46,7 @@ describe('LoginForm', () => {
     const password = screen.getByPlaceholderText(/密码/);
     await userEvent.type(phone, '12345');
     await userEvent.type(password, 'whatever');
-    await userEvent.click(screen.getByRole('button', { name: /登录|login/i }));
+    await userEvent.click(screen.getByRole('button', { name: /登\s*录|login/i }));
     expect(await screen.findByText(/请输入有效的11位手机号/)).toBeInTheDocument();
     expect(loginMock).not.toHaveBeenCalled();
   });
@@ -54,18 +54,18 @@ describe('LoginForm', () => {
   it('calls login() with the entered credentials on submit (spec §US1 AS-1)', async () => {
     loginMock.mockResolvedValueOnce(undefined);
     renderForm();
-    await userEvent.type(screen.getByPlaceholderText(/手机号/), '13800138000');
+    await userEvent.type(screen.getByPlaceholderText(/手机号/), '18810154696');
     await userEvent.type(screen.getByPlaceholderText(/密码/), 'admin123');
-    await userEvent.click(screen.getByRole('button', { name: /登录|login/i }));
-    expect(loginMock).toHaveBeenCalledWith('13800138000', 'admin123');
+    await userEvent.click(screen.getByRole('button', { name: /登\s*录|login/i }));
+    expect(loginMock).toHaveBeenCalledWith('18810154696', 'admin123');
   });
 
   it('surfaces the backend error message when login() rejects (spec §US1 AS-2)', async () => {
     loginMock.mockRejectedValueOnce({ response: { data: { message: '密码错误' } } });
     renderForm();
-    await userEvent.type(screen.getByPlaceholderText(/手机号/), '13800138000');
+    await userEvent.type(screen.getByPlaceholderText(/手机号/), '18810154696');
     await userEvent.type(screen.getByPlaceholderText(/密码/), 'bad');
-    await userEvent.click(screen.getByRole('button', { name: /登录|login/i }));
+    await userEvent.click(screen.getByRole('button', { name: /登\s*录|login/i }));
     expect(await screen.findByText('密码错误')).toBeInTheDocument();
   });
 });

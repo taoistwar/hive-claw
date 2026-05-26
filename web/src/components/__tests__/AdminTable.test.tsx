@@ -65,9 +65,9 @@ describe('AdminTable', () => {
   it('hides only the delete button for System admins (spec §US3 AS-2, post-2026-05-26 convention)', () => {
     userRef.current = { role: 2 };
     render(<AdminTable {...baseProps} />);
-    expect(screen.queryByRole('button', { name: /编辑/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /禁用|启用/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('button', { name: /编辑/ }).length).toBeGreaterThan(0);
+    expect(screen.queryAllByRole('button', { name: /禁用|启用/ }).length).toBeGreaterThan(0);
+    expect(screen.queryAllByRole('button', { name: /删除/ })).toHaveLength(0);
   });
 
   it('shows all action buttons for Super admins (spec §US3 AS-3)', () => {

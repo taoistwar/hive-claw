@@ -13,6 +13,7 @@ pub mod capabilities;
 pub mod capability;
 pub mod invoker;
 pub mod llm;
+pub mod orchestrator;
 pub mod pool;
 pub mod workflow;
 

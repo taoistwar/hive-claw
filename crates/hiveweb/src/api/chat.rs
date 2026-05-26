@@ -186,143 +186,44 @@ async fn post_message_sse(
         Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
     };
 
-    // 4. 准备 SSE 流：T128 实接 LLM stream
+    // 4. 准备 SSE 流：T119 接入 orchestrator 多跳 tool-calling 循环
     //
-    // 资源装配（main agent 视角，T128 MVP — 多 Agent routing 留后续）：
-    //   1. resolve main agent (id=1) → 取 system_prompt + skill markdown 拼装 + permissions
-    //   2. resolve model_preset → providers::build_provider 拿 Arc<dyn LLMProvider>
-    //   3. provider.chat_stream(req, on_delta=回调推 mpsc) — 把 token 塞 mpsc::channel
-    //   4. SSE 流 = ReceiverStream<Event>
-    //
-    // 无 API key / preset 缺失 → emit error event 而非 5xx，让前端能看到具体错误
+    // orchestrator::run_session 内部完成：
+    //   - 装配 main agent 资源（system_prompt + skill markdown + tools schema）
+    //   - LLM tool-calling 循环（每跳调 provider.chat_stream → 解析 tool_calls →
+    //     执行宿主工具或路由到子 agent → tool message 喂回）
+    //   - emit 6 类 SSE 事件 + 终态 persist + audit (llm_invoke / agent_route)
+    //   - 5-hop guard + 循环路由检测 (depth/visited)
     let pool = state.pool.clone();
     let session_id = id;
-    let llm = Arc::clone(&state.runtime_state.llm);
     let user_content = body.content.clone();
-    let elapsed_start = std::time::Instant::now();
     let _ = user_msg.id;
-
-    // 拉 main agent 配置（id=1） — 简化：T128 MVP 暂用 main，后续接 route_to_subagent
-    let (system_prompt, model_preset_name) = match sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT system_prompt, model_preset FROM agents WHERE id = 1",
-    )
-    .fetch_optional(&state.pool)
-    .await
-    {
-        Ok(Some((sp, mp))) => (sp, mp),
-        _ => (
-            "You are a helpful assistant.".to_string(),
-            None,
-        ),
-    };
-
-    // 拉 main agent 的 skill markdown 拼到 system prompt
-    let skills: Vec<(String,)> = sqlx::query_as(
-        r#"SELECT s.content FROM skills s
-           JOIN agent_skills ax ON ax.skill_id = s.id
-           WHERE ax.agent_id = 1"#,
-    )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
-    let mut sys = system_prompt;
-    for (md,) in &skills {
-        sys.push_str("\n\n");
-        sys.push_str(md);
-    }
 
     // 拉历史对话作为 LLM 上下文
     let history: Vec<crate::models::ChatMessage> =
         svc::list_messages(&state.pool, session_id).await.unwrap_or_default();
 
-    // 构造 provider
-    let (provider, model) = match llm.build_primary(model_preset_name.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
-            // 立即 emit error 事件然后 done — 整个流退化为单事件
-            let error_evt = Event::default()
-                .event("error")
-                .data(json!({"code": 5007, "message": format!("preset error: {e}")}).to_string());
-            let final_stream: std::pin::Pin<
-                Box<dyn Stream<Item = Result<Event, Infallible>> + Send>,
-            > = Box::pin(stream::iter(vec![Ok::<_, Infallible>(error_evt)]));
-            let sse = Sse::new(final_stream).keep_alive(KeepAlive::new());
-            let mut headers = HeaderMap::new();
-            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache, no-transform"));
-            headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
-            headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
-            return (StatusCode::OK, headers, sse).into_response();
-        }
-    };
-
-    // 把 LLM 历史拼成 ChatRequest.messages（OpenAI-style）
-    use providers::ChatRequest;
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-    messages.push(json!({"role": "system", "content": sys}));
-    for m in &history {
-        if let Some(c) = &m.content {
-            messages.push(json!({"role": m.role, "content": c}));
-        }
-    }
-    messages.push(json!({"role": "user", "content": user_content}));
-
-    let req = ChatRequest {
-        model: Some(model.clone()),
-        messages,
-        max_tokens: 2048,
-        temperature: 0.7,
-        tools: None,
-        tool_choice: None,
-        reasoning_effort: None,
-    };
-
-    // 创建 mpsc channel：LLM streaming task → SSE 流读
+    // 创建 mpsc channel：orchestrator → SSE 流读
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
-    let pool_clone = pool.clone();
+    let deps = crate::runtime::orchestrator::OrchestratorDeps {
+        pool: pool.clone(),
+        s3: state.s3.clone(),
+        llm: Arc::clone(&state.runtime_state.llm),
+        registry: Arc::clone(&state.runtime_state.capabilities),
+        invoker: Arc::clone(&state.runtime_state.invoker),
+    };
+    let history_clone = history.clone();
     tokio::spawn(async move {
-        let tx_inner = tx.clone();
-        let on_delta: providers::StreamDeltaCallback = Arc::new(move |delta: String| {
-            let payload = json!({ "text": delta });
-            let ev = Event::default().event("token").data(payload.to_string());
-            let _ = tx_inner.send(Ok::<_, Infallible>(ev));
-        });
-        let resp = provider.chat_stream(req, Some(on_delta), None).await;
-
-        let elapsed = elapsed_start.elapsed().as_millis() as i32;
-
-        if resp.is_error() {
-            let err_msg = resp
-                .content
-                .clone()
-                .or(resp.error_kind.clone())
-                .unwrap_or_else(|| "LLM error".into());
-            let ev = Event::default()
-                .event("error")
-                .data(
-                    json!({
-                        "code": resp.error_status_code.unwrap_or(5000),
-                        "message": err_msg,
-                    })
-                    .to_string(),
-                );
-            let _ = tx.send(Ok(ev));
-        } else if let Some(text) = resp.content.clone() {
-            // persist assistant message
-            let _ = svc::append_assistant_message(
-                &pool_clone,
-                session_id,
-                &text,
-                None,
-                Some(elapsed),
-            )
-            .await;
-        }
-
-        let done_ev = Event::default()
-            .event("done")
-            .data(json!({"elapsed_ms": elapsed, "final_agent_id": null}).to_string());
-        let _ = tx.send(Ok(done_ev));
+        crate::runtime::orchestrator::run_session(
+            deps,
+            session_id,
+            1, // main agent
+            history_clone,
+            user_content,
+            tx,
+        )
+        .await;
     });
 
     // mpsc::UnboundedReceiver → Stream via futures::stream::unfold

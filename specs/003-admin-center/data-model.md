@@ -209,21 +209,22 @@ fn check_permission(role: Role, operation: &str) -> bool {
 
 ## Migrations
 
+迁移文件位于 `crates/hiveweb/migrations/`，由 `cargo run --bin migrate` 按版本号顺序应用；已应用版本记录在 `schema_migrations` 表中（一次性 forward-only）。
+
 ### V001__create_admins_table.sql
-```sql
--- 创建 admins 表（见上方 DDL）
-```
+创建 `admins` 表（见上方 DDL）。
 
 ### V002__create_login_records_table.sql
-```sql
--- 创建 login_records 表（见上方 DDL）
-```
+创建 `login_records` 表（初始 schema：`admin_id NOT NULL` + `ON DELETE CASCADE`；后续由 V004 修订）。
 
 ### V003__seed_super_admin.sql
-```sql
--- 初始化超级管理员（通过脚本生成，非直接 SQL）
--- 实际数据由 create-super-admin 二进制文件插入
-```
+占位 no-op。初始超级管理员通过 `cargo run --bin create_super_admin` 命令使用 bcrypt 加密后插入，不在 SQL 迁移内完成。
+
+### V004__login_records_set_null_and_snapshots.sql
+（T096）将 `login_records.admin_id` 改为 NULL-able 并把外键 `ON DELETE CASCADE` 改为 `ON DELETE SET NULL`；新增 `admin_phone_snapshot` 与 `admin_nickname_snapshot` 列，用于审计在管理员删除后仍可读到当时的手机号 / 昵称（FR-022 90 天保留）。
+
+### V005__login_records_idx_login_at_desc.sql
+（T097）把 `idx_login_at` 改为 DESC 索引，加速仪表盘 `ORDER BY login_at DESC LIMIT 10`（MySQL 8.0 descending index）。
 
 ## MySQL Configuration
 

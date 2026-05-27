@@ -1,33 +1,19 @@
-// AgentPage — Agent 树 + 简化创建 (T125)
-//
-// MVP 范围：列树 + 查看详情 + 新建（含 ModelPresetSelect + CapabilityPicker）。
-// 完整编辑（含 Monaco system_prompt 编辑 + tool/skill 多选）留待 US6 接通后扩展。
+// AgentPage — Agent 树 + 详情 + 完整创建/编辑 (T125 + T124)
 
 import { useCallback, useEffect, useState } from 'react';
-import {
-  Button,
-  Drawer,
-  Form,
-  Input,
-  InputNumber,
-  Space,
-  Tag,
-  Typography,
-  message,
-} from 'antd';
+import { Button, Drawer, Modal, Space, Tag, Typography, message } from 'antd';
 
+import { AgentEditor, type AgentFormPayload } from '../components/AgentEditor';
 import { AgentTree } from '../components/AgentTree';
-import { CapabilityPicker } from '../components/CapabilityPicker';
-import { ModelPresetSelect } from '../components/ModelPresetSelect';
-import { SystemPromptEditor } from '../components/SystemPromptEditor';
 import { useAuth } from '../hooks/useAuth';
 import {
   createAgent,
+  deleteAgent,
   getAgent,
   listAgentTree,
+  updateAgent,
   type AgentDetail,
   type AgentTreeNode,
-  type CreateAgent,
 } from '../services/agent';
 
 const { Title, Paragraph, Text } = Typography;
@@ -37,10 +23,7 @@ export default function AgentPage() {
   const [tree, setTree] = useState<AgentTreeNode[]>([]);
   const [selected, setSelected] = useState<AgentDetail | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form] = Form.useForm<CreateAgent>();
-  const [perms, setPerms] = useState<string[]>([]);
-  const [preset, setPreset] = useState<string | null>(null);
-  const [systemPrompt, setSystemPrompt] = useState<string>('');
+  const [editing, setEditing] = useState<AgentDetail | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,26 +49,65 @@ export default function AgentPage() {
     }
   };
 
-  const onCreate = async (values: CreateAgent) => {
+  const onSubmit = async (payload: AgentFormPayload, id?: number) => {
     try {
-      await createAgent({
-        ...values,
-        system_prompt: systemPrompt,
-        permissions: perms,
-        model_preset: preset ?? undefined,
-      });
-      void message.success('创建成功');
-      form.resetFields();
-      setPerms([]);
-      setPreset(null);
-      setSystemPrompt('');
-      setCreateOpen(false);
+      if (id) {
+        await updateAgent(id, {
+          name: payload.name,
+          description: payload.description,
+          system_prompt: payload.system_prompt,
+          model_preset: payload.model_preset ?? undefined,
+          tool_ids: payload.tool_ids,
+          skill_ids: payload.skill_ids,
+          permissions: payload.permissions,
+          updated_at: payload.updated_at ?? new Date().toISOString(),
+        });
+        void message.success('已保存');
+        setEditing(null);
+        if (selected?.id === id) setSelected(await getAgent(id));
+      } else {
+        await createAgent({
+          identifier: payload.identifier,
+          name: payload.name,
+          description: payload.description,
+          system_prompt: payload.system_prompt,
+          parent_agent_id: payload.parent_agent_id,
+          model_preset: payload.model_preset ?? undefined,
+          tool_ids: payload.tool_ids,
+          skill_ids: payload.skill_ids,
+          permissions: payload.permissions,
+        });
+        void message.success('已创建');
+        setCreateOpen(false);
+      }
       await refresh();
     } catch (e: unknown) {
       const err = e as { response?: { data?: { code?: number; message?: string } } };
       const msg = err.response?.data?.message ?? (e as Error).message;
-      void message.error(`创建失败：${msg}`);
+      void message.error(`操作失败：${msg}`);
     }
+  };
+
+  const onDeleteAgent = (agent: AgentDetail) => {
+    Modal.confirm({
+      title: `删除 Agent「${agent.identifier}」？`,
+      content:
+        agent.identifier === 'main'
+          ? 'main agent 不可删除，将返回 5001'
+          : '若有子 Agent 将返回 4093 阻止',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteAgent(agent.id);
+          void message.success('已删除');
+          if (selected?.id === agent.id) setSelected(null);
+          await refresh();
+        } catch (e: unknown) {
+          const err = e as { response?: { data?: { code?: number; message?: string } } };
+          void message.error(err.response?.data?.message ?? (e as Error).message);
+        }
+      },
+    });
   };
 
   return (
@@ -102,6 +124,12 @@ export default function AgentPage() {
       <div style={{ flex: 1 }}>
         {selected ? (
           <>
+            <Space style={{ float: 'right' }}>
+              <Button onClick={() => setEditing(selected)}>编辑</Button>
+              <Button danger onClick={() => onDeleteAgent(selected)}>
+                删除
+              </Button>
+            </Space>
             <Title level={4}>
               {selected.name}{' '}
               <Text type="secondary" style={{ fontSize: 14 }}>
@@ -122,6 +150,8 @@ export default function AgentPage() {
                 padding: 12,
                 whiteSpace: 'pre-wrap',
                 fontSize: 13,
+                maxHeight: 240,
+                overflow: 'auto',
               }}
             >
               {selected.system_prompt}
@@ -157,45 +187,32 @@ export default function AgentPage() {
       <Drawer
         title="新建 Agent"
         open={createOpen}
-        width={520}
+        width={680}
         onClose={() => setCreateOpen(false)}
+        destroyOnClose
       >
-        <Form form={form} layout="vertical" onFinish={onCreate}>
-          <Form.Item name="identifier" label="identifier" rules={[{ required: true }]}>
-            <Input placeholder="rust-expert" />
-          </Form.Item>
-          <Form.Item name="name" label="name" rules={[{ required: true }]}>
-            <Input placeholder="Rust 专家" />
-          </Form.Item>
-          <Form.Item name="description" label="description">
-            <Input />
-          </Form.Item>
-          <Form.Item label="system_prompt" required>
-            <SystemPromptEditor
-              value={systemPrompt}
-              onChange={setSystemPrompt}
-              height="240px"
-            />
-          </Form.Item>
-          <Form.Item name="parent_agent_id" label="parent_agent_id (留空 = 顶级)">
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item label="model_preset">
-            <ModelPresetSelect value={preset} onChange={setPreset} />
-          </Form.Item>
-          <Form.Item label="permissions">
-            <CapabilityPicker
-              value={perms}
-              onChange={setPerms}
-              currentRole={user?.role ?? 0}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit">
-              创建
-            </Button>
-          </Form.Item>
-        </Form>
+        <AgentEditor
+          currentRole={user?.role ?? 0}
+          onSubmit={onSubmit}
+          onCancel={() => setCreateOpen(false)}
+        />
+      </Drawer>
+
+      <Drawer
+        title={editing ? `编辑 Agent — ${editing.identifier}` : ''}
+        open={!!editing}
+        width={680}
+        onClose={() => setEditing(null)}
+        destroyOnClose
+      >
+        {editing && (
+          <AgentEditor
+            initial={editing}
+            currentRole={user?.role ?? 0}
+            onSubmit={onSubmit}
+            onCancel={() => setEditing(null)}
+          />
+        )}
       </Drawer>
     </div>
   );

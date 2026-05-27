@@ -1,11 +1,12 @@
 // PluginUploader — 文件选取 / sha256 预览 / 大小校验 (T075)
 
 import { useState } from 'react';
-import { Button, Form, Input, InputNumber, Upload, message } from 'antd';
+import { Button, Form, Input, Upload, message } from 'antd';
 import { InboxOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 
 import { uploadPlugin, type UploadMeta, type Plugin } from '../services/plugin';
+import { CategoryTreeSelect } from './CategoryTreeSelect';
 
 const MAX_BYTES = 16 * 1024 * 1024; // FR-005 v7 + .env PLUGIN_MAX_BYTES default
 
@@ -102,7 +103,7 @@ export function PluginUploader({ onUploaded }: PluginUploaderProps) {
         <Input />
       </Form.Item>
       <Form.Item label="category_id" name="category_id">
-        <InputNumber min={1} />
+        <CategoryTreeSelect placeholder="选择分类（可选）" />
       </Form.Item>
 
       <Form.Item>

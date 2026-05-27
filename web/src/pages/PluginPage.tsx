@@ -1,16 +1,64 @@
-// PluginPage — 列表 + 抽屉编辑 + 引用阻塞确认 (T077)
+// PluginPage — 列表 + 左侧分类树过滤 + 抽屉编辑 + 引用阻塞确认 (T077)
 
-import { useState } from 'react';
-import { Button, Drawer, Modal, Space, Table, Tag, message } from 'antd';
+import { useEffect, useState } from 'react';
+import { Button, Drawer, Modal, Space, Table, Tag, Tree, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import type { DataNode } from 'antd/es/tree';
+import { PluginEdit } from '../components/PluginEdit';
 import { PluginFilters } from '../components/PluginFilters';
 import { PluginUploader } from '../components/PluginUploader';
 import { usePlugins } from '../hooks/usePlugins';
 import { deletePlugin, type Plugin } from '../services/plugin';
+import { listCategoriesTree, type CategoryNode } from '../services/category';
+
+function toDataNodes(nodes: CategoryNode[]): DataNode[] {
+  return nodes.map((n) => ({
+    key: n.id,
+    title: n.name,
+    children: n.children?.length ? toDataNodes(n.children) : undefined,
+  }));
+}
 
 export default function PluginPage() {
   const { items, total, loading, params, setParams, refresh } = usePlugins();
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingPlugin, setEditingPlugin] = useState<Plugin | null>(null);
+  const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
+  const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
+  const [treeLoading, setTreeLoading] = useState(false);
+
+  const loadCategoryTree = async () => {
+    setTreeLoading(true);
+    try {
+      const tree = await listCategoriesTree();
+      setCategoryTree(tree);
+      const allKeys: React.Key[] = [];
+      const collect = (nodes: CategoryNode[]) => {
+        nodes.forEach((n) => {
+          allKeys.push(n.id);
+          if (n.children?.length) collect(n.children);
+        });
+      };
+      collect(tree);
+      setTreeExpandedKeys(allKeys);
+    } catch (e) {
+      void message.error(`加载分类树失败：${(e as Error).message}`);
+    } finally {
+      setTreeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadCategoryTree();
+  }, []);
+
+  const handleCategorySelect = (key?: React.Key) => {
+    const newSelected = key === selectedCategoryKey ? undefined : key;
+    setSelectedCategoryKey(newSelected);
+    setParams({ ...params, category_id: newSelected !== undefined ? Number(newSelected) : undefined, offset: 0 });
+  };
 
   const onDelete = (p: Plugin) => {
     Modal.confirm({
@@ -42,6 +90,11 @@ export default function PluginPage() {
     { title: 'name', dataIndex: 'name' },
     { title: 'version', dataIndex: 'version', width: 100 },
     {
+      title: 'category',
+      dataIndex: 'category_id',
+      render: (categoryId: number | null) => (categoryId ? `ID: ${categoryId}` : '—'),
+    },
+    {
       title: 'tags',
       dataIndex: 'tags',
       render: (tags?: { id: number; name: string }[]) =>
@@ -64,6 +117,9 @@ export default function PluginPage() {
       key: 'actions',
       render: (_, p) => (
         <Space>
+          <Button size="small" onClick={() => { setEditingPlugin(p); setEditOpen(true); }}>
+            编辑
+          </Button>
           <Button danger size="small" onClick={() => onDelete(p)} disabled={!!p.deleted_at}>
             删除
           </Button>
@@ -73,41 +129,87 @@ export default function PluginPage() {
   ];
 
   return (
-    <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => setUploadOpen(true)}>
-          上传 Plugin
+    <div style={{ display: 'flex', gap: 16 }}>
+      <div style={{ width: 280, flexShrink: 0, borderRight: '1px solid #f0f0f0', paddingRight: 16 }}>
+        <h4 style={{ margin: '0 0 8px 0' }}>Categories</h4>
+        <Button size="small" style={{ width: '100%', marginBottom: 8 }} onClick={() => handleCategorySelect()}>
+          全部
         </Button>
-      </Space>
-      <PluginFilters value={params} onChange={setParams} />
-      <Table<Plugin>
-        rowKey="id"
-        columns={columns}
-        dataSource={items}
-        loading={loading}
-        pagination={{
-          current: Math.floor((params.offset ?? 0) / (params.limit ?? 20)) + 1,
-          pageSize: params.limit ?? 20,
-          total,
-          onChange: (page, pageSize) => {
-            setParams({ ...params, offset: (page - 1) * pageSize, limit: pageSize });
-          },
-        }}
-        style={{ marginTop: 16 }}
-      />
-      <Drawer
-        title="上传 Plugin"
-        open={uploadOpen}
-        width={520}
-        onClose={() => setUploadOpen(false)}
-      >
-        <PluginUploader
-          onUploaded={() => {
-            setUploadOpen(false);
-            void refresh();
+        {treeLoading ? <p>加载中…</p> : (
+          <Tree
+            treeData={toDataNodes(categoryTree)}
+            expandedKeys={treeExpandedKeys}
+            onExpand={(keys) => setTreeExpandedKeys(keys)}
+            selectedKeys={selectedCategoryKey !== undefined ? [selectedCategoryKey] : []}
+            onSelect={(keys) => {
+              if (keys.length > 0) handleCategorySelect(keys[0]);
+              else handleCategorySelect();
+            }}
+            showLine
+            blockNode
+          />
+        )}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Space style={{ marginBottom: 16 }}>
+          <Button type="primary" onClick={() => setUploadOpen(true)}>
+            上传 Plugin
+          </Button>
+        </Space>
+        <PluginFilters value={params} onChange={setParams} />
+        <Table<Plugin>
+          rowKey="id"
+          columns={columns}
+          dataSource={items}
+          loading={loading}
+          pagination={{
+            current: Math.floor((params.offset ?? 0) / (params.limit ?? 20)) + 1,
+            pageSize: params.limit ?? 20,
+            total,
+            onChange: (page, pageSize) => {
+              setParams({ ...params, offset: (page - 1) * pageSize, limit: pageSize });
+            },
           }}
+          style={{ marginTop: 16 }}
         />
-      </Drawer>
+        <Drawer
+          title="上传 Plugin"
+          open={uploadOpen}
+          width={520}
+          onClose={() => setUploadOpen(false)}
+        >
+          <PluginUploader
+            onUploaded={() => {
+              setUploadOpen(false);
+              void refresh();
+            }}
+          />
+        </Drawer>
+        <Drawer
+          title={editingPlugin ? `编辑 Plugin「${editingPlugin.identifier}@${editingPlugin.version}」` : '编辑 Plugin'}
+          open={editOpen}
+          width={520}
+          onClose={() => {
+            setEditOpen(false);
+            setEditingPlugin(null);
+          }}
+        >
+          {editingPlugin && (
+            <PluginEdit
+              plugin={editingPlugin}
+              onUpdated={() => {
+                setEditOpen(false);
+                setEditingPlugin(null);
+                void refresh();
+              }}
+              onCancel={() => {
+                setEditOpen(false);
+                setEditingPlugin(null);
+              }}
+            />
+          )}
+        </Drawer>
+      </div>
     </div>
   );
 }

@@ -1,10 +1,8 @@
 // PluginFilters — search + category + tags 三维检索 UI (T076)
-//
-// 当前 stub：仅 search + category_id + 逗号分隔 tag_ids 输入。
-// US7 接入 Category / Tag CRUD 后替换为树形 Select / 多选标签。
 
-import { Input, InputNumber, Space } from 'antd';
+import { Input, Space } from 'antd';
 import type { PluginListParams } from '../services/plugin';
+import { CategoryTreeSelect } from './CategoryTreeSelect';
 
 export interface PluginFiltersProps {
   value: PluginListParams;
@@ -22,14 +20,13 @@ export function PluginFilters({ value, onChange }: PluginFiltersProps) {
         style={{ width: 320 }}
         aria-label="搜索关键字"
       />
-      <InputNumber
-        placeholder="category_id"
-        min={1}
+      <CategoryTreeSelect
         value={value.category_id}
         onChange={(v) =>
-          onChange({ ...value, category_id: v === null ? undefined : Number(v), offset: 0 })
+          onChange({ ...value, category_id: v === undefined || v === null ? undefined : Number(v), offset: 0 })
         }
-        aria-label="按 category 筛选"
+        placeholder="按分类筛选"
+        style={{ width: 220 }}
       />
       <Input
         placeholder="tag ids (逗号分隔)"

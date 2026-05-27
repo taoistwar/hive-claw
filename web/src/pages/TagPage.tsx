@@ -1,16 +1,20 @@
-// TagPage — Tag 列表 + 创建 + 删除（引用阻塞 4091）(T136)
+// TagPage — Tag 列表 + 创建 + 编辑 + 删除（引用阻塞 4091）(T136)
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Form, Input, Modal, Space, Table, Tag as AntTag, message } from 'antd';
+import { Button, Drawer, Form, Input, Modal, Space, Table, Tag as AntTag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { createTag, deleteTag, listTags, type TagItem } from '../services/tag';
+import { ColorPickerInput } from '../components/ColorPickerInput';
+import { createTag, deleteTag, listTags, updateTag, type TagItem } from '../services/tag';
 
 export default function TagPage() {
   const [items, setItems] = useState<TagItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingTag, setEditingTag] = useState<TagItem | null>(null);
   const [search, setSearch] = useState('');
-  const [form] = Form.useForm();
+  const [createForm] = Form.useForm();
+  const [editForm] = Form.useForm();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -31,11 +35,31 @@ export default function TagPage() {
     try {
       await createTag(values);
       void message.success('已创建');
-      form.resetFields();
+      createForm.resetFields();
       setCreateOpen(false);
       await refresh();
     } catch (e) {
       void message.error(`创建失败：${(e as Error).message}`);
+    }
+  };
+
+  const openEdit = (tag: TagItem) => {
+    setEditingTag(tag);
+    editForm.setFieldsValue({ name: tag.name, color: tag.color });
+    setEditOpen(true);
+  };
+
+  const onEdit = async (values: { name: string; color?: string }) => {
+    if (!editingTag) return;
+    try {
+      await updateTag(editingTag.id, values);
+      void message.success('更新成功');
+      editForm.resetFields();
+      setEditOpen(false);
+      setEditingTag(null);
+      await refresh();
+    } catch (e) {
+      void message.error(`更新失败：${(e as Error).message}`);
     }
   };
 
@@ -71,15 +95,40 @@ export default function TagPage() {
       dataIndex: 'name',
       render: (n: string, r) => <AntTag color={r.color ?? 'default'}>{n}</AntTag>,
     },
-    { title: 'color', dataIndex: 'color' },
+    {
+      title: 'color',
+      dataIndex: 'color',
+      render: (c: string | null) => (
+        <Space>
+          {c && (
+            <span
+              style={{
+                display: 'inline-block',
+                width: 16,
+                height: 16,
+                borderRadius: 4,
+                backgroundColor: c,
+                border: '1px solid #d9d9d9',
+              }}
+            />
+          )}
+          <span>{c ?? '—'}</span>
+        </Space>
+      ),
+    },
     { title: '被引用', dataIndex: 'reference_count', width: 100 },
     {
       title: 'actions',
       key: 'actions',
       render: (_, r) => (
-        <Button danger size="small" onClick={() => onDelete(r)}>
-          删除
-        </Button>
+        <Space>
+          <Button size="small" onClick={() => openEdit(r)}>
+            编辑
+          </Button>
+          <Button danger size="small" onClick={() => onDelete(r)}>
+            删除
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -105,22 +154,49 @@ export default function TagPage() {
         loading={loading}
         pagination={false}
       />
+
       <Modal
         title="新建 Tag"
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
-        onOk={() => form.submit()}
+        onOk={() => createForm.submit()}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" onFinish={onCreate}>
+        <Form form={createForm} layout="vertical" onFinish={onCreate}>
           <Form.Item name="name" label="name" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="color" label="color (hex, 可选)">
-            <Input placeholder="#1677ff" />
+          <Form.Item name="color" label="color (可选)">
+            <ColorPickerInput />
           </Form.Item>
         </Form>
       </Modal>
+
+      <Drawer
+        title={editingTag ? `编辑 Tag「${editingTag.name}」` : '编辑 Tag'}
+        open={editOpen}
+        width={400}
+        onClose={() => {
+          setEditOpen(false);
+          setEditingTag(null);
+        }}
+      >
+        {editingTag && (
+          <Form form={editForm} layout="vertical" onFinish={onEdit}>
+            <Form.Item name="name" label="name" rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="color" label="color (可选)">
+              <ColorPickerInput />
+            </Form.Item>
+            <Form.Item>
+              <Button type="primary" htmlType="submit">
+                保存
+              </Button>
+            </Form.Item>
+          </Form>
+        )}
+      </Drawer>
     </div>
   );
 }

@@ -1,7 +1,9 @@
 // PluginDetail — read-only plugin information viewer
 
-import { Button, Descriptions, Tag } from 'antd';
+import { useEffect, useState } from 'react';
+import { Button, Descriptions, Spin, Tag } from 'antd';
 import type { Plugin, PluginTag } from '../services/plugin';
+import { getPluginExports } from '../services/plugin';
 
 export interface PluginDetailProps {
   plugin: Plugin;
@@ -11,6 +13,20 @@ export interface PluginDetailProps {
 }
 
 export function PluginDetail({ plugin, categoryNameMap, onEdit, onBack }: PluginDetailProps) {
+  const [exports, setExports] = useState<string[]>([]);
+  const [exportsLoading, setExportsLoading] = useState(false);
+
+  useEffect(() => {
+    setExportsLoading(true);
+    setExports([]);
+    getPluginExports(plugin.id)
+      .then((list) => setExports(list))
+      .catch(() => {
+        setExports([]);
+      })
+      .finally(() => setExportsLoading(false));
+  }, [plugin.id]);
+
   const tagItems = plugin.tags?.map((t: PluginTag) => (
     <Tag key={t.id} color="blue">
       {t.name}
@@ -61,6 +77,17 @@ export function PluginDetail({ plugin, categoryNameMap, onEdit, onBack }: Plugin
         </Descriptions.Item>
         <Descriptions.Item label="s3_key">
           <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{plugin.s3_key}</code>
+        </Descriptions.Item>
+        <Descriptions.Item label="exports">
+          {exportsLoading ? (
+            <Spin size="small" />
+          ) : exports.length > 0 ? (
+            exports.map((fn) => (
+              <Tag key={fn} color="geekblue">{fn}</Tag>
+            ))
+          ) : (
+            '—'
+          )}
         </Descriptions.Item>
         <Descriptions.Item label="created_at">
           {new Date(plugin.created_at).toLocaleString('zh-CN')}

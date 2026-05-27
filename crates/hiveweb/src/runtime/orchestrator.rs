@@ -568,9 +568,33 @@ async fn handle_workspace_tool(
                 Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
             }
         }
-        2 => ToolOutcome::error(
-            "workflow-wrap tool 调用尚未接通（T110 完成后启用）".into(),
-        ),
+        2 => {
+            // workflow-wrap (T111) — 直接派发到 WorkflowExecutor
+            let Some(workflow_id) = tool_ref.workflow_id else {
+                return ToolOutcome::error("workflow-wrap tool 缺 workflow_id".into());
+            };
+            let args_value: Value = Value::Object(tc.arguments.clone());
+            let executor_deps = crate::runtime::workflow::ExecutorDeps {
+                pool: deps.pool.clone(),
+                s3: deps.s3.clone(),
+                registry: Arc::clone(&deps.registry),
+                llm: Arc::clone(&deps.llm),
+                invoker: Arc::clone(&deps.invoker),
+            };
+            // 临时构造 executor — 直接用 sentinel；workflows 持有也行
+            let executor = crate::runtime::workflow::WorkflowExecutor::new();
+            match executor
+                .execute(&executor_deps, workflow_id, args_value, ctx.agent_id)
+                .await
+            {
+                Ok(out) => {
+                    // 把 HashMap<node_key, Value> 当成对象返回
+                    let obj = serde_json::Map::from_iter(out.into_iter());
+                    ToolOutcome::ok(Value::Object(obj))
+                }
+                Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
+            }
+        }
         _ => ToolOutcome::error(format!("未知 tool kind: {}", tool_ref.kind)),
     }
 }

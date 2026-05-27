@@ -126,13 +126,29 @@ pub struct ExecuteBody {
 fn default_input() -> Value { Value::Object(serde_json::Map::new()) }
 
 async fn execute_workflow(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(_body): Json<ExecuteBody>,
+    Json(body): Json<ExecuteBody>,
 ) -> Result<ApiResponse<Value>, ApiResponse<()>> {
-    // T110 真实拓扑执行留待 commit 2；当前返 5001 占位
-    Err(AppError::Internal(format!(
-        "workflow execute (id={id}) 待 T110 接通；当前 stub"
-    ))
-    .into_response())
+    use crate::runtime::workflow::ExecutorDeps;
+    let t0 = std::time::Instant::now();
+    let deps = ExecutorDeps {
+        pool: state.pool.clone(),
+        s3: state.s3.clone(),
+        registry: std::sync::Arc::clone(&state.runtime_state.capabilities),
+        llm: std::sync::Arc::clone(&state.runtime_state.llm),
+        invoker: std::sync::Arc::clone(&state.runtime_state.invoker),
+    };
+    let outputs = state
+        .runtime_state
+        .workflows
+        .execute(&deps, id, body.input, 1 /* main agent */)
+        .await
+        .map_err(|e| AppError::Internal(format!("workflow execute: {e}")).into_response())?;
+    let elapsed_ms = t0.elapsed().as_millis() as i32;
+    Ok(ApiResponse::success(serde_json::json!({
+        "workflow_id": id,
+        "node_results": outputs,
+        "elapsed_ms": elapsed_ms,
+    })))
 }

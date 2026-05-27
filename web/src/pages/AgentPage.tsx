@@ -19,6 +19,7 @@ import {
 import { AgentTree } from '../components/AgentTree';
 import { CapabilityPicker } from '../components/CapabilityPicker';
 import { ModelPresetSelect } from '../components/ModelPresetSelect';
+import { SystemPromptEditor } from '../components/SystemPromptEditor';
 import { useAuth } from '../hooks/useAuth';
 import {
   createAgent,
@@ -39,6 +40,7 @@ export default function AgentPage() {
   const [form] = Form.useForm<CreateAgent>();
   const [perms, setPerms] = useState<string[]>([]);
   const [preset, setPreset] = useState<string | null>(null);
+  const [systemPrompt, setSystemPrompt] = useState<string>('');
 
   const refresh = useCallback(async () => {
     try {
@@ -68,6 +70,7 @@ export default function AgentPage() {
     try {
       await createAgent({
         ...values,
+        system_prompt: systemPrompt,
         permissions: perms,
         model_preset: preset ?? undefined,
       });
@@ -75,6 +78,7 @@ export default function AgentPage() {
       form.resetFields();
       setPerms([]);
       setPreset(null);
+      setSystemPrompt('');
       setCreateOpen(false);
       await refresh();
     } catch (e: unknown) {
@@ -166,12 +170,12 @@ export default function AgentPage() {
           <Form.Item name="description" label="description">
             <Input />
           </Form.Item>
-          <Form.Item
-            name="system_prompt"
-            label="system_prompt"
-            rules={[{ required: true }]}
-          >
-            <Input.TextArea rows={4} placeholder="You answer Rust async questions." />
+          <Form.Item label="system_prompt" required>
+            <SystemPromptEditor
+              value={systemPrompt}
+              onChange={setSystemPrompt}
+              height="240px"
+            />
           </Form.Item>
           <Form.Item name="parent_agent_id" label="parent_agent_id (留空 = 顶级)">
             <InputNumber min={1} style={{ width: '100%' }} />

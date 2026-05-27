@@ -102,3 +102,25 @@ export async function updatePlugin(id: number, meta: UpdateMeta): Promise<Plugin
 export async function deletePlugin(id: number): Promise<void> {
   await apiClient.delete(`/plugins/${id}`);
 }
+
+/** 下载 WASM 文件（绕过 axios JSON envelope 拦截器） */
+export async function downloadPlugin(plugin: Plugin): Promise<void> {
+  const token = localStorage.getItem('auth_token');
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+  const url = `${API_BASE_URL}/plugins/${plugin.id}/download`;
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resp.ok) {
+    throw new Error(`下载失败：HTTP ${resp.status}`);
+  }
+  const blob = await resp.blob();
+  const filename = `${plugin.identifier}-${plugin.version}.wasm`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}

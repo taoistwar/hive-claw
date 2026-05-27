@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 import { Button, Drawer, Modal, Space, Table, Tag, Tree, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { DataNode } from 'antd/es/tree';
+import { PluginDetail } from '../components/PluginDetail';
 import { PluginEdit } from '../components/PluginEdit';
 import { PluginFilters } from '../components/PluginFilters';
 import { PluginUploader } from '../components/PluginUploader';
 import { usePlugins } from '../hooks/usePlugins';
-import { deletePlugin, type Plugin } from '../services/plugin';
+import { deletePlugin, downloadPlugin, type Plugin } from '../services/plugin';
 import { listCategoriesTree, type CategoryNode } from '../services/category';
 
 function toDataNodes(nodes: CategoryNode[]): DataNode[] {
@@ -23,7 +24,9 @@ export default function PluginPage() {
   const { items, total, loading, params, setParams, refresh } = usePlugins();
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
   const [editingPlugin, setEditingPlugin] = useState<Plugin | null>(null);
+  const [viewingPlugin, setViewingPlugin] = useState<Plugin | null>(null);
   const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
   const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
@@ -58,6 +61,14 @@ export default function PluginPage() {
     const newSelected = key === selectedCategoryKey ? undefined : key;
     setSelectedCategoryKey(newSelected);
     setParams({ ...params, category_id: newSelected !== undefined ? Number(newSelected) : undefined, offset: 0 });
+  };
+
+  const handleDownload = async (p: Plugin) => {
+    try {
+      await downloadPlugin(p);
+    } catch (e) {
+      void message.error(`下载失败：${(e as Error).message}`);
+    }
   };
 
   const onDelete = (p: Plugin) => {
@@ -117,8 +128,14 @@ export default function PluginPage() {
       key: 'actions',
       render: (_, p) => (
         <Space>
+          <Button size="small" onClick={() => { setViewingPlugin(p); setViewOpen(true); }}>
+            查看
+          </Button>
           <Button size="small" onClick={() => { setEditingPlugin(p); setEditOpen(true); }}>
             编辑
+          </Button>
+          <Button size="small" onClick={() => void handleDownload(p)} disabled={!!p.deleted_at}>
+            下载
           </Button>
           <Button danger size="small" onClick={() => onDelete(p)} disabled={!!p.deleted_at}>
             删除
@@ -146,7 +163,7 @@ export default function PluginPage() {
               else handleCategorySelect();
             }}
             showLine
-            blockNode
+            loadData={async () => {}}
           />
         )}
       </div>
@@ -172,6 +189,31 @@ export default function PluginPage() {
           }}
           style={{ marginTop: 16 }}
         />
+        <Drawer
+          title={viewingPlugin ? `查看 Plugin「${viewingPlugin.identifier}@${viewingPlugin.version}」` : '查看 Plugin'}
+          open={viewOpen}
+          width={600}
+          onClose={() => {
+            setViewOpen(false);
+            setViewingPlugin(null);
+          }}
+        >
+          {viewingPlugin && (
+            <PluginDetail
+              plugin={viewingPlugin}
+              onBack={() => {
+                setViewOpen(false);
+                setViewingPlugin(null);
+              }}
+              onEdit={() => {
+                setViewOpen(false);
+                setEditingPlugin(viewingPlugin);
+                setEditOpen(true);
+                setViewingPlugin(null);
+              }}
+            />
+          )}
+        </Drawer>
         <Drawer
           title="上传 Plugin"
           open={uploadOpen}

@@ -1,9 +1,13 @@
 //! Plugin API handlers (T071 / US1)
 //!
 //! GET / POST(multipart) / PUT / DELETE /api/plugins[/:id]
+//! GET /api/plugins/:id/download — 下载 WASM 文件（二进制流）
 
 use axum::{
+    body::Body,
     extract::{Multipart, Path, Query, State},
+    http::header::{CONTENT_DISPOSITION, CONTENT_TYPE},
+    response::Response,
     routing::get,
     Json, Router,
 };
@@ -13,6 +17,7 @@ use crate::api::AppState;
 use crate::services::plugin::{
     self as svc, ListFilter, UpdateMeta, UploadMeta,
 };
+use crate::storage::s3::get_wasm;
 use crate::utils::error::{ApiResponse, AppError};
 
 pub fn router() -> Router<AppState> {
@@ -22,6 +27,7 @@ pub fn router() -> Router<AppState> {
             "/plugins/:id",
             get(get_plugin).put(update_plugin).delete(delete_plugin),
         )
+        .route("/plugins/:id/download", get(download_plugin))
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,4 +147,34 @@ async fn delete_plugin(
         Ok(()) => Ok(ApiResponse::success(())),
         Err(e) => Err(e.into_response()),
     }
+}
+
+async fn download_plugin(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response<Body>, ApiResponse<()>> {
+    let plugin = svc::fetch_by_id(&state.pool, id)
+        .await
+        .map_err(|e| e.into_response())?;
+
+    if plugin.deleted_at.is_some() {
+        return Err(AppError::NotFound("Plugin has been deleted".into()).into_response());
+    }
+
+    let bytes = get_wasm(&state.s3, &plugin.s3_key)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("S3 get WASM: {e}")).into_response()
+        })?;
+
+    let filename = format!("{}-{}.wasm", plugin.identifier, plugin.version);
+    let response = Response::builder()
+        .header(CONTENT_TYPE, "application/wasm")
+        .header(CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))
+        .body(Body::from(bytes))
+        .map_err(|e| {
+            AppError::Internal(format!("build response: {e}")).into_response()
+        })?;
+
+    Ok(response)
 }

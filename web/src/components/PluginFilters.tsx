@@ -1,8 +1,7 @@
-// PluginFilters — search + category + tags 三维检索 UI (T076)
+// PluginFilters — search + tags + include_deleted 三维检索 UI (T076)
 
-import { Input, Space } from 'antd';
+import { Input, Space, Switch } from 'antd';
 import type { PluginListParams } from '../services/plugin';
-import { CategoryTreeSelect } from './CategoryTreeSelect';
 
 export interface PluginFiltersProps {
   value: PluginListParams;
@@ -20,14 +19,6 @@ export function PluginFilters({ value, onChange }: PluginFiltersProps) {
         style={{ width: 320 }}
         aria-label="搜索关键字"
       />
-      <CategoryTreeSelect
-        value={value.category_id}
-        onChange={(v) =>
-          onChange({ ...value, category_id: v === undefined || v === null ? undefined : Number(v), offset: 0 })
-        }
-        placeholder="按分类筛选"
-        style={{ width: 220 }}
-      />
       <Input
         placeholder="tag ids (逗号分隔)"
         defaultValue={value.tag_ids?.join(',')}
@@ -41,6 +32,13 @@ export function PluginFilters({ value, onChange }: PluginFiltersProps) {
         style={{ width: 220 }}
         aria-label="按 tag 筛选"
       />
+      <Space>
+        <span style={{ fontSize: 14 }}>包含已删除</span>
+        <Switch
+          checked={!!value.include_deleted}
+          onChange={(checked) => onChange({ ...value, include_deleted: checked, offset: 0 })}
+        />
+      </Space>
     </Space>
   );
 }

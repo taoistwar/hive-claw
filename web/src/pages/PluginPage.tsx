@@ -21,13 +21,14 @@ function toDataNodes(nodes: CategoryNode[]): DataNode[] {
 }
 
 export default function PluginPage() {
-  const { items, total, loading, params, setParams, refresh } = usePlugins();
+  const { items, total, loading, params, setParams, refresh } = usePlugins({ offset: 0, limit: 20, include_deleted: false });
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
   const [editingPlugin, setEditingPlugin] = useState<Plugin | null>(null);
   const [viewingPlugin, setViewingPlugin] = useState<Plugin | null>(null);
   const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
+  const [categoryNameMap, setCategoryNameMap] = useState<Map<number, string>>(new Map());
   const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -38,13 +39,16 @@ export default function PluginPage() {
       const tree = await listCategoriesTree();
       setCategoryTree(tree);
       const allKeys: React.Key[] = [];
+      const nameMap = new Map<number, string>();
       const collect = (nodes: CategoryNode[]) => {
         nodes.forEach((n) => {
           allKeys.push(n.id);
+          nameMap.set(n.id, n.name);
           if (n.children?.length) collect(n.children);
         });
       };
       collect(tree);
+      setCategoryNameMap(nameMap);
       setTreeExpandedKeys(allKeys);
     } catch (e) {
       void message.error(`加载分类树失败：${(e as Error).message}`);
@@ -103,7 +107,7 @@ export default function PluginPage() {
     {
       title: 'category',
       dataIndex: 'category_id',
-      render: (categoryId: number | null) => (categoryId ? `ID: ${categoryId}` : '—'),
+      render: (categoryId: number | null) => (categoryId ? (categoryNameMap.get(categoryId) ?? `ID: ${categoryId}`) : '—'),
     },
     {
       title: 'tags',
@@ -122,6 +126,18 @@ export default function PluginPage() {
       dataIndex: 'deleted_at',
       width: 90,
       render: (v: string | null) => (v ? <Tag color="red">deleted</Tag> : null),
+    },
+    {
+      title: 'created_at',
+      dataIndex: 'created_at',
+      width: 170,
+      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+    },
+    {
+      title: 'updated_at',
+      dataIndex: 'updated_at',
+      width: 170,
+      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
     },
     {
       title: 'actions',

@@ -104,6 +104,7 @@ impl Invoker {
         db_pool: &MySqlPool,
         s3: &S3Client,
         registry: Arc<CapabilityRegistry>,
+        llm: Arc<crate::runtime::llm::LlmRegistry>,
         plugin_id: i64,
         export_name: &str,
         input_json: String,
@@ -113,6 +114,7 @@ impl Invoker {
             pool: db_pool.clone(),
             s3: s3.clone(),
             registry,
+            llm,
         };
         let t0 = Instant::now();
 

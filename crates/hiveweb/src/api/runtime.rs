@@ -104,6 +104,7 @@ async fn invoke_function(
             &state.pool,
             &state.s3,
             Arc::clone(&state.runtime_state.capabilities),
+            Arc::clone(&state.runtime_state.llm),
             plugin_id,
             &export,
             input_json,

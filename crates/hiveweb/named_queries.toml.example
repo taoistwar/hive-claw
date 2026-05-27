@@ -1,0 +1,33 @@
+# Named queries for db.query / db.execute capabilities (T098)
+#
+# Plugins call: { capability: "db.query", args: { query: "<name>", params: {...} } }
+# The host looks up <name> here; only registered queries are runnable.
+# Free-form SQL is REJECTED unconditionally — this is the security contract.
+#
+# Copy to named_queries.toml and set DB_NAMED_QUERIES_PATH env (default
+# ./named_queries.toml).
+
+[[query]]
+name = "admin.count_by_status"
+sql = "SELECT COUNT(*) AS n FROM admins WHERE status = :status"
+kind = "select"
+params = ["status"]
+
+[[query]]
+name = "audit.recent_denials"
+sql = """
+  SELECT capability, COUNT(*) AS n
+  FROM runtime_audit_logs
+  WHERE outcome = 'denied'
+    AND occurred_at >= NOW() - INTERVAL :hours HOUR
+  GROUP BY capability
+"""
+kind = "select"
+params = ["hours"]
+
+# DML — db.execute (dangerous; requires Super to grant)
+[[query]]
+name = "chat.purge_session"
+sql = "DELETE FROM chat_sessions WHERE id = :session_id AND admin_id = :admin_id"
+kind = "execute"
+params = ["session_id", "admin_id"]

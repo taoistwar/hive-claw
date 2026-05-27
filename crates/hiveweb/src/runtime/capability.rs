@@ -137,12 +137,13 @@ async fn load_agent_permissions(pool: &MySqlPool, agent_id: i64) -> Result<HashS
     Ok(rows.into_iter().map(|(c,)| c).collect())
 }
 
-/// Dispatcher 调用所需的宿主资源句柄（pool / s3 / registry）
+/// Dispatcher 调用所需的宿主资源句柄（pool / s3 / registry / llm）
 #[derive(Clone)]
 pub struct DispatcherDeps {
     pub pool: MySqlPool,
     pub s3: S3Client,
     pub registry: Arc<CapabilityRegistry>,
+    pub llm: Arc<crate::runtime::llm::LlmRegistry>,
 }
 
 impl std::fmt::Debug for DispatcherDeps {
@@ -302,15 +303,20 @@ pub async fn dispatch(
             Ok(args) => to_reply(capabilities::secret::secret_get(args)),
             Err(e) => args_err("secret.get", e),
         },
-        // db.query / db.execute / llm.invoke 待 US5 接入 named_queries.toml + providers
-        DB_QUERY | DB_EXECUTE | LLM_INVOKE => (
-            ReplyEnvelope::err(
-                5001,
-                format!("capability {cap_name} 已声明但 handler 尚未配置（待 US5）"),
+        DB_QUERY => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(capabilities::db::db_query(&deps.pool, args).await),
+            Err(e) => args_err("db.query", e),
+        },
+        DB_EXECUTE => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(capabilities::db::db_execute(&deps.pool, args).await),
+            Err(e) => args_err("db.execute", e),
+        },
+        LLM_INVOKE => match serde_json::from_value(envelope.args.clone()) {
+            Ok(args) => to_reply(
+                capabilities::llm::llm_invoke(&deps.pool, &deps.llm, ctx.agent_id, args).await,
             ),
-            "error",
-            Some("handler unimplemented".to_string()),
-        ),
+            Err(e) => args_err("llm.invoke", e),
+        },
         _ => (
             ReplyEnvelope::err(5001, format!("unknown handler for {cap_name}")),
             "error",

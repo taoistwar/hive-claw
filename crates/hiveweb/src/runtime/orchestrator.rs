@@ -551,6 +551,7 @@ async fn handle_workspace_tool(
                     &deps.pool,
                     &deps.s3,
                     Arc::clone(&deps.registry),
+                    Arc::clone(&deps.llm),
                     plugin_id,
                     export,
                     input_json,

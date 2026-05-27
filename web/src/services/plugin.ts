@@ -40,7 +40,8 @@ export interface PluginListParams {
   search?: string;
   category_id?: number;
   tag_ids?: number[];
-  include_deleted?: boolean;
+  /** true=只看已删除，false/missing=只看未删除（默认） */
+  deleted_only?: boolean;
 }
 
 export async function listPlugins(params: PluginListParams = {}): Promise<PluginList> {
@@ -50,7 +51,7 @@ export async function listPlugins(params: PluginListParams = {}): Promise<Plugin
   if (params.search) query.search = params.search;
   if (params.category_id !== undefined) query.category_id = String(params.category_id);
   if (params.tag_ids?.length) query.tag_ids = params.tag_ids.join(',');
-  if (params.include_deleted) query.include_deleted = 'true';
+  if (params.deleted_only) query.deleted_only = 'true';
   const resp = await apiClient.get<PluginList>('/plugins', { params: query });
   // apiClient response interceptor 已 unwrap envelope.data
   return resp.data;
@@ -123,4 +124,10 @@ export async function downloadPlugin(plugin: Plugin): Promise<void> {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
+}
+
+/** 获取指定插件的 WASM 导出函数名列表 */
+export async function getPluginExports(pluginId: number): Promise<string[]> {
+  const resp = await apiClient.get<{ exports: string[] }>(`/plugins/${pluginId}/exports`);
+  return resp.data.exports;
 }

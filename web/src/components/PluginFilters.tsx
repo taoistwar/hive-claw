@@ -1,4 +1,4 @@
-// PluginFilters — search + tags + include_deleted 三维检索 UI (T076)
+// PluginFilters — search + tags + deleted_only 三维检索 UI (T076)
 
 import { Input, Space, Switch } from 'antd';
 import type { PluginListParams } from '../services/plugin';
@@ -33,10 +33,10 @@ export function PluginFilters({ value, onChange }: PluginFiltersProps) {
         aria-label="按 tag 筛选"
       />
       <Space>
-        <span style={{ fontSize: 14 }}>包含已删除</span>
+        <span style={{ fontSize: 14 }}>只看已删除</span>
         <Switch
-          checked={!!value.include_deleted}
-          onChange={(checked) => onChange({ ...value, include_deleted: checked, offset: 0 })}
+          checked={!!value.deleted_only}
+          onChange={(checked) => onChange({ ...value, deleted_only: checked, offset: 0 })}
         />
       </Space>
     </Space>

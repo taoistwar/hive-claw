@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
             get(get_plugin).put(update_plugin).delete(delete_plugin),
         )
         .route("/plugins/:id/download", get(download_plugin))
+        .route("/plugins/:id/exports", get(list_plugin_exports))
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,8 +44,9 @@ pub struct ListQuery {
     /// 逗号分隔 tag id
     #[serde(default)]
     pub tag_ids: Option<String>,
+    /// true=只看已删除，false/missing=只看未删除（默认）
     #[serde(default)]
-    pub include_deleted: Option<bool>,
+    pub deleted_only: Option<bool>,
 }
 
 async fn list_plugins(
@@ -66,7 +68,7 @@ async fn list_plugins(
         search: q.search.filter(|s| !s.is_empty()),
         category_id: q.category_id,
         tag_ids,
-        include_deleted: q.include_deleted.unwrap_or(false),
+        deleted_only: q.deleted_only.unwrap_or(false),
     };
     match svc::list(&state.pool, filter).await {
         Ok(list) => Ok(ApiResponse::success(list)),
@@ -177,4 +179,34 @@ async fn download_plugin(
         })?;
 
     Ok(response)
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct PluginExportsResp {
+    pub exports: Vec<String>,
+}
+
+/// 从 S3 下载插件 WASM 并解析其导出函数名列表 (T092 扩展)
+async fn list_plugin_exports(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<ApiResponse<PluginExportsResp>, ApiResponse<()>> {
+    let plugin = svc::fetch_by_id(&state.pool, id)
+        .await
+        .map_err(|e| e.into_response())?;
+
+    if plugin.deleted_at.is_some() {
+        return Err(AppError::NotFound("Plugin has been deleted".into()).into_response());
+    }
+
+    let bytes = get_wasm(&state.s3, &plugin.s3_key)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("S3 get WASM: {e}")).into_response()
+        })?;
+
+    let exports = crate::runtime::wasm_exports::extract_wasm_exports(&bytes)
+        .map_err(|e| AppError::Internal(format!("WASM 解析失败: {e}")).into_response())?;
+
+    Ok(ApiResponse::success(PluginExportsResp { exports }))
 }

@@ -21,7 +21,7 @@ function toDataNodes(nodes: CategoryNode[]): DataNode[] {
 }
 
 export default function PluginPage() {
-  const { items, total, loading, params, setParams, refresh } = usePlugins({ offset: 0, limit: 20, include_deleted: false });
+  const { items, total, loading, params, setParams, refresh } = usePlugins({ offset: 0, limit: 20 });
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
@@ -188,8 +188,8 @@ export default function PluginPage() {
           <Button type="primary" onClick={() => setUploadOpen(true)}>
             上传 Plugin
           </Button>
+          <PluginFilters value={params} onChange={setParams} />
         </Space>
-        <PluginFilters value={params} onChange={setParams} />
         <Table<Plugin>
           rowKey="id"
           columns={columns}

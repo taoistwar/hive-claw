@@ -89,7 +89,7 @@ pub struct ListFilter {
     pub search: Option<String>,
     pub category_id: Option<i64>,
     pub tag_ids: Vec<i64>,
-    pub include_deleted: bool,
+    pub deleted_only: bool,
 }
 
 pub async fn upload(
@@ -199,7 +199,9 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Plugin, AppError> 
 pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, AppError> {
     // 简化版三维检索：search / category / 软删除过滤 + 分页。tag_ids 暂走子查询。
     let mut where_clauses: Vec<String> = Vec::new();
-    if !filter.include_deleted {
+    if filter.deleted_only {
+        where_clauses.push("p.deleted_at IS NOT NULL".into());
+    } else {
         where_clauses.push("p.deleted_at IS NULL".into());
     }
     if filter.category_id.is_some() {

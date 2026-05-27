@@ -58,6 +58,12 @@ async fn main() -> anyhow::Result<()> {
     let s3_client = storage::s3::create_client().await?;
     tracing::info!("S3 storage client initialized");
 
+    // Startup step 4 (plan §Startup Initialization Order): builtin function upsert
+    if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
+        // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
+        panic!("builtin functions upsert failed: {e}");
+    }
+
     // Create router
     let app = api::create_router(pool, redis, s3_client);
     tracing::info!("HTTP router initialized with CORS and rate limiting");

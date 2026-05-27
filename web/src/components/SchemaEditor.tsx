@@ -45,6 +45,7 @@ export function SchemaEditor({ value, onChange, label, rows = 8 }: SchemaEditorP
         spellCheck={false}
         style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
         aria-invalid={!!err}
+        aria-label={label ? `${label} (JSON)` : 'JSON 编辑器输入区'}
       />
       {err ? (
         <Text type="danger" role="alert" style={{ display: 'block', marginTop: 4 }}>

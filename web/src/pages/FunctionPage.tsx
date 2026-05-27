@@ -1,28 +1,72 @@
-// FunctionPage — 列表 + 创建 + 编辑 + 删除 (T092 扩展)
+// FunctionPage — 列表 + 左侧分类树过滤 + 创建 + 编辑 + 删除 (T092 扩展)
 
 import { useEffect, useState } from 'react';
-import { Table, Tag, Space, Input, Select, message, Button, Popconfirm } from 'antd';
+import { Table, Tag, Space, Input, Select, message, Button, Popconfirm, Tree } from 'antd';
+import type { DataNode } from 'antd/es/tree';
 import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { listFunctions, deleteFunction, type FunctionItem, type FunctionList } from '../services/function';
 import FunctionForm from '../components/FunctionForm';
 import FunctionTester from '../components/FunctionTester';
+import { listCategoriesTree, type CategoryNode } from '../services/category';
 
 type FormMode = 'create' | 'edit' | null;
+
+function toDataNodes(nodes: CategoryNode[]): DataNode[] {
+  return nodes.map((n) => ({
+    key: n.id,
+    title: n.name,
+    children: n.children?.length ? toDataNodes(n.children) : undefined,
+  }));
+}
 
 export default function FunctionPage() {
   const [data, setData] = useState<FunctionList>({ items: [], total: 0, offset: 0, limit: 20 });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [kind, setKind] = useState<'builtin' | 'custom' | ''>('');
+  const [categoryId, setCategoryId] = useState<number | undefined>(undefined);
   const [formMode, setFormMode] = useState<FormMode>(null);
   const [editingRecord, setEditingRecord] = useState<FunctionItem | null>(null);
   const [testingRecord, setTestingRecord] = useState<FunctionItem | null>(null);
   const [testerOpen, setTesterOpen] = useState(false);
+  const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
+  const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
+  const [treeLoading, setTreeLoading] = useState(false);
+
+  const loadCategoryTree = async () => {
+    setTreeLoading(true);
+    try {
+      const tree = await listCategoriesTree();
+      setCategoryTree(tree);
+      const allKeys: React.Key[] = [];
+      const collect = (nodes: CategoryNode[]) => {
+        nodes.forEach((n) => {
+          allKeys.push(n.id);
+          if (n.children?.length) collect(n.children);
+        });
+      };
+      collect(tree);
+      setTreeExpandedKeys(allKeys);
+    } catch (e) {
+      void message.error(`加载分类树失败：${(e as Error).message}`);
+    } finally {
+      setTreeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadCategoryTree();
+  }, []);
 
   const fetchData = () => {
     setLoading(true);
-    listFunctions({ search: search || undefined, kind: kind || undefined })
+    listFunctions({
+      search: search || undefined,
+      kind: kind || undefined,
+      category_id: categoryId,
+    })
       .then(setData)
       .catch((e) => message.error(`加载失败：${(e as Error).message}`))
       .finally(() => setLoading(false));
@@ -31,7 +75,13 @@ export default function FunctionPage() {
   useEffect(() => {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, kind]);
+  }, [search, kind, categoryId]);
+
+  const handleCategorySelect = (key?: React.Key) => {
+    const newSelected = key === selectedCategoryKey ? undefined : key;
+    setSelectedCategoryKey(newSelected);
+    setCategoryId(newSelected !== undefined ? Number(newSelected) : undefined);
+  };
 
   const handleCreate = () => {
     setEditingRecord(null);
@@ -127,60 +177,81 @@ export default function FunctionPage() {
   ];
 
   return (
-    <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Input.Search
-          placeholder="搜索 function"
-          allowClear
-          onSearch={setSearch}
-          style={{ width: 280 }}
-          aria-label="搜索 function"
-        />
-        <Select
-          value={kind}
-          onChange={(v) => setKind(v)}
-          style={{ width: 140 }}
-          aria-label="按 kind 筛选"
-          options={[
-            { value: '', label: '全部 kind' },
-            { value: 'builtin', label: 'builtin' },
-            { value: 'custom', label: 'custom' },
-          ]}
-        />
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={handleCreate}
-        >
-          创建函数
+    <div style={{ display: 'flex', gap: 16 }}>
+      <div style={{ width: 280, flexShrink: 0, borderRight: '1px solid #f0f0f0', paddingRight: 16 }}>
+        <h4 style={{ margin: '0 0 8px 0' }}>分类</h4>
+        <Button size="small" style={{ width: '100%', marginBottom: 8 }} onClick={() => handleCategorySelect()}>
+          全部
         </Button>
-      </Space>
-      <Table<FunctionItem>
-        rowKey="id"
-        columns={columns}
-        dataSource={data.items}
-        loading={loading}
-        pagination={{ total: data.total, pageSize: data.limit }}
-      />
-
-      <FunctionForm
-        open={formMode !== null}
-        mode={formMode === 'create' ? 'create' : 'edit'}
-        record={editingRecord}
-        onClose={handleFormClose}
-        onSuccess={handleFormSuccess}
-      />
-
-      {testingRecord && (
-        <FunctionTester
-          functionItem={testingRecord}
-          open={testerOpen}
-          onClose={() => {
-            setTesterOpen(false);
-            setTestingRecord(null);
-          }}
+        {treeLoading ? <p>加载中…</p> : (
+          <Tree
+            treeData={toDataNodes(categoryTree)}
+            expandedKeys={treeExpandedKeys}
+            onExpand={(keys) => setTreeExpandedKeys(keys)}
+            selectedKeys={selectedCategoryKey !== undefined ? [selectedCategoryKey] : []}
+            onSelect={(keys) => {
+              if (keys.length > 0) handleCategorySelect(keys[0]);
+              else handleCategorySelect();
+            }}
+            showLine
+          />
+        )}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Space style={{ marginBottom: 16 }}>
+          <Input.Search
+            placeholder="搜索 function"
+            allowClear
+            onSearch={setSearch}
+            style={{ width: 280 }}
+            aria-label="搜索 function"
+          />
+          <Select
+            value={kind}
+            onChange={(v) => setKind(v)}
+            style={{ width: 140 }}
+            aria-label="按 kind 筛选"
+            options={[
+              { value: '', label: '全部 kind' },
+              { value: 'builtin', label: 'builtin' },
+              { value: 'custom', label: 'custom' },
+            ]}
+          />
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={handleCreate}
+          >
+            创建函数
+          </Button>
+        </Space>
+        <Table<FunctionItem>
+          rowKey="id"
+          columns={columns}
+          dataSource={data.items}
+          loading={loading}
+          pagination={{ total: data.total, pageSize: data.limit }}
         />
-      )}
+
+        <FunctionForm
+          open={formMode !== null}
+          mode={formMode === 'create' ? 'create' : 'edit'}
+          record={editingRecord}
+          onClose={handleFormClose}
+          onSuccess={handleFormSuccess}
+        />
+
+        {testingRecord && (
+          <FunctionTester
+            functionItem={testingRecord}
+            open={testerOpen}
+            onClose={() => {
+              setTesterOpen(false);
+              setTestingRecord(null);
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }

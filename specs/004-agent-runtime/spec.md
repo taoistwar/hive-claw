@@ -251,7 +251,7 @@
 
 ### Key Entities
 
-- **Capability**：固定枚举集合，由宿主代码定义，不入库。其元数据（描述、is_dangerous）可入库以便 UI 展示。
+- **Capability**：固定枚举集合，由宿主代码定义（真值源）。启动期将代码列表 upsert 到 `capabilities` 表（仅含描述 + is_dangerous 元数据，供 UI 渲染）；DB 中存在但代码已移除的项仅 warn 不删。
 - **Category**：树状分类，自引用 parent_id，支持 Plugin / Function 分组。
 - **Tag**：扁平标签集合。
 - **Plugin**：WASM 二进制 + 元数据。多对一 Category；多对多 Tag。

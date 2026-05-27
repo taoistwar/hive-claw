@@ -33,7 +33,7 @@ export function PluginFilters({ value, onChange }: PluginFiltersProps) {
         aria-label="按 tag 筛选"
       />
       <Space>
-        <span style={{ fontSize: 14 }}>只看已删除</span>
+        <span style={{ fontSize: 14 }}>回收站</span>
         <Switch
           checked={!!value.deleted_only}
           onChange={(checked) => onChange({ ...value, deleted_only: checked, offset: 0 })}

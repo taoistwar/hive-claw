@@ -94,7 +94,8 @@ crates/hiveweb/
 │   │   ├── pool.rs          # Extism Instance Pool（LRU）
 │   │   ├── invoker.rs       # Plugin 调用入口（resolve + invoke + audit）
 │   │   ├── workflow.rs      # DAG 拓扑执行器
-│   │   ├── agent.rs         # Agent 编排 + 路由决策
+│   │   ├── agent.rs         # Agent 编排骨架（接 crates/agent::AgentRunner 占位，T031）
+│   │   ├── orchestrator.rs  # Agent 编排 + 路由决策（run_session + route_to_subagent + hard-rule 安全门，T118/T119）
 │   │   └── llm.rs           # LLM client（OpenAI 兼容）
 │   ├── services/
 │   │   ├── capability.rs

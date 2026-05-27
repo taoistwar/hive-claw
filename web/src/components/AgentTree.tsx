@@ -29,15 +29,19 @@ function toNodes(items: AgentTreeNode[]): DataNode[] {
 export interface AgentTreeProps {
   data: AgentTreeNode[];
   onSelect?: (id: number | null) => void;
+  expandedKeys?: number[];
+  onExpand?: (keys: number[]) => void;
 }
 
-export function AgentTree({ data, onSelect }: AgentTreeProps) {
+export function AgentTree({ data, onSelect, expandedKeys, onExpand }: AgentTreeProps) {
   return (
     <Tree
       treeData={toNodes(data)}
-      defaultExpandAll
+      expandedKeys={expandedKeys !== undefined ? expandedKeys : undefined}
+      defaultExpandAll={expandedKeys === undefined}
       showLine
       onSelect={(keys) => onSelect?.((keys[0] as number) ?? null)}
+      onExpand={(keys: React.Key[]) => onExpand?.(keys as number[])}
     />
   );
 }

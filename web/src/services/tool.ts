@@ -6,7 +6,7 @@ export interface ToolItem {
   identifier: string;
   name: string;
   description: string;
-  kind: number; // 1 function-wrap, 2 workflow-wrap
+  kind: number;
   function_id: number | null;
   workflow_id: number | null;
   input_schema: unknown;
@@ -22,17 +22,27 @@ export interface ToolList {
   limit: number;
 }
 
-export async function listTools(params: {
+export interface ToolSearchParams {
   offset?: number;
   limit?: number;
   search?: string;
   kind?: number;
-}): Promise<ToolList> {
+  created_at_start?: string;
+  created_at_end?: string;
+  updated_at_start?: string;
+  updated_at_end?: string;
+}
+
+export async function listTools(params: ToolSearchParams = {}): Promise<ToolList> {
   const q: Record<string, string> = {};
   if (params.offset !== undefined) q.offset = String(params.offset);
   if (params.limit !== undefined) q.limit = String(params.limit);
   if (params.search) q.search = params.search;
   if (params.kind !== undefined) q.kind = String(params.kind);
+  if (params.created_at_start) q.created_at_start = params.created_at_start;
+  if (params.created_at_end) q.created_at_end = params.created_at_end;
+  if (params.updated_at_start) q.updated_at_start = params.updated_at_start;
+  if (params.updated_at_end) q.updated_at_end = params.updated_at_end;
   const resp = await apiClient.get<ToolList>('/tools', { params: q });
   return resp.data;
 }

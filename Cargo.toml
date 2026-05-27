@@ -19,6 +19,7 @@ members = [
     "crates/hiveclaw",
     "crates/hivegui",
     "crates/hiveweb",
+    "plugins/smoke-plugin",
 ]
 # `default-members` keeps `cargo build` / `cargo test` (no args) scoped to
 # HiveClaw, so the service side stays iterable on machines without the
@@ -36,13 +37,29 @@ repository = "https://github.com/taoistwar/hive-claw"
 
 [workspace.dependencies]
 # HTTP / async (HiveClaw)
-axum = { version = "0.8", default-features = false, features = ["macros", "tokio", "http1", "json", "multipart"] }
+axum = { version = "0.8", default-features = false, features = [
+    "macros",
+    "tokio",
+    "http1",
+    "json",
+    "multipart",
+] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
-tower-http = { version = "0.6", features = ["limit", "trace", "request-id", "util"] }
+tower-http = { version = "0.6", features = [
+    "limit",
+    "trace",
+    "request-id",
+    "util",
+] }
 
 # HTTP client (HiveGUI)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "stream",
+    "multipart",
+] }
 eventsource-stream = "0.2"
 
 # Desktop UI (HiveGUI). Pulled from Zed's main branch — gpui is not on crates.io.
@@ -64,7 +81,10 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tracing-appender = "0.2"
 
 # Misc
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "serde",
+] }
 chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "1"
@@ -81,7 +101,13 @@ assert_cmd = "2"
 
 # Data source management (HiveGUI)
 mysql_async = "0.34"
-sqlx = { version = "0.8", default-features = false, features = ["derive", "runtime-tokio-native-tls", "sqlite", "mysql", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "derive",
+    "runtime-tokio-native-tls",
+    "sqlite",
+    "mysql",
+    "chrono",
+] }
 chacha20poly1305 = "0.10"
 zeroize = "1"
 dirs = "5"

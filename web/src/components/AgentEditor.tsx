@@ -121,7 +121,7 @@ export function AgentEditor({ initial, currentRole, onSubmit, onCancel }: AgentE
         <Input placeholder="Rust 专家" />
       </Form.Item>
       <Form.Item name="description" label="description">
-        <Input />
+        <Input.TextArea rows={4} />
       </Form.Item>
       <Form.Item label="system_prompt" required>
         <SystemPromptEditor value={systemPrompt} onChange={setSystemPrompt} height="280px" />

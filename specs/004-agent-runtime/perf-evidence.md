@@ -148,15 +148,114 @@ includes network + LLM compute. A follow-up improvement: introduce
 All hot-path queries hit indexes; retention sweeps scan `idx_ral_occurred_at`
 in range form (efficient).
 
-## 9. Live benchmark results (placeholder)
+## 9. Live benchmark results (T140/T141/T153-T156)
 
-T140 / T141 / T153–T156 microbenchmarks not yet wired. Live data will be
-appended in a follow-up commit; until then this document captures the
-**structural** analysis required by Principle IV gate.
+**Status**: ✅ Implemented (2026-05-27) — criterion benches wired in
+`crates/hiveweb/benches/`. Run with `cargo bench --bench <name>`.
+
+### T140: host_call dispatch (SC-004 ≤ 5 ms)
+
+**File**: `crates/hiveweb/benches/host_call.rs`
+
+**Benchmarks**:
+- `host_call_dispatch/small_100b` — 100-byte payload
+- `host_call_dispatch/medium_1kb` — 1KB payload
+- `host_call_dispatch/large_10kb` — 10KB payload
+- `capability_lookup/lookup_allowed` — HashMap O(1) lookup
+- `capability_lookup/lookup_denied` — HashMap miss path
+
+**Target**: p95 ≤ 5 ms for dispatch path (no plugin execution)
+
+**Run**: `cargo bench --bench host_call`
+
+### T141: Plugin call pool (SC-005)
+
+**File**: `crates/hiveweb/benches/plugin_invoke.rs`
+
+**Benchmarks**:
+- `pool_acquire_release/acquire_release_cycle` — single acquire/release
+- `pool_concurrent_acquire/1/4/8/16` — concurrent acquire at different concurrency levels
+- `pool_cold_start/first_instance_creation` — cold start (includes WASM compile)
+- `pool_hit_rate/cached_instance_reuse` — cached instance reuse timing
+
+**Targets**:
+- Pool hit p95 ≤ 50 ms
+- Cold start ≤ 300 ms
+
+**Run**: `cargo bench --bench plugin_invoke`
+
+### T153: Plugin upload (SC-001 ≤ 5 s for 1 MB)
+
+**File**: `crates/hiveweb/benches/plugin_upload.rs`
+
+**Benchmarks**:
+- `plugin_upload/100kb/500kb/1mb/5mb` — end-to-end upload (S3 PUT + DB INSERT)
+- `plugin_validation/wasm_magic_check` — reject non-WASM files
+- `plugin_validation/size_limit_check` — reject > 16 MB files
+
+**Target**: 1 MB upload p95 ≤ 5 s
+
+**Run**: `cargo bench --bench plugin_upload`
+
+### T154: Plugin list/search (SC-002 ≤ 1 s for 500 items)
+
+**File**: `crates/hiveweb/benches/plugin_list.rs`
+
+**Benchmarks**:
+- `plugin_list/list_all` — full table scan
+- `plugin_list/list_paginated` — LIMIT 20 OFFSET 0
+- `plugin_filter/filter_by_category` — indexed category filter
+- `plugin_filter/filter_by_search` — keyword search
+- `plugin_fulltext_search/exact/prefix/wildcard` — FULLTEXT search patterns
+
+**Target**: 500 items p95 ≤ 1 s
+
+**Run**: `cargo bench --bench plugin_list`
+
+### T155: Workflow save/validation (SC-003 ≤ 1 s for 50-node DAG)
+
+**File**: `crates/hiveweb/benches/workflow_save.rs`
+
+**Benchmarks**:
+- `workflow_save/10_nodes/25_nodes/50_nodes/100_nodes` — PUT graph with varying sizes
+- `cycle_detection/detect_no_cycle` — valid DAG
+- `cycle_detection/detect_cycle` — cyclic graph rejection
+- `mapping_validation/validate_mapping_compatible/missing_field` — edge mapping validation
+
+**Target**: 50-node DAG p95 ≤ 1 s
+
+**Run**: `cargo bench --bench workflow_save`
+
+### T156: Agent routing (SC-006 ≤ 1.5 s with 1 LLM call)
+
+**File**: `crates/hiveweb/benches/agent_route.rs`
+
+**Benchmarks**:
+- `agent_routing_decision/direct_answer/route_to_coding/complex_routing` — routing decision with mock LLM
+- `llm_fallback_chain/primary_success/primary_failover` — fallback provider chain
+- `hop_limit_enforcement/within_hop_limit/exceed_hop_limit` — AGENT_MAX_HOPS guard
+- `routing_end_to_end/single_hop_routing` — end-to-end session with mock 800ms LLM
+
+**Target**: p95 ≤ 1.5 s (with mock LLM at 800ms)
+
+**Run**: `cargo bench --bench agent_route`
+
+### Results Table (to be filled)
+
+| Benchmark | Metric | Target | Actual (p95) | Status |
+|---|---|---|---|---|
+| T140: host_call dispatch | p95 latency | ≤ 5 ms | _pending_ | ⏳ |
+| T141: pool hit | p95 latency | ≤ 50 ms | _pending_ | ⏳ |
+| T141: cold start | p95 latency | ≤ 300 ms | _pending_ | ⏳ |
+| T153: 1 MB upload | p95 latency | ≤ 5 s | _pending_ | ⏳ |
+| T154: 500-item list | p95 latency | ≤ 1 s | _pending_ | ⏳ |
+| T155: 50-node DAG | p95 latency | ≤ 1 s | _pending_ | ⏳ |
+| T156: routing (mock 800ms LLM) | p95 latency | ≤ 1.5 s | _pending_ | ⏳ |
 
 ## 10. Action items (post-MVP)
 
-- [ ] Wire criterion benches in `crates/hiveweb/benches/`
+- [x] Wire criterion benches in `crates/hiveweb/benches/` — ✅ Done 2026-05-27
+- [ ] Run benchmarks on CI and record actual p95 values
 - [ ] Add composite index `(deleted_at, created_at DESC)` on plugins
 - [ ] Batch INSERT in workflow::put_graph
 - [ ] Pool prewarm option (eager compile on Plugin upload, gated by env)

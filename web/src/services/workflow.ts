@@ -67,3 +67,16 @@ export async function putWorkflowGraph(
 export async function deleteWorkflow(id: number): Promise<void> {
   await apiClient.delete(`/workflows/${id}`);
 }
+
+export async function updateWorkflow(
+  id: number,
+  meta: {
+    name?: string;
+    description?: string;
+    timeout_ms?: number;
+    updated_at: string;
+  },
+): Promise<WorkflowMeta> {
+  const resp = await apiClient.put<WorkflowMeta>(`/workflows/${id}`, meta);
+  return resp.data;
+}

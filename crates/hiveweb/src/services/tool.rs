@@ -51,6 +51,10 @@ pub struct ListFilter {
     pub limit: i64,
     pub search: Option<String>,
     pub kind: Option<i8>,
+    pub created_at_start: Option<chrono::NaiveDateTime>,
+    pub created_at_end: Option<chrono::NaiveDateTime>,
+    pub updated_at_start: Option<chrono::NaiveDateTime>,
+    pub updated_at_end: Option<chrono::NaiveDateTime>,
 }
 
 /// 深度 JSON 值相等（顺序无关的 object key 比较）
@@ -223,6 +227,18 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     if filter.search.is_some() {
         where_clauses.push("(name LIKE ? OR identifier LIKE ? OR description LIKE ?)".into());
     }
+    if filter.created_at_start.is_some() {
+        where_clauses.push("created_at >= ?".into());
+    }
+    if filter.created_at_end.is_some() {
+        where_clauses.push("created_at < ?".into());
+    }
+    if filter.updated_at_start.is_some() {
+        where_clauses.push("updated_at >= ?".into());
+    }
+    if filter.updated_at_end.is_some() {
+        where_clauses.push("updated_at < ?".into());
+    }
     let where_sql = if where_clauses.is_empty() {
         String::new()
     } else {
@@ -240,6 +256,18 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
         let like = format!("%{s}%");
         count_q = count_q.bind(like.clone()).bind(like.clone()).bind(like);
     }
+    if let Some(start) = filter.created_at_start {
+        count_q = count_q.bind(start);
+    }
+    if let Some(end) = filter.created_at_end {
+        count_q = count_q.bind(end);
+    }
+    if let Some(start) = filter.updated_at_start {
+        count_q = count_q.bind(start);
+    }
+    if let Some(end) = filter.updated_at_end {
+        count_q = count_q.bind(end);
+    }
     let total = count_q
         .fetch_one(pool)
         .await
@@ -253,6 +281,18 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     if let Some(ref s) = filter.search {
         let like = format!("%{s}%");
         list_q = list_q.bind(like.clone()).bind(like.clone()).bind(like);
+    }
+    if let Some(start) = filter.created_at_start {
+        list_q = list_q.bind(start);
+    }
+    if let Some(end) = filter.created_at_end {
+        list_q = list_q.bind(end);
+    }
+    if let Some(start) = filter.updated_at_start {
+        list_q = list_q.bind(start);
+    }
+    if let Some(end) = filter.updated_at_end {
+        list_q = list_q.bind(end);
     }
     let items = list_q
         .bind(filter.limit)

@@ -76,3 +76,18 @@ export async function updateFunction(id: number, meta: UpdateFunction): Promise<
 export async function deleteFunction(id: number): Promise<void> {
   await apiClient.delete(`/functions/${id}`);
 }
+
+export interface InvokeFunctionRequest {
+  input: Record<string, unknown>;
+  agent_id?: number;
+}
+
+export interface InvokeFunctionResponse {
+  output: unknown;
+  elapsed_ms: number;
+}
+
+export async function invokeFunction(id: number, params: InvokeFunctionRequest): Promise<InvokeFunctionResponse> {
+  const resp = await apiClient.post<InvokeFunctionResponse>(`/functions/${id}/invoke`, params);
+  return resp.data;
+}

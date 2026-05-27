@@ -16,6 +16,7 @@ pub mod invoker;
 pub mod llm;
 pub mod orchestrator;
 pub mod pool;
+pub mod wasm_exports;
 pub mod workflow;
 
 pub use capability::{CapabilityRegistry, CAPABILITIES};

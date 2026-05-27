@@ -57,6 +57,7 @@ futures = { workspace = true }
 bytes = { workspace = true }
 toml = "0.8"
 reqwest = { workspace = true }
+wasmparser = "0.221"
 
 # Internal workspace crates reused by Agent Runtime
 agent = { path = "../agent" }
@@ -68,6 +69,31 @@ tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 mime = "0.3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "host_call"
+harness = false
+
+[[bench]]
+name = "plugin_invoke"
+harness = false
+
+[[bench]]
+name = "plugin_upload"
+harness = false
+
+[[bench]]
+name = "plugin_list"
+harness = false
+
+[[bench]]
+name = "workflow_save"
+harness = false
+
+[[bench]]
+name = "agent_route"
+harness = false
 
 [[bin]]
 name = "migrate"

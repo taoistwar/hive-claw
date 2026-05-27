@@ -40,7 +40,7 @@ export interface PluginListParams {
   search?: string;
   category_id?: number;
   tag_ids?: number[];
-  /** true=只看已删除，false/missing=只看未删除（默认） */
+  /** true=回收站，false/missing=只看未删除（默认） */
   deleted_only?: boolean;
 }
 

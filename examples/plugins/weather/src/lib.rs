@@ -53,7 +53,7 @@ struct HttpArgs<'a> {
     url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct HttpReply {
     status: u16,
     body: String,

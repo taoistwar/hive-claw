@@ -75,7 +75,7 @@ pub fn lookup_weather(city: String) -> FnResult<String> {
 }
 ```
 
-`capability` 必须是宿主 §4 列出的某个已注册名。任何拼写错误或未注册的名 → 立即返回 `{ ok: false, code: 4040, message: "Capability unknown: ..." }`。
+`capability` 必须是宿主 §4 列出的某个已注册名。任何拼写错误或未注册的名 → 立即返回 `{ ok: false, code: 4045, message: "Capability unknown: ..." }`。
 
 ---
 
@@ -96,7 +96,7 @@ pub fn lookup_weather(city: String) -> FnResult<String> {
 | code | 含义 |
 | --- | --- |
 | 4030 | Capability denied（Agent permissions 未包含该 capability） |
-| 4040 | Capability unknown |
+| 4045 | Capability unknown（避免与 003 NOT_FOUND 冲突） |
 | 4001 | Invalid args（不符合 capability 的 input schema） |
 | 4081 | Timeout（capability 调用上游超时） |
 | 5000 | Internal error |

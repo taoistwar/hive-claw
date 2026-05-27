@@ -24,14 +24,32 @@ export default function AgentPage() {
   const [selected, setSelected] = useState<AgentDetail | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<AgentDetail | null>(null);
+  const [expandedKeys, setExpandedKeys] = useState<number[]>();
+
+  const collectAllKeys = useCallback((items: AgentTreeNode[]): number[] => {
+    const keys: number[] = [];
+    for (const n of items) {
+      keys.push(n.id);
+      if (n.children?.length) {
+        keys.push(...collectAllKeys(n.children));
+      }
+    }
+    return keys;
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
-      setTree(await listAgentTree());
+      const data = await listAgentTree();
+      setTree(data);
+      setExpandedKeys(collectAllKeys(data));
     } catch (e) {
       void message.error(`加载失败：${(e as Error).message}`);
     }
-  }, []);
+  }, [collectAllKeys]);
+
+  const expandAll = () => setExpandedKeys(collectAllKeys(tree));
+
+  const collapseAll = () => setExpandedKeys([]);
 
   useEffect(() => {
     void refresh();
@@ -118,8 +136,10 @@ export default function AgentPage() {
             新建 Agent
           </Button>
           <Button onClick={() => void refresh()}>刷新</Button>
+          <Button onClick={expandAll}>全部展开</Button>
+          <Button onClick={collapseAll}>全部关闭</Button>
         </Space>
-        <AgentTree data={tree} onSelect={onSelect} />
+        <AgentTree data={tree} onSelect={onSelect} expandedKeys={expandedKeys} onExpand={setExpandedKeys} />
       </div>
       <div style={{ flex: 1 }}>
         {selected ? (

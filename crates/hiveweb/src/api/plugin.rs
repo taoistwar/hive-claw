@@ -44,7 +44,7 @@ pub struct ListQuery {
     /// 逗号分隔 tag id
     #[serde(default)]
     pub tag_ids: Option<String>,
-    /// true=只看已删除，false/missing=只看未删除（默认）
+    /// true=回收站，false/missing=只看未删除（默认）
     #[serde(default)]
     pub deleted_only: Option<bool>,
 }

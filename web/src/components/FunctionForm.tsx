@@ -19,7 +19,7 @@ import {
   type CreateFunction,
   type UpdateFunction,
 } from '../services/function';
-import { listPlugins, type Plugin } from '../services/plugin';
+import { listPlugins, type Plugin, getPluginExports } from '../services/plugin';
 import { listCategoriesFlat, type CategoryItem } from '../services/category';
 
 interface FunctionFormProps {
@@ -68,6 +68,8 @@ export default function FunctionForm({
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [inputSchema, setInputSchema] = useState<unknown>(defaultInputSchema);
   const [outputSchema, setOutputSchema] = useState<unknown>(defaultOutputSchema);
+  const [pluginExports, setPluginExports] = useState<string[]>([]);
+  const [loadingExports, setLoadingExports] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -121,8 +123,26 @@ export default function FunctionForm({
       form.resetFields();
       setInputSchema(defaultInputSchema);
       setOutputSchema(defaultOutputSchema);
+      setPluginExports([]);
     }
   }, [mode, record, form, open]);
+
+  /** 选择插件后自动拉取其 WASM 导出函数列表 */
+  const handlePluginChange = async (pluginId: number | null) => {
+    form.setFieldValue('plugin_export', undefined);
+    setPluginExports([]);
+    if (!pluginId) return;
+
+    setLoadingExports(true);
+    try {
+      const exports = await getPluginExports(pluginId);
+      setPluginExports(exports);
+    } catch (e) {
+      message.error(`获取插件导出函数失败：${(e as Error).message}`);
+    } finally {
+      setLoadingExports(false);
+    }
+  };
 
   const handleSubmit = async () => {
     try {
@@ -243,6 +263,7 @@ export default function FunctionForm({
                       .toLowerCase()
                       .includes(input.toLowerCase())
                   }
+                  onChange={handlePluginChange}
                 />
               </Form.Item>
 
@@ -253,7 +274,24 @@ export default function FunctionForm({
                   { required: true, message: '请输入插件导出函数名' },
                 ]}
               >
-                <Input placeholder="例如: lookup" />
+                <Select
+                  placeholder={
+                    loadingExports
+                      ? '加载中...'
+                      : pluginExports.length > 0
+                      ? '选择导出函数'
+                      : '请先选择插件'
+                  }
+                  options={pluginExports.map((exp) => ({ label: exp, value: exp }))}
+                  disabled={loadingExports || pluginExports.length === 0}
+                  loading={loadingExports}
+                  showSearch
+                  filterOption={(input, option) =>
+                    (option?.label ?? '')
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
+                />
               </Form.Item>
             </>
           )}

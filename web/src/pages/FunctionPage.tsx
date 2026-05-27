@@ -1,13 +1,14 @@
 // FunctionPage — 列表 + 左侧分类树过滤 + 创建 + 编辑 + 删除 (T092 扩展)
 
 import { useEffect, useState } from 'react';
-import { Table, Tag, Space, Input, Select, message, Button, Popconfirm, Tree } from 'antd';
+import { Table, Tag, Space, Input, Select, message, Button, Popconfirm, Tree, Drawer } from 'antd';
 import type { DataNode } from 'antd/es/tree';
-import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { listFunctions, deleteFunction, type FunctionItem, type FunctionList } from '../services/function';
 import FunctionForm from '../components/FunctionForm';
 import FunctionTester from '../components/FunctionTester';
+import { FunctionDetail } from '../components/FunctionDetail';
 import { listCategoriesTree, type CategoryNode } from '../services/category';
 
 type FormMode = 'create' | 'edit' | null;
@@ -30,6 +31,8 @@ export default function FunctionPage() {
   const [editingRecord, setEditingRecord] = useState<FunctionItem | null>(null);
   const [testingRecord, setTestingRecord] = useState<FunctionItem | null>(null);
   const [testerOpen, setTesterOpen] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewingRecord, setViewingRecord] = useState<FunctionItem | null>(null);
   const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
   const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
@@ -98,6 +101,24 @@ export default function FunctionPage() {
     setTesterOpen(true);
   };
 
+  const handleView = (record: FunctionItem) => {
+    setViewingRecord(record);
+    setViewOpen(true);
+  };
+
+  const handleViewEdit = () => {
+    setViewOpen(false);
+    setViewingRecord(null);
+    if (viewingRecord) {
+      handleEdit(viewingRecord);
+    }
+  };
+
+  const handleViewClose = () => {
+    setViewOpen(false);
+    setViewingRecord(null);
+  };
+
   const handleDelete = async (record: FunctionItem) => {
     try {
       await deleteFunction(record.id);
@@ -134,9 +155,17 @@ export default function FunctionPage() {
     { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (v: string) => new Date(v).toLocaleString() },
     {
       title: '操作',
-      width: 220,
+      width: 260,
       render: (_: unknown, record: FunctionItem) => (
         <Space>
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => handleView(record)}
+          >
+            查看
+          </Button>
           <Button
             type="link"
             size="small"
@@ -145,31 +174,33 @@ export default function FunctionPage() {
           >
             测试
           </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(record)}
-          >
-            编辑
-          </Button>
           {record.kind !== 1 && (
-            <Popconfirm
-              title="确认删除"
-              description="确定要删除此函数吗？此操作不可撤销。"
-              onConfirm={() => handleDelete(record)}
-              okText="确认"
-              cancelText="取消"
-            >
+            <>
               <Button
                 type="link"
                 size="small"
-                danger
-                icon={<DeleteOutlined />}
+                icon={<EditOutlined />}
+                onClick={() => handleEdit(record)}
               >
-                删除
+                编辑
               </Button>
-            </Popconfirm>
+              <Popconfirm
+                title="确认删除"
+                description="确定要删除此函数吗？此操作不可撤销。"
+                onConfirm={() => handleDelete(record)}
+                okText="确认"
+                cancelText="取消"
+              >
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                >
+                  删除
+                </Button>
+              </Popconfirm>
+            </>
           )}
         </Space>
       ),
@@ -251,6 +282,21 @@ export default function FunctionPage() {
             }}
           />
         )}
+
+        <Drawer
+          title="查看函数"
+          open={viewOpen}
+          onClose={handleViewClose}
+          width={720}
+        >
+          {viewingRecord && (
+            <FunctionDetail
+              fn={viewingRecord}
+              onEdit={handleViewEdit}
+              onBack={handleViewClose}
+            />
+          )}
+        </Drawer>
       </div>
     </div>
   );

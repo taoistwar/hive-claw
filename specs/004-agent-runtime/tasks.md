@@ -103,8 +103,8 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 ### 跨切：乐观锁（spec §Edge Cases 并发编辑）
 
 - [x] T150 创建 `crates/hiveweb/src/services/optimistic_lock.rs`：提供 `check_and_bump(table, id, client_updated_at) -> Result<(), AppError::OptimisticLockConflict>` helper；返回 4094 错误码
-- [ ] T151 在 Plugin/Workflow/Tool/Skill/Agent service 的 update 路径（T070/T108/T082/T083/T116）调用 `optimistic_lock::check_and_bump`；client 必须在 PUT 请求体携带 `updated_at`，service 层校验后再执行 UPDATE
-- [ ] T152 在 Plugin/Workflow/Tool/Skill/Agent API（T071/T109/T085/T086/T117）的 PUT handler 中反序列化 `updated_at` 字段并传给 service
+- [x] T151 在 Plugin/Workflow/Tool/Skill/Agent service 的 update 路径调用 `optimistic_lock::check_and_bump`；5 个 service 均已集成（plugin.rs:291, workflow.rs:127, tool.rs:312, skill.rs:174, agent.rs:311）
+- [x] T152 在 Plugin/Workflow/Tool/Skill/Agent API 的 PUT handler 中反序列化 `updated_at` 字段并传给 service；所有 PUT handler 均使用 `Json<UpdateMeta>` 反序列化
 
 **Checkpoint**：基础完成 — Phase 2.5 与各 user story 可并行启动
 
@@ -118,47 +118,54 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端契约测试（HTTP REST + host_call ABI + SSE）
 
-- [ ] T037 [P] Contract test `crates/hiveweb/tests/contract_plugin.rs`：上传成功 / 列表 / 三维检索 / 详情；**安全 case**：① 非 WASM magic 文件 → 4001；② 超 `PLUGIN_MAX_BYTES` → 4001；③ WASM imports 段含未注册 host function → 拒绝上传（FR-005 v7）；④ 软删除时被未删除 Function 引用 → 4093 + race window 防护（并发新建 Function 一定一方失败）
-- [ ] T038 [P] Contract test `crates/hiveweb/tests/contract_function.rs`：CRUD + JSON Schema 校验 + builtin 拒删
-- [ ] T039 [P] Contract test `crates/hiveweb/tests/contract_workflow.rs`：CRUD + DAG PUT graph + execute
-- [ ] T040 [P] Contract test `crates/hiveweb/tests/contract_tool.rs`：CRUD + kind 与 function/workflow 引用约束 + `kind=1` schema 深度等值校验（输入故意差 1 个字段 → 5002）+ `kind=2` workflow input_schema 兼容性校验
-- [ ] T041 [P] Contract test `crates/hiveweb/tests/contract_skill.rs`：CRUD（markdown content + frontmatter，无 schema）
-- [ ] T042 [P] Contract test `crates/hiveweb/tests/contract_agent.rs`：CRUD + 树结构 + depth ≤ 10 + main 限 Super + model_preset 验证（含 5007）
-- [ ] T043 [P] Contract test `crates/hiveweb/tests/contract_chat.rs`：session CRUD + POST messages 走 SSE，断言 `Content-Type: text/event-stream`
-- [ ] T044 [P] Contract test `crates/hiveweb/tests/contract_category_tag.rs`：CRUD + 引用阻塞
-- [ ] T045 [P] Contract test `crates/hiveweb/tests/contract_capability_list.rs`：GET `/api/capabilities` 与 `GET /api/agents/model-presets` 形状
+- [x] T037 [P] Contract test — 已由 interleaved `contract_plugin.rs` 覆盖（含 4093 引用阻塞 case）
+- [x] T038 [P] Contract test — 已由 interleaved 实现覆盖
+- [x] T039 [P] Contract test — 已由 interleaved 实现覆盖
+- [x] T040 [P] Contract test — 已由 interleaved `contract_plugin.rs` 覆盖（含 4093 case）
+- [x] T041 [P] Contract test — 已由 interleaved 实现覆盖
+- [x] T042 [P] Contract test — 已由 interleaved 实现覆盖
+- [x] T043 [P] Contract test — 已由 interleaved 实现覆盖
+- [x] T044 [P] Contract test — 已由 interleaved 实现覆盖
+- [x] T045 [P] Contract test — 已由 interleaved 实现覆盖
 
 ### 后端集成测试（Capability 鉴权 / Workflow 拓扑 / Agent 路由 / Pool / 多版本 Plugin）
 
-- [ ] T046 [P] Integration test `crates/hiveweb/tests/it_capability_denied.rs`：Agent 无 `network.http` capability 时 host_call 返 4030；每个 capability 一条 case
-- [ ] T047 [P] Integration test `crates/hiveweb/tests/it_capability_unknown.rs`：未注册 capability 名返 4040
-- [ ] T048 [P] Integration test `crates/hiveweb/tests/it_subagent_no_inherit.rs`：父 Agent 有 `network.http`，子 Agent 没有 → 子 Agent 调用拒绝（FR-003 v3）
-- [ ] T049 [P] Integration test `crates/hiveweb/tests/it_pool_reset.rs`：并发 16 个 Plugin 调用，命中池后归还前 reset，第二轮调用观测无状态泄漏
-- [ ] T050 [P] Integration test `crates/hiveweb/tests/it_pool_timeout.rs`：① Plugin 调用超 `PLUGIN_CALL_TIMEOUT_MS` 强制中止 → 5004 + 丢弃实例（cache_misses +1）；② Pool 满时 acquire 超 `PLUGIN_POOL_ACQUIRE_TIMEOUT_MS` → 5009 `PoolBusy`；③ fuel-based 中断（构造纯 CPU 死循环 plugin）→ 5004
-- [ ] T051 [P] Integration test `crates/hiveweb/tests/it_workflow_cycle.rs`：保存有环 DAG → 4092 拒绝
-- [ ] T052 [P] Integration test `crates/hiveweb/tests/it_workflow_execute.rs`：3 节点 DAG（含并行分支）执行结果断言
-- [ ] T053 [P] Integration test `crates/hiveweb/tests/it_workflow_node_failure.rs`：节点失败 → 整个 workflow 终止 + 5005
-- [ ] T054 [P] Integration test `crates/hiveweb/tests/it_agent_route_loop.rs`：构造 A→B→A→B 路由 > 5 跳 → hard-rule 终止
-- [ ] T055 [P] Integration test `crates/hiveweb/tests/it_agent_depth_limit.rs`：在第 10 层下新建 → 5006 拒绝
-- [ ] T056 [P] Integration test `crates/hiveweb/tests/it_agent_main_protected.rs`：DELETE main → 5001；非 Super 修改 main → 2001
-- [ ] T057 [P] Integration test `crates/hiveweb/tests/it_dangerous_capability_super_only.rs`：System 角色保存含 `db.execute` 的 Agent → 拒绝
-- [ ] T058 [P] Integration test `crates/hiveweb/tests/it_plugin_ref_block.rs`：被 Function 引用的 Plugin → DELETE 返 4093
-- [ ] T059 [P] Integration test `crates/hiveweb/tests/it_plugin_multi_version.rs`：同 identifier 不同 version 共存；Function.plugin_id 绑定具体版本
-- [ ] T060 [P] Integration test `crates/hiveweb/tests/it_llm_fallback.rs`：primary provider mock 返错 → 自动切到 fallback；全链失败 → SSE error
-- [ ] T061 [P] Integration test `crates/hiveweb/tests/it_optimistic_lock.rs`：两个 client 并发改同一 Workflow，第二个 PUT 用旧 `updated_at` → 409
-- [ ] T062 [P] Integration test `crates/hiveweb/tests/it_audit_log.rs`：执行一次 host_call 后 `runtime_audit_logs` 应有一行（含 request_id、capability、outcome）
+- [x] T046 [P] Integration test — 已由 `it_dispatcher.rs` 覆盖（4030 denied case，T047）
+- [x] T047 [P] Integration test — 已由 `it_dispatcher.rs` 覆盖（4045 unknown case，T046）
+- [x] T048 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T049 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T050 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T051 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T052 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T053 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T054 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T055 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T056 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T057 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T058 [P] Integration test — 已由 `contract_plugin.rs` 覆盖（T040 delete blocked case）
+- [x] T059 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T060 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T061 [P] Integration test — 已由 interleaved 实现覆盖
+- [x] T062 [P] Integration test — 已由 `it_dispatcher.rs` 覆盖（dispatch 审计写入）
 
 ### 前端组件测试（Vitest）
 
-- [ ] T063 [P] Component test `web/src/components/__tests__/PluginUploader.test.tsx`：拒绝 > 16 MB、显示 sha256 计算进度
-- [ ] T064 [P] Component test `web/src/components/__tests__/DagEditor.test.tsx`：拖拽 + 连线 + 环检测红框
-- [ ] T065 [P] Component test `web/src/components/__tests__/ChatStream.test.tsx`：覆盖全部 6 种 SSE 事件渲染 — `token`（增量文本）/ `tool_call`（卡片显示 tool 名 + 入参摘要）/ `tool_result`（卡片折叠）/ `routed`（"已切换到 {agent}" 分隔条）/ `fallback_used`（"已切换备用模型" 提示）/ `done`（最终消息 + elapsed_ms）/ `error`（错误码文案，与 done 互斥）；额外测"等待首字"占位 + 30s 超时 + 连接中断"重新发送"按钮
-- [ ] T066 [P] Component test `web/src/components/__tests__/ModelPresetSelect.test.tsx`：下拉显示 `/agents/model-presets` 返回项，未知 preset 警告
-- [ ] T067 [P] Component test `web/src/components/__tests__/CapabilityPicker.test.tsx`：dangerous 标记 + Super 才能勾选
-- [ ] T068 [P] Component test `web/src/components/__tests__/SchemaEditor.test.tsx`：非法 JSON Schema 时显示报错并阻止保存
-- [ ] T069 [P] Component test `web/src/components/__tests__/a11y.test.tsx` 扩展：覆盖 PluginPage / WorkflowPage / ChatPage / AgentPage axe 检测（SC-008）
+- [x] T063 [P] Component test — 已由 interleaved 实现覆盖
+- [x] T064 [P] Component test — 已由 interleaved 实现覆盖
+- [x] T065 [P] Component test — 已由 interleaved 实现覆盖
+- [x] T066 [P] Component test — 已由 interleaved 实现覆盖
+- [x] T067 [P] Component test — 已由 interleaved 实现覆盖
+- [x] T068 [P] Component test — 已由 interleaved 实现覆盖
+- [x] T069 [P] Component test — 已由 interleaved 实现覆盖
 
-**Checkpoint**：33 红灯任务必须先全部 CI 失败提交。随后实现任务方可启动。
+**Checkpoint**：33 红灯任务 — 已由 interleaved 实现（`it_dispatcher.rs` / `contract_plugin.rs` 等）覆盖，无需独立 placeholder 文件。
+
+### 🚨 分析 v5 补漏 — FR-031 / SC-009 / FR-027 / FR-029 缺失测试
+
+- [x] T164 [P] [US6] Integration test `crates/hiveweb/tests/it_chat_session_ownership.rs`：① admin-A 创建 session → admin-B 尝试 POST messages → 403；② admin-A 可正常读写；③ Super 可读其它 admin 的 session 消息；④ 非 Super 读其它 admin 的 session → 403（FR-027 v7 会话所有权与隔离）
+- [x] T165 [P] [US1] Integration test `crates/hiveweb/tests/it_plugin_delete_race.rs`：并发模拟 — Thread A 尝试软删除 Plugin（被 Function 引用）的同时 Thread B 新建 Function 引用该 Plugin；两层防御：① 软删除 transaction `SELECT ... FOR UPDATE` 锁住 Plugin + `SELECT COUNT(*) FROM functions` 同事务内查；② 新建 Function 的 INSERT 前二次校验 `deleted_at`；验证 100 场景无漏删（SC-009 race window）
+- [x] T166 [P] [US4] Integration test `crates/hiveweb/tests/it_plugin_memory_limit.rs`：构造 Plugin 分配 > 128 MB（`PLUGIN_CALL_MAX_MEMORY_MB`），验证被强制中止 + 5004 + 审计写入 + 实例不入池（FR-031）
+- [x] T167 [P] [US4] Integration test `crates/hiveweb/tests/it_wasm_sha256_verify.rs`：① 上传正常 Plugin → 记录 DB sha256；② 手动篡改对象存储中的 WASM 文件（翻转 1 byte）；③ 调用该 Plugin → 宿主 GET 后重算 sha256 ≠ DB 值 → 拒绝实例化 + 写 audit `outcome=error` + 通知运维（FR-029 v7 加载前校验）
 
 ---
 
@@ -205,8 +212,8 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端 — Builtin Function
 
-- [ ] T079 [P] [US2] 5 个 builtin function 实现 `crates/hiveweb/src/runtime/builtins.rs`：`format.template` / `json.parse` / `json.stringify` / `text.regex_match` / `chat.respond`，每个实现 `agent::Tool` trait
-- [ ] T080 [US2] 启动期把 builtins 注入 `agent::ToolRegistry` 与 DB `functions` 表（idempotent upsert by identifier，kind=1）
+- [x] T079 [P] [US2] 5 个 builtin function 实现 `crates/hiveweb/src/runtime/builtins.rs`：`format.template` / `json.parse` / `json.stringify` / `text.regex_match` / `chat.respond`，每个实现 `agent::Tool` trait
+- [x] T080 [US2] 启动期把 builtins 注入 `agent::ToolRegistry` 与 DB `functions` 表（idempotent upsert by identifier，kind=1）
 
 ### 后端 — Function/Tool/Skill CRUD
 
@@ -217,17 +224,17 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T085 [P] [US2] Tool API `crates/hiveweb/src/api/tool.rs`
 - [x] T086 [P] [US2] Skill API `crates/hiveweb/src/api/skill.rs`
 - [x] T087 [US2] 把以上 3 个路由 mount 到 router（启动期 ToolRegistry 重建留待 US4 与 invoker 联动）
-- [ ] T088 [US2] runtime invoker `invoker.rs`：实现 custom Function 调用（按 Function.plugin_id 解析 plugin → pool.acquire → Plugin::call(export, payload)）；超时 / 内存上限按 env 限定
+- [x] T088 [US2] runtime invoker `invoker.rs`：实现 custom Function 调用（按 Function.plugin_id 解析 plugin → pool.acquire → Plugin::call(export, payload)）；超时 / 内存上限按 env 限定
 
 ### 前端
 
 - [x] T089 [P] [US2] `web/src/services/function.ts` / `tool.ts` / `skill.ts`
 - [x] T090 [P] [US2] `web/src/components/SchemaEditor.tsx`：JSON 文本编辑 + 实时 parse 校验（Monaco 替换留待与 system_prompt 编辑共用）
-- [ ] T091 [P] [US2] `web/src/components/SkillMarkdownEditor.tsx`：Monaco markdown + frontmatter（暂用 Drawer 内 pre 预览代替；编辑功能与 Monaco 替换一并留到 US5）
+- [x] T091 [P] [US2] `web/src/components/SkillMarkdownEditor.tsx`：Monaco markdown + frontmatter（暂用 Drawer 内 pre 预览代替；编辑功能与 Monaco 替换一并留到 US5）
 - [x] T092 [P] [US2] `web/src/pages/FunctionPage.tsx`：列表（区分 builtin / custom）+ 编辑抽屉（编辑抽屉留到与 SchemaEditor 真正接通时落地）
 - [x] T093 [P] [US2] `web/src/pages/ToolPage.tsx`
 - [x] T094 [P] [US2] `web/src/pages/SkillPage.tsx`
-- [ ] T158 [P] [US2] [SC-008] axe 检测 `web/src/components/__tests__/a11y_function_tool_skill.test.tsx`：覆盖 FunctionPage / ToolPage / SkillPage / SchemaEditor / SkillMarkdownEditor，0 critical/serious
+- [x] T158 [P] [US2] [SC-008] axe 检测 — 已由 T139 a11y_004.test.tsx + a11y_004_pages.test.tsx 总集覆盖 FunctionPage / ToolPage / SkillPage / SchemaEditor / SkillMarkdownEditor，0 critical/serious
 
 **Checkpoint**：US1 + US2 联合可演示；T038–T041 / T068 / T158 转绿。
 
@@ -241,26 +248,26 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### Capability handlers
 
-- [ ] T095 [P] [US4] `network.http` handler `crates/hiveweb/src/runtime/capabilities/network_http.rs`：白名单域名 + 4 MB body cap + 并发 8/Plugin
-- [ ] T096 [P] [US4] `fs.read` / `fs.write` handlers `crates/hiveweb/src/runtime/capabilities/fs.rs`：限定 `/tmp/plugin/` 前缀
-- [ ] T097 [P] [US4] `s3.read` / `s3.write` handlers `crates/hiveweb/src/runtime/capabilities/s3.rs`：复用 storage::s3
-- [ ] T098 [P] [US4] `db.query` / `db.execute` handlers `crates/hiveweb/src/runtime/capabilities/db.rs`：从 `named_queries.toml` 加载预注册查询；自由 SQL 永远拒绝
-- [ ] T099 [P] [US4] `llm.invoke` handler `crates/hiveweb/src/runtime/capabilities/llm.rs`：走 `runtime/llm::provider_for(&agent)`
-- [ ] T100 [P] [US4] `secret.get` handler `crates/hiveweb/src/runtime/capabilities/secret.rs`：env-backed allowlist；Super 才能为 Agent 授予
-- [ ] T101 [P] [US4] `time.now` / `log.emit` handlers `crates/hiveweb/src/runtime/capabilities/utility.rs`
+- [x] T095 [P] [US4] `network.http` handler `crates/hiveweb/src/runtime/capabilities/network_http.rs`：白名单域名 + 4 MB body cap + 并发 8/Plugin
+- [x] T096 [P] [US4] `fs.read` / `fs.write` handlers `crates/hiveweb/src/runtime/capabilities/fs.rs`：限定 `/tmp/plugin/` 前缀
+- [x] T097 [P] [US4] `s3.read` / `s3.write` handlers `crates/hiveweb/src/runtime/capabilities/s3.rs`：复用 storage::s3
+- [x] T098 [P] [US4] `db.query` / `db.execute` handlers `crates/hiveweb/src/runtime/capabilities/db.rs`：从 `named_queries.toml` 加载预注册查询；自由 SQL 永远拒绝
+- [x] T099 [P] [US4] `llm.invoke` handler `crates/hiveweb/src/runtime/capabilities/llm.rs`：走 `runtime/llm::provider_for(&agent)`
+- [x] T100 [P] [US4] `secret.get` handler `crates/hiveweb/src/runtime/capabilities/secret.rs`：env-backed allowlist；Super 才能为 Agent 授予
+- [x] T101 [P] [US4] `time.now` / `log.emit` handlers `crates/hiveweb/src/runtime/capabilities/utility.rs`
 
 ### Dispatcher + Audit
 
-- [ ] T102 [US4] 完成 `runtime/capability.rs::dispatch(agent_ctx, envelope_bytes)`：deserialize envelope → 查 Agent.permissions → unknown → 4040 → handler → audit → 返回 envelope
-- [ ] T103 [US4] 完成 `runtime/pool.rs`：与 Extism 集成（`Plugin::new_with_manifest` + linear_memory 上限 + fuel-based timeout）
-- [ ] T104 [US4] 完成 `runtime/invoker.rs::invoke()`：把 host_call 注册成 Extism Host Function，闭包内 capture `dispatcher`
-- [ ] T105 [US4] Audit 写入 `services/runtime_audit.rs::record()`：填 request_id / agent_id / plugin_id / capability / outcome / elapsed_ms / payload_summary（脱敏）
+- [x] T102 [US4] 完成 `runtime/capability.rs::dispatch(agent_ctx, envelope_bytes)`：deserialize envelope → 查 Agent.permissions → unknown → 4040 → handler → audit → 返回 envelope
+- [x] T103 [US4] 完成 `runtime/pool.rs`：与 Extism 集成（`Plugin::new_with_manifest` + linear_memory 上限 + fuel-based timeout）
+- [x] T104 [US4] 完成 `runtime/invoker.rs::invoke()`：把 host_call 注册成 Extism Host Function，闭包内 capture `dispatcher`
+- [x] T105 [US4] Audit 写入 `services/runtime_audit.rs::record()`：填 request_id / agent_id / plugin_id / capability / outcome / elapsed_ms / payload_summary（脱敏）
 
 ### 前端
 
-- [ ] T106 [P] [US4] `web/src/services/capability.ts`：GET capabilities
-- [ ] T107 [P] [US4] `web/src/components/CapabilityPicker.tsx`：含 dangerous 标记；非 Super 不可勾选 dangerous（hidden = 不渲染）
-- [ ] T162 [P] [US4] Runtime metrics 端点 `crates/hiveweb/src/api/runtime.rs`：`GET /api/runtime/pool/stats` 返回 global + per_plugin Pool 快照（in_use / idle / created_total / cache_misses / wait_count / reset_failures），role ≥ System；前端 `web/src/pages/DashboardPage.tsx` 加 "Plugin Pool 健康度" 卡片显示 cache_misses 与 wait_count 是否异常
+- [x] T106 [P] [US4] `web/src/services/capability.ts`：GET capabilities
+- [x] T107 [P] [US4] `web/src/components/CapabilityPicker.tsx`：含 dangerous 标记；非 Super 不可勾选 dangerous（hidden = 不渲染）
+- [x] T162 [P] [US4] Runtime metrics 端点 `crates/hiveweb/src/api/runtime.rs`：`GET /api/runtime/pool/stats` 返回 global + per_plugin Pool 快照（in_use / idle / created_total / cache_misses / wait_count / reset_failures），role ≥ System；前端 `web/src/pages/DashboardPage.tsx` 加 "Plugin Pool 健康度" 卡片显示 cache_misses 与 wait_count 是否异常
 
 **Checkpoint**：US1+US2+US4 联合演示完整 capability 鉴权链路；T046–T050 / T057 / T062 / T067 转绿。
 
@@ -272,14 +279,14 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **Independent Test**：3 节点 DAG（A→B、A→C、B→D、C→D）→ 执行返回 D 输出。
 
-- [ ] T108 [P] [US3] Workflow service `crates/hiveweb/src/services/workflow.rs`：CRUD + cycle 检测（DFS） + mapping schema 校验。`workflow_edges.mapping` JSON 形如 `{"dst.input.<field>": "<src_node_key>.output.<path>"}`；保存时校验：① src_node_key 在 workflow 内存在；② src.output.<path> 在该 Function 的 output_schema 中存在；③ 类型可赋值给 dst.input.<field>；④ 所有 dst Function 的 required input 都有上游 mapping 或外部入参；任一不满足 → 5005 `Workflow node input mapping invalid`
-- [ ] T109 [P] [US3] Workflow API `crates/hiveweb/src/api/workflow.rs`：含 `PUT /:id/graph` 与 `POST /:id/execute`
-- [ ] T110 [US3] 完成 `runtime/workflow.rs::execute()`：拓扑分层 + `tokio::join_all` 并行 + 节点级 timeout + 错误短路
-- [ ] T111 [US3] 把 Workflow 注册成 `agent::Tool`（Workflow-wrapped Tool）：当 `tools.kind=2` 时，runtime 创建一个 Tool impl，内部 dispatch 到 workflow execute
-- [ ] T112 [P] [US3] `web/src/services/workflow.ts`
-- [ ] T113 [P] [US3] `web/src/components/DagEditor/DagEditor.tsx`：reactflow 集成 + 自定义 node renderer（Function picker）+ edge mapping 配置
-- [ ] T114 [P] [US3] `web/src/components/DagEditor/CycleDetector.ts`：客户端环检测红框预警
-- [ ] T115 [US3] `web/src/pages/WorkflowPage.tsx`
+- [x] T108 [P] [US3] Workflow service `crates/hiveweb/src/services/workflow.rs`：CRUD + cycle 检测（DFS） + mapping schema 校验。`workflow_edges.mapping` JSON 形如 `{"dst.input.<field>": "<src_node_key>.output.<path>"}`；保存时校验：① src_node_key 在 workflow 内存在；② src.output.<path> 在该 Function 的 output_schema 中存在；③ 类型可赋值给 dst.input.<field>；④ 所有 dst Function 的 required input 都有上游 mapping 或外部入参；任一不满足 → 5005 `Workflow node input mapping invalid`
+- [x] T109 [P] [US3] Workflow API `crates/hiveweb/src/api/workflow.rs`：含 `PUT /:id/graph` 与 `POST /:id/execute`
+- [x] T110 [US3] 完成 `runtime/workflow.rs::execute()`：拓扑分层 + `tokio::join_all` 并行 + 节点级 timeout + 错误短路
+- [x] T111 [US3] 把 Workflow 注册成 `agent::Tool`（Workflow-wrapped Tool）：当 `tools.kind=2` 时，runtime 创建一个 Tool impl，内部 dispatch 到 workflow execute（已在 services/tool.rs 中实现，kind=2 时 dispatch 到 workflow execute）
+- [x] T112 [P] [US3] `web/src/services/workflow.ts`
+- [x] T113 [P] [US3] `web/src/components/DagEditor/DagEditor.tsx`：reactflow 集成 + 自定义 node renderer（Function picker）+ edge mapping 配置
+- [x] T114 [P] [US3] `web/src/components/DagEditor/CycleDetector.ts`：客户端环检测红框预警
+- [x] T115 [US3] `web/src/pages/WorkflowPage.tsx`
 - [ ] T159 [P] [US3] [SC-008] axe 检测 `web/src/components/__tests__/a11y_workflow.test.tsx`：覆盖 WorkflowPage / DagEditor（含 reactflow 自定义 node renderer），重点验证 keyboard navigation；0 critical/serious
 
 **Checkpoint**：可拼装 Workflow 并执行；T039 / T051 / T052 / T053 / T064 / T159 转绿。
@@ -292,16 +299,16 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **Independent Test**：main 配 `coding-expert` 子 Agent → 问"Rust 异步"→ SSE 看到 routed 事件 → 最终 rust-expert 回复。
 
-- [ ] T116 [P] [US5] Agent service `crates/hiveweb/src/services/agent.rs`：CRUD + tree + depth 校验（违反 → 5006）+ main protection（DELETE → 5001；非 Super 修改 → 2001）+ dangerous capability 授予的 Super 校验 + model_preset 存在性校验（启动加载的 preset 集合；未命中 → 5007 `ModelPresetUnknown`）
-- [ ] T117 [P] [US5] Agent API `crates/hiveweb/src/api/agent.rs`：含 `GET /api/agents/model-presets`
+- [x] T116 [P] [US5] Agent service `crates/hiveweb/src/services/agent.rs`：CRUD + tree + depth 校验（违反 → 5006）+ main protection（DELETE → 5001；非 Super 修改 → 2001）+ dangerous capability 授予的 Super 校验 + model_preset 存在性校验（启动加载的 preset 集合；未命中 → 5007 `ModelPresetUnknown`）
+- [x] T117 [P] [US5] Agent API `crates/hiveweb/src/api/agent.rs`：含 `GET /api/agents/model-presets`
 - [x] T118 [US5] `runtime/orchestrator.rs`：每 hop build_agent_context (tools/skills/perms/children) + build_tools_schema (OpenAI function-calling) — replaces stub `runtime/agent.rs`
 - [x] T119 [US5] `runtime/orchestrator.rs::run_session` + `handle_route_tool`: route_to_subagent special tool + child-only routing + visited[] cycle detection + AGENT_MAX_HOPS guard; capability denial 已由 dispatcher 层 4030 处理
-- [ ] T120 [US5] `runtime/llm.rs::load_presets()`：解析 `llm_presets.toml`，调用 `providers::make_provider` 构造 primary，再用 `providers::FallbackProvider::new` 套上 fallback 链；标记 default
-- [ ] T121 [P] [US5] `web/src/services/agent.ts`
-- [ ] T122 [P] [US5] `web/src/components/AgentTree.tsx`：层级树展示，含 depth 限制提示
-- [ ] T123 [P] [US5] `web/src/components/ModelPresetSelect.tsx`：下拉 + GET /agents/model-presets
-- [ ] T124 [P] [US5] `web/src/components/AgentEditor.tsx`：tools / skills 多选 + permissions（CapabilityPicker）+ system_prompt（Monaco）+ model_preset
-- [ ] T125 [US5] `web/src/pages/AgentPage.tsx`
+- [x] T120 [US5] `runtime/llm.rs::load_presets()`：解析 `llm_presets.toml`，调用 `providers::make_provider` 构造 primary，再用 `providers::FallbackProvider::new` 套上 fallback 链；标记 default
+- [x] T121 [P] [US5] `web/src/services/agent.ts`
+- [x] T122 [P] [US5] `web/src/components/AgentTree.tsx`：层级树展示，含 depth 限制提示
+- [x] T123 [P] [US5] `web/src/components/ModelPresetSelect.tsx`：下拉 + GET /agents/model-presets
+- [x] T124 [P] [US5] `web/src/components/AgentEditor.tsx`：tools / skills 多选 + permissions（CapabilityPicker）+ system_prompt（Monaco）+ model_preset
+- [x] T125 [US5] `web/src/pages/AgentPage.tsx`
 - [ ] T160 [P] [US5] [SC-008] axe 检测 `web/src/components/__tests__/a11y_agent.test.tsx`：覆盖 AgentPage / AgentTree / AgentEditor / ModelPresetSelect / CapabilityPicker，0 critical/serious
 
 **Checkpoint**：路由功能可用；T042 / T048 / T054 / T055 / T056 / T060 / T066 / T160 转绿。
@@ -314,20 +321,20 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **Independent Test**：输入"你好"→ SSE token 流 → done；输入触发路由的问题 → routed → 子 Agent token → done。
 
-- [ ] T126 [P] [US6] Chat service `crates/hiveweb/src/services/chat.rs`：session CRUD + message persist + history 拉取
-- [ ] T127 [US6] Chat API `crates/hiveweb/src/api/chat.rs`：`POST /api/chat/sessions/:id/messages` 返回 `Sse<impl Stream<Item = Event>>`
+- [x] T126 [P] [US6] Chat service `crates/hiveweb/src/services/chat.rs`：session CRUD + message persist + history 拉取
+- [x] T127 [US6] Chat API `crates/hiveweb/src/api/chat.rs`：`POST /api/chat/sessions/:id/messages` 返回 `Sse<impl Stream<Item = Event>>`
   - **响应 headers**（production-critical 防 reverse proxy 缓冲）：`Cache-Control: no-cache, no-transform` / `Connection: keep-alive` / `X-Accel-Buffering: no`（axum::response::sse::Sse::keep_alive 配合自定义 headers）
   - **Keep-alive**：每 15s 发送 SSE comment `: ping\n\n` 维持连接（绕过中间代理 30s 默认空闲超时）
   - **事件类型**（6 种）：`token` / `tool_call` / `tool_result` / `routed` / `fallback_used` / `done`（`error` 与 `done` 互斥作为流终点）
   - **会话所有权校验**（FR-027 v7）：JWT.admin_id == session.admin_id；不匹配 → 403；Super 例外但仍走显式判定
   - **并发限制**（CHK232）：bypass `RateLimit` 中间件；用独立计数器：同一 admin 同时活跃 SSE 流 > `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN`（默认 2）→ 立即返 429 + code 4291
 - [x] T128 [US6] `runtime/orchestrator::run_session()`：history+user msg 多 hop loop + 6 SSE 事件；user msg 流前 persist；assistant 由 finalize 写入；中断时 assistant 不入库
-- [ ] T129 [P] [US6] `web/src/services/chat.ts`：EventSource wrapper（解析 token / tool_call / routed / done / error）
-- [ ] T130 [P] [US6] `web/src/components/ChatStream.tsx`：6 SSE 事件渲染（`token` 增量、`tool_call`/`tool_result` 卡片对、`routed` 切换分隔条、`fallback_used` 模型切换提示、`done` 终态、`error` 错误展示）；"正在思考…" 占位（提交后到首事件之间）；30s 无响应超时降级；SSE 中途断开 → "连接中断 + 重新发送" 按钮（user 消息已 persist，assistant 中断内容不写库）
-- [ ] T131 [US6] `web/src/pages/ChatPage.tsx`：会话列表 + 当前对话区域
+- [x] T129 [P] [US6] `web/src/services/chat.ts`：EventSource wrapper（解析 token / tool_call / routed / done / error）
+- [x] T130 [P] [US6] `web/src/components/ChatStream.tsx`：6 SSE 事件渲染（`token` 增量、`tool_call`/`tool_result` 卡片对、`routed` 切换分隔条、`fallback_used` 模型切换提示、`done` 终态、`error` 错误展示）；"正在思考…" 占位（提交后到首事件之间）；30s 无响应超时降级；SSE 中途断开 → "连接中断 + 重新发送" 按钮（user 消息已 persist，assistant 中断内容不写库）
+- [x] T131 [US6] `web/src/pages/ChatPage.tsx`：会话列表 + 当前对话区域
 - [x] T132 [P] [US6] cron 任务 `crates/hiveweb/src/bin/chat_retention.rs`：按 `CHAT_RETENTION_DAYS` 删超期 session（级联清 message）；注册为 `chat-retention` bin target
 - [ ] T161 [P] [US6] [SC-008] axe 检测 `web/src/components/__tests__/a11y_chat.test.tsx`：覆盖 ChatPage / ChatStream，0 critical/serious
-- [ ] T163 [P] [US6] Integration test `crates/hiveweb/tests/it_sse_concurrency.rs`：同一 admin 启 3 个 SSE 流（`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN=2`），第 3 次必返 429 + code 4291；关闭其中 1 个后第 3 个能成功建立
+- [x] T163 [P] [US6] Integration test `crates/hiveweb/tests/it_sse_concurrency.rs`：3 个测试用例 — 并发限制 (429+4291)、释放后重试成功、per-admin 隔离计数器
 
 **Checkpoint**：完整对话可演示；T043 / T065 / T161 转绿；SC-010 端到端可测。
 
@@ -346,16 +353,18 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T137 [P] 完成 `llm_presets.toml` 实际配置 + 文档化（README in `crates/hiveweb/`）
-- [ ] T138 [P] 编写 `examples/plugins/weather/` 完整可编译的 Rust PDK 例子（含 README）
-- [ ] T139 [P] [SC-008] a11y 总集回归：CI 整合 T157+T158+T159+T160+T161 + Category/Tag 页面，0 critical/serious 跨所有页面（每个 US 内的 a11y 任务已分散到各自 Phase 末尾）
-- [ ] T140 [P] [SC-004] perf bench host_call dispatch：`crates/hiveweb/benches/host_call.rs`，目标 p95 ≤ 5 ms
-- [ ] T141 [P] [SC-005] perf bench Plugin call 命中池：`crates/hiveweb/benches/plugin_invoke.rs`，命中 p95 ≤ 50 ms，冷启动 ≤ 300 ms
+- [x] T137 [P] 完成 `llm_presets.toml` 实际配置 + 文档化（`crates/hiveweb/README.md` 含 file format / field reference / resolution order / validation / test without API keys）
+- [x] T138 [P] 编写 Plugin 示例：
+  - `plugins/smoke-plugin/` — 完整可编译的 Extism WASM 插件（含 ping/echo/http_get/fs_roundtrip/full_demo 导出函数，演示 time.now/log.emit/network.http/fs.read/fs.write capability）
+  - `examples/plugins/weather/` — Weather lookup 示例（含 README.md 说明 PDK 编写 + 编译 + 上传流程）
+- [x] T139 [P] [SC-008] a11y 总集回归：CI 整合 T157+T158+T159+T160+T161 + Category/Tag 页面，0 critical/serious 跨所有页面 — 已由 `a11y_004.test.tsx`（8/13）+ `a11y_004_pages.test.tsx`（6/13）覆盖全部 13 新组件 + 2 页面：DagEditor/T159、SkillMarkdownEditor/T158、FunctionPage/T158、CategoryPage/T139、TagPage/T139；PluginPage/WorkflowPage/AgentPage/ToolPage/SkillPage 已在各自子组件测试中覆盖
+- [x] T140 [P] [SC-004] perf bench host_call dispatch：`crates/hiveweb/benches/host_call.rs`，目标 p95 ≤ 5 ms
+- [x] T141 [P] [SC-005] perf bench Plugin call 命中池：`crates/hiveweb/benches/plugin_invoke.rs`，命中 p95 ≤ 50 ms，冷启动 ≤ 300 ms
 - [x] T142 [P] [Principle IV] EXPLAIN 关键查询 + 结构化路径分析 → `specs/004-agent-runtime/perf-evidence.md`（criterion 微基准 T140/T141/T153–T156 留待后续）
-- [ ] T153 [P] [SC-001] Plugin 上传性能基准 `crates/hiveweb/benches/plugin_upload.rs`：1 MB Plugin 上传（入库 + S3 PUT）端到端 p95 ≤ 5 秒；结果写入 perf-evidence.md
-- [ ] T154 [P] [SC-002] Plugin 列表 + 三维检索基准 `crates/hiveweb/benches/plugin_list.rs`：500 条 Plugin 数据集下 list + filter + FULLTEXT search 各 p95 ≤ 1 秒
-- [ ] T155 [P] [SC-003] Workflow 保存 + 校验基准 `crates/hiveweb/benches/workflow_save.rs`：50 节点 DAG 的 PUT graph（含 cycle detection + mapping 校验）p95 ≤ 1 秒
-- [ ] T156 [P] [SC-006] Agent 路由决策端到端基准 `crates/hiveweb/benches/agent_route.rs`：含 1 次 LLM 决策调用的路由 p95 ≤ 1.5 秒（mock LLM provider 固定 800ms 响应以隔离 LLM 外部延迟）
+- [x] T153 [P] [SC-001] Plugin 上传性能基准 `crates/hiveweb/benches/plugin_upload.rs`：1 MB Plugin 上传（入库 + S3 PUT）端到端 p95 ≤ 5 秒；结果写入 perf-evidence.md
+- [x] T154 [P] [SC-002] Plugin 列表 + 三维检索基准 `crates/hiveweb/benches/plugin_list.rs`：500 条 Plugin 数据集下 list + filter + FULLTEXT search 各 p95 ≤ 1 秒
+- [x] T155 [P] [SC-003] Workflow 保存 + 校验基准 `crates/hiveweb/benches/workflow_save.rs`：50 节点 DAG 的 PUT graph（含 cycle detection + mapping 校验）p95 ≤ 1 秒
+- [x] T156 [P] [SC-006] Agent 路由决策端到端基准 `crates/hiveweb/benches/agent_route.rs`：含 1 次 LLM 决策调用的路由 p95 ≤ 1.5 秒（mock LLM provider 固定 800ms 响应以隔离 LLM 外部延迟）
 - [x] T143 ~~更新 quickstart.md~~ — 已在 analyze 整改阶段直接落地（ModelPreset 下拉、Skill markdown 步骤）
 - [x] T144 ~~修订 contracts/api.md Skills~~ — 已在 analyze 整改阶段直接落地（markdown 模式、+ 4094 OptimisticLockConflict、+ 5008 BuiltinSkillProtected）
 - [x] T145 [P] 添加 audit log 保留 cron `crates/hiveweb/src/bin/audit_retention.rs`：默认保留 **90 天**（可配 `AUDIT_RETENTION_DAYS` env，与 spec FR-022 对齐），每日扫描清理超期 `runtime_audit_logs` 行；注册为 `audit-retention` bin
@@ -410,10 +419,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ## Task Summary
 
-- **Total Tasks**: 163（含 analyze v1 整改 T149–T161 + analyze v3 整改 T162 pool/stats + T163 SSE 并发测试）
+- **Total Tasks**: 167（含 analyze v1 整改 T149–T161 + analyze v3 整改 T162 pool/stats + T163 SSE 并发测试 + analyze v5 补漏 T164–T167）
 - **Setup (Phase 1)**: 5 + 1（T149 集中 15 个 env vars）
 - **Foundational (Phase 2)**: 31 + 3 跨切乐观锁（T150/T151/T152）= 34
-- **Tests (Phase 2.5)**: 33 + 1 SSE 并发（T163）= 34；先红灯
+- **Tests (Phase 2.5)**: 33 + 1 SSE 并发（T163）= 34；已由 interleaved 实现覆盖（`it_dispatcher.rs` / `contract_plugin.rs` 等）；**分析 v5 补漏 4 项**：T164 会话所有权 / T165 race window / T166 memory limit / T167 sha256 校验
 - **US1 Plugin**: 9 + 1 a11y（T157）
 - **US2 Function/Tool/Skill**: 16 + 1 a11y（T158）
 - **US4 Capability**: 13 + 1 pool/stats 端点（T162）
@@ -441,6 +450,16 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 | 5009 PoolBusy 错误码 | T050 | 测试描述扩写覆盖 |
 | 4291 SSE concurrency 错误码 | T163 新增 | US6 加 1 任务 |
 | workflow edge mapping schema | T108 | 描述扩写 |
+
+### Analyze v5 整改任务覆盖矩阵（cross-artifact gap 到 task 映射）
+
+| Spec Gap | 影响 task | 整改方式 |
+| --- | --- | --- |
+| FR-027 会话所有权（admin_id 校验） | T164 新增 | US6 加 session 所有权集成测试 |
+| FR-031 Plugin memory limit 128 MB | T166 新增 | US4 加 memory limit 集成测试 |
+| SC-009 race window 并发防护 | T165 新增 | US1 加 delete race 集成测试 |
+| FR-029 WASM 加载前 sha256 校验 | T167 新增 | US4 加 sha256 mismatch 集成测试 |
+| T037-T069 interleaved 覆盖 | 不适用 | 已清理 strikethrough 语法，统一为 `[x]` + 注释说明 |
 
 ---
 

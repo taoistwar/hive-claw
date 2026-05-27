@@ -217,6 +217,7 @@ export default function PluginPage() {
           {viewingPlugin && (
             <PluginDetail
               plugin={viewingPlugin}
+              categoryNameMap={categoryNameMap}
               onBack={() => {
                 setViewOpen(false);
                 setViewingPlugin(null);

@@ -1,23 +1,71 @@
-// FunctionPage — 列表（区分 builtin / custom）(T092)
+// FunctionPage — 列表 + 创建 + 编辑 + 删除 (T092 扩展)
 
 import { useEffect, useState } from 'react';
-import { Table, Tag, Space, Input, Select, message } from 'antd';
+import { Table, Tag, Space, Input, Select, message, Button, Popconfirm } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { listFunctions, type FunctionItem, type FunctionList } from '../services/function';
+import { listFunctions, deleteFunction, type FunctionItem, type FunctionList } from '../services/function';
+import FunctionForm from '../components/FunctionForm';
+import FunctionTester from '../components/FunctionTester';
+
+type FormMode = 'create' | 'edit' | null;
 
 export default function FunctionPage() {
   const [data, setData] = useState<FunctionList>({ items: [], total: 0, offset: 0, limit: 20 });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [kind, setKind] = useState<'builtin' | 'custom' | ''>('');
+  const [formMode, setFormMode] = useState<FormMode>(null);
+  const [editingRecord, setEditingRecord] = useState<FunctionItem | null>(null);
+  const [testingRecord, setTestingRecord] = useState<FunctionItem | null>(null);
+  const [testerOpen, setTesterOpen] = useState(false);
 
-  useEffect(() => {
+  const fetchData = () => {
     setLoading(true);
     listFunctions({ search: search || undefined, kind: kind || undefined })
       .then(setData)
       .catch((e) => message.error(`加载失败：${(e as Error).message}`))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, kind]);
+
+  const handleCreate = () => {
+    setEditingRecord(null);
+    setFormMode('create');
+  };
+
+  const handleEdit = (record: FunctionItem) => {
+    setEditingRecord(record);
+    setFormMode('edit');
+  };
+
+  const handleTest = (record: FunctionItem) => {
+    setTestingRecord(record);
+    setTesterOpen(true);
+  };
+
+  const handleDelete = async (record: FunctionItem) => {
+    try {
+      await deleteFunction(record.id);
+      message.success('函数删除成功');
+      fetchData();
+    } catch (e) {
+      message.error(`删除失败：${(e as Error).message}`);
+    }
+  };
+
+  const handleFormSuccess = () => {
+    fetchData();
+  };
+
+  const handleFormClose = () => {
+    setFormMode(null);
+    setEditingRecord(null);
+  };
 
   const columns: ColumnsType<FunctionItem> = [
     { title: 'ID', dataIndex: 'id', width: 60 },
@@ -32,6 +80,50 @@ export default function FunctionPage() {
     },
     { title: 'plugin', dataIndex: 'plugin_identifier', render: (v?: string | null) => v ?? '-' },
     { title: 'plugin_export', dataIndex: 'plugin_export' },
+    { title: '创建时间', dataIndex: 'created_at', width: 180, render: (v: string) => new Date(v).toLocaleString() },
+    { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (v: string) => new Date(v).toLocaleString() },
+    {
+      title: '操作',
+      width: 220,
+      render: (_: unknown, record: FunctionItem) => (
+        <Space>
+          <Button
+            type="link"
+            size="small"
+            icon={<PlayCircleOutlined />}
+            onClick={() => handleTest(record)}
+          >
+            测试
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => handleEdit(record)}
+          >
+            编辑
+          </Button>
+          {record.kind !== 1 && (
+            <Popconfirm
+              title="确认删除"
+              description="确定要删除此函数吗？此操作不可撤销。"
+              onConfirm={() => handleDelete(record)}
+              okText="确认"
+              cancelText="取消"
+            >
+              <Button
+                type="link"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
+      ),
+    },
   ];
 
   return (
@@ -55,6 +147,13 @@ export default function FunctionPage() {
             { value: 'custom', label: 'custom' },
           ]}
         />
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={handleCreate}
+        >
+          创建函数
+        </Button>
       </Space>
       <Table<FunctionItem>
         rowKey="id"
@@ -63,6 +162,25 @@ export default function FunctionPage() {
         loading={loading}
         pagination={{ total: data.total, pageSize: data.limit }}
       />
+
+      <FunctionForm
+        open={formMode !== null}
+        mode={formMode === 'create' ? 'create' : 'edit'}
+        record={editingRecord}
+        onClose={handleFormClose}
+        onSuccess={handleFormSuccess}
+      />
+
+      {testingRecord && (
+        <FunctionTester
+          functionItem={testingRecord}
+          open={testerOpen}
+          onClose={() => {
+            setTesterOpen(false);
+            setTestingRecord(null);
+          }}
+        />
+      )}
     </div>
   );
 }

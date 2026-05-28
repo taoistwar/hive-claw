@@ -1,6 +1,9 @@
 pub mod auth;
 pub mod admin;
 pub mod dashboard;
+pub mod admin_audit_log;
+pub mod runtime_audit_log;
+pub mod login_record;
 
 // 004 Agent Runtime
 pub mod agent;
@@ -14,6 +17,7 @@ pub mod chat;
 pub mod tag;
 pub mod tool;
 pub mod workflow;
+pub mod recommended_game;
 
 use axum::{
     http::HeaderValue,
@@ -121,7 +125,8 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .on_response(DefaultOnResponse::new().level(Level::INFO));
 
     let public_routes = Router::new()
-        .merge(auth::router_public());
+        .merge(auth::router_public())
+        .merge(recommended_game::router_public());
 
     let protected_routes = Router::new()
         .merge(auth::router_protected())
@@ -135,9 +140,13 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(tag::router())
         .merge(capability::router())
         .merge(runtime::router())
+        .merge(admin_audit_log::router())
+        .merge(runtime_audit_log::router())
+        .merge(login_record::router())
         .merge(agent::router())
         .merge(workflow::router())
         .merge(chat::router())
+        .merge(recommended_game::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 

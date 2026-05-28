@@ -30,6 +30,7 @@ async fn t046_unknown_capability_returns_4045() -> anyhow::Result<()> {
         agent_id: 1, // main agent
         plugin_id: 9999,
         function_id: None,
+        permissions: vec![],
     };
     let envelope = r#"{"capability":"no.such.cap","args":{}}"#;
     let resp = capability::dispatch(&deps, &ctx, envelope).await;
@@ -62,6 +63,7 @@ async fn t047_known_but_not_granted_returns_4030() -> anyhow::Result<()> {
         agent_id: 1,
         plugin_id: 9999,
         function_id: None,
+        permissions: vec![],
     };
     let envelope = format!(r#"{{"capability":"{NETWORK_HTTP}","args":{{}}}}"#);
     let resp = capability::dispatch(&deps, &ctx, &envelope).await;
@@ -96,6 +98,7 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
         agent_id: 1,
         plugin_id: 9999,
         function_id: None,
+        permissions: vec![],
     };
     let envelope = format!(r#"{{"capability":"{TIME_NOW}","args":{{}}}}"#);
     let resp = capability::dispatch(&deps, &ctx, &envelope).await;
@@ -128,6 +131,7 @@ async fn t049_bad_envelope_returns_4000() -> anyhow::Result<()> {
         agent_id: 1,
         plugin_id: 9999,
         function_id: None,
+        permissions: vec![],
     };
     let resp = capability::dispatch(&deps, &ctx, "{not-json}").await;
     let v: serde_json::Value = serde_json::from_str(&resp)?;

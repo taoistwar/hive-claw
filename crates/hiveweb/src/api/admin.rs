@@ -216,7 +216,7 @@ pub async fn create_admin(
         }
     };
 
-    let _ = audit_event(
+    if let Err(e) = audit_event(
         &state.pool,
         &claims,
         Operation::Create,
@@ -224,7 +224,10 @@ pub async fn create_admin(
         &new_admin.phone,
         serde_json::json!({ "role": new_admin.role, "nickname": new_admin.nickname }),
     )
-    .await;
+    .await
+    {
+        tracing::error!("Failed to write audit log for admin create: {}", e);
+    }
 
     ApiResponse::success(new_admin.into())
 }
@@ -268,7 +271,7 @@ pub async fn update_admin(
         Err(_) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
     };
 
-    let _ = audit_event(
+    if let Err(e) = audit_event(
         &state.pool,
         &claims,
         Operation::Update,
@@ -276,7 +279,10 @@ pub async fn update_admin(
         &updated_admin.phone,
         serde_json::json!({ "nickname": updated_admin.nickname, "role": updated_admin.role }),
     )
-    .await;
+    .await
+    {
+        tracing::error!("Failed to write audit log for admin update: {}", e);
+    }
 
     ApiResponse::success(updated_admin.into())
 }
@@ -306,7 +312,7 @@ pub async fn delete_admin(
 
     match admin::delete_admin(&state.pool, id).await {
         Ok(_) => {
-            let _ = audit_event(
+            if let Err(e) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Delete,
@@ -314,7 +320,10 @@ pub async fn delete_admin(
                 &target_phone,
                 serde_json::json!({}),
             )
-            .await;
+            .await
+            {
+                tracing::error!("Failed to write audit log for admin delete: {}", e);
+            }
             ApiResponse::success(())
         }
         Err(e) => {
@@ -358,7 +367,7 @@ pub async fn toggle_admin_status(
     match admin::toggle_admin_status(&state.pool, id, req.status).await {
         Ok(admin) => {
             let op = if req.status == 1 { Operation::Enable } else { Operation::Disable };
-            let _ = audit_event(
+            if let Err(e) = audit_event(
                 &state.pool,
                 &claims,
                 op,
@@ -366,7 +375,10 @@ pub async fn toggle_admin_status(
                 &admin.phone,
                 serde_json::json!({ "new_status": req.status }),
             )
-            .await;
+            .await
+            {
+                tracing::error!("Failed to write audit log for admin status toggle: {}", e);
+            }
             ApiResponse::success(admin.into())
         }
         Err(e) => {

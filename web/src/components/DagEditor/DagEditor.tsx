@@ -34,6 +34,9 @@ import {
 import { listFunctions, type FunctionItem } from '../../services/function';
 import { detectCycle, type SimpleEdge } from './CycleDetector';
 import { DEFAULT_FIT_VIEW_OPTIONS, DEFAULT_FLOW_STYLE } from '../../utils/reactflow';
+import { CustomNode } from './CustomNode';
+import { ContextMenu } from './ContextMenu';
+import { FunctionDetail } from '../FunctionDetail';
 
 interface NodeData {
   node_key: string;
@@ -43,18 +46,30 @@ interface NodeData {
 
 export interface DagEditorProps {
   workflowId: number;
+  readonly?: boolean;
   onSaved?: () => void;
 }
 
-export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
+const nodeTypes = {
+  custom: CustomNode,
+};
+
+export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
   const [nodes, setNodes] = useState<Node<NodeData>[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [functions, setFunctions] = useState<FunctionItem[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [pickedFn, setPickedFn] = useState<number | undefined>();
   const [pickedKey, setPickedKey] = useState<string>('');
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    nodeId: string;
+    functionId: number;
+  } | null>(null);
+  const [viewFnOpen, setViewFnOpen] = useState(false);
+  const [viewingFn, setViewingFn] = useState<FunctionItem | null>(null);
 
-  // 加载已有图 + function 列表
   useEffect(() => {
     void (async () => {
       try {
@@ -67,14 +82,13 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
         setNodes(
           graph.nodes.map((n: GraphNode, i: number) => ({
             id: n.node_key,
-            type: 'default',
+            type: 'custom',
             position: n.position ?? { x: 80 + i * 200, y: 80 },
             data: {
               node_key: n.node_key,
               function_id: n.function_id,
               function_name: fnMap.get(n.function_id)?.name,
             },
-            style: { padding: 8, border: '1px solid #91caff', borderRadius: 6 },
           })),
         );
         setEdges(
@@ -105,6 +119,30 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
     [],
   );
 
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node<NodeData>) => {
+    event.preventDefault();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      nodeId: node.id,
+      functionId: node.data.function_id,
+    });
+  }, []);
+
+  const onDeleteNode = useCallback((nodeId: string) => {
+    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+    setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    void message.success('节点已删除');
+  }, []);
+
+  const onViewFunction = useCallback((functionId: number) => {
+    const fn = functions.find((f) => f.id === functionId);
+    if (fn) {
+      setViewingFn(fn);
+      setViewFnOpen(true);
+    }
+  }, [functions]);
+
   const cycle = useMemo(() => {
     const simpleEdges: SimpleEdge[] = edges
       .filter((e) => e.source && e.target)
@@ -115,12 +153,11 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
     );
   }, [nodes, edges]);
 
-  // 高亮成环节点
   const styledNodes = useMemo(
     () =>
       nodes.map((n) =>
         cycle?.includes(n.id)
-          ? { ...n, style: { ...n.style, border: '2px solid #ff4d4f' } }
+          ? { ...n, data: { ...n.data, style: { border: '2px solid #ff4d4f' } } }
           : n,
       ),
     [nodes, cycle],
@@ -140,14 +177,13 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
       ...nds,
       {
         id: pickedKey,
-        type: 'default',
+        type: 'custom',
         position: { x: 100 + nds.length * 60, y: 100 },
         data: {
           node_key: pickedKey,
           function_id: pickedFn,
           function_name: fn?.name,
         },
-        style: { padding: 8, border: '1px solid #91caff', borderRadius: 6 },
       },
     ]);
     setAddOpen(false);
@@ -185,12 +221,14 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
 
   return (
     <div>
-      <Space style={{ marginBottom: 12 }}>
-        <Button onClick={() => setAddOpen(true)}>添加节点</Button>
-        <Button type="primary" onClick={onSave} disabled={!!cycle}>
-          保存
-        </Button>
-      </Space>
+      {!readonly && (
+        <Space style={{ marginBottom: 12 }}>
+          <Button onClick={() => setAddOpen(true)}>添加节点</Button>
+          <Button type="primary" onClick={onSave} disabled={!!cycle}>
+            保存
+          </Button>
+        </Space>
+      )}
       {cycle ? (
         <Alert
           type="error"
@@ -205,6 +243,8 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onNodeContextMenu={onNodeContextMenu}
+          nodeTypes={nodeTypes}
           fitView
           fitViewOptions={DEFAULT_FIT_VIEW_OPTIONS}
         >
@@ -241,6 +281,28 @@ export function DagEditor({ workflowId, onSaved }: DagEditorProps) {
             }))}
           />
         </Space>
+      </Modal>
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          nodeId={contextMenu.nodeId}
+          functionId={contextMenu.functionId}
+          onDelete={onDeleteNode}
+          onViewFunction={onViewFunction}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      <Modal
+        title="函数详情"
+        open={viewFnOpen}
+        onCancel={() => setViewFnOpen(false)}
+        footer={null}
+        width={600}
+      >
+        {viewingFn && <FunctionDetail fn={viewingFn} />}
       </Modal>
     </div>
   );

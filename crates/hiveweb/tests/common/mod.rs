@@ -27,6 +27,8 @@ pub use hiveweb::utils::jwt::create_token;
 /// MySQL/Redis/S3 backends. Returns `Err` when required env vars are missing
 /// so the calling test fails with a descriptive message.
 pub async fn test_app() -> Result<Router> {
+    dotenvy::dotenv_override().ok();
+
     let database_url = std::env::var("DATABASE_URL").map_err(|_| {
         anyhow!(
             "Phase 2.5 RED: DATABASE_URL not set. \
@@ -44,6 +46,8 @@ pub async fn test_app() -> Result<Router> {
 
 /// Open a direct MySQL pool from `DATABASE_URL` for seed / cleanup operations.
 pub async fn test_pool() -> Result<MySqlPool> {
+    dotenvy::dotenv_override().ok();
+
     let url = std::env::var("DATABASE_URL")
         .map_err(|_| anyhow!("Phase 2.5 RED: DATABASE_URL not set"))?;
     Ok(MySqlPool::connect(&url).await?)

@@ -14,7 +14,6 @@
 
 mod common;
 
-use common::seed_admin;
 use sqlx::MySqlPool;
 
 /// Helper: insert a test plugin row directly into the database for pool testing.
@@ -37,7 +36,7 @@ async fn insert_test_plugin(pool: &MySqlPool, identifier: &str, sha256_hex: &str
 
 #[tokio::test]
 async fn t166_pool_config_respects_memory_limit() -> anyhow::Result<()> {
-    let pool = common::test_pool().await?;
+    let _pool = common::test_pool().await?;
 
     // Read the configured memory limit from environment
     let max_memory_mb: u64 = std::env::var("PLUGIN_CALL_MAX_MEMORY_MB")

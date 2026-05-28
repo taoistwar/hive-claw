@@ -221,6 +221,7 @@ pub struct BuiltinDef {
     pub description: &'static str,
     pub input_schema: &'static str,
     pub output_schema: &'static str,
+    pub required_capabilities: &'static [&'static str],
     pub handler: fn(Value) -> BuiltinResult,
 }
 
@@ -231,6 +232,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         description: "Render a template string with named {var} placeholders.",
         input_schema: FORMAT_TEMPLATE_INPUT_SCHEMA,
         output_schema: FORMAT_TEMPLATE_OUTPUT_SCHEMA,
+        required_capabilities: &[],
         handler: format_template,
     },
     BuiltinDef {
@@ -239,6 +241,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         description: "Parse a JSON string into a structured value.",
         input_schema: JSON_PARSE_INPUT_SCHEMA,
         output_schema: JSON_PARSE_OUTPUT_SCHEMA,
+        required_capabilities: &[],
         handler: json_parse,
     },
     BuiltinDef {
@@ -247,6 +250,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         description: "Serialize a value to a JSON string (optionally pretty-printed).",
         input_schema: JSON_STRINGIFY_INPUT_SCHEMA,
         output_schema: JSON_STRINGIFY_OUTPUT_SCHEMA,
+        required_capabilities: &[],
         handler: json_stringify,
     },
     BuiltinDef {
@@ -255,6 +259,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         description: "Apply a Rust-syntax regex against text and return matches with capture groups.",
         input_schema: TEXT_REGEX_MATCH_INPUT_SCHEMA,
         output_schema: TEXT_REGEX_MATCH_OUTPUT_SCHEMA,
+        required_capabilities: &[],
         handler: text_regex_match,
     },
     BuiltinDef {
@@ -263,6 +268,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         description: "Submit the final user-visible reply (signals orchestrator to end the turn).",
         input_schema: CHAT_RESPOND_INPUT_SCHEMA,
         output_schema: CHAT_RESPOND_OUTPUT_SCHEMA,
+        required_capabilities: &[super::capability::CHAT_RESPOND],
         handler: chat_respond,
     },
 ];
@@ -272,29 +278,122 @@ pub fn lookup(identifier: &str) -> Option<&'static BuiltinDef> {
 }
 
 /// 启动期 idempotent upsert — INSERT IGNORE 兜底 (identifier UNIQUE)
+/// 同时为每个 builtin function 创建对应的 builtin tool（source='builtin', kind=1）
 pub async fn ensure_registered(
     pool: &sqlx::MySqlPool,
 ) -> Result<(), sqlx::Error> {
     for b in BUILTINS {
+        let caps_json = serde_json::to_string(b.required_capabilities).unwrap_or_else(|_| "[]".to_string());
+
         sqlx::query(
             r#"INSERT INTO functions
-               (identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export)
-               VALUES (?, ?, ?, 1, CAST(? AS JSON), CAST(? AS JSON), NULL, NULL)
+               (identifier, name, description, kind, input_schema, output_schema,
+                required_capabilities, plugin_id, plugin_export)
+               VALUES (?, ?, ?, 1, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), NULL, NULL)
                ON DUPLICATE KEY UPDATE
                  name = VALUES(name),
                  description = VALUES(description),
                  input_schema = VALUES(input_schema),
-                 output_schema = VALUES(output_schema)"#,
+                 output_schema = VALUES(output_schema),
+                 required_capabilities = VALUES(required_capabilities)"#,
         )
         .bind(b.identifier)
         .bind(b.name)
         .bind(b.description)
         .bind(b.input_schema)
         .bind(b.output_schema)
+        .bind(&caps_json)
+        .execute(pool)
+        .await?;
+
+        // 为每个 builtin function 创建对应的 builtin tool
+        // tool.identifier = function.identifier（保持一致）
+        sqlx::query(
+            r#"INSERT INTO tools
+               (identifier, name, description, kind, source, is_always,
+                function_id, workflow_id, input_schema, output_schema, required_capabilities)
+               VALUES (?, ?, ?, 1, 'builtin', 0,
+                       (SELECT id FROM functions WHERE identifier = ? LIMIT 1),
+                       NULL, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON))
+               ON DUPLICATE KEY UPDATE
+                 name = VALUES(name),
+                 description = VALUES(description),
+                 input_schema = VALUES(input_schema),
+                 output_schema = VALUES(output_schema),
+                 required_capabilities = VALUES(required_capabilities)"#,
+        )
+        .bind(b.identifier)
+        .bind(b.name)
+        .bind(b.description)
+        .bind(b.identifier)
+        .bind(b.input_schema)
+        .bind(b.output_schema)
+        .bind(&caps_json)
         .execute(pool)
         .await?;
     }
-    tracing::info!(count = BUILTINS.len(), "builtin functions upserted");
+    tracing::info!(count = BUILTINS.len(), "builtin functions and tools upserted");
+
+    // Seed invoke_function meta-tool (is_always=1 → 所有 Agent 自动加载)
+    // function_id=NULL 表示不包装具体 function，运行时动态查找
+    sqlx::query(
+        r#"INSERT INTO tools
+           (identifier, name, description, kind, source, is_always,
+            function_id, workflow_id, input_schema, output_schema)
+           VALUES ('invoke_function', 'Invoke Function',
+                   'Invoke a function by its identifier. Dynamically resolves to any function (builtin or custom) and executes it.',
+                   1, 'builtin', 1,
+                   NULL, NULL,
+                   CAST('{
+                     "type": "object",
+                     "properties": {
+                       "function_identifier": { "type": "string", "description": "The identifier of the function to invoke" },
+                       "function_input": { "type": "object", "description": "The input arguments matching the function input_schema" }
+                     },
+                     "required": ["function_identifier", "function_input"]
+                   }' AS JSON),
+                   CAST('{ "type": "object" }' AS JSON))
+           ON DUPLICATE KEY UPDATE
+             name = VALUES(name),
+             description = VALUES(description),
+             input_schema = VALUES(input_schema),
+             output_schema = VALUES(output_schema)"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Seed invoke_workflow meta-tool (is_always=1 → 所有 Agent 自动加载)
+    sqlx::query(
+        r#"INSERT INTO tools
+           (identifier, name, description, kind, source, is_always,
+            function_id, workflow_id, input_schema, output_schema)
+           VALUES ('invoke_workflow', 'Invoke Workflow',
+                   'Invoke a workflow by its identifier. Executes a DAG of function calls.',
+                   1, 'builtin', 1,
+                   NULL, NULL,
+                   CAST('{
+                     "type": "object",
+                     "properties": {
+                       "workflow_identifier": { "type": "string", "description": "The identifier of the workflow to invoke" },
+                       "workflow_input": { "type": "object", "description": "The input arguments matching the workflow input_schema" }
+                     },
+                     "required": ["workflow_identifier", "workflow_input"]
+                   }' AS JSON),
+                   CAST('{ "type": "object" }' AS JSON))
+           ON DUPLICATE KEY UPDATE
+             name = VALUES(name),
+             description = VALUES(description),
+             input_schema = VALUES(input_schema),
+             output_schema = VALUES(output_schema)"#,
+    )
+    .execute(pool)
+    .await?;
+
+    tracing::info!("meta-tools (invoke_function, invoke_workflow) upserted");
+
+    // Register agent-level builtin tools (read_file, write_file, exec, etc.)
+    super::builtin_tools::ensure_registered(pool).await?;
+
     Ok(())
 }
 

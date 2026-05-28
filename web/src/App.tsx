@@ -12,6 +12,11 @@ import TagPage from './pages/TagPage'
 import AgentPage from './pages/AgentPage'
 import WorkflowPage from './pages/WorkflowPage'
 import ChatPage from './pages/ChatPage'
+import RecommendedGamePage from './pages/RecommendedGamePage'
+import CapabilityPage from './pages/CapabilityPage'
+import RuntimeAuditLogPage from './pages/RuntimeAuditLogPage'
+import AdminAuditLogPage from './pages/AdminAuditLogPage'
+import LoginRecordPage from './pages/LoginRecordPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 
@@ -26,14 +31,19 @@ function App() {
               <Route index element={<DashboardPage />} />
               <Route path="admins" element={<AdminPage />} />
               <Route path="plugins" element={<PluginPage />} />
+            <Route path="capabilities" element={<CapabilityPage />} />
               <Route path="functions" element={<FunctionPage />} />
               <Route path="tools" element={<ToolPage />} />
               <Route path="skills" element={<SkillPage />} />
               <Route path="categories" element={<CategoryPage />} />
               <Route path="tags" element={<TagPage />} />
               <Route path="agents" element={<AgentPage />} />
-              <Route path="workflows" element={<WorkflowPage />} />
-              <Route path="chat" element={<ChatPage />} />
+            <Route path="workflows" element={<WorkflowPage />} />
+            <Route path="chat" element={<ChatPage />} />
+            <Route path="recommended-games" element={<RecommendedGamePage />} />
+              <Route path="admin-audit-logs" element={<AdminAuditLogPage />} />
+              <Route path="runtime-audit-logs" element={<RuntimeAuditLogPage />} />
+              <Route path="login-records" element={<LoginRecordPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

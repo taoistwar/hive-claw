@@ -11,14 +11,14 @@ mod common;
 
 use common::{mint_jwt, seed_admin, test_app};
 use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// Build a POST /api/chat/sessions/:id/messages request with SSE Accept header.
-fn sse_request(app: &Router, token: &str, session_id: i64) -> anyhow::Result<Request<Body>> {
-    use axum::http::Request;
+fn sse_request(_app: &Router, token: &str, session_id: i64) -> anyhow::Result<Request<Body>> {
     Ok(Request::builder()
         .method("POST")
         .uri(&format!("/api/chat/sessions/{session_id}/messages"))
@@ -29,7 +29,7 @@ fn sse_request(app: &Router, token: &str, session_id: i64) -> anyhow::Result<Req
 }
 
 /// Send a request and get just the status code quickly (without consuming the full SSE body).
-async fn send_sse_status(app: &Router, req: Request<Body>) -> anyhow::Result<http::StatusCode> {
+async fn send_sse_status(app: &Router, req: Request<Body>) -> anyhow::Result<StatusCode> {
     // For SSE responses, we need to consume the response to get the status.
     // We only need the first few bytes to check if it's a JSON error (429) or SSE stream.
     let resp = app.clone().oneshot(req).await?;
@@ -46,7 +46,7 @@ async fn send_sse_status(app: &Router, req: Request<Body>) -> anyhow::Result<htt
 }
 
 /// Full SSE request that also reads the first event to confirm stream started.
-async fn send_sse_full(app: &Router, req: Request<Body>) -> anyhow::Result<(http::StatusCode, Value)> {
+async fn send_sse_full(app: &Router, req: Request<Body>) -> anyhow::Result<(StatusCode, Value)> {
     let resp = app.clone().oneshot(req).await?;
     let status = resp.status();
     let bytes = resp.into_body().collect().await?.to_bytes();
@@ -62,12 +62,10 @@ async fn send_sse_full(app: &Router, req: Request<Body>) -> anyhow::Result<(http
     Ok((status, body))
 }
 
-use axum::http::Request;
-
 #[tokio::test]
 async fn sse_concurrency_limit_third_request_gets_429() -> anyhow::Result<()> {
     // Set limit to 2
-    std::env::set_var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", "2");
+    unsafe { std::env::set_var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", "2") };
 
     let app = test_app().await?;
     let pool = common::test_pool().await?;
@@ -82,7 +80,7 @@ async fn sse_concurrency_limit_third_request_gets_429() -> anyhow::Result<()> {
         json!({"title": "sse-concurrency-test"}),
     )
     .await?;
-    assert_eq!(status, http::StatusCode::OK, "create session: {status} {body}");
+    assert_eq!(status, StatusCode::OK, "create session: {status} {body}");
     let session_id = body["data"]["id"].as_i64().expect("missing session id");
 
     // Start 2 concurrent SSE streams (these should succeed — status 200)
@@ -97,15 +95,15 @@ async fn sse_concurrency_limit_third_request_gets_429() -> anyhow::Result<()> {
     // Both should be 200 OK (or possibly fail for other reasons, but not 429)
     let (s1, _b1) = status1?;
     let (s2, _b2) = status2?;
-    assert_eq!(s1, http::StatusCode::OK, "first SSE stream should succeed");
-    assert_eq!(s2, http::StatusCode::OK, "second SSE stream should succeed");
+    assert_eq!(s1, StatusCode::OK, "first SSE stream should succeed");
+    assert_eq!(s2, StatusCode::OK, "second SSE stream should succeed");
 
     // 3rd stream should get 429 (Too Many Requests)
     let req3 = sse_request(&app, &token, session_id)?;
     let (status3, body3) = send_sse_full(&app, req3).await?;
     assert_eq!(
         status3,
-        http::StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::TOO_MANY_REQUESTS,
         "3rd SSE stream should get 429, got {status3}: {body3}"
     );
 
@@ -114,7 +112,7 @@ async fn sse_concurrency_limit_third_request_gets_429() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn sse_concurrency_limit_releases_after_close() -> anyhow::Result<()> {
-    std::env::set_var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", "2");
+    unsafe { std::env::set_var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", "2") };
 
     let app = test_app().await?;
     let pool = common::test_pool().await?;
@@ -129,7 +127,7 @@ async fn sse_concurrency_limit_releases_after_close() -> anyhow::Result<()> {
         json!({"title": "sse-release-test"}),
     )
     .await?;
-    assert_eq!(status, http::StatusCode::OK);
+    assert_eq!(status, StatusCode::OK);
     let session_id = body["data"]["id"].as_i64().expect("missing session id");
 
     // Start 2 streams
@@ -138,8 +136,8 @@ async fn sse_concurrency_limit_releases_after_close() -> anyhow::Result<()> {
 
     let (s1, _b1) = send_sse_full(&app, req1).await?;
     let (s2, _b2) = send_sse_full(&app, req2).await?;
-    assert_eq!(s1, http::StatusCode::OK);
-    assert_eq!(s2, http::StatusCode::OK);
+    assert_eq!(s1, StatusCode::OK);
+    assert_eq!(s2, StatusCode::OK);
 
     // The guard drop happens when the response body is fully consumed.
     // After consuming responses 1 and 2, the concurrency slots should be released.
@@ -151,7 +149,7 @@ async fn sse_concurrency_limit_releases_after_close() -> anyhow::Result<()> {
     let (status3, _body3) = send_sse_full(&app, req3).await?;
     assert_eq!(
         status3,
-        http::StatusCode::OK,
+        StatusCode::OK,
         "3rd SSE stream should succeed after previous ones closed"
     );
 
@@ -160,7 +158,7 @@ async fn sse_concurrency_limit_releases_after_close() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn sse_concurrency_per_admin_isolation() -> anyhow::Result<()> {
-    std::env::set_var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", "2");
+    unsafe { std::env::set_var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", "2") };
 
     let app = test_app().await?;
     let pool = common::test_pool().await?;
@@ -195,21 +193,21 @@ async fn sse_concurrency_per_admin_isolation() -> anyhow::Result<()> {
     let req_a2 = sse_request(&app, &token_a, session_a)?;
     let (s_a1, _) = send_sse_full(&app, req_a1).await?;
     let (s_a2, _) = send_sse_full(&app, req_a2).await?;
-    assert_eq!(s_a1, http::StatusCode::OK);
-    assert_eq!(s_a2, http::StatusCode::OK);
+    assert_eq!(s_a1, StatusCode::OK);
+    assert_eq!(s_a2, StatusCode::OK);
 
     // Admin B should still be able to start 2 streams (isolated counter)
     let req_b1 = sse_request(&app, &token_b, session_b)?;
     let req_b2 = sse_request(&app, &token_b, session_b)?;
     let (s_b1, _) = send_sse_full(&app, req_b1).await?;
     let (s_b2, _) = send_sse_full(&app, req_b2).await?;
-    assert_eq!(s_b1, http::StatusCode::OK);
-    assert_eq!(s_b2, http::StatusCode::OK);
+    assert_eq!(s_b1, StatusCode::OK);
+    assert_eq!(s_b2, StatusCode::OK);
 
     // Admin B's 3rd should fail (their own limit)
     let req_b3 = sse_request(&app, &token_b, session_b)?;
     let (s_b3, _) = send_sse_full(&app, req_b3).await?;
-    assert_eq!(s_b3, http::StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(s_b3, StatusCode::TOO_MANY_REQUESTS);
 
     Ok(())
 }

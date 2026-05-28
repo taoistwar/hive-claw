@@ -5,6 +5,7 @@ import apiClient from './api';
 export interface PluginTag {
   id: number;
   name: string;
+  color?: string | null;
 }
 
 export interface Plugin {

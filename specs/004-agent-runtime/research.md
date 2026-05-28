@@ -187,6 +187,10 @@ return results[terminal_node]
 
 **审计**：每次 fallback 切换写 `runtime_audit_logs` 一行（`event_type=llm_fallback`、`outcome=success`、payload_summary 含 from/to/reason）；整链失败写一行 `event_type=llm_invoke`、`outcome=error`。
 
+**Timeout 优先级**（CHK241）：
+- `LLM_NODE_TIMEOUT_MS = 25s`（单节点上限）⊂ `PLUGIN_CALL_TIMEOUT_MS = 30s`（Plugin 外层硬超时）
+- `LLM_CHAIN_TIMEOUT_MS = 45s`（整条 fallback 链总上限）**超过** 30s Plugin timeout —— 因此 `llm.invoke` handler 内部必须在 `min(LLM_CHAIN_TIMEOUT_MS, PLUGIN_CALL_TIMEOUT_MS - buffer)` 时主动返回错误，避免被外层 30s 墙钟中断。推荐 handler 内部链上限设为 **25s**（与单节点一致），留 5s buffer 给 Plugin 外层归还实例 / 写审计。
+
 ---
 
 ## 8. 流式回复

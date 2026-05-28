@@ -13,7 +13,7 @@ mod common;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
-use common::{mint_jwt, seed_admin, post_json_auth, get, delete_auth};
+use common::{seed_admin, post_json_auth, get, delete_auth};
 use axum::Router;
 use serde_json::{json, Value};
 
@@ -27,7 +27,7 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use http_body_util::{BodyExt, Multipart};
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     let boundary = "----WebKitFormBoundaryTest123";
@@ -91,7 +91,7 @@ async fn create_function(app: &Router, token: &str, plugin_id: i64, identifier: 
 }
 
 /// Helper: soft-delete a plugin
-async fn delete_plugin(app: &Router, token: &str, plugin_id: i64) -> anyhow::Result<(http::StatusCode, Value)> {
+async fn delete_plugin(app: &Router, token: &str, plugin_id: i64) -> anyhow::Result<(axum::http::StatusCode, Value)> {
     delete_auth(app, &format!("/api/plugins/{plugin_id}"), token).await
 }
 

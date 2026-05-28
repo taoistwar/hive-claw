@@ -10,6 +10,7 @@ mod common;
 
 use common::{mint_jwt, seed_admin, post_json_auth, get, post_json, delete_auth};
 use axum::Router;
+use axum::http::StatusCode;
 use serde_json::{json, Value};
 
 /// Helper: create a chat session as a given admin, return session id.
@@ -27,7 +28,7 @@ async fn create_session(app: &Router, token: &str) -> anyhow::Result<i64> {
 
 /// Helper: POST a message to a chat session (just to trigger ownership check;
 /// we don't need the SSE stream to complete for this test).
-async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(http::StatusCode, Value)> {
+async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(StatusCode, Value)> {
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -54,7 +55,7 @@ async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Res
 }
 
 /// Helper: GET messages from a session
-async fn get_messages(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(http::StatusCode, Value)> {
+async fn get_messages(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(StatusCode, Value)> {
     get(app, &format!("/api/chat/sessions/{session_id}/messages"), Some(token)).await
 }
 
@@ -77,7 +78,7 @@ async fn t164_admin_cannot_access_other_admin_session() -> anyhow::Result<()> {
         status.is_client_error(),
         "admin B must be denied access to admin A's session; got {status} {body}"
     );
-    assert_eq!(code, Some(4030), "expected error code 4030; got {body}");
+    assert_eq!(code, Some(2001), "expected error code 2001 (insufficient permission); got {body}");
 
     // Admin B tries to GET messages from Admin A's session → 403
     let (status, body) = get_messages(&app, &admin_b.token()?, session_id).await?;
@@ -86,7 +87,7 @@ async fn t164_admin_cannot_access_other_admin_session() -> anyhow::Result<()> {
         status.is_client_error(),
         "admin B must be denied read access to admin A's session; got {status} {body}"
     );
-    assert_eq!(code, Some(4030), "expected error code 4030; got {body}");
+    assert_eq!(code, Some(2001), "expected error code 2001 (insufficient permission); got {body}");
 
     Ok(())
 }

@@ -15,6 +15,7 @@ pub struct Function {
     pub plugin_id: Option<i64>,
     pub plugin_export: Option<String>,
     pub category_id: Option<i64>,
+    pub required_capabilities: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

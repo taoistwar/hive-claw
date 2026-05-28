@@ -15,15 +15,30 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
-import { axe, toHaveNoViolations } from 'vitest-axe';
+import { axe } from 'vitest-axe';
 import { MemoryRouter } from 'react-router-dom';
 import 'vitest-axe/extend-expect';
+
+// jsdom polyfill for ResizeObserver (required by reactflow)
+class ResizeObserverMock {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
+}
+
+// jsdom polyfill for DOMMatrixReadOnly (required by axe-core canvas detection)
+if (typeof globalThis.DOMMatrixReadOnly === 'undefined') {
+  globalThis.DOMMatrixReadOnly = class {
+    m22 = 1;
+  } as unknown as typeof DOMMatrixReadOnly;
+}
 
 import { DagEditor } from '../DagEditor/DagEditor';
 import { SkillMarkdownEditor } from '../SkillMarkdownEditor';
 import FunctionPage from '../../pages/FunctionPage';
-
-expect.extend({ toHaveNoViolations: toHaveNoViolations as never });
 
 // Mock services to avoid HTTP in isolated component tests
 vi.mock('../../services/workflow', () => ({

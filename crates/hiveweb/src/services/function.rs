@@ -21,6 +21,7 @@ pub struct CreateMeta {
     pub input_schema: Value,
     pub output_schema: Value,
     pub category_id: Option<i64>,
+    pub required_capabilities: Option<Vec<String>>,
     #[serde(default)]
     pub tag_ids: Vec<i64>,
 }
@@ -32,9 +33,16 @@ pub struct UpdateMeta {
     pub category_id: Option<i64>,
     pub input_schema: Option<Value>,
     pub output_schema: Option<Value>,
+    pub required_capabilities: Option<Vec<String>>,
     pub tag_ids: Option<Vec<i64>>,
     /// 乐观锁
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TagSummary {
+    pub id: i64,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +50,8 @@ pub struct FunctionListItem {
     #[serde(flatten)]
     pub function: Function,
     pub plugin_identifier: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<TagSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +69,16 @@ pub struct ListFilter {
     pub search: Option<String>,
     pub category_id: Option<i64>,
     pub kind: Option<i8>,
+    pub identifier: Option<String>,
+    pub name: Option<String>,
+    pub plugin_id: Option<i64>,
+    pub plugin_identifier: Option<String>,
+    pub required_capabilities: Option<String>,
+    pub tag_id: Option<i64>,
+    pub created_at_start: Option<String>,
+    pub created_at_end: Option<String>,
+    pub updated_at_start: Option<String>,
+    pub updated_at_end: Option<String>,
 }
 
 fn validate_schema(schema: &Value, label: &str) -> Result<(), AppError> {
@@ -93,8 +113,8 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
 
     let res = sqlx::query(
         r#"INSERT INTO functions
-           (identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id)
-           VALUES (?, ?, ?, 2, ?, ?, ?, ?, ?)"#,
+           (identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id, required_capabilities)
+           VALUES (?, ?, ?, 2, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&meta.identifier)
     .bind(&meta.name)
@@ -104,6 +124,7 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
     .bind(meta.plugin_id)
     .bind(&meta.plugin_export)
     .bind(meta.category_id)
+    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
     .execute(pool)
     .await
     .map_err(|e| {
@@ -148,9 +169,39 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
     if filter.category_id.is_some() {
         where_clauses.push("f.category_id = ?".into());
     }
+    if filter.identifier.is_some() {
+        where_clauses.push("f.identifier LIKE ?".into());
+    }
+    if filter.name.is_some() {
+        where_clauses.push("f.name LIKE ?".into());
+    }
+    if filter.plugin_id.is_some() {
+        where_clauses.push("f.plugin_id = ?".into());
+    }
+    if filter.plugin_identifier.is_some() {
+        where_clauses.push("p.identifier LIKE ?".into());
+    }
+    if filter.required_capabilities.is_some() {
+        where_clauses.push("JSON_CONTAINS(f.required_capabilities, ?)".into());
+    }
+    if filter.tag_id.is_some() {
+        where_clauses.push("f.id IN (SELECT entity_id FROM taggings WHERE entity_type='function' AND tag_id=?)".into());
+    }
+    if filter.created_at_start.is_some() {
+        where_clauses.push("f.created_at >= ?".into());
+    }
+    if filter.created_at_end.is_some() {
+        where_clauses.push("f.created_at <= ?".into());
+    }
+    if filter.updated_at_start.is_some() {
+        where_clauses.push("f.updated_at >= ?".into());
+    }
+    if filter.updated_at_end.is_some() {
+        where_clauses.push("f.updated_at <= ?".into());
+    }
     if filter.search.is_some() {
         where_clauses.push(
-            "MATCH(f.name, f.description, f.identifier) AGAINST (? IN NATURAL LANGUAGE MODE)".into(),
+            "(f.name LIKE ? OR f.description LIKE ? OR f.identifier LIKE ?)".into(),
         );
     }
     let where_sql = if where_clauses.is_empty() {
@@ -159,7 +210,7 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         format!("WHERE {}", where_clauses.join(" AND "))
     };
 
-    let count_sql = format!("SELECT COUNT(*) FROM functions f {where_sql}");
+    let count_sql = format!("SELECT COUNT(*) FROM functions f LEFT JOIN plugins p ON p.id = f.plugin_id {where_sql}");
     let list_sql = format!(
         "SELECT f.*, p.identifier AS plugin_identifier \
          FROM functions f LEFT JOIN plugins p ON p.id = f.plugin_id \
@@ -173,8 +224,39 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
     if let Some(c) = filter.category_id {
         count_q = count_q.bind(c);
     }
+    if let Some(ref s) = filter.identifier {
+        count_q = count_q.bind(format!("%{s}%"));
+    }
+    if let Some(ref s) = filter.name {
+        count_q = count_q.bind(format!("%{s}%"));
+    }
+    if let Some(pid) = filter.plugin_id {
+        count_q = count_q.bind(pid);
+    }
+    if let Some(ref s) = filter.plugin_identifier {
+        count_q = count_q.bind(format!("%{s}%"));
+    }
+    if let Some(ref cap) = filter.required_capabilities {
+        count_q = count_q.bind(format!("\"{cap}\""));
+    }
+    if let Some(tid) = filter.tag_id {
+        count_q = count_q.bind(tid);
+    }
+    if let Some(ref start) = filter.created_at_start {
+        count_q = count_q.bind(start);
+    }
+    if let Some(ref end) = filter.created_at_end {
+        count_q = count_q.bind(end);
+    }
+    if let Some(ref start) = filter.updated_at_start {
+        count_q = count_q.bind(start);
+    }
+    if let Some(ref end) = filter.updated_at_end {
+        count_q = count_q.bind(end);
+    }
     if let Some(ref s) = filter.search {
-        count_q = count_q.bind(s);
+        let like = format!("%{s}%");
+        count_q = count_q.bind(like.clone()).bind(like.clone()).bind(like);
     }
     let total: i64 = count_q
         .fetch_one(pool)
@@ -196,8 +278,39 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
     if let Some(c) = filter.category_id {
         list_q = list_q.bind(c);
     }
+    if let Some(ref s) = filter.identifier {
+        list_q = list_q.bind(format!("%{s}%"));
+    }
+    if let Some(ref s) = filter.name {
+        list_q = list_q.bind(format!("%{s}%"));
+    }
+    if let Some(pid) = filter.plugin_id {
+        list_q = list_q.bind(pid);
+    }
+    if let Some(ref s) = filter.plugin_identifier {
+        list_q = list_q.bind(format!("%{s}%"));
+    }
+    if let Some(ref cap) = filter.required_capabilities {
+        list_q = list_q.bind(format!("\"{cap}\""));
+    }
+    if let Some(tid) = filter.tag_id {
+        list_q = list_q.bind(tid);
+    }
+    if let Some(ref start) = filter.created_at_start {
+        list_q = list_q.bind(start);
+    }
+    if let Some(ref end) = filter.created_at_end {
+        list_q = list_q.bind(end);
+    }
+    if let Some(ref start) = filter.updated_at_start {
+        list_q = list_q.bind(start);
+    }
+    if let Some(ref end) = filter.updated_at_end {
+        list_q = list_q.bind(end);
+    }
     if let Some(ref s) = filter.search {
-        list_q = list_q.bind(s);
+        let like = format!("%{s}%");
+        list_q = list_q.bind(like.clone()).bind(like.clone()).bind(like);
     }
     let rows = list_q
         .bind(filter.limit)
@@ -206,54 +319,99 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         .await
         .map_err(|e| AppError::Internal(format!("function list: {e}")))?;
 
+    let mut items = Vec::with_capacity(rows.len());
+    for r in rows {
+        let tags = fetch_tags(pool, r.f.id).await?;
+        items.push(FunctionListItem {
+            function: r.f,
+            plugin_identifier: r.plugin_identifier,
+            tags,
+        });
+    }
     Ok(FunctionList {
-        items: rows
-            .into_iter()
-            .map(|r| FunctionListItem {
-                function: r.f,
-                plugin_identifier: r.plugin_identifier,
-            })
-            .collect(),
+        items,
         total,
         offset: filter.offset,
         limit: filter.limit,
     })
 }
 
+async fn fetch_tags(pool: &MySqlPool, function_id: i64) -> Result<Vec<TagSummary>, AppError> {
+    let tags = sqlx::query_as::<_, TagSummary>(
+        r#"SELECT t.id, t.name FROM tags t
+           JOIN taggings tg ON tg.tag_id = t.id
+           WHERE tg.entity_type = 'function' AND tg.entity_id = ?"#,
+    )
+    .bind(function_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("function tags: {e}")))?;
+    Ok(tags)
+}
+
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Function, AppError> {
-    // 仅 custom 可编辑（builtin 禁止）
     let existing = fetch_by_id(pool, id).await?;
-    if existing.kind == 1 {
-        return Err(AppError::Conflict("内置 function 不可编辑".into()));
+    let is_builtin = existing.kind == 1;
+
+    // 内置函数仅允许编辑 category_id 和 tag
+    if is_builtin && meta.name.is_some() {
+        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+    }
+    if is_builtin && meta.description.is_some() {
+        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+    }
+    if is_builtin && meta.input_schema.is_some() {
+        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+    }
+    if is_builtin && meta.output_schema.is_some() {
+        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+    }
+    if is_builtin && meta.required_capabilities.is_some() {
+        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
     }
 
     crate::services::optimistic_lock::check_and_bump(pool, "functions", id, meta.updated_at).await?;
 
-    if let Some(ref s) = meta.input_schema {
-        validate_schema(s, "input_schema")?;
-    }
-    if let Some(ref s) = meta.output_schema {
-        validate_schema(s, "output_schema")?;
-    }
+    if !is_builtin {
+        if let Some(ref s) = meta.input_schema {
+            validate_schema(s, "input_schema")?;
+        }
+        if let Some(ref s) = meta.output_schema {
+            validate_schema(s, "output_schema")?;
+        }
 
-    sqlx::query(
-        r#"UPDATE functions SET
-              name = COALESCE(?, name),
-              description = COALESCE(?, description),
-              category_id = COALESCE(?, category_id),
-              input_schema = COALESCE(?, input_schema),
-              output_schema = COALESCE(?, output_schema)
-           WHERE id = ?"#,
-    )
-    .bind(&meta.name)
-    .bind(&meta.description)
-    .bind(meta.category_id)
-    .bind(&meta.input_schema)
-    .bind(&meta.output_schema)
-    .bind(id)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("function update: {e}")))?;
+        sqlx::query(
+            r#"UPDATE functions SET
+                  name = COALESCE(?, name),
+                  description = COALESCE(?, description),
+                  category_id = COALESCE(?, category_id),
+                  input_schema = COALESCE(?, input_schema),
+                  output_schema = COALESCE(?, output_schema),
+                  required_capabilities = COALESCE(?, required_capabilities)
+               WHERE id = ?"#,
+        )
+        .bind(&meta.name)
+        .bind(&meta.description)
+        .bind(meta.category_id)
+        .bind(&meta.input_schema)
+        .bind(&meta.output_schema)
+        .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("function update: {e}")))?;
+    } else {
+        sqlx::query(
+            r#"UPDATE functions SET
+                  category_id = COALESCE(?, category_id)
+               WHERE id = ?"#,
+        )
+        .bind(meta.category_id)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("function update: {e}")))?;
+    }
 
     if let Some(ref tags) = meta.tag_ids {
         sqlx::query("DELETE FROM taggings WHERE entity_type='function' AND entity_id = ?")

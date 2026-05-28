@@ -5,6 +5,7 @@
 //! need to provide `chat`.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -807,7 +808,47 @@ const PERSISTENT_MAX_DELAY: u64 = 60;
 const PERSISTENT_IDENTICAL_ERROR_LIMIT: u32 = 10;
 const RETRY_HEARTBEAT_CHUNK: u64 = 30;
 
-/// Base trait every LLM backend implements.
+// ---------------------------------------------------------------------------
+// Global Langfuse client (set once at startup)
+// ---------------------------------------------------------------------------
+
+static LANGIFUSE_CLIENT: OnceLock<Option<std::sync::Arc<langfuse::LangfuseClient>>> = OnceLock::new();
+
+/// Initialise the global Langfuse client.
+///
+/// Call once at startup (e.g. from `hiveweb::main` or `cli::main`).
+/// Pass `None` to disable tracing.
+pub fn set_langfuse_client(client: Option<std::sync::Arc<langfuse::LangfuseClient>>) {
+    match LANGIFUSE_CLIENT.set(client) {
+        Ok(()) => {
+            log::info!("Langfuse: global client set successfully");
+        }
+        Err(_) => {
+            log::error!("Langfuse: set_langfuse_client called more than once (OnceLock already set)");
+        }
+    }
+}
+
+fn get_langfuse_client() -> Option<&'static std::sync::Arc<langfuse::LangfuseClient>> {
+    let client = LANGIFUSE_CLIENT.get();
+    match client {
+        None => {
+            log::warn!("Langfuse: LANGIFUSE_CLIENT OnceLock not initialized");
+            None
+        }
+        Some(None) => {
+            // Langfuse was explicitly disabled at startup
+            None
+        }
+        Some(Some(c)) => {
+            Some(c)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LLMProvider trait
+// ---------------------------------------------------------------------------
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Provider's default model when none is passed explicitly.
@@ -851,6 +892,23 @@ pub trait LLMProvider: Send + Sync {
         mode: RetryMode,
         on_retry_wait: Option<RetryWaitCallback>,
     ) -> LLMResponse {
+        // --- Langfuse instrumentation (non-blocking) ---
+        let lf = get_langfuse_client();
+        let trace = lf.map(|c| c.trace("chat_with_retry"));
+        let model_params = json!({
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "reasoning_effort": req.reasoning_effort,
+        });
+        let gen_handle = trace.as_ref().map(|t| {
+            t.generation(
+                "LLM Chat",
+                req.model.clone(),
+                Some(serde_json::to_value(&req.messages).unwrap_or(Value::Null)),
+                Some(model_params),
+            )
+        });
+
         let defaults = self.generation();
         if req.max_tokens == 0 {
             req.max_tokens = defaults.max_tokens;
@@ -877,6 +935,15 @@ pub trait LLMProvider: Send + Sync {
             attempt += 1;
             let response = self.chat(req.clone()).await;
             if response.finish_reason != "error" {
+                let usage = extract_usage_tuple(&response.usage);
+                if let Some(g) = gen_handle {
+                    g.end(
+                        response.content.clone().map(|c| Value::String(c)),
+                        usage,
+                        Some(response.finish_reason.clone()),
+                        false,
+                    );
+                }
                 return response;
             }
 
@@ -905,7 +972,25 @@ pub trait LLMProvider: Send + Sync {
                         // subsequent iterations do not repeat the error-retry cycle.
                         strip_image_content_inplace(&mut req.messages);
                     }
+                    let usage = extract_usage_tuple(&result.usage);
+                    if let Some(g) = gen_handle {
+                        g.end(
+                            result.content.clone().map(|c| Value::String(c)),
+                            usage,
+                            Some(result.finish_reason.clone()),
+                            result.finish_reason == "error",
+                        );
+                    }
                     return result;
+                }
+                let usage = extract_usage_tuple(&response.usage);
+                if let Some(g) = gen_handle {
+                    g.end(
+                        response.content.clone().map(|c| Value::String(c)),
+                        usage,
+                        Some(response.finish_reason.clone()),
+                        true,
+                    );
                 }
                 return response;
             }
@@ -920,6 +1005,15 @@ pub trait LLMProvider: Send + Sync {
                         "Persistent retry stopped after {identical_count} identical errors."
                     ))
                     .await;
+                }
+                let usage = extract_usage_tuple(&response.usage);
+                if let Some(g) = gen_handle {
+                    g.end(
+                        response.content.clone().map(|c| Value::String(c)),
+                        usage,
+                        Some(response.finish_reason.clone()),
+                        true,
+                    );
                 }
                 return response;
             }
@@ -957,7 +1051,17 @@ pub trait LLMProvider: Send + Sync {
             sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
         }
 
-        last_response.unwrap_or_else(|| LLMResponse::error("LLM request failed"))
+        let final_response = last_response.unwrap_or_else(|| LLMResponse::error("LLM request failed"));
+        let usage = extract_usage_tuple(&final_response.usage);
+        if let Some(g) = gen_handle {
+            g.end(
+                final_response.content.clone().map(|c| Value::String(c)),
+                usage,
+                Some(final_response.finish_reason.clone()),
+                true,
+            );
+        }
+        final_response
     }
 
     /// Wrapper for streaming chat with retry policy on transient errors.
@@ -969,6 +1073,25 @@ pub trait LLMProvider: Send + Sync {
         mode: RetryMode,
         on_retry_wait: Option<RetryWaitCallback>,
     ) -> LLMResponse {
+        // --- Langfuse instrumentation (non-blocking) ---
+        let lf = get_langfuse_client();
+        log::info!("Langfuse client available: {}", lf.is_some());
+        let trace = lf.map(|c| c.trace("chat_stream_with_retry"));
+        log::info!("Langfuse trace handle created: {}", trace.is_some());
+        let model_params = json!({
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "reasoning_effort": req.reasoning_effort,
+        });
+        let gen_handle = trace.as_ref().map(|t| {
+            t.generation(
+                "LLM Chat (stream)",
+                req.model.clone(),
+                Some(serde_json::to_value(&req.messages).unwrap_or(Value::Null)),
+                Some(model_params),
+            )
+        });
+
         let defaults = self.generation();
         if req.max_tokens == 0 {
             req.max_tokens = defaults.max_tokens;
@@ -995,6 +1118,15 @@ pub trait LLMProvider: Send + Sync {
             attempt += 1;
             let response = self.chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone()).await;
             if response.finish_reason != "error" {
+                let usage = extract_usage_tuple(&response.usage);
+                if let Some(g) = gen_handle {
+                    g.end(
+                        response.content.clone().map(|c| Value::String(c)),
+                        usage,
+                        Some(response.finish_reason.clone()),
+                        false,
+                    );
+                }
                 return response;
             }
 
@@ -1021,7 +1153,25 @@ pub trait LLMProvider: Send + Sync {
                     if result.finish_reason != "error" {
                         strip_image_content_inplace(&mut req.messages);
                     }
+                    let usage = extract_usage_tuple(&result.usage);
+                    if let Some(g) = gen_handle {
+                        g.end(
+                            result.content.clone().map(|c| Value::String(c)),
+                            usage,
+                            Some(result.finish_reason.clone()),
+                            result.finish_reason == "error",
+                        );
+                    }
                     return result;
+                }
+                let usage = extract_usage_tuple(&response.usage);
+                if let Some(g) = gen_handle {
+                    g.end(
+                        response.content.clone().map(|c| Value::String(c)),
+                        usage,
+                        Some(response.finish_reason.clone()),
+                        true,
+                    );
                 }
                 return response;
             }
@@ -1036,6 +1186,15 @@ pub trait LLMProvider: Send + Sync {
                         "Persistent retry stopped after {identical_count} identical errors."
                     ))
                     .await;
+                }
+                let usage = extract_usage_tuple(&response.usage);
+                if let Some(g) = gen_handle {
+                    g.end(
+                        response.content.clone().map(|c| Value::String(c)),
+                        usage,
+                        Some(response.finish_reason.clone()),
+                        true,
+                    );
                 }
                 return response;
             }
@@ -1073,7 +1232,17 @@ pub trait LLMProvider: Send + Sync {
             sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
         }
 
-        last_response.unwrap_or_else(|| LLMResponse::error("LLM stream request failed"))
+        let final_response = last_response.unwrap_or_else(|| LLMResponse::error("LLM stream request failed"));
+        let usage = extract_usage_tuple(&final_response.usage);
+        if let Some(g) = gen_handle {
+            g.end(
+                final_response.content.clone().map(|c| Value::String(c)),
+                usage,
+                Some(final_response.finish_reason.clone()),
+                true,
+            );
+        }
+        final_response
     }
 }
 
@@ -1100,5 +1269,34 @@ async fn sleep_with_heartbeat(
         let chunk = remaining.min(RETRY_HEARTBEAT_CHUNK as f64);
         sleep(Duration::from_secs_f64(chunk)).await;
         remaining -= chunk;
+    }
+}
+
+/// Extract (prompt_tokens, completion_tokens, total_tokens) from the usage map.
+///
+/// Tries common LLM response keys: `prompt_tokens`/`completion_tokens`/
+/// `total_tokens` (OpenAI) and `input_tokens`/`output_tokens` (Anthropic).
+fn extract_usage_tuple(usage: &HashMap<String, i64>) -> Option<(i64, i64, i64)> {
+    if usage.is_empty() {
+        return None;
+    }
+    let prompt = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .copied()
+        .unwrap_or(0);
+    let completion = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .copied()
+        .unwrap_or(0);
+    let total = usage
+        .get("total_tokens")
+        .copied()
+        .unwrap_or(prompt.saturating_add(completion));
+    if prompt == 0 && completion == 0 && total == 0 {
+        None
+    } else {
+        Some((prompt, completion, total))
     }
 }

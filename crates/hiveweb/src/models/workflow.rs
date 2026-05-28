@@ -9,6 +9,8 @@ pub struct Workflow {
     pub name: String,
     pub description: Option<String>,
     pub timeout_ms: i32,
+    pub category_id: Option<i64>,
+    pub required_capabilities: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

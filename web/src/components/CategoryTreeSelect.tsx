@@ -83,7 +83,7 @@ export function CategoryTreeSelect({
     <TreeSelect
       value={value ?? undefined}
       onChange={onChange}
-      treeData={treeData}
+      treeData={treeData as any}
       placeholder={placeholder}
       allowClear={allowClear}
       showSearch={showSearch}

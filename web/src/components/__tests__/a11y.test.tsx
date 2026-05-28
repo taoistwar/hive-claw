@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { axe, toHaveNoViolations } from 'vitest-axe';
+import { axe } from 'vitest-axe';
 import { MemoryRouter } from 'react-router-dom';
 import 'vitest-axe/extend-expect';
 import LoginForm from '../LoginForm';
@@ -11,8 +11,6 @@ import type { Admin } from '../../services/admin';
 
 // T094 / SC-008：登录页与管理员管理页通过 axe-core 自动检测时
 // 0 个 critical / serious 违规项。
-
-expect.extend({ toHaveNoViolations: toHaveNoViolations as never });
 
 vi.mock('../../hooks/useAuth', () => ({
   useAuth: () => ({

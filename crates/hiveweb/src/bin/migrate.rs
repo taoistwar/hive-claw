@@ -89,6 +89,62 @@ const MIGRATIONS: &[Migration] = &[
         version: "V018__seed",
         sql: include_str!("../../migrations/V018__seed.sql"),
     },
+    Migration {
+        version: "V019__tools_source",
+        sql: include_str!("../../migrations/V019__tools_source.sql"),
+    },
+    Migration {
+        version: "V020__tools_is_always",
+        sql: include_str!("../../migrations/V020__tools_is_always.sql"),
+    },
+    Migration {
+        version: "V021__skills_is_always",
+        sql: include_str!("../../migrations/V021__skills_is_always.sql"),
+    },
+    Migration {
+        version: "V022__recommended_games",
+        sql: include_str!("../../migrations/V022__recommended_games.sql"),
+    },
+    Migration {
+        version: "V023__recommended_games_add_card_content",
+        sql: include_str!("../../migrations/V023__recommended_games_add_card_content.sql"),
+    },
+    Migration {
+        version: "V024__recommended_games_add_sort_value",
+        sql: include_str!("../../migrations/V024__recommended_games_add_sort_value.sql"),
+    },
+    Migration {
+        version: "V025__recommended_games_add_fields",
+        sql: include_str!("../../migrations/V025__recommended_games_add_fields.sql"),
+    },
+    Migration {
+        version: "V026__tools_category",
+        sql: include_str!("../../migrations/V026__tools_category.sql"),
+    },
+    Migration {
+        version: "V027__skills_category",
+        sql: include_str!("../../migrations/V027__skills_category.sql"),
+    },
+    Migration {
+        version: "V028__rename_audit_logs_to_admin_audit_logs",
+        sql: include_str!("../../migrations/V028__rename_audit_logs_to_admin_audit_logs.sql"),
+    },
+    Migration {
+        version: "V029__function_tool_capabilities",
+        sql: include_str!("../../migrations/V029__function_tool_capabilities.sql"),
+    },
+    Migration {
+        version: "V030__workflow_required_capabilities",
+        sql: include_str!("../../migrations/V030__workflow_required_capabilities.sql"),
+    },
+    Migration {
+        version: "V031__skill_required_capabilities",
+        sql: include_str!("../../migrations/V031__skill_required_capabilities.sql"),
+    },
+    Migration {
+        version: "V032__workflow_category",
+        sql: include_str!("../../migrations/V032__workflow_category.sql"),
+    },
 ];
 
 #[tokio::main]

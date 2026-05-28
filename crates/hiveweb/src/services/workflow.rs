@@ -25,6 +25,9 @@ pub struct CreateMeta {
     pub name: String,
     pub description: Option<String>,
     pub timeout_ms: Option<i32>,
+    pub category_id: Option<i64>,
+    #[serde(default)]
+    pub tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,12 +35,40 @@ pub struct UpdateMeta {
     pub name: Option<String>,
     pub description: Option<String>,
     pub timeout_ms: Option<i32>,
+    pub category_id: Option<i64>,
+    #[serde(default)]
+    pub tag_ids: Option<Vec<i64>>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Default)]
+pub struct ListFilter {
+    pub search: Option<String>,
+    pub category_id: Option<i64>,
+    pub tag_id: Option<i64>,
+    pub created_at_from: Option<DateTime<Utc>>,
+    pub created_at_to: Option<DateTime<Utc>>,
+    pub updated_at_from: Option<DateTime<Utc>>,
+    pub updated_at_to: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TagSummary {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkflowListItem {
+    #[serde(flatten)]
+    pub workflow: Workflow,
+    #[serde(default)]
+    pub tags: Vec<TagSummary>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct WorkflowList {
-    pub items: Vec<Workflow>,
+    pub items: Vec<WorkflowListItem>,
     pub total: i64,
 }
 
@@ -80,12 +111,13 @@ pub struct GraphPut {
 
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Workflow, AppError> {
     let res = sqlx::query(
-        "INSERT INTO workflows (identifier, name, description, timeout_ms) VALUES (?, ?, ?, ?)",
+        "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&meta.identifier)
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(meta.timeout_ms.unwrap_or(30000))
+    .bind(meta.category_id)
     .execute(pool)
     .await
     .map_err(|e| {
@@ -96,7 +128,39 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Workflow, AppE
             AppError::Internal(format!("workflow insert: {e}"))
         }
     })?;
-    fetch_by_id(pool, res.last_insert_id() as i64).await
+    let id = res.last_insert_id() as i64;
+    apply_tags(pool, id, &meta.tag_ids).await?;
+    fetch_by_id(pool, id).await
+}
+
+async fn fetch_tags(pool: &MySqlPool, entity_id: i64) -> Result<Vec<TagSummary>, AppError> {
+    let tags = sqlx::query_as::<_, TagSummary>(
+        r#"SELECT t.id, t.name FROM tags t
+           JOIN taggings tg ON tg.tag_id = t.id
+           WHERE tg.entity_type = 'workflow' AND tg.entity_id = ?"#,
+    )
+    .bind(entity_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("workflow tags: {e}")))?;
+    Ok(tags)
+}
+
+async fn apply_tags(pool: &MySqlPool, entity_id: i64, tag_ids: &[i64]) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM taggings WHERE entity_type = 'workflow' AND entity_id = ?")
+        .bind(entity_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("taggings clear: {e}")))?;
+    for &tid in tag_ids {
+        sqlx::query("INSERT INTO taggings (tag_id, entity_type, entity_id) VALUES (?, 'workflow', ?)")
+            .bind(tid)
+            .bind(entity_id)
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("tagging insert: {e}")))?;
+    }
+    Ok(())
 }
 
 pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Workflow, AppError> {
@@ -108,18 +172,82 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Workflow, AppError
         .ok_or_else(|| AppError::NotFound(format!("workflow id={id} not found")))
 }
 
-pub async fn list(pool: &MySqlPool, offset: i64, limit: i64) -> Result<WorkflowList, AppError> {
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workflows")
+pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter) -> Result<WorkflowList, AppError> {
+    let mut where_clauses: Vec<String> = Vec::new();
+    let mut search_pattern: Option<String> = None;
+    let mut date_params: Vec<String> = Vec::new();
+
+    if let Some(ref search) = filter.search {
+        where_clauses.push("(w.identifier LIKE ? OR w.name LIKE ? OR w.description LIKE ? OR CAST(w.required_capabilities AS CHAR) LIKE ?)".to_string());
+        search_pattern = Some(format!("%{}%", search));
+    }
+    if let Some(cid) = filter.category_id {
+        where_clauses.push("w.category_id = ?".to_string());
+        date_params.push(cid.to_string());
+    }
+    if let Some(tid) = filter.tag_id {
+        where_clauses.push("EXISTS (SELECT 1 FROM taggings tg WHERE tg.entity_type = 'workflow' AND tg.entity_id = w.id AND tg.tag_id = ?)".to_string());
+        date_params.push(tid.to_string());
+    }
+    if let Some(from) = &filter.created_at_from {
+        where_clauses.push("w.created_at >= ?".to_string());
+        date_params.push(from.to_string());
+    }
+    if let Some(to) = &filter.created_at_to {
+        where_clauses.push("w.created_at <= ?".to_string());
+        date_params.push(to.to_string());
+    }
+    if let Some(from) = &filter.updated_at_from {
+        where_clauses.push("w.updated_at >= ?".to_string());
+        date_params.push(from.to_string());
+    }
+    if let Some(to) = &filter.updated_at_to {
+        where_clauses.push("w.updated_at <= ?".to_string());
+        date_params.push(to.to_string());
+    }
+
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+
+    let count_sql = format!("SELECT COUNT(*) FROM workflows w {where_sql}");
+
+    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    if let Some(ref pattern) = search_pattern {
+        count_q = count_q.bind(pattern).bind(pattern).bind(pattern).bind(pattern);
+    }
+    for p in &date_params {
+        count_q = count_q.bind(p);
+    }
+    let total: (i64,) = count_q
         .fetch_one(pool)
         .await
         .map_err(|e| AppError::Internal(format!("workflow count: {e}")))?;
-    let items: Vec<Workflow> =
-        sqlx::query_as("SELECT * FROM workflows ORDER BY created_at DESC LIMIT ? OFFSET ?")
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("workflow list: {e}")))?;
+
+    let list_sql = format!("SELECT w.* FROM workflows w {where_sql} ORDER BY w.created_at DESC LIMIT ? OFFSET ?");
+
+    let mut q = sqlx::query_as::<_, Workflow>(&list_sql);
+    if let Some(ref pattern) = search_pattern {
+        q = q.bind(pattern).bind(pattern).bind(pattern).bind(pattern);
+    }
+    for p in &date_params {
+        q = q.bind(p);
+    }
+    q = q.bind(limit).bind(offset);
+
+    let workflows: Vec<Workflow> = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("workflow list: {e}")))?;
+
+    let mut items = Vec::with_capacity(workflows.len());
+    for wf in workflows {
+        let tags = fetch_tags(pool, wf.id).await?;
+        items.push(WorkflowListItem { workflow: wf, tags });
+    }
+
     Ok(WorkflowList { items, total: total.0 })
 }
 
@@ -129,16 +257,23 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Workf
         r#"UPDATE workflows SET
               name = COALESCE(?, name),
               description = COALESCE(?, description),
-              timeout_ms = COALESCE(?, timeout_ms)
+              timeout_ms = COALESCE(?, timeout_ms),
+              category_id = COALESCE(?, category_id)
            WHERE id = ?"#,
     )
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(meta.timeout_ms)
+    .bind(meta.category_id)
     .bind(id)
     .execute(pool)
     .await
     .map_err(|e| AppError::Internal(format!("workflow update: {e}")))?;
+
+    if let Some(ref tag_ids) = meta.tag_ids {
+        apply_tags(pool, id, tag_ids).await?;
+    }
+
     fetch_by_id(pool, id).await
 }
 
@@ -227,8 +362,9 @@ pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, App
 ///   2. 校验 function_id 全部存在
 ///   3. 检查环 → 5 4092
 ///   4. 校验 edge mapping
-///   5. DELETE 旧 nodes + edges (CASCADE 自动清 edges)
-///   6. INSERT 新 nodes + INSERT 新 edges
+///   5. 聚合 required_capabilities 并更新到 workflows 表
+///   6. DELETE 旧 nodes + edges (CASCADE 自动清 edges)
+///   7. INSERT 新 nodes + INSERT 新 edges
 pub async fn put_graph(
     pool: &MySqlPool,
     id: i64,
@@ -253,14 +389,14 @@ pub async fn put_graph(
     if function_ids.is_empty() && !graph.edges.is_empty() {
         return Err(AppError::BadRequest("空 graph 不能有 edges".into()));
     }
-    let function_schemas: HashMap<i64, (Value, Value)> = if function_ids.is_empty() {
+    let function_schemas: HashMap<i64, (Value, Value, Option<Value>)> = if function_ids.is_empty() {
         HashMap::new()
     } else {
         let placeholders = vec!["?"; function_ids.len()].join(",");
         let sql = format!(
-            "SELECT id, input_schema, output_schema FROM functions WHERE id IN ({placeholders})"
+            "SELECT id, input_schema, output_schema, required_capabilities FROM functions WHERE id IN ({placeholders})"
         );
-        let mut q = sqlx::query_as::<_, (i64, Value, Value)>(&sql);
+        let mut q = sqlx::query_as::<_, (i64, Value, Value, Option<Value>)>(&sql);
         for fid in &function_ids {
             q = q.bind(fid);
         }
@@ -268,8 +404,8 @@ pub async fn put_graph(
             .fetch_all(pool)
             .await
             .map_err(|e| AppError::Internal(format!("function schemas: {e}")))?;
-        let found: HashMap<i64, (Value, Value)> =
-            rows.into_iter().map(|(i, a, b)| (i, (a, b))).collect();
+        let found: HashMap<i64, (Value, Value, Option<Value>)> =
+            rows.into_iter().map(|(i, a, b, c)| (i, (a, b, c))).collect();
         for fid in &function_ids {
             if !found.contains_key(fid) {
                 return Err(AppError::NotFound(format!("function id={fid} not found")));
@@ -322,7 +458,7 @@ pub async fn put_graph(
         }
     }
     for n in &graph.nodes {
-        let Some((input_schema, _output_schema)) = function_schemas.get(&n.function_id) else {
+        let Some((input_schema, _output_schema, _caps)) = function_schemas.get(&n.function_id) else {
             continue;
         };
         let required: Vec<&str> = input_schema
@@ -349,11 +485,43 @@ pub async fn put_graph(
         }
     }
 
-    // 5+6. 事务内重建
+    // 5. 聚合 required_capabilities
+    let mut all_caps: HashSet<String> = HashSet::new();
+    for n in &graph.nodes {
+        if let Some((_, _, Some(caps))) = function_schemas.get(&n.function_id) {
+            if let Some(arr) = caps.as_array() {
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        all_caps.insert(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let workflow_caps: Option<Value> = if all_caps.is_empty() {
+        None
+    } else {
+        let mut caps_vec: Vec<String> = all_caps.into_iter().collect();
+        caps_vec.sort();
+        Some(Value::Array(caps_vec.into_iter().map(Value::String).collect()))
+    };
+
+    // 6+7. 事务内重建
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
+
+    // 更新 workflow 的 required_capabilities
+    sqlx::query(
+        "UPDATE workflows SET required_capabilities = ? WHERE id = ?"
+    )
+    .bind(&workflow_caps)
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(format!("workflow capabilities update: {e}")))?;
+
     sqlx::query("DELETE FROM workflow_edges WHERE workflow_id = ?")
         .bind(id)
         .execute(&mut *tx)

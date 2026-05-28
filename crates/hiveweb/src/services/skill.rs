@@ -25,6 +25,9 @@ pub struct CreateMeta {
     pub description: String,
     pub frontmatter: Option<Value>,
     pub content: String,
+    pub is_always: Option<bool>,
+    pub category_id: Option<i64>,
+    pub required_capabilities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +36,9 @@ pub struct UpdateMeta {
     pub description: Option<String>,
     pub frontmatter: Option<Value>,
     pub content: Option<String>,
+    pub is_always: Option<bool>,
+    pub category_id: Option<Option<i64>>,
+    pub required_capabilities: Option<Vec<String>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -50,6 +56,15 @@ pub struct ListFilter {
     pub limit: i64,
     pub search: Option<String>,
     pub source: Option<String>,
+    pub category_id: Option<i64>,
+    pub identifier: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub required_capabilities: Option<String>,
+    pub created_at_start: Option<String>,
+    pub created_at_end: Option<String>,
+    pub updated_at_start: Option<String>,
+    pub updated_at_end: Option<String>,
 }
 
 fn validate_content(content: &str) -> Result<(), AppError> {
@@ -65,15 +80,20 @@ fn validate_content(content: &str) -> Result<(), AppError> {
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Skill, AppError> {
     validate_content(&meta.content)?;
 
+    let is_always = meta.is_always.unwrap_or(false) as i8;
+
     let res = sqlx::query(
-        r#"INSERT INTO skills (identifier, name, description, frontmatter, content, source)
-           VALUES (?, ?, ?, ?, ?, 'workspace')"#,
+        r#"INSERT INTO skills (identifier, name, description, frontmatter, content, source, is_always, category_id, required_capabilities)
+           VALUES (?, ?, ?, ?, ?, 'workspace', ?, ?, ?)"#,
     )
     .bind(&meta.identifier)
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(&meta.frontmatter)
     .bind(&meta.content)
+    .bind(is_always)
+    .bind(meta.category_id)
+    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
     .execute(pool)
     .await
     .map_err(|e| {
@@ -102,6 +122,33 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<SkillList, App
     if filter.source.is_some() {
         where_clauses.push("source = ?".into());
     }
+    if filter.category_id.is_some() {
+        where_clauses.push("category_id = ?".into());
+    }
+    if filter.identifier.is_some() {
+        where_clauses.push("identifier LIKE ?".into());
+    }
+    if filter.name.is_some() {
+        where_clauses.push("name LIKE ?".into());
+    }
+    if filter.description.is_some() {
+        where_clauses.push("description LIKE ?".into());
+    }
+    if filter.required_capabilities.is_some() {
+        where_clauses.push("JSON_CONTAINS(required_capabilities, ?)".into());
+    }
+    if filter.created_at_start.is_some() {
+        where_clauses.push("created_at >= ?".into());
+    }
+    if filter.created_at_end.is_some() {
+        where_clauses.push("created_at <= ?".into());
+    }
+    if filter.updated_at_start.is_some() {
+        where_clauses.push("updated_at >= ?".into());
+    }
+    if filter.updated_at_end.is_some() {
+        where_clauses.push("updated_at <= ?".into());
+    }
     if filter.search.is_some() {
         where_clauses.push("(name LIKE ? OR identifier LIKE ? OR description LIKE ? OR content LIKE ?)".into());
     }
@@ -117,6 +164,33 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<SkillList, App
     let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
     if let Some(ref src) = filter.source {
         count_q = count_q.bind(src);
+    }
+    if let Some(ref cid) = filter.category_id {
+        count_q = count_q.bind(cid);
+    }
+    if let Some(ref ident) = filter.identifier {
+        count_q = count_q.bind(format!("%{ident}%"));
+    }
+    if let Some(ref n) = filter.name {
+        count_q = count_q.bind(format!("%{n}%"));
+    }
+    if let Some(ref d) = filter.description {
+        count_q = count_q.bind(format!("%{d}%"));
+    }
+    if let Some(ref cap) = filter.required_capabilities {
+        count_q = count_q.bind(format!("\"{cap}\""));
+    }
+    if let Some(ref start) = filter.created_at_start {
+        count_q = count_q.bind(start);
+    }
+    if let Some(ref end) = filter.created_at_end {
+        count_q = count_q.bind(end);
+    }
+    if let Some(ref start) = filter.updated_at_start {
+        count_q = count_q.bind(start);
+    }
+    if let Some(ref end) = filter.updated_at_end {
+        count_q = count_q.bind(end);
     }
     if let Some(ref s) = filter.search {
         let like = format!("%{s}%");
@@ -135,6 +209,33 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<SkillList, App
     let mut list_q = sqlx::query_as::<_, Skill>(&list_sql);
     if let Some(ref src) = filter.source {
         list_q = list_q.bind(src);
+    }
+    if let Some(ref cid) = filter.category_id {
+        list_q = list_q.bind(cid);
+    }
+    if let Some(ref ident) = filter.identifier {
+        list_q = list_q.bind(format!("%{ident}%"));
+    }
+    if let Some(ref n) = filter.name {
+        list_q = list_q.bind(format!("%{n}%"));
+    }
+    if let Some(ref d) = filter.description {
+        list_q = list_q.bind(format!("%{d}%"));
+    }
+    if let Some(ref cap) = filter.required_capabilities {
+        list_q = list_q.bind(format!("\"{cap}\""));
+    }
+    if let Some(ref start) = filter.created_at_start {
+        list_q = list_q.bind(start);
+    }
+    if let Some(ref end) = filter.created_at_end {
+        list_q = list_q.bind(end);
+    }
+    if let Some(ref start) = filter.updated_at_start {
+        list_q = list_q.bind(start);
+    }
+    if let Some(ref end) = filter.updated_at_end {
+        list_q = list_q.bind(end);
     }
     if let Some(ref s) = filter.search {
         let like = format!("%{s}%");
@@ -178,13 +279,19 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Skill
               name = COALESCE(?, name),
               description = COALESCE(?, description),
               frontmatter = COALESCE(?, frontmatter),
-              content = COALESCE(?, content)
+              content = COALESCE(?, content),
+              is_always = COALESCE(?, is_always),
+              category_id = COALESCE(?, category_id),
+              required_capabilities = COALESCE(?, required_capabilities)
            WHERE id = ?"#,
     )
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(&meta.frontmatter)
     .bind(&meta.content)
+    .bind(meta.is_always.map(|v| v as i8))
+    .bind(meta.category_id)
+    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
     .bind(id)
     .execute(pool)
     .await

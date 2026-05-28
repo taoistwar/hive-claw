@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{mint_jwt, seed_admin};
+use common::{seed_admin};
 use axum::Router;
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
@@ -108,18 +108,20 @@ async fn tamper_s3_wasm(pool: &MySqlPool, s3_client: &aws_sdk_s3::Client, plugin
 
     // Flip one byte (if file is at least 1 byte)
     let mut tampered = bytes.clone();
-    if !tampered.is_empty() {
+    let flip_idx = if !tampered.is_empty() {
         let idx = tampered.len() / 2;
         tampered[idx] = tampered[idx].wrapping_add(1);
+        idx
     } else {
         // If empty, append a byte
         tampered.push(0xFF);
-    }
+        0
+    };
 
     // Re-upload tampered content
     hiveweb::storage::s3::put_wasm(s3_client, &s3_key, tampered).await?;
 
-    tracing::info!("t167: tampered S3 WASM at s3_key={s3_key}, flipped byte at index {}", tampered.len() / 2);
+    tracing::info!("t167: tampered S3 WASM at s3_key={s3_key}, flipped byte at index {}", flip_idx);
 
     Ok(())
 }

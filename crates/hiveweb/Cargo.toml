@@ -12,6 +12,9 @@ description = "HiveClaw Admin Center - Backend API service"
 axum = { version = "0.7", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 
+# CLI
+clap = { workspace = true }
+
 # Database — 004 加 json feature 以便序列化 JSON 列
 sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono", "json"] }
 
@@ -63,13 +66,14 @@ wasmparser = "0.221"
 agent = { path = "../agent" }
 providers = { path = "../providers" }
 skills = { path = "../skills" }
+langfuse = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 mime = "0.3"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 [[bench]]
 name = "host_call"
@@ -93,6 +97,10 @@ harness = false
 
 [[bench]]
 name = "agent_route"
+harness = false
+
+[[bench]]
+name = "chat_e2e"
 harness = false
 
 [[bin]]

@@ -48,7 +48,7 @@ pub async fn record(
 ) -> Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO audit_logs
+        INSERT INTO admin_audit_logs
             (operator_id, operator_phone_snapshot,
              target_admin_id, target_phone_snapshot,
              operation, detail, occurred_at)

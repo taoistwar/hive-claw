@@ -2,6 +2,7 @@ pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod dashboard;
+pub mod login_record;
 
 // 004 Agent Runtime
 pub mod agent;
@@ -15,3 +16,4 @@ pub mod tag;
 pub mod tool;
 pub mod workflow;
 pub mod chat;
+pub mod recommended_game;

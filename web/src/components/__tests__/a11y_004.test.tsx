@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { axe, toHaveNoViolations } from 'vitest-axe';
+import { axe } from 'vitest-axe';
 import { MemoryRouter } from 'react-router-dom';
 import 'vitest-axe/extend-expect';
 
@@ -16,8 +16,6 @@ import { ModelPresetSelect } from '../ModelPresetSelect';
 import { AgentTree } from '../AgentTree';
 import { CapabilityPicker } from '../CapabilityPicker';
 import { ChatStream } from '../ChatStream';
-
-expect.extend({ toHaveNoViolations: toHaveNoViolations as never });
 
 // Mock services so isolated components don't fire HTTP
 vi.mock('../../services/capability', () => ({

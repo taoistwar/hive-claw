@@ -353,6 +353,7 @@ async fn execute_node(
         agent_id: invoking_agent_id,
         plugin_id,
         function_id: Some(function_id),
+        permissions: vec![],
     };
     let out_str = deps
         .invoker

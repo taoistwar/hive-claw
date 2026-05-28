@@ -2039,6 +2039,7 @@ dependencies = [
  "env_logger",
  "futures",
  "heartbeat",
+ "langfuse",
  "log",
  "providers",
  "rustyline",
@@ -2685,6 +2686,7 @@ dependencies = [
  "ciborium",
  "clap",
  "criterion-plot",
+ "futures",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -2697,6 +2699,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "tinytemplate",
+ "tokio",
  "walkdir",
 ]
 
@@ -4846,6 +4849,7 @@ dependencies = [
  "bcrypt",
  "bytes",
  "chrono",
+ "clap",
  "criterion",
  "dotenvy",
  "extism",
@@ -4853,6 +4857,7 @@ dependencies = [
  "http-body-util",
  "jsonschema",
  "jsonwebtoken",
+ "langfuse",
  "mime",
  "once_cell",
  "providers",
@@ -5678,6 +5683,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de8b303297635ad57c9f5059fd9cee7a47f8e8daa09df0fcd07dd39fb22977f"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "langfuse"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7407,6 +7426,7 @@ dependencies = [
  "chrono",
  "config",
  "futures",
+ "langfuse",
  "log",
  "once_cell",
  "regex",

@@ -17,7 +17,7 @@
 
 use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
-use providers::{ChatRequest, LLMProvider, ToolCallRequest};
+use providers::{ChatRequest, LLMProvider, RetryMode, ToolCallRequest};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::convert::Infallible;
@@ -119,7 +119,7 @@ pub async fn run_session(
             let ev = Event::default().event("token").data(payload.to_string());
             let _ = tx_inner.send(Ok::<_, Infallible>(ev));
         });
-        let resp = provider.chat_stream(req, Some(on_delta), None).await;
+        let resp = provider.chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None).await;
 
         if resp.is_error() {
             let msg = resp
@@ -260,36 +260,42 @@ fn emit_error(tx: &UnboundedSender<Result<Event, Infallible>>, code: u16, messag
 // ============================ Agent context ============================
 
 #[derive(Debug, Clone)]
-struct AgentContext {
-    agent_id: i64,
-    identifier: String,
-    system_prompt: String,
-    model_preset: Option<String>,
-    tools: Vec<ToolRef>,
-    permissions: Vec<String>,
-    children: Vec<ChildAgent>,
+pub(crate) struct AgentContext {
+    pub(crate) agent_id: i64,
+    pub(crate) identifier: String,
+    pub(crate) system_prompt: String,
+    pub(crate) model_preset: Option<String>,
+    pub(crate) tools: Vec<ToolRef>,
+    pub(crate) permissions: Vec<String>,
+    pub(crate) children: Vec<ChildAgent>,
 }
 
 #[derive(Debug, Clone)]
-struct ToolRef {
-    id: i64,
-    identifier: String,
-    name: String,
-    description: String,
-    kind: i8, // 1 function-wrap, 2 workflow-wrap
-    function_id: Option<i64>,
-    workflow_id: Option<i64>,
-    input_schema: Value,
+pub(crate) struct ToolRef {
+    pub(crate) id: i64,
+    pub(crate) identifier: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) kind: i8, // 1 function-wrap, 2 workflow-wrap
+    pub(crate) function_id: Option<i64>,
+    pub(crate) workflow_id: Option<i64>,
+    pub(crate) input_schema: Value,
     /// custom function 对应的 plugin_id + plugin_export（kind=1 时填充）
-    plugin_id: Option<i64>,
-    plugin_export: Option<String>,
+    pub(crate) plugin_id: Option<i64>,
+    pub(crate) plugin_export: Option<String>,
+    /// builtin function（plugin_id IS NULL）标记
+    pub(crate) is_builtin_function: bool,
+    /// 元工具：kind=1 且 function_id=NULL（如 invoke_function / invoke_workflow）
+    pub(crate) is_meta_tool: bool,
+    /// 该 tool/function 声明所需的 capabilities
+    pub(crate) required_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-struct ChildAgent {
-    id: i64,
-    identifier: String,
-    description: Option<String>,
+pub(crate) struct ChildAgent {
+    pub(crate) id: i64,
+    pub(crate) identifier: String,
+    pub(crate) description: Option<String>,
 }
 
 async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentContext, String> {
@@ -319,49 +325,58 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
         system_prompt.push_str(md);
     }
 
-    // Tools
-    let tool_rows: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value)> =
+    // Tools: agent-specific + always tools (deduplicated by tool id)
+    let tool_rows: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<Value>)> =
         sqlx::query_as(
             r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
-                      t.function_id, t.workflow_id, t.input_schema
+                      t.function_id, t.workflow_id, t.input_schema,
+                      f.plugin_id, f.plugin_export,
+                      COALESCE(t.required_capabilities, f.required_capabilities)
                FROM tools t
                JOIN agent_tools at ON at.tool_id = t.id
-               WHERE at.agent_id = ?"#,
+               LEFT JOIN functions f ON f.id = t.function_id
+               WHERE at.agent_id = ?
+               UNION
+               SELECT t.id, t.identifier, t.name, t.description, t.kind,
+                      t.function_id, t.workflow_id, t.input_schema,
+                      f.plugin_id, f.plugin_export,
+                      COALESCE(t.required_capabilities, f.required_capabilities)
+               FROM tools t
+               LEFT JOIN functions f ON f.id = t.function_id
+               WHERE t.is_always = 1
+                 AND t.id NOT IN (
+                     SELECT at2.tool_id FROM agent_tools at2 WHERE at2.agent_id = ?
+                 )"#,
         )
+        .bind(agent_id)
         .bind(agent_id)
         .fetch_all(pool)
         .await
         .unwrap_or_default();
 
     let mut tools: Vec<ToolRef> = Vec::new();
-    for (id, ident, name, desc, kind, fid, wid, input_schema) in tool_rows {
-        let (plugin_id, plugin_export) = if kind == 1 {
-            if let Some(fid) = fid {
-                let fr: Option<(Option<i64>, Option<String>)> = sqlx::query_as(
-                    "SELECT plugin_id, plugin_export FROM functions WHERE id = ?",
-                )
-                .bind(fid)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
-                fr.unwrap_or((None, None))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
+    for (id, identifier, name, desc, kind, function_id, workflow_id, input_schema, plugin_id, plugin_export, caps_json) in tool_rows {
+        let is_builtin_function = kind == 1 && plugin_id.is_none();
+        // 元工具（meta-tool）：kind=1 且 function_id=NULL（如 invoke_function / invoke_workflow）
+        let is_meta_tool = kind == 1 && function_id.is_none();
+        let required_capabilities: Vec<String> = caps_json
+            .and_then(|v| v.as_array().cloned())
+            .map(|arr| arr.into_iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
         tools.push(ToolRef {
             id,
-            identifier: ident,
+            identifier,
             name,
             description: desc,
             kind,
-            function_id: fid,
-            workflow_id: wid,
+            function_id,
+            workflow_id,
             input_schema,
             plugin_id,
             plugin_export,
+            is_builtin_function,
+            is_meta_tool,
+            required_capabilities,
         });
     }
 
@@ -398,7 +413,7 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
 }
 
 /// 组装 LLM-side tools schema（OpenAI function-calling format）
-fn build_tools_schema(ctx: &AgentContext) -> Vec<Value> {
+pub(crate) fn build_tools_schema(ctx: &AgentContext) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     // route_to_subagent（仅当存在子 agent 时暴露）
     if !ctx.children.is_empty() {
@@ -456,17 +471,34 @@ fn build_tools_schema(ctx: &AgentContext) -> Vec<Value> {
     out
 }
 
+/// 简化版：仅从 ToolRef 列表构建 schema（用于 tool_test）
+pub(crate) fn build_tools_schema_simple(tools: &[ToolRef]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": t.identifier,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                }
+            })
+        })
+        .collect()
+}
+
 // ============================ Tool execution ============================
 
 #[derive(Debug, Clone)]
-struct ToolOutcome {
-    payload: Value,
+pub(crate) struct ToolOutcome {
+    pub(crate) payload: Value,
     route_to: Option<i64>,
     route_identifier: Option<String>,
 }
 
 impl ToolOutcome {
-    fn ok(payload: Value) -> Self {
+    pub(crate) fn ok(payload: Value) -> Self {
         Self { payload, route_to: None, route_identifier: None }
     }
     fn route(agent_id: i64, identifier: String) -> Self {
@@ -476,7 +508,7 @@ impl ToolOutcome {
             route_identifier: Some(identifier),
         }
     }
-    fn error(msg: String) -> Self {
+    pub(crate) fn error(msg: String) -> Self {
         Self {
             payload: json!({"error": msg}),
             route_to: None,
@@ -517,55 +549,229 @@ async fn handle_route_tool(
     ToolOutcome::route(child.id, child.identifier.clone())
 }
 
-async fn handle_workspace_tool(
+async fn handle_meta_tool(
     deps: &OrchestratorDeps,
     ctx: &AgentContext,
     tool_ref: &ToolRef,
     tc: &ToolCallRequest,
     session_id: i64,
 ) -> ToolOutcome {
+    match tool_ref.identifier.as_str() {
+        "invoke_function" => {
+            let func_ident = match tc.arguments.get("function_identifier").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => return ToolOutcome::error("invoke_function: function_identifier 缺失".into()),
+            };
+            let function_input = match tc.arguments.get("function_input") {
+                Some(v) => v.clone(),
+                None => return ToolOutcome::error("invoke_function: function_input 缺失".into()),
+            };
+            // 查询 function 信息（包含 required_capabilities）
+            let func_row: Option<(i64, i8, Option<i64>, Option<String>, Option<Value>)> = sqlx::query_as(
+                "SELECT id, kind, plugin_id, plugin_export, required_capabilities FROM functions WHERE identifier = ?",
+            )
+            .bind(&func_ident)
+            .fetch_optional(&deps.pool)
+            .await
+            .map_err(|e| format!("function lookup: {e}"))
+            .unwrap_or(None);
+            let Some((func_id, func_kind, plugin_id, plugin_export, func_caps)) = func_row else {
+                return ToolOutcome::error(format!("invoke_function: function「{func_ident}」不存在"));
+            };
+
+            // Capability check: 如果 function 声明了 required_capabilities，校验 agent 权限
+            if let Some(ref caps) = func_caps {
+                if let Some(arr) = caps.as_array() {
+                    let required: Vec<String> = arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    if !required.is_empty() {
+                        let agent_perms: std::collections::HashSet<&str> = ctx.permissions.iter().map(|s| s.as_str()).collect();
+                        let missing: Vec<&str> = required.iter()
+                            .filter(|c| !agent_perms.contains(c.as_str()))
+                            .map(|s| s.as_str())
+                            .collect();
+                        if !missing.is_empty() {
+                            return ToolOutcome::error(format!(
+                                "function「{func_ident}」需要能力「{}」，但当前 Agent 未授权",
+                                missing.join("、")
+                            ));
+                        }
+                    }
+                }
+            }
+
+            match func_kind {
+                1 if plugin_id.is_none() => {
+                    // builtin function — 直接调用
+                    let Some(builtin) = super::builtins::lookup(&func_ident) else {
+                        return ToolOutcome::error(format!("builtin function「{func_ident}」未找到 handler"));
+                    };
+                    match (builtin.handler)(function_input) {
+                        Ok(result) => ToolOutcome::ok(result),
+                        Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                    }
+                }
+                1 | 2 => {
+                    // custom function (kind=2) 或 plugin-based function (kind=1) — 通过 invoker 调用
+                    let Some(pid) = plugin_id else {
+                        return ToolOutcome::error("function 缺 plugin_id".into());
+                    };
+                    let Some(ref export) = plugin_export else {
+                        return ToolOutcome::error("function 缺 plugin_export".into());
+                    };
+                    let input_json = match serde_json::to_string(&function_input) {
+                        Ok(s) => s,
+                        Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                    };
+                    let dispatch_ctx = DispatchCtx {
+                        request_id: None,
+                        session_id: Some(session_id),
+                        agent_id: ctx.agent_id,
+                        plugin_id: pid,
+                        function_id: Some(func_id),
+                        permissions: ctx.permissions.clone(),
+                    };
+                    match deps.invoker.invoke(
+                        &deps.pool, &deps.s3,
+                        Arc::clone(&deps.registry), Arc::clone(&deps.llm),
+                        pid, export, input_json, dispatch_ctx,
+                    ).await {
+                        Ok(out_str) => {
+                            let parsed: Value = serde_json::from_str(&out_str)
+                                .unwrap_or_else(|_| Value::String(out_str));
+                            ToolOutcome::ok(parsed)
+                        }
+                        Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                    }
+                }
+                _ => ToolOutcome::error(format!("invoke_function: function「{func_ident}」kind={func_kind} 不支持")),
+            }
+        }
+        "invoke_workflow" => {
+            let wf_ident = match tc.arguments.get("workflow_identifier").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => return ToolOutcome::error("invoke_workflow: workflow_identifier 缺失".into()),
+            };
+            let workflow_input = match tc.arguments.get("workflow_input") {
+                Some(v) => v.clone(),
+                None => return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into()),
+            };
+            // 查询 workflow id
+            let wf_row: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM workflows WHERE identifier = ?",
+            )
+            .bind(&wf_ident)
+            .fetch_optional(&deps.pool)
+            .await
+            .map_err(|e| format!("workflow lookup: {e}"))
+            .unwrap_or(None);
+            let Some((workflow_id,)) = wf_row else {
+                return ToolOutcome::error(format!("invoke_workflow: workflow「{wf_ident}」不存在"));
+            };
+            let executor_deps = crate::runtime::workflow::ExecutorDeps {
+                pool: deps.pool.clone(),
+                s3: deps.s3.clone(),
+                registry: Arc::clone(&deps.registry),
+                llm: Arc::clone(&deps.llm),
+                invoker: Arc::clone(&deps.invoker),
+            };
+            let executor = crate::runtime::workflow::WorkflowExecutor::new();
+            match executor.execute(&executor_deps, workflow_id, workflow_input, ctx.agent_id).await {
+                Ok(out) => {
+                    let obj = serde_json::Map::from_iter(out.into_iter());
+                    ToolOutcome::ok(Value::Object(obj))
+                }
+                Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
+            }
+        }
+        _ => ToolOutcome::error(format!("未知元工具: {}", tool_ref.identifier)),
+    }
+}
+
+pub(crate) async fn handle_workspace_tool(
+    deps: &OrchestratorDeps,
+    ctx: &AgentContext,
+    tool_ref: &ToolRef,
+    tc: &ToolCallRequest,
+    session_id: i64,
+) -> ToolOutcome {
+    // Capability check: 如果 tool 声明了 required_capabilities，校验 agent 权限
+    if !tool_ref.required_capabilities.is_empty() {
+        let agent_perms: std::collections::HashSet<&str> = ctx.permissions.iter().map(|s| s.as_str()).collect();
+        let missing: Vec<&str> = tool_ref.required_capabilities.iter()
+            .filter(|c| !agent_perms.contains(c.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return ToolOutcome::error(format!(
+                "tool「{}」需要能力「{}」，但当前 Agent 未授权",
+                tool_ref.identifier,
+                missing.join("、")
+            ));
+        }
+    }
+
     match tool_ref.kind {
         1 => {
-            // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
-            let Some(plugin_id) = tool_ref.plugin_id else {
-                return ToolOutcome::error("function 缺 plugin_id".into());
-            };
-            let Some(ref export) = tool_ref.plugin_export else {
-                return ToolOutcome::error("function 缺 plugin_export".into());
-            };
-            let args_value: Value = Value::Object(tc.arguments.clone());
-            let input_json = match serde_json::to_string(&args_value) {
-                Ok(s) => s,
-                Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
-            };
-            let dispatch_ctx = DispatchCtx {
-                request_id: None,
-                session_id: Some(session_id),
-                agent_id: ctx.agent_id,
-                plugin_id,
-                function_id: tool_ref.function_id,
-            };
-            match deps
-                .invoker
-                .invoke(
-                    &deps.pool,
-                    &deps.s3,
-                    Arc::clone(&deps.registry),
-                    Arc::clone(&deps.llm),
-                    plugin_id,
-                    export,
-                    input_json,
-                    dispatch_ctx,
-                )
-                .await
-            {
-                Ok(out_str) => {
-                    // Plugin 返回的是 JSON 字符串 — 解析后封装；失败 → 当作 string
-                    let parsed: Value = serde_json::from_str(&out_str)
-                        .unwrap_or_else(|_| Value::String(out_str));
-                    ToolOutcome::ok(parsed)
+            if tool_ref.is_meta_tool {
+                // 元工具 — 根据 identifier 分发到 invoke_function / invoke_workflow
+                handle_meta_tool(deps, ctx, tool_ref, tc, session_id).await
+            } else if tool_ref.is_builtin_function {
+                if tool_ref.function_id.is_none() {
+                    return ToolOutcome::error("builtin function 缺 function_id".into());
+                };
+                let Some(builtin) = super::builtins::lookup(&tool_ref.identifier) else {
+                    return ToolOutcome::error(format!("builtin function「{}」未找到 handler", tool_ref.identifier));
+                };
+                let args_value: Value = Value::Object(tc.arguments.clone());
+                match (builtin.handler)(args_value) {
+                    Ok(result) => ToolOutcome::ok(result),
+                    Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
                 }
-                Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+            } else {
+                // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
+                let Some(plugin_id) = tool_ref.plugin_id else {
+                    return ToolOutcome::error("function 缺 plugin_id".into());
+                };
+                let Some(ref export) = tool_ref.plugin_export else {
+                    return ToolOutcome::error("function 缺 plugin_export".into());
+                };
+                let args_value: Value = Value::Object(tc.arguments.clone());
+                let input_json = match serde_json::to_string(&args_value) {
+                    Ok(s) => s,
+                    Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                };
+                let dispatch_ctx = DispatchCtx {
+                    request_id: None,
+                    session_id: Some(session_id),
+                    agent_id: ctx.agent_id,
+                    plugin_id,
+                    function_id: tool_ref.function_id,
+                    permissions: ctx.permissions.clone(),
+                };
+                match deps
+                    .invoker
+                    .invoke(
+                        &deps.pool,
+                        &deps.s3,
+                        Arc::clone(&deps.registry),
+                        Arc::clone(&deps.llm),
+                        plugin_id,
+                        export,
+                        input_json,
+                        dispatch_ctx,
+                    )
+                    .await
+                {
+                    Ok(out_str) => {
+                        // Plugin 返回的是 JSON 字符串 — 解析后封装；失败 → 当作 string
+                        let parsed: Value = serde_json::from_str(&out_str)
+                            .unwrap_or_else(|_| Value::String(out_str));
+                        ToolOutcome::ok(parsed)
+                    }
+                    Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                }
             }
         }
         2 => {

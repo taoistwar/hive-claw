@@ -22,10 +22,18 @@ pub struct CreateMeta {
     pub description: String,
     /// 1 = function-wrap, 2 = workflow-wrap
     pub kind: i8,
+    /// workspace | builtin
+    pub source: String,
+    /// 0 = normal, 1 = always available for all agents
+    pub is_always: bool,
     pub function_id: Option<i64>,
     pub workflow_id: Option<i64>,
     pub input_schema: Value,
     pub output_schema: Value,
+    pub category_id: Option<i64>,
+    pub required_capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    pub tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,12 +42,29 @@ pub struct UpdateMeta {
     pub description: Option<String>,
     pub input_schema: Option<Value>,
     pub output_schema: Option<Value>,
+    pub category_id: Option<i64>,
+    pub required_capabilities: Option<Vec<String>>,
+    pub tag_ids: Option<Vec<i64>>,
+    pub is_always: Option<bool>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct TagSummary {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ToolListItem {
+    #[serde(flatten)]
+    pub tool: Tool,
+    pub tags: Vec<TagSummary>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ToolList {
-    pub items: Vec<Tool>,
+    pub items: Vec<ToolListItem>,
     pub total: i64,
     pub offset: i64,
     pub limit: i64,
@@ -51,6 +76,8 @@ pub struct ListFilter {
     pub limit: i64,
     pub search: Option<String>,
     pub kind: Option<i8>,
+    pub source: Option<String>,
+    pub category_id: Option<i64>,
     pub created_at_start: Option<chrono::NaiveDateTime>,
     pub created_at_end: Option<chrono::NaiveDateTime>,
     pub updated_at_start: Option<chrono::NaiveDateTime>,
@@ -106,7 +133,6 @@ async fn validate_schemas_workflow(
     workflow_id: i64,
     tool_input: &Value,
 ) -> Result<(), AppError> {
-    // 入口 = 无 incoming edge 的 workflow_node；取其 function 的 input_schema
     let row: Option<(Value,)> = sqlx::query_as(
         r#"SELECT f.input_schema FROM workflow_nodes n
            JOIN functions f ON f.id = n.function_id
@@ -125,8 +151,6 @@ async fn validate_schemas_workflow(
         ))
     })?;
 
-    // sub-schema 检查（MVP 简化）：tool.required ⊇ entry.required；
-    // tool.properties 中 entry.required 项的 type 必须一致
     let empty_arr = Value::Array(vec![]);
     let empty_obj = Value::Object(serde_json::Map::new());
     let entry_required = entry.get("required").unwrap_or(&empty_arr);
@@ -160,16 +184,62 @@ async fn validate_schemas_workflow(
     Ok(())
 }
 
-pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Tool, AppError> {
+async fn fetch_tags(pool: &MySqlPool, tool_id: i64) -> Result<Vec<TagSummary>, AppError> {
+    let tags = sqlx::query_as::<_, TagSummary>(
+        r#"SELECT t.id, t.name FROM tags t
+           JOIN taggings tg ON tg.tag_id = t.id
+           WHERE tg.entity_type = 'tool' AND tg.entity_id = ?"#,
+    )
+    .bind(tool_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("tool tags: {e}")))?;
+    Ok(tags)
+}
+
+async fn fetch_tool_with_tags(pool: &MySqlPool, id: i64) -> Result<ToolListItem, AppError> {
+    let tool = sqlx::query_as::<_, Tool>("SELECT * FROM tools WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("tool fetch: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("tool id={id} not found")))?;
+    let tags = fetch_tags(pool, id).await?;
+    Ok(ToolListItem { tool, tags })
+}
+
+pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<ToolListItem, AppError> {
+    let source = if meta.source.is_empty() || meta.source == "workspace" {
+        "workspace".to_string()
+    } else if meta.source == "builtin" {
+        "builtin".to_string()
+    } else {
+        return Err(AppError::BadRequest(
+            "source 必须为 workspace 或 builtin".into(),
+        ));
+    };
+
     match meta.kind {
         1 => {
-            let fid = meta.function_id.ok_or_else(|| {
-                AppError::BadRequest("kind=1 时必须提供 function_id".into())
-            })?;
-            if meta.workflow_id.is_some() {
-                return Err(AppError::BadRequest("kind=1 时不允许提供 workflow_id".into()));
+            if let Some(fid) = meta.function_id {
+                if meta.workflow_id.is_some() {
+                    return Err(AppError::BadRequest("kind=1 时不允许提供 workflow_id".into()));
+                }
+                if source == "builtin" {
+                    let f_kind: Option<i8> = sqlx::query_scalar("SELECT kind FROM functions WHERE id = ?")
+                        .bind(fid)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| AppError::Internal(format!("function fetch: {e}")))?
+                        .ok_or_else(|| AppError::NotFound(format!("function id={fid} not found")))?;
+                    if f_kind != Some(1) {
+                        return Err(AppError::BadRequest(
+                            "builtin Tool 只能包装 builtin Function（kind=1）".into(),
+                        ));
+                    }
+                }
+                validate_schemas_function(pool, fid, &meta.input_schema, &meta.output_schema).await?;
             }
-            validate_schemas_function(pool, fid, &meta.input_schema, &meta.output_schema).await?;
         }
         2 => {
             let wid = meta.workflow_id.ok_or_else(|| {
@@ -178,6 +248,11 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Tool, AppError
             if meta.function_id.is_some() {
                 return Err(AppError::BadRequest("kind=2 时不允许提供 function_id".into()));
             }
+            if source == "builtin" {
+                return Err(AppError::BadRequest(
+                    "builtin Tool 不允许包装 Workflow".into(),
+                ));
+            }
             validate_schemas_workflow(pool, wid, &meta.input_schema).await?;
         }
         _ => return Err(AppError::BadRequest("kind 必须为 1 或 2".into())),
@@ -185,17 +260,21 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Tool, AppError
 
     let res = sqlx::query(
         r#"INSERT INTO tools
-           (identifier, name, description, kind, function_id, workflow_id, input_schema, output_schema)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+           (identifier, name, description, kind, source, is_always, function_id, workflow_id, input_schema, output_schema, category_id, required_capabilities)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&meta.identifier)
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(meta.kind)
+    .bind(&source)
+    .bind(meta.is_always)
     .bind(meta.function_id)
     .bind(meta.workflow_id)
     .bind(&meta.input_schema)
     .bind(&meta.output_schema)
+    .bind(meta.category_id)
+    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
     .execute(pool)
     .await
     .map_err(|e| {
@@ -207,7 +286,20 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Tool, AppError
         }
     })?;
 
-    fetch_by_id(pool, res.last_insert_id() as i64).await
+    let id = res.last_insert_id() as i64;
+
+    for tid in &meta.tag_ids {
+        sqlx::query(
+            "INSERT IGNORE INTO taggings (tag_id, entity_type, entity_id) VALUES (?, 'tool', ?)",
+        )
+        .bind(tid)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("tool tag insert: {e}")))?;
+    }
+
+    fetch_tool_with_tags(pool, id).await
 }
 
 pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Tool, AppError> {
@@ -219,10 +311,20 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Tool, AppError> {
         .ok_or_else(|| AppError::NotFound(format!("tool id={id} not found")))
 }
 
+pub async fn fetch_by_id_with_tags(pool: &MySqlPool, id: i64) -> Result<ToolListItem, AppError> {
+    fetch_tool_with_tags(pool, id).await
+}
+
 pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppError> {
     let mut where_clauses = Vec::<String>::new();
     if filter.kind.is_some() {
         where_clauses.push("kind = ?".into());
+    }
+    if filter.source.is_some() {
+        where_clauses.push("source = ?".into());
+    }
+    if filter.category_id.is_some() {
+        where_clauses.push("category_id = ?".into());
     }
     if filter.search.is_some() {
         where_clauses.push("(name LIKE ? OR identifier LIKE ? OR description LIKE ?)".into());
@@ -252,6 +354,12 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     if let Some(k) = filter.kind {
         count_q = count_q.bind(k);
     }
+    if let Some(ref s) = filter.source {
+        count_q = count_q.bind(s);
+    }
+    if let Some(c) = filter.category_id {
+        count_q = count_q.bind(c);
+    }
     if let Some(ref s) = filter.search {
         let like = format!("%{s}%");
         count_q = count_q.bind(like.clone()).bind(like.clone()).bind(like);
@@ -278,6 +386,12 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     if let Some(k) = filter.kind {
         list_q = list_q.bind(k);
     }
+    if let Some(ref s) = filter.source {
+        list_q = list_q.bind(s);
+    }
+    if let Some(c) = filter.category_id {
+        list_q = list_q.bind(c);
+    }
     if let Some(ref s) = filter.search {
         let like = format!("%{s}%");
         list_q = list_q.bind(like.clone()).bind(like.clone()).bind(like);
@@ -294,12 +408,19 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     if let Some(end) = filter.updated_at_end {
         list_q = list_q.bind(end);
     }
-    let items = list_q
+    let tools = list_q
         .bind(filter.limit)
         .bind(filter.offset)
         .fetch_all(pool)
         .await
         .map_err(|e| AppError::Internal(format!("tool list: {e}")))?;
+
+    let mut items = Vec::with_capacity(tools.len());
+    for t in tools {
+        let tags = fetch_tags(pool, t.id).await?;
+        items.push(ToolListItem { tool: t, tags });
+    }
+
     Ok(ToolList {
         items,
         total,
@@ -308,9 +429,54 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     })
 }
 
-pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tool, AppError> {
+pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<ToolListItem, AppError> {
     crate::services::optimistic_lock::check_and_bump(pool, "tools", id, meta.updated_at).await?;
     let existing = fetch_by_id(pool, id).await?;
+
+    if existing.source == "builtin" {
+        if meta.name.is_some() || meta.description.is_some()
+            || meta.input_schema.is_some() || meta.output_schema.is_some()
+            || meta.required_capabilities.is_some()
+        {
+            return Err(AppError::BuiltinToolProtected(format!(
+                "内置工具「{}」仅可修改分类、标签和 always",
+                existing.identifier
+            )));
+        }
+
+        sqlx::query(
+            r#"UPDATE tools SET
+                  category_id = COALESCE(?, category_id),
+                  is_always = COALESCE(?, is_always)
+               WHERE id = ?"#,
+        )
+        .bind(meta.category_id)
+        .bind(meta.is_always)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("builtin tool update: {e}")))?;
+
+        if let Some(ref tags) = meta.tag_ids {
+            sqlx::query("DELETE FROM taggings WHERE entity_type='tool' AND entity_id = ?")
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| AppError::Internal(format!("tag clear: {e}")))?;
+            for tid in tags {
+                sqlx::query(
+                    "INSERT IGNORE INTO taggings (tag_id, entity_type, entity_id) VALUES (?, 'tool', ?)"
+                )
+                .bind(tid)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| AppError::Internal(format!("tool tag insert: {e}")))?;
+            }
+        }
+
+        return fetch_tool_with_tags(pool, id).await;
+    }
 
     let new_in = meta.input_schema.clone().unwrap_or(existing.input_schema.clone());
     let new_out = meta
@@ -318,7 +484,6 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tool,
         .clone()
         .unwrap_or(existing.output_schema.clone());
 
-    // schema 变更 → 再验
     if meta.input_schema.is_some() || meta.output_schema.is_some() {
         match existing.kind {
             1 => {
@@ -337,23 +502,54 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tool,
               name = COALESCE(?, name),
               description = COALESCE(?, description),
               input_schema = COALESCE(?, input_schema),
-              output_schema = COALESCE(?, output_schema)
+              output_schema = COALESCE(?, output_schema),
+              category_id = COALESCE(?, category_id),
+              required_capabilities = COALESCE(?, required_capabilities),
+              is_always = COALESCE(?, is_always)
            WHERE id = ?"#,
     )
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(&meta.input_schema)
     .bind(&meta.output_schema)
+    .bind(meta.category_id)
+    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
+    .bind(meta.is_always)
     .bind(id)
     .execute(pool)
     .await
     .map_err(|e| AppError::Internal(format!("tool update: {e}")))?;
 
-    fetch_by_id(pool, id).await
+    if let Some(ref tags) = meta.tag_ids {
+        sqlx::query("DELETE FROM taggings WHERE entity_type='tool' AND entity_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("tag clear: {e}")))?;
+        for tid in tags {
+            sqlx::query(
+                "INSERT IGNORE INTO taggings (tag_id, entity_type, entity_id) VALUES (?, 'tool', ?)"
+            )
+            .bind(tid)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("tool tag insert: {e}")))?;
+        }
+    }
+
+    fetch_tool_with_tags(pool, id).await
 }
 
-/// Tool 被 agent_tools 引用 → 4093
+/// Tool 被 agent_tools 引用 → 4093；builtin Tool → 5008
 pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
+    let existing = fetch_by_id(pool, id).await?;
+    if existing.source == "builtin" {
+        return Err(AppError::BuiltinToolProtected(format!(
+            "内置工具「{}」不可删除",
+            existing.identifier
+        )));
+    }
     let mut tx = pool
         .begin()
         .await

@@ -1,11 +1,16 @@
-import { useEffect } from 'react';
-import { Typography, Button, Table, Tag, Form, Input, Select, Space, DatePicker, Popconfirm } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
+import { useEffect, useState } from 'react';
+import { Typography, Button, Table, Tag, Form, Input, Select, Space, DatePicker, Popconfirm, Tree, message } from 'antd';
+import type { DataNode } from 'antd/es/tree';
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ReloadOutlined, EyeOutlined, ExperimentOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useTool } from '../hooks/useTool';
 import ToolForm from '../components/ToolForm';
 import ToolDetail from '../components/ToolDetail';
+import ToolTestModal from '../components/ToolTestModal';
 import type { ToolItem, ToolSearchParams } from '../services/tool';
+import { listCategoriesTree, type CategoryNode } from '../services/category';
+import { listFunctions, type FunctionItem } from '../services/function';
+import { listWorkflows } from '../services/workflow';
 
 const { Title } = Typography;
 const { RangePicker } = DatePicker;
@@ -14,6 +19,21 @@ const KIND_MAP: Record<number, { label: string; color: string }> = {
   1: { label: 'function-wrap', color: 'green' },
   2: { label: 'workflow-wrap', color: 'cyan' },
 };
+
+const SOURCE_MAP: Record<string, { label: string; color: string }> = {
+  builtin: { label: 'builtin', color: 'purple' },
+  workspace: { label: 'workspace', color: 'blue' },
+};
+
+const ALWAYS_TAG = { label: 'always', color: 'red' };
+
+function toDataNodes(nodes: CategoryNode[]): DataNode[] {
+  return nodes.map((n) => ({
+    key: n.id,
+    title: n.name,
+    children: n.children?.length ? toDataNodes(n.children) : undefined,
+  }));
+}
 
 const ToolPage = () => {
   const {
@@ -41,10 +61,73 @@ const ToolPage = () => {
   } = useTool();
 
   const [form] = Form.useForm();
+  const [testModalVisible, setTestModalVisible] = useState(false);
+  const [testingTool, setTestingTool] = useState<ToolItem | null>(null);
+  const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
+  const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
+  const [categoryId, setCategoryId] = useState<number | undefined>(undefined);
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
+  const [treeLoading, setTreeLoading] = useState(false);
+  const [functionMap, setFunctionMap] = useState<Map<number, string>>(new Map());
+  const [workflowMap, setWorkflowMap] = useState<Map<number, string>>(new Map());
+
+  const loadCategoryTree = async () => {
+    setTreeLoading(true);
+    try {
+      const tree = await listCategoriesTree();
+      setCategoryTree(tree);
+      const allKeys: React.Key[] = [];
+      const collect = (nodes: CategoryNode[]) => {
+        nodes.forEach((n) => {
+          allKeys.push(n.id);
+          if (n.children?.length) collect(n.children);
+        });
+      };
+      collect(tree);
+      setTreeExpandedKeys(allKeys);
+    } catch (e) {
+      void message.error(`加载分类树失败：${(e as Error).message}`);
+    } finally {
+      setTreeLoading(false);
+    }
+  };
 
   useEffect(() => {
+    void loadCategoryTree();
+
+    listFunctions({ limit: 500 })
+      .then((res) => {
+        const map = new Map<number, string>();
+        res.items.forEach((f: FunctionItem) => map.set(f.id, f.name));
+        setFunctionMap(map);
+      })
+      .catch(() => {});
+
+    listWorkflows()
+      .then((res) => {
+        const map = new Map<number, string>();
+        res.items.forEach((w) => map.set(w.id, w.name));
+        setWorkflowMap(map);
+      })
+      .catch(() => {});
+
     fetchTools();
   }, []);
+
+  const handleCategorySelect = (key?: React.Key) => {
+    const newSelected = key === selectedCategoryKey ? undefined : key;
+    setSelectedCategoryKey(newSelected);
+    const newCategoryId = newSelected !== undefined ? Number(newSelected) : undefined;
+    setCategoryId(newCategoryId);
+    const params: ToolSearchParams = {
+      category_id: newCategoryId,
+      search: form.getFieldValue('search') || undefined,
+      kind: form.getFieldValue('kind'),
+      source: form.getFieldValue('source') || undefined,
+    };
+    setSearchParams(params);
+    handleSearch(params);
+  };
 
   const handlePaginationChange = (page: number, pageSize: number) => {
     setPagination((prev) => ({ ...prev, current: page, pageSize }));
@@ -55,6 +138,8 @@ const ToolPage = () => {
     const params: ToolSearchParams = {
       search: values.search || undefined,
       kind: values.kind,
+      source: values.source || undefined,
+      category_id: categoryId,
     };
 
     if (values.created_at_range && values.created_at_range.length === 2) {
@@ -101,16 +186,55 @@ const ToolPage = () => {
       },
     },
     {
+      title: '来源',
+      dataIndex: 'source',
+      width: 110,
+      render: (s: string) => {
+        const info = SOURCE_MAP[s];
+        return info ? <Tag color={info.color}>{info.label}</Tag> : s;
+      },
+    },
+    {
+      title: 'always',
+      dataIndex: 'is_always',
+      width: 80,
+      render: (v: boolean) => (v ? <Tag color={ALWAYS_TAG.color}>{ALWAYS_TAG.label}</Tag> : '-'),
+    },
+    {
+      title: 'required_capabilities',
+      dataIndex: 'required_capabilities',
+      width: 180,
+      render: (caps: string[] | null) =>
+        caps?.map((c) => <Tag key={c}>{c}</Tag>) ?? '-',
+    },
+    {
+      title: '标签',
+      dataIndex: 'tags',
+      width: 180,
+      render: (tags: { id: number; name: string }[]) =>
+        tags && tags.length > 0
+          ? tags.map((t) => <Tag key={t.id}>{t.name}</Tag>)
+          : '-',
+    },
+    {
       title: 'function_id',
       dataIndex: 'function_id',
-      width: 100,
-      render: (v: number | null) => v ?? '-',
+      width: 140,
+      render: (v: number | null) => {
+        if (!v) return '-';
+        const name = functionMap.get(v);
+        return name ? `${name}[${v}]` : v;
+      },
     },
     {
       title: 'workflow_id',
       dataIndex: 'workflow_id',
-      width: 100,
-      render: (v: number | null) => v ?? '-',
+      width: 140,
+      render: (v: number | null) => {
+        if (!v) return '-';
+        const name = workflowMap.get(v);
+        return name ? `${name}[${v}]` : v;
+      },
     },
     {
       title: '创建时间',
@@ -127,9 +251,17 @@ const ToolPage = () => {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 260,
       render: (_: unknown, record: ToolItem) => (
         <span>
+          <Button
+            type="link"
+            size="small"
+            icon={<ExperimentOutlined />}
+            onClick={() => { setTestingTool(record); setTestModalVisible(true); }}
+          >
+            测试
+          </Button>
           <Button
             type="link"
             size="small"
@@ -148,12 +280,12 @@ const ToolPage = () => {
           </Button>
           <Popconfirm
             title="确认删除"
-            description="确定要删除该工具吗？"
-            onConfirm={() => handleDelete(record.id)}
+            description={record.source === 'builtin' ? '内置工具不可删除' : '确定要删除该工具吗？'}
+            onConfirm={() => record.source !== 'builtin' && handleDelete(record.id)}
             okText="确定"
             cancelText="取消"
           >
-            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={record.source === 'builtin'}>
               删除
             </Button>
           </Popconfirm>
@@ -163,72 +295,115 @@ const ToolPage = () => {
   ];
 
   return (
-    <div>
+    <div style={{ display: 'flex', gap: 16 }}>
+      <div style={{ width: 280, flexShrink: 0, borderRight: '1px solid #f0f0f0', paddingRight: 16 }}>
+        <h4 style={{ margin: '0 0 8px 0' }}>分类</h4>
+        <Button size="small" style={{ width: '100%', marginBottom: 8 }} onClick={() => handleCategorySelect()}>
+          全部
+        </Button>
+        {treeLoading ? <p>加载中…</p> : (
+          <Tree
+            treeData={toDataNodes(categoryTree)}
+            expandedKeys={treeExpandedKeys}
+            onExpand={(keys) => setTreeExpandedKeys(keys)}
+            selectedKeys={selectedCategoryKey !== undefined ? [selectedCategoryKey] : []}
+            onSelect={(keys) => {
+              if (keys.length > 0) handleCategorySelect(keys[0]);
+              else handleCategorySelect();
+            }}
+            showLine
+          />
+        )}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 24,
+          }}
+        >
+          <Title level={4} style={{ margin: 0 }}>
+            工具管理
+          </Title>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+            添加工具
+          </Button>
+        </div>
+
       <div
         style={{
           display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 24,
+          flexWrap: 'wrap',
+          gap: 12,
+          alignItems: 'flex-end',
+          marginBottom: 16,
         }}
       >
-        <Title level={4} style={{ margin: 0 }}>
-          工具管理
-        </Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-          添加工具
-        </Button>
-      </div>
-
-      <Form
-        form={form}
-        layout="inline"
-        onFinish={doSearch}
-        style={{ marginBottom: 16 }}
-        aria-label="工具筛选"
-      >
-        <Form.Item name="search" label="搜索">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 12, color: '#666' }}>搜索</label>
           <Input
+            value={form.getFieldValue('search')}
+            onChange={(e) => form.setFieldValue('search', e.target.value)}
             placeholder="搜索名称/标识符/描述"
             allowClear
             style={{ width: 200 }}
-            aria-label="搜索名称、标识符或描述"
           />
-        </Form.Item>
-        <Form.Item name="kind" label="类型">
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 12, color: '#666' }}>类型</label>
           <Select
+            value={form.getFieldValue('kind')}
+            onChange={(v) => form.setFieldValue('kind', v)}
             placeholder="类型"
             allowClear
             style={{ width: 140 }}
-            aria-label="按类型筛选"
           >
             <Select.Option value={1}>function-wrap</Select.Option>
             <Select.Option value={2}>workflow-wrap</Select.Option>
           </Select>
-        </Form.Item>
-        <Form.Item name="created_at_range" label="创建时间">
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 12, color: '#666' }}>来源</label>
+          <Select
+            value={form.getFieldValue('source')}
+            onChange={(v) => form.setFieldValue('source', v)}
+            placeholder="来源"
+            allowClear
+            style={{ width: 130 }}
+          >
+            <Select.Option value="workspace">workspace</Select.Option>
+            <Select.Option value="builtin">builtin</Select.Option>
+          </Select>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 12, color: '#666' }}>创建时间</label>
           <RangePicker
+            value={form.getFieldValue('created_at_range')}
+            onChange={(v) => form.setFieldValue('created_at_range', v)}
             placeholder={['创建时间起', '创建时间止']}
-            aria-label="按创建时间筛选"
+            style={{ width: 260 }}
           />
-        </Form.Item>
-        <Form.Item name="updated_at_range" label="修改时间">
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 12, color: '#666' }}>修改时间</label>
           <RangePicker
+            value={form.getFieldValue('updated_at_range')}
+            onChange={(v) => form.setFieldValue('updated_at_range', v)}
             placeholder={['修改时间起', '修改时间止']}
-            aria-label="按修改时间筛选"
+            style={{ width: 260 }}
           />
-        </Form.Item>
-        <Form.Item>
-          <Space>
-            <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
-              搜索
-            </Button>
-            <Button onClick={handleResetSearch} icon={<ReloadOutlined />}>
-              重置
-            </Button>
-          </Space>
-        </Form.Item>
-      </Form>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button type="primary" icon={<SearchOutlined />} onClick={() => form.submit()}>
+            搜索
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={handleResetSearch}>
+            重置
+          </Button>
+        </div>
+      </div>
 
       <Table<ToolItem>
         columns={columns}
@@ -258,6 +433,14 @@ const ToolPage = () => {
         tool={viewingTool}
         onCancel={closeDetailModal}
       />
+
+      <ToolTestModal
+        visible={testModalVisible}
+        toolId={testingTool?.id ?? null}
+        toolName={testingTool?.name ?? ''}
+        onCancel={() => { setTestModalVisible(false); setTestingTool(null); }}
+      />
+      </div>
     </div>
   );
 };

@@ -234,7 +234,22 @@ fn build_one(cfg: &ProviderConfig) -> Result<Arc<dyn LLMProvider>, LlmAdapterErr
     let api_key = cfg
         .api_key_env
         .as_deref()
-        .and_then(|env_name| std::env::var(env_name).ok());
+        .and_then(|val| {
+            // 优先按环境变量名读取
+            std::env::var(val).ok()
+                // 如果环境变量不存在，则当作直接的 API Key 使用
+                .or_else(|| {
+                    if !val.is_empty() {
+                        tracing::debug!(
+                            env_name = val,
+                            "api_key_env not found in env, treating as direct key"
+                        );
+                        Some(val.to_string())
+                    } else {
+                        None
+                    }
+                })
+        });
     let build = ProviderBuildConfig {
         model: cfg.model.clone().unwrap_or_default(),
         api_key,

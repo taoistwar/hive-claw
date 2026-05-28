@@ -5,7 +5,7 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, Query, State},
+    extract::{Extension, Multipart, Path, Query, State},
     http::header::{CONTENT_DISPOSITION, CONTENT_TYPE},
     response::Response,
     routing::get,
@@ -14,11 +14,13 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::AppState;
+use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::plugin::{
     self as svc, ListFilter, UpdateMeta, UploadMeta,
 };
 use crate::storage::s3::get_wasm;
 use crate::utils::error::{ApiResponse, AppError};
+use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -88,6 +90,7 @@ async fn get_plugin(
 
 async fn upload_plugin(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     mut multipart: Multipart,
 ) -> Result<ApiResponse<crate::models::Plugin>, ApiResponse<()>> {
     let mut meta_json: Option<String> = None;
@@ -125,28 +128,76 @@ async fn upload_plugin(
         .map_err(|e| AppError::BadRequest(format!("meta json: {e}")).into_response())?;
 
     match svc::upload(&state.pool, &state.s3, meta, bytes).await {
-        Ok(p) => Ok(ApiResponse::success(p)),
+        Ok(plugin) => {
+            if let Err(e) = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Create,
+                Some(plugin.id),
+                &plugin.identifier,
+                serde_json::json!({ "name": plugin.name, "version": plugin.version }),
+            )
+            .await
+            {
+                tracing::error!("Failed to write audit log for plugin upload: {}", e);
+            }
+            Ok(ApiResponse::success(plugin))
+        }
         Err(e) => Err(e.into_response()),
     }
 }
 
 async fn update_plugin(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<i64>,
     Json(meta): Json<UpdateMeta>,
 ) -> Result<ApiResponse<crate::models::Plugin>, ApiResponse<()>> {
     match svc::update(&state.pool, id, meta).await {
-        Ok(p) => Ok(ApiResponse::success(p)),
+        Ok(plugin) => {
+            if let Err(e) = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Update,
+                Some(plugin.id),
+                &plugin.identifier,
+                serde_json::json!({ "name": plugin.name, "version": plugin.version }),
+            )
+            .await
+            {
+                tracing::error!("Failed to write audit log for plugin update: {}", e);
+            }
+            Ok(ApiResponse::success(plugin))
+        }
         Err(e) => Err(e.into_response()),
     }
 }
 
 async fn delete_plugin(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
+    let prev = svc::fetch_by_id(&state.pool, id).await.ok();
+    let target_id = prev.as_ref().map(|p| p.id);
+    let target_ident = prev.as_ref().map(|p| &p.identifier).cloned().unwrap_or_default();
+
     match svc::soft_delete(&state.pool, id).await {
-        Ok(()) => Ok(ApiResponse::success(())),
+        Ok(()) => {
+            if let Err(e) = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Delete,
+                target_id,
+                &target_ident,
+                serde_json::json!({}),
+            )
+            .await
+            {
+                tracing::error!("Failed to write audit log for plugin delete: {}", e);
+            }
+            Ok(ApiResponse::success(()))
+        }
         Err(e) => Err(e.into_response()),
     }
 }
@@ -209,4 +260,33 @@ async fn list_plugin_exports(
         .map_err(|e| AppError::Internal(format!("WASM 解析失败: {e}")).into_response())?;
 
     Ok(ApiResponse::success(PluginExportsResp { exports }))
+}
+
+/// 写入审计日志。失败时记录 tracing 日志但不影响主流程。
+async fn audit_event(
+    pool: &sqlx::MySqlPool,
+    claims: &Claims,
+    op: Operation,
+    target_id: Option<i64>,
+    target_name: &str,
+    detail: serde_json::Value,
+) -> anyhow::Result<()> {
+    use crate::services::admin as admin_svc;
+    let operator = admin_svc::get_admin_by_id(pool, claims.admin_id).await?;
+    let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
+    if let Err(e) = audit_svc::record(
+        pool,
+        claims.admin_id,
+        &operator_phone,
+        target_id,
+        target_name,
+        op,
+        Some(detail),
+    )
+    .await
+    {
+        tracing::error!("Failed to write audit log: {}", e);
+        return Err(e);
+    }
+    Ok(())
 }

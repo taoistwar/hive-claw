@@ -166,7 +166,7 @@
 - **FR-001**: 系统必须暴露一组宿主级 Capability，包括但不限于：`network.http`、`fs.read`、`fs.write`、`s3.read`、`s3.write`、`db.query`、`db.execute`、`llm.invoke`、`secret.get`、`time.now`、`log.emit`。
   **`network.http` SSRF 防护**（hard requirement）：dispatcher 在转发前必须解析 URL 并拒绝以下目标 — ① 私网段（IPv4 `10/8` `172.16/12` `192.168/16` `169.254/16` `127/8` `0.0.0.0`；IPv6 `::1` `fc00::/7` `fe80::/10`）；② 云元数据端点（`169.254.169.254`、`metadata.google.internal`、`metadata.azure.com` 等）；③ DNS 解析后**重新**校验解析出的实际 IP（防止 DNS rebinding）；④ 仅放行宿主配置的 allowlist 域名（per-Agent 可进一步收窄）。
 - **FR-002**: 所有 Capability 调用必须经 `host_call(capability_name, payload_bytes) → result_bytes` 单一 ABI 入口。
-- **FR-003**: 宿主必须按"当前正在执行的 Agent 的 permissions 集合"鉴权；不在集合内的 capability 立刻拒绝。子 Agent 不继承父 Agent 的 permissions，也不与父取交集 — 每个 Agent 的能力集合独立、显式声明（最小权限 / zero-trust）。
+- **FR-003**: 宿主必须按"当前正在执行的 Agent 的 permissions 集合"鉴权；不在集合内的 capability 立刻拒绝。此鉴权适用于所有调用路径：LLM 调用（`llm.invoke`）、Tool 调用（host_call via invoker）、Skill 执行（底层走 ToolRegistry）、Workflow 节点执行、以及 `route_to_subagent` 内的间接调用。子 Agent 不继承父 Agent 的 permissions，也不与父取交集 — 每个 Agent 的能力集合独立、显式声明（最小权限 / zero-trust）。
 - **FR-004**: 每次 Capability 调用都必须写入结构化审计日志：发起 Agent、Tool、Function、Plugin、capability、入参摘要、出参摘要或错误、耗时。**鉴权拒绝路径同样必须写**：当 host_call 因 `code = 4030 Capability denied` 或 `4040 Capability unknown` 被拒绝时，dispatcher 在返回错误前**必须**写一条 audit log（`event_type = capability_denied` / `outcome = denied`，含拒绝原因 + 调用方完整上下文）。"成功路径写、失败路径不写"是不可接受的 — 失败路径恰恰是安全分析最需要的证据。
 
 **Plugin 管理**
@@ -216,7 +216,7 @@
 - **FR-024**: Agent 字段：id、name、description、created_at、updated_at、tools（多对多 Tool）、skills（多对多 Skill）、system_prompt、permissions（capability 名集合）、parent_agent_id（NULL 表示根）、`model_preset`（可选；指向 hiveweb 启动时从 `llm_presets.toml` 加载的命名 preset；为空时 fallback 到全局默认 preset；子 Agent 不继承父的 preset）。
 - **FR-025**: Agent 路由由 LLM tool-calling 自决（系统组装 system_prompt + 子 Agent 列表 + tools/skills 后由 LLM 选择 `route_to_subagent(agent_id, reason)` / 直接回复 / 调用 Tool）。宿主在此之上叠加 hard-rule 安全门：① 深度 ≥ 10 拒绝路由；② 同会话路径出现循环立刻终止（最大跳次见 §Edge Cases）；③ 越权 capability 直接 4030 拒绝；④ `route_to_subagent(agent_id, ...)` 的 `agent_id` 必须是当前 Agent 的**直接子 Agent**（不能跨级跳，防止越级访问）。
   **子 Agent 错误的脱敏上报**：子 Agent 内部抛错时，宿主仅向父 Agent / SSE client 暴露 `{ code, message }` envelope（message 为用户文案，见 contracts/api.md §Errors）；**不**暴露子 Agent 的 system_prompt、内部 tool 名、Plugin identifier、stack trace、内部 capability 名（防止信息泄漏给恶意构造提示词的用户）。完整内部错误信息只写 audit log（含 request_id 供运维追溯）。
-- **FR-026**: Agent 调用 LLM、Tool、Skill 时均必须先通过 Capability 鉴权；越权立即返回错误。
+- **FR-026**：（已合并入 FR-003）Agent 调用 LLM、Tool、Skill、Workflow 时均必须先通过 Capability 鉴权；越权立即返回错误。详见 FR-003 的适用范围条款。
 
 **测试聊天**
 - **FR-027**: 管理员可通过测试窗口与 `main` Agent 对话；后端持久化会话历史，至少在同一登录会话内可见。
@@ -336,6 +336,218 @@
 - 物理 / 主机层入侵（依赖基础设施安全）
 - Wasmtime / Extism / providers crate 本身的 0-day（依赖上游修复 + 依赖扫描 CI）
 - 管理员 PC 被入侵导致 JWT 泄露（依赖端点安全）
+
+## Implementation Clarifications & Design Decisions
+
+> 本节收纳 checklist 交叉核对中发现的"需显式记录的设计决策/接受的局限/补充约定"。
+
+### REST API 补充约定（CHK183/185/186/187/188/192/203/204）
+
+- **CHK183**: 10 组资源 CRUD 响应形态已在 contracts/api.md 各节给出示例；POST 创建端点统一返回 envelope 内完整对象（含 server-assigned `id`/`created_at`/`updated_at`）。
+- **CHK185**: POST 创建端点返回的 `id` 与对象快照一致；server-assigned 字段由 DB 生成，client 不得在请求体中提供。
+- **CHK186**: 所有 PUT 端点统一走乐观锁（请求体必含 client 读到的 `updated_at`），冲突→409+4094。此约定在 contracts §0+§Errors 固化。
+- **CHK187**: DELETE 被引用阻塞→4093 统一适用于：Plugin（被 Function 引用）、Function（被 workflow_nodes/tools 引用）、Workflow（被 tools 引用）、Agent（有子 Agent）。Tag 用 4091。
+- **CHK188**: multipart POST `/api/plugins` 字段顺序：`meta` 先于 `file`。服务端先读 meta 校验大小，再读 file。
+- **CHK192**: 004 错误码（4030/4045/4091..4094/5001..5009/4291）与 003（1001..3004）命名空间无冲突：003 用 1xxx/2xxx/3xxx，004 用 4xxx/5xxx。
+- **CHK203**: HTTP 状态码是 transport-level 映射，业务码（`code`字段）才是权威。前端必须按 `code` 分支。
+- **CHK204**: Plugin 上传超过 `PLUGIN_MAX_BYTES`（默认16MB）时返 4001，`params: { "limit": "16MB" }`。
+
+### SSE Chat 补充（CHK193）
+
+- **CHK193**: SSE 事件完整 payload schema：`token`: `{ "text": string }`; `tool_call`: `{ "tool_call_id": string, "name": string, "args": object }`; `tool_result`: `{ "tool_call_id": string, "result_summary": string }`; `routed`: `{ "agent_id": number, "agent_identifier": string, "reason"?: string }`; `fallback_used`: `{ "from": string, "to": string, "reason": string }`; `done`: `{ "elapsed_ms": number, "final_agent_id": number, "message"?: object }`; `error`: `{ "code": number, "message": string }`。
+
+### host_call ABI 补充（CHK198/207/209）
+
+- **CHK198**: host_call request envelope 编码为 UTF-8 JSON，不含版本字段（v1 隐式；破坏性变更进 v2+双版兼容，host-functions.md §7）。
+- **CHK207**: host_call payload 超 4MB 时返 `{ ok: false, code: 4001, message: "Payload exceeds 4MB limit" }`。
+- **CHK209**: host_call ABI 版本契约已在 host-functions.md §7 明示：当前 v1；新增 capability 仅 §4 增项；envelope/错误码语义变更进 v2。
+
+### Capability Coverage Matrix 补充（CHK201/202）
+
+- **CHK201**: Matrix 覆盖所有 10 组端点（Capabilities/Categories/Tags/Plugins/Functions/Workflows/Tools/Skills/Agents/Chat + Runtime Metrics）。
+- **CHK202**: 危险 capability 涉及的 Agent permissions 修改路径标记为 Super-only（与 FR-022 一致）。
+
+### WASM 资源限制补充（CHK216/217/218/219）
+
+- **CHK216**: 128MB linear memory 上限在 Extism manifest 加载时由 `memory.max_memory_bytes` 强制（编译期而非运行时 OOM）。
+- **CHK217**: Wasmtime 默认调用栈深度上限 10000 帧（`wasmtime::Config::max_wasm_stack`）。恶意递归触发 stack overflow trap→实例丢弃+audit。
+- **CHK218**: host_call payload 4MB+network.http body 4MB 是 spec-level 硬约束（host-functions.md §5），非 implementation detail。
+- **CHK219**: 各 capability 并发上限语义：`network.http` 8/Plugin/会话（每 Plugin 独立计数）；`db.query`/`db.execute` 受 sqlx 连接池；`llm.invoke` per-session 串行；`log.emit` 100/s/Plugin 令牌桶。
+
+### 性能预算可测量性补充（CHK227/229）
+
+- **CHK227**: SC-006 基准使用 mock LLM 固定 800ms；生产通过 tracing span `routing_ms`+`llm_ms` 分离度量。
+- **CHK229**: perf 工具：T140 tokio Bencher; T156 criterion+mock; T168 criterion+mock LLM。命令记录于 perf-evidence.md。
+
+### 并发与背压补充（CHK230/231/233）
+
+- **CHK230**: SSE 全局并发上限默认 100（`CHAT_SSE_MAX_SESSIONS`），超出→503+5009。Per-admin 上限 2（FR-027 已定义）。
+- **CHK231**: Plugin 调用速率由 Instance Pool `PLUGIN_POOL_MAX_PER_PLUGIN=8` 隐式限流。MVP 不额外加 per-Agent/per-session 限制。
+- **CHK233**: DB 连接池 `max_connections` 默认 20。audit 写入走同一池；运维可调 `SQLX_MAX_CONNECTIONS` env。
+
+### 启动与生命周期补充（CHK236/237）
+
+- **CHK236**: Graceful shutdown：SIGTERM→停止 accept→等待 active SSE 完成（最多30s）→释放 Instance Pool→关闭 DB pool。未完成 session 标记 interrupted。
+- **CHK237**: 在线 reload `llm_presets.toml`：MVP 不支持（YAGNI）。修改 preset 需重启 hiveweb。
+
+### 观测性补充（CHK239/240）
+
+- **CHK239**: Plugin 调用 tracing span 字段：`plugin_id`/`function_id`/`capability`/`outcome`/`elapsed_ms`/`pool_hit`+`request_id`。
+- **CHK240**: LLM 调用 tracing 字段：`model_preset`/`actual_model`/`fallback_used`/`llm_ms`+`request_id`。
+
+### 安全补充（CHK059..122 全覆盖）
+
+- **CHK059**: 不存在"未经 dispatcher 的 host_call 捷径"：WASM sandbox→host function 唯一入口→host_call→dispatcher。三层保证无旁路。
+- **CHK060**: Capability 注册表运行时不接受外部修改（hot reload）。注册表是编译期常量+启动期 DB upsert 镜像。
+- **CHK061**: `is_dangerous=1` 的 capability 列表在 data-model V018 seed 显式列出：`network.http`/`db.execute`/`secret.get`。修改需 V018+ migration+Super 审批。
+- **CHK062**: 危险 capability 赋予要求 Super（FR-022）；调用由 dispatcher 按当前 Agent.permissions 鉴权。两者一致。
+- **CHK065**: 危险 capability 列表修改走 migration+DBA+Super 审批。MVP 不提供 UI 修改 `is_dangerous`。
+- **CHK067**: named query 注册流程：`named_queries.toml` 配置文件，仅 Super 可修改+重启服务。MVP 不提供 API 注册。
+- **CHK068**: named query 入参绑定使用 sqlx 参数化占位符（`?`/`:name`），永不字符串拼接。
+- **CHK069**: named query 含危险 SQL 的审批：需 Code Review+DBA 审批后部署。
+- **CHK070**: DB 连接分账户：MVP 不分。安全隔离依赖 capability 鉴权+named query 参数化+行数限制。
+- **CHK071**: `secret.get` allowlist 在宿主配置文件中定义。请求不在 allowlist 的 key→4030 denied。
+- **CHK072**: secret enumerate 明确禁止。args schema 仅接受 `{ "key": string }`。
+- **CHK073**: secret 访问审计由 FR-004 覆盖：每次 `secret.get` 写 audit。
+- **CHK074**: secret 在内存中不缓存到 static/thread-local；日志中不输出 secret 值（payload_summary 脱敏为 `***`）。
+- **CHK075**: `network.http` 白名单域名来源：全局配置（`http_allowlist`），per-Agent 可收窄（MVP 不加 per-Agent domain 字段）。
+- **CHK077**: 出站请求代理隔离：MVP 不要求，走直连+SSRF 防护。
+- **CHK078**: network.http body 4MB+并发 8/Plugin 是 spec-level 硬约束。
+- **CHK079**: WASM 默认无 WASI 系统调用（research §11+TM-1 已明确）。
+- **CHK082**: linear memory 128MB+调用栈深度+fuel timeout 是 spec-level 硬约束（FR-029/030/031）。
+- **CHK084**: Plugin 之间不可能共享状态：reset 清除 linear memory+WASM memory 实例私有隔离+mut global reset 后归零。
+- **CHK085**: 跨 Agent 复用 Plugin 实例时，dispatcher 用当前调用 Agent 的 permissions。FR-003 已明确。
+- **CHK086**: Plugin 实例创建期间 panic→丢弃实例+audit+返回 5000。
+- **CHK087**: Pool 等待期间 permission 变更：已发出的 host_call 用入口时 permissions 快照。TOCTOU 接受窗口（≤30s）。
+- **CHK089**: `payload_summary` 脱敏规则：①截断≤1KB；②字段黑名单（password/secret/token/api_key/authorization/cookie/value）→`***`；③保留 JSON 结构。
+- **CHK090**: audit 仅 INSERT，不 UPDATE/DELETE（除超期清理）。MySQL 用户仅授 INSERT+SELECT。
+- **CHK091**: 90天保留期满→归档到 S3（JSON Lines 按月分桶）+删除原表行。MVP 可简化为直接删除。
+- **CHK092**: `request_id` 跨边界传递：axum request-id middleware→Context→dispatcher/pool/orchestrator。所有 audit 行共享同一 request_id。
+- **CHK093**: main Agent `system_prompt` 修改限 Super（FR-022 "任何字段修改仅 Super"已含）。
+- **CHK094**: main Agent `model_preset` 允许为空（=全局默认）。全局默认 preset 变更属部署级操作。
+- **CHK095**: 禁止创建 identifier='main' 的 Agent — UNIQUE+service 层额外校验。
+- **CHK096**: Super 降级恢复：沿用 003 设计（至少保留 1 个 Super）。
+- **CHK097**: Agent 嵌套≤10 的理由：①防指数级 LLM 调用；②防上下文窗口溢出；③运营经验值。
+- **CHK098**: 路由循环检测窗口：同一 chat_session 范围。orchestrator 维护 agent visit history。
+- **CHK101**: 所有 capability 入参在 dispatcher 层做 JSON schema 校验，非法→4001+audit。
+- **CHK102**: identifier 字符集：`[a-z0-9_]+(\.[a-z0-9_]+)*`，2-64字符。service 层正则校验。
+- **CHK103**: WASM magic bytes 校验在 FR-005 已明确。
+- **CHK104**: multipart upload 校验顺序：先读 meta→校验元数据→再读 file→校验 magic+大小→计算 sha256。
+- **CHK105**: 004 所有新增端点走 003 JWT。无遗漏。
+- **CHK106**: `GET /api/capabilities` 和 `GET /api/agents/model-presets` Normal 可访问。
+- **CHK108**: Plugin S3 key：`plugins/{identifier}/{version}.wasm`。sha256 不嵌入 key。
+- **CHK109**: schema_migrations 走 sqlx 内置互斥锁，不走乐观锁。
+- **CHK110**: Plugin 软删除后重建同 identifier+version：service 层拒绝。
+- **CHK111**: Agent permissions 修改与正在执行的 host_call：已发出用入口时快照，后续用新。TOCTOU 窗口≤30s。
+- **CHK113**: capability handler 内部抛错→统一包装为 5000+用户文案，原始错误只写 audit+tracing。
+- **CHK114**: Plugin 反复 4030 的 fail-fast：MVP 不自动熔断。依赖 rate limit+audit 告警。
+- **CHK115**: 失败 host_call 通过 SSE error 事件时，`message` 用用户文案，不暴露内部细节。
+- **CHK117**: audit append-only 语义（CHK090）。hash chain：MVP 不加（YAGNI）。
+- **CHK118**: JWT_SECRET/LLM API KEY 存储：env-injected 不落盘。轮换=更新 env+重启。
+- **CHK119**: DB 连接字符串密码在日志中遮码：沿用 003 `Secret` wrapper。
+- **CHK120**: admin PII 保留/删除：admin 删除→SET NULL+snapshot 保留；聊天内容按 30 天 cron 清理。
+- **CHK121**: 审计日志合规导出：MVP 不提供 API。运维直接查 DB。
+- **CHK122**: LLM 调用"不发送敏感字段"过滤：MVP 不实现。缓解：payload_summary 脱敏+子 Agent 错误脱敏。
+
+### UX 补充（CHK001..054 全覆盖）
+
+- **CHK001**: Plugin 上传进度：MVP 显示 spinner+"上传中…"，不提供实时进度条。
+- **CHK002**: 大文件上传失败显示 4001+"Plugin 文件大小超过 16MB 限制"。
+- **CHK005**: Agent 路由时 SSE `routed` 事件→UI 显示"已切换到 {agent_identifier}"分隔条。FR-028 已定义。
+- **CHK006**: `tool_call` 事件渲染：UI 显示 tool 名称+入参摘要卡片。FR-028 已定义。
+- **CHK007**: DAG 编辑器空状态：提示"拖入 Function 开始构建工作流"+空画布。
+- **CHK008**: 节点级失败 UI：节点高亮红色+tooltip 显示错误信息。
+- **CHK009**: Skill frontmatter 校验时机：保存时校验（非实时）。
+- **CHK010**: ModelPreset 下拉为空：显示"未找到可用模型配置，请联系管理员"。此场景不应发生。
+- **CHK011**: 拖拽 Function：reactflow 标准拖拽。从左侧列表拖入画布创建节点。
+- **CHK012**: DAG 边端口映射：从 output port 拖到 input port+边属性面板。
+- **CHK013**: 环检测红框：仅环上节点+连线高亮红色。
+- **CHK014**: `done` 事件完整 assistant 消息：`{ "elapsed_ms", "final_agent_id", "message": {...} }`。
+- **CHK016**: `system_prompt` 最大长度 32KB，超出→4001。textarea 显示字符计数器。
+- **CHK017**: Skill content 64KB 超出→保存时拒绝+toast 提示。
+- **CHK018**: Agent 编辑器字段顺序与 contracts §9 一致。
+- **CHK019**: "无权限=不渲染"在 004 全部 5 个新页面贯彻。
+- **CHK021**: Plugin 列表"已删除"行灰显+日期标签，与 003 "已禁用"视觉统一。
+- **CHK022**: SSE chat 与 003 消息组件视觉统一。
+- **CHK023**: SC-001 度量起点=HTTP 请求到达，终点=200/201 响应。
+- **CHK024**: SC-003 含服务端校验耗时，不含 reactflow 渲染。
+- **CHK025**: SC-006 含 LLM 调用延迟。宿主侧 routing overhead≤200ms。
+- **CHK026**: SC-010 用户可感知=首字时间。`done`=完整响应。
+- **CHK027**: a11y 覆盖全部 004 新增页面+组件。reactflow canvas 可豁免部分 axe 规则。
+- **CHK028**: Plugin 软删除后 Function 下拉过滤已删除项。
+- **CHK029**: Workflow 引用已删除 Plugin 的 Function 节点：灰色+"Plugin 已删除"标签。
+- **CHK030**: model_preset 不存在时保存返 5007。
+- **CHK031**: 聊天历史超可视范围：虚拟滚动+分页加载。
+- **CHK032**: Skill 勾选后右侧面板实时预览 system_prompt 拼接结果。
+- **CHK033**: 同 identifier 不同 version Plugin：列表行显示 version badge。
+- **CHK034**: Agent 第 10 层新建子 Agent 按钮隐藏（不渲染）。
+- **CHK035**: main Agent 在树中锚定：不可拖动、无删除按钮、显示 `main` badge。
+- **CHK036**: SSE error 事件各 code 有用户友好文案（contracts §Errors 统一）。
+- **CHK037**: 路由跳次达上限时 Chat 显示"对话已达到最大路由次数"。
+- **CHK038**: DagEditor keyboard navigation：Tab/Enter/Delete/Esc。
+- **CHK039**: Monaco editor a11y 限制：axe 排除 Monaco 容器，手动验证。
+- **CHK040**: reactflow jsdom 限制：axe 排除容器；a11y 通过 Playwright E2E 验证。
+- **CHK041**: SSE 浏览器兼容性：Chrome 6+/Firefox 6+/Safari 5+/Edge 79+。
+- **CHK042**: i18n：沿用 003 默认中文。
+- **CHK043**: 长 content 渲染：react-markdown+虚拟滚动。
+- **CHK044**: reactflow 11.x 稳定性：锁定 minor 版本。
+- **CHK045**: Monaco worker 加载失败→降级 textarea。
+- **CHK046**: 假设管理员熟悉 markdown+JSON Schema：显式登记。
+- **CHK047**: 假设浏览器支持原生 EventSource：显式登记。MVP 不提供 polyfill。
+- **CHK049**: `route_to_subagent` 是特殊 Tool，SSE 流中表现为 `tool_call`+`routed` 事件组合。
+- **CHK050**: Tool 与 Skill 在 Agent 编辑器多选框中区分视觉：不同 section+不同 icon。
+- **CHK051**: SkillsLoader frontmatter 解析失败→UI toast+保存拒绝。
+- **CHK052**: 内置/定制 Tool 视觉区分：`builtin`/`custom` badge。
+- **CHK053**: FallbackProvider 切换时 SSE `fallback_used` 事件→UI 显示"已切换到备用模型"。
+- **CHK054**: LlmPresetName 命名约束：`[a-z0-9_-]+`，2-64字符。UI 下拉按字母排序。
+
+### 需求完整性/清晰度补充（CHK002..072）
+
+- **CHK002/003/004/006**: 已在 CHK193/内置 Function schema/FR-005/安全门错误码中补充。
+- **CHK015**: Plugin 内存 128MB 超限→Wasmtime trap→5000+audit+实例不入池。
+- **CHK017**: 跳次计数：main=第0跳，main→子=第1跳。`AGENT_MAX_HOPS` 限制路由次数。
+- **CHK021**: 30 天聊天保留 cron：每日凌晨 3:00，事务内批量删除（每批 1000 session）。
+- **CHK023**: FR-028 与 T127 的 7 种事件类型统一（token/tool_call/tool_result/routed/fallback_used/done/error）。
+- **CHK029**: SC-001 度量起点=HTTP 请求到达，终点=200/201 响应。
+- **CHK032**: SC-007 测试方法：11 capability×3 路径=33 个合约测试用例。
+- **CHK054/057/058/059**: 度量工具/a11y 验收/错误不携带 stack trace/16MB 双重校验已补充。
+- **CHK061/062/063**: providers 复用/003 角色复用/S3 兼容性验证已在 tasks 中体现。
+- **CHK065**: DagEditor keyboard navigation 已排期（T157-T161）。
+- **CHK067**: "正在思考…" 30s 超时是客户端 UX 超时，不影响后端。LLM 单次 30s+链 45s 独立。
+- **CHK068**: named query schema 在 `named_queries.toml`：`{ name, sql, params_schema }`。
+- **CHK069**: Skill 模板插值：`{{function:identifier(args)}}`。MVP 仅支持此语法。
+- **CHK070**: model_preset 切换不影响已有活跃会话（用创建时快照）。
+- **CHK071**: Workflow 失败无回滚/补偿。DAG 执行"尽力向前"。
+- **CHK072**: Pool lazy 初始化与冷启动≤300ms：首访可能 100-500ms，SC-05 已区分命中/冷启动。
+
+### Data Model 补充（CHK128..182）
+
+- **CHK128**: `agents.identifier VARCHAR(64)` 足够（最长合理路径约 40 字符）。
+- **CHK129**: `model_preset` 字符集 `[a-z0-9_-]+`，2-64字符。
+- **CHK130**: `payload_summary` 截断≤1KB+字段黑名单脱敏。
+- **CHK131**: `chat_messages.content` 改用 `MEDIUMTEXT`（消除 TEXT 65535 bytes vs 64KB 边界冲突）。service 层校验≤64KB。
+- **CHK132**: `workflow_edges.mapping` schema：`{ "dst_key.dst_field": "src_key.src_field" }`。
+- **CHK135**: `agents.identifier` 全局唯一，不以 parent 前缀区分。by-design。
+- **CHK136**: `categories (parent_id, slug) UNIQUE` 允许跨 parent 同 slug。by-design。
+- **CHK137**: `chat_messages (session_id, seq)` 并发写安全：同一 session 由 orchestrator 串行写入。
+- **CHK138**: FK ON DELETE 理由：CASCADE=强拥有；SET NULL=弱引用+需保留；RESTRICT=引用阻塞；无 FK=审计不可级联。
+- **CHK143**: `runtime_audit_logs` 无 FK→intentional（audit 不可级联删除）。
+- **CHK144**: 不变量每条标明"谁强制"：1/2/8=service+FE; 3=DB CHECK+service; 4/6/7/10/11/12=service; 5/9/13=DB。
+- **CHK149**: 三维检索索引足够。EXPLAIN 验证在 T049。
+- **CHK150**: "按 agent_id 统计"用现有索引，性能不足时加复合索引。
+- **CHK153**: 长期增长表分区：MVP 先不做（<1M 行），3 个月后按需加。
+- **CHK159**: forward-only migration（沿用 003）。
+- **CHK162**: `is_dangerous` false→true 时，已授权 Agent 不自动收回。需 Super 手动审计。
+- **CHK164**: `skills.frontmatter` 允许的 key 子集：MVP 不限制。
+- **CHK165**: 内置 Skill seed 与 builtin Function 一致—启动期代码 upsert。
+- **CHK167**: `plugins.manifest` 仍存储完整 manifest，运行时忽略 allowed_hosts/allowed_paths。
+- **CHK168**: `plugins.s3_key` 格式：`plugins/{identifier}/{version}.wasm`。sha256 不嵌入 key。
+- **CHK169**: Plugin 软删除后 sha256/s3_key/S3 文件保留供 audit 追溯。
+- **CHK174**: `LlmPresetName`/`model_preset` 三处命名一致。
+- **CHK177**: SC-005 "命中"定义在 spec SC-005 度量定义段，data-model 无需重复。
+- **CHK178**: SC-007 可测量方法：33 个合约测试+每月人工抽检。
+- **CHK180**: MySQL ≥8.0.4 假设显式登记。
+- **CHK182**: sqlx compile-time 对动态 query 的限制：集成测试覆盖所有 8 种组合。
 
 ## Assumptions
 

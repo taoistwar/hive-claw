@@ -7,8 +7,17 @@ export interface CapabilityItem {
   is_dangerous: boolean;
 }
 
+export interface CapabilityDetail extends CapabilityItem {
+  allowed_plugins?: string[];
+}
+
 export async function listCapabilities(): Promise<CapabilityItem[]> {
   const resp = await apiClient.get<CapabilityItem[]>('/capabilities');
+  return resp.data;
+}
+
+export async function getCapabilityDetail(name: string): Promise<CapabilityDetail> {
+  const resp = await apiClient.get<CapabilityDetail>(`/capabilities/${name}`);
   return resp.data;
 }
 

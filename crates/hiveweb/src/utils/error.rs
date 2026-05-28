@@ -49,6 +49,7 @@ pub mod codes {
     pub const MODEL_PRESET_UNKNOWN: u16 = 5007;
     pub const BUILTIN_SKILL_PROTECTED: u16 = 5008;
     pub const POOL_BUSY: u16 = 5009;
+    pub const BUILTIN_TOOL_PROTECTED: u16 = 5010;
 }
 
 #[derive(Debug, Serialize)]
@@ -114,7 +115,8 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         codes::SSE_CONCURRENCY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
         codes::CANNOT_DELETE_MAIN_AGENT
         | codes::CAPABILITY_DENIED_CHAT
-        | codes::BUILTIN_SKILL_PROTECTED => StatusCode::FORBIDDEN,
+        | codes::BUILTIN_SKILL_PROTECTED
+        | codes::BUILTIN_TOOL_PROTECTED => StatusCode::FORBIDDEN,
         codes::SCHEMA_MISMATCH
         | codes::WORKFLOW_MAPPING_INVALID
         | codes::AGENT_DEPTH_EXCEEDED
@@ -165,6 +167,7 @@ pub enum AppError {
     ModelPresetUnknown(String),
     BuiltinSkillProtected(String),
     PoolBusy(String),
+    BuiltinToolProtected(String),
 }
 
 impl AppError {
@@ -200,6 +203,7 @@ impl AppError {
             AppError::ModelPresetUnknown(_) => codes::MODEL_PRESET_UNKNOWN,
             AppError::BuiltinSkillProtected(_) => codes::BUILTIN_SKILL_PROTECTED,
             AppError::PoolBusy(_) => codes::POOL_BUSY,
+            AppError::BuiltinToolProtected(_) => codes::BUILTIN_TOOL_PROTECTED,
         }
     }
 
@@ -233,7 +237,8 @@ impl AppError {
             | AppError::AgentDepthExceeded(m)
             | AppError::ModelPresetUnknown(m)
             | AppError::BuiltinSkillProtected(m)
-            | AppError::PoolBusy(m) => m,
+            | AppError::PoolBusy(m)
+            | AppError::BuiltinToolProtected(m) => m,
         }
     }
 

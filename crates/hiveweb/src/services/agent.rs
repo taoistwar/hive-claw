@@ -41,6 +41,7 @@ pub struct UpdateMeta {
     pub name: Option<String>,
     pub description: Option<String>,
     pub system_prompt: Option<String>,
+    pub parent_agent_id: Option<i64>,
     pub model_preset: Option<String>,
     #[serde(default)]
     pub tool_ids: Option<Vec<i64>>,
@@ -308,6 +309,36 @@ pub async fn update(
         check_dangerous_permissions(registry, perms, actor_role)?;
     }
 
+    // 计算 depth（如果 parent_agent_id 有变更）
+    let new_depth: Option<i8> = if meta.parent_agent_id.is_some()
+        && meta.parent_agent_id != existing.parent_agent_id
+    {
+        let pid = meta.parent_agent_id.unwrap();
+        // 不允许设置自己为父
+        if pid == id {
+            return Err(AppError::BadRequest(
+                "parent_agent_id 不能指向自身".into(),
+            ));
+        }
+        let p: Option<(i8,)> =
+            sqlx::query_as("SELECT depth FROM agents WHERE id = ?")
+                .bind(pid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| AppError::Internal(format!("parent lookup: {e}")))?;
+        let parent_depth = p
+            .ok_or_else(|| AppError::NotFound(format!("parent agent id={pid} not found")))?
+            .0;
+        if parent_depth + 1 > MAX_DEPTH {
+            return Err(AppError::AgentDepthExceeded(format!(
+                "Agent 层级已达最大深度 {MAX_DEPTH}"
+            )));
+        }
+        Some(parent_depth + 1)
+    } else {
+        None
+    };
+
     crate::services::optimistic_lock::check_and_bump(pool, "agents", id, meta.updated_at).await?;
 
     let mut tx = pool
@@ -320,12 +351,16 @@ pub async fn update(
               name = COALESCE(?, name),
               description = COALESCE(?, description),
               system_prompt = COALESCE(?, system_prompt),
+              parent_agent_id = COALESCE(?, parent_agent_id),
+              depth = COALESCE(?, depth),
               model_preset = COALESCE(?, model_preset)
            WHERE id = ?"#,
     )
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(&meta.system_prompt)
+    .bind(meta.parent_agent_id)
+    .bind(new_depth)
     .bind(&meta.model_preset)
     .bind(id)
     .execute(&mut *tx)

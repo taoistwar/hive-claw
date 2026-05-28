@@ -15,6 +15,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -42,6 +43,13 @@ pub fn router() -> Router<AppState> {
 pub struct ListQuery {
     #[serde(default)] pub offset: Option<i64>,
     #[serde(default)] pub limit: Option<i64>,
+    #[serde(default)] pub search: Option<String>,
+    #[serde(default)] pub category_id: Option<i64>,
+    #[serde(default)] pub tag_id: Option<i64>,
+    #[serde(default)] pub created_at_from: Option<DateTime<Utc>>,
+    #[serde(default)] pub created_at_to: Option<DateTime<Utc>>,
+    #[serde(default)] pub updated_at_from: Option<DateTime<Utc>>,
+    #[serde(default)] pub updated_at_to: Option<DateTime<Utc>>,
 }
 
 async fn list_workflows(
@@ -50,10 +58,23 @@ async fn list_workflows(
 ) -> Result<ApiResponse<svc::WorkflowList>, ApiResponse<()>> {
     let offset = q.offset.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
-    svc::list(&state.pool, offset, limit)
-        .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+    svc::list(
+        &state.pool,
+        offset,
+        limit,
+        svc::ListFilter {
+            search: q.search,
+            category_id: q.category_id,
+            tag_id: q.tag_id,
+            created_at_from: q.created_at_from,
+            created_at_to: q.created_at_to,
+            updated_at_from: q.updated_at_from,
+            updated_at_to: q.updated_at_to,
+        },
+    )
+    .await
+    .map(ApiResponse::success)
+    .map_err(|e| e.into_response())
 }
 
 async fn get_workflow(

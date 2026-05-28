@@ -37,6 +37,7 @@ export function PluginFilters({ value, onChange }: PluginFiltersProps) {
         <Switch
           checked={!!value.deleted_only}
           onChange={(checked) => onChange({ ...value, deleted_only: checked, offset: 0 })}
+          aria-label="是否显示已删除的 Plugin"
         />
       </Space>
     </Space>

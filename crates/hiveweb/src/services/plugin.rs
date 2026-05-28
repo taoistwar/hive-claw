@@ -72,6 +72,7 @@ pub struct PluginListItem {
 pub struct TagSummary {
     pub id: i64,
     pub name: String,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -277,7 +278,7 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, Ap
 
 async fn fetch_tags(pool: &MySqlPool, plugin_id: i64) -> Result<Vec<TagSummary>, AppError> {
     let tags = sqlx::query_as::<_, TagSummary>(
-        r#"SELECT t.id, t.name FROM tags t
+        r#"SELECT t.id, t.name, t.color FROM tags t
            JOIN taggings tg ON tg.tag_id = t.id
            WHERE tg.entity_type = 'plugin' AND tg.entity_id = ?"#,
     )

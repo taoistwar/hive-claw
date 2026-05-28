@@ -1,7 +1,7 @@
 // PluginDetail — read-only plugin information viewer
 
 import { useEffect, useState } from 'react';
-import { Button, Descriptions, Spin, Tag } from 'antd';
+import { Button, Descriptions, Spin, Tag, Divider } from 'antd';
 import type { Plugin, PluginTag } from '../services/plugin';
 import { getPluginExports } from '../services/plugin';
 
@@ -35,12 +35,8 @@ export function PluginDetail({ plugin, categoryNameMap, onEdit, onBack }: Plugin
 
   return (
     <div>
-      <Descriptions
-        bordered
-        column={1}
-        title="插件详情"
-        size="small"
-      >
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>基本信息</div>
+      <Descriptions bordered column={1} size="small">
         <Descriptions.Item label="ID">{plugin.id}</Descriptions.Item>
         <Descriptions.Item label="identifier">
           <code>{plugin.identifier}</code>
@@ -69,26 +65,6 @@ export function PluginDetail({ plugin, categoryNameMap, onEdit, onBack }: Plugin
         <Descriptions.Item label="tags">
           {tagItems?.length ? tagItems : '—'}
         </Descriptions.Item>
-        <Descriptions.Item label="size_bytes">
-          {(plugin.size_bytes / 1024).toFixed(1)} KB
-        </Descriptions.Item>
-        <Descriptions.Item label="sha256">
-          <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{plugin.sha256}</code>
-        </Descriptions.Item>
-        <Descriptions.Item label="s3_key">
-          <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{plugin.s3_key}</code>
-        </Descriptions.Item>
-        <Descriptions.Item label="exports">
-          {exportsLoading ? (
-            <Spin size="small" />
-          ) : exports.length > 0 ? (
-            exports.map((fn) => (
-              <Tag key={fn} color="geekblue">{fn}</Tag>
-            ))
-          ) : (
-            '—'
-          )}
-        </Descriptions.Item>
         <Descriptions.Item label="created_at">
           {new Date(plugin.created_at).toLocaleString('zh-CN')}
         </Descriptions.Item>
@@ -103,6 +79,34 @@ export function PluginDetail({ plugin, categoryNameMap, onEdit, onBack }: Plugin
           )}
         </Descriptions.Item>
       </Descriptions>
+
+      <Divider style={{ margin: '24px 0 16px' }} />
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>存储信息</div>
+      <Descriptions bordered column={1} size="small">
+        <Descriptions.Item label="size_bytes">
+          {(plugin.size_bytes / 1024).toFixed(1)} KB
+        </Descriptions.Item>
+        <Descriptions.Item label="sha256">
+          <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{plugin.sha256}</code>
+        </Descriptions.Item>
+        <Descriptions.Item label="s3_key">
+          <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{plugin.s3_key}</code>
+        </Descriptions.Item>
+      </Descriptions>
+
+      <Divider style={{ margin: '24px 0 16px' }} />
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>exports</div>
+      <div style={{ padding: '12px 16px', background: '#fafafa', borderRadius: 4 }}>
+        {exportsLoading ? (
+          <Spin size="small" />
+        ) : exports.length > 0 ? (
+          exports.map((fn) => (
+            <Tag key={fn} color="geekblue">{fn}</Tag>
+          ))
+        ) : (
+          '—'
+        )}
+      </div>
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         {onBack && <Button onClick={onBack}>返回</Button>}

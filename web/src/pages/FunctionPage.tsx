@@ -1,17 +1,32 @@
 // FunctionPage — 列表 + 左侧分类树过滤 + 创建 + 编辑 + 删除 (T092 扩展)
 
 import { useEffect, useState } from 'react';
-import { Table, Tag, Space, Input, Select, message, Button, Popconfirm, Tree, Drawer } from 'antd';
+import { Table, Tag, Space, Input, Select, message, Button, Popconfirm, Tree, Drawer, Form, Row, Col, DatePicker, Card } from 'antd';
 import type { DataNode } from 'antd/es/tree';
-import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, SearchOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import type { Dayjs } from 'dayjs';
 import { listFunctions, deleteFunction, type FunctionItem, type FunctionList } from '../services/function';
 import FunctionForm from '../components/FunctionForm';
 import FunctionTester from '../components/FunctionTester';
 import { FunctionDetail } from '../components/FunctionDetail';
 import { listCategoriesTree, type CategoryNode } from '../services/category';
+import { listCapabilities, type CapabilityItem } from '../services/capability';
+
+const { RangePicker } = DatePicker;
 
 type FormMode = 'create' | 'edit' | null;
+
+interface FilterValues {
+  search?: string;
+  kind?: 'builtin' | 'custom' | '';
+  identifier?: string;
+  name?: string;
+  plugin_identifier?: string;
+  required_capabilities?: string;
+  created_at_range?: [Dayjs, Dayjs] | null;
+  updated_at_range?: [Dayjs, Dayjs] | null;
+}
 
 function toDataNodes(nodes: CategoryNode[]): DataNode[] {
   return nodes.map((n) => ({
@@ -24,8 +39,6 @@ function toDataNodes(nodes: CategoryNode[]): DataNode[] {
 export default function FunctionPage() {
   const [data, setData] = useState<FunctionList>({ items: [], total: 0, offset: 0, limit: 20 });
   const [loading, setLoading] = useState(false);
-  const [search, setSearch] = useState('');
-  const [kind, setKind] = useState<'builtin' | 'custom' | ''>('');
   const [categoryId, setCategoryId] = useState<number | undefined>(undefined);
   const [formMode, setFormMode] = useState<FormMode>(null);
   const [editingRecord, setEditingRecord] = useState<FunctionItem | null>(null);
@@ -37,12 +50,19 @@ export default function FunctionPage() {
   const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key | undefined>(undefined);
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<React.Key[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
+  const [filterForm] = Form.useForm<FilterValues>();
+  const [filterCollapsed, setFilterCollapsed] = useState(false);
+  const [capabilities, setCapabilities] = useState<CapabilityItem[]>([]);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
     try {
-      const tree = await listCategoriesTree();
+      const [tree, caps] = await Promise.all([
+        listCategoriesTree(),
+        listCapabilities(),
+      ]);
       setCategoryTree(tree);
+      setCapabilities(caps);
       const allKeys: React.Key[] = [];
       const collect = (nodes: CategoryNode[]) => {
         nodes.forEach((n) => {
@@ -63,12 +83,21 @@ export default function FunctionPage() {
     void loadCategoryTree();
   }, []);
 
-  const fetchData = () => {
+  const fetchData = (overrides?: Partial<FilterValues>) => {
+    const values = overrides || filterForm.getFieldsValue();
     setLoading(true);
     listFunctions({
-      search: search || undefined,
-      kind: kind || undefined,
+      search: values.search || undefined,
+      kind: values.kind || undefined,
       category_id: categoryId,
+      identifier: values.identifier || undefined,
+      name: values.name || undefined,
+      plugin_identifier: values.plugin_identifier || undefined,
+      required_capabilities: values.required_capabilities || undefined,
+      created_at_start: values.created_at_range ? values.created_at_range[0].startOf('day').toISOString() : undefined,
+      created_at_end: values.created_at_range ? values.created_at_range[1].endOf('day').toISOString() : undefined,
+      updated_at_start: values.updated_at_range ? values.updated_at_range[0].startOf('day').toISOString() : undefined,
+      updated_at_end: values.updated_at_range ? values.updated_at_range[1].endOf('day').toISOString() : undefined,
     })
       .then(setData)
       .catch((e) => message.error(`加载失败：${(e as Error).message}`))
@@ -78,7 +107,16 @@ export default function FunctionPage() {
   useEffect(() => {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, kind, categoryId]);
+  }, [categoryId]);
+
+  const handleFilter = () => {
+    fetchData();
+  };
+
+  const handleReset = () => {
+    filterForm.resetFields();
+    fetchData({});
+  };
 
   const handleCategorySelect = (key?: React.Key) => {
     const newSelected = key === selectedCategoryKey ? undefined : key;
@@ -151,6 +189,18 @@ export default function FunctionPage() {
     },
     { title: 'plugin', dataIndex: 'plugin_identifier', render: (v?: string | null) => v ?? '-' },
     { title: 'plugin_export', dataIndex: 'plugin_export' },
+    {
+      title: 'required_capabilities',
+      dataIndex: 'required_capabilities',
+      render: (caps?: string[] | null) =>
+        caps?.map((c) => <Tag key={c}>{c}</Tag>) ?? '-',
+    },
+    {
+      title: 'tags',
+      dataIndex: 'tags',
+      render: (tags?: { id: number; name: string }[]) =>
+        tags?.map((t) => <Tag key={t.id}>{t.name}</Tag>) ?? null,
+    },
     { title: '创建时间', dataIndex: 'created_at', width: 180, render: (v: string) => new Date(v).toLocaleString() },
     { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (v: string) => new Date(v).toLocaleString() },
     {
@@ -174,33 +224,31 @@ export default function FunctionPage() {
           >
             测试
           </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => handleEdit(record)}
+          >
+            编辑
+          </Button>
           {record.kind !== 1 && (
-            <>
+            <Popconfirm
+              title="确认删除"
+              description="确定要删除此函数吗？此操作不可撤销。"
+              onConfirm={() => handleDelete(record)}
+              okText="确认"
+              cancelText="取消"
+            >
               <Button
                 type="link"
                 size="small"
-                icon={<EditOutlined />}
-                onClick={() => handleEdit(record)}
+                danger
+                icon={<DeleteOutlined />}
               >
-                编辑
+                删除
               </Button>
-              <Popconfirm
-                title="确认删除"
-                description="确定要删除此函数吗？此操作不可撤销。"
-                onConfirm={() => handleDelete(record)}
-                okText="确认"
-                cancelText="取消"
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  danger
-                  icon={<DeleteOutlined />}
-                >
-                  删除
-                </Button>
-              </Popconfirm>
-            </>
+            </Popconfirm>
           )}
         </Space>
       ),
@@ -230,24 +278,6 @@ export default function FunctionPage() {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Space style={{ marginBottom: 16 }}>
-          <Input.Search
-            placeholder="搜索 function"
-            allowClear
-            onSearch={setSearch}
-            style={{ width: 280 }}
-            aria-label="搜索 function"
-          />
-          <Select
-            value={kind}
-            onChange={(v) => setKind(v)}
-            style={{ width: 140 }}
-            aria-label="按 kind 筛选"
-            options={[
-              { value: '', label: '全部 kind' },
-              { value: 'builtin', label: 'builtin' },
-              { value: 'custom', label: 'custom' },
-            ]}
-          />
           <Button
             type="primary"
             icon={<PlusOutlined />}
@@ -255,7 +285,102 @@ export default function FunctionPage() {
           >
             创建函数
           </Button>
+          <Button
+            icon={filterCollapsed ? <FilterOutlined /> : <SearchOutlined />}
+            onClick={() => setFilterCollapsed(!filterCollapsed)}
+          >
+            {filterCollapsed ? '展开筛选' : '收起筛选'}
+          </Button>
         </Space>
+
+        {!filterCollapsed && (
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Form form={filterForm} layout="inline">
+              <Row gutter={[16, 8]} style={{ width: '100%' }}>
+                <Col span={6}>
+                  <Form.Item name="search" label="关键词" style={{ width: '100%', marginBottom: 0 }}>
+                    <Input placeholder="搜索名称/描述/identifier" allowClear />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="kind" label="类型" style={{ width: '100%', marginBottom: 0 }}>
+                    <Select
+                      placeholder="选择类型"
+                      allowClear
+                      options={[
+                        { value: 'builtin', label: 'builtin' },
+                        { value: 'custom', label: 'custom' },
+                      ]}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="identifier" label="identifier" style={{ width: '100%', marginBottom: 0 }}>
+                    <Input placeholder="精确匹配" allowClear />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="name" label="名称" style={{ width: '100%', marginBottom: 0 }}>
+                    <Input placeholder="模糊匹配" allowClear />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="plugin_identifier" label="插件" style={{ width: '100%', marginBottom: 0 }}>
+                    <Input placeholder="模糊匹配" allowClear />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="required_capabilities" label="权限" style={{ width: '100%', marginBottom: 0 }}>
+                    <Select
+                      placeholder="选择capability"
+                      allowClear
+                      options={capabilities.map((c) => ({
+                        label: (
+                          <span>
+                            {c.name}
+                            {c.is_dangerous && <Tag color="red" style={{ marginLeft: 4 }}>危险</Tag>}
+                          </span>
+                        ),
+                        value: c.name,
+                      }))}
+                      showSearch
+                      filterOption={(input: string, option) => {
+                        const cap = capabilities.find((c) => c.name === (option as any)?.value);
+                        if (!cap) return false;
+                        return cap.name.toLowerCase().includes(input.toLowerCase());
+                      }}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item label="创建时间" style={{ width: '100%', marginBottom: 0 }}>
+                    <Form.Item name="created_at_range" noStyle>
+                      <RangePicker style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item label="更新时间" style={{ width: '100%', marginBottom: 0 }}>
+                    <Form.Item name="updated_at_range" noStyle>
+                      <RangePicker style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item style={{ marginBottom: 0 }}>
+                    <Button type="primary" icon={<SearchOutlined />} onClick={handleFilter}>
+                      查询
+                    </Button>
+                    <Button style={{ marginLeft: 8 }} icon={<ReloadOutlined />} onClick={handleReset}>
+                      重置
+                    </Button>
+                  </Form.Item>
+                </Col>
+              </Row>
+            </Form>
+          </Card>
+        )}
+
         <Table<FunctionItem>
           rowKey="id"
           columns={columns}

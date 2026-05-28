@@ -13,6 +13,7 @@ use agent::{AgentLoop, BuiltinToolSet, LoopConfig, ToolFactoryConfig, ToolFactor
 use bus::MessageBus;
 use config::schema::{Config, ProviderConfig};
 use config::{get_config_path, paths::is_default_workspace, set_config_path};
+use std::sync::OnceLock;
 use providers::anthropic_provider::{AnthropicConfig, AnthropicProvider};
 use providers::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
 use providers::bedrock_provider::{BedrockConfig, BedrockProvider};
@@ -125,6 +126,9 @@ impl LoopBundle {
         cfg: &Config,
         cron: Option<Arc<::cron::CronService>>,
     ) -> Result<Self, String> {
+        // Initialise Langfuse tracing if configured (once per process).
+        init_langfuse_from_config(cfg);
+
         let provider = providers::make_provider(cfg)?;
         let bus = Arc::new(MessageBus::new());
         let tf = ToolFactoryConfig::from_config(cfg);
@@ -162,4 +166,57 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+// ---------------------------------------------------------------------------
+// Langfuse initialisation
+// ---------------------------------------------------------------------------
+
+static LANGFUSE_INIT: OnceLock<()> = OnceLock::new();
+
+/// Initialise the global Langfuse client from [`Config::langfuse`].
+///
+/// Idempotent — only sets the client once per process lifetime.
+fn init_langfuse_from_config(cfg: &Config) {
+    LANGFUSE_INIT.get_or_init(|| {
+        let lf = &cfg.langfuse;
+        if !lf.enabled {
+            return;
+        }
+        let public_key = match lf.public_key.as_deref() {
+            Some(k) if !k.is_empty() => k.to_string(),
+            _ => {
+                log::warn!("langfuse.enabled=true but public_key is empty — tracing disabled");
+                return;
+            }
+        };
+        let secret_key = match lf.secret_key.as_deref() {
+            Some(k) if !k.is_empty() => k.to_string(),
+            _ => {
+                log::warn!("langfuse.enabled=true but secret_key is empty — tracing disabled");
+                return;
+            }
+        };
+        let host = lf
+            .host
+            .clone()
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "https://cloud.langfuse.com".to_string());
+
+        let client_cfg = langfuse::LangfuseConfig {
+            public_key,
+            secret_key,
+            host,
+        };
+
+        match langfuse::LangfuseClient::new(client_cfg) {
+            Some(client) => {
+                providers::set_langfuse_client(Some(std::sync::Arc::new(client)));
+                log::info!("Langfuse LLM tracing initialised from config.json");
+            }
+            None => {
+                log::warn!("LangfuseClient::new returned None, tracing disabled");
+            }
+        }
+    });
 }

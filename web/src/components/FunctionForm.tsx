@@ -5,12 +5,16 @@ import {
   Form,
   Input,
   Select,
+  TreeSelect,
   Button,
   Space,
   Drawer,
   message,
   Spin,
+  Tag,
+  Card,
 } from 'antd';
+import type { DataNode } from 'antd/es/tree';
 import { SchemaEditor } from './SchemaEditor';
 import {
   createFunction,
@@ -20,7 +24,9 @@ import {
   type UpdateFunction,
 } from '../services/function';
 import { listPlugins, type Plugin, getPluginExports } from '../services/plugin';
-import { listCategoriesFlat, type CategoryItem } from '../services/category';
+import { listCategoriesTree, type CategoryNode } from '../services/category';
+import { listCapabilities, type CapabilityItem } from '../services/capability';
+import { listTags, type TagItem } from '../services/tag';
 
 interface FunctionFormProps {
   open: boolean;
@@ -31,12 +37,6 @@ interface FunctionFormProps {
 }
 
 interface PluginSelectOption {
-  id: number;
-  label: string;
-  value: number;
-}
-
-interface CategorySelectOption {
   id: number;
   label: string;
   value: number;
@@ -54,6 +54,15 @@ const defaultOutputSchema = {
   required: [],
 };
 
+function buildTreeData(nodes: CategoryNode[]): DataNode[] {
+  return nodes.map((n) => ({
+    key: n.id,
+    value: n.id,
+    title: n.name,
+    children: n.children?.length ? buildTreeData(n.children) : undefined,
+  }));
+}
+
 export default function FunctionForm({
   open,
   mode,
@@ -64,12 +73,15 @@ export default function FunctionForm({
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [plugins, setPlugins] = useState<PluginSelectOption[]>([]);
-  const [categories, setCategories] = useState<CategorySelectOption[]>([]);
+  const [categoryTreeData, setCategoryTreeData] = useState<DataNode[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [inputSchema, setInputSchema] = useState<unknown>(defaultInputSchema);
   const [outputSchema, setOutputSchema] = useState<unknown>(defaultOutputSchema);
   const [pluginExports, setPluginExports] = useState<string[]>([]);
   const [loadingExports, setLoadingExports] = useState(false);
+  const [capabilities, setCapabilities] = useState<CapabilityItem[]>([]);
+  const [tags, setTags] = useState<TagItem[]>([]);
+  const [loadingTags, setLoadingTags] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -77,10 +89,15 @@ export default function FunctionForm({
     const loadOptions = async () => {
       setLoadingOptions(true);
       try {
-        const [pluginRes, categoryRes] = await Promise.all([
+        const [pluginRes, treeRes, capRes, tagRes] = await Promise.all([
           listPlugins({ limit: 1000 }),
-          listCategoriesFlat(),
+          listCategoriesTree(),
+          listCapabilities(),
+          listTags(),
         ]);
+        setCapabilities(capRes);
+        setTags(tagRes);
+        setCategoryTreeData(buildTreeData(treeRes));
         setPlugins(
           pluginRes.items
             .filter((p: Plugin) => !p.deleted_at)
@@ -89,13 +106,6 @@ export default function FunctionForm({
               label: `${p.identifier} (${p.version})`,
               value: p.id,
             }))
-        );
-        setCategories(
-          categoryRes.map((c: CategoryItem) => ({
-            id: c.id,
-            label: c.name,
-            value: c.id,
-          }))
         );
       } catch (e) {
         message.error(`加载选项失败：${(e as Error).message}`);
@@ -116,6 +126,8 @@ export default function FunctionForm({
         plugin_id: record.plugin_id,
         plugin_export: record.plugin_export,
         category_id: record.category_id,
+        required_capabilities: record.required_capabilities || [],
+        tag_ids: record.tags?.map((t) => t.id) || [],
       });
       setInputSchema(record.input_schema ?? defaultInputSchema);
       setOutputSchema(record.output_schema ?? defaultOutputSchema);
@@ -159,20 +171,35 @@ export default function FunctionForm({
           input_schema: inputSchema,
           output_schema: outputSchema,
           category_id: values.category_id,
+          required_capabilities: values.required_capabilities,
+          tag_ids: values.tag_ids,
         };
         await createFunction(payload);
         message.success('函数创建成功');
       } else {
-        const payload: UpdateFunction = {
-          name: values.name,
-          description: values.description,
-          category_id: values.category_id,
-          input_schema: inputSchema,
-          output_schema: outputSchema,
-          updated_at: record!.updated_at,
-        };
-        await updateFunction(record!.id, payload);
-        message.success('函数更新成功');
+        const isBuiltin = record?.kind === 1;
+        if (isBuiltin) {
+          const payload: UpdateFunction = {
+            category_id: values.category_id,
+            updated_at: record!.updated_at,
+            tag_ids: values.tag_ids,
+          };
+          await updateFunction(record!.id, payload);
+          message.success('函数更新成功');
+        } else {
+          const payload: UpdateFunction = {
+            name: values.name,
+            description: values.description,
+            category_id: values.category_id,
+            input_schema: inputSchema,
+            output_schema: outputSchema,
+            required_capabilities: values.required_capabilities,
+            updated_at: record!.updated_at,
+            tag_ids: values.tag_ids,
+          };
+          await updateFunction(record!.id, payload);
+          message.success('函数更新成功');
+        }
       }
 
       onSuccess();
@@ -188,9 +215,20 @@ export default function FunctionForm({
 
   const isBuiltin = record?.kind === 1;
 
+  const categorySelector = (
+    <TreeSelect
+      placeholder="选择分类"
+      allowClear
+      treeData={categoryTreeData}
+      showSearch
+      treeNodeFilterProp="title"
+      treeDefaultExpandAll
+    />
+  );
+
   return (
     <Drawer
-      title={mode === 'create' ? '创建函数' : '编辑函数'}
+      title={mode === 'create' ? '创建函数' : isBuiltin ? '编辑分类与标签' : '编辑函数'}
       open={open}
       onClose={onClose}
       width={720}
@@ -201,7 +239,6 @@ export default function FunctionForm({
             type="primary"
             onClick={handleSubmit}
             loading={submitting}
-            disabled={isBuiltin && mode === 'edit'}
           >
             {mode === 'create' ? '创建' : '保存'}
           </Button>
@@ -213,46 +250,83 @@ export default function FunctionForm({
           <Spin size="large" />
         </div>
       ) : (
-        <Form
-          form={form}
-          layout="vertical"
-          disabled={isBuiltin && mode === 'edit'}
-        >
-          <Form.Item
-            name="identifier"
-            label="标识符"
-            rules={[
-              { required: true, message: '请输入函数标识符' },
-              {
-                pattern: /^[a-zA-Z][a-zA-Z0-9._-]*$/,
-                message: '标识符只能包含字母、数字、点、下划线和连字符',
-              },
-            ]}
-          >
-            <Input
-              placeholder="例如: weather.lookup"
-              disabled={mode === 'edit'}
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="name"
-            label="名称"
-            rules={[{ required: true, message: '请输入函数名称' }]}
-          >
-            <Input placeholder="例如: 查天气" />
-          </Form.Item>
-
-          <Form.Item name="description" label="描述">
-            <Input.TextArea rows={2} placeholder="函数描述" />
-          </Form.Item>
-
-          {mode === 'create' && (
+        <Form form={form} layout="vertical">
+          {isBuiltin && mode === 'edit' ? (
             <>
+              <Card size="small" style={{ marginBottom: 16 }}>
+                <div style={{ color: '#999', fontSize: 12 }}>
+                  内置函数仅可编辑分类和标签，其他字段不可修改。
+                </div>
+              </Card>
+
+              <Form.Item name="identifier" label="标识符">
+                <Input disabled />
+              </Form.Item>
+
+              <Form.Item name="name" label="名称">
+                <Input disabled />
+              </Form.Item>
+
+              <Form.Item name="category_id" label="分类">
+                {categorySelector}
+              </Form.Item>
+
+              <Form.Item name="tag_ids" label="标签" tooltip="为函数添加标签，便于分类和检索">
+                <Select
+                  mode="multiple"
+                  placeholder="选择标签"
+                  allowClear
+                  options={tags.map((t) => ({
+                    label: t.color ? (
+                      <Tag color={t.color}>{t.name}</Tag>
+                    ) : (
+                      t.name
+                    ),
+                    value: t.id,
+                  }))}
+                  loading={loadingTags}
+                />
+              </Form.Item>
+            </>
+          ) : (
+            <>
+              <Form.Item
+                name="identifier"
+                label="标识符"
+                rules={[
+                  { required: true, message: '请输入函数标识符' },
+                  {
+                    pattern: /^[a-zA-Z][a-zA-Z0-9._-]*$/,
+                    message: '标识符只能包含字母、数字、点、下划线和连字符',
+                  },
+                ]}
+              >
+                <Input
+                  placeholder="例如: weather.lookup"
+                  disabled={mode === 'edit'}
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="name"
+                label="名称"
+                rules={[{ required: true, message: '请输入函数名称' }]}
+              >
+                <Input placeholder="例如: 查天气" />
+              </Form.Item>
+
+              <Form.Item name="description" label="描述">
+                <Input.TextArea rows={2} placeholder="函数描述" />
+              </Form.Item>
+
               <Form.Item
                 name="plugin_id"
                 label="关联插件"
-                rules={[{ required: true, message: '请选择关联插件' }]}
+                rules={
+                  mode === 'create'
+                    ? [{ required: true, message: '请选择关联插件' }]
+                    : []
+                }
               >
                 <Select
                   placeholder="选择插件"
@@ -264,67 +338,98 @@ export default function FunctionForm({
                       .includes(input.toLowerCase())
                   }
                   onChange={handlePluginChange}
+                  disabled={mode === 'edit'}
                 />
               </Form.Item>
 
               <Form.Item
                 name="plugin_export"
                 label="插件导出函数名"
-                rules={[
-                  { required: true, message: '请输入插件导出函数名' },
-                ]}
+                rules={
+                  mode === 'create'
+                    ? [{ required: true, message: '请输入插件导出函数名' }]
+                    : []
+                }
               >
+                {mode === 'create' ? (
+                  <Select
+                    placeholder={
+                      loadingExports
+                        ? '加载中...'
+                        : pluginExports.length > 0
+                        ? '选择导出函数'
+                        : '请先选择插件'
+                    }
+                    options={pluginExports.map((exp) => ({ label: exp, value: exp }))}
+                    disabled={loadingExports || pluginExports.length === 0}
+                    loading={loadingExports}
+                    showSearch
+                    filterOption={(input, option) =>
+                      (option?.label ?? '')
+                        .toLowerCase()
+                        .includes(input.toLowerCase())
+                    }
+                  />
+                ) : (
+                  <Input disabled />
+                )}
+              </Form.Item>
+
+              <Form.Item name="category_id" label="分类">
+                {categorySelector}
+              </Form.Item>
+
+              <Form.Item name="tag_ids" label="标签" tooltip="为函数添加标签，便于分类和检索">
                 <Select
-                  placeholder={
-                    loadingExports
-                      ? '加载中...'
-                      : pluginExports.length > 0
-                      ? '选择导出函数'
-                      : '请先选择插件'
-                  }
-                  options={pluginExports.map((exp) => ({ label: exp, value: exp }))}
-                  disabled={loadingExports || pluginExports.length === 0}
-                  loading={loadingExports}
-                  showSearch
-                  filterOption={(input, option) =>
-                    (option?.label ?? '')
-                      .toLowerCase()
-                      .includes(input.toLowerCase())
-                  }
+                  mode="multiple"
+                  placeholder="选择标签"
+                  allowClear
+                  options={tags.map((t) => ({
+                    label: t.color ? (
+                      <Tag color={t.color}>{t.name}</Tag>
+                    ) : (
+                      t.name
+                    ),
+                    value: t.id,
+                  }))}
+                  loading={loadingTags}
+                />
+              </Form.Item>
+
+              <Form.Item name="required_capabilities" label="所需权限" tooltip="该函数执行时需要的能力，执行时会校验 Agent 是否被授权">
+                <Select
+                  mode="multiple"
+                  placeholder="选择所需权限"
+                  options={capabilities.map((c) => ({
+                    label: (
+                      <span>
+                        {c.name}
+                        {c.is_dangerous && <Tag color="red" style={{ marginLeft: 4 }}>危险</Tag>}
+                      </span>
+                    ),
+                    value: c.name,
+                  }))}
+                  allowClear
+                />
+              </Form.Item>
+
+              <Form.Item label="输入 Schema" required>
+                <SchemaEditor
+                  value={inputSchema}
+                  onChange={setInputSchema}
+                  label="input_schema"
+                />
+              </Form.Item>
+
+              <Form.Item label="输出 Schema" required>
+                <SchemaEditor
+                  value={outputSchema}
+                  onChange={setOutputSchema}
+                  label="output_schema"
                 />
               </Form.Item>
             </>
           )}
-
-          <Form.Item name="category_id" label="分类">
-            <Select
-              placeholder="选择分类"
-              allowClear
-              options={categories}
-              showSearch
-              filterOption={(input, option) =>
-                (option?.label ?? '')
-                  .toLowerCase()
-                  .includes(input.toLowerCase())
-              }
-            />
-          </Form.Item>
-
-          <Form.Item label="输入 Schema" required>
-            <SchemaEditor
-              value={inputSchema}
-              onChange={setInputSchema}
-              label="input_schema"
-            />
-          </Form.Item>
-
-          <Form.Item label="输出 Schema" required>
-            <SchemaEditor
-              value={outputSchema}
-              onChange={setOutputSchema}
-              label="output_schema"
-            />
-          </Form.Item>
         </Form>
       )}
     </Drawer>

@@ -1,15 +1,18 @@
 //! Tool API handlers (T085 / US2)
 
 use axum::{
-    extract::{Path, Query, State},
-    routing::get,
+    extract::{Extension, Path, Query, State},
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
 
 use crate::api::AppState;
+use crate::runtime::tool_test::{self as test_svc, TestToolRequest};
+use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::tool::{self as svc, CreateMeta, ListFilter, UpdateMeta};
 use crate::utils::error::ApiResponse;
+use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -18,6 +21,7 @@ pub fn router() -> Router<AppState> {
             "/tools/:id",
             get(get_tool).put(update_tool).delete(delete_tool),
         )
+        .route("/tools/:id/test", post(test_tool))
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +30,8 @@ pub struct ListQuery {
     #[serde(default)] pub limit: Option<i64>,
     #[serde(default)] pub search: Option<String>,
     #[serde(default)] pub kind: Option<i8>,
+    #[serde(default)] pub source: Option<String>,
+    #[serde(default)] pub category_id: Option<i64>,
     #[serde(default)] pub created_at_start: Option<String>,
     #[serde(default)] pub created_at_end: Option<String>,
     #[serde(default)] pub updated_at_start: Option<String>,
@@ -41,12 +47,14 @@ async fn list_tools(
             .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
             .map_err(|_| ())
     };
-    
+
     let filter = ListFilter {
         offset: q.offset.unwrap_or(0).max(0),
         limit: q.limit.unwrap_or(20).clamp(1, 100),
         search: q.search.filter(|s| !s.is_empty()),
         kind: q.kind,
+        source: q.source.filter(|s| !s.is_empty()),
+        category_id: q.category_id,
         created_at_start: q.created_at_start.as_ref().and_then(|s| parse_dt(s).ok()),
         created_at_end: q.created_at_end.as_ref().and_then(|s| parse_dt(s).ok()),
         updated_at_start: q.updated_at_start.as_ref().and_then(|s| parse_dt(s).ok()),
@@ -61,8 +69,8 @@ async fn list_tools(
 async fn get_tool(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<ApiResponse<crate::models::Tool>, ApiResponse<()>> {
-    svc::fetch_by_id(&state.pool, id)
+) -> Result<ApiResponse<crate::services::tool::ToolListItem>, ApiResponse<()>> {
+    svc::fetch_by_id_with_tags(&state.pool, id)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -70,31 +78,127 @@ async fn get_tool(
 
 async fn create_tool(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Json(meta): Json<CreateMeta>,
-) -> Result<ApiResponse<crate::models::Tool>, ApiResponse<()>> {
-    svc::create(&state.pool, meta)
-        .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+) -> Result<ApiResponse<crate::services::tool::ToolListItem>, ApiResponse<()>> {
+    match svc::create(&state.pool, meta).await {
+        Ok(tool_item) => {
+            if let Err(e) = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Create,
+                Some(tool_item.tool.id),
+                &tool_item.tool.name,
+                serde_json::json!({ "kind": tool_item.tool.kind, "source": tool_item.tool.source }),
+            )
+            .await
+            {
+                tracing::error!("Failed to write audit log for tool create: {}", e);
+            }
+            Ok(ApiResponse::success(tool_item))
+        }
+        Err(e) => Err(e.into_response()),
+    }
 }
 
 async fn update_tool(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<i64>,
     Json(meta): Json<UpdateMeta>,
-) -> Result<ApiResponse<crate::models::Tool>, ApiResponse<()>> {
-    svc::update(&state.pool, id, meta)
-        .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+) -> Result<ApiResponse<crate::services::tool::ToolListItem>, ApiResponse<()>> {
+    match svc::update(&state.pool, id, meta).await {
+        Ok(tool_item) => {
+            if let Err(e) = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Update,
+                Some(tool_item.tool.id),
+                &tool_item.tool.name,
+                serde_json::json!({ "kind": tool_item.tool.kind, "source": tool_item.tool.source }),
+            )
+            .await
+            {
+                tracing::error!("Failed to write audit log for tool update: {}", e);
+            }
+            Ok(ApiResponse::success(tool_item))
+        }
+        Err(e) => Err(e.into_response()),
+    }
 }
 
 async fn delete_tool(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
+    let prev = svc::fetch_by_id_with_tags(&state.pool, id).await.ok();
+    let target_id = prev.as_ref().map(|t| t.tool.id);
+    let target_name = prev.as_ref().map(|t| &t.tool.name).cloned().unwrap_or_default();
+
     match svc::delete(&state.pool, id).await {
-        Ok(()) => Ok(ApiResponse::success(())),
+        Ok(()) => {
+            if let Err(e) = audit_event(
+                &state.pool,
+                &claims,
+                Operation::Delete,
+                target_id,
+                &target_name,
+                serde_json::json!({}),
+            )
+            .await
+            {
+                tracing::error!("Failed to write audit log for tool delete: {}", e);
+            }
+            Ok(ApiResponse::success(()))
+        }
         Err(e) => Err(e.into_response()),
     }
+}
+
+async fn test_tool(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<TestToolRequest>,
+) -> Result<ApiResponse<test_svc::TestToolResult>, ApiResponse<()>> {
+    let deps = crate::runtime::orchestrator::OrchestratorDeps {
+        pool: state.pool.clone(),
+        s3: state.s3.clone(),
+        llm: state.runtime_state.llm.clone(),
+        registry: state.runtime_state.capabilities.clone(),
+        invoker: state.runtime_state.invoker.clone(),
+    };
+    match test_svc::run_tool_test(&state.pool, &deps, id, req).await {
+        Ok(result) => Ok(ApiResponse::success(result)),
+        Err(e) => Err(ApiResponse::err(5000, e)),
+    }
+}
+
+/// 写入审计日志。失败时记录 tracing 日志但不影响主流程。
+async fn audit_event(
+    pool: &sqlx::MySqlPool,
+    claims: &Claims,
+    op: Operation,
+    target_id: Option<i64>,
+    target_name: &str,
+    detail: serde_json::Value,
+) -> anyhow::Result<()> {
+    use crate::services::admin as admin_svc;
+    let operator = admin_svc::get_admin_by_id(pool, claims.admin_id).await?;
+    let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
+    if let Err(e) = audit_svc::record(
+        pool,
+        claims.admin_id,
+        &operator_phone,
+        target_id,
+        target_name,
+        op,
+        Some(detail),
+    )
+    .await
+    {
+        tracing::error!("Failed to write audit log: {}", e);
+        return Err(e);
+    }
+    Ok(())
 }

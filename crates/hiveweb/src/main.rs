@@ -1,3 +1,4 @@
+use clap::Parser;
 use tracing_subscriber::{self, EnvFilter};
 
 mod api;
@@ -10,8 +11,86 @@ mod services;
 mod storage;
 mod utils;
 
+#[derive(Parser)]
+#[command(name = "hiveweb", about = "HiveClaw Admin Center")]
+struct Cli {
+    /// Port to listen on (overrides HIVWEB_PORT env var)
+    #[arg(long)]
+    port: Option<u16>,
+}
+
+/// Try to initialise Langfuse from environment variables.
+///
+/// Reads:
+/// - `LANGFUSE_ENABLED` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`
+/// - `LANGFUSE_HOST` (defaults to `https://cloud.langfuse.com`)
+///
+/// If Langfuse is disabled or credentials are missing, tracing is silently skipped.
+fn try_init_langfuse() {
+    let enabled = std::env::var("LANGFUSE_ENABLED")
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // Auto-detect: if LANGFUSE_PUBLIC_KEY + SECRET_KEY are set but
+    // LANGFUSE_ENABLED is missing, enable tracing automatically and warn.
+    let has_public_key = std::env::var("LANGFUSE_PUBLIC_KEY")
+        .map(|k| !k.is_empty())
+        .unwrap_or(false);
+    let has_secret_key = std::env::var("LANGFUSE_SECRET_KEY")
+        .map(|k| !k.is_empty())
+        .unwrap_or(false);
+
+    if enabled != "true" && enabled != "1" && enabled != "yes" {
+        if has_public_key && has_secret_key {
+            tracing::warn!(
+                "LANGFUSE_ENABLED not set, but LANGFUSE_PUBLIC_KEY and SECRET_KEY are present. \
+                 Enabling Langfuse tracing automatically. \
+                 Set LANGFUSE_ENABLED=true explicitly to suppress this warning."
+            );
+        } else {
+            tracing::info!("Langfuse tracing disabled (LANGFUSE_ENABLED not set)");
+            return;
+        }
+    }
+
+    let public_key = match std::env::var("LANGFUSE_PUBLIC_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            tracing::warn!("LANGFUSE_ENABLED=true but LANGFUSE_PUBLIC_KEY missing");
+            return;
+        }
+    };
+    let secret_key = match std::env::var("LANGFUSE_SECRET_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            tracing::warn!("LANGFUSE_ENABLED=true but LANGFUSE_SECRET_KEY missing");
+            return;
+        }
+    };
+    let host = std::env::var("LANGFUSE_HOST")
+        .unwrap_or_else(|_| "https://cloud.langfuse.com".to_string());
+
+    let cfg = langfuse::LangfuseConfig {
+        public_key,
+        secret_key,
+        host,
+    };
+
+    match langfuse::LangfuseClient::new(cfg) {
+        Some(client) => {
+            providers::set_langfuse_client(Some(std::sync::Arc::new(client)));
+            tracing::info!("Langfuse LLM tracing initialised");
+        }
+        None => {
+            tracing::warn!("LangfuseClient::new returned None, tracing disabled");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
     // Load .env file if it exists, but don't fail if it doesn't
     match dotenvy::dotenv_override() {
         Ok(path) => {
@@ -33,10 +112,16 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("=== HiveClaw Admin Center Starting ===");
 
+    // Initialise Langfuse LLM observability (non-blocking, async ingestion)
+    try_init_langfuse();
+
     let host = std::env::var("HIVWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("HIVWEB_PORT")
-        .unwrap_or_else(|_| "3000".to_string())
-        .parse::<u16>()?;
+    let port = cli.port.unwrap_or_else(|| {
+        std::env::var("HIVWEB_PORT")
+            .unwrap_or_else(|_| "3000".to_string())
+            .parse::<u16>()
+            .expect("HIVWEB_PORT must be a valid number")
+    });
     println!("Host: {}, Port: {}", host, port);
 
     // Initialize database connection pool

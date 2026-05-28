@@ -108,6 +108,7 @@ async fn invoke_function(
         agent_id: body.agent_id,
         plugin_id,
         function_id: Some(id),
+        permissions: vec![],
     };
 
     let input_json = serde_json::to_string(&body.input)

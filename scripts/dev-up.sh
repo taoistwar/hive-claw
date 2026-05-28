@@ -24,9 +24,9 @@ case "${1:-up}" in
     docker compose up -d
     echo
     echo "Services started:"
-    echo "  MySQL:    mysql://hiveweb:hiveweb@127.0.0.1:3306/hiveweb"
-    echo "  Redis:    redis://127.0.0.1:6379"
-    echo "  MinIO:    http://127.0.0.1:9000   (console: http://127.0.0.1:9001, user=minioadmin pass=minioadmin)"
+    echo "  MySQL:    mysql://hiveweb:hiveweb@127.0.0.1:13306/hiveweb"
+    echo "  Redis:    redis://127.0.0.1:16379"
+    echo "  MinIO:    http://127.0.0.1:19210   (console: http://127.0.0.1:19211, user=minioadmin pass=minioadmin)"
     ;;
   up|"")
     docker compose up

@@ -72,6 +72,7 @@ export interface UpdateAgent {
   name?: string;
   description?: string;
   system_prompt?: string;
+  parent_agent_id?: number;
   model_preset?: string;
   tool_ids?: number[];
   skill_ids?: number[];

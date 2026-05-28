@@ -192,7 +192,7 @@ export default function CategoryPage() {
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={createForm} layout="vertical" onFinish={onCreate}>
           <Form.Item name="name" label="name" rules={[{ required: true }]}>
@@ -223,7 +223,7 @@ export default function CategoryPage() {
           setEditingCategory(null);
         }}
         onOk={() => editForm.submit()}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={editForm} layout="vertical" onFinish={onEdit}>
           <Form.Item name="name" label="name" rules={[{ required: true }]}>

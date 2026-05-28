@@ -74,6 +74,7 @@ export default function AgentPage() {
           name: payload.name,
           description: payload.description,
           system_prompt: payload.system_prompt,
+          parent_agent_id: payload.parent_agent_id,
           model_preset: payload.model_preset ?? undefined,
           tool_ids: payload.tool_ids,
           skill_ids: payload.skill_ids,
@@ -209,7 +210,7 @@ export default function AgentPage() {
         open={createOpen}
         width={680}
         onClose={() => setCreateOpen(false)}
-        destroyOnClose
+        destroyOnHidden
       >
         <AgentEditor
           currentRole={user?.role ?? 0}
@@ -223,7 +224,7 @@ export default function AgentPage() {
         open={!!editing}
         width={680}
         onClose={() => setEditing(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {editing && (
           <AgentEditor

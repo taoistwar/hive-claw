@@ -8,7 +8,6 @@ import {
   Button,
   Form,
   Input,
-  InputNumber,
   Select,
   Space,
   Tag,
@@ -21,6 +20,7 @@ import { ModelPresetSelect } from './ModelPresetSelect';
 import { SystemPromptEditor } from './SystemPromptEditor';
 import { listTools, type ToolItem } from '../services/tool';
 import { listSkills, type SkillItem } from '../services/skill';
+import { listAgentTree, type AgentItem } from '../services/agent';
 import type { AgentDetail } from '../services/agent';
 
 const { Text } = Typography;
@@ -55,6 +55,7 @@ export function AgentEditor({ initial, currentRole, onSubmit, onCancel }: AgentE
   const [preset, setPreset] = useState<string | null>(initial?.model_preset ?? null);
   const [toolIds, setToolIds] = useState<number[]>(initial?.tools.map((t) => t.id) ?? []);
   const [skillIds, setSkillIds] = useState<number[]>(initial?.skills.map((s) => s.id) ?? []);
+  const [agents, setAgents] = useState<AgentItem[]>([]);
   const [tools, setTools] = useState<ToolItem[]>([]);
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -62,7 +63,21 @@ export function AgentEditor({ initial, currentRole, onSubmit, onCancel }: AgentE
   useEffect(() => {
     void (async () => {
       try {
-        const [tl, sl] = await Promise.all([listTools({ limit: 100 }), listSkills({ limit: 100 })]);
+        const [treeData, tl, sl] = await Promise.all([
+          listAgentTree(),
+          listTools({ limit: 100 }),
+          listSkills({ limit: 100 }),
+        ]);
+        // Flatten tree to a flat list
+        const flatAgents: AgentItem[] = [];
+        const flatten = (items: typeof treeData) => {
+          for (const n of items) {
+            flatAgents.push(n);
+            if (n.children?.length) flatten(n.children);
+          }
+        };
+        flatten(treeData);
+        setAgents(flatAgents);
         setTools(tl.items);
         setSkills(sl.items);
       } catch (e) {
@@ -126,11 +141,20 @@ export function AgentEditor({ initial, currentRole, onSubmit, onCancel }: AgentE
       <Form.Item label="system_prompt" required>
         <SystemPromptEditor value={systemPrompt} onChange={setSystemPrompt} height="280px" />
       </Form.Item>
-      {!isEdit && (
-        <Form.Item name="parent_agent_id" label="parent_agent_id (留空 = 顶级)">
-          <InputNumber min={1} style={{ width: '100%' }} />
-        </Form.Item>
-      )}
+      <Form.Item name="parent_agent_id" label="parent_agent_id (留空 = 顶级)">
+        <Select
+          allowClear
+          placeholder="选择父 Agent"
+          showSearch
+          optionFilterProp="label"
+          options={agents
+            .filter((a) => !isEdit || a.id !== initial?.id)
+            .map((a) => ({
+              value: a.id,
+              label: `${a.name} (${a.identifier})`,
+            }))}
+        />
+      </Form.Item>
       <Form.Item label="model_preset">
         <ModelPresetSelect value={preset} onChange={setPreset} />
       </Form.Item>

@@ -24,7 +24,7 @@ interface AdminTableProps {
   onToggleStatus: (id: number, status: number) => void;
   searchParams: AdminSearchParams;
   onSearchParamsChange: (params: AdminSearchParams) => void;
-  onSearch: () => void;
+  onSearch: (params: AdminSearchParams) => void;
   onReset: () => void;
 }
 

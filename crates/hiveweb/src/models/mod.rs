@@ -14,12 +14,13 @@ pub mod skill;
 pub mod tag;
 pub mod tool;
 pub mod workflow;
+pub mod recommended_game;
 
 pub use admin::Admin;
 pub use login_record::LoginRecord;
 pub use role::Role;
 
-pub use agent::{Agent, AgentPermission, AgentSkill, AgentTool};
+pub use agent::Agent;
 pub use capability::Capability;
 pub use category::Category;
 pub use chat::{ChatMessage, ChatSession};
@@ -30,3 +31,4 @@ pub use skill::Skill;
 pub use tag::{Tag, Tagging};
 pub use tool::Tool;
 pub use workflow::{Workflow, WorkflowEdge, WorkflowNode};
+pub use recommended_game::RecommendedGame;

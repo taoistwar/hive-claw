@@ -471,6 +471,34 @@ pub struct AgentsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Langfuse observability
+// ---------------------------------------------------------------------------
+
+/// Langfuse integration configuration (LLM tracing / observability).
+///
+/// When `enabled` is true and credentials are provided, every LLM call is
+/// traced asynchronously.  Supports both cloud and self-hosted Langfuse.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LangfuseConfig {
+    /// Master switch.  Set to `true` to enable LLM tracing.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Langfuse public key (from project settings).
+    #[serde(default)]
+    pub public_key: Option<String>,
+    /// Langfuse secret key.
+    #[serde(default)]
+    pub secret_key: Option<String>,
+    /// Langfuse base URL.
+    ///
+    /// - Cloud: `"https://cloud.langfuse.com"`
+    /// - Self-hosted: `"https://langfuse.example.com"`
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
 
@@ -952,6 +980,8 @@ pub struct Config {
     pub gateway: GatewayConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub langfuse: LangfuseConfig,
     #[serde(
         default,
         rename = "modelPresets",

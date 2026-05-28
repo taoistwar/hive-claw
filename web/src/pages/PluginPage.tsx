@@ -112,8 +112,8 @@ export default function PluginPage() {
     {
       title: 'tags',
       dataIndex: 'tags',
-      render: (tags?: { id: number; name: string }[]) =>
-        tags?.map((t) => <Tag key={t.id}>{t.name}</Tag>) ?? null,
+      render: (tags?: { id: number; name: string; color?: string | null }[]) =>
+        tags?.map((t) => <Tag key={t.id} color={t.color ?? 'default'}>{t.name}</Tag>) ?? null,
     },
     {
       title: 'size',

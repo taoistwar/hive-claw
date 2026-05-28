@@ -7,6 +7,7 @@ import type { UploadFile } from 'antd/es/upload/interface';
 
 import { uploadPlugin, type UploadMeta, type Plugin } from '../services/plugin';
 import { CategoryTreeSelect } from './CategoryTreeSelect';
+import { TagMultiSelect } from './TagMultiSelect';
 
 const MAX_BYTES = 16 * 1024 * 1024; // FR-005 v7 + .env PLUGIN_MAX_BYTES default
 
@@ -104,6 +105,9 @@ export function PluginUploader({ onUploaded }: PluginUploaderProps) {
       </Form.Item>
       <Form.Item label="category_id" name="category_id">
         <CategoryTreeSelect placeholder="选择分类（可选）" />
+      </Form.Item>
+      <Form.Item label="tag_ids" name="tag_ids">
+        <TagMultiSelect />
       </Form.Item>
 
       <Form.Item>

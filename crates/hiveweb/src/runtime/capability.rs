@@ -19,7 +19,7 @@ use std::time::Instant;
 use crate::runtime::capabilities;
 use crate::services::runtime_audit::{self, AuditRecord};
 
-/// 11 个 capability 名常量（与 data-model §V018 / §6 完全对齐）
+/// Capability 名常量（与 data-model §V018 / §6 + 扩展对齐）
 pub const NETWORK_HTTP: &str = "network.http";
 pub const FS_READ: &str = "fs.read";
 pub const FS_WRITE: &str = "fs.write";
@@ -31,6 +31,11 @@ pub const LLM_INVOKE: &str = "llm.invoke";
 pub const SECRET_GET: &str = "secret.get";
 pub const TIME_NOW: &str = "time.now";
 pub const LOG_EMIT: &str = "log.emit";
+/// 扩展：内置函数/工具所需的细粒度 capability
+pub const CHAT_RESPOND: &str = "chat.respond";
+pub const EXEC_RUN: &str = "exec.run";
+pub const AGENT_SPAWN: &str = "agent.spawn";
+pub const CRON_MANAGE: &str = "cron.manage";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capability {
@@ -51,6 +56,10 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability { name: SECRET_GET,   description: "allowlist 内的密钥读取", is_dangerous: true },
     Capability { name: TIME_NOW,     description: "服务器当前时间", is_dangerous: false },
     Capability { name: LOG_EMIT,     description: "结构化日志写入（rate-limited）", is_dangerous: false },
+    Capability { name: CHAT_RESPOND, description: "提交 Agent 最终用户可见回复", is_dangerous: false },
+    Capability { name: EXEC_RUN,     description: "Shell 命令执行（受 workspace 边界约束）", is_dangerous: true },
+    Capability { name: AGENT_SPAWN,  description: "生成子 Agent 执行独立任务", is_dangerous: false },
+    Capability { name: CRON_MANAGE,  description: "管理定时 Cron 任务", is_dangerous: false },
 ];
 
 #[derive(Debug, Clone)]
@@ -96,6 +105,8 @@ pub struct DispatchCtx {
     pub agent_id: i64,
     pub plugin_id: i64,
     pub function_id: Option<i64>,
+    /// 预计算的 agent 权限列表（测试模式可为全量）；若为空则 fallback 到 DB 查询
+    pub permissions: Vec<String>,
 }
 
 /// Plugin 侧发来的 envelope: { "capability": "...", "args": {...} }
@@ -214,12 +225,16 @@ pub async fn dispatch(
     }
 
     // 2. permission check
-    let granted = match load_agent_permissions(pool, ctx.agent_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, agent_id = ctx.agent_id, "load_agent_permissions");
-            let reply = ReplyEnvelope::err(5000, "permission lookup failed");
-            return serde_json::to_string(&reply).unwrap_or_default();
+    let granted: HashSet<String> = if !ctx.permissions.is_empty() {
+        ctx.permissions.iter().cloned().collect()
+    } else {
+        match load_agent_permissions(pool, ctx.agent_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, agent_id = ctx.agent_id, "load_agent_permissions");
+                let reply = ReplyEnvelope::err(5000, "permission lookup failed");
+                return serde_json::to_string(&reply).unwrap_or_default();
+            }
         }
     };
     if !granted.contains(&cap_name) {

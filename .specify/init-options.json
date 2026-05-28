@@ -1,10 +1,9 @@
 {
-  "ai": "opencode",
-  "ai_skills": true,
+  "ai": "codebuddy",
   "branch_numbering": "sequential",
-  "context_file": "AGENTS.md",
+  "context_file": "CODEBUDDY.md",
   "here": true,
-  "integration": "opencode",
+  "integration": "codebuddy",
   "script": "sh",
   "speckit_version": "0.8.10.dev0"
 }

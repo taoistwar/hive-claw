@@ -17,6 +17,7 @@ cron = { path = "../cron" }
 heartbeat = { path = "../heartbeat" }
 providers = { path = "../providers" }
 session = { path = "../session" }
+langfuse = { workspace = true }
 
 async-trait = { workspace = true }
 clap = { workspace = true }

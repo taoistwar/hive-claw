@@ -160,7 +160,7 @@ export default function TagPage() {
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={createForm} layout="vertical" onFinish={onCreate}>
           <Form.Item name="name" label="name" rules={[{ required: true }]}>

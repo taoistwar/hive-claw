@@ -7,7 +7,7 @@
 //! 是给 **Plugin 内部** 在 host_call 范围内做一次性 LLM 询问（如 summarize、
 //! classify 等无 tool 的子任务）。
 
-use providers::ChatRequest;
+use providers::{ChatRequest, LLMProvider, RetryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
@@ -79,7 +79,7 @@ pub async fn llm_invoke(
         reasoning_effort: None,
     };
 
-    let resp = provider.chat(req).await;
+    let resp = provider.chat_with_retry(req, RetryMode::Standard, None).await;
     if resp.is_error() {
         let msg = resp
             .content

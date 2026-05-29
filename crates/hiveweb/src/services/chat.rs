@@ -7,7 +7,6 @@
 //! admin_phone_snapshot / admin_nickname_snapshot 由 service 在创建时写入，
 //! admin 删后保留追溯。
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 

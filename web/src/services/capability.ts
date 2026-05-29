@@ -5,20 +5,57 @@ export interface CapabilityItem {
   name: string;
   description: string;
   is_dangerous: boolean;
+  category_id: number | null;
+  created_at: string;
 }
 
 export interface CapabilityDetail extends CapabilityItem {
   allowed_plugins?: string[];
 }
 
-export async function listCapabilities(): Promise<CapabilityItem[]> {
-  const resp = await apiClient.get<CapabilityItem[]>('/capabilities');
+export interface ListCapabilitiesParams {
+  name?: string;
+  description?: string;
+  is_dangerous?: boolean;
+  category_id?: number;
+  offset?: number;
+  limit?: number;
+}
+
+export async function listCapabilities(params?: ListCapabilitiesParams): Promise<[CapabilityItem[], number]> {
+  const resp = await apiClient.get<[CapabilityItem[], number]>('/capabilities', { params });
   return resp.data;
 }
 
 export async function getCapabilityDetail(name: string): Promise<CapabilityDetail> {
   const resp = await apiClient.get<CapabilityDetail>(`/capabilities/${name}`);
   return resp.data;
+}
+
+export async function createCapability(meta: {
+  name: string;
+  description: string;
+  is_dangerous: boolean;
+  category_id?: number;
+}): Promise<CapabilityItem> {
+  const resp = await apiClient.post<CapabilityItem>('/capabilities', meta);
+  return resp.data;
+}
+
+export async function updateCapability(
+  name: string,
+  meta: {
+    description?: string;
+    is_dangerous?: boolean;
+    category_id?: number | null;
+  },
+): Promise<CapabilityItem> {
+  const resp = await apiClient.put<CapabilityItem>(`/capabilities/${name}`, meta);
+  return resp.data;
+}
+
+export async function deleteCapability(name: string): Promise<void> {
+  await apiClient.delete(`/capabilities/${name}`);
 }
 
 // Pool stats — T162

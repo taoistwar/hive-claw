@@ -2,7 +2,8 @@
 
 **Feature Branch**: `004-agent-runtime`
 **Created**: 2026-05-26
-**Status**: Draft
+**Last Updated**: 2026-05-29
+**Status**: Implemented
 **Input**: User description: 添加 Agent Runtime（Capability-based with Extism WASM Plugin），它包括能力管理、分类管理、标签管理、WASM 插件管理、函数管理、Workflow 管理、工具管理、技能管理、Agent 管理、测试聊天窗口。
 
 ## Glossary
@@ -189,21 +190,22 @@
 - **FR-013**: 系统必须在保存 Function 时校验 input/output schema 为合法 JSON Schema（draft 2020-12 或同等）。
 
 **Workflow 管理**
-- **FR-014**: Workflow 必须以 DAG 表示，节点是 Function 引用，边携带"上游某 output 字段 → 下游某 input 字段"映射。
+- **FR-014**: Workflow 必须以 DAG 表示，节点是 Function 引用，边携带"上游某 output 字段 → 下游某 input 字段"映射。Workflow 支持分类关联（`category_id`）、起始输入 schema（`input_schema`）、起始节点描述（`start_description`）、结束输出 schema（`output_schema`）、结束节点描述（`end_description`）、执行所需 capabilities 聚合（`required_capabilities`）。
 - **FR-015**: Web 必须提供可视化编辑器以拖拽节点与连线。
 - **FR-016**: 系统必须在保存时拒绝包含环的 DAG。
 - **FR-017**: Workflow 执行必须按拓扑顺序，独立分支并行执行；任一节点失败终止流程并返回错误（含节点 id）。
+- **FR-018 WorkflowNode**: 节点类型（`node_type`）包括 `function_node`（引用 Function）、`start_node`（起始节点）、`end_node`（结束节点）、`generate_answer_node`（LLM 生成节点，含 `node_config` JSON 存储 system_prompt、model_preset、history_window 等 LLM 生成配置）。`start_node` 和 `end_node` 无需引用 Function。
 
 **Tool 管理**
-- **FR-018**: Tool 字段：id、type（function / workflow）、name、identifier、description、input_schema、output_schema、引用的 function_id 或 workflow_id、created_at、updated_at。Tool 在 runtime 通过 `crates/agent::ToolRegistry` 暴露给 LLM；workflow-wrapped Tool 在 ToolRegistry 上同样表现为单一 `Tool` impl，内部 dispatch 到 Workflow 执行器。
-- **FR-019**: 单 Function Tool 的 schema 必须等于其引用 Function 的 schema。
-- **FR-020**: Workflow-wrapped Tool 的 input_schema = DAG 入口 Function 的 input_schema；output_schema 由编辑者显式声明（默认为 DAG 终点的 output_schema）。
+- **FR-019**: Tool 字段：id、type（function / workflow）、name、identifier、description、input_schema、output_schema、引用的 function_id 或 workflow_id、source（`workspace` | `builtin`）、is_always（对所有 Agent 自动可用）、category_id、required_capabilities、created_at、updated_at。Tool 在 runtime 通过 `crates/agent::ToolRegistry` 暴露给 LLM；workflow-wrapped Tool 在 ToolRegistry 上同样表现为单一 `Tool` impl，内部 dispatch 到 Workflow 执行器。`source = 'builtin'` 的 Tool 不可编辑，只能包装 builtin Function。
+- **FR-020**: 单 Function Tool 的 schema 必须等于其引用 Function 的 schema。
+- **FR-021**: Workflow-wrapped Tool 的 input_schema = DAG 入口 Function 的 input_schema；output_schema 由编辑者显式声明（默认为 DAG 终点的 output_schema）。
 
 **Skill 管理**
-- **FR-021**: Skill 内容以 markdown 形式持久化（含可选 YAML frontmatter）。调用 Skill = 把其 markdown 内容拼接到当前 Agent 的 system prompt 末尾；Skill **不**作为 OpenAI tool 暴露给 LLM。复用 `crates/agent::SkillsLoader` 的现有模式。Skill 可在文本中以模板插值方式引用 Function / Workflow 调用结果，但 Function/Workflow 的执行最终走 ToolRegistry。
+- **FR-022**: Skill 内容以 markdown 形式持久化（含可选 YAML frontmatter）。调用 Skill = 把其 markdown 内容拼接到当前 Agent 的 system prompt 末尾；Skill **不**作为 OpenAI tool 暴露给 LLM。复用 `crates/agent::SkillsLoader` 的现有模式。Skill 可在文本中以模板插值方式引用 Function / Workflow 调用结果，但 Function/Workflow 的执行最终走 ToolRegistry。Skill 字段新增：source（`workspace` | `builtin`）、is_always（对所有 Agent 自动加载）、category_id、required_capabilities。
 
 **Agent 管理**
-- **FR-022**: 入口 Agent 标识固定为 `main`，必须存在且不可删除（删除 API 必须拒绝）。对 `main` Agent 的任何字段修改（含 system_prompt / tools / skills / permissions）仅 Super 角色可执行；非 main Agent 的 CRUD = System 及以上；任何 Agent 的 permissions 含 `is_dangerous=1` 的 capability 时，保存动作仍要求 Super。
+- **FR-023**: 入口 Agent 标识固定为 `main`，必须存在且不可删除（删除 API 必须拒绝）。对 `main` Agent 的任何字段修改（含 system_prompt / tools / skills / permissions）仅 Super 角色可执行；非 main Agent 的 CRUD = System 及以上；任何 Agent 的 permissions 含 `is_dangerous=1` 的 capability 时，保存动作仍要求 Super。
   **危险 capability 的赋予 + 撤销 + 调用** 都受 Super 关口：
   - **赋予**（PUT /api/agents 把 `is_dangerous=1` 的 capability 加入 permissions）→ 仅 Super
   - **撤销**（PUT /api/agents 把 `is_dangerous=1` 的 capability 从 permissions 移除）→ 仍仅 Super（避免 System 在 Super 不在场时"先撤后改"绕过审计）
@@ -212,17 +214,17 @@
   - **System 角色**打开 CapabilityPicker → `is_dangerous=1` 的项**不渲染**（不是 disabled）。System 看不到、点不到、也无法通过 DevTools 强行勾选并提交（后端再次校验拒绝）。
   - **Super 角色**打开 CapabilityPicker → 所有 capability 都渲染；dangerous 项加 ⚠ 标记 + tooltip 解释风险。
   - 后端是权威：即便前端被绕过强行 POST 含 dangerous capability 的请求，service 层在保存时按调用者角色再校验一次（非 Super → 2001 InsufficientPermission）。
-- **FR-023**: Agent 可嵌套至多 10 层；新建子 Agent 时校验深度。
-- **FR-024**: Agent 字段：id、name、description、created_at、updated_at、tools（多对多 Tool）、skills（多对多 Skill）、system_prompt、permissions（capability 名集合）、parent_agent_id（NULL 表示根）、`model_preset`（可选；指向 hiveweb 启动时从 `llm_presets.toml` 加载的命名 preset；为空时 fallback 到全局默认 preset；子 Agent 不继承父的 preset）。
-- **FR-025**: Agent 路由由 LLM tool-calling 自决（系统组装 system_prompt + 子 Agent 列表 + tools/skills 后由 LLM 选择 `route_to_subagent(agent_id, reason)` / 直接回复 / 调用 Tool）。宿主在此之上叠加 hard-rule 安全门：① 深度 ≥ 10 拒绝路由；② 同会话路径出现循环立刻终止（最大跳次见 §Edge Cases）；③ 越权 capability 直接 4030 拒绝；④ `route_to_subagent(agent_id, ...)` 的 `agent_id` 必须是当前 Agent 的**直接子 Agent**（不能跨级跳，防止越级访问）。
+- **FR-024**: Agent 可嵌套至多 10 层；新建子 Agent 时校验深度。
+- **FR-025**: Agent 字段：id、name、description、created_at、updated_at、tools（多对多 Tool）、skills（多对多 Skill）、system_prompt、permissions（capability 名集合）、parent_agent_id（NULL 表示根）、`model_preset`（可选；指向 hiveweb 启动时从 `llm_presets.toml` 加载的命名 preset；为空时 fallback 到全局默认 preset；子 Agent 不继承父的 preset）。
+- **FR-026**: Agent 路由由 LLM tool-calling 自决（系统组装 system_prompt + 子 Agent 列表 + tools/skills 后由 LLM 选择 `route_to_subagent(agent_id, reason)` / 直接回复 / 调用 Tool）。宿主在此之上叠加 hard-rule 安全门：① 深度 ≥ 10 拒绝路由；② 同会话路径出现循环立刻终止（最大跳次见 §Edge Cases）；③ 越权 capability 直接 4030 拒绝；④ `route_to_subagent(agent_id, ...)` 的 `agent_id` 必须是当前 Agent 的**直接子 Agent**（不能跨级跳，防止越级访问）。
   **子 Agent 错误的脱敏上报**：子 Agent 内部抛错时，宿主仅向父 Agent / SSE client 暴露 `{ code, message }` envelope（message 为用户文案，见 contracts/api.md §Errors）；**不**暴露子 Agent 的 system_prompt、内部 tool 名、Plugin identifier、stack trace、内部 capability 名（防止信息泄漏给恶意构造提示词的用户）。完整内部错误信息只写 audit log（含 request_id 供运维追溯）。
-- **FR-026**：（已合并入 FR-003）Agent 调用 LLM、Tool、Skill、Workflow 时均必须先通过 Capability 鉴权；越权立即返回错误。详见 FR-003 的适用范围条款。
+- **FR-027**：（已合并入 FR-003）Agent 调用 LLM、Tool、Skill、Workflow 时均必须先通过 Capability 鉴权；越权立即返回错误。详见 FR-003 的适用范围条款。
 
 **测试聊天**
-- **FR-027**: 管理员可通过测试窗口与 `main` Agent 对话；后端持久化会话历史，至少在同一登录会话内可见。
+- **FR-028**: 管理员可通过测试窗口与 `main` Agent 对话；后端持久化会话历史，至少在同一登录会话内可见。
   **会话所有权与隔离**（hard requirement）：每个 `chat_sessions` 行绑定 `admin_id`（创建时从 JWT claims 取）；所有 `/api/chat/sessions/:id/*` 端点（GET messages、POST messages、DELETE session 等）必须校验：当前 JWT 的 admin_id == session.admin_id，**否则 403**（即使 token 有效）。Super 角色可读其它管理员的 session（审计用途）但仍走显式 403/200 判定，不允许任何路径绕过所有权检查。
   **Rate-limit 兼容**（CHK232）：复用 003 的 `tower-http RateLimit` 中间件对 SSE 长连接不友好（每个 token 事件计为一次请求会被误杀）。`POST /api/chat/sessions/:id/messages` 端点在 router 装配时**绕过** RateLimit 中间件，改用独立的 per-admin SSE 并发上限：默认每个 admin 同时 ≤ 2 个 active SSE 流（`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` env），超出 → 立即返 429 + `code = 4291` 而非排队。
-- **FR-028**: 聊天端点 `POST /api/chat/sessions/:id/messages` 必须以 SSE（text/event-stream）返回。
+- **FR-029**: 聊天端点 `POST /api/chat/sessions/:id/messages` 必须以 SSE（text/event-stream）返回。
   **事件类型与顺序**：
   - `token`（0..N 次）— 增量文本片段；按时间顺序，可被 `tool_call` 或 `routed` 中断
   - `tool_call`（0..N 次）— Agent 决定调用 Tool；服务端**在此事件后暂停 `token` 流**直到 tool 执行完
@@ -247,22 +249,35 @@
   - **实例 reset 失败处理**：归还前 reset 抛错 → 丢弃实例（不入池）+ 计入 `pool.reset_failures` 指标 + audit 一条 `outcome=error`；下次 acquire 会重新编译一个新实例（cache_miss 计数 +1）
 - **FR-030**: 单次 Plugin 调用必须有硬超时，默认 **30 秒**（可配 `PLUGIN_CALL_TIMEOUT_MS` env），超时强制中止并归还实例位。
   **双层 timeout 实现**（CHK215）：① Wasmtime **fuel-based budget** 防止纯 CPU 死循环（按指令计数中断；上限由 `PLUGIN_CALL_FUEL` env 调，默认值与 30s × 典型指令吞吐对齐）；② tokio `select!` 包一层墙钟超时防止 await 永远不返回（如 host_call 内部网络挂起未响应）。两者任一触发即视为 timeout，宿主返 5004 + audit + 丢弃实例（被中断的 Wasmtime 实例不再可信，不入池）。
-- **FR-031**: 单次 Plugin 调用必须有内存上限，默认 **128 MB**（可配 `PLUGIN_CALL_MAX_MEMORY_MB` env），超限中止。
+- **FR-032**: 单次 Plugin 调用必须有内存上限，默认 **128 MB**（可配 `PLUGIN_CALL_MAX_MEMORY_MB` env），超限中止。
+
+**Required Capabilities 声明**
+- **FR-033**: Function、Tool、Skill、Workflow 均可声明 `required_capabilities`（JSON 数组，元素为 capability name）。声明表示该实体在执行期间需要调用的 capability 集合。系统在以下场景强制校验：
+  - Function 创建时校验 `required_capabilities` 中的每一项必须属于 `capabilities` 表（service 层 lookup，不存在 → 5002）
+  - Tool 包装 Function/Workflow 时，Tool 的 `required_capabilities` 必须为被包装实体的超集（service 层校验，缺项 → 5002）
+  - Agent 绑定 Tool/Skill 时不校验（运行时由 capability dispatcher 按 Agent.permissions 鉴权，越权 → 4030）
+
+**RecommendedGame 管理**
+- **FR-034**: 系统支持维护推荐游戏列表，每条包含：名称、回复内容、推荐理由、游戏唯一标识（game_id）、游戏名称、标签（如"运营推荐/新游上线/本周热玩"）、游戏类型、推荐图片地址、排序值（sort_value）。支持按 sort_value 排序返回，game_id 全局唯一。
 
 ### Key Entities
 
-- **Capability**：固定枚举集合，由宿主代码定义（真值源）。启动期将代码列表 upsert 到 `capabilities` 表（仅含描述 + is_dangerous 元数据，供 UI 渲染）；DB 中存在但代码已移除的项仅 warn 不删。
-- **Category**：树状分类，自引用 parent_id，支持 Plugin / Function 分组。
+- **Capability**：固定枚举集合，由宿主代码定义（真值源）。启动期将代码列表 upsert 到 `capabilities` 表（仅含描述 + is_dangerous + category_id 元数据，供 UI 渲染）；DB 中存在但代码已移除的项仅 warn 不删。
+- **Category**：树状分类，自引用 parent_id，支持 Plugin / Function / Tool / Skill / Workflow / Capability 分组。
 - **Tag**：扁平标签集合。
 - **Plugin**：WASM 二进制 + 元数据。多对一 Category；多对多 Tag。
-- **Function**：可执行单元。多对一 Plugin（仅定制）；多对一 Category；多对多 Tag。
-- **Workflow**：DAG。多对多 Function（通过 WorkflowNode）。
-- **WorkflowNode + WorkflowEdge**：DAG 的节点 / 边。
-- **Tool**：包装层。引用 Function 或 Workflow。
-- **Skill**：上层封装。引用 Function 或 Workflow + 自有描述/示例。
-- **Agent**：交互单元。自引用 parent_agent_id；多对多 Tools；多对多 Skills；Set 列存 permissions。
-- **ChatSession + ChatMessage**：测试聊天的会话与消息。
+- **Function**：可执行单元。多对一 Plugin（仅定制）；多对一 Category；多对多 Tag；声明 required_capabilities。
+- **Workflow**：DAG。多对一 Category；多对多 Function（通过 WorkflowNode）；声明 input_schema / output_schema / required_capabilities。
+- **WorkflowNode + WorkflowEdge**：DAG 的节点 / 边。节点类型含 function_node / start_node / end_node / generate_answer_node（后者含 node_config JSON）。
+- **Tool**：包装层。引用 Function 或 Workflow；声明 source（workspace | builtin）/ is_always / category_id / required_capabilities。
+- **Skill**：上层封装。声明 source（workspace | builtin）/ is_always / category_id / required_capabilities。引用 Function 或 Workflow + 自有描述/示例。
+- **Agent**：交互单元。自引用 parent_agent_id；多对多 Tools；多对多 Skills；Set 列存 permissions；可选 model_preset。
+- **ChatSession + ChatMessage**：测试聊天的会话与消息。ChatSession 含 admin 快照列。
 - **AuditLog（runtime）**：每次 capability 调用、每次 Agent 路由、每次 Workflow 节点执行的审计记录。
+- **Admin + AdminAuditLog**：管理员账户与操作审计（继承自 003-admin-center）。
+- **LoginRecord**：登录记录（继承自 003-admin-center）。
+- **RecommendedGame**：推荐游戏列表，含排序和分类标签。
+- **Dashboard**：统计聚合视图（plugin/function/workflow/agent/tool/skill/chat 计数 + 最近活动）。
 
 ## Success Criteria *(mandatory)*
 
@@ -561,6 +576,34 @@
 - 内置 Function 由系统启动时静态注册；不支持热加载内置函数。
 - 聊天会话历史保留期默认 **30 天**（可配 `CHAT_RETENTION_DAYS` env）；cron 任务每日清理超期 session（含级联 message）。
 - Capability `db.execute` / `db.query` 仅允许宿主预注册的命名查询/写入（zero-trust），自由 SQL 永不暴露 — 已锁定。
+- `is_always = 1` 的 Tool/Skill 对所有 Agent 自动可用/加载，无需在 `agent_tools` / `agent_skills` 中建立关联。
+- `source = 'builtin'` 的 Tool 不可编辑，只能包装 builtin Function (kind=1)。
+
+## Implementation Status
+
+> 004-agent-runtime 已完整实现（237 个任务，V001–V038 迁移）。以下为超出原始 spec 范围的实现：
+
+### V019–V038 数据库扩展
+- **V019–V020**: `tools.source`（workspace | builtin）+ `tools.is_always`（全局可用 Tool）；放宽 CHECK 允许 kind=1 时 function_id=NULL（meta-tools）
+- **V021**: `skills.is_always`（全局可用 Skill）
+- **V022–V025**: `recommended_games` 表 — 推荐游戏管理
+- **V026–V027**: `tools.category_id` + `skills.category_id`
+- **V028**: `audit_logs` → `admin_audit_logs` 重命名
+- **V029–V031**: `functions.required_capabilities` + `tools.required_capabilities` + `workflows.required_capabilities` + `skills.required_capabilities`
+- **V032–V033**: `workflows.category_id` + `workflows.input_schema` + `workflows.start_description`
+- **V034–V036**: `workflow_nodes.node_type` 扩展（function_node / start_node / end_node / generate_answer_node）+ `workflow_nodes.function_id` 可为 NULL + `workflow_nodes.node_config` JSON + `workflows.output_schema` + `workflows.end_description`
+- **V037–V038**: `capabilities.category_id` + seed capability categories
+
+### 新增功能（不在原始 spec 中）
+- **Admin Center**（继承 003）：Admin CRUD / LoginRecord / AdminAuditLog / RBAC / Super Admin 保护
+- **Dashboard**：统计面板（各类资源计数 + 最近活动 + Plugin Pool 健康度）
+- **RecommendedGame**：推荐游戏 CRUD + 排序管理
+- **Capability CRUD**：capability 管理 + category 关联
+- **RuntimeAuditLog**：运行时审计日志查询
+- **LoginPage**：管理员登录页面
+- **通用组件**：Layout / PermissionGuard / FunctionTester / ToolTestModal / SkillTestModal / AdminForm / api.ts / auth.ts
+- **Bin 工具**：seed / seed_bench / create_super_admin
+- **前端分页**：TagPage 分页（V038 后新增）
 
 ## Outstanding Clarifications
 

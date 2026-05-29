@@ -49,6 +49,9 @@ dotenvy = { workspace = true }
 # CORS
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
+# HTTP body utilities
+http-body-util = "0.1"
+
 # Agent Runtime (004) — WASM plugin runtime + JSON schema validation
 extism = "1"
 jsonschema = "0.17"
@@ -71,7 +74,6 @@ langfuse = { workspace = true }
 [dev-dependencies]
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
 mime = "0.3"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 

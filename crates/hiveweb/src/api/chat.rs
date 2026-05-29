@@ -14,12 +14,11 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{get, post},
+    routing::get,
     Extension, Json, Router,
 };
-use futures::stream::{self, Stream, StreamExt};
+use futures::stream::{self, Stream};
 use serde::Serialize;
-use serde_json::json;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;

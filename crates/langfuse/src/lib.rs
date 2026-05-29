@@ -6,5 +6,10 @@
 //! and will silently drop events if the buffer is full.
 
 mod client;
+pub mod debug_log;
 
-pub use client::{LangfuseClient, LangfuseConfig, TraceHandle, GenerationHandle};
+pub use client::{
+    LangfuseClient, LangfuseConfig, TraceHandle, GenerationHandle, SpanHandle,
+    ObservationType, SpanLevel, TraceOptions, GenerationOptions, SpanOptions, EventOptions,
+    ScoreOptions, ScoreValueInput, GenerationEndOptions,
+};

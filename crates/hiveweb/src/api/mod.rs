@@ -36,6 +36,7 @@ use tracing::Level;
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::rate_limit::{rate_limit_middleware, RateLimitState};
 use crate::middleware::request_id::request_id_middleware;
+use crate::middleware::request_body_log::log_request_body_middleware;
 use crate::runtime::{
     CapabilityRegistry, InstancePool, Invoker, LlmRegistry, PoolConfig, RuntimeState,
     WorkflowExecutor,
@@ -159,6 +160,7 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .nest("/api", api_routes)
         .layer(cors)
         .layer(tracing_layer)
+        .layer(axum::middleware::from_fn(log_request_body_middleware))
         // request_id is the outermost layer so every other layer (cors,
         // tracing, rate-limit, auth, handlers) sees the same id.
         .layer(axum::middleware::from_fn(request_id_middleware))

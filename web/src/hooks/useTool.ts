@@ -51,13 +51,14 @@ export const useTool = (): UseToolReturn => {
   const [viewingTool, setViewingTool] = useState<ToolItem | null>(null);
   const [searchParams, setSearchParams] = useState<ToolSearchParams>({});
 
-  const doFetch = useCallback(async (page: number, params: ToolSearchParams) => {
+  const doFetch = useCallback(async (page: number, params: ToolSearchParams, currentPageSize?: number) => {
     setLoading(true);
     try {
-      const offset = (page - 1) * pagination.pageSize;
-      const response = await listTools({ ...params, offset, limit: pagination.pageSize });
+      const size = currentPageSize ?? pagination.pageSize;
+      const offset = (page - 1) * size;
+      const response = await listTools({ ...params, offset, limit: size });
       setTools(response.items);
-      setPagination((prev) => ({ ...prev, current: page, total: response.total }));
+      setPagination((prev) => ({ ...prev, current: page, total: response.total, pageSize: size }));
     } catch (error: any) {
       message.error(error.response?.data?.message || '获取工具列表失败');
     } finally {

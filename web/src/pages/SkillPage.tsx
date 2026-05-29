@@ -77,6 +77,8 @@ export default function SkillPage() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [filterForm] = Form.useForm<FilterValues>();
   const [filterCollapsed, setFilterCollapsed] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
@@ -107,10 +109,12 @@ export default function SkillPage() {
     const newSelected = key === selectedCategoryKey ? undefined : key;
     setSelectedCategoryKey(newSelected);
     setCategoryId(newSelected !== undefined ? Number(newSelected) : undefined);
+    setCurrentPage(1);
   };
 
   const fetchData = (overrides?: Partial<FilterValues>) => {
     const values = overrides || filterForm.getFieldsValue();
+    const offset = (currentPage - 1) * pageSize;
     setLoading(true);
     listSkills({
       search: values.search || undefined,
@@ -124,6 +128,8 @@ export default function SkillPage() {
       created_at_end: values.created_at_range ? values.created_at_range[1].endOf('day').toISOString() : undefined,
       updated_at_start: values.updated_at_range ? values.updated_at_range[0].startOf('day').toISOString() : undefined,
       updated_at_end: values.updated_at_range ? values.updated_at_range[1].endOf('day').toISOString() : undefined,
+      offset,
+      limit: pageSize,
     })
       .then(setData)
       .catch((e) => message.error(`加载失败：${(e as Error).message}`))
@@ -135,12 +141,19 @@ export default function SkillPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryId]);
 
+  useEffect(() => {
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, pageSize]);
+
   const handleFilter = () => {
+    setCurrentPage(1);
     fetchData();
   };
 
   const handleReset = () => {
     filterForm.resetFields();
+    setCurrentPage(1);
     fetchData({});
   };
 
@@ -409,7 +422,18 @@ export default function SkillPage() {
           columns={columns}
           dataSource={data.items}
           loading={loading}
-          pagination={{ total: data.total, pageSize: data.limit }}
+          pagination={{
+            total: data.total,
+            current: currentPage,
+            pageSize: pageSize,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => {
+              setCurrentPage(page);
+              setPageSize(pageSize);
+            },
+          }}
         />
 
         <Drawer

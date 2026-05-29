@@ -15,8 +15,8 @@ export function TagMultiSelect({ value, onChange }: TagMultiSelectProps) {
     let cancelled = false;
     setLoading(true);
     listTags()
-      .then((items) => {
-        if (!cancelled) setTags(items);
+      .then((res) => {
+        if (!cancelled) setTags(res.items);
       })
       .catch((e) => {
         if (!cancelled) {

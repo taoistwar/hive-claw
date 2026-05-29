@@ -2,14 +2,16 @@
 //!
 //! 为单个 Skill 创建隔离测试环境：加载目标 Skill + Always Tools + Always Skills → 执行单轮对话 → 返回结果
 
-use providers::{ChatRequest, LLMProvider, RetryMode, ToolCallRequest};
+use providers::{ChatRequest, RetryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
+use std::time::Instant;
 
 use super::orchestrator::{
-    build_tools_schema_simple, handle_workspace_tool, AgentContext, OrchestratorDeps, ToolRef, ToolOutcome,
+    build_tools_schema_simple, handle_workspace_tool, AgentContext, OrchestratorDeps, ToolRef,
 };
+use crate::services::runtime_audit::{self, AuditRecord};
 
 #[derive(Debug, Deserialize)]
 pub struct TestSkillRequest {
@@ -154,11 +156,49 @@ pub async fn run_skill_test(
         reasoning_effort: None,
     };
 
+    let llm_started = Instant::now();
     let resp = provider.chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None).await;
+    let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
 
     if resp.is_error() {
-        return Err(format!("LLM error: {}", resp.content.unwrap_or_else(|| "unknown".into())));
+        let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
+        runtime_audit::record(
+            pool,
+            AuditRecord {
+                request_id: None,
+                session_id: None,
+                agent_id: None,
+                plugin_id: None,
+                function_id: None,
+                capability: None,
+                event_type: "llm_invoke",
+                outcome: "error",
+                elapsed_ms: Some(llm_elapsed_ms),
+                error_message: Some(&err_msg),
+                payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
+            },
+        )
+        .await;
+        return Err(format!("LLM error: {}", err_msg));
     }
+
+    runtime_audit::record(
+        pool,
+        AuditRecord {
+            request_id: None,
+            session_id: None,
+            agent_id: None,
+            plugin_id: None,
+            function_id: None,
+            capability: None,
+            event_type: "llm_invoke",
+            outcome: "success",
+            elapsed_ms: Some(llm_elapsed_ms),
+            error_message: None,
+            payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
+        },
+    )
+    .await;
 
     let assistant_content = resp.content.unwrap_or_default();
     let tool_calls = resp.tool_calls;

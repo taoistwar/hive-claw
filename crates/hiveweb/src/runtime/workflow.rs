@@ -73,8 +73,8 @@ impl WorkflowExecutor {
             .ok_or(WorkflowError::NotFound(workflow_id))?
             .0 as u64;
 
-        let nodes: Vec<(i64, String, i64)> = sqlx::query_as(
-            "SELECT id, node_key, function_id FROM workflow_nodes WHERE workflow_id = ?",
+        let nodes: Vec<(i64, String, Option<i64>, String, Option<Value>)> = sqlx::query_as(
+            "SELECT id, node_key, function_id, COALESCE(node_type, 'function_node'), node_config FROM workflow_nodes WHERE workflow_id = ?",
         )
         .bind(workflow_id)
         .fetch_all(&deps.pool)
@@ -91,13 +91,17 @@ impl WorkflowExecutor {
 
         // 2. Build lookup tables
         let id_to_key: HashMap<i64, String> =
-            nodes.iter().map(|(id, k, _)| (*id, k.clone())).collect();
-        let key_to_function: HashMap<String, i64> =
-            nodes.iter().map(|(_, k, fid)| (k.clone(), *fid)).collect();
+            nodes.iter().map(|(id, k, _, _, _)| (*id, k.clone())).collect();
+        let key_to_function: HashMap<String, Option<i64>> =
+            nodes.iter().map(|(_, k, fid, _, _)| (k.clone(), *fid)).collect();
+        let key_to_node_type: HashMap<String, String> =
+            nodes.iter().map(|(_, k, _, nt, _)| (k.clone(), nt.clone())).collect();
+        let key_to_node_config: HashMap<String, Option<Value>> =
+            nodes.iter().map(|(_, k, _, _, cfg)| (k.clone(), cfg.clone())).collect();
 
         // adjacency for topology: indegree per node_key
         let mut indegree: HashMap<String, usize> =
-            nodes.iter().map(|(_, k, _)| (k.clone(), 0)).collect();
+            nodes.iter().map(|(_, k, _, _, _)| (k.clone(), 0)).collect();
         // dst_node_key → Vec<(src_node_key, mapping object)>
         let mut inbound: HashMap<String, Vec<(String, Map<String, Value>)>> = HashMap::new();
         // src_node_key → Vec<dst_node_key>
@@ -125,6 +129,8 @@ impl WorkflowExecutor {
                 deps,
                 &nodes,
                 &key_to_function,
+                &key_to_node_type,
+                &key_to_node_config,
                 &inbound,
                 &succ,
                 &mut indegree,
@@ -144,8 +150,10 @@ impl WorkflowExecutor {
 #[allow(clippy::too_many_arguments)]
 async fn run_layers(
     deps: &ExecutorDeps,
-    nodes: &[(i64, String, i64)],
-    key_to_function: &HashMap<String, i64>,
+    nodes: &[(i64, String, Option<i64>, String, Option<Value>)],
+    key_to_function: &HashMap<String, Option<i64>>,
+    key_to_node_type: &HashMap<String, String>,
+    key_to_node_config: &HashMap<String, Option<Value>>,
     inbound: &HashMap<String, Vec<(String, Map<String, Value>)>>,
     _succ: &HashMap<String, Vec<String>>,
     indegree: &mut HashMap<String, usize>,
@@ -154,7 +162,7 @@ async fn run_layers(
     workflow_id: i64,
 ) -> Result<HashMap<String, Value>, WorkflowError> {
     let mut outputs: HashMap<String, Value> = HashMap::new();
-    let mut remaining: HashSet<String> = nodes.iter().map(|(_, k, _)| k.clone()).collect();
+    let mut remaining: HashSet<String> = nodes.iter().map(|(_, k, _, _, _)| k.clone()).collect();
     let t0 = Instant::now();
 
     while !remaining.is_empty() {
@@ -182,11 +190,15 @@ async fn run_layers(
                     field: e.0,
                     message: e.1,
                 })?;
-            let function_id = *key_to_function
+            let node_type = key_to_node_type.get(node_key.as_str())
+                .map(|s| s.as_str())
+                .unwrap_or("function_node");
+            let function_id_opt = *key_to_function
                 .get(node_key)
                 .ok_or_else(|| WorkflowError::MissingFunction(node_key.clone()))?;
+            let node_config = key_to_node_config.get(node_key.as_str()).cloned().flatten();
             let nk = node_key.clone();
-            futures.push(execute_node(deps, function_id, nk, node_input, invoking_agent_id, workflow_id));
+            futures.push(execute_node(deps, function_id_opt, node_type.to_string(), node_config, nk, node_input, invoking_agent_id, workflow_id));
         }
 
         let results = futures::future::join_all(futures).await;
@@ -294,15 +306,29 @@ fn resolve_src_path(
     Ok(current.clone())
 }
 
-/// Execute a single node by function_id.
+/// Execute a single node. For answer nodes (function_id=None), generate a response using LLM.
 async fn execute_node(
     deps: &ExecutorDeps,
-    function_id: i64,
+    function_id: Option<i64>,
+    node_type: String,
+    node_config: Option<Value>,
     node_key: String,
     input: Value,
     invoking_agent_id: i64,
     workflow_id: i64,
 ) -> Result<(String, Value), WorkflowError> {
+    let _ = workflow_id;
+
+    // Handle answer node: generate response using LLM
+    if node_type == "generate_answer_node" {
+        return execute_answer_node(deps, &node_key, input, node_config, invoking_agent_id).await;
+    }
+
+    let function_id = function_id.ok_or_else(|| WorkflowError::NodeFailure {
+        node_key: node_key.clone(),
+        message: "node has no function_id and is not an answer node".into(),
+    })?;
+
     // Load function metadata
     let row: Option<(i8, Option<i64>, Option<String>, String)> = sqlx::query_as(
         "SELECT kind, plugin_id, plugin_export, identifier FROM functions WHERE id = ?",
@@ -372,8 +398,99 @@ async fn execute_node(
             node_key: node_key.clone(),
             message: format!("plugin invoke: {e}"),
         })?;
-    let _ = workflow_id;
     let out: Value =
         serde_json::from_str(&out_str).unwrap_or_else(|_| Value::String(out_str));
     Ok((node_key, out))
+}
+
+/// Execute a generate-answer node: resolves template variables from upstream outputs
+/// and calls LLM to generate a response.
+async fn execute_answer_node(
+    deps: &ExecutorDeps,
+    node_key: &str,
+    input: Value,
+    node_config: Option<Value>,
+    invoking_agent_id: i64,
+) -> Result<(String, Value), WorkflowError> {
+    let config = node_config.unwrap_or_default();
+    let system_prompt = config
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("You are a helpful assistant.");
+    let model_preset = config
+        .get("model_preset")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let history_window = config
+        .get("history_window")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(3);
+
+    // Resolve template variables in system_prompt (e.g., "{{query}}" → actual value)
+    let resolved_prompt = resolve_template_vars(system_prompt, &input);
+
+    // Build the user message from the resolved input
+    let user_message = serde_json::to_string(&input)
+        .unwrap_or_else(|_| "{}".to_string());
+
+    // Try LLM invocation; fall back to direct response if no LLM available
+    let answer = match deps.llm.build_primary(model_preset) {
+        Ok((provider, model)) => {
+            use providers::ChatRequest;
+            let req = ChatRequest {
+                messages: vec![
+                    serde_json::json!({"role": "system", "content": resolved_prompt}),
+                    serde_json::json!({"role": "user", "content": user_message}),
+                ],
+                model: Some(model.clone()),
+                max_tokens: 2048,
+                temperature: 0.7,
+                tools: None,
+                tool_choice: None,
+                reasoning_effort: None,
+            };
+            let resp = provider.chat(req).await;
+            if resp.is_error() {
+                let err_msg = resp.content.unwrap_or_else(|| "unknown LLM error".to_string());
+                tracing::warn!(node_key, error = %err_msg, "answer node LLM failed, using fallback");
+                format!("[LLM 调用失败: {err_msg}] 输入: {user_message}")
+            } else {
+                resp.content.unwrap_or_default()
+            }
+        }
+        Err(e) => {
+            tracing::warn!(node_key, error = %e, "answer node no LLM provider, using fallback");
+            format!("[无可用模型] 系统提示: {resolved_prompt}\n输入: {user_message}")
+        }
+    };
+
+    let _ = invoking_agent_id;
+    let _ = history_window;
+
+    Ok((
+        node_key.to_string(),
+        serde_json::json!({
+            "answer": answer,
+            "model_preset": model_preset,
+        }),
+    ))
+}
+
+/// Replace `{{var_name}}` template variables in a string with values from input JSON.
+fn resolve_template_vars(template: &str, input: &Value) -> String {
+    let mut result = template.to_string();
+    if let Value::Object(map) = input {
+        for (key, val) in map {
+            let placeholder = format!("{{{{{key}}}}}");
+            let replacement = match val {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            result = result.replace(&placeholder, &replacement);
+        }
+    }
+    // Replace remaining unresolved placeholders with empty string
+    let re = regex::Regex::new(r"\{\{[a-zA-Z0-9_]+\}\}")
+        .unwrap_or_else(|_| regex::Regex::new(r"\{\{[^}]+\}\}").unwrap());
+    re.replace_all(&result, "").to_string()
 }

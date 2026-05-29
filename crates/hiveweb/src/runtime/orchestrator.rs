@@ -17,7 +17,7 @@
 
 use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
-use providers::{ChatRequest, LLMProvider, RetryMode, ToolCallRequest};
+use providers::{ChatRequest, RetryMode, ToolCallRequest};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::convert::Infallible;

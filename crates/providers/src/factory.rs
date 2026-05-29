@@ -14,7 +14,6 @@ use config::{get_config_path, paths::is_default_workspace, set_config_path};
 use crate::anthropic_provider::{AnthropicConfig, AnthropicProvider};
 use crate::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
 use crate::bedrock_provider::{BedrockConfig, BedrockProvider};
-use crate::fallback_provider::{FallbackPreset, FallbackProvider, ProviderFactory};
 use crate::github_copilot_provider::GitHubCopilotProvider;
 use crate::openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
 use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};

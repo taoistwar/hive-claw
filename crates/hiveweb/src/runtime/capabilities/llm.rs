@@ -7,7 +7,7 @@
 //! 是给 **Plugin 内部** 在 host_call 范围内做一次性 LLM 询问（如 summarize、
 //! classify 等无 tool 的子任务）。
 
-use providers::{ChatRequest, LLMProvider, RetryMode};
+use providers::{ChatRequest, RetryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;

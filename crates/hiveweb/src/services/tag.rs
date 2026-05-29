@@ -56,8 +56,13 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Tag, AppError> {
         .ok_or_else(|| AppError::NotFound(format!("tag id={id} not found")))
 }
 
-pub async fn list(pool: &MySqlPool, q: Option<&str>) -> Result<Vec<TagWithCount>, AppError> {
-    let sql = r#"SELECT t.*, COALESCE(c.cnt, 0) AS reference_count
+pub async fn list(
+    pool: &MySqlPool,
+    q: Option<&str>,
+    offset: i64,
+    limit: i64,
+) -> Result<(Vec<TagWithCount>, i64), AppError> {
+    let base_sql = r#"SELECT t.*, COALESCE(c.cnt, 0) AS reference_count
                  FROM tags t
                  LEFT JOIN (SELECT tag_id, COUNT(*) AS cnt FROM taggings GROUP BY tag_id) c
                    ON c.tag_id = t.id"#;
@@ -69,26 +74,50 @@ pub async fn list(pool: &MySqlPool, q: Option<&str>) -> Result<Vec<TagWithCount>
         reference_count: i64,
     }
 
-    let rows: Vec<Row> = if let Some(keyword) = q {
+    let (rows, total) = if let Some(keyword) = q {
         let like = format!("%{keyword}%");
-        sqlx::query_as(&format!("{sql} WHERE t.name LIKE ? ORDER BY t.name"))
-            .bind(like)
+        let count_sql = "SELECT COUNT(*) FROM tags WHERE name LIKE ?";
+        let total: (i64,) = sqlx::query_as(count_sql)
+            .bind(&like)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("tag count: {e}")))?;
+        let sql = format!(
+            "{base_sql} WHERE t.name LIKE ? ORDER BY t.name LIMIT ? OFFSET ?"
+        );
+        let rows: Vec<Row> = sqlx::query_as(&sql)
+            .bind(&like)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(pool)
             .await
+            .map_err(|e| AppError::Internal(format!("tag list: {e}")))?;
+        (rows, total.0)
     } else {
-        sqlx::query_as(&format!("{sql} ORDER BY t.name"))
+        let count_sql = "SELECT COUNT(*) FROM tags";
+        let total: (i64,) = sqlx::query_as(count_sql)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("tag count: {e}")))?;
+        let sql = format!("{base_sql} ORDER BY t.name LIMIT ? OFFSET ?");
+        let rows: Vec<Row> = sqlx::query_as(&sql)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(pool)
             .await
-    }
-    .map_err(|e| AppError::Internal(format!("tag list: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("tag list: {e}")))?;
+        (rows, total.0)
+    };
 
-    Ok(rows
-        .into_iter()
-        .map(|r| TagWithCount {
-            tag: r.tag,
-            reference_count: r.reference_count,
-        })
-        .collect())
+    Ok((
+        rows.into_iter()
+            .map(|r| TagWithCount {
+                tag: r.tag,
+                reference_count: r.reference_count,
+            })
+            .collect(),
+        total,
+    ))
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tag, AppError> {

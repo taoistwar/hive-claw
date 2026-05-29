@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::MySqlPool;
 
 use crate::models::RecommendedGame;

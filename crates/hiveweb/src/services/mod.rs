@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod capability;
 pub mod dashboard;
 pub mod login_record;
 

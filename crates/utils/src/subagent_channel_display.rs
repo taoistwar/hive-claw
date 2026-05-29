@@ -5,8 +5,6 @@
 /// `Summarize…` instruction. External channels (embedded WebUI, session previews)
 /// should show only the header plus a truncated result body.
 
-use regex::Regex;
-
 /// Cap Result section length so WebSocket session replay stays readable; full text
 /// remains on disk for LLM replay (we only mutate outgoing API copies in websocket).
 const SUBAGENT_CHANNEL_RESULT_MAX_CHARS: usize = 800;

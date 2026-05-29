@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::api::AppState;
 use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::function::{self as svc, CreateMeta, ListFilter, UpdateMeta};
-use crate::utils::error::{ApiResponse, AppError};
+use crate::utils::error::ApiResponse;
 use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {

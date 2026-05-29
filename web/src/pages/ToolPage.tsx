@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Typography, Button, Table, Tag, Form, Input, Select, Space, DatePicker, Popconfirm, Tree, message } from 'antd';
+import { Typography, Button, Table, Tag, Form, Input, Select, DatePicker, Popconfirm, Tree, message } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, ReloadOutlined, EyeOutlined, ExperimentOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -131,6 +131,7 @@ const ToolPage = () => {
 
   const handlePaginationChange = (page: number, pageSize: number) => {
     setPagination((prev) => ({ ...prev, current: page, pageSize }));
+    fetchTools(page);
   };
 
   const doSearch = () => {
@@ -201,7 +202,7 @@ const ToolPage = () => {
       render: (v: boolean) => (v ? <Tag color={ALWAYS_TAG.color}>{ALWAYS_TAG.label}</Tag> : '-'),
     },
     {
-      title: 'required_capabilities',
+      title: 'capabilities',
       dataIndex: 'required_capabilities',
       width: 180,
       render: (caps: string[] | null) =>
@@ -332,6 +333,7 @@ const ToolPage = () => {
           </Button>
         </div>
 
+      <Form form={form} layout="inline" onFinish={doSearch}>
       <div
         style={{
           display: 'flex',
@@ -341,21 +343,15 @@ const ToolPage = () => {
           marginBottom: 16,
         }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label style={{ fontSize: 12, color: '#666' }}>搜索</label>
+        <Form.Item name="search" style={{ marginBottom: 0 }}>
           <Input
-            value={form.getFieldValue('search')}
-            onChange={(e) => form.setFieldValue('search', e.target.value)}
             placeholder="搜索名称/标识符/描述"
             allowClear
             style={{ width: 200 }}
           />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label style={{ fontSize: 12, color: '#666' }}>类型</label>
+        </Form.Item>
+        <Form.Item name="kind" style={{ marginBottom: 0 }}>
           <Select
-            value={form.getFieldValue('kind')}
-            onChange={(v) => form.setFieldValue('kind', v)}
             placeholder="类型"
             allowClear
             style={{ width: 140 }}
@@ -363,12 +359,9 @@ const ToolPage = () => {
             <Select.Option value={1}>function-wrap</Select.Option>
             <Select.Option value={2}>workflow-wrap</Select.Option>
           </Select>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label style={{ fontSize: 12, color: '#666' }}>来源</label>
+        </Form.Item>
+        <Form.Item name="source" style={{ marginBottom: 0 }}>
           <Select
-            value={form.getFieldValue('source')}
-            onChange={(v) => form.setFieldValue('source', v)}
             placeholder="来源"
             allowClear
             style={{ width: 130 }}
@@ -376,27 +369,21 @@ const ToolPage = () => {
             <Select.Option value="workspace">workspace</Select.Option>
             <Select.Option value="builtin">builtin</Select.Option>
           </Select>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label style={{ fontSize: 12, color: '#666' }}>创建时间</label>
+        </Form.Item>
+        <Form.Item name="created_at_range" style={{ marginBottom: 0 }}>
           <RangePicker
-            value={form.getFieldValue('created_at_range')}
-            onChange={(v) => form.setFieldValue('created_at_range', v)}
             placeholder={['创建时间起', '创建时间止']}
             style={{ width: 260 }}
           />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label style={{ fontSize: 12, color: '#666' }}>修改时间</label>
+        </Form.Item>
+        <Form.Item name="updated_at_range" style={{ marginBottom: 0 }}>
           <RangePicker
-            value={form.getFieldValue('updated_at_range')}
-            onChange={(v) => form.setFieldValue('updated_at_range', v)}
             placeholder={['修改时间起', '修改时间止']}
             style={{ width: 260 }}
           />
-        </div>
+        </Form.Item>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button type="primary" icon={<SearchOutlined />} onClick={() => form.submit()}>
+          <Button type="primary" icon={<SearchOutlined />} htmlType="submit">
             搜索
           </Button>
           <Button icon={<ReloadOutlined />} onClick={handleResetSearch}>
@@ -404,6 +391,7 @@ const ToolPage = () => {
           </Button>
         </div>
       </div>
+      </Form>
 
       <Table<ToolItem>
         columns={columns}
@@ -414,9 +402,11 @@ const ToolPage = () => {
           current: pagination.current,
           pageSize: pagination.pageSize,
           total: pagination.total,
-          showSizeChanger: false,
+          showSizeChanger: true,
+          pageSizeOptions: ['10', '20', '50', '100'],
           showTotal: (total) => `共 ${total} 条`,
           onChange: handlePaginationChange,
+          onShowSizeChange: (page, pageSize) => handlePaginationChange(page, pageSize),
         }}
       />
 

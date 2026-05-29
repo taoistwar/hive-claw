@@ -43,6 +43,17 @@ export interface PluginListParams {
   tag_ids?: number[];
   /** true=回收站，false/missing=只看未删除（默认） */
   deleted_only?: boolean;
+  identifier?: string;
+  name?: string;
+  description?: string;
+  runtime?: string;
+  version?: string;
+  author?: string;
+  repository_url?: string;
+  created_at_start?: string;
+  created_at_end?: string;
+  updated_at_start?: string;
+  updated_at_end?: string;
 }
 
 export async function listPlugins(params: PluginListParams = {}): Promise<PluginList> {
@@ -53,6 +64,17 @@ export async function listPlugins(params: PluginListParams = {}): Promise<Plugin
   if (params.category_id !== undefined) query.category_id = String(params.category_id);
   if (params.tag_ids?.length) query.tag_ids = params.tag_ids.join(',');
   if (params.deleted_only) query.deleted_only = 'true';
+  if (params.identifier) query.identifier = params.identifier;
+  if (params.name) query.name = params.name;
+  if (params.description) query.description = params.description;
+  if (params.runtime) query.runtime = params.runtime;
+  if (params.version) query.version = params.version;
+  if (params.author) query.author = params.author;
+  if (params.repository_url) query.repository_url = params.repository_url;
+  if (params.created_at_start) query.created_at_start = params.created_at_start;
+  if (params.created_at_end) query.created_at_end = params.created_at_end;
+  if (params.updated_at_start) query.updated_at_start = params.updated_at_start;
+  if (params.updated_at_end) query.updated_at_end = params.updated_at_end;
   const resp = await apiClient.get<PluginList>('/plugins', { params: query });
   // apiClient response interceptor 已 unwrap envelope.data
   return resp.data;

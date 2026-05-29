@@ -7,5 +7,6 @@ pub struct Capability {
     pub name: String,
     pub description: String,
     pub is_dangerous: i8,
+    pub category_id: Option<i64>,
     pub created_at: DateTime<Utc>,
 }

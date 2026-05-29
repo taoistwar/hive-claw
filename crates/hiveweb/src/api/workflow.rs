@@ -12,7 +12,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -43,9 +43,15 @@ pub fn router() -> Router<AppState> {
 pub struct ListQuery {
     #[serde(default)] pub offset: Option<i64>,
     #[serde(default)] pub limit: Option<i64>,
+    #[serde(default)] pub id: Option<i64>,
+    #[serde(default)] pub identifier: Option<String>,
+    #[serde(default)] pub name: Option<String>,
     #[serde(default)] pub search: Option<String>,
     #[serde(default)] pub category_id: Option<i64>,
     #[serde(default)] pub tag_id: Option<i64>,
+    #[serde(default)] pub required_capabilities: Option<String>,
+    #[serde(default)] pub timeout_ms_from: Option<i64>,
+    #[serde(default)] pub timeout_ms_to: Option<i64>,
     #[serde(default)] pub created_at_from: Option<DateTime<Utc>>,
     #[serde(default)] pub created_at_to: Option<DateTime<Utc>>,
     #[serde(default)] pub updated_at_from: Option<DateTime<Utc>>,
@@ -63,9 +69,15 @@ async fn list_workflows(
         offset,
         limit,
         svc::ListFilter {
+            id: q.id,
+            identifier: q.identifier,
+            name: q.name,
             search: q.search,
             category_id: q.category_id,
             tag_id: q.tag_id,
+            required_capabilities: q.required_capabilities,
+            timeout_ms_from: q.timeout_ms_from,
+            timeout_ms_to: q.timeout_ms_to,
             created_at_from: q.created_at_from,
             created_at_to: q.created_at_to,
             updated_at_from: q.updated_at_from,

@@ -1,14 +1,16 @@
 // WorkflowPage — 列表 + 左侧分类树过滤 + 标签 + 创建 + 编辑 + 删除
 
 import { useEffect, useState } from 'react';
-import { Table, Tag, Space, Input, InputNumber, message, Button, Popconfirm, Tree, Drawer, Form, Row, Col, DatePicker, Card, Select, Modal, Tooltip } from 'antd';
+import { Table, Tag, Space, Input, InputNumber, message, Button, Popconfirm, Tree, Drawer, Form, Row, Col, DatePicker, Card, Select, Modal, Tooltip, Dropdown } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import type { ColumnsType } from 'antd/es/table';
 import type { Dayjs } from 'dayjs';
-import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, SearchOutlined, FilterOutlined, ReloadOutlined, SettingOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import type { MenuProps } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined, SearchOutlined, FilterOutlined, ReloadOutlined, SettingOutlined, UnorderedListOutlined, EllipsisOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 import { DagEditor } from '../components/DagEditor/DagEditor';
+import { CategoryTreeSelect } from '../components/CategoryTreeSelect';
 import {
   createWorkflow,
   deleteWorkflow,
@@ -22,7 +24,13 @@ import { listTags, type TagItem } from '../services/tag';
 const { RangePicker } = DatePicker;
 
 interface FilterValues {
+  id?: number;
+  identifier?: string;
+  name?: string;
   search?: string;
+  required_capabilities?: string;
+  timeout_ms_from?: number;
+  timeout_ms_to?: number;
   created_at_range?: [Dayjs, Dayjs] | null;
   updated_at_range?: [Dayjs, Dayjs] | null;
 }
@@ -68,6 +76,8 @@ export default function WorkflowPage() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [filterForm] = Form.useForm<FilterValues>();
   const [allTags, setAllTags] = useState<TagItem[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
@@ -77,7 +87,7 @@ export default function WorkflowPage() {
         listTags(),
       ]);
       setCategoryTree(tree);
-      setAllTags(tags);
+      setAllTags(tags.items);
       const allKeys: React.Key[] = [];
       const collect = (nodes: CategoryNode[]) => {
         nodes.forEach((n) => {
@@ -100,15 +110,24 @@ export default function WorkflowPage() {
 
   const fetchData = () => {
     const values = filterForm.getFieldsValue();
+    const offset = (currentPage - 1) * pageSize;
     setLoading(true);
     listWorkflows({
+      id: values.id,
+      identifier: values.identifier || undefined,
+      name: values.name || undefined,
       search: values.search || undefined,
       category_id: categoryId,
       tag_id: tagId,
+      required_capabilities: values.required_capabilities || undefined,
+      timeout_ms_from: values.timeout_ms_from,
+      timeout_ms_to: values.timeout_ms_to,
       created_at_from: values.created_at_range ? values.created_at_range[0].startOf('day').toISOString() : undefined,
       created_at_to: values.created_at_range ? values.created_at_range[1].endOf('day').toISOString() : undefined,
       updated_at_from: values.updated_at_range ? values.updated_at_range[0].startOf('day').toISOString() : undefined,
       updated_at_to: values.updated_at_range ? values.updated_at_range[1].endOf('day').toISOString() : undefined,
+      offset,
+      limit: pageSize,
     })
       .then((resp) => { setData(resp.items); setTotal(resp.total); })
       .catch((e) => message.error(`加载失败：${(e as Error).message}`))
@@ -120,12 +139,19 @@ export default function WorkflowPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryId, tagId]);
 
+  useEffect(() => {
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, pageSize]);
+
   const handleFilter = () => {
+    setCurrentPage(1);
     fetchData();
   };
 
   const handleReset = () => {
     filterForm.resetFields();
+    setCurrentPage(1);
     fetchData();
   };
 
@@ -134,6 +160,7 @@ export default function WorkflowPage() {
     setSelectedCategoryKey(newSelected);
     setCategoryId(newSelected !== undefined ? Number(newSelected) : undefined);
     setTagId(undefined);
+    setCurrentPage(1);
   };
 
   const onCreate = async (values: {
@@ -253,59 +280,64 @@ export default function WorkflowPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 140,
-      render: (_, r) => (
-        <Space size={2}>
-          <Tooltip title="查看信息">
-            <Button
-              type="text"
-              size="small"
-              icon={<EyeOutlined />}
-              onClick={() => { setViewingWf(r); setViewOpen(true); }}
-            />
-          </Tooltip>
-          <Tooltip title="查看 DAG">
-            <Button
-              type="text"
-              size="small"
-              icon={<UnorderedListOutlined />}
-              onClick={() => { setViewingDagWf(r); setViewDagOpen(true); }}
-            />
-          </Tooltip>
-          <Tooltip title="编辑 DAG">
-            <Button
-              type="text"
-              size="small"
-              icon={<SettingOutlined />}
-              onClick={() => setSelected(r)}
-            />
-          </Tooltip>
-          <Tooltip title="编辑信息">
-            <Button
-              type="text"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => openEdit(r)}
-            />
-          </Tooltip>
-          <Popconfirm
-            title="确认删除"
-            description={`确定要删除 workflow「${r.identifier}」吗？若被 Tool 引用将阻止删除。`}
-            onConfirm={() => onDelete(r)}
-            okText="确认"
-            cancelText="取消"
-          >
-            <Tooltip title="删除">
+      width: 80,
+      render: (_, r) => {
+        const items: MenuProps['items'] = [
+          {
+            key: 'view-dag',
+            label: '查看 DAG',
+            icon: <UnorderedListOutlined />,
+            onClick: () => { setViewingDagWf(r); setViewDagOpen(true); },
+          },
+          {
+            key: 'edit-dag',
+            label: '编辑 DAG',
+            icon: <SettingOutlined />,
+            onClick: () => setSelected(r),
+          },
+          {
+            key: 'edit-info',
+            label: '编辑信息',
+            icon: <EditOutlined />,
+            onClick: () => openEdit(r),
+          },
+          { type: 'divider' },
+          {
+            key: 'delete',
+            label: (
+              <Popconfirm
+                title="确认删除"
+                description={`确定要删除 workflow「${r.identifier}」吗？若被 Tool 引用将阻止删除。`}
+                onConfirm={() => onDelete(r)}
+                okText="确认"
+                cancelText="取消"
+              >
+                <span style={{ color: '#ff4d4f' }}>删除</span>
+              </Popconfirm>
+            ),
+            icon: <DeleteOutlined style={{ color: '#ff4d4f' }} />,
+            danger: true,
+          },
+        ];
+
+        return (
+          <Space size="small">
+            <Tooltip title="查看">
               <Button
                 type="text"
                 size="small"
-                danger
-                icon={<DeleteOutlined />}
+                icon={<EyeOutlined />}
+                onClick={() => { setViewingWf(r); setViewOpen(true); }}
               />
             </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
+            <Dropdown menu={{ items }} placement="bottomRight" trigger={['click']}>
+              <Tooltip title="更多操作">
+                <Button type="text" size="small" icon={<EllipsisOutlined />} />
+              </Tooltip>
+            </Dropdown>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -354,37 +386,79 @@ export default function WorkflowPage() {
 
       {/* Main content */}
       <div style={{ flex: 1, overflow: 'auto' }}>
-        <Space style={{ marginBottom: 16 }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建 Workflow
-          </Button>
-        </Space>
-
-        <Card style={{ marginBottom: 16 }} title="搜索过滤" size="small">
+        <Card
+          style={{ marginBottom: 16 }}
+          title="搜索过滤"
+          size="small"
+          extra={
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+              新建 Workflow
+            </Button>
+          }
+        >
           <Form
             form={filterForm}
-            layout="inline"
             onFinish={handleFilter}
           >
-            <Form.Item name="search" label="关键词">
-              <Input placeholder="identifier / name / description" allowClear style={{ width: 220 }} prefix={<SearchOutlined />} />
-            </Form.Item>
-            <Form.Item name="created_at_range" label="创建时间">
-              <RangePicker showTime />
-            </Form.Item>
-            <Form.Item name="updated_at_range" label="更新时间">
-              <RangePicker showTime />
-            </Form.Item>
-            <Form.Item>
-              <Space>
-                <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
-                  搜索
-                </Button>
-                <Button onClick={handleReset} icon={<ReloadOutlined />}>
-                  重置
-                </Button>
-              </Space>
-            </Form.Item>
+            <Row gutter={[16, 12]}>
+              <Col span={3}>
+                <Form.Item name="id" label="ID" style={{ marginBottom: 0 }}>
+                  <InputNumber placeholder="ID" style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={3}>
+                <Form.Item name="identifier" label="identifier" style={{ marginBottom: 0 }}>
+                  <Input placeholder="identifier" allowClear style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={3}>
+                <Form.Item name="name" label="name" style={{ marginBottom: 0 }}>
+                  <Input placeholder="name" allowClear style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={3}>
+                <Form.Item name="required_capabilities" label="capabilities" style={{ marginBottom: 0 }}>
+                  <Input placeholder="capability name" allowClear style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="search" label="关键词" style={{ marginBottom: 0 }}>
+                  <Input placeholder="identifier / name / description / capabilities" allowClear prefix={<SearchOutlined />} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item label="timeout_ms" style={{ marginBottom: 0 }}>
+                  <Space.Compact style={{ width: '100%' }}>
+                    <Form.Item name="timeout_ms_from" noStyle>
+                      <InputNumber placeholder="min" min={0} style={{ width: '50%' }} />
+                    </Form.Item>
+                    <Form.Item name="timeout_ms_to" noStyle>
+                      <InputNumber placeholder="max" min={0} style={{ width: '50%' }} />
+                    </Form.Item>
+                  </Space.Compact>
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item label="创建时间" style={{ marginBottom: 0 }}>
+                  <RangePicker showTime style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item label="更新时间" style={{ marginBottom: 0 }}>
+                  <RangePicker showTime style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item style={{ marginBottom: 0 }}>
+                  <Button type="primary" icon={<SearchOutlined />} htmlType="submit">
+                    搜索
+                  </Button>
+                  <Button onClick={handleReset} icon={<ReloadOutlined />} style={{ marginLeft: 8 }}>
+                    重置
+                  </Button>
+                </Form.Item>
+              </Col>
+            </Row>
           </Form>
         </Card>
 
@@ -394,9 +468,16 @@ export default function WorkflowPage() {
           dataSource={data}
           loading={loading}
           pagination={{
+            current: currentPage,
+            pageSize: pageSize,
+            total: total,
             showTotal: (t) => `共 ${t} 条`,
-            defaultPageSize: 20,
             showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+            onChange: (page, pageSize) => {
+              setCurrentPage(page);
+              setPageSize(pageSize);
+            },
           }}
         />
 
@@ -482,17 +563,7 @@ export default function WorkflowPage() {
               <InputNumber min={1000} max={300000} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="category_id" label="分类">
-              <Select
-                placeholder="选择分类"
-                allowClear
-                options={categoryTree.flatMap((node) => {
-                  const opts: { value: number; label: string }[] = [{ value: node.id, label: node.name }];
-                  node.children?.forEach((child) => {
-                    opts.push({ value: child.id, label: `${node.name} / ${child.name}` });
-                  });
-                  return opts;
-                })}
-              />
+              <CategoryTreeSelect placeholder="选择分类" />
             </Form.Item>
             <Form.Item name="tag_ids" label="标签">
               <Select
@@ -528,17 +599,7 @@ export default function WorkflowPage() {
               <InputNumber min={1000} max={300000} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="category_id" label="分类">
-              <Select
-                placeholder="选择分类"
-                allowClear
-                options={categoryTree.flatMap((node) => {
-                  const opts: { value: number; label: string }[] = [{ value: node.id, label: node.name }];
-                  node.children?.forEach((child) => {
-                    opts.push({ value: child.id, label: `${node.name} / ${child.name}` });
-                  });
-                  return opts;
-                })}
-              />
+              <CategoryTreeSelect placeholder="选择分类" />
             </Form.Item>
             <Form.Item name="tag_ids" label="标签">
               <Select

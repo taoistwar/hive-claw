@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    Json, Router,
+    Router,
 };
 use serde::Deserialize;
 use sqlx::Row;

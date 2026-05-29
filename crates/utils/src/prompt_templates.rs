@@ -79,10 +79,10 @@ fn tokenize(src: &str) -> Vec<Token> {
                     .or_else(|| name.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
                     .unwrap_or(name);
                 tokens.push(Token::Include(name.to_string()));
-            } else if let Some(condition) = lower.strip_prefix("if ") {
+            } else if let Some(_condition) = lower.strip_prefix("if ") {
                 let original_condition = trimmed[3..].trim();
                 tokens.push(Token::If(original_condition.to_string()));
-            } else if let Some(condition) = lower.strip_prefix("elif ") {
+            } else if let Some(_condition) = lower.strip_prefix("elif ") {
                 let original_condition = trimmed[5..].trim();
                 tokens.push(Token::Elif(original_condition.to_string()));
             } else if lower == "elif" {
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn if_elif_else_support() {
         let src = "{% if channel == 'telegram' %}TG{% elif channel == 'discord' %}DC{% else %}Other{% endif %}";
-        
+
         let templates = HashMap::from([
             ("test.md".to_string(), src.to_string()),
         ]);

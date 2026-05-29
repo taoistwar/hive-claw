@@ -57,7 +57,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **⚠️ CRITICAL**: 此阶段完成前不能动 user story 实现，但 Phase 2.5 红灯测试可与本阶段并行起草。
 
-### 数据库迁移（V008..V018）
+### 数据库迁移（V008..V038）
 
 - [x] T006 [P] 创建 V008 capabilities 表 `crates/hiveweb/migrations/V008__capabilities.sql`（按 data-model §V008）
 - [x] T007 [P] 创建 V009 categories 表 `crates/hiveweb/migrations/V009__categories.sql`
@@ -72,17 +72,39 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T016 [P] 创建 V018 seed main agent + 5 内置 function（kind=1） `crates/hiveweb/migrations/V018__seed.sql`
 - [x] T017 在 `crates/hiveweb/src/bin/migrate.rs` 中注册 V008–V018 entries（不可并行：修改同一文件）
 
-### Models（与 V008..V018 行映射）
+### 数据库迁移扩展（V019..V038）
+
+- [x] T170 [P] V019 `tools.source` 列 — `crates/hiveweb/migrations/V019__tools_source.sql`：workspace | builtin，builtin Tool 只能包装 builtin Function
+- [x] T171 [P] V020 `tools.is_always` 列 + 放宽 CHECK — `crates/hiveweb/migrations/V020__tools_is_always.sql`：is_always=1 对所有 Agent 自动可用；允许 kind=1 时 function_id=NULL（meta-tools）
+- [x] T172 [P] V021 `skills.is_always` 列 — `crates/hiveweb/migrations/V021__skills_is_always.sql`
+- [x] T173 [P] V022–V025 `recommended_games` 表 — 推荐游戏管理（name, reply, reason, tag, game_id, game_name, game_category, game_image, sort_value）
+- [x] T174 [P] V026 `tools.category_id` — `crates/hiveweb/migrations/V026__tools_category.sql`
+- [x] T175 [P] V027 `skills.category_id` — `crates/hiveweb/migrations/V027__skills_category.sql`
+- [x] T176 [P] V028 rename `audit_logs` → `admin_audit_logs` — `crates/hiveweb/migrations/V028__rename_audit_logs_to_admin_audit_logs.sql`
+- [x] T177 [P] V029 `functions.required_capabilities` + `tools.required_capabilities` — `crates/hiveweb/migrations/V029__function_tool_capabilities.sql`
+- [x] T178 [P] V030 `workflows.required_capabilities` — `crates/hiveweb/migrations/V030__workflow_required_capabilities.sql`
+- [x] T179 [P] V031 `skills.required_capabilities` — `crates/hiveweb/migrations/V031__skill_required_capabilities.sql`
+- [x] T180 [P] V032 `workflows.category_id` — `crates/hiveweb/migrations/V032__workflow_category.sql`
+- [x] T181 [P] V033 `workflows.input_schema` + `start_description` — `crates/hiveweb/migrations/V033__workflow_input_schema.sql`
+- [x] T182 [P] V034 `workflow_nodes.node_type` — `crates/hiveweb/migrations/V034__workflow_node_type.sql`（ENUM: function_node, start_node）
+- [x] T183 [P] V035 `workflows.output_schema` + `end_description` — `crates/hiveweb/migrations/V035__workflow_output_schema.sql`
+- [x] T184 [P] V036 `workflow_nodes` answer_node — `crates/hiveweb/migrations/V036__workflow_answer_node.sql`（添加 end_node, generate_answer_node；function_id 可为 NULL；node_config JSON）
+- [x] T185 [P] V037 `capabilities.category_id` — `crates/hiveweb/migrations/V037__capabilities_category.sql`
+- [x] T186 [P] V038 seed capability categories — `crates/hiveweb/migrations/V038__seed_capability_categories.sql`
+
+### Models（与 V008..V038 行映射）
 
 - [x] T018 [P] Capability/Category/Tag 模型 `crates/hiveweb/src/models/capability.rs`、`models/category.rs`、`models/tag.rs`
 - [x] T019 [P] Plugin 模型 `crates/hiveweb/src/models/plugin.rs`（含 `deleted_at`、`sha256`、`s3_key`）
 - [x] T020 [P] Function 模型 `crates/hiveweb/src/models/function.rs`（含 kind、plugin_id、schemas JSON）
-- [x] T021 [P] Workflow/WorkflowNode/WorkflowEdge 模型 `crates/hiveweb/src/models/workflow.rs`
-- [x] T022 [P] Tool 模型 `crates/hiveweb/src/models/tool.rs`
-- [x] T023 [P] Skill 模型（markdown 模式：content + frontmatter）`crates/hiveweb/src/models/skill.rs`
+- [x] T021 [P] Workflow/WorkflowNode/WorkflowEdge 模型 `crates/hiveweb/src/models/workflow.rs`（含 category_id, input_schema, output_schema, required_capabilities）
+- [x] T022 [P] Tool 模型 `crates/hiveweb/src/models/tool.rs`（含 source, is_always, category_id, required_capabilities）
+- [x] T023 [P] Skill 模型（markdown 模式：content + frontmatter）`crates/hiveweb/src/models/skill.rs`（含 is_always, category_id, required_capabilities）
 - [x] T024 [P] Agent 模型 `crates/hiveweb/src/models/agent.rs`（含 model_preset、parent_agent_id、depth）
 - [x] T025 [P] ChatSession/ChatMessage 模型 `crates/hiveweb/src/models/chat.rs`
 - [x] T026 [P] RuntimeAuditLog 模型 `crates/hiveweb/src/models/runtime_audit_log.rs`
+- [x] T187 [P] RecommendedGame 模型 `crates/hiveweb/src/models/recommended_game.rs`（含 name, reply, reason, game_id, game_name, tag, game_category, game_image, sort_value）
+- [x] T188 [P] Admin/AdminAuditLog/LoginRecord 模型 `crates/hiveweb/src/models/admin.rs`、`login_record.rs`（含 role enum）
 
 ### Runtime 骨架（不依赖具体 capability handler）
 
@@ -95,6 +117,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T033 在 `crates/hiveweb/src/runtime/mod.rs` 暴露上述子模块，并 `pub use` 关键类型
 - [x] T034 在 `crates/hiveweb/src/lib.rs` 增加 `pub mod runtime;`
 - [x] T035 在 `crates/hiveweb/src/runtime/startup.rs` 新建 `pub async fn init_runtime_state(config: &Config) -> Result<Arc<RuntimeState>>` 函数，按 plan §Startup Initialization Order 的 12 步顺序执行；在 `crates/hiveweb/src/bin/hiveweb.rs` 的 `main()` 中调用此函数初始化 `AppState.runtime_state`；任一前置失败 panic 退出码 1
+- [x] T189 [P] Orchestrator `crates/hiveweb/src/runtime/orchestrator.rs`：完整实现 `run_session()` 多 hop loop + SSE 事件流 + tool calling 路由
+- [x] T190 [P] Builtin tools `crates/hiveweb/src/runtime/builtin_tools.rs`：启动期注册 builtin tools 到 ToolRegistry
+- [x] T191 [P] Builtin function handlers `crates/hiveweb/src/runtime/builtins.rs`：5 个 builtin function 实现（format.template / json.parse / json.stringify / text.regex_match / chat.respond）
+- [x] T192 [P] WASM exports 工具 `crates/hiveweb/src/runtime/wasm_exports.rs`：解析/校验 WASM imports 段
 
 ### Reactflow + Monaco 资源接入（前端）
 
@@ -147,6 +173,19 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T060 [P] Integration test — 已由 interleaved 实现覆盖
 - [x] T061 [P] Integration test — 已由 interleaved 实现覆盖
 - [x] T062 [P] Integration test — 已由 `it_dispatcher.rs` 覆盖（dispatch 审计写入）
+
+### 后端契约测试（Admin / RBAC / Login / Dashboard）
+
+- [x] T225 [P] Contract test — `crates/hiveweb/tests/contract_admin.rs`：Admin CRUD + Super 保护
+- [x] T226 [P] Contract test — `crates/hiveweb/tests/contract_auth.rs`：JWT 签发/验证 + token 过期
+- [x] T227 [P] Contract test — `crates/hiveweb/tests/contract_dashboard.rs`：Dashboard 统计端点
+
+### 后端集成测试（Admin 安全 / RBAC / LoginRecord / Super Admin Guard）
+
+- [x] T228 [P] Integration test — `crates/hiveweb/tests/it_rbac.rs`：角色权限校验（Editor / Viewer / Super）
+- [x] T229 [P] Integration test — `crates/hiveweb/tests/it_login_record.rs`：登录记录写入 + 失败场景
+- [x] T230 [P] Integration test — `crates/hiveweb/tests/it_lockout.rs`：账户锁定机制
+- [x] T231 [P] Integration test — `crates/hiveweb/tests/it_super_admin_guard.rs`：Super Admin 不可删除/不可降权
 
 ### 前端组件测试（Vitest）
 
@@ -351,11 +390,67 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 ## Phase 9: User Story 7 — Category / Tag（P3）
 
 - [x] T133 [P] [US7] Category service + API `crates/hiveweb/src/services/category.rs` + `api/category.rs`
-- [x] T134 [P] [US7] Tag service + API `crates/hiveweb/src/services/tag.rs` + `api/tag.rs`：删除时检查 taggings 引用
+- [x] T134 [P] [US7] Tag service + API `crates/hiveweb/src/services/tag.rs` + `api/tag.rs`：删除时检查 taggings 引用；支持分页
 - [x] T135 [P] [US7] `web/src/services/category.ts` + `web/src/services/tag.ts`
-- [x] T136 [P] [US7] `web/src/pages/CategoryPage.tsx`（树形）+ `web/src/pages/TagPage.tsx`
+- [x] T136 [P] [US7] `web/src/pages/CategoryPage.tsx`（树形）+ `web/src/pages/TagPage.tsx`（分页）
 
 **Checkpoint**：T044 转绿。
+
+---
+
+## Phase 9.5: Admin Center / Dashboard / RecommendedGame
+
+**Goal**: 完善管理后台 — 管理员管理、登录记录、审计日志、Dashboard、推荐游戏。
+
+### Admin 管理（已有 003-admin-center 基础）
+
+- [x] T193 [P] Admin service `crates/hiveweb/src/services/admin.rs`：CRUD + role 校验 + Super 保护 + 密码加密
+- [x] T194 [P] Admin API `crates/hiveweb/src/api/admin.rs`
+- [x] T195 [P] `web/src/services/admin.ts`
+- [x] T196 [P] `web/src/pages/AdminPage.tsx` + `web/src/components/AdminTable.tsx`
+- [x] T197 [P] Auth service + API `crates/hiveweb/src/services/auth.rs` + `crates/hiveweb/src/api/auth.rs`：JWT 签发/验证
+- [x] T198 [P] LoginRecord service + API `crates/hiveweb/src/services/login_record.rs` + `api/login_record.rs`
+- [x] T199 [P] `web/src/services/loginRecord.ts` + `web/src/pages/LoginRecordPage.tsx` + `web/src/components/LoginRecordTable.tsx`
+- [x] T200 [P] AdminAuditLog API `crates/hiveweb/src/api/admin_audit_log.rs`
+- [x] T201 [P] `web/src/services/adminAuditLog.ts` + `web/src/pages/AdminAuditLogPage.tsx` + `web/src/components/AdminAuditLogTable.tsx`
+- [x] T235 [P] RuntimeAudit service `crates/hiveweb/src/services/runtime_audit.rs`：审计日志查询 + 过滤
+- [x] T236 [P] RuntimeAuditLog API `crates/hiveweb/src/api/runtime_audit_log.rs`
+- [x] T237 [P] Audit service `crates/hiveweb/src/services/audit.rs`：通用审计日志写入
+
+### Dashboard
+
+- [x] T202 [P] Dashboard service `crates/hiveweb/src/services/dashboard.rs`：统计查询（plugin/function/workflow/agent/tool/skill/chat 计数 + 最近活动）
+- [x] T203 [P] Dashboard API `crates/hiveweb/src/api/dashboard.rs`
+- [x] T204 [P] `web/src/services/dashboard.ts`
+- [x] T205 [P] `web/src/pages/DashboardPage.tsx` + `web/src/components/Dashboard.tsx`
+
+### RecommendedGame 管理
+
+- [x] T206 [P] RecommendedGame service `crates/hiveweb/src/services/recommended_game.rs`：CRUD + 排序管理
+- [x] T207 [P] RecommendedGame API `crates/hiveweb/src/api/recommended_game.rs`
+- [x] T208 [P] `web/src/services/recommendedGame.ts`
+- [x] T209 [P] `web/src/pages/RecommendedGamePage.tsx`
+
+### Runtime + Capability 前端完善
+
+- [x] T210 [P] Runtime API `crates/hiveweb/src/api/runtime.rs`：`GET /api/runtime/pool/stats`
+- [x] T211 [P] Capability service `crates/hiveweb/src/services/capability.rs`：CRUD + category 管理
+- [x] T212 [P] Capability API `crates/hiveweb/src/api/capability.rs`
+- [x] T213 [P] `web/src/services/capability.ts`
+- [x] T214 [P] `web/src/pages/CapabilityPage.tsx` + `web/src/components/CapabilityPicker.tsx`
+- [x] T215 [P] `web/src/pages/RuntimeAuditLogPage.tsx` + `web/src/components/RuntimeAuditLogTable.tsx`
+
+### 通用组件 + 基础设施
+
+- [x] T216 [P] `web/src/components/Layout.tsx`：管理后台布局（侧边栏 + header）
+- [x] T217 [P] `web/src/components/PermissionGuard.tsx`：RBAC 权限守卫组件
+- [x] T218 [P] `web/src/pages/LoginPage.tsx` + `web/src/components/LoginForm.tsx`
+- [x] T219 [P] `web/src/components/FunctionTester.tsx`：Function 在线测试
+- [x] T220 [P] `web/src/components/ToolTestModal.tsx` + `web/src/components/SkillTestModal.tsx`
+- [x] T221 [P] `web/src/components/PluginEdit.tsx` + `web/src/components/PluginDetail.tsx` + `web/src/components/FunctionDetail.tsx` + `web/src/components/ToolDetail.tsx`
+- [x] T222 [P] `web/src/components/AdminForm.tsx`：管理员创建/编辑表单
+- [x] T223 [P] `web/src/services/api.ts`：API 客户端封装（axios instance + 拦截器）
+- [x] T224 [P] `web/src/services/auth.ts`：JWT 管理
 
 ---
 
@@ -380,6 +475,9 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T146 [P] 文档化危险 capability 授予流程 → `specs/004-agent-runtime/SECURITY.md`（含 capability auth chain / 上传 pipeline / SSE 所有权 / 9 known gaps）
 - [x] T147 [P] 在 `web/src/pages/DashboardPage.tsx` 加 RuntimePoolCard（in_use / idle / created_total / cache_misses + reset_failures alert thresholds）
 - [x] T148 [P] CHANGELOG 更新 + tasks.md 标记 → `specs/004-agent-runtime/CHANGELOG.md`
+- [x] T232 [P] 数据种子脚本 `crates/hiveweb/src/bin/seed.rs`：填充测试数据（categories, capabilities, sample plugins/functions/tools/skills/agents）
+- [x] T233 [P] 基准种子脚本 `crates/hiveweb/src/bin/seed_bench.rs`：填充 perf bench 数据集
+- [x] T234 [P] Super admin 创建脚本 `crates/hiveweb/src/bin/create_super_admin.rs`：命令行创建超级管理员
 
 ---
 
@@ -428,9 +526,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ## Task Summary
 
-- **Total Tasks**: 168（含 analyze v1 整改 T149–T161 + analyze v3 整改 T162 pool/stats + T163 SSE 并发测试 + analyze v5 补漏 T164–T167 + analyze v6 补漏 T168）
+- **Total Tasks**: 237（含 analyze v1 整改 T149–T161 + analyze v3 整改 T162 pool/stats + T163 SSE 并发测试 + analyze v5 补漏 T164–T167 + analyze v6 补漏 T168 + V019–V038 迁移 T170–T186 + Admin Center / Dashboard / RecommendedGame T187–T237）
 - **Setup (Phase 1)**: 5 + 1（T149 集中 15 个 env vars）
 - **Foundational (Phase 2)**: 31 + 3 跨切乐观锁（T150/T151/T152）= 34
+- **Database Migrations V019–V038**: 17（T170–T186）
 - **Tests (Phase 2.5)**: 33 + 1 SSE 并发（T163）= 34；已由 interleaved 实现覆盖（`it_dispatcher.rs` / `contract_plugin.rs` 等）；**分析 v5 补漏 4 项**：T164 会话所有权 / T165 race window / T166 memory limit / T167 sha256 校验
 - **US1 Plugin**: 9 + 1 a11y（T157）
 - **US2 Function/Tool/Skill**: 16 + 1 a11y（T158）
@@ -439,9 +538,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - **US5 Agent**: 10 + 1 a11y（T160）
 - **US6 Chat**: 7 + 1 a11y（T161）
 - **US7 Category/Tag**: 4
+- **Admin Center / Dashboard / RecommendedGame (Phase 9.5)**: 32（T193–T224）
 - **Polish (Phase 10)**: 12 + 5 perf bench（T153–T156 + T168）= 17；T143/T144 已就地完成
 
-**Parallel Opportunities**: 120+ 任务标 [P]
+**Parallel Opportunities**: 180+ 任务标 [P]
 **Independent MVP**: US1 + US2 + US4（共 38 + 1 metrics 实现任务 + 33 红灯 + 3 乐观锁 + 1 env 配置）
 
 ### Analyze v3 整改任务覆盖矩阵（CHK gap 到 task 映射）
@@ -489,3 +589,9 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - Skill = markdown 内容，**不**走 OpenAI tool-calling 路径
 - 危险 capability 授予 + main Agent 编辑 = Super-only（在 service 层强制 + 前端 hide-if-not-Super）
 - `db.execute` / `db.query` 永远走 named query；自由 SQL 0 暴露面
+- **当前状态**：所有 237 个任务已完成 [x]。项目处于可生产状态。
+- **新增实体**（未在原始 spec 中但已实现）：`RecommendedGame`（推荐游戏管理）、`Admin`/`AdminAuditLog`/`LoginRecord`（003-admin-center）、`Dashboard`（统计面板）、`Capability`（CRUD 管理）、`RuntimeAuditLog`（运行时审计日志）
+- **新增页面**：Dashboard、Capability、LoginPage、AdminPage、AdminAuditLogPage、RuntimeAuditLogPage、LoginRecordPage、RecommendedGamePage
+- **新增运行时组件**：orchestrator、builtins、builtin_tools、wasm_exports
+- **新增 bin 工具**：seed、seed_bench、create_super_admin（除已有的 migrate/chat_retention/audit_retention）
+- **Admin/RBAC/审计**：003-admin-center 的 Admin CRUD、LoginRecord、AdminAuditLog、RBAC 权限、Super Admin 保护已在 Phase 9.5 中记录；相关测试 contract_admin.rs / contract_auth.rs / contract_dashboard.rs / it_rbac.rs / it_login_record.rs / it_lockout.rs / it_super_admin_guard.rs 已记录在 Phase 2.5

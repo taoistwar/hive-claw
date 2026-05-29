@@ -49,6 +49,28 @@ pub struct ListQuery {
     /// true=回收站，false/missing=只看未删除（默认）
     #[serde(default)]
     pub deleted_only: Option<bool>,
+    #[serde(default)]
+    pub identifier: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub repository_url: Option<String>,
+    #[serde(default)]
+    pub created_at_start: Option<String>,
+    #[serde(default)]
+    pub created_at_end: Option<String>,
+    #[serde(default)]
+    pub updated_at_start: Option<String>,
+    #[serde(default)]
+    pub updated_at_end: Option<String>,
 }
 
 async fn list_plugins(
@@ -71,6 +93,17 @@ async fn list_plugins(
         category_id: q.category_id,
         tag_ids,
         deleted_only: q.deleted_only.unwrap_or(false),
+        identifier: q.identifier.filter(|s| !s.is_empty()),
+        name: q.name.filter(|s| !s.is_empty()),
+        description: q.description.filter(|s| !s.is_empty()),
+        runtime: q.runtime.filter(|s| !s.is_empty()),
+        version: q.version.filter(|s| !s.is_empty()),
+        author: q.author.filter(|s| !s.is_empty()),
+        repository_url: q.repository_url.filter(|s| !s.is_empty()),
+        created_at_start: q.created_at_start.filter(|s| !s.is_empty()),
+        created_at_end: q.created_at_end.filter(|s| !s.is_empty()),
+        updated_at_start: q.updated_at_start.filter(|s| !s.is_empty()),
+        updated_at_end: q.updated_at_end.filter(|s| !s.is_empty()),
     };
     match svc::list(&state.pool, filter).await {
         Ok(list) => Ok(ApiResponse::success(list)),

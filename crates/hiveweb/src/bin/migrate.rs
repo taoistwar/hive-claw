@@ -145,6 +145,30 @@ const MIGRATIONS: &[Migration] = &[
         version: "V032__workflow_category",
         sql: include_str!("../../migrations/V032__workflow_category.sql"),
     },
+    Migration {
+        version: "V033__workflow_input_schema",
+        sql: include_str!("../../migrations/V033__workflow_input_schema.sql"),
+    },
+    Migration {
+        version: "V034__workflow_node_type",
+        sql: include_str!("../../migrations/V034__workflow_node_type.sql"),
+    },
+    Migration {
+        version: "V035__workflow_output_schema",
+        sql: include_str!("../../migrations/V035__workflow_output_schema.sql"),
+    },
+    Migration {
+        version: "V036__workflow_answer_node",
+        sql: include_str!("../../migrations/V036__workflow_answer_node.sql"),
+    },
+    Migration {
+        version: "V037__capabilities_category",
+        sql: include_str!("../../migrations/V037__capabilities_category.sql"),
+    },
+    Migration {
+        version: "V038__seed_capability_categories",
+        sql: include_str!("../../migrations/V038__seed_capability_categories.sql"),
+    },
 ];
 
 #[tokio::main]

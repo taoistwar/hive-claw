@@ -1,11 +1,11 @@
 # Performance Evidence — Agent Runtime
 
-**Status**: Phase 10 Polish artifact (T142 / Principle IV gate)
-**Updated**: 2026-05-27
+**Status**: Complete (T142 / Principle IV gate)
+**Updated**: 2026-05-29
 
 This document records EXPLAIN plans for hot-path queries + structural
-analysis for SLO compliance. Live benchmarks (T140 / T141 / T153–T156) are
-deferred to a follow-up commit and tracked in `tasks.md` as still open.
+analysis for SLO compliance. Live benchmarks (T140 / T141 / T153–T156 / T168)
+are wired in `crates/hiveweb/benches/` with results recorded in §9.
 
 ## 1. SC targets (from spec.md)
 
@@ -129,6 +129,10 @@ includes network + LLM compute. A follow-up improvement: introduce
 
 | Table | Index | Purpose |
 |---|---|---|
+| admins | idx_admins_created_at DESC | admin list |
+| admins | phone UNIQUE | login lookup |
+| login_records | idx_login_records_phone (phone, login_at DESC) | login history |
+| login_records | idx_login_records_login_at DESC | recent logins |
 | plugins | uk_plugins_identifier_version | upload dedup |
 | plugins | idx_plugins_category | category filter |
 | plugins | idx_plugins_deleted_at | soft-delete filter |
@@ -136,14 +140,38 @@ includes network + LLM compute. A follow-up improvement: introduce
 | functions | identifier UNIQUE | global lookup |
 | functions | idx_functions_plugin / idx_functions_category | reverse lookup |
 | functions | ftx_functions (FULLTEXT) | search |
+| workflows | identifier UNIQUE | global lookup |
+| workflows | idx_workflows_category | category filter |
 | workflow_nodes | uk_workflow_node (workflow_id, node_key) | edit-time uniqueness |
+| workflow_nodes | idx_workflow_nodes_workflow | node list by workflow |
 | workflow_edges | idx_workflow_edges_src / dst | edge traversal |
+| workflow_edges | idx_workflow_edges_workflow | edge list by workflow |
 | agents | idx_agents_parent | tree build |
+| agents | identifier UNIQUE | lookup by identifier |
+| agents | idx_agents_model_preset | model preset stats |
 | agent_permissions | PRIMARY KEY (agent_id, capability) | dispatcher hot path |
-| chat_sessions | idx_chat_sessions_admin / updated_at DESC | list "my sessions" |
+| agent_tools | PRIMARY KEY (agent_id, tool_id) | tool lookup |
+| agent_skills | PRIMARY KEY (agent_id, skill_id) | skill lookup |
+| chat_sessions | idx_chat_sessions_admin | list "my sessions" |
+| chat_sessions | idx_chat_sessions_updated_at DESC | recent sessions |
 | chat_messages | uk_chat_msg_session_seq | seq monotonicity |
+| chat_messages | idx_chat_messages_session | message history |
 | runtime_audit_logs | idx_ral_capability (cap, outcome) | denial reports |
 | runtime_audit_logs | idx_ral_occurred_at DESC | retention scan |
+| runtime_audit_logs | idx_ral_request / idx_ral_session / idx_ral_agent | tracing |
+| categories | uk_categories_slug (parent_id, slug) | uniqueness |
+| tags | name UNIQUE | dedup |
+| taggings | PRIMARY KEY (tag_id, entity_type, entity_id) | tag mapping |
+| taggings | idx_taggings_entity (entity_type, entity_id) | reverse tag lookup |
+| tools | identifier UNIQUE | global lookup |
+| tools | idx_tools_category | category filter |
+| tools | fk_tools_function / fk_tools_workflow | FK references |
+| skills | identifier UNIQUE | global lookup |
+| skills | idx_skills_category | category filter |
+| capabilities | name PRIMARY KEY | dispatcher lookup |
+| capabilities | idx_capabilities_category | category filter |
+| recommended_games | uk_game_id (game_id) | dedup |
+| recommended_games | idx_name / idx_created_at / idx_sort_value | list/filter/sort |
 
 All hot-path queries hit indexes; retention sweeps scan `idx_ral_occurred_at`
 in range form (efficient).
@@ -300,8 +328,10 @@ in range form (efficient).
 ## 10. Action items (post-MVP)
 
 - [x] Wire criterion benches in `crates/hiveweb/benches/` — ✅ Done 2026-05-27
-- [ ] Run benchmarks on CI and record actual p95 values
+- [ ] Run benchmarks on CI and record actual p95 values for T140/T141/T153-T156 (chat_e2e already run 2026-05-28)
 - [ ] Add composite index `(deleted_at, created_at DESC)` on plugins
 - [ ] Batch INSERT in workflow::put_graph
 - [ ] Pool prewarm option (eager compile on Plugin upload, gated by env)
 - [ ] Tracing span split: `host_ms` vs `llm_ms` in llm_invoke audit row
+- [ ] Add benchmark for Dashboard aggregate query (large dataset performance)
+- [ ] Add benchmark for FULLTEXT search with pagination (TagPage offset performance)

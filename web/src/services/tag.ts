@@ -9,8 +9,19 @@ export interface TagItem {
   reference_count: number;
 }
 
-export async function listTags(q?: string): Promise<TagItem[]> {
-  const resp = await apiClient.get<TagItem[]>('/tags', { params: q ? { q } : {} });
+export interface TagListResponse {
+  items: TagItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export async function listTags(q?: string, offset?: number, limit?: number): Promise<TagListResponse> {
+  const params: Record<string, string> = {};
+  if (q) params.q = q;
+  if (offset !== undefined) params.offset = String(offset);
+  if (limit !== undefined) params.limit = String(limit);
+  const resp = await apiClient.get<TagListResponse>('/tags', { params });
   return resp.data;
 }
 

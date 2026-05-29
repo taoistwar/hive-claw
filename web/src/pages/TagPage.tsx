@@ -6,6 +6,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { ColorPickerInput } from '../components/ColorPickerInput';
 import { createTag, deleteTag, listTags, updateTag, type TagItem } from '../services/tag';
 
+const DEFAULT_PAGE_SIZE = 20;
+
 export default function TagPage() {
   const [items, setItems] = useState<TagItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -13,23 +15,46 @@ export default function TagPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editingTag, setEditingTag] = useState<TagItem | null>(null);
   const [search, setSearch] = useState('');
+  const [pagination, setPagination] = useState({
+    current: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+    total: 0,
+  });
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
 
-  const refresh = useCallback(async () => {
+  const doFetch = useCallback(async (page: number, currentSearch: string, currentPageSize: number) => {
+    const offset = (page - 1) * currentPageSize;
     setLoading(true);
     try {
-      setItems(await listTags(search || undefined));
+      const result = await listTags(currentSearch || undefined, offset, currentPageSize);
+      setItems(result.items);
+      setPagination((prev) => ({ ...prev, current: page, total: result.total }));
     } catch (e) {
       void message.error(`加载失败：${(e as Error).message}`);
     } finally {
       setLoading(false);
     }
-  }, [search]);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    doFetch(pagination.current, search, pagination.pageSize);
+  }, [pagination.current, pagination.pageSize, search, doFetch]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const handlePaginationChange = (page: number, pageSize: number) => {
+    setPagination((prev) => ({ ...prev, current: page, pageSize }));
+    doFetch(page, search, pageSize);
+  };
+
+  const handleSearch = useCallback((value: string) => {
+    setSearch(value);
+    setPagination((prev) => ({ ...prev, current: 1 }));
+    doFetch(1, value, pagination.pageSize);
+  }, [pagination.pageSize, doFetch]);
 
   const onCreate = async (values: { name: string; color?: string }) => {
     try {
@@ -142,7 +167,7 @@ export default function TagPage() {
         <Input.Search
           placeholder="搜索 tag name"
           allowClear
-          onSearch={setSearch}
+          onSearch={handleSearch}
           style={{ width: 280 }}
           aria-label="搜索 tag"
         />
@@ -152,7 +177,14 @@ export default function TagPage() {
         columns={columns}
         dataSource={items}
         loading={loading}
-        pagination={false}
+        pagination={{
+          current: pagination.current,
+          pageSize: pagination.pageSize,
+          total: pagination.total,
+          showSizeChanger: true,
+          showTotal: (total) => `共 ${total} 条`,
+          onChange: handlePaginationChange,
+        }}
       />
 
       <Modal

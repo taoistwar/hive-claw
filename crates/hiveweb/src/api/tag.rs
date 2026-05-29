@@ -20,16 +20,29 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default)] pub q: Option<String>,
+    #[serde(default)] pub offset: Option<i64>,
+    #[serde(default)] pub limit: Option<i64>,
 }
 
 async fn list_tags(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
-) -> Result<ApiResponse<Vec<TagWithCount>>, ApiResponse<()>> {
-    svc::list(&state.pool, q.q.as_deref().filter(|s| !s.is_empty()))
+) -> Result<ApiResponse<serde_json::Value>, ApiResponse<()>> {
+    let offset = q.offset.unwrap_or(0).max(0);
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+
+    let (items, total) = svc::list(&state.pool, q.q.as_deref().filter(|s| !s.is_empty()), offset, limit)
         .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+        .map_err(|e| e.into_response())?;
+
+    let resp = serde_json::json!({
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    });
+
+    Ok(ApiResponse::success(resp))
 }
 
 async fn get_tag(

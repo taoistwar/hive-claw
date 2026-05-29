@@ -623,7 +623,7 @@ impl AIHubMixImageGenerationClient {
     }
 }
 
-async fn _http_error_detail(mut response: reqwest::Response) -> String {
+async fn _http_error_detail(response: reqwest::Response) -> String {
     let status = response.status();
     let body_bytes = response.bytes().await.unwrap_or_default();
     if let Ok(data) = serde_json::from_slice::<Value>(&body_bytes) {

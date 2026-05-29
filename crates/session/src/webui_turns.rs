@@ -4,7 +4,6 @@
 /// `channel == "websocket"` messages are affected.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use regex::Regex;
 use serde_json::Value;

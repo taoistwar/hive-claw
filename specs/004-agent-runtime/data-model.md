@@ -1,7 +1,8 @@
 # Data Model: Agent Runtime
 
 **Created**: 2026-05-26
-**Status**: Phase 1 output
+**Last Updated**: 2026-05-29
+**Status**: Up-to-date with migrations V001–V038
 
 ---
 
@@ -9,15 +10,19 @@
 
 | 实体 | 表名 | 关键关系 |
 | --- | --- | --- |
+| Admin | `admins` | — |
+| LoginRecord | `login_records` | admin_id |
+| AdminAuditLog | `admin_audit_logs` | actor_admin_id |
+| Capability | `capabilities` | category_id |
 | Category | `categories` | self-FK parent_id |
 | Tag | `tags` | — |
 | Plugin | `plugins` | category_id, taggable |
 | Function | `functions` | plugin_id (custom 才有), category_id, taggable |
-| Workflow | `workflows` | nodes/edges 在子表 |
-| WorkflowNode | `workflow_nodes` | workflow_id, function_id |
+| Workflow | `workflows` | nodes/edges 在子表, category_id |
+| WorkflowNode | `workflow_nodes` | workflow_id, function_id (nullable), node_type |
 | WorkflowEdge | `workflow_edges` | workflow_id, src_node_id, dst_node_id, mapping |
-| Tool | `tools` | function_id OR workflow_id（互斥） |
-| Skill | `skills` | function_id OR workflow_id（互斥） |
+| Tool | `tools` | function_id OR workflow_id（互斥）, category_id, taggable |
+| Skill | `skills` | 不引用 Function/Workflow, category_id, taggable |
 | Agent | `agents` | self-FK parent_agent_id |
 | AgentTool（多对多） | `agent_tools` | agent_id, tool_id |
 | AgentSkill（多对多） | `agent_skills` | agent_id, skill_id |
@@ -26,21 +31,105 @@
 | ChatSession | `chat_sessions` | admin_id（操作者） |
 | ChatMessage | `chat_messages` | session_id |
 | RuntimeAuditLog | `runtime_audit_logs` | session_id?, agent_id, plugin_id, capability |
+| RecommendedGame | `recommended_games` | — |
 
-Capability 是**代码内静态注册表**，不入库；只有"描述/危险标记"可选入 `capabilities`（只读元数据表）。
+Capability 是**代码内静态注册表**，`capabilities` 表只存描述/危险标记/分类等元数据，启动时由 runtime registry 同步 upsert。
 
 ---
 
-## 2. 详细字段 + DDL（迁移按顺序 V008..V020）
+## 2. 详细字段 + DDL（迁移按顺序）
 
-### V008 capabilities (元数据，只读)
+### V001 admins
+
+```sql
+CREATE TABLE admins (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    phone VARCHAR(11) NOT NULL UNIQUE COMMENT '手机号，登录账号',
+    password_hash VARCHAR(255) NOT NULL,
+    nickname VARCHAR(20) NOT NULL DEFAULT '' COMMENT '昵称',
+    role TINYINT NOT NULL DEFAULT 0 COMMENT '1=Super, 2=Editor, 3=Viewer',
+    status TINYINT NOT NULL DEFAULT 1 COMMENT '1=active, 0=disabled',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+### V002 login_records
+
+```sql
+CREATE TABLE login_records (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    admin_id BIGINT NOT NULL COMMENT '成功时关联 admin；失败时为 0 或 NULL',
+    phone VARCHAR(11) NOT NULL COMMENT '登录时输入的手机号',
+    ip VARCHAR(45) NOT NULL COMMENT '客户端 IP',
+    user_agent VARCHAR(255) NULL COMMENT '浏览器 UA',
+    status VARCHAR(16) NOT NULL COMMENT 'success|fail_captcha|fail_credentials',
+    login_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_login_records_phone (phone, login_at DESC),
+    CONSTRAINT fk_login_records_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+### V003 seed super admin
+
+```sql
+INSERT IGNORE INTO admins (id, phone, password_hash, nickname, role, status)
+VALUES (1, '13800138000', '$2b$12$...', '系统超级管理员', 1, 1);
+```
+
+### V004 login_records: SET NULL + snapshots
+
+```sql
+ALTER TABLE login_records
+    DROP FOREIGN KEY fk_login_records_admin;
+ALTER TABLE login_records
+    ADD CONSTRAINT fk_login_records_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE SET NULL;
+```
+
+### V005 login_records index
+
+```sql
+ALTER TABLE login_records
+    ADD INDEX idx_login_records_login_at_desc (login_at DESC);
+```
+
+### V006 audit_logs → V028 更名为 admin_audit_logs
+
+```sql
+CREATE TABLE admin_audit_logs (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    actor_admin_id BIGINT NULL COMMENT '操作者；admin 删除后 SET NULL',
+    action VARCHAR(32) NOT NULL COMMENT 'create|update|delete|login|...',
+    entity_type VARCHAR(32) NOT NULL COMMENT 'admin|plugin|function|workflow|tool|skill|agent|...',
+    entity_id BIGINT NULL,
+    old_values JSON NULL,
+    new_values JSON NULL,
+    ip VARCHAR(45) NULL,
+    user_agent VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_aal_actor (actor_admin_id),
+    INDEX idx_aal_entity (entity_type, entity_id),
+    INDEX idx_aal_created_at (created_at DESC),
+    CONSTRAINT fk_aal_admin FOREIGN KEY (actor_admin_id) REFERENCES admins(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='管理审计日志（管理员对配置数据的写操作）';
+```
+
+### V007 admins index
+
+```sql
+ALTER TABLE admins ADD INDEX idx_admins_created_at (created_at DESC);
+```
+
+### V008 capabilities (元数据)
 
 ```sql
 CREATE TABLE capabilities (
     name VARCHAR(64) PRIMARY KEY COMMENT 'e.g. network.http',
     description VARCHAR(255) NOT NULL,
     is_dangerous TINYINT(1) NOT NULL DEFAULT 0 COMMENT '需 Super 才能授予',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    category_id BIGINT NULL COMMENT '所属分类',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_capabilities_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- 启动时由 runtime registry 同步 upsert。
 ```
@@ -107,8 +196,6 @@ CREATE TABLE plugins (
     FULLTEXT INDEX ftx_plugins (name, description, identifier),
     CONSTRAINT fk_plugins_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- 多版本共存：unique 在 (identifier, version) 上。
--- 软删除：deleted_at IS NOT NULL；引用检查见 services::plugin。
 ```
 
 ### V012 functions
@@ -125,6 +212,7 @@ CREATE TABLE functions (
     plugin_id BIGINT NULL COMMENT 'custom 必填',
     plugin_export VARCHAR(64) NULL COMMENT 'extism export 函数名，custom 必填',
     category_id BIGINT NULL,
+    required_capabilities JSON NULL COMMENT '声明该 function 执行所需的 capabilities',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_functions_plugin (plugin_id),
@@ -136,9 +224,6 @@ CREATE TABLE functions (
         (kind = 1) OR (kind = 2 AND plugin_id IS NOT NULL AND plugin_export IS NOT NULL)
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- builtin function 由代码注册时 INSERT IGNORE 写入，identifier 即 builtin 名。
--- FK ON DELETE RESTRICT 实现 spec FR-007 的"plugin 被 function 引用时不能软删除"
--- （应用层另判断 deleted_at NULL 即可）。
 ```
 
 ### V013 workflows
@@ -150,16 +235,26 @@ CREATE TABLE workflows (
     name VARCHAR(128) NOT NULL,
     description VARCHAR(512) NULL,
     timeout_ms INT NOT NULL DEFAULT 30000,
+    required_capabilities JSON NULL COMMENT '计算出的执行所需 capabilities（由 DAG 中所有节点的 function 聚合）',
+    category_id BIGINT NULL COMMENT '所属分类',
+    input_schema JSON NULL COMMENT '工作流起始节点的输入变量定义 (JSON Schema format)',
+    start_description VARCHAR(512) NULL COMMENT '起始节点描述/欢迎语',
+    output_schema JSON NULL COMMENT '工作流结束节点的输出变量定义 (JSON Schema format)',
+    end_description VARCHAR(512) NULL COMMENT '结束节点描述/结束语',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_workflows_category (category_id),
+    CONSTRAINT fk_workflows_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE workflow_nodes (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     workflow_id BIGINT NOT NULL,
     node_key VARCHAR(32) NOT NULL COMMENT '工作流内唯一 key',
-    function_id BIGINT NOT NULL,
+    node_type ENUM('function_node','start_node','end_node','generate_answer_node') NOT NULL DEFAULT 'function_node' COMMENT '节点类型',
+    function_id BIGINT NULL COMMENT 'function_node 必填，其他类型可为 NULL',
     position JSON NULL COMMENT 'reactflow 坐标 {x, y}',
+    node_config JSON NULL COMMENT 'Node-specific configuration (e.g., answer node: system_prompt, model_preset, history_window, variables)',
     UNIQUE KEY uk_workflow_node (workflow_id, node_key),
     INDEX idx_workflow_nodes_workflow (workflow_id),
     CONSTRAINT fk_workflow_nodes_workflow FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
@@ -189,31 +284,26 @@ CREATE TABLE tools (
     identifier VARCHAR(64) NOT NULL UNIQUE,
     name VARCHAR(128) NOT NULL,
     description VARCHAR(512) NOT NULL,
-    kind TINYINT NOT NULL COMMENT '1=function, 2=workflow',
+    kind TINYINT NOT NULL COMMENT '1=function-wrap, 2=workflow-wrap',
+    source VARCHAR(16) NOT NULL DEFAULT 'workspace' COMMENT 'workspace | builtin',
+    is_always TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=normal, 1=always available for all agents',
     function_id BIGINT NULL,
     workflow_id BIGINT NULL,
     input_schema JSON NOT NULL,
     output_schema JSON NOT NULL,
+    category_id BIGINT NULL COMMENT '所属分类',
+    required_capabilities JSON NULL COMMENT '声明该 tool 执行所需的 capabilities',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT chk_tools_target CHECK (
-        (kind = 1 AND function_id IS NOT NULL AND workflow_id IS NULL) OR
-        (kind = 2 AND workflow_id IS NOT NULL AND function_id IS NULL)
+        (kind = 1 AND workflow_id IS NULL) OR
+        (kind = 2 AND function_id IS NULL)
     ),
     CONSTRAINT fk_tools_function FOREIGN KEY (function_id) REFERENCES functions(id) ON DELETE RESTRICT,
-    CONSTRAINT fk_tools_workflow FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE RESTRICT
+    CONSTRAINT fk_tools_workflow FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_tools_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Skill 沿用 crates/agent::SkillsLoader 的"markdown + frontmatter"模式：
--- 调用 Skill = 把 content 拼到 Agent 的 system prompt 末尾。
--- 因此 Skill 不持有 schema、不引用 Function/Workflow（如需调函数，由 Skill
--- 内容描述 + Agent LLM 在 system_prompt 指引下自行选用已绑定的 Tool）。
---
--- 删除策略（CHK166，与 FR-007 / FR-009 引用阻塞原则对齐）：
---   * `agent_skills` 是多对多关系；删除 Skill 前 service 层必须先校验
---     "SELECT COUNT(*) FROM agent_skills WHERE skill_id = ?"，> 0 → 4093 拒绝。
---   * 不依赖 DB CASCADE（CASCADE 会悄无声息从 Agent 列表移除 Skill，与"删除前必须看到引用列表"的运营预期冲突）。
---   * 强引用阻塞 = 与 Tool / Function / Plugin 一致的删除模型。
 CREATE TABLE skills (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     identifier VARCHAR(64) NOT NULL UNIQUE,
@@ -222,8 +312,12 @@ CREATE TABLE skills (
     frontmatter JSON NULL COMMENT 'YAML frontmatter 解析后的结构',
     content MEDIUMTEXT NOT NULL COMMENT 'markdown 主体；不超过 64KB 建议',
     source VARCHAR(16) NOT NULL DEFAULT 'workspace' COMMENT 'workspace | builtin',
+    is_always TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=normal, 1=always available for all agents',
+    category_id BIGINT NULL COMMENT '所属分类',
+    required_capabilities JSON NULL COMMENT '声明该 skill 执行所需的 capabilities',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_skills_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
@@ -269,7 +363,6 @@ CREATE TABLE agent_permissions (
     PRIMARY KEY (agent_id, capability),
     CONSTRAINT fk_ap_agent FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- main agent 由 seed 写入 (identifier='main', depth=0)，与"不可删除"约束在 service 层强制。
 ```
 
 ### V016 chat
@@ -277,9 +370,9 @@ CREATE TABLE agent_permissions (
 ```sql
 CREATE TABLE chat_sessions (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    admin_id BIGINT NULL COMMENT '发起测试的管理员；admin 删除后 SET NULL，session 仅 Super 可访问',
-    admin_phone_snapshot VARCHAR(11) NOT NULL DEFAULT '' COMMENT '快照：admin 删除后仍可追溯发起者',
-    admin_nickname_snapshot VARCHAR(20) NOT NULL DEFAULT '' COMMENT '快照：admin 删除后仍可追溯发起者',
+    admin_id BIGINT NULL COMMENT '发起测试的管理员；admin 删除后 SET NULL',
+    admin_phone_snapshot VARCHAR(11) NOT NULL DEFAULT '' COMMENT '快照',
+    admin_nickname_snapshot VARCHAR(20) NOT NULL DEFAULT '' COMMENT '快照',
     title VARCHAR(128) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -287,10 +380,6 @@ CREATE TABLE chat_sessions (
     INDEX idx_chat_sessions_updated_at (updated_at DESC),
     CONSTRAINT fk_chat_sessions_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- 所有权语义（与 FR-027 v7 对齐）：
---   * admin 仍存在 → service 层校验 JWT.admin_id == admin_id 才放行；Super 例外
---   * admin 已删除（admin_id IS NULL）→ session 仅 Super 可访问，普通管理员一律 403
---   * snapshot 列保证 audit 追溯到具体管理员，与 V004 login_records 模式一致（CHK176）
 
 CREATE TABLE chat_messages (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -310,12 +399,6 @@ CREATE TABLE chat_messages (
 ```
 
 ### V017 runtime_audit_logs
-
-> **与 V006 `audit_logs`（003 admin 操作审计）的职责边界**（CHK124 / CHK157）：
-> - V006 `audit_logs`：**管理员对配置数据的写操作**审计（Plugin/Function/Workflow/Agent CRUD、登录、修改 system_prompt 等）。沿用 003 既有，键字段是 `actor_admin_id` + `entity_type` + `entity_id`。
-> - V017 `runtime_audit_logs`：**Agent / Plugin 在运行时对资源的访问**审计（host_call dispatch、Workflow 节点执行、Agent 路由、LLM 调用）。键字段是 `agent_id` + `capability` + `outcome`。
-> - 两表互不替代，互不重叠；查同一个 `request_id` 时可 JOIN 两表得到"管理员配置 → 运行时使用"的完整链路。
-> - 都假定与 003 V006 在**同一数据库实例**（CHK181 假设），跨实例时 JOIN 不可用。
 
 ```sql
 CREATE TABLE runtime_audit_logs (
@@ -337,53 +420,179 @@ CREATE TABLE runtime_audit_logs (
     INDEX idx_ral_agent (agent_id),
     INDEX idx_ral_occurred_at (occurred_at DESC),
     INDEX idx_ral_capability (capability, outcome)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Runtime 审计日志（保留 ≥ 90 天，同 003 FR-022 精神）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-### V018 seed main agent + builtin capabilities 元数据
+### V018 seed
 
 ```sql
--- 1. main Agent（不可删除）
+-- main Agent（不可删除）
 INSERT IGNORE INTO agents (id, identifier, name, description, system_prompt, parent_agent_id, depth)
 VALUES (1, 'main', '入口 Agent', '系统的入口 Agent；不可删除',
         'You are the main entry agent. Decide whether to answer directly or route to a sub-agent.',
         NULL, 0);
--- main 默认无任何 capability / tool / skill；管理员在 UI 上后续配置。
-
--- 2. capabilities 元数据（is_dangerous 标记 + 描述供 UI 渲染）
-INSERT IGNORE INTO capabilities (name, description, is_dangerous) VALUES
-  ('network.http',  'HTTP/HTTPS access (allowlisted hosts; SSRF-blocked)', 1),
-  ('fs.read',       '/tmp/plugin/ 内文件读', 0),
-  ('fs.write',      '/tmp/plugin/ 内文件写', 0),
-  ('s3.read',       'Rustfs 桶 GET', 0),
-  ('s3.write',      'Rustfs 桶 PUT / DELETE', 0),
-  ('db.query',      '宿主预注册命名 SELECT 查询', 0),
-  ('db.execute',    '宿主预注册命名 DML（永不自由 SQL）', 1),
-  ('llm.invoke',    'LLM 调用（走 Agent.model_preset 解析）', 0),
-  ('secret.get',    'allowlist 内的密钥读取', 1),
-  ('time.now',      '服务器当前时间', 0),
-  ('log.emit',      '结构化日志写入（rate-limited）', 0);
 ```
 
-**Builtin function 不通过 V018 seed**：FR-010 v5 的 5 个 builtin function（`format.template` / `json.parse` / `json.stringify` / `text.regex_match` / `chat.respond`）的 schema 是代码内的常量，**启动期由 service 层 idempotent upsert 到 `functions` 表**（`kind = 1`，`plugin_id IS NULL`）。理由：
-1. schema 跟随代码版本演进；DDL seed 一旦写入难以跟踪 schema 变更
-2. 启动期 upsert 是 init-once 操作，多实例并发启动时由 MySQL UNIQUE(identifier) 兜底
-3. 与 V008 `capabilities` 元数据的"代码 = 真值源，DB = 镜像"原则一致（CHK160）
+### V019–V020 tools 扩展
 
-启动期与 DB 的同步策略（CHK156 / CHK161）：
-- 代码常量列表 → upsert 到 DB（INSERT ... ON DUPLICATE KEY UPDATE schema, updated_at）
-- DB 中存在但代码已移除的项 → 启动 warn 日志（不自动删除，避免误删历史数据）
-- 真值源：代码 > DB
+- **V019**: `ALTER TABLE tools ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'workspace'`
+- **V020**: `ALTER TABLE tools ADD COLUMN is_always TINYINT(1) NOT NULL DEFAULT 0`；放宽 CHECK 约束允许 kind=1 时 function_id=NULL（meta-tools）
+
+### V021 skills is_always
+
+```sql
+ALTER TABLE skills ADD COLUMN is_always TINYINT(1) NOT NULL DEFAULT 0;
+```
+
+### V022–V025 recommended_games
+
+```sql
+CREATE TABLE recommended_games (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    reply TEXT NOT NULL,
+    reason TEXT COMMENT '推荐理由',
+    game_id VARCHAR(128) NOT NULL,
+    game_name VARCHAR(255) NOT NULL,
+    tag VARCHAR(32) COMMENT '标签：运营推荐/新游上线/本周热玩',
+    game_category VARCHAR(64) COMMENT '游戏类型',
+    game_image VARCHAR(512) COMMENT '推荐图片地址',
+    sort_value INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_game_id (game_id),
+    INDEX idx_name (name),
+    INDEX idx_created_at (created_at),
+    INDEX idx_sort_value (sort_value)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+### V026 tools category
+
+```sql
+ALTER TABLE tools ADD COLUMN category_id BIGINT NULL;
+ALTER TABLE tools ADD CONSTRAINT fk_tools_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL;
+```
+
+### V027 skills category
+
+```sql
+ALTER TABLE skills ADD COLUMN category_id BIGINT NULL;
+ALTER TABLE skills ADD CONSTRAINT fk_skills_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL;
+```
+
+### V028 rename audit_logs
+
+```sql
+RENAME TABLE audit_logs TO admin_audit_logs;
+```
+
+### V029 function & tool required_capabilities
+
+```sql
+ALTER TABLE functions ADD COLUMN required_capabilities JSON NULL;
+ALTER TABLE tools ADD COLUMN required_capabilities JSON NULL;
+```
+
+### V030 workflow required_capabilities
+
+```sql
+ALTER TABLE workflows ADD COLUMN required_capabilities JSON NULL;
+```
+
+### V031 skill required_capabilities
+
+```sql
+ALTER TABLE skills ADD COLUMN required_capabilities JSON NULL;
+```
+
+### V032 workflow category
+
+```sql
+ALTER TABLE workflows ADD COLUMN category_id BIGINT NULL;
+ALTER TABLE workflows ADD CONSTRAINT fk_workflows_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL;
+```
+
+### V033 workflow input_schema
+
+```sql
+ALTER TABLE workflows ADD COLUMN input_schema JSON NULL;
+ALTER TABLE workflows ADD COLUMN start_description VARCHAR(512) NULL;
+```
+
+### V034 workflow_node type
+
+```sql
+ALTER TABLE workflow_nodes ADD COLUMN node_type ENUM('function_node','start_node') NOT NULL DEFAULT 'function_node';
+```
+
+### V035 workflow output_schema
+
+```sql
+ALTER TABLE workflows ADD COLUMN output_schema JSON NULL;
+ALTER TABLE workflows ADD COLUMN end_description VARCHAR(512) NULL;
+```
+
+### V036 workflow answer_node
+
+```sql
+ALTER TABLE workflow_nodes
+    MODIFY COLUMN node_type ENUM('function_node','start_node','end_node','generate_answer_node') NOT NULL DEFAULT 'function_node';
+ALTER TABLE workflow_nodes MODIFY COLUMN function_id BIGINT NULL;
+ALTER TABLE workflow_nodes ADD COLUMN node_config JSON NULL;
+```
+
+### V037 capabilities category
+
+```sql
+ALTER TABLE capabilities ADD COLUMN category_id BIGINT NULL;
+ALTER TABLE capabilities ADD CONSTRAINT fk_capabilities_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL;
+```
+
+### V038 seed capability categories
+
+```sql
+-- 预置 Capability 内置分类（与 runtime/capability.rs 中的 CAPABILITIES 对应）
+INSERT IGNORE INTO categories (parent_id, name, slug, description) VALUES
+    (NULL, '网络', 'network', '网络相关能力'),
+    (NULL, '文件系统', 'fs', '文件系统读写能力'),
+    (NULL, '对象存储', 's3', '对象存储（Rustfs）能力'),
+    (NULL, '数据库', 'db', '数据库查询与执行'),
+    (NULL, 'LLM', 'llm', '大语言模型调用'),
+    (NULL, '密钥管理', 'secret', '密钥读取与管理'),
+    (NULL, '时间', 'time', '服务器时间相关'),
+    (NULL, '日志', 'log', '日志写入'),
+    (NULL, '聊天', 'chat', '聊天交互'),
+    (NULL, '命令执行', 'exec', 'Shell 命令执行'),
+    (NULL, 'Agent', 'agent', 'Agent 管理'),
+    (NULL, '定时任务', 'cron', 'Cron 任务管理');
+
+-- 更新 capabilities 的 category_id（按 slug 匹配）
+UPDATE capabilities c
+JOIN categories cat ON cat.slug = SUBSTRING_INDEX(c.name, '.', 1) AND cat.parent_id IS NULL
+SET c.category_id = cat.id
+WHERE cat.slug IN ('network', 'fs', 's3', 'db', 'llm', 'secret', 'time', 'log', 'chat', 'exec', 'agent', 'cron');
+```
 
 ---
 
 ## 3. 关系图（简化）
 
 ```
+Admin --< LoginRecord
+Admin --< AdminAuditLog
+Admin --< ChatSession --< ChatMessage → Agent
+
 Category --< Plugin >--*-- Tag
+Category --< Function >--*-- Tag
+Category --< Workflow >--*-- Tag
+Category --< Tool >--*-- Tag
+Category --< Skill >--*-- Tag
+Category --< Capability
+
                 |
                 v
-            Function --< WorkflowNode >--in Workflow
+            Function --< WorkflowNode(node_type: function_node/start_node/end_node/generate_answer_node) >--in Workflow
                 |                 \
                 v                  >---< WorkflowEdge
               Tool/Skill            mapping
@@ -399,6 +608,8 @@ Category --< Plugin >--*-- Tag
                   |
                   v
         RuntimeAuditLog
+
+RecommendedGame (独立实体)
 ```
 
 ---
@@ -412,12 +623,18 @@ Category --< Plugin >--*-- Tag
 5. `tools.kind` 与 function_id/workflow_id 一一对应（DB CHECK 已表达）
 6. `workflow_edges` 不能形成环（service 层 DFS 校验）
 7. `agent_permissions.capability` 必须属于 `capabilities.name`（service 层 lookup）
-8. 危险 capability（`is_dangerous = 1`）只能由 role=3 Super 授予
+8. 危险 capability（`is_dangerous = 1`）只能由 role=1 Super 授予
 9. `chat_messages.seq` 在 `session_id` 内单调（DB UNIQUE 已表达）
 10. `agents.model_preset` 取值必须为启动期从 hiveweb `llm_presets.toml` 加载的命名 preset；service 层在保存时校验未知 preset → 5007 `ModelPresetUnknown`。子 Agent 不继承父的 preset；运行时解析顺序：当前 Agent.model_preset → 全局默认 preset
-11. `tools.kind=1`（function-wrap）时，`tools.input_schema` / `tools.output_schema` 必须**完全等于**其引用 function 的对应字段；service 层在 PUT/POST tools 时做深度 JSON 等值校验，不一致 → 5002 `Schema mismatch`。`tools.kind=2`（workflow-wrap）时，`tools.input_schema` 必须能赋值给 workflow 入口 function 的 input_schema（至少包含所有 required 字段且类型一致），output_schema 由编辑者声明（默认 = DAG 终点输出）。（CHK170）
-12. `chat_sessions.admin_id IS NULL` 时（操作者已被删除），该 session 仅 Super 角色可读 / 可继续对话 / 可删除；普通管理员一律 403。snapshot 列用于审计追溯。service 层强制；DB 不加 CHECK。（CHK142 / CHK148）
-13. `functions` 表**不支持软删除**（无 `deleted_at` 列）；任何 Function 的 DELETE 都是物理删除。前置检查：被 `workflow_nodes` / `tools` / `skills` 引用时拒绝（4093）。`plugins` 软删除时，引用其的 Function 仍存在但 service 层在调用时返 `5004 Plugin missing` 或类似错误（FR-007 软删除语义）。（CHK166 / CHK173）
+11. `tools.kind=1`（function-wrap）时，`tools.input_schema` / `tools.output_schema` 必须**完全等于**其引用 function 的对应字段；service 层在 PUT/POST tools 时做深度 JSON 等值校验，不一致 → 5002 `Schema mismatch`。`tools.kind=2`（workflow-wrap）时，`tools.input_schema` 必须能赋值给 workflow 入口 function 的 input_schema（至少包含所有 required 字段且类型一致），output_schema 由编辑者声明（默认 = DAG 终点输出）
+12. `chat_sessions.admin_id IS NULL` 时（操作者已被删除），该 session 仅 Super 角色可读 / 可继续对话 / 可删除；普通管理员一律 403。snapshot 列用于审计追溯。service 层强制；DB 不加 CHECK
+13. `functions` 表**不支持软删除**（无 `deleted_at` 列）；任何 Function 的 DELETE 都是物理删除。前置检查：被 `workflow_nodes` / `tools` 引用时拒绝（4093）
+14. `skills` 不引用 Function/Workflow；删除前必须校验 `agent_skills` 引用计数 > 0 → 4093 拒绝
+15. `tools.source = 'builtin'` 的 Tool 不可编辑，只能包装 builtin Function (kind=1)
+16. `tools.is_always = 1` 的 Tool 对所有 Agent 自动可用，无需在 `agent_tools` 中建立关联
+17. `skills.is_always = 1` 的 Skill 对所有 Agent 自动加载，无需在 `agent_skills` 中建立关联
+18. `workflow_nodes.node_type = 'generate_answer_node'` 时，`function_id` 可为 NULL，`node_config` 中应包含 `system_prompt` 等 LLM 生成配置
+19. `workflow_nodes.node_type = 'start_node'` 或 `'end_node'` 时，`function_id` 可为 NULL
 
 ---
 
@@ -429,6 +646,8 @@ Category --< Plugin >--*-- Tag
   - `idx_taggings_entity` 实现 "某 entity 的全部 tag" 反向查询
   - `idx_chat_sessions_updated_at` 最近会话列表
   - `idx_ral_occurred_at` + `idx_ral_capability` 用于 capability 鉴权审计的反查
+  - `idx_workflows_category` / `idx_tools_category` / `idx_skills_category` / `idx_functions_category` 分类过滤
+  - `idx_sort_value` 推荐游戏排序
 
 ---
 

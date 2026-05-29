@@ -1,7 +1,7 @@
 /// Artifact persistence helpers for generated media.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use base64::Engine;
 use chrono::{DateTime, Local};

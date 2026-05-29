@@ -91,6 +91,17 @@ pub struct ListFilter {
     pub category_id: Option<i64>,
     pub tag_ids: Vec<i64>,
     pub deleted_only: bool,
+    pub identifier: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub runtime: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub repository_url: Option<String>,
+    pub created_at_start: Option<String>,
+    pub created_at_end: Option<String>,
+    pub updated_at_start: Option<String>,
+    pub updated_at_end: Option<String>,
 }
 
 pub async fn upload(
@@ -198,8 +209,8 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Plugin, AppError> 
 }
 
 pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, AppError> {
-    // 简化版三维检索：search / category / 软删除过滤 + 分页。tag_ids 暂走子查询。
     let mut where_clauses: Vec<String> = Vec::new();
+    let mut like_clauses: Vec<String> = Vec::new();
     if filter.deleted_only {
         where_clauses.push("p.deleted_at IS NOT NULL".into());
     } else {
@@ -208,9 +219,42 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, Ap
     if filter.category_id.is_some() {
         where_clauses.push("p.category_id = ?".into());
     }
+    if filter.identifier.is_some() {
+        like_clauses.push("p.identifier LIKE ?".into());
+    }
+    if filter.name.is_some() {
+        like_clauses.push("p.name LIKE ?".into());
+    }
+    if filter.description.is_some() {
+        like_clauses.push("p.description LIKE ?".into());
+    }
+    if filter.runtime.is_some() {
+        where_clauses.push("p.runtime = ?".into());
+    }
+    if filter.version.is_some() {
+        where_clauses.push("p.version = ?".into());
+    }
+    if filter.author.is_some() {
+        like_clauses.push("p.author LIKE ?".into());
+    }
+    if filter.repository_url.is_some() {
+        like_clauses.push("p.repository_url LIKE ?".into());
+    }
+    if filter.created_at_start.is_some() {
+        where_clauses.push("p.created_at >= ?".into());
+    }
+    if filter.created_at_end.is_some() {
+        where_clauses.push("p.created_at <= ?".into());
+    }
+    if filter.updated_at_start.is_some() {
+        where_clauses.push("p.updated_at >= ?".into());
+    }
+    if filter.updated_at_end.is_some() {
+        where_clauses.push("p.updated_at <= ?".into());
+    }
     if filter.search.is_some() {
-        where_clauses.push(
-            "MATCH(p.name, p.description, p.identifier) AGAINST (? IN NATURAL LANGUAGE MODE)".into(),
+        like_clauses.push(
+            "(p.name LIKE ? OR p.description LIKE ? OR p.identifier LIKE ?)".into(),
         );
     }
     if !filter.tag_ids.is_empty() {
@@ -219,10 +263,11 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, Ap
             "p.id IN (SELECT entity_id FROM taggings WHERE entity_type='plugin' AND tag_id IN ({placeholders}))"
         ));
     }
-    let where_sql = if where_clauses.is_empty() {
+    let all_clauses: Vec<String> = where_clauses.into_iter().chain(like_clauses).collect();
+    let where_sql = if all_clauses.is_empty() {
         String::new()
     } else {
-        format!("WHERE {}", where_clauses.join(" AND "))
+        format!("WHERE {}", all_clauses.join(" AND "))
     };
 
     let count_sql = format!("SELECT COUNT(*) FROM plugins p {where_sql}");
@@ -230,33 +275,65 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, Ap
         "SELECT p.* FROM plugins p {where_sql} ORDER BY p.created_at DESC LIMIT ? OFFSET ?"
     );
 
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
-    if let Some(cid) = filter.category_id {
-        count_q = count_q.bind(cid);
+    macro_rules! bind_filter_params {
+        ($q:ident, $f:expr) => {{
+            let mut q = $q;
+            if let Some(cid) = $f.category_id {
+                q = q.bind(cid);
+            }
+            if let Some(ref s) = $f.identifier {
+                q = q.bind(format!("%{s}%"));
+            }
+            if let Some(ref s) = $f.name {
+                q = q.bind(format!("%{s}%"));
+            }
+            if let Some(ref s) = $f.description {
+                q = q.bind(format!("%{s}%"));
+            }
+            if let Some(ref s) = $f.runtime {
+                q = q.bind(s);
+            }
+            if let Some(ref s) = $f.version {
+                q = q.bind(s);
+            }
+            if let Some(ref s) = $f.author {
+                q = q.bind(format!("%{s}%"));
+            }
+            if let Some(ref s) = $f.repository_url {
+                q = q.bind(format!("%{s}%"));
+            }
+            if let Some(ref s) = $f.created_at_start {
+                q = q.bind(s);
+            }
+            if let Some(ref s) = $f.created_at_end {
+                q = q.bind(s);
+            }
+            if let Some(ref s) = $f.updated_at_start {
+                q = q.bind(s);
+            }
+            if let Some(ref s) = $f.updated_at_end {
+                q = q.bind(s);
+            }
+            if let Some(ref s) = $f.search {
+                let like = format!("%{s}%");
+                q = q.bind(like.clone()).bind(like.clone()).bind(like);
+            }
+            for tid in &$f.tag_ids {
+                q = q.bind(tid);
+            }
+            q
+        }};
     }
-    if let Some(ref s) = filter.search {
-        count_q = count_q.bind(s);
-    }
-    for tid in &filter.tag_ids {
-        count_q = count_q.bind(tid);
-    }
-    let total: i64 = count_q
+
+    let count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let total: i64 = bind_filter_params!(count_q, &filter)
         .fetch_one(pool)
         .await
         .map(|(c,)| c)
         .map_err(|e| AppError::Internal(format!("plugin count: {e}")))?;
 
-    let mut list_q = sqlx::query_as::<_, Plugin>(&list_sql);
-    if let Some(cid) = filter.category_id {
-        list_q = list_q.bind(cid);
-    }
-    if let Some(ref s) = filter.search {
-        list_q = list_q.bind(s);
-    }
-    for tid in &filter.tag_ids {
-        list_q = list_q.bind(tid);
-    }
-    let rows: Vec<Plugin> = list_q
+    let list_q = sqlx::query_as::<_, Plugin>(&list_sql);
+    let rows: Vec<Plugin> = bind_filter_params!(list_q, &filter)
         .bind(filter.limit)
         .bind(filter.offset)
         .fetch_all(pool)

@@ -10,21 +10,39 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Background,
-  Controls,
-  MiniMap,
   ReactFlow,
+  ReactFlowProvider,
+  MiniMap,
   addEdge,
-  applyEdgeChanges,
   applyNodeChanges,
+  applyEdgeChanges,
+  useNodesState,
+  useEdgesState,
+  Controls,
+  Background,
+  Handle,
+  Position,
   MarkerType,
   type Connection,
   type Edge,
-  type EdgeChange,
   type Node,
+  type EdgeChange,
   type NodeChange,
 } from 'reactflow';
-import { Alert, Button, Modal, Select, Space, message } from 'antd';
+import {
+  Alert,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Space,
+  Spin,
+  Switch,
+  Typography,
+  message,
+} from 'antd';
 
 import {
   getWorkflowGraph,
@@ -36,6 +54,16 @@ import {
   type NodeType,
   type WorkflowExecuteResult,
 } from '../../services/workflow';
+
+const { Text, Paragraph } = Typography;
+
+interface SchemaProperty {
+  type?: string;
+  description?: string;
+  enum?: unknown[];
+  default?: unknown;
+  [key: string]: unknown;
+}
 import { listFunctions, type FunctionItem } from '../../services/function';
 import { detectCycle, type SimpleEdge } from './CycleDetector';
 import { DEFAULT_FIT_VIEW_OPTIONS, DEFAULT_FLOW_STYLE } from '../../utils/reactflow';
@@ -48,6 +76,106 @@ import { ContextMenu } from './ContextMenu';
 import { FunctionDetail } from '../FunctionDetail';
 import { NodeDetailDrawer } from './NodeDetailDrawer';
 
+/**
+ * 从 JSON Schema 中解析 properties，生成表单字段配置
+ * 支持类型：string, number, integer, boolean, enum
+ */
+function parseSchemaProperties(schema: unknown): Array<{ key: string; prop: SchemaProperty }> {
+  if (!schema || typeof schema !== 'object') return [];
+  const schemaObj = schema as Record<string, unknown>;
+  const properties = schemaObj.properties as Record<string, SchemaProperty> | undefined;
+  if (!properties) return [];
+  return Object.entries(properties).map(([key, prop]) => ({ key, prop }));
+}
+
+/**
+ * 根据结束节点的 output_schema，从上游节点结果中提取匹配的字段
+ * e.g. output_schema.properties = { answer: {...} }, upstream = { answer: "x", model: "y" }
+ *   → 返回 { answer: "x" }
+ */
+function extractOutputFields(
+  outputSchema: Record<string, unknown> | null | undefined,
+  upstreamResults: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const schemaFields = outputSchema?.properties
+    ? Object.keys(outputSchema.properties as Record<string, unknown>)
+    : [];
+  if (schemaFields.length === 0) {
+    // 未配置 output_schema → 不显示结果
+    return null;
+  }
+  const extracted: Record<string, unknown> = {};
+  for (const key of schemaFields) {
+    if (key in upstreamResults) {
+      extracted[key] = (upstreamResults as Record<string, unknown>)[key];
+    }
+  }
+  return extracted;
+}
+
+/** 渲染单个表单字段 */
+function renderFormField(key: string, prop: SchemaProperty) {
+  const type = prop.type ?? 'string';
+  const label = prop.description ? (
+    <span>
+      {key}
+      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+        {prop.description}
+      </Text>
+    </span>
+  ) : (
+    key
+  );
+
+  switch (type) {
+    case 'string':
+      if (prop.enum && Array.isArray(prop.enum)) {
+        return (
+          <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
+            <Select placeholder={`选择 ${key}`}>
+              {prop.enum.map((v) => (
+                <Select.Option key={String(v)} value={v}>
+                  {String(v)}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+        );
+      }
+      return (
+        <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
+          <Input placeholder={`输入 ${key}`} />
+        </Form.Item>
+      );
+
+    case 'number':
+    case 'integer':
+      return (
+        <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
+          <InputNumber
+            placeholder={`输入 ${key}`}
+            style={{ width: '100%' }}
+            step={type === 'integer' ? 1 : 0.1}
+          />
+        </Form.Item>
+      );
+
+    case 'boolean':
+      return (
+        <Form.Item key={key} name={key} label={label} valuePropName="checked" initialValue={prop.default}>
+          <Switch />
+        </Form.Item>
+      );
+
+    default:
+      return (
+        <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
+          <Input placeholder={`输入 ${key} (${type})`} />
+        </Form.Item>
+      );
+  }
+}
+
 interface NodeData {
   node_key: string;
   function_id?: number | null;
@@ -56,6 +184,7 @@ interface NodeData {
   input_schema?: Record<string, unknown> | null;
   output_schema?: Record<string, unknown> | null;
   node_config?: AnswerNodeConfig | null;
+  input_mapping?: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | null;
   execution_result?: unknown;
 }
 
@@ -138,9 +267,11 @@ function EdgeContextMenu({ x, y, edgeId, onDelete, onClose }: {
 }
 
 export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
+  const [form] = Form.useForm();
   const [nodes, setNodes] = useState<Node<NodeData>[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [functions, setFunctions] = useState<FunctionItem[]>([]);
+  const [workflow, setWorkflow] = useState<any>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [pickedFn, setPickedFn] = useState<number | undefined>();
   const [contextMenu, setContextMenu] = useState<{
@@ -167,12 +298,13 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     inputSchema?: Record<string, unknown> | null;
     outputSchema?: Record<string, unknown> | null;
     answerConfig?: AnswerNodeConfig | null;
+    inputMapping?: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | null;
   } | null>(null);
   // 运行相关状态
   const [runModalOpen, setRunModalOpen] = useState(false);
-  const [runInputJson, setRunInputJson] = useState<string>('{}');
   const [isRunning, setIsRunning] = useState(false);
   const [executionResult, setExecutionResult] = useState<WorkflowExecuteResult | null>(null);
+  const [lastRunInput, setLastRunInput] = useState<Record<string, unknown> | null>(null);
   const [resultModalOpen, setResultModalOpen] = useState(false);
   const [selectedNodeResult, setSelectedNodeResult] = useState<{
     nodeKey: string;
@@ -186,10 +318,12 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       try {
         const cached = localStorage.getItem(STORAGE_KEY);
         if (cached) {
-          const { nodes: cachedNodes, edges: cachedEdges, functions: cachedFunctions } = JSON.parse(cached);
+          const { nodes: cachedNodes, edges: cachedEdges, functions: cachedFunctions, executionResult: cachedResult, lastRunInput: cachedInput } = JSON.parse(cached);
           setNodes(cachedNodes);
           setEdges(cachedEdges);
           setFunctions(cachedFunctions);
+          if (cachedResult) setExecutionResult(cachedResult);
+          if (cachedInput) setLastRunInput(cachedInput);
           return;
         }
       } catch { /* ignore parse error, fallback to API */ }
@@ -200,6 +334,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         getWorkflowGraph(workflowId),
         listFunctions({ limit: 100 }),
       ]);
+      setWorkflow(graph.workflow);
       setFunctions(fnList.items);
       const fnMap = new Map(fnList.items.map((f) => [f.id, f]));
       setNodes(
@@ -207,6 +342,13 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           const isStart = n.node_type === 'start_node' || n.node_key === 'start';
           const isEnd = n.node_type === 'end_node' || n.node_key === 'end';
           const isAnswer = n.node_type === 'generate_answer_node';
+          // 从 node_config 中恢复函数节点的 input_mapping
+          const isFunctionNode = !isStart && !isEnd && !isAnswer;
+          const cfg = n.node_config as Record<string, unknown> | null | undefined;
+          const inputMapping = (isFunctionNode && cfg?.input_mapping)
+            ? cfg.input_mapping as Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>
+            : undefined;
+
           return {
             id: n.node_key,
             type: isStart ? 'start' : isEnd ? 'end' : isAnswer ? 'answer' : 'custom',
@@ -218,7 +360,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
               function_name: isStart || isEnd || isAnswer ? undefined : (n.function_id ? fnMap.get(n.function_id)?.name : undefined),
               input_schema: isStart ? (graph.workflow.input_schema ?? null) : undefined,
               output_schema: isEnd ? (graph.workflow.output_schema ?? null) : undefined,
-              node_config: isAnswer ? (n.node_config ?? null) : undefined,
+              node_config: isAnswer ? ((n.node_config ?? null) as AnswerNodeConfig | null) : undefined,
+              input_mapping: inputMapping ?? undefined,
             },
           };
         }),
@@ -242,13 +385,16 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     void fetchGraph();
   }, [fetchGraph]);
 
-  // 自动同步到 localStorage（覆盖拖拽、连线、配置修改等所有操作）
+  // 自动同步到 localStorage
   useEffect(() => {
     if (nodes.length === 0) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, edges, functions }));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ nodes, edges, functions, executionResult, lastRunInput }),
+      );
     } catch { /* ignore quota errors */ }
-  }, [nodes, edges, functions, STORAGE_KEY]);
+  }, [nodes, edges, functions, executionResult, lastRunInput, STORAGE_KEY]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -308,17 +454,10 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
   }, []);
 
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node<NodeData>) => {
-    if (executionResult) {
-      const result = executionResult.node_results[node.data.node_key];
-      if (result !== undefined) {
-        setSelectedNodeResult({ nodeKey: node.data.node_key, result });
-        setResultModalOpen(true);
-        return;
-      }
-    }
     const isStart = node.data.node_type === 'start_node' || node.id === 'start';
     const isEnd = node.data.node_type === 'end_node' || node.id === 'end';
     const isAnswer = node.data.node_type === 'generate_answer_node';
+    const isFunction = !isStart && !isEnd && !isAnswer;
     setSelectedNode({
       nodeType: isStart ? 'start' : isEnd ? 'end' : isAnswer ? 'generate_answer' : 'function',
       nodeKey: node.data.node_key,
@@ -326,9 +465,10 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       inputSchema: isStart ? node.data.input_schema : undefined,
       outputSchema: isEnd ? node.data.output_schema : undefined,
       answerConfig: isAnswer ? (node.data.node_config ?? null) : undefined,
+      inputMapping: isFunction ? (node.data.input_mapping ?? null) : undefined,
     });
     setDetailDrawerOpen(true);
-  }, [executionResult]);
+  }, []);
 
   const onUpdateStartNode = useCallback((vars: Record<string, unknown>) => {
     setNodes((nds) =>
@@ -367,6 +507,23 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     void message.success('回答节点配置已更新');
   }, []);
 
+  const onUpdateFunctionNode = useCallback(
+    (nodeKey: string, inputMapping: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>) => {
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === nodeKey || n.data.node_key === nodeKey
+            ? { ...n, data: { ...n.data, input_mapping: inputMapping } }
+            : n,
+        ),
+      );
+      setSelectedNode((prev) =>
+        prev?.nodeKey === nodeKey ? { ...prev, inputMapping } : prev
+      );
+      void message.success('函数节点输入映射已更新');
+    },
+    [],
+  );
+
   const onDeleteNode = useCallback((nodeId: string) => {
     if (nodeId === 'start') {
       void message.error('起始节点不能删除');
@@ -399,14 +556,65 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     );
   }, [nodes, edges]);
 
+  /** 从当前 nodes 中提取 start 节点的 input_schema，用于"测试"弹窗 */
+  const startInputSchema = useMemo(() => {
+    const startNode = nodes.find((n) => n.data.node_type === 'start_node' || n.id === 'start');
+    return startNode?.data.input_schema ?? null;
+  }, [nodes]);
+
+  /** 找到 DAG 中连接到结束节点的上游节点 key（即最终输出节点） */
+  const finalOutputNodeKeys = useMemo(() => {
+    const endNode = nodes.find((n) => n.data.node_type === 'end_node' || n.id === 'end');
+    const endKey = endNode?.data.node_key ?? 'end';
+    // 找到所有指向 end 节点的边，收集上游 source
+    return edges
+      .filter((e) => e.target === endKey && e.source)
+      .map((e) => e.source!);
+  }, [nodes, edges]);
+
+  /** 结束节点的 output_schema */
+  const endOutputSchema = useMemo(() => {
+    const endNode = nodes.find((n) => n.data.node_type === 'end_node' || n.id === 'end');
+    return endNode?.data.output_schema ?? null;
+  }, [nodes]);
+
+  /** 为每个节点附加执行结果标识（含开始/结束节点） */
   const styledNodes = useMemo(
     () =>
       nodes.map((n) => {
         let node = n;
+        const isStart = n.data.node_type === 'start_node' || n.id === 'start';
+        const isEnd = n.data.node_type === 'end_node' || n.id === 'end';
+
         if (cycle?.includes(n.id)) {
           node = { ...n, data: { ...n.data, style: { border: '2px solid #ff4d4f' } } };
         }
-        if (executionResult) {
+
+        // 开始节点：有上次运行输入时标记为有结果
+        if (isStart && lastRunInput) {
+          node = { ...node, data: { ...node.data, execution_result: lastRunInput } };
+        }
+
+        // 结束节点：根据 output_schema 提取上游输出字段
+        if (isEnd && executionResult) {
+          // 收集所有上游结果
+          const allUpstream: Record<string, unknown> = {};
+          for (const key of finalOutputNodeKeys) {
+            const r = executionResult.node_results[key];
+            if (r !== undefined && typeof r === 'object' && r !== null) {
+              Object.assign(allUpstream, r as Record<string, unknown>);
+            }
+          }
+          if (Object.keys(allUpstream).length > 0) {
+            const extracted = extractOutputFields(n.data.output_schema, allUpstream);
+            if (extracted !== null) {
+              node = { ...node, data: { ...node.data, execution_result: extracted } };
+            }
+          }
+        }
+
+        // 普通节点：从 node_results 中查找
+        if (executionResult && !isStart && !isEnd) {
           const result = executionResult.node_results[n.data.node_key];
           if (result !== undefined) {
             node = { ...node, data: { ...node.data, execution_result: result } };
@@ -414,8 +622,54 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         }
         return node;
       }),
-    [nodes, cycle, executionResult],
+    [nodes, cycle, executionResult, lastRunInput, finalOutputNodeKeys],
   );
+
+  // 监听节点组件发出的「查看结果」事件
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { nodeKey } = (e as CustomEvent<{ nodeKey: string }>).detail;
+      const isStart = nodeKey === 'start' || nodeKey === 'start_node';
+      const isEnd = nodeKey === 'end' || nodeKey === 'end_node';
+
+      if (isStart && lastRunInput) {
+        setSelectedNodeResult({ nodeKey, result: lastRunInput });
+        setResultModalOpen(true);
+        return;
+      }
+
+      if (isEnd && executionResult) {
+        // 根据结束节点的 output_schema 提取上游输出字段
+        const allUpstream: Record<string, unknown> = {};
+        for (const key of finalOutputNodeKeys) {
+          const r = executionResult.node_results[key];
+          if (r !== undefined && typeof r === 'object' && r !== null) {
+            Object.assign(allUpstream, r as Record<string, unknown>);
+          }
+        }
+        if (Object.keys(allUpstream).length > 0) {
+          const extracted = extractOutputFields(endOutputSchema, allUpstream);
+          if (extracted !== null) {
+            setSelectedNodeResult({ nodeKey, result: extracted });
+            setResultModalOpen(true);
+          }
+        }
+        return;
+      }
+
+      // 普通节点：从 executionResult 中查找
+      if (executionResult) {
+        const result = executionResult.node_results[nodeKey];
+        if (result !== undefined) {
+          setSelectedNodeResult({ nodeKey, result });
+          setResultModalOpen(true);
+        }
+      }
+    };
+
+    window.addEventListener('node-view-result', handler);
+    return () => window.removeEventListener('node-view-result', handler);
+  }, [executionResult, lastRunInput, finalOutputNodeKeys]);
 
   const onAdd = () => {
     if (!pickedFn) {
@@ -437,14 +691,20 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     }
     const newSeq = maxSeq + 1;
     const newKey = `function_${newSeq}`;
-    
+
     const fn = functions.find((f) => f.id === pickedFn);
-    setNodes((nds) => [
-      ...nds,
-      {
-        id: newKey,
-        type: 'custom',
-        position: { x: 100 + nds.length * 60, y: 100 },
+    setNodes((nds) => {
+      // 找到开始节点位置，将新节点放在其正下方
+      const startNode = nds.find((n) => n.id === 'start' || n.data.node_type === 'start_node');
+      const baseX = startNode ? startNode.position.x : 100;
+      const baseY = startNode ? startNode.position.y + 120 : 300;
+      const offsetX = (nds.filter((n) => n.type === 'custom' || n.type === 'answer').length % 3) * 200;
+      return [
+        ...nds,
+        {
+          id: newKey,
+          type: 'custom',
+          position: { x: baseX + offsetX, y: baseY },
         data: {
           node_key: newKey,
           function_id: pickedFn,
@@ -452,7 +712,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           function_name: fn?.name,
         },
       },
-    ]);
+    ];
+    });
     setAddOpen(false);
     setPickedFn(undefined);
   };
@@ -493,6 +754,13 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       void message.error('图中存在环，请先消除');
       return;
     }
+    // 检查结束节点是否配置了输出变量
+    const endOutputProps = endOutputSchema?.properties
+      ? (endOutputSchema.properties as Record<string, unknown>)
+      : {};
+    if (Object.keys(endOutputProps).length === 0) {
+      void message.warning('结束节点尚未配置输出变量，保存后执行结果将不会包含结束节点输出');
+    }
     const payload = {
       nodes: nodes.map((n) => {
         const isStart = n.data.node_type === 'start_node' || n.id === 'start';
@@ -505,26 +773,43 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           position: {
             x: n.position.x,
             y: n.position.y,
-            ...(isStart && n.data.input_schema && {
-              input_schema: n.data.input_schema,
-            }),
-            ...(isEnd && n.data.output_schema && {
-              output_schema: n.data.output_schema,
-            }),
+            ...(isStart && n.data.input_schema && { input_schema: n.data.input_schema }),
+            ...(isEnd && n.data.output_schema && { output_schema: n.data.output_schema }),
           },
           ...(isAnswer && n.data.node_config && {
             node_config: n.data.node_config,
           }),
+          // 函数节点：将 input_mapping 写入 node_config，供后端执行引擎读取
+          ...(!isStart && !isEnd && !isAnswer && n.data.input_mapping && {
+            node_config: { input_mapping: n.data.input_mapping },
+          }),
         };
       }),
-      edges: edges.map((e) => ({
-        src_node_key: e.source!,
-        dst_node_key: e.target!,
-        mapping: ((e.data as { mapping?: Record<string, string> })?.mapping) ?? {},
-      })),
+      edges: edges.map((e) => {
+        // 查找目标函数节点的 input_mapping，合并到边 mapping
+        const dstNode = nodes.find((n) => n.id === e.target);
+        const inputMapping = dstNode?.data.input_mapping as Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | undefined;
+        const edgeMapping: Record<string, string> = {};
+        if (inputMapping) {
+          for (const [field, m] of Object.entries(inputMapping)) {
+            if (m.source === 'upstream' && m.source_node_key) {
+              edgeMapping[`dst.input.${field}`] = m.source_field
+                ? `${m.source_node_key}.output.${m.source_field}`
+                : `${m.source_node_key}.output`;
+            } else if (m.source === 'custom' && m.custom_value !== undefined) {
+              edgeMapping[`dst.input.${field}`] = m.custom_value;
+            }
+          }
+        }
+        return {
+          src_node_key: e.source!,
+          dst_node_key: e.target!,
+          mapping: Object.keys(edgeMapping).length > 0 ? edgeMapping : ((e.data as { mapping?: Record<string, string> })?.mapping) ?? {},
+        };
+      }),
     };
     try {
-      await putWorkflowGraph(workflowId, payload);
+      await putWorkflowGraph(workflowId, payload as Parameters<typeof putWorkflowGraph>[1]);
       void message.success('保存成功');
       onSaved?.();
     } catch (e: unknown) {
@@ -545,25 +830,31 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
   }, []);
 
   const handleRun = useCallback(async () => {
-    let input: Record<string, unknown>;
     try {
-      input = JSON.parse(runInputJson);
-    } catch (e) {
-      void message.error('JSON 格式错误');
-      return;
-    }
-    setIsRunning(true);
-    try {
-      const result = await executeWorkflow(workflowId, input);
+      const values = await form.validateFields();
+      setIsRunning(true);
+      setExecutionResult(null); // 清除上次结果，准备新执行
+      setLastRunInput(values); // 保存输入，供开始节点查看
+      const result = await executeWorkflow(workflowId, values);
       setExecutionResult(result);
-      setRunModalOpen(false);
+      // 保持在弹窗内展示结果，不关闭
       void message.success(`执行成功，耗时 ${result.elapsed_ms}ms`);
-    } catch (e) {
-      void message.error(`执行失败: ${(e as Error).message}`);
+    } catch (e: unknown) {
+      if (e && typeof e === 'object' && 'errorFields' in e) {
+        void message.error('请检查表单输入');
+      } else {
+        void message.error(`执行失败: ${(e as Error).message}`);
+      }
     } finally {
       setIsRunning(false);
     }
-  }, [workflowId, runInputJson]);
+  }, [workflowId, form]);
+
+  const handleResetRun = useCallback(() => {
+    form.resetFields();
+    setExecutionResult(null);
+    setLastRunInput(null);
+  }, [form]);
 
 
 
@@ -573,8 +864,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         <Space style={{ marginBottom: 12 }}>
           <Button onClick={() => setAddOpen(true)}>添加函数节点</Button>
           <Button onClick={onAddAnswer}>添加回答节点</Button>
-          <Button type="default" onClick={handleRunClick} disabled={!!cycle}>
-            运行
+            <Button type="default" onClick={handleRunClick} disabled={!!cycle}>
+              测试
           </Button>
           <Button type="primary" onClick={onSave} disabled={!!cycle}>
             保存
@@ -584,36 +875,110 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       )}
       {/* 运行参数输入弹窗 */}
       <Modal
-        title="运行工作流"
+        title={`${executionResult ? '执行结果' : '运行'}工作流「${workflow?.name || workflow?.identifier || ''}」`}
         open={runModalOpen}
         onCancel={() => setRunModalOpen(false)}
-        onOk={handleRun}
-        confirmLoading={isRunning}
-        width={600}
+        footer={[
+          <Button key="reset" onClick={handleResetRun} disabled={isRunning}>
+            重置
+          </Button>,
+          <Button key="close" onClick={() => setRunModalOpen(false)} disabled={isRunning}>
+            关闭
+          </Button>,
+          <Button key="run" type="primary" onClick={handleRun} loading={isRunning}>
+            执行
+          </Button>,
+        ]}
+        width={executionResult ? 800 : 700}
       >
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>
-            输入参数（JSON 格式）
-          </label>
-          <textarea
-            value={runInputJson}
-            onChange={(e) => setRunInputJson(e.target.value)}
-            style={{
-              width: '100%',
-              height: 200,
-              fontFamily: 'monospace',
-              fontSize: 14,
-              padding: 12,
-              border: '1px solid #d9d9d9',
-              borderRadius: 6,
-            }}
-            placeholder='{"query": "请输入您的问题..."}'
-          />
-        </div>
+        <Space direction="vertical" style={{ width: '100%' }} size="large">
+          {/* 工作流信息 */}
+          <div>
+            <Text strong>工作流信息：</Text>
+            {workflow?.description && (
+              <Paragraph type="secondary" style={{ margin: '8px 0 0 0' }}>
+                {workflow.description}
+              </Paragraph>
+            )}
+          </div>
+
+          {/* 输入表单 */}
+          <div>
+            <Text strong style={{ marginBottom: 8, display: 'block' }}>输入参数：</Text>
+            {(() => {
+              const fields = parseSchemaProperties(startInputSchema);
+              if (fields.length > 0) {
+                return (
+                  <Form form={form} layout="vertical" size="small">
+                    {fields.map(({ key, prop }) => renderFormField(key, prop))}
+                  </Form>
+                );
+              }
+              return <Text type="secondary">该工作流无输入参数（空 schema）</Text>;
+            })()}
+          </div>
+
+          {/* 执行结果展示 — 显示结束节点的最终输出（按 output_schema 提取字段） */}
+          {executionResult && (
+            <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+              <Text strong style={{ marginBottom: 8, display: 'block' }}>
+                执行结果（耗时 {executionResult.elapsed_ms}ms）：
+              </Text>
+              {(() => {
+                // 收集所有上游结果，按结束节点的 output_schema 提取
+                const allUpstream: Record<string, unknown> = {};
+                for (const key of finalOutputNodeKeys) {
+                  const r = executionResult.node_results[key];
+                  if (r !== undefined && typeof r === 'object' && r !== null) {
+                    Object.assign(allUpstream, r as Record<string, unknown>);
+                  }
+                }
+                const endResult = extractOutputFields(endOutputSchema, allUpstream);
+                if (endResult !== null && Object.keys(endResult).length > 0) {
+                  return (
+                    <div
+                      style={{
+                        background: '#fff7e6',
+                        border: '1px solid #ffd591',
+                        borderRadius: 6,
+                        padding: 12,
+                      }}
+                    >
+                      <div style={{ marginBottom: 8 }}>
+                        <Text strong style={{ fontSize: 13, color: '#fa541c' }}>
+                          结束节点输出
+                        </Text>
+                      </div>
+                      <pre
+                        style={{
+                          background: '#fffbf0',
+                          padding: 12,
+                          borderRadius: 4,
+                          fontSize: 12,
+                          overflow: 'auto',
+                          maxHeight: 300,
+                          margin: 0,
+                        }}
+                      >
+                        {typeof endResult === 'string' ? endResult : JSON.stringify(endResult, null, 2)}
+                      </pre>
+                    </div>
+                  );
+                }
+                return <Text type="secondary">结束节点未配置输出变量或无输出数据</Text>;
+              })()}
+            </div>
+          )}
+        </Space>
       </Modal>
       {/* 节点结果查看弹窗 */}
       <Modal
-        title={selectedNodeResult ? `节点 ${selectedNodeResult.nodeKey} 运行结果` : '节点结果'}
+        title={(() => {
+          if (!selectedNodeResult) return '节点结果';
+          if (selectedNodeResult.nodeKey === 'start' || selectedNodeResult.nodeKey === 'start_node') return '输入参数（开始节点）';
+          if (selectedNodeResult.nodeKey === 'end' || selectedNodeResult.nodeKey === 'end_node') return '最终输出（结束节点）';
+          return `节点 ${selectedNodeResult.nodeKey} 运行结果`;
+        })()}
         open={resultModalOpen}
         onCancel={() => setResultModalOpen(false)}
         footer={[
@@ -742,6 +1107,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           onUpdateStartNode={onUpdateStartNode}
           onUpdateEndNode={onUpdateEndNode}
           onUpdateAnswerNode={selectedNode.nodeType === 'generate_answer' ? (config: AnswerNodeConfig) => onUpdateAnswerNode(selectedNode.nodeKey, config) : undefined}
+          onUpdateFunctionNode={selectedNode.nodeType === 'function' ? (nodeKey: string, mapping: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>) => onUpdateFunctionNode(nodeKey, mapping) : undefined}
+          functionInputMapping={selectedNode.inputMapping ?? null}
           allNodes={nodes}
           allEdges={edges}
           allFunctions={functions}

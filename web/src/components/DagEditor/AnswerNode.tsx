@@ -11,6 +11,11 @@ interface AnswerNodeData {
   execution_result?: unknown;
 }
 
+function emitViewResult(nodeKey: string, e: React.MouseEvent) {
+  e.stopPropagation();
+  window.dispatchEvent(new CustomEvent('node-view-result', { detail: { nodeKey } }));
+}
+
 export function AnswerNode({ data, selected }: NodeProps<AnswerNodeData>) {
   const varCount = data.node_config?.variables?.length ?? 0;
   const modelLabel = data.node_config?.model_preset || '默认模型';
@@ -31,7 +36,7 @@ export function AnswerNode({ data, selected }: NodeProps<AnswerNodeData>) {
         background: hasResult 
           ? `linear-gradient(135deg, #f6ffed 0%, #fff 100%)` 
           : `linear-gradient(135deg, #e6fffb 0%, #fff 100%)`,
-        minWidth: 200,
+        minWidth: 160,
         boxShadow: selected ? '0 2px 12px rgba(19, 194, 194, 0.25)' : '0 1px 4px rgba(19, 194, 194, 0.1)',
         cursor: 'pointer',
         position: 'relative',
@@ -73,6 +78,21 @@ export function AnswerNode({ data, selected }: NodeProps<AnswerNodeData>) {
           <span style={{ fontSize: 14, fontWeight: 600, color: '#006d75' }}>
             生成回答
           </span>
+          {hasResult && (
+            <span
+              onClick={(e) => emitViewResult(data.node_key, e)}
+              style={{
+                fontSize: 11,
+                color: '#1890ff',
+                cursor: 'pointer',
+                marginLeft: 'auto',
+                textDecoration: 'underline',
+                flexShrink: 0,
+              }}
+            >
+              查看结果
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 11, color: '#8c8c8c', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {promptPreview}

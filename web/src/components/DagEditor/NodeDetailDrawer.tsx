@@ -26,6 +26,8 @@ interface NodeDetailDrawerProps {
   onUpdateStartNode?: (vars: Record<string, unknown>) => void;
   onUpdateEndNode?: (vars: Record<string, unknown>) => void;
   onUpdateAnswerNode?: (config: AnswerNodeConfig) => void;
+  onUpdateFunctionNode?: (nodeKey: string, inputMapping: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>) => void;
+  functionInputMapping?: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | null;
   allNodes?: Node[];
   allEdges?: Edge[];
   allFunctions?: FunctionItem[];
@@ -464,6 +466,7 @@ function AnswerNodePanel(props: {
   const [presets, setPresets] = useState<ModelPreset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
   const [addVarOpen, setAddVarOpen] = useState(false);
+  const [editingVarIndex, setEditingVarIndex] = useState<number | null>(null);
   const [newVarName, setNewVarName] = useState('');
   const [newVarSource, setNewVarSource] = useState<'upstream' | 'custom'>('upstream');
   const [newVarSourceNode, setNewVarSourceNode] = useState('');
@@ -516,6 +519,46 @@ function AnswerNodePanel(props: {
 
   const handleRemoveVar = (index: number) => {
     setVariables(variables.filter((_, i) => i !== index));
+    if (editingVarIndex === index) {
+      setEditingVarIndex(null);
+    }
+  };
+
+  const handleStartEditVar = (index: number) => {
+    const v = variables[index];
+    setEditingVarIndex(index);
+    setNewVarName(v.name);
+    setNewVarSource(v.value_source);
+    setNewVarSourceNode(v.source_node_key || '');
+    setNewVarSourceField(v.source_field || '');
+    setNewVarCustomValue(v.custom_value || '');
+  };
+
+  const handleCancelEditVar = () => {
+    setEditingVarIndex(null);
+    setNewVarName('');
+    setNewVarSource('upstream');
+    setNewVarSourceNode('');
+    setNewVarSourceField('');
+    setNewVarCustomValue('');
+  };
+
+  const handleSaveEditVar = () => {
+    if (!newVarName.trim() || editingVarIndex === null) return;
+    const updatedVar: AnswerNodeVariable = {
+      name: newVarName.trim(),
+      value_source: newVarSource,
+      ...(newVarSource === 'upstream' ? {
+        source_node_key: newVarSourceNode || undefined,
+        source_field: newVarSourceField || undefined,
+      } : {
+        custom_value: newVarCustomValue || undefined,
+      }),
+    };
+    const updated = [...variables];
+    updated[editingVarIndex] = updatedVar;
+    setVariables(updated);
+    handleCancelEditVar();
   };
 
   const handleSave = () => {
@@ -667,33 +710,93 @@ function AnswerNodePanel(props: {
               <div
                 key={idx}
                 style={{
-                  border: '1px solid #f0f0f0',
+                  border: editingVarIndex === idx ? '1px solid #1890ff' : '1px solid #f0f0f0',
                   borderRadius: 8,
                   padding: '8px 12px',
-                  background: '#fff',
+                  background: editingVarIndex === idx ? '#e6f7ff' : '#fff',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Space direction="vertical" size={0}>
+                {editingVarIndex === idx ? (
+                  <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <Input
+                      placeholder="变量名 (英文，如 query)"
+                      value={newVarName}
+                      onChange={(e) => setNewVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    />
                     <Space>
-                      <Text strong>{v.name}</Text>
-                      <Tag color="cyan">{v.value_source === 'upstream' ? '上游节点' : '自定义'}</Tag>
+                      <Text>值来源:</Text>
+                      <Select
+                        value={newVarSource}
+                        onChange={setNewVarSource}
+                        style={{ width: 120 }}
+                        options={[
+                          { label: '上游节点', value: 'upstream' },
+                          { label: '自定义值', value: 'custom' },
+                        ]}
+                      />
                     </Space>
-                    {v.value_source === 'upstream' && v.source_node_key && (
-                      <Text type="secondary" style={{ fontSize: 11 }}>
-                        源: {v.source_node_key}{v.source_field ? `.${v.source_field}` : ''}
-                      </Text>
+                    {newVarSource === 'upstream' && (
+                      <>
+                        <Select
+                          value={newVarSourceNode || undefined}
+                          onChange={(val) => {
+                            setNewVarSourceNode(val || '');
+                            setNewVarSourceField('');
+                          }}
+                          placeholder="选择上游节点"
+                          allowClear
+                          style={{ width: '100%' }}
+                          options={upstreamOptions}
+                        />
+                        <Select
+                          value={newVarSourceField || undefined}
+                          onChange={(val) => setNewVarSourceField(val || '')}
+                          placeholder="选择字段（留空=整个输出）"
+                          allowClear
+                          disabled={!newVarSourceNode}
+                          style={{ width: '100%' }}
+                          options={fieldOptions}
+                        />
+                      </>
                     )}
-                    {v.value_source === 'custom' && v.custom_value && (
-                      <Text type="secondary" style={{ fontSize: 11 }}>
-                        值: {v.custom_value}
-                      </Text>
+                    {newVarSource === 'custom' && (
+                      <Input
+                        placeholder="自定义默认值"
+                        value={newVarCustomValue}
+                        onChange={(e) => setNewVarCustomValue(e.target.value)}
+                      />
                     )}
+                    <Space>
+                      <a onClick={handleSaveEditVar}>保存修改</a>
+                      <a onClick={handleCancelEditVar}>取消</a>
+                    </Space>
                   </Space>
-                  <a onClick={() => handleRemoveVar(idx)} style={{ color: '#ff4d4f' }}>
-                    删除
-                  </a>
-                </div>
+                ) : (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Space direction="vertical" size={0}>
+                      <Space>
+                        <Text strong>{v.name}</Text>
+                        <Tag color="cyan">{v.value_source === 'upstream' ? '上游节点' : '自定义'}</Tag>
+                      </Space>
+                      {v.value_source === 'upstream' && v.source_node_key && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          源: {v.source_node_key}{v.source_field ? `.${v.source_field}` : ''}
+                        </Text>
+                      )}
+                      {v.value_source === 'custom' && v.custom_value && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          值: {v.custom_value}
+                        </Text>
+                      )}
+                    </Space>
+                    <Space>
+                      <a onClick={() => handleStartEditVar(idx)}>编辑</a>
+                      <a onClick={() => handleRemoveVar(idx)} style={{ color: '#ff4d4f' }}>
+                        删除
+                      </a>
+                    </Space>
+                  </div>
+                )}
               </div>
             ))}
           </Space>
@@ -738,14 +841,129 @@ function AnswerNodePanel(props: {
   );
 }
 
+/** 将 JSON Schema 解析为字段列表用于展示 */
+function parseSchemaToFieldList(schema: unknown): Array<{ name: string; type: string; required: boolean; description?: string; default?: unknown }> {
+  if (!schema || typeof schema !== 'object') return [];
+  const s = schema as Record<string, unknown>;
+  const properties = s.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!properties) return [];
+  const required: string[] = Array.isArray(s.required) ? s.required as string[] : [];
+  return Object.entries(properties).map(([name, prop]) => ({
+    name,
+    type: (prop.type as string) || 'string',
+    required: required.includes(name),
+    description: prop.description as string | undefined,
+    default: prop.default,
+  }));
+}
+
+function SchemaFieldList({ title, fields }: { title: string; fields: ReturnType<typeof parseSchemaToFieldList> }) {
+  return (
+    <div>
+      <Text strong style={{ marginBottom: 8, display: 'block' }}>{title} ({fields.length})</Text>
+      {fields.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无字段" style={{ margin: '12px 0' }} />
+      ) : (
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          {fields.map((f) => (
+            <div
+              key={f.name}
+              style={{
+                border: '1px solid #f0f0f0',
+                borderRadius: 8,
+                padding: '8px 12px',
+                background: '#fff',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
+                  <Space size={4}>
+                    <Text strong style={{ fontSize: 13 }}>{f.name}</Text>
+                    <Tag color="blue" style={{ fontSize: 11 }}>{f.type}</Tag>
+                    {f.required && <Tag color="red" style={{ fontSize: 11 }}>必填</Tag>}
+                  </Space>
+                  {f.description && (
+                    <Text type="secondary" style={{ fontSize: 11 }}>{f.description}</Text>
+                  )}
+                  {f.default !== undefined && (
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                      默认值: {String(f.default)}
+                    </Text>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </Space>
+      )}
+    </div>
+  );
+}
+
+type InputMapping = Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>;
+
 function FunctionNodePanel(props: {
   functionId?: number | null;
   functions: FunctionItem[];
+  nodeKey: string;
+  onUpdate?: (nodeKey: string, inputMapping: InputMapping) => void;
+  upstreamNodes?: Array<{ node_key: string; node_type: string; function_id?: number | null }>;
+  nodeOutputFields?: (node_key: string) => { value: string; label: string }[];
+  initialMapping?: InputMapping | null;
 }) {
   const fn = props.functions.find((f) => f.id === props.functionId);
+  const [inputMapping, setInputMapping] = useState<InputMapping>(props.initialMapping ?? {});
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editSource, setEditSource] = useState<'upstream' | 'custom'>('upstream');
+  const [editSourceNode, setEditSourceNode] = useState('');
+  const [editSourceField, setEditSourceField] = useState('');
+  const [editCustomValue, setEditCustomValue] = useState('');
+
   if (!fn) {
     return <Empty description="未找到关联的函数" />;
   }
+
+  const inputFields = parseSchemaToFieldList(fn.input_schema);
+  const outputFields = parseSchemaToFieldList(fn.output_schema);
+
+  const upstreamOptions = (props.upstreamNodes || []).map((n) => ({
+    value: n.node_key,
+    label: `${n.node_key}${n.node_type === 'start_node' ? ' (开始)' : n.node_type === 'function_node' ? ' (函数)' : n.node_type === 'generate_answer_node' ? ' (回答)' : ''}`,
+  }));
+
+  const fieldOptions = props.nodeOutputFields
+    ? props.nodeOutputFields(editSourceNode)
+    : [];
+
+  const handleStartEdit = (fieldName: string) => {
+    const current = inputMapping[fieldName];
+    setEditingField(fieldName);
+    setEditSource(current?.source || 'upstream');
+    setEditSourceNode(current?.source_node_key || '');
+    setEditSourceField(current?.source_field || '');
+    setEditCustomValue(current?.custom_value || '');
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingField) return;
+    const updated: InputMapping = { ...inputMapping };
+    updated[editingField] = {
+      source: editSource,
+      ...(editSource === 'upstream' ? {
+        source_node_key: editSourceNode || undefined,
+        source_field: editSourceField || undefined,
+      } : {
+        custom_value: editCustomValue || undefined,
+      }),
+    };
+    setInputMapping(updated);
+    setEditingField(null);
+    props.onUpdate?.(props.nodeKey, updated);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingField(null);
+  };
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -754,18 +972,123 @@ function FunctionNodePanel(props: {
         <Text type="secondary">{fn.identifier}</Text>
       </div>
       {fn.description && <Text>{fn.description}</Text>}
+
+      {/* 输入变量值来源配置 */}
       <div>
-        <Text strong>输入 Schema:</Text>
-        <pre style={{ background: '#fafafa', padding: 8, borderRadius: 4, fontSize: 12, maxHeight: 200, overflow: 'auto', marginTop: 4 }}>
-          {JSON.stringify(fn.input_schema, null, 2)}
-        </pre>
+        <Text strong style={{ marginBottom: 8, display: 'block' }}>输入变量配置 ({inputFields.length})</Text>
+        <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 8 }}>
+          为每个输入变量指定值来源，运行时自动从前置节点获取
+        </Text>
+        {inputFields.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无输入变量" style={{ margin: '12px 0' }} />
+        ) : (
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            {inputFields.map((f) => {
+              const mapping = inputMapping[f.name];
+              const isEditing = editingField === f.name;
+              return (
+                <div
+                  key={f.name}
+                  style={{
+                    border: isEditing ? '1px solid #1890ff' : '1px solid #f0f0f0',
+                    borderRadius: 8,
+                    padding: '8px 12px',
+                    background: isEditing ? '#e6f7ff' : '#fff',
+                  }}
+                >
+                  {isEditing ? (
+                    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      <Space>
+                        <Text strong>{f.name}</Text>
+                        <Tag color="blue">{f.type}</Tag>
+                        {f.required && <Tag color="red">必填</Tag>}
+                      </Space>
+                      <Space>
+                        <Text>值来源:</Text>
+                        <Select
+                          value={editSource}
+                          onChange={setEditSource}
+                          style={{ width: 120 }}
+                          options={[
+                            { label: '上游节点', value: 'upstream' },
+                            { label: '自定义值', value: 'custom' },
+                          ]}
+                        />
+                      </Space>
+                      {editSource === 'upstream' && (
+                        <>
+                          <Select
+                            value={editSourceNode || undefined}
+                            onChange={(val) => {
+                              setEditSourceNode(val || '');
+                              setEditSourceField('');
+                            }}
+                            placeholder="选择上游节点"
+                            allowClear
+                            style={{ width: '100%' }}
+                            options={upstreamOptions}
+                          />
+                          <Select
+                            value={editSourceField || undefined}
+                            onChange={(val) => setEditSourceField(val || '')}
+                            placeholder="选择字段（留空=整个输出）"
+                            allowClear
+                            disabled={!editSourceNode}
+                            style={{ width: '100%' }}
+                            options={fieldOptions}
+                          />
+                        </>
+                      )}
+                      {editSource === 'custom' && (
+                        <Input
+                          placeholder="自定义默认值"
+                          value={editCustomValue}
+                          onChange={(e) => setEditCustomValue(e.target.value)}
+                        />
+                      )}
+                      <Space>
+                        <a onClick={handleSaveEdit}>保存修改</a>
+                        <a onClick={handleCancelEdit}>取消</a>
+                      </Space>
+                    </Space>
+                  ) : (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}>
+                        <Space size={4}>
+                          <Text strong style={{ fontSize: 13 }}>{f.name}</Text>
+                          <Tag color="blue" style={{ fontSize: 11 }}>{f.type}</Tag>
+                          {f.required && <Tag color="red" style={{ fontSize: 11 }}>必填</Tag>}
+                        </Space>
+                        {mapping ? (
+                          <div style={{ marginTop: 2 }}>
+                            {mapping.source === 'upstream' && mapping.source_node_key && (
+                              <Text type="secondary" style={{ fontSize: 11 }}>
+                                源: {mapping.source_node_key}{mapping.source_field ? `.${mapping.source_field}` : ''}
+                              </Text>
+                            )}
+                            {mapping.source === 'custom' && mapping.custom_value !== undefined && (
+                              <Text type="secondary" style={{ fontSize: 11 }}>
+                                值: {mapping.custom_value}
+                              </Text>
+                            )}
+                          </div>
+                        ) : (
+                          <Text type="warning" style={{ fontSize: 11, marginTop: 2, display: 'block' }}>
+                            未配置来源
+                          </Text>
+                        )}
+                      </div>
+                      <a onClick={() => handleStartEdit(f.name)}>配置</a>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </Space>
+        )}
       </div>
-      <div>
-        <Text strong>输出 Schema:</Text>
-        <pre style={{ background: '#fafafa', padding: 8, borderRadius: 4, fontSize: 12, maxHeight: 200, overflow: 'auto', marginTop: 4 }}>
-          {JSON.stringify(fn.output_schema, null, 2)}
-        </pre>
-      </div>
+
+      <SchemaFieldList title="输出 Schema" fields={outputFields} />
     </Space>
   );
 }
@@ -886,6 +1209,11 @@ export function NodeDetailDrawer(props: NodeDetailDrawerProps) {
         <FunctionNodePanel
           functionId={props.functionId}
           functions={mergedFunctions}
+          nodeKey={props.nodeKey}
+          onUpdate={props.onUpdateFunctionNode}
+          upstreamNodes={upstreamNodes}
+          nodeOutputFields={nodeOutputFields}
+          initialMapping={props.functionInputMapping ?? null}
         />
       )}
     </Drawer>

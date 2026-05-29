@@ -3,20 +3,31 @@ import { Handle, Position, type NodeProps } from 'reactflow';
 interface StartNodeData {
   node_key: string;
   input_schema?: Record<string, unknown> | null;
+  execution_result?: unknown;
+}
+
+function emitViewResult(nodeKey: string, e: React.MouseEvent) {
+  e.stopPropagation();
+  window.dispatchEvent(new CustomEvent('node-view-result', { detail: { nodeKey } }));
 }
 
 export function StartNode({ data, selected }: NodeProps<StartNodeData>) {
   const varCount = data.input_schema?.properties
     ? Object.keys(data.input_schema.properties).length
     : 0;
+  const hasResult = data.execution_result !== undefined;
 
   return (
     <div
       style={{
         padding: '14px 18px',
-        border: selected ? '2px solid #722ed1' : '1px solid #d3adf7',
+        border: selected
+          ? '2px solid #722ed1'
+          : hasResult
+            ? '2px solid #52c41a'
+            : '1px solid #d3adf7',
         borderRadius: 12,
-        background: `linear-gradient(135deg, #f9f0ff 0%, #fff 100%)`,
+        background: hasResult ? 'linear-gradient(135deg, #f6ffed 0%, #fff 100%)' : 'linear-gradient(135deg, #f9f0ff 0%, #fff 100%)',
         minWidth: 160,
         boxShadow: selected ? '0 2px 12px rgba(114, 46, 209, 0.25)' : '0 1px 4px rgba(114, 46, 209, 0.1)',
         cursor: 'pointer',
@@ -59,10 +70,39 @@ export function StartNode({ data, selected }: NodeProps<StartNodeData>) {
           <span style={{ fontSize: 14, fontWeight: 600, color: '#391085' }}>
             开始
           </span>
+          {hasResult && (
+            <span
+              onClick={(e) => emitViewResult(data.node_key, e)}
+              style={{
+                fontSize: 11,
+                color: '#1890ff',
+                cursor: 'pointer',
+                marginLeft: 'auto',
+                textDecoration: 'underline',
+              }}
+            >
+              查看结果
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 11, color: '#9254de', background: '#f0e6ff', borderRadius: 4, padding: '2px 6px', alignSelf: 'flex-start' }}>
           {varCount} 个输入变量
         </div>
+        {hasResult && (
+          <div style={{
+            fontSize: 11,
+            color: '#389e0d',
+            background: '#f6ffed',
+            borderRadius: 4,
+            padding: '2px 6px',
+            marginTop: 4,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}>
+            ✓ 已运行
+          </div>
+        )}
       </div>
     </div>
   );

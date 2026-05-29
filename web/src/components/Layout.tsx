@@ -20,7 +20,7 @@ import {
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 
-const { Header, Sider, Content } = Layout;
+const { Header, Content } = Layout;
 const { Text } = Typography;
 
 const AppLayout: React.FC = () => {
@@ -147,37 +147,38 @@ const AppLayout: React.FC = () => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider theme="light" breakpoint="lg" collapsedWidth="80">
-        <div style={{ padding: '16px', textAlign: 'center' }}>
-          <Text strong style={{ fontSize: '18px' }}>
-            Admin Center
-          </Text>
-        </div>
+      <Header
+        style={{
+          padding: '0 24px',
+          background: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '24px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
+          width: '100%',
+        }}
+      >
+        <Text strong style={{ fontSize: '18px', whiteSpace: 'nowrap' }}>
+          Admin Center
+        </Text>
         <Menu
-          mode="inline"
+          mode="horizontal"
           selectedKeys={[location.pathname]}
-          defaultOpenKeys={['business', 'agent-os', 'system']}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
+          style={{ border: 'none', flex: 1, minWidth: 0 }}
         />
-      </Sider>
+        <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+          <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <Avatar icon={<UserOutlined />} />
+            <Text style={{ marginLeft: '8px' }}>{user?.nickname}</Text>
+          </div>
+        </Dropdown>
+      </Header>
       <Layout>
-        <Header
-          style={{
-            padding: '0 24px',
-            background: '#fff',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-          }}
-        >
-          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-              <Avatar icon={<UserOutlined />} />
-              <Text style={{ marginLeft: '8px' }}>{user?.nickname}</Text>
-            </div>
-          </Dropdown>
-        </Header>
         <Content style={{ margin: '24px 16px', padding: 24, background: '#fff' }}>
           <Outlet />
         </Content>

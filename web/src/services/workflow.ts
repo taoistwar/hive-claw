@@ -33,7 +33,7 @@ export interface GraphNode {
   input_schema?: Record<string, unknown> | null;
   start_description?: string | null;
   output_schema?: Record<string, unknown> | null;
-  node_config?: AnswerNodeConfig | null;
+  node_config?: AnswerNodeConfig | Record<string, unknown> | null;
 }
 
 export interface AnswerNodeConfig {

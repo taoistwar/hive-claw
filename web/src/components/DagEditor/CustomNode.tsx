@@ -7,22 +7,27 @@ interface CustomNodeData {
   execution_result?: unknown;
 }
 
+function emitViewResult(nodeKey: string, e: React.MouseEvent) {
+  e.stopPropagation();
+  window.dispatchEvent(new CustomEvent('node-view-result', { detail: { nodeKey } }));
+}
+
 export function CustomNode({ data, selected }: NodeProps<CustomNodeData>) {
   const hasResult = data.execution_result !== undefined;
   
   return (
     <div
       style={{
-        padding: '12px 16px',
+        padding: '14px 18px',
         border: selected 
           ? '2px solid #1890ff' 
           : hasResult 
             ? '2px solid #52c41a' 
             : '1px solid #91caff',
-        borderRadius: 8,
-        background: hasResult ? '#f6ffed' : '#fff',
-        minWidth: 120,
-        boxShadow: selected ? '0 2px 8px rgba(24, 144, 255, 0.3)' : 'none',
+        borderRadius: 12,
+        background: hasResult ? 'linear-gradient(135deg, #f6ffed 0%, #fff 100%)' : 'linear-gradient(135deg, #e6f7ff 0%, #fff 100%)',
+        minWidth: 160,
+        boxShadow: selected ? '0 2px 12px rgba(24, 144, 255, 0.25)' : '0 1px 4px rgba(24, 144, 255, 0.1)',
         position: 'relative',
       }}
     >
@@ -42,11 +47,43 @@ export function CustomNode({ data, selected }: NodeProps<CustomNodeData>) {
       }}>
         输入
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: '#333', wordBreak: 'break-all' }}>
-          {data.function_name || '未命名函数'}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #1890ff, #69b1ff)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              fontSize: 14,
+            }}
+          >
+            ⚙
+          </div>
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#003eb3', wordBreak: 'break-all' }}>
+            {data.function_name || '未命名函数'}
+          </span>
+          {hasResult && (
+            <span
+              onClick={(e) => emitViewResult(data.node_key, e)}
+              style={{
+                fontSize: 11,
+                color: '#1890ff',
+                cursor: 'pointer',
+                marginLeft: 'auto',
+                textDecoration: 'underline',
+                flexShrink: 0,
+              }}
+            >
+              查看结果
+            </span>
+          )}
         </div>
-        <div style={{ fontSize: 12, color: '#999' }}>
+        <div style={{ fontSize: 11, color: '#69b1ff', background: '#e6f7ff', borderRadius: 4, padding: '2px 6px', alignSelf: 'flex-start' }}>
           {data.node_key}
         </div>
         {hasResult && (

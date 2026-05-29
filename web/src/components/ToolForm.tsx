@@ -4,6 +4,7 @@ import { ToolItem, CreateTool, UpdateTool, listTags, TagItem } from '../services
 import { listFunctions, type FunctionItem } from '../services/function';
 import { listCategoriesFlat, type CategoryItem } from '../services/category';
 import { listCapabilities, type CapabilityItem } from '../services/capability';
+import { listWorkflows, type WorkflowMeta } from '../services/workflow';
 
 interface ToolFormProps {
   visible: boolean;
@@ -40,6 +41,8 @@ const ToolForm: React.FC<ToolFormProps> = ({
   const [loadingCategories, setLoadingCategories] = useState(false);
   const [capabilities, setCapabilities] = useState<CapabilityItem[]>([]);
   const [loadingCapabilities, setLoadingCapabilities] = useState(false);
+  const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
+  const [loadingWorkflows, setLoadingWorkflows] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
@@ -70,6 +73,12 @@ const ToolForm: React.FC<ToolFormProps> = ({
       .then((res) => setCapabilities(res))
       .catch(() => {})
       .finally(() => setLoadingCapabilities(false));
+
+    setLoadingWorkflows(true);
+    listWorkflows({ limit: 500 })
+      .then((res) => setWorkflows(res.items))
+      .catch(() => {})
+      .finally(() => setLoadingWorkflows(false));
   }, [visible]);
 
   useEffect(() => {
@@ -360,10 +369,48 @@ const ToolForm: React.FC<ToolFormProps> = ({
                 getFieldValue('kind') === 2 ? (
                   <Form.Item
                     name="workflow_id"
-                    label="Workflow ID"
-                    rules={[{ required: true, message: '请输入Workflow ID' }]}
+                    label="Workflow"
+                    rules={[{ required: true, message: '请选择Workflow' }]}
                   >
-                    <Input type="number" />
+                    <Select
+                      placeholder="选择Workflow"
+                      options={workflows.map((w) => ({
+                        label: `${w.name}(${w.id})`,
+                        value: w.id,
+                      }))}
+                      showSearch
+                      filterOption={(input, option) => {
+                        const w = workflows.find((wf) => wf.id === option?.value);
+                        if (!w) return false;
+                        const searchText = `${w.name} ${w.description || ''}`.toLowerCase();
+                        return searchText.includes(input.toLowerCase());
+                      }}
+                      disabled={isEditing}
+                      loading={loadingWorkflows}
+                      notFoundContent={loadingWorkflows ? <Spin size="small" /> : '无可用Workflow'}
+                      onChange={(workflowId: number) => {
+                        if (isEditing) return;
+                        const wf = workflows.find((w) => w.id === workflowId);
+                        if (wf) {
+                          form.setFieldsValue({
+                            input_schema: wf.input_schema
+                              ? JSON.stringify(wf.input_schema, null, 2)
+                              : '',
+                            output_schema: wf.output_schema
+                              ? JSON.stringify(wf.output_schema, null, 2)
+                              : '',
+                          });
+                        }
+                      }}
+                      optionRender={(option) => (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span>{option.label}</span>
+                          <span style={{ fontSize: 12, color: '#999' }}>
+                            {workflows.find((w) => w.id === option.value)?.description || '无描述'}
+                          </span>
+                        </div>
+                      )}
+                    />
                   </Form.Item>
                 ) : null
               }

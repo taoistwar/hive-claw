@@ -434,18 +434,49 @@ pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, App
     all_nodes.extend(db_nodes);
     all_nodes.push(end_node);
 
+    // 构建 DB 边列表
+    let mut graph_edges: Vec<GraphEdge> = edges
+        .into_iter()
+        .map(|e| GraphEdge {
+            id: Some(e.id),
+            src_node_key: id_to_key.get(&e.src_node_id).cloned().unwrap_or_default(),
+            dst_node_key: id_to_key.get(&e.dst_node_id).cloned().unwrap_or_default(),
+            mapping: e.mapping,
+        })
+        .collect();
+
+    // 重建连接 start/end 虚拟节点的边
+    // - 没有入边的 db 节点 → 从 start 连过来
+    // - 没有出边的 db 节点 → 连到 end
+    let has_inbound: HashSet<String> = graph_edges.iter().map(|e| e.dst_node_key.clone()).collect();
+    let has_outbound: HashSet<String> = graph_edges.iter().map(|e| e.src_node_key.clone()).collect();
+    let empty_mapping = serde_json::json!({});
+    for n in &all_nodes {
+        if n.node_key == "start" || n.node_key == "end" {
+            continue;
+        }
+        if !has_inbound.contains(&n.node_key) {
+            graph_edges.push(GraphEdge {
+                id: None,
+                src_node_key: "start".to_string(),
+                dst_node_key: n.node_key.clone(),
+                mapping: empty_mapping.clone(),
+            });
+        }
+        if !has_outbound.contains(&n.node_key) {
+            graph_edges.push(GraphEdge {
+                id: None,
+                src_node_key: n.node_key.clone(),
+                dst_node_key: "end".to_string(),
+                mapping: empty_mapping.clone(),
+            });
+        }
+    }
+
     Ok(WorkflowGraph {
         workflow: wf,
         nodes: all_nodes,
-        edges: edges
-            .into_iter()
-            .map(|e| GraphEdge {
-                id: Some(e.id),
-                src_node_key: id_to_key.get(&e.src_node_id).cloned().unwrap_or_default(),
-                dst_node_key: id_to_key.get(&e.dst_node_id).cloned().unwrap_or_default(),
-                mapping: e.mapping,
-            })
-            .collect(),
+        edges: graph_edges,
     })
 }
 

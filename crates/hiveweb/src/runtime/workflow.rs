@@ -62,16 +62,16 @@ impl WorkflowExecutor {
         invoking_agent_id: i64,
     ) -> Result<HashMap<String, Value>, WorkflowError> {
         // 1. Load workflow + nodes + edges
-        let wf_row: Option<(i32,)> = sqlx::query_as(
-            "SELECT timeout_ms FROM workflows WHERE id = ?",
+        let wf_row: Option<(i32, Option<Value>)> = sqlx::query_as(
+            "SELECT timeout_ms, output_schema FROM workflows WHERE id = ?",
         )
         .bind(workflow_id)
         .fetch_optional(&deps.pool)
         .await
         .map_err(|e| WorkflowError::LoadFailed(format!("{e}")))?;
-        let timeout_ms = wf_row
-            .ok_or(WorkflowError::NotFound(workflow_id))?
-            .0 as u64;
+        let (timeout_ms, output_schema) = wf_row
+            .ok_or(WorkflowError::NotFound(workflow_id))
+            .map(|(t, os)| (t as u64, os))?;
 
         let nodes: Vec<(i64, String, Option<i64>, String, Option<Value>)> = sqlx::query_as(
             "SELECT id, node_key, function_id, COALESCE(node_type, 'function_node'), node_config FROM workflow_nodes WHERE workflow_id = ?",
@@ -122,7 +122,13 @@ impl WorkflowExecutor {
             inbound.entry(dst_key).or_default().push((src_key, m));
         }
 
-        // 3. Topological layer execution with overall timeout
+        // 3. Workflow 执行时授予全部 capability 权限（与 Tool 测试行为一致）
+        let agent_perms: Vec<String> = crate::runtime::capability::CAPABILITIES
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect();
+
+        // 4. Topological layer execution with overall timeout
         let result = timeout(
             Duration::from_millis(timeout_ms),
             run_layers(
@@ -137,13 +143,50 @@ impl WorkflowExecutor {
                 external_input,
                 invoking_agent_id,
                 workflow_id,
+                &agent_perms,
             ),
         )
         .await;
-        match result {
+        let mut outputs = match result {
             Ok(r) => r,
-            Err(_) => Err(WorkflowError::Timeout(timeout_ms)),
+            Err(_) => return Err(WorkflowError::Timeout(timeout_ms)),
+        };
+
+        // 5. Build "end" node output: 从上游节点输出中按 output_schema 提取字段
+        if let Some(ref schema) = output_schema {
+            let schema_fields: Vec<String> = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|props| props.keys().cloned().collect())
+                .unwrap_or_default();
+
+            if !schema_fields.is_empty() {
+                // 找到没有下游 DB 边的节点（它们连接到 end）
+                let final_node_keys: Vec<&str> = nodes
+                    .iter()
+                    .filter(|(_, k, _, _, _)| !succ.contains_key(k.as_str()))
+                    .map(|(_, k, _, _, _)| k.as_str())
+                    .collect();
+
+                let mut end_output = serde_json::Map::new();
+                for nk in &final_node_keys {
+                    if let Some(result) = outputs.get(*nk) {
+                        if let Value::Object(obj) = result {
+                            for field in &schema_fields {
+                                if let Some(val) = obj.get(field) {
+                                    end_output.insert(field.clone(), val.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                if !end_output.is_empty() {
+                    outputs.insert("end".to_string(), Value::Object(end_output));
+                }
+            }
         }
+
+        Ok(outputs)
     }
 }
 
@@ -160,6 +203,7 @@ async fn run_layers(
     external_input: Value,
     invoking_agent_id: i64,
     workflow_id: i64,
+    agent_perms: &[String],
 ) -> Result<HashMap<String, Value>, WorkflowError> {
     let mut outputs: HashMap<String, Value> = HashMap::new();
     let mut remaining: HashSet<String> = nodes.iter().map(|(_, k, _, _, _)| k.clone()).collect();
@@ -184,7 +228,8 @@ async fn run_layers(
         // 并行执行同层节点
         let mut futures = Vec::with_capacity(layer.len());
         for node_key in &layer {
-            let node_input = build_node_input(node_key, inbound, &outputs, &external_input)
+            let node_config = key_to_node_config.get(node_key.as_str()).cloned().flatten();
+            let node_input = build_node_input(node_key, inbound, &outputs, &external_input, node_config.as_ref())
                 .map_err(|e| WorkflowError::MappingResolve {
                     node_key: node_key.clone(),
                     field: e.0,
@@ -196,9 +241,8 @@ async fn run_layers(
             let function_id_opt = *key_to_function
                 .get(node_key)
                 .ok_or_else(|| WorkflowError::MissingFunction(node_key.clone()))?;
-            let node_config = key_to_node_config.get(node_key.as_str()).cloned().flatten();
             let nk = node_key.clone();
-            futures.push(execute_node(deps, function_id_opt, node_type.to_string(), node_config, nk, node_input, invoking_agent_id, workflow_id));
+            futures.push(execute_node(deps, function_id_opt, node_type.to_string(), node_config, nk, node_input, invoking_agent_id, workflow_id, agent_perms));
         }
 
         let results = futures::future::join_all(futures).await;
@@ -237,10 +281,51 @@ fn build_node_input(
     inbound: &HashMap<String, Vec<(String, Map<String, Value>)>>,
     outputs: &HashMap<String, Value>,
     external_input: &Value,
+    node_config: Option<&Value>,
 ) -> Result<Value, (String, String)> {
     let edges = inbound.get(node_key);
     if edges.is_none() || edges.unwrap().is_empty() {
-        // 入口节点：直接喂外部输入
+        // 入口节点：检查 node_config 中是否有 input_mapping 用于映射 start → field
+        if let Some(cfg) = node_config {
+            if let Some(mapping) = cfg.get("input_mapping") {
+                if let Value::Object(map) = mapping {
+                    let mut input = Map::new();
+                    for (field, m) in map {
+                        if let Value::Object(src_cfg) = m {
+                            let source = src_cfg.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                            if source == "upstream" {
+                                if let Some(snk) = src_cfg.get("source_node_key").and_then(|v| v.as_str()) {
+                                    if snk == "start" {
+                                        // 从 external_input 中取对应字段
+                                        let src_field = src_cfg.get("source_field").and_then(|v| v.as_str());
+                                        if let Value::Object(ext) = external_input {
+                                            if let Some(src_field) = src_field {
+                                                if let Some(val) = ext.get(src_field) {
+                                                    input.insert(field.clone(), val.clone());
+                                                }
+                                            } else {
+                                                // 无 source_field：用字段名在 external_input 中查找
+                                                if let Some(val) = ext.get(field.as_str()) {
+                                                    input.insert(field.clone(), val.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if source == "custom" {
+                                if let Some(cv) = src_cfg.get("custom_value") {
+                                    input.insert(field.clone(), cv.clone());
+                                }
+                            }
+                        }
+                    }
+                    if !input.is_empty() {
+                        return Ok(Value::Object(input));
+                    }
+                }
+            }
+        }
+        // 默认：入口节点直接喂外部输入
         return Ok(external_input.clone());
     }
     let mut input = Map::new();
@@ -259,7 +344,12 @@ fn build_node_input(
                 None => return Err((field.to_string(), "mapping value is not a string".into())),
             };
             // path: "<src_node_key>.output.<...>" or shorthand "output.<...>"
-            let resolved = resolve_src_path(path, src_key, outputs)?;
+            // start 是虚拟节点，其"输出"就是 external_input
+            let resolved = if src_key == "start" {
+                resolve_from_external(path, external_input)?
+            } else {
+                resolve_src_path(path, src_key, outputs)?
+            };
             input.insert(field.to_string(), resolved);
         }
     }
@@ -306,6 +396,32 @@ fn resolve_src_path(
     Ok(current.clone())
 }
 
+/// 解析 start 节点的虚拟输出：从 external_input 中取值
+/// path 格式: "start.output.<field>"  — 从中提取 <field> 并在 external_input 中查找
+fn resolve_from_external(
+    path: &str,
+    external_input: &Value,
+) -> Result<Value, (String, String)> {
+    // path: "start.output.query" → 提取 "query"
+    let field = if let Some(r) = path.strip_prefix("start.output.") {
+        r
+    } else if let Some(r) = path.strip_prefix("output.") {
+        r
+    } else {
+        return Err((
+            path.to_string(),
+            "expected 'start.output.<field>' or 'output.<field>' for start mapping".into(),
+        ));
+    };
+    if let Value::Object(ext) = external_input {
+        ext.get(field)
+            .cloned()
+            .ok_or_else(|| (path.to_string(), format!("external input missing field '{field}'")))
+    } else {
+        Err((path.to_string(), "external input is not an object".into()))
+    }
+}
+
 /// Execute a single node. For answer nodes (function_id=None), generate a response using LLM.
 async fn execute_node(
     deps: &ExecutorDeps,
@@ -316,6 +432,7 @@ async fn execute_node(
     input: Value,
     invoking_agent_id: i64,
     workflow_id: i64,
+    agent_perms: &[String],
 ) -> Result<(String, Value), WorkflowError> {
     let _ = workflow_id;
 
@@ -379,7 +496,7 @@ async fn execute_node(
         agent_id: invoking_agent_id,
         plugin_id,
         function_id: Some(function_id),
-        permissions: vec![],
+        permissions: agent_perms.to_vec(),
     };
     let out_str = deps
         .invoker

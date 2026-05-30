@@ -64,7 +64,7 @@ pub async fn run_skill_test(
     }
 
     // 2. 加载 all tools（全部工具暴露给 Skill 测试，让 Skill 有机会调用任何工具）
-    let tool_rows: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<String>)> =
+    let tool_rows: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<Value>)> =
         sqlx::query_as(
             r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
@@ -84,7 +84,7 @@ pub async fn run_skill_test(
             let is_builtin = kind == 1 && pid.is_none();
             let is_meta = kind == 1 && fid.is_none();
             let required_capabilities: Vec<String> = caps_raw
-                .and_then(|s| serde_json::from_str(&s).ok())
+                .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
             ToolRef {
                 id,
@@ -125,13 +125,19 @@ pub async fn run_skill_test(
     system_prompt.push_str("\n\n--- TARGET SKILL TO TEST ---\n\n");
     system_prompt.push_str(&skill_content);
 
+    // 测试模式：授予所有 capability 权限，以便插件能自由调用 network.http 等能力
+    let permissions: Vec<String> = crate::runtime::capability::CAPABILITIES
+        .iter()
+        .map(|c| c.name.to_string())
+        .collect();
+
     let ctx = AgentContext {
         agent_id: 0, // 测试模式，不需要真实 agent_id
         identifier: format!("test_skill_{}", skill_id),
         system_prompt,
         model_preset: req.model_preset,
         tools,
-        permissions: vec![],
+        permissions,
         children: vec![],
     };
 
@@ -157,7 +163,7 @@ pub async fn run_skill_test(
     };
 
     let llm_started = Instant::now();
-    let resp = provider.chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None).await;
+    let resp = provider.chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None, None).await;
     let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
 
     if resp.is_error() {

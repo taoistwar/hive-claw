@@ -17,6 +17,7 @@ import {
   ApartmentOutlined,
   FileTextOutlined,
   KeyOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 
@@ -59,6 +60,11 @@ const AppLayout: React.FC = () => {
                   key: '/agents',
                   icon: <RobotOutlined />,
                   label: 'Agents',
+                },
+                {
+                  key: '/chat',
+                  icon: <MessageOutlined />,
+                  label: '聊天',
                 },
                 {
                   key: '/skills',

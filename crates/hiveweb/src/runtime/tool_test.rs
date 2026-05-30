@@ -6,6 +6,7 @@ use providers::{ChatRequest, RetryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use super::orchestrator::{
@@ -17,6 +18,7 @@ use crate::services::runtime_audit::{self, AuditRecord};
 pub struct TestToolRequest {
     pub message: String,
     pub model_preset: Option<String>,
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,14 +42,64 @@ pub struct TestToolCallOutcome {
     pub error: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct DebugLogger {
+    trace_id: Option<String>,
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl DebugLogger {
+    pub fn new(trace_id: Option<String>) -> Self {
+        Self {
+            trace_id,
+            lines: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn log(&self, msg: &str) {
+        let line = format!("[tool_test] {}", msg);
+        let is_dev = std::env::var("APP_ENV")
+            .map(|v| v == "development" || v == "dev")
+            .unwrap_or(true);
+        if is_dev {
+            if let Some(ref tid) = self.trace_id {
+                let _ = std::fs::create_dir_all("/tmp/tool_test_logs");
+                let path = format!("/tmp/tool_test_logs/{}.log", tid);
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "{}", line)
+                    });
+            }
+        }
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.push(line.clone());
+        }
+        println!("{}", line);
+    }
+
+    pub fn dump(&self) -> String {
+        self.lines.lock().map(|l| l.join("\n")).unwrap_or_default()
+    }
+
+    pub fn trace_id(&self) -> Option<&str> {
+        self.trace_id.as_deref()
+    }
+}
+
 pub async fn run_tool_test(
     pool: &MySqlPool,
     deps: &OrchestratorDeps,
     tool_id: i64,
     req: TestToolRequest,
 ) -> Result<TestToolResult, String> {
+    let logger = DebugLogger::new(req.trace_id.clone());
+    logger.log(&format!("START tool_id={} message={}", tool_id, req.message));
     // 1. 查询目标 tool
-    let tool_row: Option<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<String>)> =
+    let tool_row: Option<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<Value>)> =
         sqlx::query_as(
             r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
@@ -63,15 +115,17 @@ pub async fn run_tool_test(
         .map_err(|e| format!("tool lookup: {e}"))?;
 
     let Some((tid, t_ident, t_name, t_desc, t_kind, t_fid, t_wid, t_input_schema, t_plugin_id, t_plugin_export, t_caps_raw)) = tool_row else {
+        logger.log(&format!("FAIL: tool id={} not found", tool_id));
         return Err(format!("tool id={tool_id} not found"));
     };
+    logger.log(&format!("STEP1 OK: tool found id={} identifier={} kind={}", tid, t_ident, t_kind));
 
     let t_caps: Vec<String> = t_caps_raw
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 
     // 2. 加载 always tools（排除目标 tool 避免重复）
-    let always_tools: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<String>)> =
+    let always_tools: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<Value>)> =
         sqlx::query_as(
             r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
@@ -85,6 +139,7 @@ pub async fn run_tool_test(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("always tools: {e}"))?;
+    logger.log(&format!("STEP2 OK: loaded {} always_tools", always_tools.len()));
 
     // 3. 构建 ToolRef 列表
     let mut tools: Vec<ToolRef> = Vec::new();
@@ -109,7 +164,7 @@ pub async fn run_tool_test(
         let is_builtin = kind == 1 && pid.is_none();
         let is_meta = kind == 1 && fid.is_none();
         let required_capabilities: Vec<String> = caps_raw
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
         tools.push(ToolRef {
             id,
@@ -135,6 +190,7 @@ pub async fn run_tool_test(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("always skills: {e}"))?;
+    logger.log(&format!("STEP3 OK: loaded {} skills", skills.len()));
 
     let mut system_prompt = "You are a test assistant. Use the available tools when appropriate.".to_string();
     for (md,) in &skills {
@@ -157,10 +213,12 @@ pub async fn run_tool_test(
         permissions,
         children: vec![],
     };
+    logger.log(&format!("STEP4 OK: AgentContext built, tools_count={}", ctx.tools.len()));
 
     // 5. 构建 LLM request
     let (provider, model) = deps.llm.build_primary(ctx.model_preset.as_deref())
         .map_err(|e| format!("LLM provider: {e}"))?;
+    logger.log(&format!("STEP5 OK: LLM provider built, model={}", model));
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
 
@@ -178,13 +236,19 @@ pub async fn run_tool_test(
         tool_choice: None,
         reasoning_effort: None,
     };
+    logger.log(&format!("STEP6 OK: chat_req built, has_tools={}", chat_req.tools.is_some()));
 
     let llm_started = Instant::now();
-    let resp = provider.chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None).await;
+    logger.log("STEP7: calling chat_stream_with_retry...");
+    let resp = provider.chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None, None).await;
     let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
+    logger.log(&format!("STEP7 DONE: LLM responded in {}ms, is_error={}, content_len={}",
+        llm_elapsed_ms, resp.is_error(),
+        resp.content.as_ref().map(|s| s.len()).unwrap_or(0)));
 
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
+        logger.log(&format!("FAIL: LLM error: {}", err_msg));
         runtime_audit::record(
             pool,
             AuditRecord {
@@ -222,26 +286,31 @@ pub async fn run_tool_test(
         },
     )
     .await;
+    logger.log(&format!("STEP7 OK: LLM success, tool_calls_count={}", resp.tool_calls.len()));
 
     let assistant_content = resp.content.unwrap_or_default();
     let tool_calls = resp.tool_calls;
 
     if tool_calls.is_empty() {
+        logger.log("STEP8 OK: no tool_calls, returning direct response");
         return Ok(TestToolResult {
             assistant_content,
             has_tool_calls: false,
             tool_calls: vec![],
         });
     }
+    logger.log(&format!("STEP8: executing {} tool_calls", tool_calls.len()));
 
     // 6. 执行工具调用
     let mut records = Vec::new();
-    for tc in tool_calls {
+    for (idx, tc) in tool_calls.iter().enumerate() {
         let tool_name = tc.name.clone();
         let args = tc.arguments.clone();
+        logger.log(&format!("STEP9.{}: executing tool '{}' with args={}", idx, tool_name, serde_json::to_string(&args).unwrap_or_default()));
 
         let tool_ref = ctx.tools.iter().find(|t| t.identifier == tc.name);
         let Some(tool_ref) = tool_ref else {
+            logger.log(&format!("STEP9.{}: FAIL: tool '{}' not found in context", idx, tc.name));
             records.push(TestToolCallRecord {
                 tool_name,
                 arguments: Value::Object(args),
@@ -253,8 +322,11 @@ pub async fn run_tool_test(
             });
             continue;
         };
+        logger.log(&format!("STEP9.{}: tool_ref found, kind={}", idx, tool_ref.kind));
 
-        let outcome = handle_workspace_tool(deps, &ctx, tool_ref, &tc, 0).await;
+        let outcome = handle_workspace_tool(deps, &ctx, tool_ref, tc, 0).await;
+        logger.log(&format!("STEP9.{}: handle_workspace_tool returned, payload_keys={:?}",
+            idx, outcome.payload.as_object().map(|o| o.keys().collect::<Vec<_>>()).unwrap_or_default()));
 
         let (success, content, error) = match outcome {
             o if matches!(o.payload, Value::Object(_)) && !o.payload.get("error").is_some() => {
@@ -277,6 +349,7 @@ pub async fn run_tool_test(
         });
     }
 
+    logger.log(&format!("DONE: returning {} tool_call_records", records.len()));
     Ok(TestToolResult {
         assistant_content,
         has_tool_calls: true,

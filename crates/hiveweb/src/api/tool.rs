@@ -159,8 +159,13 @@ async fn delete_tool(
 async fn test_tool(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(req): Json<TestToolRequest>,
+    Json(mut req): Json<TestToolRequest>,
 ) -> Result<ApiResponse<test_svc::TestToolResult>, ApiResponse<()>> {
+    let trace_id = req.trace_id.take().unwrap_or_else(|| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        format!("tool_test_{}", ts)
+    });
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: state.pool.clone(),
         s3: state.s3.clone(),
@@ -168,9 +173,17 @@ async fn test_tool(
         registry: state.runtime_state.capabilities.clone(),
         invoker: state.runtime_state.invoker.clone(),
     };
-    match test_svc::run_tool_test(&state.pool, &deps, id, req).await {
+    let req_with_trace = test_svc::TestToolRequest {
+        message: req.message,
+        model_preset: req.model_preset,
+        trace_id: Some(trace_id.clone()),
+    };
+    match test_svc::run_tool_test(&state.pool, &deps, id, req_with_trace).await {
         Ok(result) => Ok(ApiResponse::success(result)),
-        Err(e) => Err(ApiResponse::err(5000, e)),
+        Err(e) => {
+            let log_path = format!("/tmp/tool_test_logs/{}.log", trace_id);
+            Err(ApiResponse::err(5000, format!("{} (debug: {})", e, log_path)))
+        }
     }
 }
 

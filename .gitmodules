@@ -1,7 +1,3 @@
-
 [submodule "nanobot"]
 	path = nanobot
 	url = https://ghfast.top/https://github.com/taoistwar/nanobot.git
-[submodule "langfuse-python"]
-	path = langfuse-python
-	url = https://ghfast.top/https://github.com/langfuse/langfuse-python.git

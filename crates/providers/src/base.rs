@@ -159,7 +159,7 @@ impl GenerationSettings {
 }
 
 /// Optional tool-selection strategy passed to `chat`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum ToolChoice {
     Auto,
     Required,
@@ -901,13 +901,23 @@ pub trait LLMProvider: Send + Sync {
         // --- Langfuse instrumentation (non-blocking) ---
         let lf = get_langfuse_client();
         langfuse::lf_debug!("chat_with_retry: get_langfuse_client returned {}", if lf.is_some() { "Some" } else { "None" });
-        let trace_input = serde_json::to_value(&req.messages).unwrap_or(Value::Null);
-        let trace = lf.map(|c| c.trace("chat_with_retry", Some(trace_input)));
+        let full_request = json!({
+            "model": req.model,
+            "messages": req.messages,
+            "tools": req.tools,
+            "tool_choice": req.tool_choice,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "reasoning_effort": req.reasoning_effort,
+        });
+        let trace = lf.map(|c| c.trace("chat_with_retry", Some(full_request.clone())));
         langfuse::lf_debug!("chat_with_retry: trace created, is_some={}", trace.is_some());
         let model_params = json!({
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
             "reasoning_effort": req.reasoning_effort,
+            "tools": req.tools.as_ref(),
+            "tool_choice": req.tool_choice.as_ref(),
         });
         let gen_handle = trace.as_ref().map(|t| {
             langfuse::lf_debug!("chat_with_retry: creating generation under trace_id={} model={:?}",
@@ -915,7 +925,7 @@ pub trait LLMProvider: Send + Sync {
             t.generation(
                 "LLM Chat",
                 req.model.clone(),
-                Some(serde_json::to_value(&req.messages).unwrap_or(Value::Null)),
+                Some(full_request),
                 Some(model_params),
             )
         });
@@ -952,6 +962,7 @@ pub trait LLMProvider: Send + Sync {
                 let output = build_langfuse_output(&response);
                 if let Some(g) = gen_handle {
                     langfuse::lf_debug!("chat_with_retry: calling gen_handle.end() success path, usage={:?}", usage);
+                    g.emit_tools_from_output(&output);
                     g.end(
                         Some(output.clone()),
                         usage,
@@ -997,6 +1008,7 @@ pub trait LLMProvider: Send + Sync {
                     let output = build_langfuse_output(&result);
                     if let Some(g) = gen_handle {
                         langfuse::lf_debug!("chat_with_retry: ending generation after image strip, is_error={}", result.finish_reason == "error");
+                        g.emit_tools_from_output(&output);
                         g.end(
                             Some(output.clone()),
                             usage,
@@ -1039,6 +1051,7 @@ pub trait LLMProvider: Send + Sync {
                 let usage = extract_usage_tuple(&response.usage);
                 if let Some(g) = gen_handle {
                     langfuse::lf_debug!("chat_with_retry: ending generation persistent retry limit path");
+                    g.emit_tools_from_output(&build_langfuse_output(&response));
                     g.end(
                         response.content.clone().map(|c| Value::String(c)),
                         usage,
@@ -1090,8 +1103,10 @@ pub trait LLMProvider: Send + Sync {
         let usage = extract_usage_tuple(&final_response.usage);
         if let Some(g) = gen_handle {
             langfuse::lf_debug!("chat_with_retry: ending generation final error path, usage={:?}", usage);
+            let final_output = build_langfuse_output(&final_response);
+            g.emit_tools_from_output(&final_output);
             g.end(
-                Some(build_langfuse_output(&final_response)),
+                Some(final_output),
                 usage,
                 Some(final_response.finish_reason.clone()),
                 true,
@@ -1117,14 +1132,24 @@ pub trait LLMProvider: Send + Sync {
         let lf = get_langfuse_client();
         langfuse::lf_debug!("chat_stream_with_retry: get_langfuse_client returned {}", if lf.is_some() { "Some" } else { "None" });
         log::info!("Langfuse client available: {}", lf.is_some());
-        let trace_input = serde_json::to_value(&req.messages).unwrap_or(Value::Null);
-        let trace = lf.map(|c| c.trace("chat_stream_with_retry", Some(trace_input)));
+        let full_request = json!({
+            "model": req.model,
+            "messages": req.messages,
+            "tools": req.tools,
+            "tool_choice": req.tool_choice,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "reasoning_effort": req.reasoning_effort,
+        });
+        let trace = lf.map(|c| c.trace("chat_stream_with_retry", Some(full_request.clone())));
         langfuse::lf_debug!("chat_stream_with_retry: trace created, is_some={}", trace.is_some());
         log::info!("Langfuse trace handle created: {}", trace.is_some());
         let model_params = json!({
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
             "reasoning_effort": req.reasoning_effort,
+            "tools": req.tools.as_ref(),
+            "tool_choice": req.tool_choice.as_ref(),
         });
         let gen_handle = trace.as_ref().map(|t| {
             langfuse::lf_debug!("chat_stream_with_retry: creating generation under trace_id={} model={:?}",
@@ -1132,7 +1157,7 @@ pub trait LLMProvider: Send + Sync {
             t.generation(
                 "LLM Chat (stream)",
                 req.model.clone(),
-                Some(serde_json::to_value(&req.messages).unwrap_or(Value::Null)),
+                Some(full_request),
                 Some(model_params),
             )
         });
@@ -1169,6 +1194,7 @@ pub trait LLMProvider: Send + Sync {
                 let output = build_langfuse_output(&response);
                 if let Some(g) = gen_handle {
                     langfuse::lf_debug!("chat_stream_with_retry: calling gen_handle.end() success path, usage={:?}", usage);
+                    g.emit_tools_from_output(&output);
                     g.end(
                         Some(output.clone()),
                         usage,
@@ -1212,6 +1238,7 @@ pub trait LLMProvider: Send + Sync {
                     let output = build_langfuse_output(&result);
                     if let Some(g) = gen_handle {
                         langfuse::lf_debug!("chat_stream_with_retry: ending generation after image strip, is_error={}", result.finish_reason == "error");
+                        g.emit_tools_from_output(&output);
                         g.end(
                             Some(output.clone()),
                             usage,
@@ -1254,6 +1281,7 @@ pub trait LLMProvider: Send + Sync {
                 let usage = extract_usage_tuple(&response.usage);
                 if let Some(g) = gen_handle {
                     langfuse::lf_debug!("chat_stream_with_retry: ending generation persistent retry limit path");
+                    g.emit_tools_from_output(&build_langfuse_output(&response));
                     g.end(
                         response.content.clone().map(|c| Value::String(c)),
                         usage,
@@ -1305,8 +1333,10 @@ pub trait LLMProvider: Send + Sync {
         let usage = extract_usage_tuple(&final_response.usage);
         if let Some(g) = gen_handle {
             langfuse::lf_debug!("chat_stream_with_retry: ending generation final error path, usage={:?}", usage);
+            let final_output = build_langfuse_output(&final_response);
+            g.emit_tools_from_output(&final_output);
             g.end(
-                Some(build_langfuse_output(&final_response)),
+                Some(final_output),
                 usage,
                 Some(final_response.finish_reason.clone()),
                 true,

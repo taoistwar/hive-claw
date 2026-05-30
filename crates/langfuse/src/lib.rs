@@ -9,7 +9,7 @@ mod client;
 pub mod debug_log;
 
 pub use client::{
-    LangfuseClient, LangfuseConfig, TraceHandle, GenerationHandle, SpanHandle,
-    ObservationType, SpanLevel, TraceOptions, GenerationOptions, SpanOptions, EventOptions,
-    ScoreOptions, ScoreValueInput, GenerationEndOptions,
+    LangfuseClient, LangfuseConfig, TraceHandle, GenerationHandle, SpanHandle, ToolHandle,
+    ObservationType, SpanLevel, TraceOptions, GenerationOptions, SpanOptions, EventOptions, ToolOptions,
+    ScoreOptions, ScoreValueInput, GenerationEndOptions, ToolEndOptions,
 };

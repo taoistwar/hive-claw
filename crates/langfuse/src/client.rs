@@ -189,6 +189,20 @@ enum IngestEvent {
         timestamp: String,
         body: ScoreBody,
     },
+    #[serde(rename = "tool-create")]
+    ToolCreate {
+        id: String,
+        trace_id: String,
+        timestamp: String,
+        body: ToolBody,
+    },
+    #[serde(rename = "tool-update")]
+    ToolUpdate {
+        id: String,
+        trace_id: String,
+        timestamp: String,
+        body: ToolUpdateBody,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -398,6 +412,53 @@ struct ScoreBody {
     data_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolBody {
+    id: String,
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "parentObservationId")]
+    parent_observation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<SpanLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "statusMessage")]
+    status_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolUpdateBody {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<SpanLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "statusMessage")]
+    status_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "endTime")]
+    end_time: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -691,6 +752,27 @@ pub struct EventOptions {
     pub status_message: Option<String>,
 }
 
+/// Options for creating a tool observation.
+#[derive(Debug, Clone, Default)]
+pub struct ToolOptions {
+    pub parent_observation_id: Option<String>,
+    pub input: Option<Value>,
+    pub output: Option<Value>,
+    pub metadata: Option<Value>,
+    pub version: Option<String>,
+    pub level: Option<SpanLevel>,
+    pub status_message: Option<String>,
+}
+
+/// Options for ending a tool observation.
+#[derive(Debug, Clone, Default)]
+pub struct ToolEndOptions {
+    pub level: Option<SpanLevel>,
+    pub status_message: Option<String>,
+    pub version: Option<String>,
+    pub metadata: Option<Value>,
+}
+
 // ---------------------------------------------------------------------------
 // Handles
 // ---------------------------------------------------------------------------
@@ -933,6 +1015,49 @@ impl TraceHandle {
             },
         });
     }
+
+    /// Start a tool observation under this trace.
+    ///
+    /// The tool-create event is enqueued immediately. Returns a
+    /// `ToolHandle` that should be `.end()`-ed with the result data.
+    pub fn tool(&self, name: impl Into<String>) -> ToolHandle {
+        self.tool_with_options(name, ToolOptions::default())
+    }
+
+    /// Start a tool observation with options.
+    pub fn tool_with_options(&self, name: impl Into<String>, options: ToolOptions) -> ToolHandle {
+        let tool_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let name: String = name.into();
+
+        lf_debug!("TraceHandle::tool name={} tool_id={} trace_id={}",
+            name, tool_id, self.id);
+
+        let event = IngestEvent::ToolCreate {
+            id: tool_id.clone(),
+            trace_id: self.id.clone(),
+            timestamp: now.clone(),
+            body: ToolBody {
+                id: tool_id.clone(),
+                trace_id: self.id.clone(),
+                name,
+                parent_observation_id: options.parent_observation_id,
+                input: options.input,
+                output: None,
+                metadata: options.metadata,
+                version: options.version,
+                level: options.level,
+                status_message: options.status_message,
+            },
+        };
+        self.send(event);
+
+        ToolHandle {
+            id: tool_id,
+            trace_id: self.id.clone(),
+            tx: self.tx.clone(),
+        }
+    }
 }
 
 /// Handle representing an open Langfuse span.
@@ -1009,6 +1134,123 @@ impl SpanHandle {
                 end_time: Some(now),
             },
         });
+    }
+}
+
+/// Handle representing an open Langfuse tool observation.
+#[derive(Debug, Clone)]
+pub struct ToolHandle {
+    id: String,
+    trace_id: String,
+    tx: mpsc::Sender<IngestEvent>,
+}
+
+impl ToolHandle {
+    fn send(&self, event: IngestEvent) {
+        match self.tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("Langfuse event buffer full, dropping event");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!("Langfuse channel closed, event dropped");
+            }
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn update(
+        &self,
+        name: Option<String>,
+        input: Option<Value>,
+        output: Option<Value>,
+        metadata: Option<Value>,
+        version: Option<String>,
+        level: Option<SpanLevel>,
+        status_message: Option<String>,
+    ) {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.send(IngestEvent::ToolUpdate {
+            id: self.id.clone(),
+            trace_id: self.trace_id.clone(),
+            timestamp: now,
+            body: ToolUpdateBody {
+                id: self.id.clone(),
+                name,
+                input,
+                output,
+                metadata,
+                version,
+                level,
+                status_message,
+                end_time: None,
+            },
+        });
+    }
+
+    pub fn end(
+        self,
+        output: Option<Value>,
+        is_error: bool,
+    ) {
+        self.end_with_options(output, is_error, ToolEndOptions::default())
+    }
+
+    pub fn end_with_options(
+        self,
+        output: Option<Value>,
+        is_error: bool,
+        options: ToolEndOptions,
+    ) {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        let level = if is_error {
+            Some(SpanLevel::Error)
+        } else {
+            options.level
+        };
+
+        let output_len = output.as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default().len())
+            .unwrap_or(0);
+
+        lf_debug!("ToolHandle::end tool_id={} trace_id={} output_len={} is_error={}",
+            self.id, self.trace_id, output_len, is_error);
+
+        let tool_id_copy = self.id.clone();
+
+        let event = IngestEvent::ToolUpdate {
+            id: self.id.clone(),
+            trace_id: self.trace_id.clone(),
+            timestamp: now.clone(),
+            body: ToolUpdateBody {
+                id: tool_id_copy,
+                name: None,
+                input: None,
+                output,
+                metadata: options.metadata,
+                version: options.version,
+                level,
+                status_message: options.status_message,
+                end_time: Some(now),
+            },
+        };
+        match self.tx.try_send(event) {
+            Ok(()) => {
+                lf_debug!("ToolHandle::end -> OK (enqueued)");
+            }
+            Err(mpsc::error::TrySendError::Full(_ev)) => {
+                lf_debug!("ToolHandle::end -> FULL (dropping ToolUpdate)");
+                tracing::warn!("Langfuse event buffer full, dropping event");
+            }
+            Err(mpsc::error::TrySendError::Closed(_ev)) => {
+                lf_debug!("ToolHandle::end -> CLOSED (dropping ToolUpdate)");
+                tracing::error!("Langfuse channel closed, event dropped");
+            }
+        }
     }
 }
 
@@ -1102,6 +1344,92 @@ impl GenerationHandle {
             Err(mpsc::error::TrySendError::Closed(_ev)) => {
                 lf_debug!("GenerationHandle::end -> CLOSED (dropping GenerationUpdate)");
                 tracing::error!("Langfuse channel closed, event dropped");
+            }
+        }
+    }
+
+    /// Emit tool observations from tool_calls in the generation output.
+    ///
+    /// Parses the output JSON for `tool_calls` array and emits a
+    /// `tool-create` + `tool-update` for each entry, linked to this
+    /// generation via `parentObservationId`.
+    pub fn emit_tools_from_output(&self, output: &Value) {
+        if let Some(tool_calls) = output.get("tool_calls").and_then(|v| v.as_array()) {
+            if tool_calls.is_empty() {
+                return;
+            }
+            let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            lf_debug!("GenerationHandle::emit_tools_from_output gen_id={} tool_count={}",
+                self.id, tool_calls.len());
+            for tc in tool_calls {
+                let default_tool_id = uuid::Uuid::new_v4().to_string();
+                let tool_id = tc.get("id").and_then(|v| v.as_str())
+                    .unwrap_or(&default_tool_id);
+                let tool_name = tc.get("name").and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let tool_input = tc.get("arguments").cloned().unwrap_or(Value::Null);
+
+                let tool_create = IngestEvent::ToolCreate {
+                    id: tool_id.to_string(),
+                    trace_id: self.trace_id.clone(),
+                    timestamp: now.clone(),
+                    body: ToolBody {
+                        id: tool_id.to_string(),
+                        trace_id: self.trace_id.clone(),
+                        name: tool_name.to_string(),
+                        parent_observation_id: Some(self.id.clone()),
+                        input: Some(tool_input),
+                        output: None,
+                        metadata: None,
+                        version: None,
+                        level: None,
+                        status_message: None,
+                    },
+                };
+                match self.tx.try_send(tool_create) {
+                    Ok(()) => {
+                        lf_debug!("GenerationHandle::emit_tools_from_output -> ToolCreate OK");
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::warn!("Langfuse event buffer full, dropping ToolCreate");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::error!("Langfuse channel closed, dropping ToolCreate");
+                    }
+                }
+
+                let tool_result = tc.get("result").cloned().unwrap_or(Value::Null);
+                let is_error = tc.get("error").map(|v| v.as_bool().unwrap_or(false))
+                    .unwrap_or(false);
+                let tool_level = if is_error { Some(SpanLevel::Error) } else { None };
+
+                let tool_update = IngestEvent::ToolUpdate {
+                    id: tool_id.to_string(),
+                    trace_id: self.trace_id.clone(),
+                    timestamp: now.clone(),
+                    body: ToolUpdateBody {
+                        id: tool_id.to_string(),
+                        name: None,
+                        input: None,
+                        output: Some(tool_result),
+                        metadata: None,
+                        version: None,
+                        level: tool_level,
+                        status_message: None,
+                        end_time: Some(now.clone()),
+                    },
+                };
+                match self.tx.try_send(tool_update) {
+                    Ok(()) => {
+                        lf_debug!("GenerationHandle::emit_tools_from_output -> ToolUpdate OK");
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::warn!("Langfuse event buffer full, dropping ToolUpdate");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::error!("Langfuse channel closed, dropping ToolUpdate");
+                    }
+                }
             }
         }
     }
@@ -1251,5 +1579,7 @@ fn extract_event_type(event: &IngestEvent) -> &'static str {
         IngestEvent::GenerationUpdate { .. } => "GenerationUpdate",
         IngestEvent::EventCreate { .. } => "EventCreate",
         IngestEvent::ScoreCreate { .. } => "ScoreCreate",
+        IngestEvent::ToolCreate { .. } => "ToolCreate",
+        IngestEvent::ToolUpdate { .. } => "ToolUpdate",
     }
 }

@@ -8,7 +8,7 @@
 
 ## 1. 前置
 
-已完成 003-admin-center 的部署（MySQL / Redis / Rustfs + hiveweb backend + web frontend）。本特性在其上叠加。
+已完成 003-admin-center 的部署（MySQL / Redis / Rustfs + hiveweb backend + web-admin frontend）。本特性在其上叠加。
 
 ```bash
 ./scripts/dev-up.sh -d                  # MySQL / Redis / MinIO
@@ -29,7 +29,7 @@ export LLM_MODEL="gpt-4o-mini"
 
 ```bash
 cargo run -p hiveweb --bin hiveweb &     # :3300
-cd web && npm install && npm run dev     # :5173
+cd web-admin && npm install && npm run dev     # :5173
 ```
 
 浏览器打开 http://localhost:5173/，用管理中心账号登录（Super）。

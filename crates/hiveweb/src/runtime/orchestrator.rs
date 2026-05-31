@@ -64,6 +64,18 @@ pub async fn run_session(
     let mut final_content: Option<String> = None;
     let mut final_agent_id = starting_agent_id;
 
+    // Create one Langfuse trace for the entire agent loop
+    let lf_trace = providers::get_langfuse_client().map(|c| {
+        let trace_input = json!({
+            "session_id": session_id,
+            "starting_agent_id": starting_agent_id,
+            "max_hops": max_hops,
+            "history_len": history.len(),
+            "user_content": user_content,
+        });
+        c.trace("agent_loop", Some(trace_input))
+    });
+
     // 把 history 转成 LLM-side messages（OpenAI-style）
     let mut messages: Vec<Value> = Vec::new();
     // system 由每次 hop 重新拼（不同 agent 不同 system_prompt）
@@ -119,7 +131,7 @@ pub async fn run_session(
             let ev = Event::default().event("token").data(payload.to_string());
             let _ = tx_inner.send(Ok::<_, Infallible>(ev));
         });
-        let resp = provider.chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None).await;
+        let resp = provider.chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None, lf_trace.as_ref()).await;
 
         if resp.is_error() {
             let msg = resp

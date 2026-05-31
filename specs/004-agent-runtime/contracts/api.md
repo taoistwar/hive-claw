@@ -423,7 +423,7 @@ data: {"code": 5003, "message": "Capability denied: llm.invoke"}
 **前端实现要求**（CHK020 决议）：
 1. 所有错误展示组件（toast / message / inline）必须**只**使用上表"用户可见消息"列的文案；不得直接展示后端 `message` 字段的英文原文。
 2. 占位符 `{name}` 由 API 在响应的 `data.params` 中提供（如 `{ "capability": "network.http" }`），前端做模板替换。
-3. 错误码 → 文案的映射在 `web/src/utils/error_messages.ts` 集中维护；新增错误码必须同步本表 + 文件。
+3. 错误码 → 文案的映射在 `web-admin/src/utils/error_messages.ts` 集中维护；新增错误码必须同步本表 + 文件。
 
 ---
 

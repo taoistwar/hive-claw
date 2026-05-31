@@ -109,7 +109,7 @@ web/
 
 **Structure Decision**:
 - 后端：`crates/hiveweb/` - Rust workspace crate，使用 axum 提供 REST API
-- 前端：`web/` - 独立的 npm 包，使用 Vite + React + TypeScript
+- 前端：`web-admin/` - 独立的 npm 包，使用 Vite + React + TypeScript
 - 数据库：MySQL 8.0+，使用连接池管理
 - 符合宪法规定的双栈架构（Rust 后端 + React 前端）
 
@@ -257,7 +257,7 @@ web/
 2. 克隆仓库并切换到 003-admin-center 分支
 3. 创建 MySQL 数据库：`CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
 4. 后端：配置 DATABASE_URL，运行迁移 `cargo run --bin migrate`
-5. 前端：`cd web && npm install && npm run dev`
+5. 前端：`cd web-admin && npm install && npm run dev`
 6. 访问 http://localhost:5173
 
 **初始化超级管理员**:

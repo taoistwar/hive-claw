@@ -5,10 +5,14 @@ use sqlx::FromRow;
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ChatSession {
     pub id: i64,
-    /// 操作者；admin 删除后 SET NULL，仅 Super 可继续访问该 session
+    /// 管理员操作者；admin 删除后 SET NULL，仅 Super 可继续访问该 session
     pub admin_id: Option<i64>,
     pub admin_phone_snapshot: String,
     pub admin_nickname_snapshot: String,
+    /// 普通用户操作者；与 admin_id 二选一
+    pub user_id: Option<i64>,
+    pub user_phone_snapshot: String,
+    pub user_nickname_snapshot: String,
     pub title: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

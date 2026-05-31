@@ -44,29 +44,29 @@ static SSE_COUNTER: once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>> =
 
 /// RAII 计数器 guard：drop 时自动 -1
 struct SseConcurrencyGuard {
-    admin_id: i64,
+    actor_id: i64,
 }
 
 impl Drop for SseConcurrencyGuard {
     fn drop(&mut self) {
-        let admin_id = self.admin_id;
+        let actor_id = self.actor_id;
         let counter = SSE_COUNTER.clone();
         tokio::spawn(async move {
             let mut map = counter.lock().await;
-            if let Some(c) = map.get_mut(&admin_id) {
+            if let Some(c) = map.get_mut(&actor_id) {
                 *c = c.saturating_sub(1);
                 if *c == 0 {
-                    map.remove(&admin_id);
+                    map.remove(&actor_id);
                 }
             }
         });
     }
 }
 
-async fn try_acquire_slot(admin_id: i64) -> bool {
+async fn try_acquire_slot(actor_id: i64) -> bool {
     let mut map = SSE_COUNTER.lock().await;
     let cap = max_concurrent_per_admin();
-    let entry = map.entry(admin_id).or_insert(0);
+    let entry = map.entry(actor_id).or_insert(0);
     if *entry >= cap {
         return false;
     }
@@ -95,10 +95,21 @@ async fn create_session(
     Extension(claims): Extension<Claims>,
     Json(body): Json<svc::CreateSession>,
 ) -> Result<ApiResponse<crate::models::ChatSession>, ApiResponse<()>> {
-    svc::create_session(&state.pool, claims.admin_id, body.title)
-        .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+    // Admin session
+    if let Some(admin_id) = claims.admin_id {
+        return svc::create_session(&state.pool, admin_id, body.title)
+            .await
+            .map(ApiResponse::success)
+            .map_err(|e| e.into_response());
+    }
+    // User session
+    if let Some(user_id) = claims.user_id {
+        return svc::create_user_session(&state.pool, user_id, body.title)
+            .await
+            .map(ApiResponse::success)
+            .map_err(|e| e.into_response());
+    }
+    Err(AppError::Internal("No valid actor".to_string()).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,7 +127,7 @@ async fn list_sessions(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(50);
     let search = query.search.as_deref();
-    svc::list_sessions(&state.pool, claims.admin_id, claims.role, offset, limit, search)
+    svc::list_sessions(&state.pool, claims.admin_id, claims.user_id, claims.role, offset, limit, search)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -130,7 +141,7 @@ async fn delete_session(
     let session = svc::fetch_session(&state.pool, id)
         .await
         .map_err(|e| e.into_response())?;
-    svc::check_ownership(&session, claims.admin_id, claims.role).map_err(|e| e.into_response())?;
+    svc::check_ownership(&session, claims.admin_id, claims.user_id, claims.role).map_err(|e| e.into_response())?;
     svc::delete_session(&state.pool, id)
         .await
         .map(ApiResponse::success)
@@ -145,7 +156,7 @@ async fn get_messages(
     let session = svc::fetch_session(&state.pool, id)
         .await
         .map_err(|e| e.into_response())?;
-    svc::check_ownership(&session, claims.admin_id, claims.role).map_err(|e| e.into_response())?;
+    svc::check_ownership(&session, claims.admin_id, claims.user_id, claims.role).map_err(|e| e.into_response())?;
     svc::list_messages(&state.pool, id)
         .await
         .map(ApiResponse::success)
@@ -176,19 +187,26 @@ async fn post_message_sse(
         Ok(s) => s,
         Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
     };
-    if let Err(e) = svc::check_ownership(&session, claims.admin_id, claims.role) {
+    if let Err(e) = svc::check_ownership(&session, claims.admin_id, claims.user_id, claims.role) {
         return IntoResponse::into_response(AppError::into_response::<()>(e));
     }
 
     // 2. 并发限制（CHK232 / 4291）
-    if !try_acquire_slot(claims.admin_id).await {
+    let actor_id = claims.admin_id.or(claims.user_id).ok_or_else(|| {
+        AppError::Internal("No valid actor".to_string())
+    });
+    let actor_id = match actor_id {
+        Ok(id) => id,
+        Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
+    };
+    if !try_acquire_slot(actor_id).await {
         return AppError::SseConcurrencyExceeded(
             "并发会话过多，请关闭其它对话窗口后重试".into(),
         )
         .into_response::<()>()
         .into_response();
     }
-    let _guard = SseConcurrencyGuard { admin_id: claims.admin_id };
+    let _guard = SseConcurrencyGuard { actor_id };
 
     // 3. persist user message before streaming（中断时 user 已入库，assistant 不写）
     let user_msg = match svc::append_user_message(&state.pool, id, &body.content).await {

@@ -18,6 +18,8 @@ import CapabilityPage from './pages/CapabilityPage'
 import RuntimeAuditLogPage from './pages/RuntimeAuditLogPage'
 import AdminAuditLogPage from './pages/AdminAuditLogPage'
 import LoginRecordPage from './pages/LoginRecordPage'
+import ChangePasswordPage from './pages/ChangePasswordPage'
+import UserManagementPage from './pages/UserManagementPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
@@ -148,9 +150,11 @@ function AppRoutes() {
           <Route path="workflows" element={<WorkflowPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="recommended-games" element={<RecommendedGamePage />} />
+          <Route path="users" element={<UserManagementPage />} />
           <Route path="admin-audit-logs" element={<AdminAuditLogPage />} />
           <Route path="runtime-audit-logs" element={<RuntimeAuditLogPage />} />
           <Route path="login-records" element={<LoginRecordPage />} />
+          <Route path="settings/change-password" element={<ChangePasswordPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

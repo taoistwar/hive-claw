@@ -134,33 +134,26 @@ async fn validate_schemas_workflow(
     tool_input: &Value,
 ) -> Result<(), AppError> {
     let row: Option<(Value,)> = sqlx::query_as(
-        r#"SELECT f.input_schema FROM workflow_nodes n
-           JOIN functions f ON f.id = n.function_id
-           WHERE n.workflow_id = ?
-             AND n.id NOT IN (SELECT dst_node_id FROM workflow_edges WHERE workflow_id = ?)
-           LIMIT 1"#,
+        "SELECT input_schema FROM workflows WHERE id = ?",
     )
-    .bind(workflow_id)
     .bind(workflow_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| AppError::Internal(format!("workflow entry schema: {e}")))?;
-    let (entry,) = row.ok_or_else(|| {
-        AppError::BadRequest(format!(
-            "workflow id={workflow_id} 没有入口节点，无法包装为 Tool"
-        ))
+    .map_err(|e| AppError::Internal(format!("workflow input_schema fetch: {e}")))?;
+    let (wf_input,) = row.ok_or_else(|| {
+        AppError::NotFound(format!("workflow id={workflow_id} not found"))
     })?;
 
     let empty_arr = Value::Array(vec![]);
     let empty_obj = Value::Object(serde_json::Map::new());
-    let entry_required = entry.get("required").unwrap_or(&empty_arr);
-    let entry_props = entry.get("properties").unwrap_or(&empty_obj);
+    let wf_required = wf_input.get("required").unwrap_or(&empty_arr);
+    let wf_props = wf_input.get("properties").unwrap_or(&empty_obj);
     let tool_props = tool_input.get("properties").unwrap_or(&empty_obj);
 
-    if let Some(req_arr) = entry_required.as_array() {
+    if let Some(req_arr) = wf_required.as_array() {
         for r in req_arr {
             let Some(field) = r.as_str() else { continue };
-            let entry_type = entry_props
+            let wf_type = wf_props
                 .get(field)
                 .and_then(|s| s.get("type"))
                 .and_then(|t| t.as_str());
@@ -173,10 +166,10 @@ async fn validate_schemas_workflow(
                     "Tool input_schema 缺 workflow 入口必填字段「{field}」"
                 )));
             }
-            if entry_type != tool_type {
+            if wf_type != tool_type {
                 return Err(AppError::SchemaMismatch(format!(
                     "Tool input_schema 字段「{field}」类型不匹配（期望 {:?}，得到 {:?}）",
-                    entry_type, tool_type
+                    wf_type, tool_type
                 )));
             }
         }

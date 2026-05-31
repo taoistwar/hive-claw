@@ -64,7 +64,7 @@ cargo run
 ### 3. 前端设置
 
 ```bash
-cd web
+cd web-admin
 
 # 安装依赖
 npm install
@@ -95,7 +95,7 @@ hive-claw/
 │   │   └── utils/        # 工具函数
 │   ├── migrations/       # 数据库迁移
 │   └── Cargo.toml
-└── web/                  # 前端 React 项目
+└── web-admin/                  # 前端 React 项目
     ├── src/
     │   ├── main.tsx      # 入口文件
     │   ├── App.tsx       # 根组件
@@ -159,7 +159,7 @@ cd crates/hiveweb
 cargo build --release
 
 # 前端
-cd web
+cd web-admin
 npm run build
 ```
 

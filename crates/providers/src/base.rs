@@ -832,7 +832,8 @@ pub fn set_langfuse_client(client: Option<std::sync::Arc<langfuse::LangfuseClien
     }
 }
 
-fn get_langfuse_client() -> Option<&'static std::sync::Arc<langfuse::LangfuseClient>> {
+/// Returns a reference to the global Langfuse client, if initialized.
+pub fn get_langfuse_client() -> Option<&'static std::sync::Arc<langfuse::LangfuseClient>> {
     let client = LANGIFUSE_CLIENT.get();
     match client {
         None => {
@@ -897,21 +898,26 @@ pub trait LLMProvider: Send + Sync {
         mut req: ChatRequest,
         mode: RetryMode,
         on_retry_wait: Option<RetryWaitCallback>,
+        langfuse_trace: Option<&langfuse::TraceHandle>,
     ) -> LLMResponse {
         // --- Langfuse instrumentation (non-blocking) ---
-        let lf = get_langfuse_client();
-        langfuse::lf_debug!("chat_with_retry: get_langfuse_client returned {}", if lf.is_some() { "Some" } else { "None" });
+        let lf = langfuse_trace
+            .map(|t| std::borrow::Cow::Borrowed(t))
+            .or_else(|| {
+                get_langfuse_client().map(|c| {
+                    std::borrow::Cow::Owned(c.trace("chat_with_retry", None))
+                })
+            });
+        langfuse::lf_debug!("chat_with_retry: langfuse trace available: trace_id={}", lf.as_ref().map(|t| t.id()).unwrap_or("None"));
         let full_request = json!({
-            "model": req.model,
-            "messages": req.messages,
-            "tools": req.tools,
-            "tool_choice": req.tool_choice,
+            "model": &req.model,
+            "messages": &req.messages,
+            "tools": &req.tools,
+            "tool_choice": &req.tool_choice,
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
-            "reasoning_effort": req.reasoning_effort,
+            "reasoning_effort": &req.reasoning_effort,
         });
-        let trace = lf.map(|c| c.trace("chat_with_retry", Some(full_request.clone())));
-        langfuse::lf_debug!("chat_with_retry: trace created, is_some={}", trace.is_some());
         let model_params = json!({
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
@@ -919,7 +925,7 @@ pub trait LLMProvider: Send + Sync {
             "tools": req.tools.as_ref(),
             "tool_choice": req.tool_choice.as_ref(),
         });
-        let gen_handle = trace.as_ref().map(|t| {
+        let gen_handle = lf.as_ref().map(|t| {
             langfuse::lf_debug!("chat_with_retry: creating generation under trace_id={} model={:?}",
                 t.id(), req.model);
             t.generation(
@@ -970,7 +976,7 @@ pub trait LLMProvider: Send + Sync {
                         false,
                     );
                 }
-                if let Some(t) = trace {
+                if let Some(t) = lf.as_ref() {
                     t.set_output(Some(output));
                 }
                 langfuse::lf_debug!("chat_with_retry: returning success response");
@@ -1017,7 +1023,7 @@ pub trait LLMProvider: Send + Sync {
                         );
                     }
                     if !result.is_error() {
-                        if let Some(t) = trace { t.set_output(Some(output)); }
+                        if let Some(t) = lf.as_ref() { t.set_output(Some(output)); }
                     }
                     langfuse::lf_debug!("chat_with_retry: returning after image strip");
                     return result;
@@ -1112,7 +1118,7 @@ pub trait LLMProvider: Send + Sync {
                 true,
             );
         }
-        if let Some(t) = trace {
+        if let Some(t) = lf.as_ref() {
             t.set_output(Some(build_langfuse_output(&final_response)));
         }
         langfuse::lf_debug!("chat_with_retry: returning final error response");
@@ -1127,23 +1133,27 @@ pub trait LLMProvider: Send + Sync {
         on_tool_call_delta: Option<ToolCallDeltaCallback>,
         mode: RetryMode,
         on_retry_wait: Option<RetryWaitCallback>,
+        langfuse_trace: Option<&langfuse::TraceHandle>,
     ) -> LLMResponse {
         // --- Langfuse instrumentation (non-blocking) ---
-        let lf = get_langfuse_client();
-        langfuse::lf_debug!("chat_stream_with_retry: get_langfuse_client returned {}", if lf.is_some() { "Some" } else { "None" });
-        log::info!("Langfuse client available: {}", lf.is_some());
+        let lf = langfuse_trace
+            .map(|t| std::borrow::Cow::Borrowed(t))
+            .or_else(|| {
+                get_langfuse_client().map(|c| {
+                    std::borrow::Cow::Owned(c.trace("chat_stream_with_retry", None))
+                })
+            });
+        langfuse::lf_debug!("chat_stream_with_retry: langfuse trace available: trace_id={}", lf.as_ref().map(|t| t.id()).unwrap_or("None"));
+        log::info!("Langfuse trace handle available: trace_id={}", lf.as_ref().map(|t| t.id()).unwrap_or("None"));
         let full_request = json!({
-            "model": req.model,
-            "messages": req.messages,
-            "tools": req.tools,
-            "tool_choice": req.tool_choice,
+            "model": &req.model,
+            "messages": &req.messages,
+            "tools": &req.tools,
+            "tool_choice": &req.tool_choice,
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
-            "reasoning_effort": req.reasoning_effort,
+            "reasoning_effort": &req.reasoning_effort,
         });
-        let trace = lf.map(|c| c.trace("chat_stream_with_retry", Some(full_request.clone())));
-        langfuse::lf_debug!("chat_stream_with_retry: trace created, is_some={}", trace.is_some());
-        log::info!("Langfuse trace handle created: {}", trace.is_some());
         let model_params = json!({
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
@@ -1151,7 +1161,7 @@ pub trait LLMProvider: Send + Sync {
             "tools": req.tools.as_ref(),
             "tool_choice": req.tool_choice.as_ref(),
         });
-        let gen_handle = trace.as_ref().map(|t| {
+        let gen_handle = lf.as_ref().map(|t| {
             langfuse::lf_debug!("chat_stream_with_retry: creating generation under trace_id={} model={:?}",
                 t.id(), req.model);
             t.generation(
@@ -1202,7 +1212,7 @@ pub trait LLMProvider: Send + Sync {
                         false,
                     );
                 }
-                if let Some(t) = trace {
+                if let Some(t) = lf.as_ref() {
                     t.set_output(Some(output));
                 }
                 langfuse::lf_debug!("chat_stream_with_retry: returning success response");
@@ -1247,7 +1257,7 @@ pub trait LLMProvider: Send + Sync {
                         );
                     }
                     if !result.is_error() {
-                        if let Some(t) = trace { t.set_output(Some(output)); }
+                        if let Some(t) = lf.as_ref() { t.set_output(Some(output)); }
                     }
                     langfuse::lf_debug!("chat_stream_with_retry: returning after image strip");
                     return result;
@@ -1342,7 +1352,7 @@ pub trait LLMProvider: Send + Sync {
                 true,
             );
         }
-        if let Some(t) = trace {
+        if let Some(t) = lf.as_ref() {
             t.set_output(Some(build_langfuse_output(&final_response)));
         }
         langfuse::lf_debug!("chat_stream_with_retry: returning final error response");

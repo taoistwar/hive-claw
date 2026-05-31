@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN status TINYINT NOT NULL DEFAULT 1 COMMENT '状态：1=正常，0=禁用' AFTER password_hash;

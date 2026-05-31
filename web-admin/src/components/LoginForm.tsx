@@ -1,4 +1,4 @@
-import { Form, Input, Button, message } from 'antd';
+import { Form, Input, Button, message, Tabs } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
@@ -9,14 +9,14 @@ interface LoginFormValues {
 }
 
 const LoginForm: React.FC = () => {
-  const { login } = useAuth();
+  const { loginAdmin } = useAuth();
   const navigate = useNavigate();
   const [form] = Form.useForm<LoginFormValues>();
 
-  const onFinish = async (values: LoginFormValues) => {
+  const onFinishAdmin = async (values: LoginFormValues) => {
     try {
-      await login(values.phone, values.password);
-      message.success('登录成功');
+      await loginAdmin(values.phone, values.password);
+      message.success('管理员登录成功');
       navigate('/');
     } catch (error: any) {
       message.error(error.response?.data?.message || '登录失败，请检查手机号和密码');
@@ -26,8 +26,8 @@ const LoginForm: React.FC = () => {
   return (
     <Form<LoginFormValues>
       form={form}
-      name="loginForm"
-      onFinish={onFinish}
+      name="adminLoginForm"
+      onFinish={onFinishAdmin}
       autoComplete="off"
       size="large"
       layout="vertical"
@@ -43,7 +43,7 @@ const LoginForm: React.FC = () => {
         ]}
       >
         <Input
-          placeholder="手机号"
+          placeholder="管理员手机号"
           prefix={<UserOutlined style={{ color: 'var(--text-muted)' }} />}
           style={{
             background: 'var(--bg-input)',
@@ -101,7 +101,7 @@ const LoginForm: React.FC = () => {
             e.currentTarget.style.boxShadow = '0 4px 16px rgba(102, 126, 234, 0.3)';
           }}
         >
-          登录
+          管理员登录
         </Button>
       </Form.Item>
     </Form>

@@ -36,7 +36,7 @@
 - Q: 不同 Agent 是否允许选不同的 LLM 模型 / FallbackProvider 链？ → A: 是。`agents` 表加 `model_preset VARCHAR(64) NULL` 字段，对应 hiveweb 启动时从 `llm_presets.toml` 加载的命名 preset（每个 preset 内部封装一个 `providers::FallbackProvider`：primary + fallback 链）。为空 = 走全局默认 preset（启动校验必须正好 1 个 `default = true`）。子 Agent 不继承父的 preset。
 - Q: SSE 事件顺序 / 加载态 / 中途断开 UX 如何定义？（CHK003/004/048）→ A: 事件类型 token/tool_call/tool_result/routed/done/error；`done` 必有且仅 1 次，与 `error` 互斥；提交后到首事件期间显示"正在思考…" + 30s 无响应超时；SSE 中途断开显示"连接中断 + 重新发送"按钮，user 消息已 persist，assistant 中断内容不写库。详见 FR-028 重写。
 - Q: 危险 capability 在 CapabilityPicker 中对 System 角色的行为？（CHK015）→ A: 不渲染（hidden）而非 disabled。Super 才看得到；后端在保存时再校验一遍角色，前端绕过仍会被 2001 拒绝。详见 FR-022 补强。
-- Q: 全部 14 个错误码的用户可见文案如何统一？（CHK020）→ A: contracts/api.md §Errors 用三列表（code / 内部含义 / 用户文案）固化全部 14 项；前端 `web/src/utils/error_messages.ts` 集中维护映射，组件只引该字典。
+- Q: 全部 14 个错误码的用户可见文案如何统一？（CHK020）→ A: contracts/api.md §Errors 用三列表（code / 内部含义 / 用户文案）固化全部 14 项；前端 `web-admin/src/utils/error_messages.ts` 集中维护映射，组件只引该字典。
 - Q: capability 鉴权失败的 audit 行为？（CHK088）→ A: 4030 / 4040 拒绝路径**必须**写 audit log（`event_type = capability_denied`）— FR-004 v7 已强化。
 - Q: 危险 capability 撤销动作的角色门限？（CHK063）→ A: 与赋予一致，仅 Super 可执行（防 System 在 Super 不在场时绕审计降权后再改 system_prompt）— FR-022 v7。
 - Q: network.http 的 SSRF 防护？（CHK076）→ A: dispatcher 解析 URL 后拒绝 IPv4/IPv6 私网段 + 云 metadata 端点；DNS 解析后重校验实际 IP（防 DNS rebinding）；仅放行 allowlist 域名（per-Agent 可收窄）— FR-001 v7。

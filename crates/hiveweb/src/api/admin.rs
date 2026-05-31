@@ -407,11 +407,12 @@ async fn audit_event(
     target_phone: &str,
     detail: serde_json::Value,
 ) -> anyhow::Result<()> {
-    let operator = admin::get_admin_by_id(pool, claims.admin_id).await?;
+    let admin_id = claims.admin_id.ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
+    let operator = admin::get_admin_by_id(pool, admin_id).await?;
     let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
     if let Err(e) = audit::record(
         pool,
-        claims.admin_id,
+        admin_id,
         &operator_phone,
         target_id,
         target_phone,

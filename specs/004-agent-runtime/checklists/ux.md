@@ -35,7 +35,7 @@
 
 - [x] CHK018 Agent 编辑器的字段顺序（name / desc / tools / skills / permissions / model_preset / system_prompt）是否与 contracts/api.md §9 GET 返回字段顺序一致？[Consistency]
 - [x] CHK019 "无权限 = 不渲染" 约定（沿用 003）是否在 004 涉及的 5 个新页面（Plugin/Function/Workflow/Agent/Chat）显式贯彻？[Consistency, 003-admin-center spec §US3 AS-1]
-- [x] CHK020 错误码 5001/5006/5007/4030/4040/5004/4094/5008 的用户可见消息文案是否在 spec 中统一约定（避免每个 handler 自由发挥）？[Consistency, contracts/api.md §Errors] — ✅ contracts/api.md §Errors 升级为三列表（code / 内部含义 / 用户文案），全 14 项中文文案固化；前端集中字典 `web/src/utils/error_messages.ts`
+- [x] CHK020 错误码 5001/5006/5007/4030/4040/5004/4094/5008 的用户可见消息文案是否在 spec 中统一约定（避免每个 handler 自由发挥）？[Consistency, contracts/api.md §Errors] — ✅ contracts/api.md §Errors 升级为三列表（code / 内部含义 / 用户文案），全 14 项中文文案固化；前端集中字典 `web-admin/src/utils/error_messages.ts`
 - [x] CHK021 Plugin 列表的"已删除" 与 003 admin 列表的"已禁用" 的视觉处理（灰显 / icon / 标签）是否一致？[Consistency]
 - [x] CHK022 SSE chat 与 003 已有的 SSE-like 消息组件（若存在）的视觉/交互是否统一？[Consistency, Gap]
 

@@ -29,7 +29,7 @@
 ## Requirement Consistency — Schema vs Entity vs Spec
 
 - [ ] CHK013 Is the `nickname` length consistent? Entity says "2–20 字符", DDL says `VARCHAR(20)`, spec assumptions don't say. Is the **2-char minimum** an enforced data-layer constraint or only application-layer? [Consistency, Spec §Admin]
-- [ ] CHK014 Are the migration filenames consistent? Spec describes `V001__create_admins_table.sql` / `V002__create_login_records_table.sql` / `V003__seed_super_admin.sql`, but the implementation runs migrations inline from `crates/hiveweb/src/bin/migrate.rs`. Which is the source of truth? [Conflict, Spec §Migrations]
+- [ ] CHK014 Are the migration filenames consistent? Spec describes `V001__create_admins_table.sql` / `V002__create_login_records_table.sql` / `V003__seed_super_admin.sql`, but the implementation runs migrations inline from `crates/hiveweb-admin/src/bin/migrate.rs`. Which is the source of truth? [Conflict, Spec §Migrations]
 - [ ] CHK015 Are the `RolePermission` entries consistent with the spec's role descriptions? Spec §US3 says System admin sees the delete button "禁用状态或不可见", but `RolePermission.System` does not include `admin-delete` at all — clarify whether System has the delete menu hidden vs disabled. [Consistency, Spec §US3, §RolePermission]
 - [ ] CHK016 Are the `updated_at` semantics consistent between the entity description ("最后更新时间") and the DDL (`ON UPDATE CURRENT_TIMESTAMP`) — does `last_login_at` change bump `updated_at`? [Consistency, Spec §Admin]
 - [ ] CHK017 Are uniqueness requirements consistent — entity says "phone 唯一索引", DDL uses `UNIQUE` + a non-unique `INDEX idx_phone (phone)`. Is the redundant secondary index intentional? [Consistency, Spec §Admin]
@@ -71,7 +71,7 @@
 
 ## Implementation-vs-Spec Gaps (informed by current code)
 
-- [ ] CHK038 The implementation runs schema creation from `crates/hiveweb/src/bin/migrate.rs` rather than the versioned `V00X__*.sql` files described in `data-model.md` §Migrations. Should the spec be updated to match (or vice versa)? [Gap, Spec §Migrations]
+- [ ] CHK038 The implementation runs schema creation from `crates/hiveweb-admin/src/bin/migrate.rs` rather than the versioned `V00X__*.sql` files described in `data-model.md` §Migrations. Should the spec be updated to match (or vice versa)? [Gap, Spec §Migrations]
 - [ ] CHK039 The code stores failed-login counters in Redis (via `services/auth.rs`); `data-model.md` does not list Redis as part of the data model. Should Redis-state requirements (key schema, TTL, eviction policy) be documented here or in a separate cache spec? [Gap]
 - [ ] CHK040 The `Admin` Rust struct includes `updated_at`, but it never appears in `AdminResponse`. Is the API-level visibility of `updated_at` a deliberate omission documented somewhere? [Gap, Spec §Admin / DTOs]
 - [ ] CHK041 The `create_super_admin` binary inserts directly into `admins`. Is there a data-model requirement that this insertion bypass the normal validation (e.g. skip the "must have inviter" rule if one existed)? [Gap]

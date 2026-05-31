@@ -19,7 +19,7 @@ import {
 const { Title, Paragraph, Text } = Typography;
 
 export default function AgentPage() {
-  const { user } = useAuth();
+  const { admin } = useAuth();
   const [tree, setTree] = useState<AgentTreeNode[]>([]);
   const [selected, setSelected] = useState<AgentDetail | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -213,7 +213,7 @@ export default function AgentPage() {
         destroyOnHidden
       >
         <AgentEditor
-          currentRole={user?.role ?? 0}
+          currentRole={admin?.role ?? 0}
           onSubmit={onSubmit}
           onCancel={() => setCreateOpen(false)}
         />
@@ -229,7 +229,7 @@ export default function AgentPage() {
         {editing && (
           <AgentEditor
             initial={editing}
-            currentRole={user?.role ?? 0}
+            currentRole={admin?.role ?? 0}
             onSubmit={onSubmit}
             onCancel={() => setEditing(null)}
           />

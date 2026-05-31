@@ -2,10 +2,11 @@
 //!
 //! session CRUD + message persist + history。
 //! 所有权语义（FR-027 v7 / data-model 不变量 #12）：
-//!   - admin 存活 → 必须 session.admin_id == JWT.admin_id（或 Super）
+//!   - admin 会话：admin 存活 → 必须 session.admin_id == JWT.admin_id（或 Super）
 //!   - admin 已删除 (admin_id IS NULL) → 仅 Super 可访问
+//!   - user 会话：必须 session.user_id == JWT.user_id
 //! admin_phone_snapshot / admin_nickname_snapshot 由 service 在创建时写入，
-//! admin 删后保留追溯。
+//! admin 删后保留追溯。user_phone_snapshot / user_nickname_snapshot 同理。
 
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
@@ -24,7 +25,7 @@ pub struct SessionList {
     pub total: i64,
 }
 
-/// 创建 session — 写入 admin snapshot
+/// 创建 admin session — 写入 admin snapshot
 pub async fn create_session(
     pool: &MySqlPool,
     admin_id: i64,
@@ -55,6 +56,36 @@ pub async fn create_session(
     fetch_session(pool, res.last_insert_id() as i64).await
 }
 
+/// 创建 user session — 写入 user snapshot
+pub async fn create_user_session(
+    pool: &MySqlPool,
+    user_id: i64,
+    title: Option<String>,
+) -> Result<ChatSession, AppError> {
+    // 取 user 信息作为 snapshot
+    let user: Option<(String,)> =
+        sqlx::query_as("SELECT phone FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let phone = user.map(|u| u.0).unwrap_or_default();
+
+    let res = sqlx::query(
+        r#"INSERT INTO chat_sessions
+           (user_id, user_phone_snapshot, user_nickname_snapshot, title)
+           VALUES (?, ?, '', ?)"#,
+    )
+    .bind(user_id)
+    .bind(&phone)
+    .bind(&title)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("user session insert: {e}")))?;
+
+    fetch_session(pool, res.last_insert_id() as i64).await
+}
+
 pub async fn fetch_session(pool: &MySqlPool, id: i64) -> Result<ChatSession, AppError> {
     sqlx::query_as::<_, ChatSession>("SELECT * FROM chat_sessions WHERE id = ?")
         .bind(id)
@@ -66,47 +97,80 @@ pub async fn fetch_session(pool: &MySqlPool, id: i64) -> Result<ChatSession, App
 
 /// 会话所有权校验（service 层强制 — FR-027 v7）：
 ///   - actor_role=3 (Super) → 全部放行
-///   - admin_id IS NULL → 非 Super 拒绝
-///   - admin_id != JWT.admin_id → 拒绝
+///   - admin session：admin_id IS NULL → 非 Super 拒绝；admin_id != actor → 拒绝
+///   - user session：user_id != actor_user_id → 拒绝
 pub fn check_ownership(
     session: &ChatSession,
-    actor_admin_id: i64,
+    actor_admin_id: Option<i64>,
+    actor_user_id: Option<i64>,
     actor_role: i8,
 ) -> Result<(), AppError> {
     if actor_role == 3 {
         return Ok(());
     }
-    match session.admin_id {
-        None => Err(AppError::InsufficientPermission(
-            "操作者已被删除，仅 Super 可继续访问此会话".into(),
-        )),
-        Some(owner) if owner == actor_admin_id => Ok(()),
-        Some(_) => Err(AppError::InsufficientPermission(
-            "无权访问他人会话".into(),
-        )),
+
+    // Admin session
+    if session.admin_id.is_some() {
+        match (actor_admin_id, session.admin_id) {
+            (Some(admin_id), Some(owner_id)) if admin_id == owner_id => Ok(()),
+            (Some(_), Some(_)) => Err(AppError::InsufficientPermission(
+                "无权访问他人会话".into(),
+            )),
+            (Some(_), None) => Err(AppError::InsufficientPermission(
+                "操作者已被删除，仅 Super 可继续访问此会话".into(),
+            )),
+            (None, _) => Err(AppError::InsufficientPermission(
+                "无权访问管理员会话".into(),
+            )),
+        }
+    } else if session.user_id.is_some() {
+        // User session
+        match actor_user_id {
+            Some(user_id) if session.user_id == Some(user_id) => Ok(()),
+            Some(_) => Err(AppError::InsufficientPermission(
+                "无权访问他人会话".into(),
+            )),
+            None => Err(AppError::InsufficientPermission(
+                "无权访问用户会话".into(),
+            )),
+        }
+    } else {
+        Err(AppError::InsufficientPermission("无效会话".into()))
     }
 }
 
 pub async fn list_sessions(
     pool: &MySqlPool,
-    actor_admin_id: i64,
+    actor_admin_id: Option<i64>,
+    actor_user_id: Option<i64>,
     actor_role: i8,
     offset: i64,
     limit: i64,
     search: Option<&str>,
 ) -> Result<SessionList, AppError> {
-    let (count_base, list_base, bind_admin) = if actor_role == 3 {
+    let (count_base, list_base, bind_filter) = if actor_role == 3 {
+        // Super can see all sessions
         (
             "SELECT COUNT(*) FROM chat_sessions",
             "SELECT * FROM chat_sessions",
             false,
         )
-    } else {
+    } else if actor_admin_id.is_some() {
+        // Admin: see own sessions (both admin and user-created under this admin)
         (
             "SELECT COUNT(*) FROM chat_sessions WHERE admin_id = ?",
             "SELECT * FROM chat_sessions WHERE admin_id = ?",
             true,
         )
+    } else if actor_user_id.is_some() {
+        // User: see own sessions
+        (
+            "SELECT COUNT(*) FROM chat_sessions WHERE user_id = ?",
+            "SELECT * FROM chat_sessions WHERE user_id = ?",
+            true,
+        )
+    } else {
+        return Err(AppError::Internal("No valid actor".into()));
     };
 
     let (search_clause, bind_search) = match search {
@@ -117,15 +181,17 @@ pub async fn list_sessions(
     let count_sql = format!("{}{}", count_base, search_clause);
     let list_sql = format!("{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?", list_base, search_clause);
 
-    let total: (i64,) = if bind_admin && bind_search {
+    let total: (i64,) = if bind_filter && bind_search {
+        let id = actor_admin_id.or(actor_user_id).unwrap();
         sqlx::query_as(&count_sql)
-            .bind(actor_admin_id)
+            .bind(id)
             .bind(format!("%{}%", search.unwrap()))
             .fetch_one(pool)
             .await
-    } else if bind_admin {
+    } else if bind_filter {
+        let id = actor_admin_id.or(actor_user_id).unwrap();
         sqlx::query_as(&count_sql)
-            .bind(actor_admin_id)
+            .bind(id)
             .fetch_one(pool)
             .await
     } else if bind_search {
@@ -138,17 +204,19 @@ pub async fn list_sessions(
     }
     .map_err(|e| AppError::Internal(format!("session count: {e}")))?;
 
-    let items: Vec<ChatSession> = if bind_admin && bind_search {
+    let items: Vec<ChatSession> = if bind_filter && bind_search {
+        let id = actor_admin_id.or(actor_user_id).unwrap();
         sqlx::query_as(&list_sql)
-            .bind(actor_admin_id)
+            .bind(id)
             .bind(format!("%{}%", search.unwrap()))
             .bind(limit)
             .bind(offset)
             .fetch_all(pool)
             .await
-    } else if bind_admin {
+    } else if bind_filter {
+        let id = actor_admin_id.or(actor_user_id).unwrap();
         sqlx::query_as(&list_sql)
-            .bind(actor_admin_id)
+            .bind(id)
             .bind(limit)
             .bind(offset)
             .fetch_all(pool)

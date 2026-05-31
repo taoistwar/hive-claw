@@ -214,6 +214,9 @@ fn init_langfuse_from_config(cfg: &Config) {
             public_key,
             secret_key,
             host,
+            environment: None,
+            release: None,
+            sample_rate: 1.0,
         };
 
         langfuse::lf_debug!("cli::init_langfuse_from_config: calling LangfuseClient::new");

@@ -21,7 +21,8 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use tower::ServiceExt;
 
-pub use hiveweb::utils::jwt::create_token;
+pub use hiveweb::utils::jwt::create_admin_token;
+pub use hiveweb::utils::jwt::create_user_token;
 
 /// Build the test instance of the full axum router wired against the live
 /// MySQL/Redis/S3 backends. Returns `Err` when required env vars are missing
@@ -55,7 +56,12 @@ pub async fn test_pool() -> Result<MySqlPool> {
 
 /// Mint a Bearer-style JWT for the given admin and role.
 pub fn mint_jwt(admin_id: i64, role: i8) -> Result<String> {
-    Ok(create_token(admin_id, role)?)
+    Ok(create_admin_token(admin_id, role)?)
+}
+
+/// Mint a user-style JWT for the given user id.
+pub fn mint_user_jwt(user_id: i64) -> Result<String> {
+    Ok(create_user_token(user_id)?)
 }
 
 /// An admin row owned by a test. Deleted on drop (with a best-effort blocking

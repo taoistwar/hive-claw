@@ -174,11 +174,12 @@ async fn audit_event(
     detail: serde_json::Value,
 ) -> anyhow::Result<()> {
     use crate::services::admin as admin_svc;
-    let operator = admin_svc::get_admin_by_id(pool, claims.admin_id).await?;
+    let admin_id = claims.admin_id.ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
+    let operator = admin_svc::get_admin_by_id(pool, admin_id).await?;
     let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
     if let Err(e) = audit_svc::record(
         pool,
-        claims.admin_id,
+        admin_id,
         &operator_phone,
         target_id,
         target_name,

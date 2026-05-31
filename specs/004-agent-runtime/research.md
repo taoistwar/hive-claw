@@ -156,7 +156,7 @@ return results[terminal_node]
 `crates/providers::FallbackPreset` 是单个模型配置（model + tokens + temperature + reasoning_effort）；不是"命名链"。004 新增的"命名 preset" 概念是 hiveweb 这一层的**命名 LLM 配置**，每个命名 preset 内部组装出一个 `FallbackProvider`（primary + N 个 `FallbackPreset` 作为 fallback 候选）。为避免词义碰撞，本文档与代码中将其称为 **`LlmPresetName`**（hiveweb 层概念）vs **`providers::FallbackPreset`**（providers 层既有概念）。`agents.model_preset` 字段存储的是 hiveweb `LlmPresetName`。
 
 **Integration**:
-- Agent Runtime 新增 `crates/hiveweb/src/runtime/llm.rs` + 配置文件（默认 `crates/hiveweb/llm_presets.toml`）：
+- Agent Runtime 新增 `crates/hiveweb-admin/src/runtime/llm.rs` + 配置文件（默认 `crates/hiveweb/llm_presets.toml`）：
   - 启动期解析 TOML → 一组命名 `LlmPresetName → (primary cfg, fallback chain: Vec<FallbackPreset>)` → 用 `providers::make_provider` 构造 primary `Arc<dyn LLMProvider>`，再构造 `FallbackProvider::new(primary, fallback_chain, factory)`，结果挂在 `HashMap<LlmPresetName, Arc<dyn LLMProvider>>` 中
   - 配置中标记一个 preset 为 `default = true`（启动校验：必须正好 1 个）
   - 提供 `runtime/llm::provider_for(agent: &Agent) -> Arc<dyn LLMProvider>`：

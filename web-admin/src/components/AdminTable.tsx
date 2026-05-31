@@ -41,7 +41,7 @@ const AdminTable: React.FC<AdminTableProps> = ({
   onSearch,
   onReset,
 }) => {
-  const { user } = useAuth();
+  const { admin } = useAuth();
   const [form] = Form.useForm();
 
   const handleSearch = () => {
@@ -173,7 +173,7 @@ const AdminTable: React.FC<AdminTableProps> = ({
       key: 'action',
       width: 200,
       render: (_: unknown, record: Admin) => {
-        if (user?.role === 1) return null;
+        if (admin?.role === 1) return null;
 
         return (
           <Space size="small">
@@ -186,7 +186,7 @@ const AdminTable: React.FC<AdminTableProps> = ({
             >
               编辑
             </Button>
-            {user?.role === 3 && record.id !== user?.id && record.role !== 3 && (
+            {admin?.role === 3 && record.id !== admin?.id && record.role !== 3 && (
               <Popconfirm
                 title="确认删除"
                 description="确定要删除该管理员吗？"

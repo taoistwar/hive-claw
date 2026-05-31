@@ -79,7 +79,7 @@ pub async fn llm_invoke(
         reasoning_effort: None,
     };
 
-    let resp = provider.chat_with_retry(req, RetryMode::Standard, None).await;
+    let resp = provider.chat_with_retry(req, RetryMode::Standard, None, None).await;
     if resp.is_error() {
         let msg = resp
             .content

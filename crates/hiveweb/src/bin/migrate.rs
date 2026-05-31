@@ -169,6 +169,18 @@ const MIGRATIONS: &[Migration] = &[
         version: "V038__seed_capability_categories",
         sql: include_str!("../../migrations/V038__seed_capability_categories.sql"),
     },
+    Migration {
+        version: "V039__users_table",
+        sql: include_str!("../../migrations/V039__users_table.sql"),
+    },
+    Migration {
+        version: "V040__chat_sessions_user_id",
+        sql: include_str!("../../migrations/V040__chat_sessions_user_id.sql"),
+    },
+    Migration {
+        version: "V041__users_status",
+        sql: include_str!("../../migrations/V041__users_status.sql"),
+    },
 ];
 
 #[tokio::main]

@@ -9,11 +9,12 @@ use serde::Serialize;
 /// and `quickstart.md §Error Codes`. New codes belong in that table first,
 /// here second.
 pub mod codes {
-    // Auth (1001..1004)
+    // Auth (1001..1005)
     pub const WRONG_PASSWORD: u16 = 1001;
     pub const ACCOUNT_DISABLED: u16 = 1002;
     pub const ACCOUNT_LOCKED: u16 = 1003;
     pub const TOKEN_INVALID: u16 = 1004;
+    pub const NOT_ADMINISTRATOR: u16 = 1005;
 
     // Permission
     pub const INSUFFICIENT_PERMISSION: u16 = 2001;
@@ -23,6 +24,7 @@ pub mod codes {
     pub const PHONE_ALREADY_EXISTS: u16 = 3002;
     pub const CANNOT_DELETE_SUPER_ADMIN: u16 = 3003;
     pub const CANNOT_DISABLE_LAST_SUPER_ADMIN: u16 = 3004;
+    pub const NEW_PASSWORD_SAME_AS_OLD: u16 = 3008;
 
     // Generic envelopes (used when no spec-level code applies)
     pub const BAD_REQUEST: u16 = 4000;
@@ -92,7 +94,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         0 => StatusCode::OK,
         // Auth
         codes::WRONG_PASSWORD | codes::TOKEN_INVALID => StatusCode::UNAUTHORIZED,
-        codes::ACCOUNT_DISABLED | codes::ACCOUNT_LOCKED => StatusCode::FORBIDDEN,
+        codes::ACCOUNT_DISABLED | codes::ACCOUNT_LOCKED | codes::NOT_ADMINISTRATOR => StatusCode::FORBIDDEN,
         // Permission
         codes::INSUFFICIENT_PERMISSION => StatusCode::FORBIDDEN,
         // Admin domain
@@ -101,6 +103,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         codes::CANNOT_DELETE_SUPER_ADMIN | codes::CANNOT_DISABLE_LAST_SUPER_ADMIN => {
             StatusCode::FORBIDDEN
         }
+        codes::NEW_PASSWORD_SAME_AS_OLD => StatusCode::BAD_REQUEST,
         // Generic
         codes::BAD_REQUEST => StatusCode::BAD_REQUEST,
         codes::NOT_FOUND => StatusCode::NOT_FOUND,
@@ -129,11 +132,12 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
 
 #[derive(Debug)]
 pub enum AppError {
-    // Auth — spec.md §Error Codes 1001..1004
+    // Auth — spec.md §Error Codes 1001..1005
     WrongPassword(String),
     AccountDisabled(String),
     AccountLocked(String),
     TokenInvalid(String),
+    NotAdministrator(String),
 
     // Permission — 2001
     InsufficientPermission(String),
@@ -143,6 +147,7 @@ pub enum AppError {
     PhoneAlreadyExists(String),
     CannotDeleteSuperAdmin(String),
     CannotDisableLastSuperAdmin(String),
+    NewPasswordSameAsOld(String),
 
     // Generic fallbacks
     BadRequest(String),
@@ -177,11 +182,13 @@ impl AppError {
             AppError::AccountDisabled(_) => codes::ACCOUNT_DISABLED,
             AppError::AccountLocked(_) => codes::ACCOUNT_LOCKED,
             AppError::TokenInvalid(_) => codes::TOKEN_INVALID,
+            AppError::NotAdministrator(_) => codes::NOT_ADMINISTRATOR,
             AppError::InsufficientPermission(_) => codes::INSUFFICIENT_PERMISSION,
             AppError::AdminNotFound(_) => codes::ADMIN_NOT_FOUND,
             AppError::PhoneAlreadyExists(_) => codes::PHONE_ALREADY_EXISTS,
             AppError::CannotDeleteSuperAdmin(_) => codes::CANNOT_DELETE_SUPER_ADMIN,
             AppError::CannotDisableLastSuperAdmin(_) => codes::CANNOT_DISABLE_LAST_SUPER_ADMIN,
+            AppError::NewPasswordSameAsOld(_) => codes::NEW_PASSWORD_SAME_AS_OLD,
             AppError::BadRequest(_) => codes::BAD_REQUEST,
             AppError::NotFound(_) => codes::NOT_FOUND,
             AppError::Conflict(_) => codes::CONFLICT,
@@ -213,6 +220,7 @@ impl AppError {
             | AppError::AccountDisabled(m)
             | AppError::AccountLocked(m)
             | AppError::TokenInvalid(m)
+            | AppError::NotAdministrator(m)
             | AppError::InsufficientPermission(m)
             | AppError::AdminNotFound(m)
             | AppError::PhoneAlreadyExists(m)
@@ -238,7 +246,8 @@ impl AppError {
             | AppError::ModelPresetUnknown(m)
             | AppError::BuiltinSkillProtected(m)
             | AppError::PoolBusy(m)
-            | AppError::BuiltinToolProtected(m) => m,
+            | AppError::BuiltinToolProtected(m)
+            | AppError::NewPasswordSameAsOld(m) => m,
         }
     }
 

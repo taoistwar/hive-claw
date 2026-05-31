@@ -5,17 +5,23 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::AppState;
-use crate::models::Admin;
+use crate::models::{Admin, Role};
 use crate::services::{admin, auth as auth_service};
 use crate::utils::error::{ApiResponse, AppError};
-use crate::utils::jwt::{create_token, Claims};
+use crate::utils::jwt::{create_admin_token, Claims};
 use crate::utils::logging::mask_phone;
-use crate::utils::password::verify_password;
+use crate::utils::password::{verify_password, hash_password};
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
     phone: String,
     password: String,
+}
+
+#[derive(Deserialize)]
+pub struct ChangePasswordRequest {
+    old_password: String,
+    new_password: String,
 }
 
 #[derive(serde::Serialize)]
@@ -81,6 +87,21 @@ pub async fn login(
 
     if admin.status == 0 {
         return AppError::AccountDisabled("Account has been disabled".to_string()).into_response();
+    }
+
+    let role = match Role::try_from(admin.role) {
+        Ok(role) => role,
+        Err(e) => {
+            tracing::error!("Invalid role: {}", e);
+            return AppError::Internal("Invalid role configuration".to_string()).into_response();
+        }
+    };
+
+    if !matches!(role, Role::System | Role::Super) {
+        return AppError::NotAdministrator(
+            "Only System and Super administrators can log in to the admin center".to_string(),
+        )
+        .into_response();
     }
 
     let password_valid = match verify_password(&req.password, &admin.password_hash) {
@@ -165,7 +186,7 @@ pub async fn login(
         "admin login success"
     );
 
-    let token = match create_token(admin.id, admin.role) {
+    let token = match create_admin_token(admin.id, admin.role) {
         Ok(token) => token,
         Err(e) => {
             tracing::error!("Token creation failed: {}", e);
@@ -189,7 +210,11 @@ pub async fn get_current_user(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
 ) -> ApiResponse<AdminPublic> {
-    let admin = match admin::get_admin_by_id(&state.pool, claims.admin_id).await {
+    let admin_id = match claims.admin_id {
+        Some(id) => id,
+        None => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+    };
+    let admin = match admin::get_admin_by_id(&state.pool, admin_id).await {
         Ok(Some(admin)) => admin,
         Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
         Err(e) => {
@@ -201,6 +226,112 @@ pub async fn get_current_user(
     ApiResponse::success(admin.into())
 }
 
+pub async fn change_password(
+    State(state): State<AppState>,
+    axum::Extension(claims): axum::Extension<Claims>,
+    Json(req): Json<ChangePasswordRequest>,
+) -> ApiResponse<()> {
+    let admin_id = match claims.admin_id {
+        Some(id) => id,
+        None => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+    };
+
+    let is_locked = match admin::get_admin_by_id(&state.pool, admin_id).await {
+        Ok(Some(admin)) => {
+            let locked = match auth_service::is_account_locked(&state.redis, &admin.phone).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!("Redis check failed: {}", e);
+                    return AppError::Internal("Service unavailable".to_string()).into_response();
+                }
+            };
+            locked
+        }
+        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Err(e) => {
+            tracing::error!("Database error: {}", e);
+            return AppError::Internal("Service unavailable".to_string()).into_response();
+        }
+    };
+
+    if is_locked {
+        return AppError::AccountLocked(
+            "Account locked due to too many failed attempts. Try again in 15 minutes".to_string(),
+        )
+        .into_response();
+    }
+
+    let admin = match admin::get_admin_by_id(&state.pool, admin_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Err(e) => {
+            tracing::error!("Database error: {}", e);
+            return AppError::Internal("Service unavailable".to_string()).into_response();
+        }
+    };
+
+    let old_valid = match verify_password(&req.old_password, &admin.password_hash) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Password verification error: {}", e);
+            return AppError::Internal("Service unavailable".to_string()).into_response();
+        }
+    };
+
+    if !old_valid {
+        let _ = auth_service::increment_failed_attempts(&state.redis, &admin.phone).await;
+        tracing::info!(
+            admin_id = admin.id,
+            phone = %mask_phone(&admin.phone),
+            outcome = "wrong_old_password",
+            operation = "change_password",
+            "admin provided wrong old password"
+        );
+        return AppError::WrongPassword("Old password is incorrect".to_string()).into_response();
+    }
+
+    let old_matches_new = match verify_password(&req.new_password, &admin.password_hash) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Password comparison error: {}", e);
+            return AppError::Internal("Service unavailable".to_string()).into_response();
+        }
+    };
+
+    if old_matches_new {
+        return AppError::NewPasswordSameAsOld("New password cannot be the same as old password".to_string()).into_response();
+    }
+
+    if let Err(e) = crate::utils::password::validate_password(&req.new_password) {
+        return e.into_response();
+    }
+
+    let new_hash = match hash_password(&req.new_password) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("Password hashing failed: {}", e);
+            return AppError::Internal("Failed to hash password".to_string()).into_response();
+        }
+    };
+
+    if let Err(e) = admin::update_admin_password(&state.pool, admin_id, &new_hash).await {
+        tracing::error!("Password update failed: {}", e);
+        return AppError::Internal("Failed to update password".to_string()).into_response();
+    }
+
+    let _ = auth_service::reset_failed_attempts(&state.redis, &admin.phone).await;
+
+    tracing::info!(
+        admin_id = admin.id,
+        phone = %mask_phone(&admin.phone),
+        outcome = "success",
+        operation = "change_password",
+        "admin password changed successfully"
+    );
+
+    ApiResponse::success(())
+}
+
 pub fn router_public() -> Router<AppState> {
     Router::new()
         .route("/auth/login", axum::routing::post(login))
@@ -210,4 +341,5 @@ pub fn router_protected() -> Router<AppState> {
     Router::new()
         .route("/auth/logout", axum::routing::post(logout))
         .route("/auth/me", axum::routing::get(get_current_user))
+        .route("/auth/change-password", axum::routing::post(change_password))
 }

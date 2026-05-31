@@ -147,8 +147,11 @@ impl WorkflowExecutor {
             ),
         )
         .await;
-        let mut outputs = match result {
-            Ok(r) => r,
+        let mut outputs: HashMap<String, Value> = match result {
+            Ok(inner) => match inner {
+                Ok(r) => r,
+                Err(e) => return Err(e),
+            },
             Err(_) => return Err(WorkflowError::Timeout(timeout_ms)),
         };
 

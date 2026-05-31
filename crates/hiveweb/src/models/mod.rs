@@ -15,6 +15,7 @@ pub mod tag;
 pub mod tool;
 pub mod workflow;
 pub mod recommended_game;
+pub mod user;
 
 pub use admin::Admin;
 pub use login_record::LoginRecord;
@@ -31,3 +32,4 @@ pub use tag::Tag;
 pub use tool::Tool;
 pub use workflow::{NodeType, Workflow, WorkflowEdge, WorkflowNode};
 pub use recommended_game::RecommendedGame;
+pub use user::User;

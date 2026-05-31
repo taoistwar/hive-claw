@@ -20,6 +20,7 @@ import {
   MessageOutlined,
   SunOutlined,
   MoonOutlined,
+  LockOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../hooks/useTheme';
@@ -28,7 +29,7 @@ const { Header, Content } = Layout;
 const { Text } = Typography;
 
 const AppLayout: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { admin, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
@@ -39,15 +40,20 @@ const AppLayout: React.FC = () => {
       icon: <DashboardOutlined />,
       label: 'Dashboard',
     },
-    ...(user?.role === 1
+    ...(admin?.role === 1
       ? []
-      : user?.role === 2 || user?.role === 3
+      : admin?.role === 2 || admin?.role === 3
         ? [
             {
               key: 'business',
               icon: <AppstoreOutlined />,
               label: '业务功能',
               children: [
+                {
+                  key: '/users',
+                  icon: <TeamOutlined />,
+                  label: '用户管理',
+                },
                 {
                   key: '/recommended-games',
                   icon: <StarOutlined />,
@@ -144,6 +150,17 @@ const AppLayout: React.FC = () => {
   ];
 
   const userMenuItems = [
+    {
+      key: 'change-password',
+      icon: <LockOutlined />,
+      label: '修改密码',
+      onClick: () => {
+        navigate('/settings/change-password');
+      },
+    },
+    {
+      type: 'divider' as const,
+    },
     {
       key: 'logout',
       icon: <LogoutOutlined />,
@@ -289,7 +306,7 @@ const AppLayout: React.FC = () => {
                 }}
               />
               <Text style={{ color: 'var(--text-secondary)', fontSize: '14px', transition: 'color var(--transition-base)' }}>
-                {user?.nickname}
+                {admin?.nickname}
               </Text>
             </div>
           </Dropdown>

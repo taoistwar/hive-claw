@@ -147,7 +147,7 @@ web/
 │   └── hooks/
 ```
 
-**Structure Decision**：扩展现有 `crates/hiveweb`（避免单一特性新建 crate 违反 Principle V 的"至多三 deployable"）；前端继续在 `web/`。WASM 插件作者侧不在本仓内，作者使用任意 Extism PDK；hive-claw 仓提供 `examples/plugins/` 目录展示 Rust PDK 写法 — 由 T005（README）+ T138（smoke-plugin + weather demo）落地。
+**Structure Decision**：扩展现有 `crates/hiveweb`（避免单一特性新建 crate 违反 Principle V 的"至多三 deployable"）；前端继续在 `web-admin/`。WASM 插件作者侧不在本仓内，作者使用任意 Extism PDK；hive-claw 仓提供 `examples/plugins/` 目录展示 Rust PDK 写法 — 由 T005（README）+ T138（smoke-plugin + weather demo）落地。
 
 ## Complexity Tracking
 

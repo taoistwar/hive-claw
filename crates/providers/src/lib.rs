@@ -25,7 +25,7 @@ pub use base::{
     RetryWaitCallback, StreamDeltaCallback, ToolCallRequest, ToolChoice, enforce_role_alternation,
     extract_retry_after_from_text, is_transient_response, pick_delay, sanitize_empty_content,
     strip_image_content, strip_image_content_inplace,
-    set_langfuse_client,
+    set_langfuse_client, get_langfuse_client,
 };
 pub use registry::{find_by_model, find_by_name, Backend, ProviderSpec, PROVIDERS};
 

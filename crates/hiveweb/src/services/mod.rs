@@ -18,3 +18,4 @@ pub mod tool;
 pub mod workflow;
 pub mod chat;
 pub mod recommended_game;
+pub mod user_auth;

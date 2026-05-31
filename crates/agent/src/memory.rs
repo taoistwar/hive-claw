@@ -921,6 +921,7 @@ impl Dream for MemoryDream {
                 },
                 RetryMode::Standard,
                 None,
+                None,
             )
             .await;
 

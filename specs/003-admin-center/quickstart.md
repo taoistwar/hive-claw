@@ -52,11 +52,11 @@ cargo run
 # 默认运行在 http://localhost:3000
 ```
 
-### 3. 前端设置 (web)
+### 3. 前端设置 (web-admin)
 
 ```bash
 # 进入前端目录
-cd web
+cd web-admin
 
 # 安装依赖
 npm install
@@ -374,7 +374,7 @@ Network Error: Unable to connect to backend
 curl http://localhost:3000/api/health
 
 # 检查前端配置
-cat web/.env
+cat web-admin/.env
 # 确保 VITE_API_URL=http://localhost:3000
 ```
 

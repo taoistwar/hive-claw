@@ -1,7 +1,7 @@
 # Deployment Guide: 管理中心 (Admin Center)
 
 **Feature**: `003-admin-center`
-**Audience**: Operators deploying the admin center backend (`hiveweb`) and frontend (`web/`) to a server.
+**Audience**: Operators deploying the admin center backend (`hiveweb`) and frontend (`web-admin/`) to a server.
 
 ---
 
@@ -57,7 +57,7 @@ Generate a `JWT_SECRET`:
 openssl rand -base64 48
 ```
 
-### 2.2 Frontend `web/.env.production`
+### 2.2 Frontend `web-admin/.env.production`
 
 ```env
 VITE_API_BASE_URL=https://admin.example.com/api
@@ -153,12 +153,12 @@ WantedBy=multi-user.target
 ### 6.2 Frontend (static build)
 
 ```bash
-cd web
+cd web-admin
 npm ci
-npm run build                                # outputs to web/dist
+npm run build                                # outputs to web-admin/dist
 ```
 
-Copy `web/dist/` to the web server document root (e.g. `/var/www/admin-center/`).
+Copy `web-admin/dist/` to the web server document root (e.g. `/var/www/admin-center/`).
 
 ---
 
@@ -208,7 +208,7 @@ server {
 - [ ] TLS terminates at the reverse proxy; HTTP redirects to HTTPS.
 - [ ] Default super admin password is rotated immediately after first login.
 - [ ] `RUST_LOG=info` (not `debug`) in production; structured logs forwarded to your log aggregator.
-- [ ] Rate-limiting middleware (`crates/hiveweb/src/middleware/rate_limit.rs`) tuned for your traffic profile.
+- [ ] Rate-limiting middleware (`crates/hiveweb-admin/src/middleware/rate_limit.rs`) tuned for your traffic profile.
 - [ ] Backups of the MySQL `hiveweb` database scheduled and tested.
 
 ---
@@ -236,7 +236,7 @@ curl -fsS https://admin.example.com/api/auth/me -H "Authorization: Bearer $TOKEN
 ## 10. Rollback
 
 1. Stop the `hiveweb` service: `systemctl stop hiveweb`.
-2. Deploy the previous release binary and `web/dist/` artefacts.
+2. Deploy the previous release binary and `web-admin/dist/` artefacts.
 3. If a migration must be reverted, restore the pre-migration MySQL snapshot.
 4. Restart: `systemctl start hiveweb`.
 

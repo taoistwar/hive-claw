@@ -67,9 +67,9 @@
 
 - [ ] CHK035 The implementation uses Ant Design as the UI library (per `plan.md` research). Is the choice of component library — or at least the visual-language standards it implies (spacing, button hierarchy, form layout) — referenced anywhere in spec.md? [Gap]
 - [ ] CHK036 The admin-list endpoint defaults to `page_size=10` (per `quickstart.md` and code). Is this default codified in spec.md, or is it an implementation choice the spec leaves open? [Gap, Spec §FR-010]
-- [ ] CHK037 The frontend stores the JWT in browser storage (per `web/src/utils/auth.ts`). Are the UX implications (auto-login on return visit, log-out-everywhere, multi-tab behavior) specified? [Gap, Spec §FR-019]
+- [ ] CHK037 The frontend stores the JWT in browser storage (per `web-admin/src/utils/auth.ts`). Are the UX implications (auto-login on return visit, log-out-everywhere, multi-tab behavior) specified? [Gap, Spec §FR-019]
 - [ ] CHK038 The implementation exposes a `PermissionGuard` component and redirects on insufficient permission. Does spec.md describe the UX of that redirect (target page, message, breadcrumb) or only that it occurs? [Gap, Spec §US3 AS-4]
-- [ ] CHK039 The dashboard component renders stats cards and a recent-logins table (per `web/src/components/Dashboard.tsx`). Are the visual hierarchy, ordering, and grouping of these UI elements specified in spec.md, or chosen at implementation time? [Gap, Spec §FR-013/14/15]
+- [ ] CHK039 The dashboard component renders stats cards and a recent-logins table (per `web-admin/src/components/Dashboard.tsx`). Are the visual hierarchy, ordering, and grouping of these UI elements specified in spec.md, or chosen at implementation time? [Gap, Spec §FR-013/14/15]
 - [ ] CHK040 The `useAuth` hook performs role-based redirects on login. Is the post-login landing page per role specified (does Normal land on dashboard, same as Super)? [Gap, Spec §US1 AS-1]
 
 ## Ambiguities & Traceability

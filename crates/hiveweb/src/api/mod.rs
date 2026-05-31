@@ -16,8 +16,10 @@ pub mod skill;
 pub mod chat;
 pub mod tag;
 pub mod tool;
+pub mod user;
 pub mod workflow;
 pub mod recommended_game;
+pub mod users;
 
 use axum::{
     http::HeaderValue,
@@ -127,10 +129,12 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
 
     let public_routes = Router::new()
         .merge(auth::router_public())
+        .merge(users::router_public())
         .merge(recommended_game::router_public());
 
     let protected_routes = Router::new()
         .merge(auth::router_protected())
+        .merge(users::router_protected())
         .merge(admin::router())
         .merge(dashboard::router())
         .merge(plugin::router())
@@ -147,6 +151,7 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(agent::router())
         .merge(workflow::router())
         .merge(chat::router())
+        .merge(user::router())
         .merge(recommended_game::router())
         .layer(middleware::from_fn(auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));

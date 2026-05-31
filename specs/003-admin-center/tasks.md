@@ -20,8 +20,8 @@ description: "Task list for admin center implementation"
 
 ## Path Conventions
 
-- **Backend (Rust)**: `crates/hiveweb/src/`
-- **Frontend (TypeScript/React)**: `web/src/`
+- **Backend (Rust)**: `crates/hiveweb-admin/src/`
+- **Frontend (TypeScript/React)**: `web-admin/src/`
 - **Shared**: Specs in `specs/003-admin-center/`
 
 <!--
@@ -39,9 +39,9 @@ description: "Task list for admin center implementation"
 **Purpose**: Project initialization and basic structure
 
 - [x] T001 [P] Create `crates/hiveweb/` directory structure per plan.md
-- [x] T002 [P] Create `web/` directory structure per plan.md
+- [x] T002 [P] Create `web-admin/` directory structure per plan.md
 - [x] T003 [P] Initialize Rust workspace in `crates/hiveweb/Cargo.toml`
-- [x] T004 [P] Initialize npm package in `web/package.json`
+- [x] T004 [P] Initialize npm package in `web-admin/package.json`
 - [x] T005 [P] Configure Rust linting: `cargo fmt` and `cargo clippy`
 - [x] T006 [P] Configure TypeScript linting: ESLint + Prettier
 - [x] T007 [P] Setup MySQL database: `CREATE DATABASE hiveweb` (provisioned via `scripts/docker-compose.yml`)
@@ -59,20 +59,20 @@ description: "Task list for admin center implementation"
 - [x] T010 [P] Create database migration framework using SQLx
 - [x] T011 Create `admins` table migration (V001__create_admins_table.sql)
 - [x] T012 Create `login_records` table migration (V002__create_login_records_table.sql)
-- [x] T013 [P] Implement MySQL connection pool in `crates/hiveweb/src/db/connection.rs`
-- [x] T014 [P] Implement Redis connection pool in `crates/hiveweb/src/cache/redis.rs`
-- [x] T015 [P] Implement Rustfs/S3 client in `crates/hiveweb/src/storage/s3.rs`
-- [x] T016 [P] Implement JWT authentication middleware in `crates/hiveweb/src/middleware/auth.rs`
-- [x] T017 [P] Create Admin model in `crates/hiveweb/src/models/admin.rs`
-- [x] T018 [P] Create LoginRecord model in `crates/hiveweb/src/models/login_record.rs`
-- [x] T019 [P] Create Role enum and permissions in `crates/hiveweb/src/models/role.rs`
-- [x] T020 [P] Implement password hashing with bcrypt in `crates/hiveweb/src/utils/password.rs`
-- [x] T021 [P] Create base API response types in `crates/hiveweb/src/api/response.rs`
-- [x] T022 [P] Setup axum router in `crates/hiveweb/src/api/mod.rs`
-- [x] T023 [P] Create frontend API service in `web/src/services/api.ts`
-- [x] T024 [P] Create frontend auth service in `web/src/services/auth.ts`
-- [x] T025 [P] Create React Router setup in `web/src/App.tsx`
-- [x] T026 [P] Create Layout component in `web/src/components/Layout.tsx`
+- [x] T013 [P] Implement MySQL connection pool in `crates/hiveweb-admin/src/db/connection.rs`
+- [x] T014 [P] Implement Redis connection pool in `crates/hiveweb-admin/src/cache/redis.rs`
+- [x] T015 [P] Implement Rustfs/S3 client in `crates/hiveweb-admin/src/storage/s3.rs`
+- [x] T016 [P] Implement JWT authentication middleware in `crates/hiveweb-admin/src/middleware/auth.rs`
+- [x] T017 [P] Create Admin model in `crates/hiveweb-admin/src/models/admin.rs`
+- [x] T018 [P] Create LoginRecord model in `crates/hiveweb-admin/src/models/login_record.rs`
+- [x] T019 [P] Create Role enum and permissions in `crates/hiveweb-admin/src/models/role.rs`
+- [x] T020 [P] Implement password hashing with bcrypt in `crates/hiveweb-admin/src/utils/password.rs`
+- [x] T021 [P] Create base API response types in `crates/hiveweb-admin/src/api/response.rs`
+- [x] T022 [P] Setup axum router in `crates/hiveweb-admin/src/api/mod.rs`
+- [x] T023 [P] Create frontend API service in `web-admin/src/services/api.ts`
+- [x] T024 [P] Create frontend auth service in `web-admin/src/services/auth.ts`
+- [x] T025 [P] Create React Router setup in `web-admin/src/App.tsx`
+- [x] T026 [P] Create Layout component in `web-admin/src/components/Layout.tsx`
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -102,9 +102,9 @@ description: "Task list for admin center implementation"
 
 ### Frontend component tests (Vitest + Testing Library)
 
-- [x] T026k [P] Component test: LoginForm 表单校验 + 错误展示 在 `web/src/components/__tests__/LoginForm.test.tsx`（4/4 通过）
-- [x] T026l [P] Component test: PermissionGuard 隐藏/重定向逻辑 在 `web/src/components/__tests__/PermissionGuard.test.tsx`（4/4 通过）
-- [x] T026m [P] Component test: AdminTable 分页与角色按钮可见性 在 `web/src/components/__tests__/AdminTable.test.tsx`（5/5 通过）
+- [x] T026k [P] Component test: LoginForm 表单校验 + 错误展示 在 `web-admin/src/components/__tests__/LoginForm.test.tsx`（4/4 通过）
+- [x] T026l [P] Component test: PermissionGuard 隐藏/重定向逻辑 在 `web-admin/src/components/__tests__/PermissionGuard.test.tsx`（4/4 通过）
+- [x] T026m [P] Component test: AdminTable 分页与角色按钮可见性 在 `web-admin/src/components/__tests__/AdminTable.test.tsx`（5/5 通过）
 
 **Checkpoint**: ✅ Phase 2.5 完成 (2026-05-26) — 后端 13 个 T026* 测试 (3+2+2+2+2+3+1+4+2+2 = 23 个具体 test cases) 加前端 3 组件测试 (13 cases) 全部转绿。沿途修复 7+ 个真实后端 bug（详见 commits b624b57 / ab1e27f / abc93a2 / 57319e4 / 31ae8f2）。
 
@@ -118,19 +118,19 @@ description: "Task list for admin center implementation"
 
 ### Implementation for User Story 1
 
-- [x] T027 [P] [US1] Create LoginRequest/ LoginResponse DTOs in `crates/hiveweb/src/api/auth.rs`
-- [x] T028 [US1] Implement login handler in `crates/hiveweb/src/api/auth.rs`
-- [x] T029 [US1] Implement password validation in `crates/hiveweb/src/utils/password.rs`
-- [x] T030 [US1] Implement JWT token generation in `crates/hiveweb/src/middleware/auth.rs`
-- [x] T031 [US1] Implement login failure tracking with Redis in `crates/hiveweb/src/services/auth.rs`
-- [x] T032 [US1] Update last_login_at on successful login in `crates/hiveweb/src/models/admin.rs`
-- [x] T033 [US1] Implement account lock/unlock logic in `crates/hiveweb/src/services/auth.rs`
-- [x] T034 [US1] Create LoginForm component in `web/src/components/LoginForm.tsx`
-- [x] T035 [US1] Create LoginPage in `web/src/pages/LoginPage.tsx`
-- [x] T036 [US1] Implement useAuth hook in `web/src/hooks/useAuth.ts`
-- [x] T037 [US1] Add login API call in `web/src/services/auth.ts`
-- [x] T038 [US1] Store JWT token in localStorage/cookie in `web/src/utils/auth.ts`
-- [x] T039 [US1] Implement auto-redirect after login in `web/src/pages/LoginPage.tsx`
+- [x] T027 [P] [US1] Create LoginRequest/ LoginResponse DTOs in `crates/hiveweb-admin/src/api/auth.rs`
+- [x] T028 [US1] Implement login handler in `crates/hiveweb-admin/src/api/auth.rs`
+- [x] T029 [US1] Implement password validation in `crates/hiveweb-admin/src/utils/password.rs`
+- [x] T030 [US1] Implement JWT token generation in `crates/hiveweb-admin/src/middleware/auth.rs`
+- [x] T031 [US1] Implement login failure tracking with Redis in `crates/hiveweb-admin/src/services/auth.rs`
+- [x] T032 [US1] Update last_login_at on successful login in `crates/hiveweb-admin/src/models/admin.rs`
+- [x] T033 [US1] Implement account lock/unlock logic in `crates/hiveweb-admin/src/services/auth.rs`
+- [x] T034 [US1] Create LoginForm component in `web-admin/src/components/LoginForm.tsx`
+- [x] T035 [US1] Create LoginPage in `web-admin/src/pages/LoginPage.tsx`
+- [x] T036 [US1] Implement useAuth hook in `web-admin/src/hooks/useAuth.ts`
+- [x] T037 [US1] Add login API call in `web-admin/src/services/auth.ts`
+- [x] T038 [US1] Store JWT token in localStorage/cookie in `web-admin/src/utils/auth.ts`
+- [x] T039 [US1] Implement auto-redirect after login in `web-admin/src/pages/LoginPage.tsx`
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
 
@@ -144,22 +144,22 @@ description: "Task list for admin center implementation"
 
 ### Implementation for User Story 2
 
-- [x] T040 [P] [US2] Create AdminRequest/AdminResponse DTOs in `crates/hiveweb/src/api/admin.rs`
-- [x] T041 [P] [US2] Create admin list API endpoint in `crates/hiveweb/src/api/admin.rs`
-- [x] T042 [P] [US2] Create get admin by ID endpoint in `crates/hiveweb/src/api/admin.rs`
-- [x] T043 [P] [US2] Create create admin endpoint in `crates/hiveweb/src/api/admin.rs`
-- [x] T044 [P] [US2] Create update admin endpoint in `crates/hiveweb/src/api/admin.rs`
-- [x] T045 [P] [US2] Create delete admin endpoint in `crates/hiveweb/src/api/admin.rs`
-- [x] T046 [P] [US2] Create toggle admin status endpoint in `crates/hiveweb/src/api/admin.rs`
-- [x] T047 [US2] Implement admin service layer in `crates/hiveweb/src/services/admin.rs`
-- [x] T048 [US2] Add phone uniqueness validation in `crates/hiveweb/src/services/admin.rs`
-- [x] T049 [US2] Implement "cannot delete super admin" check in `crates/hiveweb/src/services/admin.rs`
-- [x] T050 [US2] Implement "cannot disable last super admin" check in `crates/hiveweb/src/services/admin.rs`
-- [x] T051 [P] [US2] Create AdminTable component in `web/src/components/AdminTable.tsx`
-- [x] T052 [P] [US2] Create AdminForm component in `web/src/components/AdminForm.tsx`
-- [x] T053 [US2] Create AdminPage in `web/src/pages/AdminPage.tsx`
-- [x] T054 [US2] Implement useAdmin hook in `web/src/hooks/useAdmin.ts`
-- [x] T055 [US2] Add admin CRUD API calls in `web/src/services/admin.ts`
+- [x] T040 [P] [US2] Create AdminRequest/AdminResponse DTOs in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T041 [P] [US2] Create admin list API endpoint in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T042 [P] [US2] Create get admin by ID endpoint in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T043 [P] [US2] Create create admin endpoint in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T044 [P] [US2] Create update admin endpoint in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T045 [P] [US2] Create delete admin endpoint in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T046 [P] [US2] Create toggle admin status endpoint in `crates/hiveweb-admin/src/api/admin.rs`
+- [x] T047 [US2] Implement admin service layer in `crates/hiveweb-admin/src/services/admin.rs`
+- [x] T048 [US2] Add phone uniqueness validation in `crates/hiveweb-admin/src/services/admin.rs`
+- [x] T049 [US2] Implement "cannot delete super admin" check in `crates/hiveweb-admin/src/services/admin.rs`
+- [x] T050 [US2] Implement "cannot disable last super admin" check in `crates/hiveweb-admin/src/services/admin.rs`
+- [x] T051 [P] [US2] Create AdminTable component in `web-admin/src/components/AdminTable.tsx`
+- [x] T052 [P] [US2] Create AdminForm component in `web-admin/src/components/AdminForm.tsx`
+- [x] T053 [US2] Create AdminPage in `web-admin/src/pages/AdminPage.tsx`
+- [x] T054 [US2] Implement useAdmin hook in `web-admin/src/hooks/useAdmin.ts`
+- [x] T055 [US2] Add admin CRUD API calls in `web-admin/src/services/admin.ts`
 - [x] T056 [US2] Implement pagination in AdminTable component
 - [x] T057 [US2] Add confirm dialogs for delete/disable actions
 
@@ -175,13 +175,13 @@ description: "Task list for admin center implementation"
 
 ### Implementation for User Story 3
 
-- [x] T058 [P] [US3] Define role permissions map in `crates/hiveweb/src/models/role.rs`
-- [x] T059 [P] [US3] Create permission check middleware in `crates/hiveweb/src/middleware/auth.rs`
+- [x] T058 [P] [US3] Define role permissions map in `crates/hiveweb-admin/src/models/role.rs`
+- [x] T059 [P] [US3] Create permission check middleware in `crates/hiveweb-admin/src/middleware/auth.rs`
 - [x] T060 [US3] Add role-based route protection in backend API handlers
-- [x] T061 [US3] Create permission guard component in `web/src/components/PermissionGuard.tsx`
-- [x] T062 [US3] Implement role-based menu filtering in `web/src/components/Layout.tsx`
-- [x] T063 [US3] Add role check in useAuth hook in `web/src/hooks/useAuth.ts`
-- [x] T064 [US3] Implement redirect on insufficient permission in `web/src/pages/DashboardPage.tsx`
+- [x] T061 [US3] Create permission guard component in `web-admin/src/components/PermissionGuard.tsx`
+- [x] T062 [US3] Implement role-based menu filtering in `web-admin/src/components/Layout.tsx`
+- [x] T063 [US3] Add role check in useAuth hook in `web-admin/src/hooks/useAuth.ts`
+- [x] T064 [US3] Implement redirect on insufficient permission in `web-admin/src/pages/DashboardPage.tsx`
 - [x] T065 [US3] Add visual indicators for disabled actions (delete button for non-super-admin)
 
 **Checkpoint**: All three user stories should now work with proper role isolation
@@ -196,19 +196,19 @@ description: "Task list for admin center implementation"
 
 ### Implementation for User Story 4
 
-- [x] T066 [P] [US4] Create DashboardStatsResponse DTO in `crates/hiveweb/src/api/dashboard.rs`
-- [x] T067 [P] [US4] Create get stats endpoint in `crates/hiveweb/src/api/dashboard.rs`
-- [x] T068 [P] [US4] Create get recent logins endpoint in `crates/hiveweb/src/api/dashboard.rs`
-- [x] T069 [US4] Implement dashboard service in `crates/hiveweb/src/services/dashboard.rs`
-- [x] T070 [US4] Query total admins count in `crates/hiveweb/src/services/dashboard.rs`
-- [x] T071 [US4] Query online admins (logged in 24h) in `crates/hiveweb/src/services/dashboard.rs`
-- [x] T072 [US4] Query today login count in `crates/hiveweb/src/services/dashboard.rs`
-- [x] T073 [US4] Query recent login records in `crates/hiveweb/src/services/dashboard.rs`
-- [x] T074 [P] [US4] Create Dashboard component in `web/src/components/Dashboard.tsx`
-- [x] T075 [P] [US4] Create DashboardPage in `web/src/pages/DashboardPage.tsx`
+- [x] T066 [P] [US4] Create DashboardStatsResponse DTO in `crates/hiveweb-admin/src/api/dashboard.rs`
+- [x] T067 [P] [US4] Create get stats endpoint in `crates/hiveweb-admin/src/api/dashboard.rs`
+- [x] T068 [P] [US4] Create get recent logins endpoint in `crates/hiveweb-admin/src/api/dashboard.rs`
+- [x] T069 [US4] Implement dashboard service in `crates/hiveweb-admin/src/services/dashboard.rs`
+- [x] T070 [US4] Query total admins count in `crates/hiveweb-admin/src/services/dashboard.rs`
+- [x] T071 [US4] Query online admins (logged in 24h) in `crates/hiveweb-admin/src/services/dashboard.rs`
+- [x] T072 [US4] Query today login count in `crates/hiveweb-admin/src/services/dashboard.rs`
+- [x] T073 [US4] Query recent login records in `crates/hiveweb-admin/src/services/dashboard.rs`
+- [x] T074 [P] [US4] Create Dashboard component in `web-admin/src/components/Dashboard.tsx`
+- [x] T075 [P] [US4] Create DashboardPage in `web-admin/src/pages/DashboardPage.tsx`
 - [x] T076 [US4] Create stats cards UI in Dashboard component
 - [x] T077 [US4] Create recent logins table in Dashboard component
-- [x] T078 [US4] Add dashboard API calls in `web/src/services/dashboard.ts`
+- [x] T078 [US4] Add dashboard API calls in `web-admin/src/services/dashboard.ts`
 - [x] T079 [US4] Implement auto-refresh for dashboard data (optional)
 
 **Checkpoint**: All user stories should now be independently functional
@@ -231,8 +231,8 @@ description: "Task list for admin center implementation"
 - [x] T089 [P] Code cleanup and refactoring
 - [x] T090 [P] Performance optimization (database query optimization, Redis caching)
 - [x] T091 [P] Security hardening (input validation, SQL injection prevention)
-- [x] T092 [P] [FR-021] 添加 request-ID 中间件 + JSON 日志格式 + 手机号遮码工具，位于 `crates/hiveweb/src/middleware/request_id.rs` 与 `crates/hiveweb/src/utils/logging.rs`
-- [x] T093 [P] [FR-022] 添加审计日志写入（管理员 CRUD 事件）至 `crates/hiveweb/src/services/audit.rs`（V006 迁移 + create/update/delete/toggle 全部接入）
+- [x] T092 [P] [FR-021] 添加 request-ID 中间件 + JSON 日志格式 + 手机号遮码工具，位于 `crates/hiveweb-admin/src/middleware/request_id.rs` 与 `crates/hiveweb-admin/src/utils/logging.rs`
+- [x] T093 [P] [FR-022] 添加审计日志写入（管理员 CRUD 事件）至 `crates/hiveweb-admin/src/services/audit.rs`（V006 迁移 + create/update/delete/toggle 全部接入）
 - [ ] T094 [P] [FR-020 / SC-008] 集成 axe-core 自动化检测进入 Vitest 套件，覆盖 LoginPage、AdminPage、DashboardPage
 - [ ] T095 [P] [FR-020] 为所有交互组件补充 ARIA 标签与键盘焦点顺序审查
 - [x] T096 [FR-022] 编写迁移 V004：login_records 改 ON DELETE SET NULL，并增加 admin_phone_snapshot / admin_nickname_snapshot 列；更新 LoginRecord 模型与 dashboard 查询
@@ -241,7 +241,7 @@ description: "Task list for admin center implementation"
 - [x] T099 [P] [SC-003] 同上（基准命令覆盖 stats + recent-logins）
 - [x] T100 [P] [Principle IV] perf-evidence.md §3 列出每条热路径查询的 EXPLAIN 期望与填表模板；实际跑 EXPLAIN 留给执行环境
 - [x] T101 [P] [SC-005] `seed-bench` 支持 1×参数：`seed-bench 100 10000` 构造 100 admin × 10k login_records 数据集
-- [x] T102 [spec.md §Error Codes] 统一后端业务错误码到 1001/1002/1003/1004/2001/3001/3002/3003/3004（修订 `crates/hiveweb/src/utils/error.rs`、`api/auth.rs`、`api/admin.rs`、`middleware/auth.rs`）
+- [x] T102 [spec.md §Error Codes] 统一后端业务错误码到 1001/1002/1003/1004/2001/3001/3002/3003/3004（修订 `crates/hiveweb-admin/src/utils/error.rs`、`api/auth.rs`、`api/admin.rs`、`middleware/auth.rs`）
 
 ---
 
@@ -284,12 +284,12 @@ description: "Task list for admin center implementation"
 
 ```bash
 # Launch all models for User Story 1 together:
-Task: "T027 [P] [US1] Create LoginRequest/ LoginResponse DTOs in crates/hiveweb/src/api/auth.rs"
-Task: "T034 [P] [US1] Create LoginForm component in web/src/components/LoginForm.tsx"
+Task: "T027 [P] [US1] Create LoginRequest/ LoginResponse DTOs in crates/hiveweb-admin/src/api/auth.rs"
+Task: "T034 [P] [US1] Create LoginForm component in web-admin/src/components/LoginForm.tsx"
 
 # Launch all backend services together:
-Task: "T028 [US1] Implement login handler in crates/hiveweb/src/api/auth.rs"
-Task: "T031 [US1] Implement login failure tracking with Redis in crates/hiveweb/src/services/auth.rs"
+Task: "T028 [US1] Implement login handler in crates/hiveweb-admin/src/api/auth.rs"
+Task: "T031 [US1] Implement login failure tracking with Redis in crates/hiveweb-admin/src/services/auth.rs"
 ```
 
 ---

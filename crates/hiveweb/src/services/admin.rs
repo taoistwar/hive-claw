@@ -281,3 +281,23 @@ pub async fn toggle_admin_status(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Admin not found after status update"))
 }
+
+pub async fn update_admin_password(
+    pool: &MySqlPool,
+    id: i64,
+    new_password_hash: &str,
+) -> Result<()> {
+    let result = sqlx::query(
+        "UPDATE admins SET password_hash = ?, updated_at = NOW() WHERE id = ?",
+    )
+    .bind(new_password_hash)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow::anyhow!("Admin not found"));
+    }
+
+    Ok(())
+}

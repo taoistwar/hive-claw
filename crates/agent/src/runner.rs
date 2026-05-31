@@ -571,7 +571,7 @@ impl AgentRunner {
             tool_choice: None,
         };
         self.provider
-            .chat_with_retry(req, spec.provider_retry_mode, None)
+            .chat_with_retry(req, spec.provider_retry_mode, None, None)
             .await
     }
 
@@ -1166,6 +1166,7 @@ impl AgentRunner {
                 on_tool_call_delta,
                 spec.provider_retry_mode,
                 None,
+                None,
             );
 
             let response = if wants_streaming {
@@ -1343,7 +1344,7 @@ impl AgentRunner {
             let timeout_dur = std::time::Duration::from_secs_f64(timeout_s);
             timeout(
                 timeout_dur,
-                self.provider.chat_with_retry(req, spec.provider_retry_mode, None),
+                self.provider.chat_with_retry(req, spec.provider_retry_mode, None, None),
             )
             .await
             .unwrap_or_else(|_| LLMResponse::error("LLM request timed out"))

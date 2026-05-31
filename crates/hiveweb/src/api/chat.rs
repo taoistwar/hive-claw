@@ -8,7 +8,7 @@
 //! 内容部分用一个 mock generator 拆分 user 输入为 token 流，便于前端联调。
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -18,7 +18,7 @@ use axum::{
     Extension, Json, Router,
 };
 use futures::stream::{self, Stream};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -101,11 +101,22 @@ async fn create_session(
         .map_err(|e| e.into_response())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListSessionsQuery {
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+    pub search: Option<String>,
+}
+
 async fn list_sessions(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
+    Query(query): Query<ListSessionsQuery>,
 ) -> Result<ApiResponse<svc::SessionList>, ApiResponse<()>> {
-    svc::list_sessions(&state.pool, claims.admin_id, claims.role, 0, 50)
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50);
+    let search = query.search.as_deref();
+    svc::list_sessions(&state.pool, claims.admin_id, claims.role, offset, limit, search)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())

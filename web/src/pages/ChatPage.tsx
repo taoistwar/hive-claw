@@ -1,8 +1,8 @@
 // ChatPage — 会话列表 + 当前对话 (T131)
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Input, List, Space, Typography, message } from 'antd';
-import { PlusOutlined, SendOutlined, DeleteOutlined, MessageOutlined } from '@ant-design/icons';
+import { Button, Input, List, Space, Typography, Pagination, message } from 'antd';
+import { PlusOutlined, SendOutlined, DeleteOutlined, MessageOutlined, SearchOutlined } from '@ant-design/icons';
 import { ChatStream } from '../components/ChatStream';
 import {
   createSession,
@@ -17,24 +17,38 @@ import {
 
 const { Title, Text } = Typography;
 
+const PAGE_SIZE = 5;
+
 export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [total, setTotal] = useState(0);
   const [active, setActive] = useState<ChatSession | null>(null);
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<SseEvent[]>([]);
   const [tokenBuf, setTokenBuf] = useState('');
   const [pending, setPending] = useState(false);
   const [draft, setDraft] = useState('');
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
-  const refreshSessions = useCallback(async () => {
+  const doFetchSessions = useCallback(async (currentPage: number, currentSearch: string) => {
     try {
-      const list = await listSessions();
+      const list = await listSessions({
+        offset: (currentPage - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+        search: currentSearch || undefined,
+      });
       setSessions(list.items);
+      setTotal(list.total);
     } catch (e) {
       void message.error(`加载失败：${(e as Error).message}`);
     }
   }, []);
+
+  const refreshSessions = useCallback(async () => {
+    doFetchSessions(page, search);
+  }, [page, search, doFetchSessions]);
 
   useEffect(() => {
     void refreshSessions();
@@ -55,7 +69,9 @@ export default function ChatPage() {
   const onNewSession = async () => {
     try {
       const s = await createSession(`会话 ${new Date().toLocaleString('zh-CN')}`);
-      await refreshSessions();
+      setPage(1);
+      setSearch('');
+      await doFetchSessions(1, '');
       await onSelectSession(s);
     } catch (e) {
       void message.error(`创建失败：${(e as Error).message}`);
@@ -142,7 +158,7 @@ export default function ChatPage() {
       {/* Sidebar - Session List */}
       <div
         style={{
-          width: '300px',
+          width: '320px',
           background: 'var(--bg-card)',
           border: '1px solid var(--border-subtle)',
           borderRadius: 'var(--radius-md)',
@@ -152,9 +168,10 @@ export default function ChatPage() {
           boxShadow: 'var(--shadow-sm)',
         }}
       >
+        {/* Header: Title + New Button */}
         <Space
           style={{
-            marginBottom: '16px',
+            marginBottom: '12px',
             width: '100%',
             justifyContent: 'space-between',
           }}
@@ -180,66 +197,128 @@ export default function ChatPage() {
             新建
           </Button>
         </Space>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          <List
-            dataSource={sessions}
-            renderItem={(s) => (
-              <List.Item
-                onClick={() => void onSelectSession(s)}
-                style={{
-                  cursor: 'pointer',
-                  padding: '12px',
-                  background: active?.id === s.id ? 'var(--accent-glow)' : 'transparent',
-                  border: `1px solid ${active?.id === s.id ? 'var(--border-accent)' : 'transparent'}`,
-                  borderRadius: 'var(--radius-sm)',
-                  marginBottom: '8px',
-                  transition: 'all var(--transition-fast)',
-                }}
-                onMouseEnter={(e) => {
-                  if (active?.id !== s.id) {
-                    e.currentTarget.style.background = 'var(--theme-toggle-hover)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (active?.id !== s.id) {
-                    e.currentTarget.style.background = 'transparent';
-                  }
-                }}
-                actions={[
-                  <Button
-                    key="del"
-                    type="text"
-                    danger
-                    size="small"
-                    icon={<DeleteOutlined />}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void onDeleteSession(s);
-                    }}
-                  />,
-                ]}
-              >
-                <List.Item.Meta
-                  title={
-                    <Text
-                      style={{
-                        color: active?.id === s.id ? 'var(--text-primary)' : 'var(--text-secondary)',
-                        fontWeight: active?.id === s.id ? 600 : 400,
+
+        {/* Search Input */}
+        <Input
+          prefix={<SearchOutlined style={{ color: 'var(--text-muted)' }} />}
+          placeholder="搜索会话..."
+          allowClear
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
+          onPressEnter={() => {
+            setPage(1);
+            void doFetchSessions(1, search);
+          }}
+          style={{
+            marginBottom: '12px',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--text-primary)',
+            transition: 'all var(--transition-fast)',
+          }}
+        />
+
+        {/* Session List */}
+        <div style={{ flex: 1, overflowY: 'auto', marginBottom: '12px' }}>
+          {sessions.length === 0 ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '32px 0',
+                color: 'var(--text-muted)',
+                fontSize: '13px',
+              }}
+            >
+              <MessageOutlined style={{ fontSize: '24px', marginBottom: '8px', opacity: 0.4 }} />
+              {search ? '未找到匹配的会话' : '暂无会话'}
+            </div>
+          ) : (
+            <List
+              dataSource={sessions}
+              renderItem={(s) => (
+                <List.Item
+                  onClick={() => void onSelectSession(s)}
+                  style={{
+                    cursor: 'pointer',
+                    padding: '12px',
+                    background: active?.id === s.id ? 'var(--accent-glow)' : 'transparent',
+                    border: `1px solid ${active?.id === s.id ? 'var(--border-accent)' : 'transparent'}`,
+                    borderRadius: 'var(--radius-sm)',
+                    marginBottom: '8px',
+                    transition: 'all var(--transition-fast)',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (active?.id !== s.id) {
+                      e.currentTarget.style.background = 'var(--theme-toggle-hover)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (active?.id !== s.id) {
+                      e.currentTarget.style.background = 'transparent';
+                    }
+                  }}
+                  actions={[
+                    <Button
+                      key="del"
+                      type="text"
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onDeleteSession(s);
                       }}
-                    >
-                      {s.title ?? `Session #${s.id}`}
-                    </Text>
-                  }
-                  description={
-                    <Text style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                      {s.updated_at?.slice(0, 19)}
-                    </Text>
-                  }
-                />
-              </List.Item>
-            )}
-          />
+                    />,
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={
+                      <Text
+                        style={{
+                          color: active?.id === s.id ? 'var(--text-primary)' : 'var(--text-secondary)',
+                          fontWeight: active?.id === s.id ? 600 : 400,
+                        }}
+                      >
+                        {s.title ?? `Session #${s.id}`}
+                      </Text>
+                    }
+                    description={
+                      <Text style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                        {s.updated_at?.slice(0, 19)}
+                      </Text>
+                    }
+                  />
+                </List.Item>
+              )}
+            />
+          )}
         </div>
+
+        {/* Pagination */}
+        {total > PAGE_SIZE && (
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <Pagination
+              size="small"
+              current={page}
+              pageSize={PAGE_SIZE}
+              total={total}
+              onChange={(p) => {
+                setPage(p);
+                void doFetchSessions(p, search);
+              }}
+              showSizeChanger={false}
+              hideOnSinglePage
+              style={{ fontSize: '12px' }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Main Chat Area */}
@@ -324,7 +403,8 @@ export default function ChatPage() {
                     >
                       {m.content}
                     </pre>
-                  </div>
+              
+            </div>
                 </div>
               ))}
               <ChatStream events={events} tokenBuffer={tokenBuf} pending={pending} />

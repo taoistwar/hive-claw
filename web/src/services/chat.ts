@@ -29,8 +29,14 @@ export interface SessionList {
   total: number;
 }
 
-export async function listSessions(): Promise<SessionList> {
-  const resp = await apiClient.get<SessionList>('/chat/sessions');
+export interface SessionListParams {
+  offset?: number;
+  limit?: number;
+  search?: string;
+}
+
+export async function listSessions(params?: SessionListParams): Promise<SessionList> {
+  const resp = await apiClient.get<SessionList>('/chat/sessions', { params });
   return resp.data;
 }
 

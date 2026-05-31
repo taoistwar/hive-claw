@@ -93,40 +93,75 @@ pub async fn list_sessions(
     actor_role: i8,
     offset: i64,
     limit: i64,
+    search: Option<&str>,
 ) -> Result<SessionList, AppError> {
-    let (count_sql, list_sql, bind_admin) = if actor_role == 3 {
+    let (count_base, list_base, bind_admin) = if actor_role == 3 {
         (
             "SELECT COUNT(*) FROM chat_sessions",
-            "SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM chat_sessions",
             false,
         )
     } else {
         (
             "SELECT COUNT(*) FROM chat_sessions WHERE admin_id = ?",
-            "SELECT * FROM chat_sessions WHERE admin_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM chat_sessions WHERE admin_id = ?",
             true,
         )
     };
 
-    let total: (i64,) = if bind_admin {
-        sqlx::query_as(count_sql)
+    let (search_clause, bind_search) = match search {
+        Some(s) if !s.is_empty() => (" AND title LIKE ?", true),
+        _ => ("", false),
+    };
+
+    let count_sql = format!("{}{}", count_base, search_clause);
+    let list_sql = format!("{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?", list_base, search_clause);
+
+    let total: (i64,) = if bind_admin && bind_search {
+        sqlx::query_as(&count_sql)
+            .bind(actor_admin_id)
+            .bind(format!("%{}%", search.unwrap()))
+            .fetch_one(pool)
+            .await
+    } else if bind_admin {
+        sqlx::query_as(&count_sql)
             .bind(actor_admin_id)
             .fetch_one(pool)
             .await
+    } else if bind_search {
+        sqlx::query_as(&count_sql)
+            .bind(format!("%{}%", search.unwrap()))
+            .fetch_one(pool)
+            .await
     } else {
-        sqlx::query_as(count_sql).fetch_one(pool).await
+        sqlx::query_as(&count_sql).fetch_one(pool).await
     }
     .map_err(|e| AppError::Internal(format!("session count: {e}")))?;
 
-    let items: Vec<ChatSession> = if bind_admin {
-        sqlx::query_as(list_sql)
+    let items: Vec<ChatSession> = if bind_admin && bind_search {
+        sqlx::query_as(&list_sql)
+            .bind(actor_admin_id)
+            .bind(format!("%{}%", search.unwrap()))
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+    } else if bind_admin {
+        sqlx::query_as(&list_sql)
             .bind(actor_admin_id)
             .bind(limit)
             .bind(offset)
             .fetch_all(pool)
             .await
+    } else if bind_search {
+        sqlx::query_as(&list_sql)
+            .bind(format!("%{}%", search.unwrap()))
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
     } else {
-        sqlx::query_as(list_sql)
+        sqlx::query_as(&list_sql)
             .bind(limit)
             .bind(offset)
             .fetch_all(pool)

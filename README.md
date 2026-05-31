@@ -1,6 +1,6 @@
-# HiveClaw Admin Center
+# HiveClaw
 
-管理中心系统 - 前后端分离架构
+管理中心 & 用户中心系统 - 前后端分离架构
 
 ## 技术栈
 
@@ -61,7 +61,7 @@ cargo run
 # 访问 http://localhost:3000
 ```
 
-### 3. 前端设置
+### 3. 管理中心前端 (web-admin)
 
 ```bash
 cd web-admin
@@ -75,6 +75,22 @@ cp .env.example .env
 # 启动开发服务器
 npm run dev
 # 访问 http://localhost:5173
+```
+
+### 4. 用户中心前端 (web-user)
+
+```bash
+cd web-user
+
+# 安装依赖
+npm install
+
+# 复制环境变量文件
+cp .env.example .env
+
+# 启动开发服务器
+npm run dev
+# 访问 http://localhost:5174
 ```
 
 ## 项目结构

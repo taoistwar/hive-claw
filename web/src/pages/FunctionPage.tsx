@@ -54,7 +54,7 @@ export default function FunctionPage() {
   const [filterCollapsed, setFilterCollapsed] = useState(false);
   const [capabilities, setCapabilities] = useState<CapabilityItem[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(5);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
@@ -64,7 +64,7 @@ export default function FunctionPage() {
         listCapabilities(),
       ]);
       setCategoryTree(tree);
-      setCapabilities(caps);
+      setCapabilities(caps[0]);
       const allKeys: React.Key[] = [];
       const collect = (nodes: CategoryNode[]) => {
         nodes.forEach((n) => {
@@ -404,7 +404,7 @@ export default function FunctionPage() {
             current: currentPage,
             pageSize: pageSize,
             showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100'],
+            pageSizeOptions: ['5', '10', '20', '50', '100'],
             showTotal: (total) => `共 ${total} 条`,
           }}
           onChange={(pagination) => {

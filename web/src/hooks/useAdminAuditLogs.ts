@@ -12,7 +12,7 @@ export const useAdminAuditLogs = () => {
   const [error, setError] = useState<string | null>(null);
   const [pagination, setPagination] = useState({
     current: 1,
-    pageSize: 10,
+    pageSize: 5,
     total: 0,
   });
 

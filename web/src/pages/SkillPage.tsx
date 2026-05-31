@@ -78,7 +78,7 @@ export default function SkillPage() {
   const [filterForm] = Form.useForm<FilterValues>();
   const [filterCollapsed, setFilterCollapsed] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(5);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
@@ -427,7 +427,7 @@ export default function SkillPage() {
             current: currentPage,
             pageSize: pageSize,
             showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100'],
+            pageSizeOptions: ['5', '10', '20', '50', '100'],
             showTotal: (total) => `共 ${total} 条`,
             onChange: (page, pageSize) => {
               setCurrentPage(page);

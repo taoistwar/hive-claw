@@ -20,7 +20,7 @@ export default function RecommendedGamePage() {
   const [editingItem, setEditingItem] = useState<RecommendedGame | null>(null)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(5)
   const [createForm] = Form.useForm()
   const [editForm] = Form.useForm()
 

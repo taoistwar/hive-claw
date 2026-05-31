@@ -77,7 +77,7 @@ export default function WorkflowPage() {
   const [filterForm] = Form.useForm<FilterValues>();
   const [allTags, setAllTags] = useState<TagItem[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(5);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
@@ -473,7 +473,7 @@ export default function WorkflowPage() {
             total: total,
             showTotal: (t) => `共 ${t} 条`,
             showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100'],
+            pageSizeOptions: ['5', '10', '20', '50', '100'],
             onChange: (page, pageSize) => {
               setCurrentPage(page);
               setPageSize(pageSize);

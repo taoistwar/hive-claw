@@ -196,8 +196,8 @@ export default function PluginPage() {
           dataSource={items}
           loading={loading}
           pagination={{
-            current: Math.floor((params.offset ?? 0) / (params.limit ?? 20)) + 1,
-            pageSize: params.limit ?? 20,
+            current: Math.floor((params.offset ?? 0) / (params.limit ?? 5)) + 1,
+            pageSize: params.limit ?? 5,
             total,
             onChange: (page, pageSize) => {
               setParams({ ...params, offset: (page - 1) * pageSize, limit: pageSize });

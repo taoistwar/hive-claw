@@ -11,7 +11,7 @@ import {
   ToolSearchParams,
 } from '../services/tool';
 
-const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 5;
 
 interface UseToolReturn {
   tools: ToolItem[];

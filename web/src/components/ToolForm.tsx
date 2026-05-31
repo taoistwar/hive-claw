@@ -43,6 +43,7 @@ const ToolForm: React.FC<ToolFormProps> = ({
   const [loadingCapabilities, setLoadingCapabilities] = useState(false);
   const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
   const [loadingWorkflows, setLoadingWorkflows] = useState(false);
+  const [workflowSchemasLocked, setWorkflowSchemasLocked] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
@@ -70,7 +71,7 @@ const ToolForm: React.FC<ToolFormProps> = ({
 
     setLoadingCapabilities(true);
     listCapabilities()
-      .then((res) => setCapabilities(res))
+      .then(([caps]) => setCapabilities(caps))
       .catch(() => {})
       .finally(() => setLoadingCapabilities(false));
 
@@ -104,9 +105,11 @@ const ToolForm: React.FC<ToolFormProps> = ({
           tags: editingTool.tags.map((t) => t.id),
           required_capabilities: editingTool.required_capabilities || [],
         });
+        setWorkflowSchemasLocked(editingTool.kind === 2);
       } else {
         form.resetFields();
         form.setFieldsValue({ kind: 1, is_always: false, tags: [], category_id: undefined, required_capabilities: [] });
+        setWorkflowSchemasLocked(false);
       }
   }, [visible, isEditing, editingTool, form]);
 
@@ -435,23 +438,25 @@ const ToolForm: React.FC<ToolFormProps> = ({
             <Form.Item
               name="input_schema"
               label="输入Schema (JSON)"
+              tooltip={workflowSchemasLocked ? '该字段由 Workflow 自动填充，不可编辑' : undefined}
               rules={[
                 { required: true, message: '请输入输入Schema' },
                 { validator: validateJson },
               ]}
             >
-              <Input.TextArea rows={6} />
+              <Input.TextArea rows={6} disabled={workflowSchemasLocked} />
             </Form.Item>
 
             <Form.Item
               name="output_schema"
               label="输出Schema (JSON)"
+              tooltip={workflowSchemasLocked ? '该字段由 Workflow 自动填充，不可编辑' : undefined}
               rules={[
                 { required: true, message: '请输入输出Schema' },
                 { validator: validateJson },
               ]}
             >
-              <Input.TextArea rows={6} />
+              <Input.TextArea rows={6} disabled={workflowSchemasLocked} />
             </Form.Item>
           </>
         )}

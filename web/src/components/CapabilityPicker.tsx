@@ -19,7 +19,7 @@ export function CapabilityPicker({ value, onChange, currentRole }: CapabilityPic
   useEffect(() => {
     setLoading(true);
     listCapabilities()
-      .then(setCaps)
+      .then(([caps]) => setCaps(caps))
       .catch((e) => message.error(`Capability 加载失败：${(e as Error).message}`))
       .finally(() => setLoading(false));
   }, []);

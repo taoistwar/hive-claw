@@ -6,7 +6,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { ColorPickerInput } from '../components/ColorPickerInput';
 import { createTag, deleteTag, listTags, updateTag, type TagItem } from '../services/tag';
 
-const DEFAULT_PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 5;
 
 export default function TagPage() {
   const [items, setItems] = useState<TagItem[]>([]);

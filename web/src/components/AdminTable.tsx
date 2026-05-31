@@ -98,7 +98,16 @@ const AdminTable: React.FC<AdminTableProps> = ({
       render: (role: number) => {
         const roleInfo = ROLE_MAP[role];
         return roleInfo ? (
-          <Tag color={roleInfo.color}>{roleInfo.label}</Tag>
+          <Tag
+            color={roleInfo.color}
+            style={{
+              borderRadius: '20px',
+              padding: '2px 12px',
+              fontWeight: 500,
+            }}
+          >
+            {roleInfo.label}
+          </Tag>
         ) : (
           <Text>{role}</Text>
         );
@@ -110,9 +119,28 @@ const AdminTable: React.FC<AdminTableProps> = ({
       key: 'status',
       width: 100,
       render: (status: number) => (
-        <Tag color={status === 1 ? 'green' : 'default'}>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '4px 12px',
+            borderRadius: '20px',
+            fontSize: '12px',
+            background: status === 1 ? 'var(--success-bg)' : 'rgba(255, 255, 255, 0.05)',
+            color: status === 1 ? 'var(--success)' : 'var(--text-muted)',
+          }}
+        >
+          <span
+            style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: status === 1 ? 'var(--success)' : 'var(--text-muted)',
+            }}
+          />
           {status === 1 ? '启用' : '禁用'}
-        </Tag>
+        </span>
       ),
     },
     {
@@ -120,7 +148,11 @@ const AdminTable: React.FC<AdminTableProps> = ({
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
-      render: (value: string) => new Date(value).toLocaleString(),
+      render: (value: string) => (
+        <span style={{ color: 'var(--text-secondary)' }}>
+          {new Date(value).toLocaleString()}
+        </span>
+      ),
     },
     {
       title: '最后登录',
@@ -128,7 +160,13 @@ const AdminTable: React.FC<AdminTableProps> = ({
       key: 'last_login_at',
       width: 180,
       render: (value: string | null) =>
-        value ? new Date(value).toLocaleString() : '未登录',
+        value ? (
+          <span style={{ color: 'var(--text-secondary)' }}>
+            {new Date(value).toLocaleString()}
+          </span>
+        ) : (
+          <span style={{ color: 'var(--text-muted)' }}>未登录</span>
+        ),
     },
     {
       title: '操作',
@@ -138,12 +176,13 @@ const AdminTable: React.FC<AdminTableProps> = ({
         if (user?.role === 1) return null;
 
         return (
-          <span>
+          <Space size="small">
             <Button
-              type="link"
+              type="text"
               size="small"
               icon={<EditOutlined />}
               onClick={() => onEdit(record)}
+              style={{ color: 'var(--accent-primary)' }}
             >
               编辑
             </Button>
@@ -155,7 +194,7 @@ const AdminTable: React.FC<AdminTableProps> = ({
                 okText="确定"
                 cancelText="取消"
               >
-                <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                <Button type="text" size="small" danger icon={<DeleteOutlined />}>
                   删除
                 </Button>
               </Popconfirm>
@@ -171,15 +210,16 @@ const AdminTable: React.FC<AdminTableProps> = ({
                 cancelText="取消"
               >
                 <Button
-                  type="link"
+                  type="text"
                   size="small"
                   icon={record.status === 1 ? <StopOutlined /> : <CheckOutlined />}
+                  style={{ color: record.status === 1 ? 'var(--warning)' : 'var(--success)' }}
                 >
                   {record.status === 1 ? '禁用' : '启用'}
                 </Button>
               </Popconfirm>
             )}
-          </span>
+          </Space>
         );
       },
     },
@@ -191,14 +231,20 @@ const AdminTable: React.FC<AdminTableProps> = ({
         form={form}
         layout="inline"
         onFinish={handleSearch}
-        style={{ marginBottom: 16 }}
+        style={{ marginBottom: 24 }}
         aria-label="管理员筛选"
       >
         <Form.Item name="search" label="搜索">
           <Input
             placeholder="搜索手机号/昵称/ID"
             allowClear
-            style={{ width: 200 }}
+            style={{
+              width: 200,
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-primary)',
+            }}
             aria-label="搜索手机号、昵称或 ID"
           />
         </Form.Item>
@@ -229,20 +275,49 @@ const AdminTable: React.FC<AdminTableProps> = ({
           <RangePicker
             placeholder={['创建时间起', '创建时间止']}
             aria-label="按创建时间筛选"
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+            }}
           />
         </Form.Item>
         <Form.Item name="last_login_range" label="最后登录">
           <RangePicker
             placeholder={['登录时间起', '登录时间止']}
             aria-label="按最后登录时间筛选"
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+            }}
           />
         </Form.Item>
         <Form.Item>
           <Space>
-            <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+            <Button
+              type="primary"
+              htmlType="submit"
+              icon={<SearchOutlined />}
+              style={{
+                background: 'var(--gradient-primary)',
+                border: 'none',
+                borderRadius: 'var(--radius-sm)',
+                boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)',
+              }}
+            >
               搜索
             </Button>
-            <Button onClick={handleResetSearch} icon={<ReloadOutlined />}>
+            <Button
+              onClick={handleResetSearch}
+              icon={<ReloadOutlined />}
+              style={{
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--text-secondary)',
+              }}
+            >
               重置
             </Button>
           </Space>
@@ -260,7 +335,9 @@ const AdminTable: React.FC<AdminTableProps> = ({
           showSizeChanger: false,
           showTotal: (total) => `共 ${total} 条`,
           onChange: onPaginationChange,
+          style: { color: 'var(--text-primary)' },
         }}
+        style={{ color: 'var(--text-primary)' }}
       />
     </div>
   );

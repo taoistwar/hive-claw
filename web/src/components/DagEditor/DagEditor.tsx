@@ -216,7 +216,7 @@ function EdgeContextMenu({ x, y, edgeId, onDelete, onClose }: {
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (menuRef.current && !menuRef.current.contains(e.target as HTMLElement)) {
         onClose();
       }
     };
@@ -587,7 +587,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         const isEnd = n.data.node_type === 'end_node' || n.id === 'end';
 
         if (cycle?.includes(n.id)) {
-          node = { ...n, data: { ...n.data, style: { border: '2px solid #ff4d4f' } } };
+          node = { ...n };
         }
 
         // 开始节点：有上次运行输入时标记为有结果

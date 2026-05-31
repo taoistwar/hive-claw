@@ -13,7 +13,7 @@ export interface UsePluginsResult {
   refresh: () => Promise<void>;
 }
 
-export function usePlugins(initial: PluginListParams = { offset: 0, limit: 20 }): UsePluginsResult {
+export function usePlugins(initial: PluginListParams = { offset: 0, limit: 5 }): UsePluginsResult {
   const [params, setParams] = useState<PluginListParams>(initial);
   const [items, setItems] = useState<Plugin[]>([]);
   const [total, setTotal] = useState(0);

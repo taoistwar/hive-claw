@@ -12,7 +12,7 @@ import {
   AdminSearchParams,
 } from '../services/admin';
 
-const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 5;
 
 interface UseAdminReturn {
   admins: Admin[];

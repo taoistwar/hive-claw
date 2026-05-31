@@ -95,7 +95,7 @@ export default function FunctionForm({
           listCapabilities(),
           listTags(),
         ]);
-        setCapabilities(capRes);
+        setCapabilities(capRes[0]);
         setTags(tagRes.items);
         setCategoryTreeData(buildTreeData(treeRes));
         setPlugins(

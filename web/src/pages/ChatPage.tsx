@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Input, List, Space, Typography, message } from 'antd';
+import { PlusOutlined, SendOutlined, DeleteOutlined, MessageOutlined } from '@ant-design/icons';
 import { ChatStream } from '../components/ChatStream';
 import {
   createSession,
@@ -86,7 +87,6 @@ export default function ChatPage() {
     setPending(true);
     abortRef.current = new AbortController();
 
-    // 把 user 消息加到 history（乐观更新）
     setHistory((h) => [
       ...h,
       {
@@ -121,7 +121,6 @@ export default function ChatPage() {
       void message.error(`流错误：${(e as Error).message}`);
       setPending(false);
     } finally {
-      // 流结束后用最新 history（含 server 写入的 assistant）替换乐观更新
       try {
         const msgs = await getMessages(active.id);
         setHistory(msgs);
@@ -132,63 +131,216 @@ export default function ChatPage() {
   };
 
   return (
-    <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 200px)' }}>
-      <div style={{ width: 260, borderRight: '1px solid #eee', paddingRight: 12 }}>
-        <Space style={{ marginBottom: 12, width: '100%', justifyContent: 'space-between' }}>
-          <Title level={5} style={{ margin: 0 }}>
-            会话
-          </Title>
-          <Button type="primary" size="small" onClick={onNewSession}>
+    <div
+      style={{
+        display: 'flex',
+        gap: '20px',
+        height: 'calc(100vh - 200px)',
+        animation: 'fadeIn 400ms ease-out',
+      }}
+    >
+      {/* Sidebar - Session List */}
+      <div
+        style={{
+          width: '300px',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-md)',
+          padding: '16px',
+          display: 'flex',
+          flexDirection: 'column',
+          boxShadow: 'var(--shadow-sm)',
+        }}
+      >
+        <Space
+          style={{
+            marginBottom: '16px',
+            width: '100%',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <MessageOutlined style={{ color: 'var(--accent-primary)' }} />
+            <Title level={5} style={{ margin: 0, color: 'var(--text-primary)' }}>
+              会话
+            </Title>
+          </div>
+          <Button
+            type="primary"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={onNewSession}
+            style={{
+              background: 'var(--gradient-primary)',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)',
+            }}
+          >
             新建
           </Button>
         </Space>
-        <List
-          dataSource={sessions}
-          renderItem={(s) => (
-            <List.Item
-              onClick={() => void onSelectSession(s)}
-              style={{
-                cursor: 'pointer',
-                padding: 8,
-                background: active?.id === s.id ? '#f0f5ff' : 'transparent',
-                borderRadius: 4,
-              }}
-              actions={[
-                <Button
-                  key="del"
-                  type="link"
-                  danger
-                  size="small"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void onDeleteSession(s);
-                  }}
-                >
-                  删除
-                </Button>,
-              ]}
-            >
-              <List.Item.Meta
-                title={s.title ?? `Session #${s.id}`}
-                description={s.updated_at?.slice(0, 19)}
-              />
-            </List.Item>
-          )}
-        />
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <List
+            dataSource={sessions}
+            renderItem={(s) => (
+              <List.Item
+                onClick={() => void onSelectSession(s)}
+                style={{
+                  cursor: 'pointer',
+                  padding: '12px',
+                  background: active?.id === s.id ? 'var(--accent-glow)' : 'transparent',
+                  border: `1px solid ${active?.id === s.id ? 'var(--border-accent)' : 'transparent'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  marginBottom: '8px',
+                  transition: 'all var(--transition-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  if (active?.id !== s.id) {
+                    e.currentTarget.style.background = 'var(--theme-toggle-hover)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (active?.id !== s.id) {
+                    e.currentTarget.style.background = 'transparent';
+                  }
+                }}
+                actions={[
+                  <Button
+                    key="del"
+                    type="text"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onDeleteSession(s);
+                    }}
+                  />,
+                ]}
+              >
+                <List.Item.Meta
+                  title={
+                    <Text
+                      style={{
+                        color: active?.id === s.id ? 'var(--text-primary)' : 'var(--text-secondary)',
+                        fontWeight: active?.id === s.id ? 600 : 400,
+                      }}
+                    >
+                      {s.title ?? `Session #${s.id}`}
+                    </Text>
+                  }
+                  description={
+                    <Text style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                      {s.updated_at?.slice(0, 19)}
+                    </Text>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        </div>
       </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+
+      {/* Main Chat Area */}
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-md)',
+          boxShadow: 'var(--shadow-sm)',
+          overflow: 'hidden',
+        }}
+      >
         {active ? (
           <>
-            <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-              {history.map((m) => (
-                <div key={m.id} style={{ marginBottom: 12 }}>
-                  <Text strong>{m.role === 'user' ? '👤 我' : '🤖 助手'}</Text>
-                  <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{m.content}</pre>
+            {/* Messages Area */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '24px',
+                background: `
+                  linear-gradient(180deg, var(--bg-card) 0%, var(--bg-secondary) 100%)
+                `,
+              }}
+            >
+              {history.map((m, index) => (
+                <div
+                  key={m.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
+                    marginBottom: '20px',
+                    animation: 'fadeIn 300ms ease-out',
+                    animationDelay: `${index * 50}ms`,
+                    animationFillMode: 'both',
+                  }}
+                >
+                  {/* Avatar */}
+                  <div
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '50%',
+                      background: m.role === 'user' ? 'var(--gradient-primary)' : 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: m.role === 'user' ? '0' : '12px',
+                      marginLeft: m.role === 'user' ? '12px' : '0',
+                      order: m.role === 'user' ? '1' : '0',
+                      flexShrink: 0,
+                      fontSize: '14px',
+                    }}
+                  >
+                    {m.role === 'user' ? '👤' : '🤖'}
+                  </div>
+
+                  {/* Message Bubble */}
+                  <div
+                    style={{
+                      maxWidth: '70%',
+                      padding: '12px 16px',
+                      borderRadius: m.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                      background: m.role === 'user' ? 'var(--gradient-primary)' : 'var(--bg-input)',
+                      border: m.role === 'user' ? 'none' : '1px solid var(--border-subtle)',
+                      boxShadow: m.role === 'user' ? '0 2px 12px rgba(102, 126, 234, 0.2)' : 'var(--shadow-sm)',
+                    }}
+                  >
+                    <pre
+                      style={{
+                        margin: 0,
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: 'inherit',
+                        fontSize: '14px',
+                        lineHeight: '1.6',
+                        color: m.role === 'user' ? 'white' : 'var(--text-primary)',
+                        background: 'transparent',
+                      }}
+                    >
+                      {m.content}
+                    </pre>
+                  </div>
                 </div>
               ))}
               <ChatStream events={events} tokenBuffer={tokenBuf} pending={pending} />
             </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+
+            {/* Input Area */}
+            <div
+              style={{
+                padding: '16px 24px',
+                borderTop: '1px solid var(--border-subtle)',
+                background: 'var(--bg-secondary)',
+                display: 'flex',
+                gap: '12px',
+                alignItems: 'flex-end',
+              }}
+            >
               <Input.TextArea
                 rows={2}
                 value={draft}
@@ -200,14 +352,67 @@ export default function ChatPage() {
                   }
                 }}
                 placeholder="输入消息（Enter 发送，Shift+Enter 换行）"
+                style={{
+                  background: 'var(--bg-input)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--text-primary)',
+                  resize: 'none',
+                  transition: 'all var(--transition-fast)',
+                }}
+                autoSize={{ minRows: 2, maxRows: 6 }}
               />
-              <Button type="primary" onClick={() => void onSend()} disabled={pending || !draft.trim()}>
-                发送
-              </Button>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={() => void onSend()}
+                disabled={pending || !draft.trim()}
+                style={{
+                  height: 'auto',
+                  padding: '12px 20px',
+                  background: 'var(--gradient-primary)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  boxShadow: '0 2px 12px rgba(102, 126, 234, 0.3)',
+                  transition: 'all var(--transition-fast)',
+                }}
+              />
             </div>
           </>
         ) : (
-          <Text type="secondary">从左侧选一个会话或新建</Text>
+          /* Empty State */
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '16px',
+            }}
+          >
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: 'var(--accent-glow)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '28px',
+                animation: 'float 3s ease-in-out infinite',
+              }}
+            >
+              💬
+            </div>
+            <Title level={4} style={{ margin: 0, color: 'var(--text-primary)' }}>
+              开始对话
+            </Title>
+            <Text style={{ color: 'var(--text-secondary)' }}>
+              从左侧选择一个会话或创建新会话
+            </Text>
+          </div>
         )}
       </div>
     </div>

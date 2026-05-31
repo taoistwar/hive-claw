@@ -7,7 +7,7 @@ import {
   LoginRecordSearchParams,
 } from '../services/loginRecord';
 
-const DEFAULT_PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 5;
 
 export const useLoginRecords = () => {
   const [loginRecords, setLoginRecords] = useState<LoginRecord[]>([]);

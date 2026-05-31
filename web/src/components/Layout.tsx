@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Dropdown, Avatar, Typography } from 'antd';
+import { Layout, Menu, Dropdown, Avatar, Typography, Button } from 'antd';
 import {
   DashboardOutlined,
   TeamOutlined,
@@ -18,14 +18,18 @@ import {
   FileTextOutlined,
   KeyOutlined,
   MessageOutlined,
+  SunOutlined,
+  MoonOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
+import { useTheme } from '../hooks/useTheme';
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
 
 const AppLayout: React.FC = () => {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -152,40 +156,161 @@ const AppLayout: React.FC = () => {
   ];
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100vh', background: 'var(--bg-primary)', transition: 'background var(--transition-base)' }}>
       <Header
         style={{
-          padding: '0 24px',
-          background: '#fff',
+          padding: '0 32px',
+          background: 'var(--bg-secondary)',
+          borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
           alignItems: 'center',
-          gap: '24px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+          gap: '32px',
           position: 'sticky',
           top: 0,
           zIndex: 100,
           width: '100%',
+          backdropFilter: 'blur(12px)',
+          transition: 'background var(--transition-base), border-color var(--transition-base)',
+          overflow: 'visible',
         }}
       >
-        <Text strong style={{ fontSize: '18px', whiteSpace: 'nowrap' }}>
-          Admin Center
-        </Text>
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', whiteSpace: 'nowrap' }}>
+          <div
+            style={{
+              width: '36px',
+              height: '36px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--gradient-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)',
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="white"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <Text
+            strong
+            style={{
+              fontSize: '18px',
+              fontFamily: "'Space Grotesk', sans-serif",
+              color: 'var(--text-primary)',
+              letterSpacing: '-0.5px',
+              transition: 'color var(--transition-base)',
+            }}
+          >
+            Admin Center
+          </Text>
+        </div>
+
+        {/* Navigation Menu */}
         <Menu
           mode="horizontal"
           selectedKeys={[location.pathname]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
-          style={{ border: 'none', flex: 1, minWidth: 0 }}
+          style={{
+            border: 'none',
+            flex: 1,
+            minWidth: 0,
+            background: 'transparent',
+          }}
         />
-        <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-          <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <Avatar icon={<UserOutlined />} />
-            <Text style={{ marginLeft: '8px' }}>{user?.nickname}</Text>
-          </div>
-        </Dropdown>
+
+        {/* Right side: Theme Toggle + User */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {/* Theme Toggle */}
+          <Button
+            type="text"
+            icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+            onClick={toggleTheme}
+            style={{
+              background: 'var(--theme-toggle-bg)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-secondary)',
+              width: '36px',
+              height: '36px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all var(--transition-fast)',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'var(--theme-toggle-hover)';
+              e.currentTarget.style.color = 'var(--text-primary)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'var(--theme-toggle-bg)';
+              e.currentTarget.style.color = 'var(--text-secondary)';
+            }}
+            aria-label={theme === 'dark' ? '切换为亮色主题' : '切换为暗色主题'}
+          />
+
+          {/* User Avatar */}
+          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-sm)',
+                transition: 'background var(--transition-fast)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--theme-toggle-hover)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <Avatar
+                icon={<UserOutlined />}
+                style={{
+                  background: 'var(--gradient-primary)',
+                  border: 'none',
+                }}
+              />
+              <Text style={{ color: 'var(--text-secondary)', fontSize: '14px', transition: 'color var(--transition-base)' }}>
+                {user?.nickname}
+              </Text>
+            </div>
+          </Dropdown>
+        </div>
       </Header>
-      <Layout>
-        <Content style={{ margin: '24px 16px', padding: 24, background: '#fff' }}>
+      <Layout style={{ position: 'relative' }}>
+        <Content
+          style={{
+            margin: '24px 32px',
+            padding: '32px',
+            background: 'var(--bg-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-subtle)',
+            boxShadow: 'var(--shadow-md)',
+            minHeight: 'calc(100vh - 120px)',
+            animation: 'fadeIn 300ms ease-out',
+            transition: 'background var(--transition-base), border-color var(--transition-base)',
+            position: 'relative',
+            zIndex: 1,
+          }}
+        >
           <Outlet />
         </Content>
       </Layout>

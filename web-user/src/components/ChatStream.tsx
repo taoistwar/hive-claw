@@ -1,7 +1,5 @@
-import { Alert, Typography } from 'antd';
+import { Alert } from 'antd';
 import type { SseEvent } from '../services/chat';
-
-const { Text } = Typography;
 
 export interface ChatStreamProps {
   events: SseEvent[];

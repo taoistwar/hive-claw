@@ -266,6 +266,23 @@ pub async fn update_admin(
             .into_response();
     }
 
+    let target_admin = admin::get_admin_by_id(&state.pool, id).await;
+    match target_admin {
+        Ok(Some(admin)) => {
+            let admin_role = Role::try_from(admin.role)
+                .map_err(|_| anyhow::anyhow!("Invalid role"))
+                .unwrap();
+            if !caller_role.can_modify_target_admin(&admin_role) {
+                return AppError::InsufficientPermission(
+                    "Cannot modify this admin's profile".to_string()
+                )
+                .into_response();
+            }
+        }
+        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Err(_) => return AppError::Internal("Service unavailable".to_string()).into_response(),
+    }
+
     let updated_admin = match admin::update_admin(&state.pool, id, &req.nickname, req.role).await {
         Ok(admin) => admin,
         Err(_) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
@@ -309,6 +326,18 @@ pub async fn delete_admin(
     // Snapshot target identity *before* the delete so audit has phone to log.
     let target = admin::get_admin_by_id(&state.pool, id).await.ok().flatten();
     let target_phone = target.as_ref().map(|t| t.phone.clone()).unwrap_or_default();
+
+    if let Some(ref admin) = target {
+        let admin_role = Role::try_from(admin.role)
+            .map_err(|_| anyhow::anyhow!("Invalid role"))
+            .unwrap();
+        if !caller_role.can_delete_target_admin(&admin_role) {
+            return AppError::InsufficientPermission(
+                "Cannot delete this admin".to_string()
+            )
+            .into_response();
+        }
+    }
 
     match admin::delete_admin(&state.pool, id).await {
         Ok(_) => {
@@ -362,6 +391,19 @@ pub async fn toggle_admin_status(
 
     if req.status != 0 && req.status != 1 {
         return AppError::BadRequest("Status must be 0 or 1".to_string()).into_response();
+    }
+
+    let target_admin = admin::get_admin_by_id(&state.pool, id).await;
+    if let Ok(Some(admin)) = &target_admin {
+        let admin_role = Role::try_from(admin.role)
+            .map_err(|_| anyhow::anyhow!("Invalid role"))
+            .unwrap();
+        if !caller_role.can_toggle_target_admin_status(&admin_role) {
+            return AppError::InsufficientPermission(
+                "Cannot toggle this admin's status".to_string()
+            )
+            .into_response();
+        }
     }
 
     match admin::toggle_admin_status(&state.pool, id, req.status).await {

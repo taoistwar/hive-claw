@@ -44,6 +44,34 @@ impl Role {
         }
     }
 
+    pub fn can_modify_target_admin(&self, target_role: &Role) -> bool {
+        match self {
+            Role::Super => true,
+            Role::System => !matches!(target_role, Role::Super),
+            Role::Normal => false,
+        }
+    }
+
+    pub fn can_delete_target_admin(&self, target_role: &Role) -> bool {
+        matches!(self, Role::Super) && !matches!(target_role, Role::Super)
+    }
+
+    pub fn can_toggle_target_admin_status(&self, target_role: &Role) -> bool {
+        match self {
+            Role::Super => true,
+            Role::System => !matches!(target_role, Role::Super),
+            Role::Normal => false,
+        }
+    }
+
+    pub fn can_manage_recommended_games(&self) -> bool {
+        matches!(self, Role::System | Role::Super)
+    }
+
+    pub fn can_delete_recommended_games(&self) -> bool {
+        matches!(self, Role::Super)
+    }
+
     pub fn accessible_menus(&self) -> Vec<&str> {
         match self {
             Role::Normal => vec!["dashboard"],

@@ -96,9 +96,10 @@ async fn admin_create_session(
     Extension(claims): Extension<Claims>,
     Json(body): Json<svc::CreateSession>,
 ) -> Result<ApiResponse<crate::models::ChatSessionAdmin>, ApiResponse<()>> {
-    let admin_id = claims.admin_id.ok_or_else(|| {
-        AppError::Internal("No admin context".to_string())
-    })?;
+    let admin_id = match claims.admin_id {
+        Some(id) => id,
+        None => return Err(AppError::Internal("No admin context".to_string()).into_response()),
+    };
     svc::create_session(&state.pool, admin_id, body.title)
         .await
         .map(ApiResponse::success)

@@ -20,6 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+use providers::{ChatRequest, RetryMode};
+use serde_json::json;
+
 use crate::api::AppState;
 use crate::services::chat as svc;
 use crate::utils::error::ApiResponse;
@@ -216,9 +219,6 @@ async fn post_message_sse(
     (StatusCode::OK, headers, sse).into_response()
 }
 
-use serde_json::json;
-use crate::utils::error::AppError;
-
 async fn user_chat_loop(
     deps: crate::runtime::orchestrator::OrchestratorDeps,
     session_id: i64,
@@ -236,7 +236,7 @@ async fn user_chat_loop(
         .chain(std::iter::once(json!({"role": "user", "content": user_content.clone()})))
         .collect();
 
-    let (provider, model) = match deps.llm.build_primary(None).await {
+    let (provider, model) = match deps.llm.build_primary(None) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("LLM provider error: {}", e);
@@ -247,7 +247,7 @@ async fn user_chat_loop(
         }
     };
 
-    let req = crate::runtime::providers::ChatRequest {
+    let req = ChatRequest {
         model: Some(model.clone()),
         messages,
         max_tokens: 2048,
@@ -258,14 +258,14 @@ async fn user_chat_loop(
     };
 
     let tx_inner = tx.clone();
-    let on_delta: crate::runtime::providers::StreamDeltaCallback = Arc::new(move |delta: String| {
+    let on_delta: providers::StreamDeltaCallback = Arc::new(move |delta: String| {
         let payload = json!({ "text": delta });
         let ev = Event::default().event("token").data(payload.to_string());
         let _ = tx_inner.send(Ok::<_, Infallible>(ev));
     });
 
     let resp = provider
-        .chat_stream_with_retry(req, Some(on_delta), None, crate::runtime::providers::RetryMode::Standard, None, None)
+        .chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None, None)
         .await;
 
     if resp.is_error() {

@@ -2,6 +2,8 @@
 -- Admin tables: chat_sessions_admin + chat_messages_admin
 -- User tables: chat_sessions_user + chat_messages_user
 
+SET FOREIGN_KEY_CHECKS = 0;
+
 -- 1. Create chat_sessions_admin (admin_id is required)
 CREATE TABLE IF NOT EXISTS chat_sessions_admin (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -90,3 +92,5 @@ WHERE cs.user_id IS NOT NULL;
 -- 6. Drop old tables after migration
 DROP TABLE IF EXISTS chat_messages;
 DROP TABLE IF EXISTS chat_sessions;
+
+SET FOREIGN_KEY_CHECKS = 1;

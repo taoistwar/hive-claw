@@ -243,9 +243,9 @@ pub async fn get_dashboard_stats(
     };
 
     Ok(ApiResponse::success(DashboardStats {
-        total_sessions: sessions.0,
-        total_messages: messages.0,
-        total_active_days: active_days.0,
+        total_sessions: sessions.0.unwrap_or(0),
+        total_messages: messages.0.unwrap_or(0),
+        total_active_days: active_days.0.unwrap_or(0),
         last_session_at: last_session.map(|ls| ls.0),
     }))
 }

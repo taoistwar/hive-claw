@@ -6,8 +6,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
+use crate::models::Role;
 use crate::services::recommended_game::{self as svc, CreateMeta, UpdateMeta};
-use crate::utils::error::ApiResponse;
+use crate::utils::error::{ApiResponse, AppError};
+use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -63,8 +65,22 @@ async fn get_recommended_game(
 
 async fn create_recommended_game(
     State(state): State<AppState>,
+    axum::Extension(claims): axum::Extension<Claims>,
     Json(meta): Json<CreateMeta>,
 ) -> Result<ApiResponse<crate::models::RecommendedGame>, ApiResponse<()>> {
+    let caller_role = match Role::try_from(claims.role) {
+        Ok(role) => role,
+        Err(_) => {
+            return Err(AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response())
+        }
+    };
+
+    if !caller_role.can_manage_recommended_games() {
+        return Err(AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response());
+    }
+
     svc::create(&state.pool, meta)
         .await
         .map(ApiResponse::success)
@@ -74,8 +90,22 @@ async fn create_recommended_game(
 async fn update_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(claims): axum::Extension<Claims>,
     Json(meta): Json<UpdateMeta>,
 ) -> Result<ApiResponse<crate::models::RecommendedGame>, ApiResponse<()>> {
+    let caller_role = match Role::try_from(claims.role) {
+        Ok(role) => role,
+        Err(_) => {
+            return Err(AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response())
+        }
+    };
+
+    if !caller_role.can_manage_recommended_games() {
+        return Err(AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response());
+    }
+
     svc::update(&state.pool, id, meta)
         .await
         .map(ApiResponse::success)
@@ -85,7 +115,21 @@ async fn update_recommended_game(
 async fn delete_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(claims): axum::Extension<Claims>,
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
+    let caller_role = match Role::try_from(claims.role) {
+        Ok(role) => role,
+        Err(_) => {
+            return Err(AppError::InsufficientPermission("Invalid role in token".to_string())
+                .into_response())
+        }
+    };
+
+    if !caller_role.can_delete_recommended_games() {
+        return Err(AppError::InsufficientPermission("Insufficient permissions".to_string())
+            .into_response());
+    }
+
     match svc::delete(&state.pool, id).await {
         Ok(()) => Ok(ApiResponse::success(())),
         Err(e) => Err(e.into_response()),

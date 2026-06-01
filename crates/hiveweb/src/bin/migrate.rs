@@ -181,6 +181,10 @@ const MIGRATIONS: &[Migration] = &[
         version: "V041__users_status",
         sql: include_str!("../../migrations/V041__users_status.sql"),
     },
+    Migration {
+        version: "V042__split_chat_tables",
+        sql: include_str!("../../migrations/V042__split_chat_tables.sql"),
+    },
 ];
 
 #[tokio::main]

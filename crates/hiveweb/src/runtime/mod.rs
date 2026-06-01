@@ -20,12 +20,14 @@ pub mod pool;
 pub mod skill_test;
 pub mod tool_test;
 pub mod wasm_exports;
+pub mod wasm_imports;
 pub mod workflow;
 
 pub use capability::CapabilityRegistry;
 pub use invoker::Invoker;
 pub use llm::LlmRegistry;
 pub use pool::{InstancePool, PoolConfig};
+pub use wasm_imports::{registered_imports, scan_wasm_imports};
 pub use workflow::WorkflowExecutor;
 
 use std::sync::Arc;

@@ -97,9 +97,7 @@ pub fn check_ownership_admin(
     }
     match actor_admin_id {
         Some(admin_id) if session.admin_id == admin_id => Ok(()),
-        Some(_) => Err(AppError::InsufficientPermission(
-            "无权访问他人会话".into(),
-        )),
+        Some(_) => Err(AppError::InsufficientPermission("无权访问他人会话".into())),
         None => Err(AppError::InsufficientPermission(
             "无权访问管理员会话".into(),
         )),
@@ -136,7 +134,10 @@ pub async fn list_sessions_admin(
     };
 
     let count_sql = format!("{}{}", count_base, search_clause);
-    let list_sql = format!("{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?", list_base, search_clause);
+    let list_sql = format!(
+        "{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        list_base, search_clause
+    );
 
     let total: (i64,) = if bind_filter && bind_search {
         sqlx::query_as(&count_sql)
@@ -203,12 +204,11 @@ pub async fn create_user_session(
     user_id: i64,
     title: Option<String>,
 ) -> Result<ChatSessionUser, AppError> {
-    let user: Option<(String,)> =
-        sqlx::query_as("SELECT phone FROM users WHERE id = ?")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let user: Option<(String,)> = sqlx::query_as("SELECT phone FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
     let phone = user.map(|u| u.0).unwrap_or_default();
 
     let res = sqlx::query(
@@ -241,12 +241,8 @@ pub fn check_ownership_user(
 ) -> Result<(), AppError> {
     match actor_user_id {
         Some(user_id) if session.user_id == user_id => Ok(()),
-        Some(_) => Err(AppError::InsufficientPermission(
-            "无权访问他人会话".into(),
-        )),
-        None => Err(AppError::InsufficientPermission(
-            "无权访问用户会话".into(),
-        )),
+        Some(_) => Err(AppError::InsufficientPermission("无权访问他人会话".into())),
+        None => Err(AppError::InsufficientPermission("无权访问用户会话".into())),
     }
 }
 
@@ -266,7 +262,10 @@ pub async fn list_sessions_user(
     };
 
     let count_sql = format!("{}{}", count_base, search_clause);
-    let list_sql = format!("{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?", list_base, search_clause);
+    let list_sql = format!(
+        "{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        list_base, search_clause
+    );
 
     let total: (i64,) = if bind_search {
         sqlx::query_as(&count_sql)
@@ -313,7 +312,7 @@ pub async fn list_messages_admin(
     session_id: i64,
 ) -> Result<Vec<ChatMessageAdmin>, AppError> {
     sqlx::query_as::<_, ChatMessageAdmin>(
-        "SELECT * FROM chat_messages_admin WHERE session_id = ? ORDER BY seq ASC",
+        "SELECT * FROM chat_messages_admin WHERE session_id = ? ORDER BY id ASC",
     )
     .bind(session_id)
     .fetch_all(pool)
@@ -324,25 +323,18 @@ pub async fn list_messages_admin(
 pub async fn append_user_message_admin(
     pool: &MySqlPool,
     session_id: i64,
+    admin_id: i64,
     content: &str,
 ) -> Result<ChatMessageAdmin, AppError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
-    let next_seq: (Option<i32>,) = sqlx::query_as(
-        "SELECT MAX(seq) FROM chat_messages_admin WHERE session_id = ?",
-    )
-    .bind(session_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(format!("seq fetch: {e}")))?;
-    let seq = next_seq.0.unwrap_or(0) + 1;
     let res = sqlx::query(
-        r#"INSERT INTO chat_messages_admin (session_id, seq, role, content) VALUES (?, ?, 'user', ?)"#,
+        r#"INSERT INTO chat_messages_admin (session_id, admin_id, role, content) VALUES (?, ?, 'user', ?)"#,
     )
     .bind(session_id)
-    .bind(seq)
+    .bind(admin_id)
     .bind(content)
     .execute(&mut *tx)
     .await
@@ -369,30 +361,104 @@ pub async fn append_user_message_admin(
 pub async fn append_assistant_message_admin(
     pool: &MySqlPool,
     session_id: i64,
+    admin_id: i64,
     content: &str,
     routed_to: Option<i64>,
     elapsed_ms: Option<i32>,
 ) -> Result<(), AppError> {
-    let next_seq: (Option<i32>,) =
-        sqlx::query_as("SELECT MAX(seq) FROM chat_messages_admin WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("seq fetch: {e}")))?;
-    let seq = next_seq.0.unwrap_or(0) + 1;
+    append_assistant_message_generic_admin(
+        pool, session_id, admin_id, content, None, routed_to, elapsed_ms,
+    )
+    .await
+}
+
+pub async fn append_assistant_with_tool_calls_admin(
+    pool: &MySqlPool,
+    session_id: i64,
+    admin_id: i64,
+    content: &str,
+    tool_calls_json: &str,
+    elapsed_ms: Option<i32>,
+) -> Result<(), AppError> {
+    append_assistant_message_generic_admin(
+        pool,
+        session_id,
+        admin_id,
+        content,
+        Some(tool_calls_json),
+        None,
+        elapsed_ms,
+    )
+    .await
+}
+
+async fn append_assistant_message_generic_admin(
+    pool: &MySqlPool,
+    session_id: i64,
+    admin_id: i64,
+    content: &str,
+    tool_calls_json: Option<&str>,
+    routed_to: Option<i64>,
+    elapsed_ms: Option<i32>,
+) -> Result<(), AppError> {
+    if let Some(tc_json) = tool_calls_json {
+        sqlx::query(
+            r#"INSERT INTO chat_messages_admin
+               (session_id, admin_id, role, content, tool_calls, routed_to_agent_id, elapsed_ms)
+               VALUES (?, ?, 'assistant', ?, ?, ?, ?)"#,
+        )
+        .bind(session_id)
+        .bind(admin_id)
+        .bind(content)
+        .bind(tc_json)
+        .bind(routed_to)
+        .bind(elapsed_ms)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("assistant insert: {e}")))?;
+    } else {
+        sqlx::query(
+            r#"INSERT INTO chat_messages_admin
+               (session_id, admin_id, role, content, routed_to_agent_id, elapsed_ms)
+               VALUES (?, ?, 'assistant', ?, ?, ?)"#,
+        )
+        .bind(session_id)
+        .bind(admin_id)
+        .bind(content)
+        .bind(routed_to)
+        .bind(elapsed_ms)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("assistant insert: {e}")))?;
+    }
+    Ok(())
+}
+
+pub async fn append_tool_message_admin(
+    pool: &MySqlPool,
+    session_id: i64,
+    admin_id: i64,
+    tool_call_id: &str,
+    name: &str,
+    result_json: &str,
+) -> Result<(), AppError> {
+    let content = serde_json::to_string(&serde_json::json!({
+        "tool_call_id": tool_call_id,
+        "name": name,
+        "result": result_json
+    }))
+    .unwrap_or_default();
     sqlx::query(
         r#"INSERT INTO chat_messages_admin
-           (session_id, seq, role, content, routed_to_agent_id, elapsed_ms)
-           VALUES (?, ?, 'assistant', ?, ?, ?)"#,
+           (session_id, admin_id, role, content)
+           VALUES (?, ?, 'tool', ?)"#,
     )
     .bind(session_id)
-    .bind(seq)
+    .bind(admin_id)
     .bind(content)
-    .bind(routed_to)
-    .bind(elapsed_ms)
     .execute(pool)
     .await
-    .map_err(|e| AppError::Internal(format!("assistant insert: {e}")))?;
+    .map_err(|e| AppError::Internal(format!("tool message insert: {e}")))?;
     Ok(())
 }
 
@@ -403,7 +469,7 @@ pub async fn list_messages_user(
     session_id: i64,
 ) -> Result<Vec<ChatMessageUser>, AppError> {
     sqlx::query_as::<_, ChatMessageUser>(
-        "SELECT * FROM chat_messages_user WHERE session_id = ? ORDER BY seq ASC",
+        "SELECT * FROM chat_messages_user WHERE session_id = ? ORDER BY id ASC",
     )
     .bind(session_id)
     .fetch_all(pool)
@@ -414,25 +480,18 @@ pub async fn list_messages_user(
 pub async fn append_user_message_user(
     pool: &MySqlPool,
     session_id: i64,
+    user_id: i64,
     content: &str,
-) -> Result<ChatMessageUser, AppError> {
+) -> Result<(), AppError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
-    let next_seq: (Option<i32>,) = sqlx::query_as(
-        "SELECT MAX(seq) FROM chat_messages_user WHERE session_id = ?",
-    )
-    .bind(session_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(format!("seq fetch: {e}")))?;
-    let seq = next_seq.0.unwrap_or(0) + 1;
     let res = sqlx::query(
-        r#"INSERT INTO chat_messages_user (session_id, seq, role, content) VALUES (?, ?, 'user', ?)"#,
+        r#"INSERT INTO chat_messages_user (session_id, user_id, role, content) VALUES (?, ?, 'user', ?)"#,
     )
     .bind(session_id)
-    .bind(seq)
+    .bind(user_id)
     .bind(content)
     .execute(&mut *tx)
     .await
@@ -448,34 +507,23 @@ pub async fn append_user_message_user(
         .await
         .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
 
-    let id = res.last_insert_id() as i64;
-    sqlx::query_as::<_, ChatMessageUser>("SELECT * FROM chat_messages_user WHERE id = ?")
-        .bind(id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("user message refetch: {e}")))
+    Ok(())
 }
 
 pub async fn append_assistant_message_user(
     pool: &MySqlPool,
     session_id: i64,
+    user_id: i64,
     content: &str,
     elapsed_ms: Option<i32>,
 ) -> Result<(), AppError> {
-    let next_seq: (Option<i32>,) =
-        sqlx::query_as("SELECT MAX(seq) FROM chat_messages_user WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("user seq fetch: {e}")))?;
-    let seq = next_seq.0.unwrap_or(0) + 1;
     sqlx::query(
         r#"INSERT INTO chat_messages_user
-           (session_id, seq, role, content, elapsed_ms)
+           (session_id, user_id, role, content, elapsed_ms)
            VALUES (?, ?, 'assistant', ?, ?)"#,
     )
     .bind(session_id)
-    .bind(seq)
+    .bind(user_id)
     .bind(content)
     .bind(elapsed_ms)
     .execute(pool)

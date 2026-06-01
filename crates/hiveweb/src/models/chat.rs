@@ -19,7 +19,7 @@ pub struct ChatSessionAdmin {
 pub struct ChatMessageAdmin {
     pub id: i64,
     pub session_id: i64,
-    pub seq: i32,
+    pub admin_id: i64,
     pub role: String,
     pub content: Option<String>,
     pub tool_calls: Option<serde_json::Value>,
@@ -45,8 +45,9 @@ pub struct ChatSessionUser {
 pub struct ChatMessageUser {
     pub id: i64,
     pub session_id: i64,
-    pub seq: i32,
+    pub user_id: i64,
     pub role: String,
     pub content: Option<String>,
+    pub elapsed_ms: Option<i32>,
     pub created_at: DateTime<Utc>,
 }

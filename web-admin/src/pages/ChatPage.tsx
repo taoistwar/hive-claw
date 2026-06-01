@@ -108,7 +108,6 @@ export default function ChatPage() {
       {
         id: -Date.now(),
         session_id: active.id,
-        seq: h.length + 1,
         role: 'user',
         content: text,
         tool_calls: null,

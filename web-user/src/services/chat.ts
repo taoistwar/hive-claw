@@ -11,7 +11,6 @@ export interface ChatSession {
 export interface ChatMessage {
   id: number;
   session_id: number;
-  seq: number;
   role: 'user' | 'assistant' | 'system';
   content: string | null;
   created_at: string;

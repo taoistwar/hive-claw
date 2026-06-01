@@ -1,90 +1,40 @@
-//! Chat API + SSE (T127 / US6) — Admin and user routes separated.
+//! Admin chat API — chat_sessions_admin + chat_messages_admin.
 //!
-//! Admin routes: /api/chat/sessions (admin chat)
-//! User routes: handled in users chat sub-routes
-//!
-//! Admin session -> chat_sessions_admin + chat_messages_admin
-//! User session -> chat_sessions_user + chat_messages_user
+//! Mounted on admin-protected router at /api/admin-chat/*
 
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse, Response,
-    },
+    response::{IntoResponse, Response},
     routing::get,
     Extension, Json, Router,
 };
+use axum::response::sse::Event;
 use futures::stream::{self, Stream};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::Serialize;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
 
 use crate::api::AppState;
+use crate::api::chat_common::{
+    ListSessionsQuery, SseSlotConfig, SseConcurrencyGuard, try_acquire_slot, sse_response,
+};
 use crate::services::chat::{self as svc, PostMessage};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
-
-/// 单 actor 并发 SSE 流上限
-fn max_concurrent_per_actor() -> usize {
-    std::env::var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2)
-}
-
-/// 进程内 per-actor SSE 计数器
-static SSE_COUNTER: once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>> =
-    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
-
-struct SseConcurrencyGuard {
-    actor_id: i64,
-}
-
-impl Drop for SseConcurrencyGuard {
-    fn drop(&mut self) {
-        let actor_id = self.actor_id;
-        let counter = SSE_COUNTER.clone();
-        tokio::spawn(async move {
-            let mut map = counter.lock().await;
-            if let Some(c) = map.get_mut(&actor_id) {
-                *c = c.saturating_sub(1);
-                if *c == 0 {
-                    map.remove(&actor_id);
-                }
-            }
-        });
-    }
-}
-
-async fn try_acquire_slot(actor_id: i64) -> bool {
-    let mut map = SSE_COUNTER.lock().await;
-    let cap = max_concurrent_per_actor();
-    let entry = map.entry(actor_id).or_insert(0);
-    if *entry >= cap {
-        return false;
-    }
-    *entry += 1;
-    true
-}
 
 /// Admin chat routes — mounted on admin-protected router
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route(
-            "/chat/sessions",
+            "/admin-chat/sessions",
             get(admin_list_sessions).post(admin_create_session),
         )
         .route(
-            "/chat/sessions/:id",
+            "/admin-chat/sessions/:id",
             axum::routing::delete(admin_delete_session),
         )
         .route(
-            "/chat/sessions/:id/messages",
+            "/admin-chat/sessions/:id/messages",
             get(admin_get_messages).post(admin_post_message_sse),
         )
 }
@@ -104,13 +54,6 @@ async fn admin_create_session(
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListSessionsQuery {
-    pub offset: Option<i64>,
-    pub limit: Option<i64>,
-    pub search: Option<String>,
 }
 
 async fn admin_list_sessions(
@@ -192,16 +135,16 @@ async fn admin_post_message_sse(
         return IntoResponse::into_response(AppError::into_response::<()>(e));
     }
 
-    if !try_acquire_slot(admin_id).await {
+    if !try_acquire_slot(admin_id, SseSlotConfig::ADMIN).await {
         return AppError::SseConcurrencyExceeded(
             "并发会话过多，请关闭其它对话窗口后重试".into(),
         )
         .into_response::<()>()
         .into_response();
     }
-    let _guard = SseConcurrencyGuard { actor_id: admin_id };
+    let _guard = SseConcurrencyGuard { actor_id: admin_id, is_admin: true };
 
-    let user_msg = match svc::append_user_message_admin(&state.pool, id, &body.content).await {
+    let user_msg = match svc::append_user_message_admin(&state.pool, id, admin_id, &body.content).await {
         Ok(m) => m,
         Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
     };
@@ -239,6 +182,7 @@ async fn admin_post_message_sse(
             deps,
             session_id,
             1,
+            admin_id,
             history_clone,
             user_content,
             tx,
@@ -252,22 +196,5 @@ async fn admin_post_message_sse(
         rx.recv().await.map(|item| (item, rx))
     }));
 
-    let sse = Sse::new(final_stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text(": ping"),
-    );
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache, no-transform"),
-    );
-    headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
-    headers.insert(
-        "x-accel-buffering",
-        HeaderValue::from_static("no"),
-    );
-
-    (StatusCode::OK, headers, sse).into_response()
+    sse_response(final_stream)
 }

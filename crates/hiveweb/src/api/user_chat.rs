@@ -1,71 +1,27 @@
-//! User chat API — user chat_sessions_user + chat_messages_user
+//! User chat API — user chat_sessions_user + chat_messages_user.
 //!
 //! Mounted on user-protected router at /api/user-chat/*
 
+use axum::response::sse::Event;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse, Response,
-    },
-    routing::get,
     Extension, Json, Router,
+    extract::{Path, Query, State},
+    response::{IntoResponse, Response},
+    routing::get,
 };
 use futures::stream::{self, Stream};
-use serde::Deserialize;
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
-
-use providers::{ChatRequest, RetryMode};
-use serde_json::json;
 
 use crate::api::AppState;
+use crate::api::chat_common::{
+    ListSessionsQuery, SseConcurrencyGuard, SseSlotConfig, sse_response, try_acquire_slot,
+};
 use crate::services::chat as svc;
 use crate::utils::error::ApiResponse;
 use crate::utils::jwt::Claims;
 
-static SSE_COUNTER: once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>> =
-    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
-
-struct SseConcurrencyGuard {
-    actor_id: i64,
-}
-
-impl Drop for SseConcurrencyGuard {
-    fn drop(&mut self) {
-        let actor_id = self.actor_id;
-        let counter = SSE_COUNTER.clone();
-        tokio::spawn(async move {
-            let mut map = counter.lock().await;
-            if let Some(c) = map.get_mut(&actor_id) {
-                *c = c.saturating_sub(1);
-                if *c == 0 {
-                    map.remove(&actor_id);
-                }
-            }
-        });
-    }
-}
-
-async fn try_acquire_slot(actor_id: i64) -> bool {
-    let mut map = SSE_COUNTER.lock().await;
-    let cap: usize = std::env::var("CHAT_SSE_MAX_CONCURRENT_PER_ADMIN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
-    let entry = map.entry(actor_id).or_insert(0);
-    if *entry >= cap {
-        return false;
-    }
-    *entry += 1;
-    true
-}
-
-pub fn router() -> Router<AppState> {
+pub fn user_router() -> Router<AppState> {
     Router::new()
         .route(
             "/user-chat/sessions",
@@ -79,13 +35,6 @@ pub fn router() -> Router<AppState> {
             "/user-chat/sessions/:id/messages",
             get(get_messages).post(post_message_sse),
         )
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListSessionsQuery {
-    pub offset: Option<i64>,
-    pub limit: Option<i64>,
-    pub search: Option<String>,
 }
 
 async fn create_session(
@@ -161,16 +110,19 @@ async fn post_message_sse(
         return IntoResponse::into_response(e.into_response::<()>());
     }
 
-    if !try_acquire_slot(user_id).await {
+    if !try_acquire_slot(user_id, SseSlotConfig::USER).await {
         return crate::utils::error::AppError::SseConcurrencyExceeded(
             "并发会话过多，请关闭其它对话窗口后重试".into(),
         )
         .into_response::<()>()
         .into_response();
     }
-    let _guard = SseConcurrencyGuard { actor_id: user_id };
+    let _guard = SseConcurrencyGuard {
+        actor_id: user_id,
+        is_admin: false,
+    };
 
-    let user_msg = match svc::append_user_message_user(&state.pool, id, &body.content).await {
+    match svc::append_user_message_user(&state.pool, id, user_id, &body.content).await {
         Ok(m) => m,
         Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
     };
@@ -190,7 +142,9 @@ async fn post_message_sse(
     let user_content = body.content.clone();
 
     let history: Vec<crate::models::ChatMessageUser> =
-        svc::list_messages_user(&state.pool, session_id).await.unwrap_or_default();
+        svc::list_messages_user(&state.pool, session_id)
+            .await
+            .unwrap_or_default();
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
@@ -203,100 +157,22 @@ async fn post_message_sse(
     };
     // Use the same Agent orchestrator as admin, but writes to user chat tables
     tokio::spawn(async move {
-        crate::runtime::orchestrator::run_session_user(deps, session_id, 1, history, user_content, tx).await;
-    });
-
-    let final_stream: std::pin::Pin<
-        Box<dyn Stream<Item = Result<Event, Infallible>> + Send>,
-    > = Box::pin(stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
-    }));
-
-    let sse = Sse::new(final_stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text(": ping"),
-    );
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache, no-transform"),
-    );
-    headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
-    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
-
-    (StatusCode::OK, headers, sse).into_response()
-}
-
-async fn user_chat_loop(
-    deps: crate::runtime::orchestrator::OrchestratorDeps,
-    session_id: i64,
-    history: Vec<crate::models::ChatMessageUser>,
-    user_content: String,
-    tx: tokio::sync::mpsc::UnboundedSender<Result<Event, Infallible>>,
-) {
-    use std::time::Instant;
-    let elapsed_start = Instant::now();
-
-    // Build messages for LLM
-    let messages: Vec<serde_json::Value> = history
-        .into_iter()
-        .filter_map(|m| m.content.map(|c| json!({"role": m.role, "content": c})))
-        .chain(std::iter::once(json!({"role": "user", "content": user_content.clone()})))
-        .collect();
-
-    let (provider, model) = match deps.llm.build_primary(None) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("LLM provider error: {}", e);
-            let _ = tx.send(Ok(Event::default()
-                .event("error")
-                .data(json!({"code": 5000, "message": format!("LLM 配置错误: {}", e)}).to_string())));
-            return;
-        }
-    };
-
-    let req = ChatRequest {
-        model: Some(model.clone()),
-        messages,
-        max_tokens: 2048,
-        temperature: 0.7,
-        tools: None,
-        tool_choice: None,
-        reasoning_effort: None,
-    };
-
-    let tx_inner = tx.clone();
-    let on_delta: providers::StreamDeltaCallback = Arc::new(move |delta: String| {
-        let payload = json!({ "text": delta });
-        let ev = Event::default().event("token").data(payload.to_string());
-        let _ = tx_inner.send(Ok::<_, Infallible>(ev));
-    });
-
-    let resp = provider
-        .chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None, None)
+        crate::runtime::orchestrator::run_session_user(
+            deps,
+            session_id,
+            1,
+            user_id,
+            history,
+            user_content,
+            tx,
+        )
         .await;
+    });
 
-    if resp.is_error() {
-        let msg = resp
-            .content
-            .clone()
-            .or(resp.error_kind.clone())
-            .unwrap_or_else(|| "LLM error".into());
-        let _ = tx.send(Ok(Event::default()
-            .event("error")
-            .data(json!({"code": resp.error_status_code.unwrap_or(5000) as u16, "message": msg}).to_string())));
-        return;
-    }
+    let final_stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        }));
 
-    let assistant_content = resp.content.unwrap_or_default();
-    let elapsed_ms = elapsed_start.elapsed().as_millis() as i32;
-
-    // Persist assistant response to user chat_messages_user
-    let _ = svc::append_assistant_message_user(&deps.pool, session_id, &assistant_content, Some(elapsed_ms)).await;
-
-    let _ = tx.send(Ok(Event::default()
-        .event("done")
-        .data(json!({"elapsed_ms": elapsed_ms}).to_string())));
+    sse_response(final_stream)
 }

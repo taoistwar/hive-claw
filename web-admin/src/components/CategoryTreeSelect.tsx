@@ -30,6 +30,16 @@ export function CategoryTreeSelect({
   const [flatData, setFlatData] = useState<CategoryItem[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const handleChange = (val: any) => {
+    if (val === undefined || val === null) {
+      onChange?.(null);
+    } else if (typeof val === 'string') {
+      onChange?.(Number(val));
+    } else {
+      onChange?.(val);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -82,7 +92,7 @@ export function CategoryTreeSelect({
   return (
     <TreeSelect
       value={value ?? undefined}
-      onChange={onChange}
+      onChange={handleChange}
       treeData={treeData as any}
       placeholder={placeholder}
       allowClear={allowClear}

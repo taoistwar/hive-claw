@@ -17,11 +17,11 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-/// Build a POST /api/chat/sessions/:id/messages request with SSE Accept header.
+/// Build a POST /api/admin-chat/sessions/:id/messages request with SSE Accept header.
 fn sse_request(_app: &Router, token: &str, session_id: i64) -> anyhow::Result<Request<Body>> {
     Ok(Request::builder()
         .method("POST")
-        .uri(&format!("/api/chat/sessions/{session_id}/messages"))
+        .uri(&format!("/api/admin-chat/sessions/{session_id}/messages"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .header("accept", "text/event-stream")
@@ -75,7 +75,7 @@ async fn sse_concurrency_limit_third_request_gets_429() -> anyhow::Result<()> {
     // Create a session
     let (status, body) = common::post_json_auth(
         &app,
-        "/api/chat/sessions",
+        "/api/admin-chat/sessions",
         &token,
         json!({"title": "sse-concurrency-test"}),
     )
@@ -122,7 +122,7 @@ async fn sse_concurrency_limit_releases_after_close() -> anyhow::Result<()> {
     // Create a session
     let (status, body) = common::post_json_auth(
         &app,
-        "/api/chat/sessions",
+        "/api/admin-chat/sessions",
         &token,
         json!({"title": "sse-release-test"}),
     )
@@ -172,7 +172,7 @@ async fn sse_concurrency_per_admin_isolation() -> anyhow::Result<()> {
     // Each admin creates their own session
     let (_, body_a) = common::post_json_auth(
         &app,
-        "/api/chat/sessions",
+        "/api/admin-chat/sessions",
         &token_a,
         json!({"title": "admin-a-session"}),
     )
@@ -181,7 +181,7 @@ async fn sse_concurrency_per_admin_isolation() -> anyhow::Result<()> {
 
     let (_, body_b) = common::post_json_auth(
         &app,
-        "/api/chat/sessions",
+        "/api/admin-chat/sessions",
         &token_b,
         json!({"title": "admin-b-session"}),
     )

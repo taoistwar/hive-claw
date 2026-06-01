@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use sqlx::MySqlPool;
 
 use crate::models::Plugin;
+use crate::runtime::{registered_imports, scan_wasm_imports};
 use crate::storage::s3;
 use crate::utils::error::AppError;
 
@@ -110,11 +111,12 @@ pub async fn upload(
     meta: UploadMeta,
     bytes: Vec<u8>,
 ) -> Result<Plugin, AppError> {
-    if bytes.len() > plugin_max_bytes() {
+    let max_bytes = plugin_max_bytes();
+    if bytes.len() > max_bytes {
         return Err(AppError::BadRequest(format!(
             "WASM 文件大小 {} 超过上限 {}",
             bytes.len(),
-            plugin_max_bytes()
+            max_bytes
         )));
     }
     if bytes.len() < 4 || &bytes[..4] != WASM_MAGIC {
@@ -122,30 +124,37 @@ pub async fn upload(
             "不是合法的 WASM 文件（magic bytes 校验失败）".into(),
         ));
     }
-    // 拒绝非宿主注册的 host function 在 invoker.load 阶段做更严格校验；这里只做基本字节校验。
+
+    let host_imports = registered_imports();
+    scan_wasm_imports(&bytes, &host_imports)?;
 
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let digest = hasher.finalize();
     let sha256: String = digest.iter().map(|b| format!("{b:02x}")).collect();
 
-    // 唯一性 (identifier, version)
-    let dup: Option<(i64,)> = sqlx::query_as(
-        r#"SELECT id FROM plugins WHERE identifier = ? AND version = ? AND deleted_at IS NULL"#,
-    )
-    .bind(&meta.identifier)
-    .bind(&meta.version)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("plugin dup check: {e}")))?;
-    if dup.is_some() {
-        return Err(AppError::Conflict(format!(
-            "Plugin {}@{} 已存在",
-            meta.identifier, meta.version
-        )));
+    // 验证 tag_id 是否存在
+    for tag_id in &meta.tag_ids {
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM tags WHERE id = ?")
+            .bind(tag_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("tag check: {e}")))?;
+        if exists.is_none() {
+            return Err(AppError::BadRequest(format!(
+                "tag_id={} 不存在",
+                tag_id
+            )));
+        }
     }
 
     let s3_key = format!("plugins/{}/{}.wasm", meta.identifier, meta.version);
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
+
     s3::put_wasm(s3_client, &s3_key, bytes.clone())
         .await
         .map_err(|e| AppError::Internal(format!("S3 upload failed: {e}")))?;
@@ -169,32 +178,38 @@ pub async fn upload(
     .bind(&sha256)
     .bind(size_bytes)
     .bind(meta.category_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| {
-        // 写 DB 失败要回滚 S3 上传，避免孤儿文件
         let key = s3_key.clone();
         let c = s3_client.clone();
-        tokio::spawn(async move {
-            let _ = s3::delete_wasm(&c, &key).await;
+        tokio::task::block_in_place(|| {
+            let rt = tokio::runtime::Handle::current();
+            let _ = rt.block_on(s3::delete_wasm(&c, &key));
         });
-        AppError::Internal(format!("plugin insert: {e}"))
+        AppError::Conflict(format!(
+            "Plugin {}@{} 已存在或插入失败: {}",
+            meta.identifier, meta.version, e
+        ))
     })?;
 
     let id = res.last_insert_id() as i64;
 
-    // tag 绑定
     for tag_id in &meta.tag_ids {
         sqlx::query(
-            r#"INSERT IGNORE INTO taggings (tag_id, entity_type, entity_id)
+            r#"INSERT INTO taggings (tag_id, entity_type, entity_id)
                VALUES (?, 'plugin', ?)"#,
         )
         .bind(tag_id)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(format!("tag bind: {e}")))?;
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
 
     fetch_by_id(pool, id).await
 }

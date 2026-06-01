@@ -49,29 +49,17 @@ pub struct OrchestratorDeps {
     pub invoker: Arc<Invoker>,
 }
 
-pub async fn run_session(
-    deps: OrchestratorDeps,
-    session_id: i64,
-    starting_agent_id: i64,
-    history: Vec<crate::models::ChatMessageAdmin>,
-    user_content: String,
-    tx: UnboundedSender<Result<Event, Infallible>>,
-) {
-    run_session_internal_admin(
-        deps, session_id, starting_agent_id, &history, &user_content, &tx,
-    ).await;
-}
-
 pub async fn run_session_admin(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
+    actor_id: i64,
     history: Vec<crate::models::ChatMessageAdmin>,
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_admin(
-        deps, session_id, starting_agent_id, &history, &user_content, &tx,
+        deps, session_id, starting_agent_id, actor_id, &history, &user_content, &tx,
     ).await;
 }
 
@@ -79,12 +67,13 @@ pub async fn run_session_user(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
+    actor_id: i64,
     history: Vec<crate::models::ChatMessageUser>,
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_user(
-        deps, session_id, starting_agent_id, &history, &user_content, &tx,
+        deps, session_id, starting_agent_id, actor_id, &history, &user_content, &tx,
     ).await;
 }
 
@@ -94,12 +83,13 @@ async fn run_session_internal_admin(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
+    actor_id: i64,
     history: &[crate::models::ChatMessageAdmin],
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_impl(
-        deps, session_id, starting_agent_id, history, user_content, tx,
+        deps, session_id, starting_agent_id, actor_id, history, user_content, tx,
         AppendVariant::Admin,
     ).await;
 }
@@ -108,12 +98,13 @@ async fn run_session_internal_user(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
+    actor_id: i64,
     history: &[crate::models::ChatMessageUser],
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_impl(
-        deps, session_id, starting_agent_id, history, user_content, tx,
+        deps, session_id, starting_agent_id, actor_id, history, user_content, tx,
         AppendVariant::User,
     ).await;
 }
@@ -138,6 +129,7 @@ async fn run_session_internal_impl<T>(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
+    actor_id: i64,
     history: &[T],
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
@@ -256,6 +248,17 @@ async fn run_session_internal_impl<T>(
 
         // 6. 处理 tool_calls
         let mut routed_to: Option<i64> = None;
+
+        // Persist assistant message with tool_calls to DB
+        if matches!(variant, AppendVariant::Admin) {
+            let tc_json: Vec<Value> = tool_calls.iter().map(|tc| tc.to_openai_tool_call()).collect();
+            let _ = chat_svc::append_assistant_with_tool_calls_admin(
+                &deps.pool, session_id, actor_id, &assistant_content,
+                &serde_json::to_string(&tc_json).unwrap_or_default(),
+                None,
+            ).await;
+        }
+
         for tc in &tool_calls {
             // emit tool_call event
             let tc_payload = json!({
@@ -280,6 +283,14 @@ async fn run_session_internal_impl<T>(
             });
             let _ = tx.send(Ok(Event::default().event("tool_result").data(tr_payload.to_string())));
 
+            // Persist tool message to DB
+            if matches!(variant, AppendVariant::Admin) {
+                let _ = chat_svc::append_tool_message_admin(
+                    &deps.pool, session_id, actor_id, &tc.id, &tc.name,
+                    &serde_json::to_string(&result.payload).unwrap_or_default(),
+                ).await;
+            }
+
             // tool message → 加入 history
             messages.push(json!({
                 "role": "tool",
@@ -296,7 +307,7 @@ async fn run_session_internal_impl<T>(
                     );
                     final_content = Some(assistant_content.clone());
                     final_agent_id = current_agent_id;
-                    return finalize_with_variant(&deps.pool, session_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
+                    return finalize_with_variant(&deps.pool, session_id, actor_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
                 }
                 routed_to = Some(next_agent);
                 visited.push(next_agent);
@@ -325,12 +336,13 @@ async fn run_session_internal_impl<T>(
         }
     }
 
-    finalize_with_variant(&deps.pool, session_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
+    finalize_with_variant(&deps.pool, session_id, actor_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
 }
 
 async fn finalize_with_variant(
     pool: &MySqlPool,
     session_id: i64,
+    actor_id: i64,
     tx: &UnboundedSender<Result<Event, Infallible>>,
     started: Instant,
     content: Option<String>,
@@ -342,10 +354,10 @@ async fn finalize_with_variant(
         match variant {
             AppendVariant::Admin => {
                 let routed = if final_agent_id != 1 { Some(final_agent_id) } else { None };
-                let _ = chat_svc::append_assistant_message_admin(pool, session_id, &text, routed, Some(elapsed)).await;
+                let _ = chat_svc::append_assistant_message_admin(pool, session_id, actor_id, &text, routed, Some(elapsed)).await;
             }
             AppendVariant::User => {
-                let _ = chat_svc::append_assistant_message_user(pool, session_id, &text, Some(elapsed)).await;
+                let _ = chat_svc::append_assistant_message_user(pool, session_id, actor_id, &text, Some(elapsed)).await;
             }
         }
     }

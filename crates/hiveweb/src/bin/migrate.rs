@@ -185,6 +185,10 @@ const MIGRATIONS: &[Migration] = &[
         version: "V042__split_chat_tables",
         sql: include_str!("../../migrations/V042__split_chat_tables.sql"),
     },
+    Migration {
+        version: "V043__drop_seq_from_chat_messages",
+        sql: include_str!("../../migrations/V043__drop_seq_from_chat_messages.sql"),
+    },
 ];
 
 #[tokio::main]

@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 async fn create_session(app: &Router, token: &str) -> anyhow::Result<i64> {
     let (status, body) = post_json_auth(
         app,
-        "/api/chat/sessions",
+        "/api/admin-chat/sessions",
         token,
         json!({"title": "test-session"}),
     )
@@ -36,7 +36,7 @@ async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Res
 
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri(&format!("/api/chat/sessions/{session_id}/messages"))
+        .uri(&format!("/api/admin-chat/sessions/{session_id}/messages"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(json!({"content": "hello"}).to_string()))?;
@@ -56,7 +56,7 @@ async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Res
 
 /// Helper: GET messages from a session
 async fn get_messages(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(StatusCode, Value)> {
-    get(app, &format!("/api/chat/sessions/{session_id}/messages"), Some(token)).await
+    get(app, &format!("/api/admin-chat/sessions/{session_id}/messages"), Some(token)).await
 }
 
 #[tokio::test]

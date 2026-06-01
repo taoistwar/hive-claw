@@ -130,8 +130,8 @@ export default function ChatPage() {
       );
     } catch (e) {
       void message.error(`流错误：${(e as Error).message}`);
-      setPending(false);
     } finally {
+      setPending(false);
       try {
         const msgs = await getMessages(active.id);
         setHistory(msgs);

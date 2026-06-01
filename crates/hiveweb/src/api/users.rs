@@ -186,8 +186,8 @@ pub async fn get_dashboard_stats(
         None => return Err(AppError::NotFound("User not found".to_string()).into_response()),
     };
 
-    let sessions: (i64,) = match sqlx::query_as(
-        "SELECT COUNT(*) FROM chat_sessions WHERE user_id = ?"
+    let sessions: (Option<i64>,) = match sqlx::query_as(
+        "SELECT COUNT(*) FROM chat_sessions_user WHERE user_id = ?"
     )
     .bind(user_id)
     .fetch_one(&state.pool)
@@ -200,8 +200,8 @@ pub async fn get_dashboard_stats(
         }
     };
 
-    let messages: (i64,) = match sqlx::query_as(
-        "SELECT COUNT(*) FROM chat_messages cm INNER JOIN chat_sessions cs ON cm.session_id = cs.id WHERE cs.user_id = ?"
+    let messages: (Option<i64>,) = match sqlx::query_as(
+        "SELECT COUNT(*) FROM chat_messages_user cmu INNER JOIN chat_sessions_user csu ON cmu.session_id = csu.id WHERE csu.user_id = ?"
     )
     .bind(user_id)
     .fetch_one(&state.pool)
@@ -214,8 +214,8 @@ pub async fn get_dashboard_stats(
         }
     };
 
-    let active_days: (i64,) = match sqlx::query_as(
-        "SELECT COUNT(DISTINCT DATE(created_at)) FROM chat_sessions WHERE user_id = ?"
+    let active_days: (Option<i64>,) = match sqlx::query_as(
+        "SELECT COUNT(DISTINCT DATE(created_at)) FROM chat_sessions_user WHERE user_id = ?"
     )
     .bind(user_id)
     .fetch_one(&state.pool)
@@ -229,7 +229,7 @@ pub async fn get_dashboard_stats(
     };
 
     let last_session: Option<(chrono::DateTime<chrono::Utc>,)> = match sqlx::query_as(
-        "SELECT MAX(created_at) FROM chat_sessions WHERE user_id = ?"
+        "SELECT MAX(created_at) FROM chat_sessions_user WHERE user_id = ?"
     )
     .bind(user_id)
     .fetch_optional(&state.pool)

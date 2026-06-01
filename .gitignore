@@ -22,3 +22,5 @@ Thumbs.db
 *.tmp
 /langfuse-python/
 /nanobot/
+
+llm_presets.toml

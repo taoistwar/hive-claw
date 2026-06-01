@@ -24,7 +24,7 @@ pub use role::Role;
 pub use agent::Agent;
 pub use capability::Capability;
 pub use category::Category;
-pub use chat::{ChatMessage, ChatSession};
+pub use chat::{ChatMessageAdmin, ChatMessageUser, ChatSessionAdmin, ChatSessionUser};
 pub use function::Function;
 pub use plugin::Plugin;
 pub use skill::Skill;

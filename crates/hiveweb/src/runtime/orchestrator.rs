@@ -53,9 +53,36 @@ pub async fn run_session(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
-    history: Vec<crate::models::ChatMessage>,
+    history: Vec<crate::models::ChatMessageAdmin>,
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
+) {
+    run_session_internal(
+        deps, session_id, starting_agent_id, &history, &user_content, &tx, true,
+    ).await;
+}
+
+pub async fn run_session_admin(
+    deps: OrchestratorDeps,
+    session_id: i64,
+    starting_agent_id: i64,
+    history: Vec<crate::models::ChatMessageAdmin>,
+    user_content: String,
+    tx: UnboundedSender<Result<Event, Infallible>>,
+) {
+    run_session_internal(
+        deps, session_id, starting_agent_id, &history, &user_content, &tx, true,
+    ).await;
+}
+
+async fn run_session_internal(
+    deps: OrchestratorDeps,
+    session_id: i64,
+    starting_agent_id: i64,
+    history: &[crate::models::ChatMessageAdmin],
+    user_content: &str,
+    tx: &UnboundedSender<Result<Event, Infallible>>,
+    _is_admin: bool,
 ) {
     let elapsed_start = Instant::now();
     let mut current_agent_id = starting_agent_id;
@@ -78,8 +105,7 @@ pub async fn run_session(
 
     // 把 history 转成 LLM-side messages（OpenAI-style）
     let mut messages: Vec<Value> = Vec::new();
-    // system 由每次 hop 重新拼（不同 agent 不同 system_prompt）
-    for m in &history {
+    for m in history {
         if let Some(c) = &m.content {
             messages.push(json!({"role": m.role, "content": c}));
         }
@@ -254,7 +280,7 @@ async fn finalize(
     let elapsed = started.elapsed().as_millis() as i32;
     if let Some(text) = content {
         let routed = if final_agent_id != 1 { Some(final_agent_id) } else { None };
-        let _ = chat_svc::append_assistant_message(pool, session_id, &text, routed, Some(elapsed)).await;
+        let _ = chat_svc::append_assistant_message_admin(pool, session_id, &text, routed, Some(elapsed)).await;
     }
     let done = json!({
         "elapsed_ms": elapsed,

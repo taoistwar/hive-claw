@@ -83,17 +83,6 @@ export default function FunctionForm({
   const [tags, setTags] = useState<TagItem[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
 
-  const categorySelector = (
-    <TreeSelect
-      treeData={categoryTreeData}
-      placeholder="选择分类"
-      allowClear
-      showSearch
-      treeNodeFilterProp="title"
-      treeDefaultExpandAll
-    />
-  );
-
   useEffect(() => {
     if (!open) return;
 
@@ -150,7 +139,6 @@ export default function FunctionForm({
     }
   }, [mode, record, form, open]);
 
-  /** 选择插件后自动拉取其 WASM 导出函数列表 */
   const handlePluginChange = async (pluginId: number | null) => {
     form.setFieldValue('plugin_export', undefined);
     setPluginExports([]);
@@ -226,6 +214,17 @@ export default function FunctionForm({
 
   const isBuiltin = record?.kind === 1;
 
+  const categorySelector = (
+    <TreeSelect
+      treeData={categoryTreeData}
+      placeholder="选择分类"
+      allowClear
+      showSearch
+      treeNodeFilterProp="title"
+      treeDefaultExpandAll
+    />
+  );
+
   return (
     <Drawer
       title={mode === 'create' ? '创建函数' : isBuiltin ? '编辑分类与标签' : '编辑函数'}
@@ -298,156 +297,164 @@ export default function FunctionForm({
                 </Card>
               ) : null}
 
-              <Form.Item
-                name="identifier"
-                label="标识符"
-                rules={
-                  mode === 'create'
-                    ? [
-                        { required: true, message: '请输入函数标识符' },
-                        {
-                          pattern: /^[a-zA-Z][a-zA-Z0-9._-]*$/,
-                          message: '标识符只能包含字母、数字、点、下划线和连字符',
-                        },
-                      ]
-                    : []
-                }
-              >
-                <Input
-                  placeholder="例如: weather.lookup"
-                  disabled={mode === 'edit'}
-                />
-              </Form.Item>
-
-              <Form.Item
-                name="name"
-                label="名称"
-                rules={
-                  mode === 'create'
-                    ? [{ required: true, message: '请输入函数名称' }]
-                    : []
-                }
-              >
-                <Input placeholder="例如: 查天气" />
-              </Form.Item>
-
-              <Form.Item name="description" label="描述">
-                <Input.TextArea rows={2} placeholder="函数描述" />
-              </Form.Item>
-
-              <Form.Item
-                name="plugin_id"
-                label="关联插件"
-                rules={
-                  mode === 'create'
-                    ? [{ required: true, message: '请选择关联插件' }]
-                    : []
-                }
-              >
-                <Select
-                  placeholder="选择插件"
-                  options={plugins.map((p) => ({
-                    ...p,
-                    label: p.label,
-                    value: p.id,
-                  }))}
-                  showSearch
-                  filterOption={(input, option) =>
-                    String(option?.label ?? '')
-                      .toLowerCase()
-                      .includes(input.toLowerCase())
+              <Card title="基本信息" size="small" style={{ marginBottom: 16 }}>
+                <Form.Item
+                  name="name"
+                  label="名称"
+                  rules={
+                    mode === 'create'
+                      ? [{ required: true, message: '请输入函数名称' }]
+                      : []
                   }
-                  onChange={handlePluginChange}
-                  disabled={mode === 'edit'}
-                />
-              </Form.Item>
+                >
+                  <Input placeholder="例如: 查天气" />
+                </Form.Item>
 
-              <Form.Item
-                name="plugin_export"
-                label="插件导出函数名"
-                rules={
-                  mode === 'create'
-                    ? [{ required: true, message: '请输入插件导出函数名' }]
-                    : []
-                }
-              >
-                {mode === 'create' ? (
+                <Form.Item name="description" label="描述">
+                  <Input.TextArea rows={2} placeholder="函数描述" />
+                </Form.Item>
+
+                <Form.Item name="category_id" label="分类">
+                  {categorySelector}
+                </Form.Item>
+
+                <Form.Item name="tag_ids" label="标签" tooltip="为函数添加标签，便于分类和检索">
                   <Select
-                    placeholder={
-                      loadingExports
-                        ? '加载中...'
-                        : pluginExports.length > 0
-                        ? '选择导出函数'
-                        : '请先选择插件'
-                    }
-                    options={pluginExports.map((exp) => ({ label: exp, value: exp }))}
-                    disabled={loadingExports || pluginExports.length === 0}
-                    loading={loadingExports}
+                    mode="multiple"
+                    placeholder="选择标签"
+                    allowClear
+                    options={tags.map((t) => ({
+                      label: t.color ? (
+                        <Tag color={t.color}>{t.name}</Tag>
+                      ) : (
+                        t.name
+                      ),
+                      value: t.id,
+                    }))}
+                    loading={loadingTags}
+                  />
+                </Form.Item>
+              </Card>
+
+              <Card title="函数签名" size="small" style={{ marginBottom: 16 }}>
+                <Form.Item
+                  name="identifier"
+                  label="标识符"
+                  rules={
+                    mode === 'create'
+                      ? [
+                          { required: true, message: '请输入函数标识符' },
+                          {
+                            pattern: /^[a-zA-Z][a-zA-Z0-9._-]*$/,
+                            message: '标识符只能包含字母、数字、点、下划线和连字符',
+                          },
+                        ]
+                      : []
+                  }
+                >
+                  <Input
+                    placeholder="例如: weather.lookup"
+                    disabled={mode === 'edit'}
+                  />
+                </Form.Item>
+
+                <Form.Item label="输入 Schema" required>
+                  <SchemaEditor
+                    value={inputSchema}
+                    onChange={setInputSchema}
+                    label="input_schema"
+                  />
+                </Form.Item>
+
+                <Form.Item label="输出 Schema" required>
+                  <SchemaEditor
+                    value={outputSchema}
+                    onChange={setOutputSchema}
+                    label="output_schema"
+                  />
+                </Form.Item>
+              </Card>
+
+              <Card title="插件信息" size="small" style={{ marginBottom: 16 }}>
+                <Form.Item
+                  name="plugin_id"
+                  label="关联插件"
+                  rules={
+                    mode === 'create'
+                      ? [{ required: true, message: '请选择关联插件' }]
+                      : []
+                  }
+                >
+                  <Select
+                    placeholder="选择插件"
+                    options={plugins.map((p) => ({
+                      ...p,
+                      label: p.label,
+                      value: p.id,
+                    }))}
                     showSearch
                     filterOption={(input, option) =>
                       String(option?.label ?? '')
                         .toLowerCase()
                         .includes(input.toLowerCase())
                     }
+                    onChange={handlePluginChange}
+                    disabled={mode === 'edit'}
                   />
-                ) : (
-                  <Input disabled />
-                )}
-              </Form.Item>
+                </Form.Item>
 
-              <Form.Item name="category_id" label="分类">
-                {categorySelector}
-              </Form.Item>
+                <Form.Item
+                  name="plugin_export"
+                  label="插件导出函数名"
+                  rules={
+                    mode === 'create'
+                      ? [{ required: true, message: '请输入插件导出函数名' }]
+                      : []
+                  }
+                >
+                  {mode === 'create' ? (
+                    <Select
+                      placeholder={
+                        loadingExports
+                          ? '加载中...'
+                          : pluginExports.length > 0
+                          ? '选择导出函数'
+                          : '请先选择插件'
+                      }
+                      options={pluginExports.map((exp) => ({ label: exp, value: exp }))}
+                      disabled={loadingExports || pluginExports.length === 0}
+                      loading={loadingExports}
+                      showSearch
+                      filterOption={(input, option) =>
+                        String(option?.label ?? '')
+                          .toLowerCase()
+                          .includes(input.toLowerCase())
+                      }
+                    />
+                  ) : (
+                    <Input disabled />
+                  )}
+                </Form.Item>
+              </Card>
 
-              <Form.Item name="tag_ids" label="标签" tooltip="为函数添加标签，便于分类和检索">
-                <Select
-                  mode="multiple"
-                  placeholder="选择标签"
-                  allowClear
-                  options={tags.map((t) => ({
-                    label: t.color ? (
-                      <Tag color={t.color}>{t.name}</Tag>
-                    ) : (
-                      t.name
-                    ),
-                    value: t.id,
-                  }))}
-                  loading={loadingTags}
-                />
-              </Form.Item>
-
-              <Form.Item name="required_capabilities" label="所需权限" tooltip="该函数执行时需要的能力，执行时会校验 Agent 是否被授权">
-                <Select
-                  mode="multiple"
-                  placeholder="选择所需权限"
-                  options={capabilities.map((c) => ({
-                    label: (
-                      <span>
-                        {c.name}
-                        {c.is_dangerous && <Tag color="red" style={{ marginLeft: 4 }}>危险</Tag>}
-                      </span>
-                    ),
-                    value: c.name,
-                  }))}
-                  allowClear
-                />
-              </Form.Item>
-
-              <Form.Item label="输入 Schema" required>
-                <SchemaEditor
-                  value={inputSchema}
-                  onChange={setInputSchema}
-                  label="input_schema"
-                />
-              </Form.Item>
-
-              <Form.Item label="输出 Schema" required>
-                <SchemaEditor
-                  value={outputSchema}
-                  onChange={setOutputSchema}
-                  label="output_schema"
-                />
-              </Form.Item>
+              <Card title="权限要求" size="small" style={{ marginBottom: 16 }}>
+                <Form.Item name="required_capabilities" label="所需权限" tooltip="该函数执行时需要的能力，执行时会校验 Agent 是否被授权">
+                  <Select
+                    mode="multiple"
+                    placeholder="选择所需权限"
+                    options={capabilities.map((c) => ({
+                      label: (
+                        <span>
+                          {c.name}
+                          {c.is_dangerous && <Tag color="red" style={{ marginLeft: 4 }}>危险</Tag>}
+                        </span>
+                      ),
+                      value: c.name,
+                    }))}
+                    allowClear
+                  />
+                </Form.Item>
+              </Card>
             </>
           )}
         </Form>

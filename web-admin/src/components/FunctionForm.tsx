@@ -83,6 +83,17 @@ export default function FunctionForm({
   const [tags, setTags] = useState<TagItem[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
 
+  const categorySelector = (
+    <TreeSelect
+      treeData={categoryTreeData}
+      placeholder="选择分类"
+      allowClear
+      showSearch
+      treeNodeFilterProp="title"
+      treeDefaultExpandAll
+    />
+  );
+
   useEffect(() => {
     if (!open) return;
 
@@ -215,17 +226,6 @@ export default function FunctionForm({
 
   const isBuiltin = record?.kind === 1;
 
-  const categorySelector = (
-    <TreeSelect
-      placeholder="选择分类"
-      allowClear
-      treeData={categoryTreeData}
-      showSearch
-      treeNodeFilterProp="title"
-      treeDefaultExpandAll
-    />
-  );
-
   return (
     <Drawer
       title={mode === 'create' ? '创建函数' : isBuiltin ? '编辑分类与标签' : '编辑函数'}
@@ -290,16 +290,28 @@ export default function FunctionForm({
             </>
           ) : (
             <>
+              {mode === 'edit' && !isBuiltin ? (
+                <Card size="small" style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#999', fontSize: 12 }}>
+                    自定义函数编辑模式下，标识符、关联插件和插件导出函数名不可修改。可修改名称、描述、分类、标签、权限和 Schema。
+                  </div>
+                </Card>
+              ) : null}
+
               <Form.Item
                 name="identifier"
                 label="标识符"
-                rules={[
-                  { required: true, message: '请输入函数标识符' },
-                  {
-                    pattern: /^[a-zA-Z][a-zA-Z0-9._-]*$/,
-                    message: '标识符只能包含字母、数字、点、下划线和连字符',
-                  },
-                ]}
+                rules={
+                  mode === 'create'
+                    ? [
+                        { required: true, message: '请输入函数标识符' },
+                        {
+                          pattern: /^[a-zA-Z][a-zA-Z0-9._-]*$/,
+                          message: '标识符只能包含字母、数字、点、下划线和连字符',
+                        },
+                      ]
+                    : []
+                }
               >
                 <Input
                   placeholder="例如: weather.lookup"
@@ -310,7 +322,11 @@ export default function FunctionForm({
               <Form.Item
                 name="name"
                 label="名称"
-                rules={[{ required: true, message: '请输入函数名称' }]}
+                rules={
+                  mode === 'create'
+                    ? [{ required: true, message: '请输入函数名称' }]
+                    : []
+                }
               >
                 <Input placeholder="例如: 查天气" />
               </Form.Item>
@@ -330,10 +346,14 @@ export default function FunctionForm({
               >
                 <Select
                   placeholder="选择插件"
-                  options={plugins}
+                  options={plugins.map((p) => ({
+                    ...p,
+                    label: p.label,
+                    value: p.id,
+                  }))}
                   showSearch
                   filterOption={(input, option) =>
-                    (option?.label ?? '')
+                    String(option?.label ?? '')
                       .toLowerCase()
                       .includes(input.toLowerCase())
                   }
@@ -365,7 +385,7 @@ export default function FunctionForm({
                     loading={loadingExports}
                     showSearch
                     filterOption={(input, option) =>
-                      (option?.label ?? '')
+                      String(option?.label ?? '')
                         .toLowerCase()
                         .includes(input.toLowerCase())
                     }

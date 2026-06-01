@@ -35,7 +35,7 @@ use tower_http::{
 };
 use tracing::Level;
 
-use crate::middleware::auth::auth_middleware;
+use crate::middleware::auth::{admin_auth_middleware, user_auth_middleware};
 use crate::middleware::rate_limit::{rate_limit_middleware, RateLimitState};
 use crate::middleware::request_id::request_id_middleware;
 use crate::middleware::request_body_log::log_request_body_middleware;
@@ -132,9 +132,8 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(users::router_public())
         .merge(recommended_game::router_public());
 
-    let protected_routes = Router::new()
+    let admin_protected_routes = Router::new()
         .merge(auth::router_protected())
-        .merge(users::router_protected())
         .merge(admin::router())
         .merge(dashboard::router())
         .merge(plugin::router())
@@ -150,15 +149,21 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(login_record::router())
         .merge(agent::router())
         .merge(workflow::router())
-        .merge(chat::router())
         .merge(user::router())
         .merge(recommended_game::router())
-        .layer(middleware::from_fn(auth_middleware))
+        .layer(middleware::from_fn(admin_auth_middleware))
+        .layer(middleware::from_fn_with_state(rate_limit_state.clone(), rate_limit_middleware));
+
+    let user_protected_routes = Router::new()
+        .merge(users::router_protected())
+        .merge(chat::router())
+        .layer(middleware::from_fn(user_auth_middleware))
         .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
 
     let api_routes = Router::new()
         .merge(public_routes)
-        .merge(protected_routes)
+        .merge(admin_protected_routes)
+        .merge(user_protected_routes)
         .with_state(state);
 
     Router::new()

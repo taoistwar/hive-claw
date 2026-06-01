@@ -61,7 +61,7 @@ export async function sendMessageStream(
   const baseUrl =
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_URL ||
-    'http://localhost:3000/api';
+    '/api';
   const token = localStorage.getItem('user_auth_token') ?? '';
   const resp = await fetch(`${baseUrl}/chat/sessions/${sessionId}/messages`, {
     method: 'POST',

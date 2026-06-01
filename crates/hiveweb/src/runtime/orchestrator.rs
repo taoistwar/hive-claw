@@ -57,8 +57,8 @@ pub async fn run_session(
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
-    run_session_internal(
-        deps, session_id, starting_agent_id, &history, &user_content, &tx, true,
+    run_session_internal_admin(
+        deps, session_id, starting_agent_id, &history, &user_content, &tx,
     ).await;
 }
 
@@ -70,20 +70,79 @@ pub async fn run_session_admin(
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
-    run_session_internal(
-        deps, session_id, starting_agent_id, &history, &user_content, &tx, true,
+    run_session_internal_admin(
+        deps, session_id, starting_agent_id, &history, &user_content, &tx,
     ).await;
 }
 
-async fn run_session_internal(
+pub async fn run_session_user(
+    deps: OrchestratorDeps,
+    session_id: i64,
+    starting_agent_id: i64,
+    history: Vec<crate::models::ChatMessageUser>,
+    user_content: String,
+    tx: UnboundedSender<Result<Event, Infallible>>,
+) {
+    run_session_internal_user(
+        deps, session_id, starting_agent_id, &history, &user_content, &tx,
+    ).await;
+}
+
+// ============================ Admin session internal ============================
+
+async fn run_session_internal_admin(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
     history: &[crate::models::ChatMessageAdmin],
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
-    _is_admin: bool,
 ) {
+    run_session_internal_impl(
+        deps, session_id, starting_agent_id, history, user_content, tx,
+        AppendVariant::Admin,
+    ).await;
+}
+
+async fn run_session_internal_user(
+    deps: OrchestratorDeps,
+    session_id: i64,
+    starting_agent_id: i64,
+    history: &[crate::models::ChatMessageUser],
+    user_content: &str,
+    tx: &UnboundedSender<Result<Event, Infallible>>,
+) {
+    run_session_internal_impl(
+        deps, session_id, starting_agent_id, history, user_content, tx,
+        AppendVariant::User,
+    ).await;
+}
+
+enum AppendVariant { Admin, User }
+
+/// Trait for accessing role + content on chat messages generically
+trait HasRoleContent {
+    fn role_ref(&self) -> &str;
+    fn content_ref(&self) -> Option<&str>;
+}
+impl HasRoleContent for crate::models::ChatMessageAdmin {
+    fn role_ref(&self) -> &str { &self.role }
+    fn content_ref(&self) -> Option<&str> { self.content.as_deref() }
+}
+impl HasRoleContent for crate::models::ChatMessageUser {
+    fn role_ref(&self) -> &str { &self.role }
+    fn content_ref(&self) -> Option<&str> { self.content.as_deref() }
+}
+
+async fn run_session_internal_impl<T>(
+    deps: OrchestratorDeps,
+    session_id: i64,
+    starting_agent_id: i64,
+    history: &[T],
+    user_content: &str,
+    tx: &UnboundedSender<Result<Event, Infallible>>,
+    variant: AppendVariant,
+) where T: HasRoleContent {
     let elapsed_start = Instant::now();
     let mut current_agent_id = starting_agent_id;
     let mut visited: Vec<i64> = vec![starting_agent_id];
@@ -106,8 +165,8 @@ async fn run_session_internal(
     // 把 history 转成 LLM-side messages（OpenAI-style）
     let mut messages: Vec<Value> = Vec::new();
     for m in history {
-        if let Some(c) = &m.content {
-            messages.push(json!({"role": m.role, "content": c}));
+        if let Some(c) = m.content_ref() {
+            messages.push(json!({"role": m.role_ref(), "content": c}));
         }
     }
     messages.push(json!({"role": "user", "content": user_content}));
@@ -237,7 +296,7 @@ async fn run_session_internal(
                     );
                     final_content = Some(assistant_content.clone());
                     final_agent_id = current_agent_id;
-                    return finalize(&deps.pool, session_id, &tx, elapsed_start, final_content, final_agent_id).await;
+                    return finalize_with_variant(&deps.pool, session_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
                 }
                 routed_to = Some(next_agent);
                 visited.push(next_agent);
@@ -266,21 +325,29 @@ async fn run_session_internal(
         }
     }
 
-    finalize(&deps.pool, session_id, &tx, elapsed_start, final_content, final_agent_id).await;
+    finalize_with_variant(&deps.pool, session_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
 }
 
-async fn finalize(
+async fn finalize_with_variant(
     pool: &MySqlPool,
     session_id: i64,
     tx: &UnboundedSender<Result<Event, Infallible>>,
     started: Instant,
     content: Option<String>,
     final_agent_id: i64,
+    variant: AppendVariant,
 ) {
     let elapsed = started.elapsed().as_millis() as i32;
     if let Some(text) = content {
-        let routed = if final_agent_id != 1 { Some(final_agent_id) } else { None };
-        let _ = chat_svc::append_assistant_message_admin(pool, session_id, &text, routed, Some(elapsed)).await;
+        match variant {
+            AppendVariant::Admin => {
+                let routed = if final_agent_id != 1 { Some(final_agent_id) } else { None };
+                let _ = chat_svc::append_assistant_message_admin(pool, session_id, &text, routed, Some(elapsed)).await;
+            }
+            AppendVariant::User => {
+                let _ = chat_svc::append_assistant_message_user(pool, session_id, &text, Some(elapsed)).await;
+            }
+        }
     }
     let done = json!({
         "elapsed_ms": elapsed,

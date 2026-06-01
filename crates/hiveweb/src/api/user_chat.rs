@@ -170,10 +170,20 @@ async fn post_message_sse(
     }
     let _guard = SseConcurrencyGuard { actor_id: user_id };
 
-    let _user_msg = match svc::append_user_message_user(&state.pool, id, &body.content).await {
+    let user_msg = match svc::append_user_message_user(&state.pool, id, &body.content).await {
         Ok(m) => m,
         Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
     };
+
+    // Auto-generate title from first message (first 30 chars)
+    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
+        let title = body.content.chars().take(30).collect::<String>();
+        let _ = sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
+            .bind(&title)
+            .bind(id)
+            .execute(&state.pool)
+            .await;
+    }
 
     let pool = state.pool.clone();
     let session_id = id;
@@ -184,7 +194,6 @@ async fn post_message_sse(
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
-    // User chat: simplified direct LLM call without agent orchestration
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: pool.clone(),
         s3: state.s3.clone(),
@@ -192,8 +201,9 @@ async fn post_message_sse(
         registry: Arc::clone(&state.runtime_state.capabilities),
         invoker: Arc::clone(&state.runtime_state.invoker),
     };
+    // Use the same Agent orchestrator as admin, but writes to user chat tables
     tokio::spawn(async move {
-        user_chat_loop(deps, session_id, history, user_content, tx).await;
+        crate::runtime::orchestrator::run_session_user(deps, session_id, 1, history, user_content, tx).await;
     });
 
     let final_stream: std::pin::Pin<

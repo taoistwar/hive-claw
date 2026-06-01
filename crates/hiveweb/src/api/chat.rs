@@ -203,8 +203,18 @@ async fn admin_post_message_sse(
 
     let user_msg = match svc::append_user_message_admin(&state.pool, id, &body.content).await {
         Ok(m) => m,
-        Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
+        Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
     };
+
+    // Auto-generate title from first message (first 30 chars)
+    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
+        let title = body.content.chars().take(30).collect::<String>();
+        let _ = sqlx::query("UPDATE chat_sessions_admin SET title = ? WHERE id = ?")
+            .bind(&title)
+            .bind(id)
+            .execute(&state.pool)
+            .await;
+    }
 
     let pool = state.pool.clone();
     let session_id = id;

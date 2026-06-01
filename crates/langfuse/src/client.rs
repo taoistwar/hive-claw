@@ -1561,10 +1561,11 @@ impl BackgroundWorker {
 
 /// Truncate a string to `max_len` chars for logging.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...<truncated>", &s[..max_len])
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{}...<truncated>", truncated)
     }
 }
 

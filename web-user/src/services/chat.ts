@@ -29,22 +29,22 @@ export interface SessionListParams {
 }
 
 export async function listSessions(params?: SessionListParams): Promise<SessionList> {
-  const resp = await apiClient.get<SessionList>('/chat/sessions', { params });
+  const resp = await apiClient.get<SessionList>('/user-chat/sessions', { params });
   return resp.data;
 }
 
 export async function createSession(title?: string): Promise<ChatSession> {
-  const resp = await apiClient.post<ChatSession>('/chat/sessions', { title });
+  const resp = await apiClient.post<ChatSession>('/user-chat/sessions', { title });
   return resp.data;
 }
 
 export async function getMessages(sessionId: number): Promise<ChatMessage[]> {
-  const resp = await apiClient.get<ChatMessage[]>(`/chat/sessions/${sessionId}/messages`);
+  const resp = await apiClient.get<ChatMessage[]>(`/user-chat/sessions/${sessionId}/messages`);
   return resp.data;
 }
 
 export async function deleteSession(sessionId: number): Promise<void> {
-  await apiClient.delete(`/chat/sessions/${sessionId}`);
+  await apiClient.delete(`/user-chat/sessions/${sessionId}`);
 }
 
 export type SseEvent =
@@ -63,7 +63,7 @@ export async function sendMessageStream(
     import.meta.env.VITE_API_URL ||
     '/api';
   const token = localStorage.getItem('user_auth_token') ?? '';
-  const resp = await fetch(`${baseUrl}/chat/sessions/${sessionId}/messages`, {
+  const resp = await fetch(`${baseUrl}/user-chat/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -88,30 +88,64 @@ export async function sendMessageStream(
   }
 
   const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+  const decoder = new TextDecoder('utf-8');
+  let buf = '';
+  let currentEvent = '';
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const jsonStr = line.slice(6);
-        try {
-          const event: SseEvent = JSON.parse(jsonStr);
-          onEvent(event);
-        } catch {}
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) {
+          currentEvent = '';
+          continue;
+        }
+        if (line.startsWith(':')) continue;
+        if (line.startsWith('event:')) {
+          currentEvent = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          const data = line.slice(5).trim();
+          try {
+            const payload = JSON.parse(data);
+            dispatchEvent(currentEvent, payload, onEvent);
+          } catch {
+            // skip malformed
+          }
+        }
       }
     }
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       onEvent({ type: 'error', code: 0, message: err.message || 'Stream interrupted' });
     }
+  }
+}
+
+function dispatchEvent(
+  type: string,
+  payload: Record<string, unknown>,
+  emit: (e: SseEvent) => void,
+) {
+  switch (type) {
+    case 'token':
+      emit({ type: 'token', text: String(payload.text ?? '') });
+      break;
+    case 'done':
+      emit({ type: 'done', elapsed_ms: Number(payload.elapsed_ms ?? 0) });
+      break;
+    case 'error':
+      emit({
+        type: 'error',
+        code: Number(payload.code ?? 0),
+        message: String(payload.message ?? ''),
+      });
+      break;
   }
 }

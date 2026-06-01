@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Input, List, Space, Typography, Pagination, message } from 'antd';
+import { Button, Input, List, Space, Typography, Pagination, App } from 'antd';
 import { PlusOutlined, SendOutlined, DeleteOutlined, MessageOutlined, SearchOutlined } from '@ant-design/icons';
 import { ChatStream } from '../components/ChatStream';
 import {
@@ -18,6 +18,7 @@ const { Title, Text } = Typography;
 const PAGE_SIZE = 5;
 
 export default function ChatPage() {
+  const { message } = App.useApp();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [total, setTotal] = useState(0);
   const [active, setActive] = useState<ChatSession | null>(null);

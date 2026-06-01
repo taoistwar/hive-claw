@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { ConfigProvider, theme as antdTheme } from 'antd'
+import { ConfigProvider, theme as antdTheme, App as AntdApp } from 'antd'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import ChatPage from './pages/ChatPage'
@@ -137,7 +137,9 @@ function App() {
     <ThemeProvider>
       <ThemeConfigProvider>
         <AuthProvider>
-          <AppRoutes />
+          <AntdApp>
+            <AppRoutes />
+          </AntdApp>
         </AuthProvider>
       </ThemeConfigProvider>
     </ThemeProvider>

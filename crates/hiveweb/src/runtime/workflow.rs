@@ -32,7 +32,11 @@ pub enum WorkflowError {
     #[error("node {node_key} failed: {message}")]
     NodeFailure { node_key: String, message: String },
     #[error("mapping resolve failed at {node_key}.{field}: {message}")]
-    MappingResolve { node_key: String, field: String, message: String },
+    MappingResolve {
+        node_key: String,
+        field: String,
+        message: String,
+    },
 }
 
 /// Dependencies needed at execution time
@@ -62,13 +66,12 @@ impl WorkflowExecutor {
         invoking_agent_id: i64,
     ) -> Result<HashMap<String, Value>, WorkflowError> {
         // 1. Load workflow + nodes + edges
-        let wf_row: Option<(i32, Option<Value>)> = sqlx::query_as(
-            "SELECT timeout_ms, output_schema FROM workflows WHERE id = ?",
-        )
-        .bind(workflow_id)
-        .fetch_optional(&deps.pool)
-        .await
-        .map_err(|e| WorkflowError::LoadFailed(format!("{e}")))?;
+        let wf_row: Option<(i32, Option<Value>)> =
+            sqlx::query_as("SELECT timeout_ms, output_schema FROM workflows WHERE id = ?")
+                .bind(workflow_id)
+                .fetch_optional(&deps.pool)
+                .await
+                .map_err(|e| WorkflowError::LoadFailed(format!("{e}")))?;
         let (timeout_ms, output_schema) = wf_row
             .ok_or(WorkflowError::NotFound(workflow_id))
             .map(|(t, os)| (t as u64, os))?;
@@ -90,14 +93,22 @@ impl WorkflowExecutor {
         .map_err(|e| WorkflowError::LoadFailed(format!("{e}")))?;
 
         // 2. Build lookup tables
-        let id_to_key: HashMap<i64, String> =
-            nodes.iter().map(|(id, k, _, _, _)| (*id, k.clone())).collect();
-        let key_to_function: HashMap<String, Option<i64>> =
-            nodes.iter().map(|(_, k, fid, _, _)| (k.clone(), *fid)).collect();
-        let key_to_node_type: HashMap<String, String> =
-            nodes.iter().map(|(_, k, _, nt, _)| (k.clone(), nt.clone())).collect();
-        let key_to_node_config: HashMap<String, Option<Value>> =
-            nodes.iter().map(|(_, k, _, _, cfg)| (k.clone(), cfg.clone())).collect();
+        let id_to_key: HashMap<i64, String> = nodes
+            .iter()
+            .map(|(id, k, _, _, _)| (*id, k.clone()))
+            .collect();
+        let key_to_function: HashMap<String, Option<i64>> = nodes
+            .iter()
+            .map(|(_, k, fid, _, _)| (k.clone(), *fid))
+            .collect();
+        let key_to_node_type: HashMap<String, String> = nodes
+            .iter()
+            .map(|(_, k, _, nt, _)| (k.clone(), nt.clone()))
+            .collect();
+        let key_to_node_config: HashMap<String, Option<Value>> = nodes
+            .iter()
+            .map(|(_, k, _, _, cfg)| (k.clone(), cfg.clone()))
+            .collect();
 
         // adjacency for topology: indegree per node_key
         let mut indegree: HashMap<String, usize> =
@@ -117,7 +128,9 @@ impl WorkflowExecutor {
                 None => continue,
             };
             *indegree.entry(dst_key.clone()).or_insert(0) += 1;
-            succ.entry(src_key.clone()).or_default().push(dst_key.clone());
+            succ.entry(src_key.clone())
+                .or_default()
+                .push(dst_key.clone());
             let m = mapping.as_object().cloned().unwrap_or_default();
             inbound.entry(dst_key).or_default().push((src_key, m));
         }
@@ -232,20 +245,37 @@ async fn run_layers(
         let mut futures = Vec::with_capacity(layer.len());
         for node_key in &layer {
             let node_config = key_to_node_config.get(node_key.as_str()).cloned().flatten();
-            let node_input = build_node_input(node_key, inbound, &outputs, &external_input, node_config.as_ref())
-                .map_err(|e| WorkflowError::MappingResolve {
-                    node_key: node_key.clone(),
-                    field: e.0,
-                    message: e.1,
-                })?;
-            let node_type = key_to_node_type.get(node_key.as_str())
+            let node_input = build_node_input(
+                node_key,
+                inbound,
+                &outputs,
+                &external_input,
+                node_config.as_ref(),
+            )
+            .map_err(|e| WorkflowError::MappingResolve {
+                node_key: node_key.clone(),
+                field: e.0,
+                message: e.1,
+            })?;
+            let node_type = key_to_node_type
+                .get(node_key.as_str())
                 .map(|s| s.as_str())
                 .unwrap_or("function_node");
             let function_id_opt = *key_to_function
                 .get(node_key)
                 .ok_or_else(|| WorkflowError::MissingFunction(node_key.clone()))?;
             let nk = node_key.clone();
-            futures.push(execute_node(deps, function_id_opt, node_type.to_string(), node_config, nk, node_input, invoking_agent_id, workflow_id, agent_perms));
+            futures.push(execute_node(
+                deps,
+                function_id_opt,
+                node_type.to_string(),
+                node_config,
+                nk,
+                node_input,
+                invoking_agent_id,
+                workflow_id,
+                agent_perms,
+            ));
         }
 
         let results = futures::future::join_all(futures).await;
@@ -295,12 +325,16 @@ fn build_node_input(
                     let mut input = Map::new();
                     for (field, m) in map {
                         if let Value::Object(src_cfg) = m {
-                            let source = src_cfg.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                            let source =
+                                src_cfg.get("source").and_then(|v| v.as_str()).unwrap_or("");
                             if source == "upstream" {
-                                if let Some(snk) = src_cfg.get("source_node_key").and_then(|v| v.as_str()) {
+                                if let Some(snk) =
+                                    src_cfg.get("source_node_key").and_then(|v| v.as_str())
+                                {
                                     if snk == "start" {
                                         // 从 external_input 中取对应字段
-                                        let src_field = src_cfg.get("source_field").and_then(|v| v.as_str());
+                                        let src_field =
+                                            src_cfg.get("source_field").and_then(|v| v.as_str());
                                         if let Value::Object(ext) = external_input {
                                             if let Some(src_field) = src_field {
                                                 if let Some(val) = ext.get(src_field) {
@@ -341,7 +375,9 @@ fn build_node_input(
     for (src_key, mapping) in edges.unwrap() {
         for (dst_key, src_path) in mapping {
             // dst_key like "dst.input.field" → strip prefix
-            let field = dst_key.strip_prefix("dst.input.").unwrap_or(dst_key.as_str());
+            let field = dst_key
+                .strip_prefix("dst.input.")
+                .unwrap_or(dst_key.as_str());
             let path = match src_path.as_str() {
                 Some(s) => s,
                 None => return Err((field.to_string(), "mapping value is not a string".into())),
@@ -377,9 +413,12 @@ fn resolve_src_path(
             format!("expected '{expected_src}.output.<path>' or 'output.<path>'"),
         ));
     };
-    let upstream = outputs
-        .get(expected_src)
-        .ok_or_else(|| (path.to_string(), format!("upstream {expected_src} produced no output")))?;
+    let upstream = outputs.get(expected_src).ok_or_else(|| {
+        (
+            path.to_string(),
+            format!("upstream {expected_src} produced no output"),
+        )
+    })?;
     let mut current = upstream;
     for seg in rest.split('.') {
         match current {
@@ -401,10 +440,7 @@ fn resolve_src_path(
 
 /// 解析 start 节点的虚拟输出：从 external_input 中取值
 /// path 格式: "start.output.<field>"  — 从中提取 <field> 并在 external_input 中查找
-fn resolve_from_external(
-    path: &str,
-    external_input: &Value,
-) -> Result<Value, (String, String)> {
+fn resolve_from_external(path: &str, external_input: &Value) -> Result<Value, (String, String)> {
     // path: "start.output.query" → 提取 "query"
     let field = if let Some(r) = path.strip_prefix("start.output.") {
         r
@@ -417,9 +453,12 @@ fn resolve_from_external(
         ));
     };
     if let Value::Object(ext) = external_input {
-        ext.get(field)
-            .cloned()
-            .ok_or_else(|| (path.to_string(), format!("external input missing field '{field}'")))
+        ext.get(field).cloned().ok_or_else(|| {
+            (
+                path.to_string(),
+                format!("external input missing field '{field}'"),
+            )
+        })
     } else {
         Err((path.to_string(), "external input is not an object".into()))
     }
@@ -460,12 +499,11 @@ async fn execute_node(
         node_key: node_key.clone(),
         message: format!("function fetch: {e}"),
     })?;
-    let (kind, plugin_id, plugin_export, identifier) = row.ok_or_else(|| {
-        WorkflowError::NodeFailure {
+    let (kind, plugin_id, plugin_export, identifier) =
+        row.ok_or_else(|| WorkflowError::NodeFailure {
             node_key: node_key.clone(),
             message: format!("function id={function_id} not found"),
-        }
-    })?;
+        })?;
 
     // Builtin (kind=1, plugin_id IS NULL) → direct handler
     if kind == 1 && plugin_id.is_none() {
@@ -473,7 +511,11 @@ async fn execute_node(
             node_key: node_key.clone(),
             message: format!("unknown builtin: {identifier}"),
         })?;
-        let out = (result.handler)(input).map_err(|e| WorkflowError::NodeFailure {
+        let ctx = crate::runtime::builtins::BuiltinContext {
+            pool: &deps.pool,
+            ext_pool: None,
+        };
+        let out = (result.handler)(input, &ctx).map_err(|e| WorkflowError::NodeFailure {
             node_key: node_key.clone(),
             message: format!("{e}"),
         })?;
@@ -518,8 +560,7 @@ async fn execute_node(
             node_key: node_key.clone(),
             message: format!("plugin invoke: {e}"),
         })?;
-    let out: Value =
-        serde_json::from_str(&out_str).unwrap_or_else(|_| Value::String(out_str));
+    let out: Value = serde_json::from_str(&out_str).unwrap_or_else(|_| Value::String(out_str));
     Ok((node_key, out))
 }
 
@@ -550,8 +591,7 @@ async fn execute_answer_node(
     let resolved_prompt = resolve_template_vars(system_prompt, &input);
 
     // Build the user message from the resolved input
-    let user_message = serde_json::to_string(&input)
-        .unwrap_or_else(|_| "{}".to_string());
+    let user_message = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
 
     // Try LLM invocation; fall back to direct response if no LLM available
     let answer = match deps.llm.build_primary(model_preset) {
@@ -571,7 +611,9 @@ async fn execute_answer_node(
             };
             let resp = provider.chat(req).await;
             if resp.is_error() {
-                let err_msg = resp.content.unwrap_or_else(|| "unknown LLM error".to_string());
+                let err_msg = resp
+                    .content
+                    .unwrap_or_else(|| "unknown LLM error".to_string());
                 tracing::warn!(node_key, error = %err_msg, "answer node LLM failed, using fallback");
                 format!("[LLM 调用失败: {err_msg}] 输入: {user_message}")
             } else {

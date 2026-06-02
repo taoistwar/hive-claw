@@ -1,9 +1,9 @@
 //! Tool API handlers (T085 / US2)
 
 use axum::{
+    Json, Router,
     extract::{Extension, Path, Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use serde::Deserialize;
 
@@ -26,16 +26,26 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    #[serde(default)] pub offset: Option<i64>,
-    #[serde(default)] pub limit: Option<i64>,
-    #[serde(default)] pub search: Option<String>,
-    #[serde(default)] pub kind: Option<i8>,
-    #[serde(default)] pub source: Option<String>,
-    #[serde(default)] pub category_id: Option<i64>,
-    #[serde(default)] pub created_at_start: Option<String>,
-    #[serde(default)] pub created_at_end: Option<String>,
-    #[serde(default)] pub updated_at_start: Option<String>,
-    #[serde(default)] pub updated_at_end: Option<String>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub kind: Option<i8>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub category_id: Option<i64>,
+    #[serde(default)]
+    pub created_at_start: Option<String>,
+    #[serde(default)]
+    pub created_at_end: Option<String>,
+    #[serde(default)]
+    pub updated_at_start: Option<String>,
+    #[serde(default)]
+    pub updated_at_end: Option<String>,
 }
 
 async fn list_tools(
@@ -134,7 +144,11 @@ async fn delete_tool(
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
     let prev = svc::fetch_by_id_with_tags(&state.pool, id).await.ok();
     let target_id = prev.as_ref().map(|t| t.tool.id);
-    let target_name = prev.as_ref().map(|t| &t.tool.name).cloned().unwrap_or_default();
+    let target_name = prev
+        .as_ref()
+        .map(|t| &t.tool.name)
+        .cloned()
+        .unwrap_or_default();
 
     match svc::delete(&state.pool, id).await {
         Ok(()) => {
@@ -163,7 +177,10 @@ async fn test_tool(
 ) -> Result<ApiResponse<test_svc::TestToolResult>, ApiResponse<()>> {
     let trace_id = req.trace_id.take().unwrap_or_else(|| {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
         format!("tool_test_{}", ts)
     });
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
@@ -172,6 +189,7 @@ async fn test_tool(
         llm: state.runtime_state.llm.clone(),
         registry: state.runtime_state.capabilities.clone(),
         invoker: state.runtime_state.invoker.clone(),
+        ext_pool: state.ext_pool.clone(),
     };
     let req_with_trace = test_svc::TestToolRequest {
         message: req.message,
@@ -182,7 +200,10 @@ async fn test_tool(
         Ok(result) => Ok(ApiResponse::success(result)),
         Err(e) => {
             let log_path = format!("/tmp/tool_test_logs/{}.log", trace_id);
-            Err(ApiResponse::err(5000, format!("{} (debug: {})", e, log_path)))
+            Err(ApiResponse::err(
+                5000,
+                format!("{} (debug: {})", e, log_path),
+            ))
         }
     }
 }
@@ -197,7 +218,9 @@ async fn audit_event(
     detail: serde_json::Value,
 ) -> anyhow::Result<()> {
     use crate::services::admin as admin_svc;
-    let admin_id = claims.admin_id.ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
+    let admin_id = claims
+        .admin_id
+        .ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
     let operator = admin_svc::get_admin_by_id(pool, admin_id).await?;
     let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
     if let Err(e) = audit_svc::record(

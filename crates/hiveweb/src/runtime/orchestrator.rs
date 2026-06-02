@@ -18,7 +18,7 @@
 use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
 use providers::{ChatRequest, RetryMode, ToolCallRequest};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -47,6 +47,7 @@ pub struct OrchestratorDeps {
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
+    pub ext_pool: Option<MySqlPool>,
 }
 
 pub async fn run_session_admin(
@@ -59,8 +60,15 @@ pub async fn run_session_admin(
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_admin(
-        deps, session_id, starting_agent_id, actor_id, &history, &user_content, &tx,
-    ).await;
+        deps,
+        session_id,
+        starting_agent_id,
+        actor_id,
+        &history,
+        &user_content,
+        &tx,
+    )
+    .await;
 }
 
 pub async fn run_session_user(
@@ -73,8 +81,15 @@ pub async fn run_session_user(
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_user(
-        deps, session_id, starting_agent_id, actor_id, &history, &user_content, &tx,
-    ).await;
+        deps,
+        session_id,
+        starting_agent_id,
+        actor_id,
+        &history,
+        &user_content,
+        &tx,
+    )
+    .await;
 }
 
 // ============================ Admin session internal ============================
@@ -89,9 +104,16 @@ async fn run_session_internal_admin(
     tx: &UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_impl(
-        deps, session_id, starting_agent_id, actor_id, history, user_content, tx,
+        deps,
+        session_id,
+        starting_agent_id,
+        actor_id,
+        history,
+        user_content,
+        tx,
         AppendVariant::Admin,
-    ).await;
+    )
+    .await;
 }
 
 async fn run_session_internal_user(
@@ -104,12 +126,22 @@ async fn run_session_internal_user(
     tx: &UnboundedSender<Result<Event, Infallible>>,
 ) {
     run_session_internal_impl(
-        deps, session_id, starting_agent_id, actor_id, history, user_content, tx,
+        deps,
+        session_id,
+        starting_agent_id,
+        actor_id,
+        history,
+        user_content,
+        tx,
         AppendVariant::User,
-    ).await;
+    )
+    .await;
 }
 
-enum AppendVariant { Admin, User }
+enum AppendVariant {
+    Admin,
+    User,
+}
 
 /// Trait for accessing role + content on chat messages generically
 trait HasRoleContent {
@@ -117,12 +149,20 @@ trait HasRoleContent {
     fn content_ref(&self) -> Option<&str>;
 }
 impl HasRoleContent for crate::models::ChatMessageAdmin {
-    fn role_ref(&self) -> &str { &self.role }
-    fn content_ref(&self) -> Option<&str> { self.content.as_deref() }
+    fn role_ref(&self) -> &str {
+        &self.role
+    }
+    fn content_ref(&self) -> Option<&str> {
+        self.content.as_deref()
+    }
 }
 impl HasRoleContent for crate::models::ChatMessageUser {
-    fn role_ref(&self) -> &str { &self.role }
-    fn content_ref(&self) -> Option<&str> { self.content.as_deref() }
+    fn role_ref(&self) -> &str {
+        &self.role
+    }
+    fn content_ref(&self) -> Option<&str> {
+        self.content.as_deref()
+    }
 }
 
 async fn run_session_internal_impl<T>(
@@ -134,7 +174,9 @@ async fn run_session_internal_impl<T>(
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
     variant: AppendVariant,
-) where T: HasRoleContent {
+) where
+    T: HasRoleContent,
+{
     let elapsed_start = Instant::now();
     let mut current_agent_id = starting_agent_id;
     let mut visited: Vec<i64> = vec![starting_agent_id];
@@ -183,7 +225,8 @@ async fn run_session_internal_impl<T>(
         };
 
         // 3. 准备 system + tools
-        let mut hop_msgs: Vec<Value> = vec![json!({"role": "system", "content": ctx.system_prompt})];
+        let mut hop_msgs: Vec<Value> =
+            vec![json!({"role": "system", "content": ctx.system_prompt})];
         hop_msgs.extend(messages.clone());
 
         let tools_schema = build_tools_schema(&ctx);
@@ -208,7 +251,16 @@ async fn run_session_internal_impl<T>(
             let ev = Event::default().event("token").data(payload.to_string());
             let _ = tx_inner.send(Ok::<_, Infallible>(ev));
         });
-        let resp = provider.chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None, lf_trace.as_ref()).await;
+        let resp = provider
+            .chat_stream_with_retry(
+                req,
+                Some(on_delta),
+                None,
+                RetryMode::Standard,
+                None,
+                lf_trace.as_ref(),
+            )
+            .await;
 
         if resp.is_error() {
             let msg = resp
@@ -227,7 +279,10 @@ async fn run_session_internal_impl<T>(
 
         // 把 assistant 消息加入 history（含 tool_calls 序列化）
         if !tool_calls.is_empty() {
-            let tc_json: Vec<Value> = tool_calls.iter().map(|tc| tc.to_openai_tool_call()).collect();
+            let tc_json: Vec<Value> = tool_calls
+                .iter()
+                .map(|tc| tc.to_openai_tool_call())
+                .collect();
             messages.push(json!({
                 "role": "assistant",
                 "content": assistant_content.clone(),
@@ -237,7 +292,14 @@ async fn run_session_internal_impl<T>(
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }
 
-        audit_llm(&deps.pool, current_agent_id, "success", elapsed_start, &model).await;
+        audit_llm(
+            &deps.pool,
+            current_agent_id,
+            "success",
+            elapsed_start,
+            &model,
+        )
+        .await;
 
         // 5. 无 tool_call → 这是最终回复
         if !resp.should_execute_tools() {
@@ -251,12 +313,19 @@ async fn run_session_internal_impl<T>(
 
         // Persist assistant message with tool_calls to DB
         if matches!(variant, AppendVariant::Admin) {
-            let tc_json: Vec<Value> = tool_calls.iter().map(|tc| tc.to_openai_tool_call()).collect();
+            let tc_json: Vec<Value> = tool_calls
+                .iter()
+                .map(|tc| tc.to_openai_tool_call())
+                .collect();
             let _ = chat_svc::append_assistant_with_tool_calls_admin(
-                &deps.pool, session_id, actor_id, &assistant_content,
+                &deps.pool,
+                session_id,
+                actor_id,
+                &assistant_content,
                 &serde_json::to_string(&tc_json).unwrap_or_default(),
                 None,
-            ).await;
+            )
+            .await;
         }
 
         for tc in &tool_calls {
@@ -266,7 +335,9 @@ async fn run_session_internal_impl<T>(
                 "name": tc.name,
                 "args": tc.arguments,
             });
-            let _ = tx.send(Ok(Event::default().event("tool_call").data(tc_payload.to_string())));
+            let _ = tx.send(Ok(Event::default()
+                .event("tool_call")
+                .data(tc_payload.to_string())));
 
             let result = if tc.name == ROUTE_TOOL_NAME {
                 handle_route_tool(&deps.pool, &ctx, &visited, tc).await
@@ -281,14 +352,21 @@ async fn run_session_internal_impl<T>(
                 "tool_call_id": tc.id,
                 "result": result.payload,
             });
-            let _ = tx.send(Ok(Event::default().event("tool_result").data(tr_payload.to_string())));
+            let _ = tx.send(Ok(Event::default()
+                .event("tool_result")
+                .data(tr_payload.to_string())));
 
             // Persist tool message to DB
             if matches!(variant, AppendVariant::Admin) {
                 let _ = chat_svc::append_tool_message_admin(
-                    &deps.pool, session_id, actor_id, &tc.id, &tc.name,
+                    &deps.pool,
+                    session_id,
+                    actor_id,
+                    &tc.id,
+                    &tc.name,
                     &serde_json::to_string(&result.payload).unwrap_or_default(),
-                ).await;
+                )
+                .await;
             }
 
             // tool message → 加入 history
@@ -307,7 +385,17 @@ async fn run_session_internal_impl<T>(
                     );
                     final_content = Some(assistant_content.clone());
                     final_agent_id = current_agent_id;
-                    return finalize_with_variant(&deps.pool, session_id, actor_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
+                    return finalize_with_variant(
+                        &deps.pool,
+                        session_id,
+                        actor_id,
+                        &tx,
+                        elapsed_start,
+                        final_content,
+                        final_agent_id,
+                        variant,
+                    )
+                    .await;
                 }
                 routed_to = Some(next_agent);
                 visited.push(next_agent);
@@ -316,7 +404,9 @@ async fn run_session_internal_impl<T>(
                     "agent_id": next_agent,
                     "agent_identifier": result.route_identifier.clone().unwrap_or_default(),
                 });
-                let _ = tx.send(Ok(Event::default().event("routed").data(routed_payload.to_string())));
+                let _ = tx.send(Ok(Event::default()
+                    .event("routed")
+                    .data(routed_payload.to_string())));
                 audit_route(&deps.pool, current_agent_id, next_agent).await;
             }
         }
@@ -336,7 +426,17 @@ async fn run_session_internal_impl<T>(
         }
     }
 
-    finalize_with_variant(&deps.pool, session_id, actor_id, &tx, elapsed_start, final_content, final_agent_id, variant).await;
+    finalize_with_variant(
+        &deps.pool,
+        session_id,
+        actor_id,
+        &tx,
+        elapsed_start,
+        final_content,
+        final_agent_id,
+        variant,
+    )
+    .await;
 }
 
 async fn finalize_with_variant(
@@ -353,11 +453,30 @@ async fn finalize_with_variant(
     if let Some(text) = content {
         match variant {
             AppendVariant::Admin => {
-                let routed = if final_agent_id != 1 { Some(final_agent_id) } else { None };
-                let _ = chat_svc::append_assistant_message_admin(pool, session_id, actor_id, &text, routed, Some(elapsed)).await;
+                let routed = if final_agent_id != 1 {
+                    Some(final_agent_id)
+                } else {
+                    None
+                };
+                let _ = chat_svc::append_assistant_message_admin(
+                    pool,
+                    session_id,
+                    actor_id,
+                    &text,
+                    routed,
+                    Some(elapsed),
+                )
+                .await;
             }
             AppendVariant::User => {
-                let _ = chat_svc::append_assistant_message_user(pool, session_id, actor_id, &text, Some(elapsed)).await;
+                let _ = chat_svc::append_assistant_message_user(
+                    pool,
+                    session_id,
+                    actor_id,
+                    &text,
+                    Some(elapsed),
+                )
+                .await;
             }
         }
     }
@@ -416,16 +535,14 @@ pub(crate) struct ChildAgent {
 }
 
 async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentContext, String> {
-    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?",
-    )
-    .bind(agent_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("agent fetch: {e}"))?;
-    let (identifier, mut system_prompt, model_preset) = row.ok_or_else(|| {
-        format!("agent id={agent_id} not found")
-    })?;
+    let row: Option<(String, String, Option<String>)> =
+        sqlx::query_as("SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("agent fetch: {e}"))?;
+    let (identifier, mut system_prompt, model_preset) =
+        row.ok_or_else(|| format!("agent id={agent_id} not found"))?;
 
     // Skill markdown 拼到 system prompt
     let skills: Vec<(String,)> = sqlx::query_as(
@@ -443,9 +560,20 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
     }
 
     // Tools: agent-specific + always tools (deduplicated by tool id)
-    let tool_rows: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<Value>)> =
-        sqlx::query_as(
-            r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
+    let tool_rows: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        i8,
+        Option<i64>,
+        Option<i64>,
+        Value,
+        Option<i64>,
+        Option<String>,
+        Option<Value>,
+    )> = sqlx::query_as(
+        r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
                       f.plugin_id, f.plugin_export,
                       COALESCE(t.required_capabilities, f.required_capabilities)
@@ -464,21 +592,38 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
                  AND t.id NOT IN (
                      SELECT at2.tool_id FROM agent_tools at2 WHERE at2.agent_id = ?
                  )"#,
-        )
-        .bind(agent_id)
-        .bind(agent_id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+    )
+    .bind(agent_id)
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     let mut tools: Vec<ToolRef> = Vec::new();
-    for (id, identifier, name, desc, kind, function_id, workflow_id, input_schema, plugin_id, plugin_export, caps_json) in tool_rows {
+    for (
+        id,
+        identifier,
+        name,
+        desc,
+        kind,
+        function_id,
+        workflow_id,
+        input_schema,
+        plugin_id,
+        plugin_export,
+        caps_json,
+    ) in tool_rows
+    {
         let is_builtin_function = kind == 1 && plugin_id.is_none();
         // 元工具（meta-tool）：kind=1 且 function_id=NULL（如 invoke_function / invoke_workflow）
         let is_meta_tool = kind == 1 && function_id.is_none();
         let required_capabilities: Vec<String> = caps_json
             .and_then(|v| v.as_array().cloned())
-            .map(|arr| arr.into_iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.into_iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         tools.push(ToolRef {
             id,
@@ -506,16 +651,19 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
             .unwrap_or_default();
 
     // Children
-    let children_rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, identifier, description FROM agents WHERE parent_agent_id = ?",
-    )
-    .bind(agent_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let children_rows: Vec<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, identifier, description FROM agents WHERE parent_agent_id = ?")
+            .bind(agent_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
     let children: Vec<ChildAgent> = children_rows
         .into_iter()
-        .map(|(id, ident, desc)| ChildAgent { id, identifier: ident, description: desc })
+        .map(|(id, ident, desc)| ChildAgent {
+            id,
+            identifier: ident,
+            description: desc,
+        })
         .collect();
 
     Ok(AgentContext {
@@ -616,7 +764,11 @@ pub(crate) struct ToolOutcome {
 
 impl ToolOutcome {
     pub(crate) fn ok(payload: Value) -> Self {
-        Self { payload, route_to: None, route_identifier: None }
+        Self {
+            payload,
+            route_to: None,
+            route_identifier: None,
+        }
     }
     fn route(agent_id: i64, identifier: String) -> Self {
         Self {
@@ -640,7 +792,8 @@ async fn handle_route_tool(
     visited: &[i64],
     tc: &ToolCallRequest,
 ) -> ToolOutcome {
-    let target_ident = tc.arguments
+    let target_ident = tc
+        .arguments
         .get("agent_identifier")
         .and_then(|v| v.as_str())
         .unwrap_or("");
@@ -648,7 +801,10 @@ async fn handle_route_tool(
         return ToolOutcome::error("agent_identifier 缺失".into());
     }
     // 必须是 parent 的直接子 agent
-    let child = parent_ctx.children.iter().find(|c| c.identifier == target_ident);
+    let child = parent_ctx
+        .children
+        .iter()
+        .find(|c| c.identifier == target_ident);
     let Some(child) = child else {
         return ToolOutcome::error(format!(
             "agent「{target_ident}」不是当前 agent「{}」的子 agent，路由拒绝",
@@ -675,9 +831,15 @@ async fn handle_meta_tool(
 ) -> ToolOutcome {
     match tool_ref.identifier.as_str() {
         "invoke_function" => {
-            let func_ident = match tc.arguments.get("function_identifier").and_then(|v| v.as_str()) {
+            let func_ident = match tc
+                .arguments
+                .get("function_identifier")
+                .and_then(|v| v.as_str())
+            {
                 Some(s) => s.to_string(),
-                None => return ToolOutcome::error("invoke_function: function_identifier 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_function: function_identifier 缺失".into());
+                }
             };
             let function_input = match tc.arguments.get("function_input") {
                 Some(v) => v.clone(),
@@ -693,18 +855,23 @@ async fn handle_meta_tool(
             .map_err(|e| format!("function lookup: {e}"))
             .unwrap_or(None);
             let Some((func_id, func_kind, plugin_id, plugin_export, func_caps)) = func_row else {
-                return ToolOutcome::error(format!("invoke_function: function「{func_ident}」不存在"));
+                return ToolOutcome::error(format!(
+                    "invoke_function: function「{func_ident}」不存在"
+                ));
             };
 
             // Capability check: 如果 function 声明了 required_capabilities，校验 agent 权限
             if let Some(ref caps) = func_caps {
                 if let Some(arr) = caps.as_array() {
-                    let required: Vec<String> = arr.iter()
+                    let required: Vec<String> = arr
+                        .iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect();
                     if !required.is_empty() {
-                        let agent_perms: std::collections::HashSet<&str> = ctx.permissions.iter().map(|s| s.as_str()).collect();
-                        let missing: Vec<&str> = required.iter()
+                        let agent_perms: std::collections::HashSet<&str> =
+                            ctx.permissions.iter().map(|s| s.as_str()).collect();
+                        let missing: Vec<&str> = required
+                            .iter()
                             .filter(|c| !agent_perms.contains(c.as_str()))
                             .map(|s| s.as_str())
                             .collect();
@@ -722,9 +889,15 @@ async fn handle_meta_tool(
                 1 if plugin_id.is_none() => {
                     // builtin function — 直接调用
                     let Some(builtin) = super::builtins::lookup(&func_ident) else {
-                        return ToolOutcome::error(format!("builtin function「{func_ident}」未找到 handler"));
+                        return ToolOutcome::error(format!(
+                            "builtin function「{func_ident}」未找到 handler"
+                        ));
                     };
-                    match (builtin.handler)(function_input) {
+                    let bctx = super::builtins::BuiltinContext {
+                        pool: &deps.pool,
+                        ext_pool: deps.ext_pool.as_ref(),
+                    };
+                    match (builtin.handler)(function_input, &bctx) {
                         Ok(result) => ToolOutcome::ok(result),
                         Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
                     }
@@ -749,11 +922,20 @@ async fn handle_meta_tool(
                         function_id: Some(func_id),
                         permissions: ctx.permissions.clone(),
                     };
-                    match deps.invoker.invoke(
-                        &deps.pool, &deps.s3,
-                        Arc::clone(&deps.registry), Arc::clone(&deps.llm),
-                        pid, export, input_json, dispatch_ctx,
-                    ).await {
+                    match deps
+                        .invoker
+                        .invoke(
+                            &deps.pool,
+                            &deps.s3,
+                            Arc::clone(&deps.registry),
+                            Arc::clone(&deps.llm),
+                            pid,
+                            export,
+                            input_json,
+                            dispatch_ctx,
+                        )
+                        .await
+                    {
                         Ok(out_str) => {
                             let parsed: Value = serde_json::from_str(&out_str)
                                 .unwrap_or_else(|_| Value::String(out_str));
@@ -762,29 +944,38 @@ async fn handle_meta_tool(
                         Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
                     }
                 }
-                _ => ToolOutcome::error(format!("invoke_function: function「{func_ident}」kind={func_kind} 不支持")),
+                _ => ToolOutcome::error(format!(
+                    "invoke_function: function「{func_ident}」kind={func_kind} 不支持"
+                )),
             }
         }
         "invoke_workflow" => {
-            let wf_ident = match tc.arguments.get("workflow_identifier").and_then(|v| v.as_str()) {
+            let wf_ident = match tc
+                .arguments
+                .get("workflow_identifier")
+                .and_then(|v| v.as_str())
+            {
                 Some(s) => s.to_string(),
-                None => return ToolOutcome::error("invoke_workflow: workflow_identifier 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_workflow: workflow_identifier 缺失".into());
+                }
             };
             let workflow_input = match tc.arguments.get("workflow_input") {
                 Some(v) => v.clone(),
                 None => return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into()),
             };
             // 查询 workflow id
-            let wf_row: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM workflows WHERE identifier = ?",
-            )
-            .bind(&wf_ident)
-            .fetch_optional(&deps.pool)
-            .await
-            .map_err(|e| format!("workflow lookup: {e}"))
-            .unwrap_or(None);
+            let wf_row: Option<(i64,)> =
+                sqlx::query_as("SELECT id FROM workflows WHERE identifier = ?")
+                    .bind(&wf_ident)
+                    .fetch_optional(&deps.pool)
+                    .await
+                    .map_err(|e| format!("workflow lookup: {e}"))
+                    .unwrap_or(None);
             let Some((workflow_id,)) = wf_row else {
-                return ToolOutcome::error(format!("invoke_workflow: workflow「{wf_ident}」不存在"));
+                return ToolOutcome::error(format!(
+                    "invoke_workflow: workflow「{wf_ident}」不存在"
+                ));
             };
             let executor_deps = crate::runtime::workflow::ExecutorDeps {
                 pool: deps.pool.clone(),
@@ -794,7 +985,10 @@ async fn handle_meta_tool(
                 invoker: Arc::clone(&deps.invoker),
             };
             let executor = crate::runtime::workflow::WorkflowExecutor::new();
-            match executor.execute(&executor_deps, workflow_id, workflow_input, ctx.agent_id).await {
+            match executor
+                .execute(&executor_deps, workflow_id, workflow_input, ctx.agent_id)
+                .await
+            {
                 Ok(out) => {
                     let obj = serde_json::Map::from_iter(out.into_iter());
                     ToolOutcome::ok(Value::Object(obj))
@@ -815,8 +1009,11 @@ pub(crate) async fn handle_workspace_tool(
 ) -> ToolOutcome {
     // Capability check: 如果 tool 声明了 required_capabilities，校验 agent 权限
     if !tool_ref.required_capabilities.is_empty() {
-        let agent_perms: std::collections::HashSet<&str> = ctx.permissions.iter().map(|s| s.as_str()).collect();
-        let missing: Vec<&str> = tool_ref.required_capabilities.iter()
+        let agent_perms: std::collections::HashSet<&str> =
+            ctx.permissions.iter().map(|s| s.as_str()).collect();
+        let missing: Vec<&str> = tool_ref
+            .required_capabilities
+            .iter()
             .filter(|c| !agent_perms.contains(c.as_str()))
             .map(|s| s.as_str())
             .collect();
@@ -839,10 +1036,17 @@ pub(crate) async fn handle_workspace_tool(
                     return ToolOutcome::error("builtin function 缺 function_id".into());
                 };
                 let Some(builtin) = super::builtins::lookup(&tool_ref.identifier) else {
-                    return ToolOutcome::error(format!("builtin function「{}」未找到 handler", tool_ref.identifier));
+                    return ToolOutcome::error(format!(
+                        "builtin function「{}」未找到 handler",
+                        tool_ref.identifier
+                    ));
                 };
                 let args_value: Value = Value::Object(tc.arguments.clone());
-                match (builtin.handler)(args_value) {
+                let bctx = super::builtins::BuiltinContext {
+                    pool: &deps.pool,
+                    ext_pool: deps.ext_pool.as_ref(),
+                };
+                match (builtin.handler)(args_value, &bctx) {
                     Ok(result) => ToolOutcome::ok(result),
                     Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
                 }
@@ -924,13 +1128,7 @@ pub(crate) async fn handle_workspace_tool(
 
 // ============================ Audit ============================
 
-async fn audit_llm(
-    pool: &MySqlPool,
-    agent_id: i64,
-    outcome: &str,
-    started: Instant,
-    model: &str,
-) {
+async fn audit_llm(pool: &MySqlPool, agent_id: i64, outcome: &str, started: Instant, model: &str) {
     let _ = model;
     runtime_audit::record(
         pool,

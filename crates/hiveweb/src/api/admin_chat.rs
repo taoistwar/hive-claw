@@ -2,13 +2,13 @@
 //!
 //! Mounted on admin-protected router at /api/admin-chat/*
 
+use axum::response::sse::Event;
 use axum::{
+    Extension, Json, Router,
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
     routing::get,
-    Extension, Json, Router,
 };
-use axum::response::sse::Event;
 use futures::stream::{self, Stream};
 use serde::Serialize;
 use std::convert::Infallible;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::api::AppState;
 use crate::api::chat_common::{
-    ListSessionsQuery, SseSlotConfig, SseConcurrencyGuard, try_acquire_slot, sse_response,
+    ListSessionsQuery, SseConcurrencyGuard, SseSlotConfig, sse_response, try_acquire_slot,
 };
 use crate::services::chat::{self as svc, PostMessage};
 use crate::utils::error::{ApiResponse, AppError};
@@ -64,10 +64,17 @@ async fn admin_list_sessions(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(50);
     let search = query.search.as_deref();
-    svc::list_sessions_admin(&state.pool, claims.admin_id, claims.role, offset, limit, search)
-        .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+    svc::list_sessions_admin(
+        &state.pool,
+        claims.admin_id,
+        claims.role,
+        offset,
+        limit,
+        search,
+    )
+    .await
+    .map(ApiResponse::success)
+    .map_err(|e| e.into_response())
 }
 
 async fn admin_delete_session(
@@ -78,7 +85,8 @@ async fn admin_delete_session(
     let session = svc::fetch_session_admin(&state.pool, id)
         .await
         .map_err(|e| e.into_response())?;
-    svc::check_ownership_admin(&session, claims.admin_id, claims.role).map_err(|e| e.into_response())?;
+    svc::check_ownership_admin(&session, claims.admin_id, claims.role)
+        .map_err(|e| e.into_response())?;
     svc::delete_session_admin(&state.pool, id)
         .await
         .map(ApiResponse::success)
@@ -93,7 +101,8 @@ async fn admin_get_messages(
     let session = svc::fetch_session_admin(&state.pool, id)
         .await
         .map_err(|e| e.into_response())?;
-    svc::check_ownership_admin(&session, claims.admin_id, claims.role).map_err(|e| e.into_response())?;
+    svc::check_ownership_admin(&session, claims.admin_id, claims.role)
+        .map_err(|e| e.into_response())?;
     svc::list_messages_admin(&state.pool, id)
         .await
         .map(ApiResponse::success)
@@ -105,12 +114,31 @@ async fn admin_get_messages(
 #[serde(tag = "_event", rename_all = "snake_case")]
 #[allow(dead_code)]
 enum ChatEvent {
-    Token { text: String },
-    ToolCall { tool_call_id: String, name: String, args: serde_json::Value },
-    ToolResult { tool_call_id: String, result: serde_json::Value },
-    Routed { agent_id: i64, agent_identifier: String },
-    FallbackUsed { from: String, to: String, reason: String },
-    Done { elapsed_ms: i64, final_agent_id: Option<i64> },
+    Token {
+        text: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        name: String,
+        args: serde_json::Value,
+    },
+    ToolResult {
+        tool_call_id: String,
+        result: serde_json::Value,
+    },
+    Routed {
+        agent_id: i64,
+        agent_identifier: String,
+    },
+    FallbackUsed {
+        from: String,
+        to: String,
+        reason: String,
+    },
+    Done {
+        elapsed_ms: i64,
+        final_agent_id: Option<i64>,
+    },
 }
 
 async fn admin_post_message_sse(
@@ -119,9 +147,9 @@ async fn admin_post_message_sse(
     Path(id): Path<i64>,
     Json(body): Json<PostMessage>,
 ) -> Response {
-    let admin_id = claims.admin_id.ok_or_else(|| {
-        AppError::Internal("No admin context".to_string())
-    });
+    let admin_id = claims
+        .admin_id
+        .ok_or_else(|| AppError::Internal("No admin context".to_string()));
     let admin_id = match admin_id {
         Ok(id) => id,
         Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
@@ -136,18 +164,20 @@ async fn admin_post_message_sse(
     }
 
     if !try_acquire_slot(admin_id, SseSlotConfig::ADMIN).await {
-        return AppError::SseConcurrencyExceeded(
-            "并发会话过多，请关闭其它对话窗口后重试".into(),
-        )
-        .into_response::<()>()
-        .into_response();
+        return AppError::SseConcurrencyExceeded("并发会话过多，请关闭其它对话窗口后重试".into())
+            .into_response::<()>()
+            .into_response();
     }
-    let _guard = SseConcurrencyGuard { actor_id: admin_id, is_admin: true };
-
-    let user_msg = match svc::append_user_message_admin(&state.pool, id, admin_id, &body.content).await {
-        Ok(m) => m,
-        Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
+    let _guard = SseConcurrencyGuard {
+        actor_id: admin_id,
+        is_admin: true,
     };
+
+    let user_msg =
+        match svc::append_user_message_admin(&state.pool, id, admin_id, &body.content).await {
+            Ok(m) => m,
+            Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
+        };
 
     // Auto-generate title from first message (first 30 chars)
     if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
@@ -165,7 +195,9 @@ async fn admin_post_message_sse(
     let _ = user_msg.id;
 
     let history: Vec<crate::models::ChatMessageAdmin> =
-        svc::list_messages_admin(&state.pool, session_id).await.unwrap_or_default();
+        svc::list_messages_admin(&state.pool, session_id)
+            .await
+            .unwrap_or_default();
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
@@ -175,6 +207,7 @@ async fn admin_post_message_sse(
         llm: Arc::clone(&state.runtime_state.llm),
         registry: Arc::clone(&state.runtime_state.capabilities),
         invoker: Arc::clone(&state.runtime_state.invoker),
+        ext_pool: state.ext_pool.clone(),
     };
     let history_clone = history.clone();
     tokio::spawn(async move {
@@ -190,11 +223,10 @@ async fn admin_post_message_sse(
         .await;
     });
 
-    let final_stream: std::pin::Pin<
-        Box<dyn Stream<Item = Result<Event, Infallible>> + Send>,
-    > = Box::pin(stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
-    }));
+    let final_stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        }));
 
     sse_response(final_stream)
 }

@@ -8,6 +8,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::MySqlPool;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuiltinError {
@@ -19,6 +20,12 @@ pub enum BuiltinError {
 
 pub type BuiltinResult = Result<Value, BuiltinError>;
 
+/// 内置函数执行时需要的上下文（DB 连接池）
+pub struct BuiltinContext<'a> {
+    pub pool: &'a MySqlPool,
+    pub ext_pool: Option<&'a MySqlPool>,
+}
+
 // ---------- format.template ----------
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +36,7 @@ struct FormatTemplateArgs {
 }
 
 /// 简单 `{var}` 占位符替换；嵌套对象暂不支持。
-pub fn format_template(args: Value) -> BuiltinResult {
+pub fn format_template(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
     let parsed: FormatTemplateArgs =
         serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
     let mut out = parsed.template;
@@ -63,7 +70,7 @@ struct JsonParseArgs {
     text: String,
 }
 
-pub fn json_parse(args: Value) -> BuiltinResult {
+pub fn json_parse(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
     let parsed: JsonParseArgs =
         serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
     serde_json::from_str::<Value>(&parsed.text).map_err(|e| BuiltinError::Exec(format!("{e}")))
@@ -74,7 +81,8 @@ pub const JSON_PARSE_INPUT_SCHEMA: &str = r#"{
   "properties": { "text": { "type": "string" } },
   "required": ["text"]
 }"#;
-pub const JSON_PARSE_OUTPUT_SCHEMA: &str = r#"{ "type": ["object", "array", "string", "number", "boolean", "null"] }"#;
+pub const JSON_PARSE_OUTPUT_SCHEMA: &str =
+    r#"{ "type": ["object", "array", "string", "number", "boolean", "null"] }"#;
 
 // ---------- json.stringify ----------
 
@@ -85,7 +93,7 @@ struct JsonStringifyArgs {
     pretty: bool,
 }
 
-pub fn json_stringify(args: Value) -> BuiltinResult {
+pub fn json_stringify(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
     let parsed: JsonStringifyArgs =
         serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
     let s = if parsed.pretty {
@@ -128,13 +136,16 @@ struct RegexMatchEntry {
     groups: Vec<Option<String>>,
 }
 
-pub fn text_regex_match(args: Value) -> BuiltinResult {
+pub fn text_regex_match(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
     let parsed: RegexMatchArgs =
         serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
     let re = Regex::new(&parsed.pattern)
         .map_err(|e| BuiltinError::BadArgs(format!("pattern compile: {e}")))?;
     let collect_one = |caps: regex::Captures| RegexMatchEntry {
-        full: caps.get(0).map(|m| m.as_str().to_string()).unwrap_or_default(),
+        full: caps
+            .get(0)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default(),
         groups: caps
             .iter()
             .skip(1)
@@ -144,7 +155,10 @@ pub fn text_regex_match(args: Value) -> BuiltinResult {
     let matches: Vec<RegexMatchEntry> = if parsed.all {
         re.captures_iter(&parsed.text).map(collect_one).collect()
     } else {
-        re.captures(&parsed.text).map(collect_one).into_iter().collect()
+        re.captures(&parsed.text)
+            .map(collect_one)
+            .into_iter()
+            .collect()
     };
     Ok(serde_json::to_value(RegexMatchReply { matches })
         .map_err(|e| BuiltinError::Exec(format!("{e}")))?)
@@ -191,7 +205,7 @@ struct ChatRespondReply {
 /// chat.respond 是 orchestrator 的"提交最终回复"信号；执行结果由 orchestrator
 /// 拿到 final_content 字段后作为 done event 的最终内容。
 /// 本函数本身只做参数透传 + 包装。
-pub fn chat_respond(args: Value) -> BuiltinResult {
+pub fn chat_respond(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
     let parsed: ChatRespondArgs =
         serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
     Ok(serde_json::to_value(ChatRespondReply {
@@ -212,6 +226,86 @@ pub const CHAT_RESPOND_OUTPUT_SCHEMA: &str = r#"{
   "properties": { "final_content": { "type": "string" } }
 }"#;
 
+// ---------- game_list ----------
+
+/// sync wrapper：在 tokio runtime 内桥接 async DB 查询
+pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|e| BuiltinError::Exec(format!("no tokio runtime: {e}")))?;
+    handle.block_on(game_list_async(ctx))
+}
+
+/// 合并内部 games 表 + 外部 cc_logic_game 表的游戏列表，格式化为文本
+async fn game_list_async(ctx: &BuiltinContext<'_>) -> BuiltinResult {
+    // 1. 内部 games 表（含别名）
+    let internal =
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT g.name, gae.alias FROM games g
+             LEFT JOIN game_alias_entries gae ON gae.game_id = g.id
+             ORDER BY g.name",
+        )
+        .fetch_all(ctx.pool)
+        .await
+        .map_err(|e| BuiltinError::Exec(format!("game_list internal query: {e}")))?;
+
+    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+    for (name, alias) in internal {
+        if let Some(entry) = entries.iter_mut().find(|e| e.0 == name) {
+            if let Some(alias) = alias {
+                if !alias.trim().is_empty() {
+                    entry.1.push(alias.trim().to_string());
+                }
+            }
+        } else {
+            let aliases = alias
+                .filter(|a| !a.trim().is_empty())
+                .map(|a| vec![a.trim().to_string()])
+                .unwrap_or_default();
+            entries.push((name, aliases));
+        }
+    }
+
+    // 2. 外部 cc_logic_game 表
+    if let Some(ext_pool) = ctx.ext_pool {
+        let external =
+            sqlx::query_as::<_, (String,)>("SELECT name FROM cc_logic_game ORDER BY name")
+                .fetch_all(ext_pool)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("game_list external query: {e}")))?;
+
+        for (name,) in external {
+            if !entries.iter().any(|e| e.0 == name) {
+                entries.push((name, vec![]));
+            }
+        }
+    }
+
+    // 3. 格式化输出
+    let lines: Vec<String> = entries
+        .into_iter()
+        .map(|(name, aliases)| {
+            if aliases.is_empty() {
+                format!("- {}", name)
+            } else {
+                format!("- {}: {}", name, aliases.join("、"))
+            }
+        })
+        .collect();
+
+    Ok(Value::String(lines.join("\n")))
+}
+
+pub const GAME_LIST_INPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}"#;
+
+pub const GAME_LIST_OUTPUT_SCHEMA: &str = r#"{
+  "type": "string",
+  "description": "Formatted game list with aliases"
+}"#;
+
 // ---------- Registry ----------
 
 #[derive(Debug, Clone, Copy)]
@@ -222,7 +316,7 @@ pub struct BuiltinDef {
     pub input_schema: &'static str,
     pub output_schema: &'static str,
     pub required_capabilities: &'static [&'static str],
-    pub handler: fn(Value) -> BuiltinResult,
+    pub handler: fn(Value, &BuiltinContext) -> BuiltinResult,
 }
 
 pub const BUILTINS: &[BuiltinDef] = &[
@@ -271,6 +365,15 @@ pub const BUILTINS: &[BuiltinDef] = &[
         required_capabilities: &[super::capability::CHAT_RESPOND],
         handler: chat_respond,
     },
+    BuiltinDef {
+        identifier: "game.list",
+        name: "Game List",
+        description: "Get merged game list with aliases from internal and external databases.",
+        input_schema: GAME_LIST_INPUT_SCHEMA,
+        output_schema: GAME_LIST_OUTPUT_SCHEMA,
+        required_capabilities: &[],
+        handler: game_list,
+    },
 ];
 
 pub fn lookup(identifier: &str) -> Option<&'static BuiltinDef> {
@@ -279,11 +382,10 @@ pub fn lookup(identifier: &str) -> Option<&'static BuiltinDef> {
 
 /// 启动期 idempotent upsert — INSERT IGNORE 兜底 (identifier UNIQUE)
 /// 同时为每个 builtin function 创建对应的 builtin tool（source='builtin', kind=1）
-pub async fn ensure_registered(
-    pool: &sqlx::MySqlPool,
-) -> Result<(), sqlx::Error> {
+pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
     for b in BUILTINS {
-        let caps_json = serde_json::to_string(b.required_capabilities).unwrap_or_else(|_| "[]".to_string());
+        let caps_json =
+            serde_json::to_string(b.required_capabilities).unwrap_or_else(|_| "[]".to_string());
 
         sqlx::query(
             r#"INSERT INTO functions
@@ -332,7 +434,10 @@ pub async fn ensure_registered(
         .execute(pool)
         .await?;
     }
-    tracing::info!(count = BUILTINS.len(), "builtin functions and tools upserted");
+    tracing::info!(
+        count = BUILTINS.len(),
+        "builtin functions and tools upserted"
+    );
 
     // Seed invoke_function meta-tool (is_always=1 → 所有 Agent 自动加载)
     // function_id=NULL 表示不包装具体 function，运行时动态查找

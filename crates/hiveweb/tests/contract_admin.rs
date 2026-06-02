@@ -18,8 +18,12 @@ async fn t026c_admins_list_normal_role_can_view() -> anyhow::Result<()> {
     let pool = common::test_pool().await?;
     let normal = common::seed_admin(&pool, 1 /* Normal */, 1, "test-pass-123").await?;
 
-    let (status, body) =
-        common::get(&app, "/api/admins?offset=0&limit=10", Some(&normal.token()?)).await?;
+    let (status, body) = common::get(
+        &app,
+        "/api/admins?offset=0&limit=10",
+        Some(&normal.token()?),
+    )
+    .await?;
 
     // Per spec §US3 AS-1, a Normal admin should still be able to *view* the list
     // (the action buttons are hidden client-side). Backend permission rule:
@@ -91,12 +95,8 @@ async fn t026e_delete_super_admin_is_forbidden() -> anyhow::Result<()> {
     let actor = common::seed_admin(&pool, 3 /* Super */, 1, "test-pass-123").await?;
     let victim = common::seed_admin(&pool, 3 /* Super */, 1, "test-pass-123").await?;
 
-    let (status, body) = common::delete_auth(
-        &app,
-        &format!("/api/admins/{}", victim.id),
-        &actor.token()?,
-    )
-    .await?;
+    let (status, body) =
+        common::delete_auth(&app, &format!("/api/admins/{}", victim.id), &actor.token()?).await?;
 
     assert!(
         status.is_client_error(),

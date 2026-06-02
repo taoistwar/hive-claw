@@ -8,7 +8,7 @@
 
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::{Column, MySqlPool, Row};
 use std::collections::HashMap;
 
@@ -45,7 +45,10 @@ impl NamedQueryRegistry {
         let path = std::env::var("DB_NAMED_QUERIES_PATH")
             .unwrap_or_else(|_| "./named_queries.toml".to_string());
         if !std::path::Path::new(&path).exists() {
-            tracing::warn!(path, "named_queries.toml not found; db.query/db.execute will reject all calls");
+            tracing::warn!(
+                path,
+                "named_queries.toml not found; db.query/db.execute will reject all calls"
+            );
             return Self::default();
         }
         let content = match std::fs::read_to_string(&path) {
@@ -141,7 +144,10 @@ pub async fn db_query(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Strin
         .lookup(&args.query)
         .ok_or_else(|| format!("未注册的 named query: {}", args.query))?;
     if q.kind != "select" {
-        return Err(format!("query {} 不是 select 类型；db.query 仅允许 select", q.name));
+        return Err(format!(
+            "query {} 不是 select 类型；db.query 仅允许 select",
+            q.name
+        ));
     }
     let (sql, ordered) = bind_params(q, &args.params)?;
 
@@ -197,7 +203,10 @@ pub async fn db_execute(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Str
         .lookup(&args.query)
         .ok_or_else(|| format!("未注册的 named query: {}", args.query))?;
     if q.kind != "execute" {
-        return Err(format!("query {} 不是 execute 类型；db.execute 仅允许 DML", q.name));
+        return Err(format!(
+            "query {} 不是 execute 类型；db.execute 仅允许 DML",
+            q.name
+        ));
     }
     let (sql, ordered) = bind_params(q, &args.params)?;
     let mut built = sqlx::query(&sql);

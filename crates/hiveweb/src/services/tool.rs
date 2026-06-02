@@ -106,15 +106,14 @@ async fn validate_schemas_function(
     tool_input: &Value,
     tool_output: &Value,
 ) -> Result<(), AppError> {
-    let row: Option<(Value, Value)> = sqlx::query_as(
-        "SELECT input_schema, output_schema FROM functions WHERE id = ?",
-    )
-    .bind(function_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("function schema fetch: {e}")))?;
-    let (fn_in, fn_out) = row
-        .ok_or_else(|| AppError::NotFound(format!("function id={function_id} not found")))?;
+    let row: Option<(Value, Value)> =
+        sqlx::query_as("SELECT input_schema, output_schema FROM functions WHERE id = ?")
+            .bind(function_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("function schema fetch: {e}")))?;
+    let (fn_in, fn_out) =
+        row.ok_or_else(|| AppError::NotFound(format!("function id={function_id} not found")))?;
     if !json_deep_equal(&fn_in, tool_input) {
         return Err(AppError::SchemaMismatch(
             "Tool input_schema 与 function 不一致".into(),
@@ -133,16 +132,13 @@ async fn validate_schemas_workflow(
     workflow_id: i64,
     tool_input: &Value,
 ) -> Result<(), AppError> {
-    let row: Option<(Value,)> = sqlx::query_as(
-        "SELECT input_schema FROM workflows WHERE id = ?",
-    )
-    .bind(workflow_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("workflow input_schema fetch: {e}")))?;
-    let (wf_input,) = row.ok_or_else(|| {
-        AppError::NotFound(format!("workflow id={workflow_id} not found"))
-    })?;
+    let row: Option<(Value,)> = sqlx::query_as("SELECT input_schema FROM workflows WHERE id = ?")
+        .bind(workflow_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("workflow input_schema fetch: {e}")))?;
+    let (wf_input,) =
+        row.ok_or_else(|| AppError::NotFound(format!("workflow id={workflow_id} not found")))?;
 
     let empty_arr = Value::Array(vec![]);
     let empty_obj = Value::Object(serde_json::Map::new());
@@ -216,30 +212,38 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<ToolListItem, 
         1 => {
             if let Some(fid) = meta.function_id {
                 if meta.workflow_id.is_some() {
-                    return Err(AppError::BadRequest("kind=1 时不允许提供 workflow_id".into()));
+                    return Err(AppError::BadRequest(
+                        "kind=1 时不允许提供 workflow_id".into(),
+                    ));
                 }
                 if source == "builtin" {
-                    let f_kind: Option<i8> = sqlx::query_scalar("SELECT kind FROM functions WHERE id = ?")
-                        .bind(fid)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| AppError::Internal(format!("function fetch: {e}")))?
-                        .ok_or_else(|| AppError::NotFound(format!("function id={fid} not found")))?;
+                    let f_kind: Option<i8> =
+                        sqlx::query_scalar("SELECT kind FROM functions WHERE id = ?")
+                            .bind(fid)
+                            .fetch_optional(pool)
+                            .await
+                            .map_err(|e| AppError::Internal(format!("function fetch: {e}")))?
+                            .ok_or_else(|| {
+                                AppError::NotFound(format!("function id={fid} not found"))
+                            })?;
                     if f_kind != Some(1) {
                         return Err(AppError::BadRequest(
                             "builtin Tool 只能包装 builtin Function（kind=1）".into(),
                         ));
                     }
                 }
-                validate_schemas_function(pool, fid, &meta.input_schema, &meta.output_schema).await?;
+                validate_schemas_function(pool, fid, &meta.input_schema, &meta.output_schema)
+                    .await?;
             }
         }
         2 => {
-            let wid = meta.workflow_id.ok_or_else(|| {
-                AppError::BadRequest("kind=2 时必须提供 workflow_id".into())
-            })?;
+            let wid = meta
+                .workflow_id
+                .ok_or_else(|| AppError::BadRequest("kind=2 时必须提供 workflow_id".into()))?;
             if meta.function_id.is_some() {
-                return Err(AppError::BadRequest("kind=2 时不允许提供 function_id".into()));
+                return Err(AppError::BadRequest(
+                    "kind=2 时不允许提供 function_id".into(),
+                ));
             }
             if source == "builtin" {
                 return Err(AppError::BadRequest(
@@ -427,8 +431,10 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<ToolL
     let existing = fetch_by_id(pool, id).await?;
 
     if existing.source == "builtin" {
-        if meta.name.is_some() || meta.description.is_some()
-            || meta.input_schema.is_some() || meta.output_schema.is_some()
+        if meta.name.is_some()
+            || meta.description.is_some()
+            || meta.input_schema.is_some()
+            || meta.output_schema.is_some()
             || meta.required_capabilities.is_some()
         {
             return Err(AppError::BuiltinToolProtected(format!(
@@ -471,7 +477,10 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<ToolL
         return fetch_tool_with_tags(pool, id).await;
     }
 
-    let new_in = meta.input_schema.clone().unwrap_or(existing.input_schema.clone());
+    let new_in = meta
+        .input_schema
+        .clone()
+        .unwrap_or(existing.input_schema.clone());
     let new_out = meta
         .output_schema
         .clone()
@@ -506,7 +515,11 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<ToolL
     .bind(&meta.input_schema)
     .bind(&meta.output_schema)
     .bind(meta.category_id)
-    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
+    .bind(
+        meta.required_capabilities
+            .as_ref()
+            .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
+    )
     .bind(meta.is_always)
     .bind(id)
     .execute(pool)
@@ -552,12 +565,11 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(format!("tool lock: {e}")))?;
-    let cnt: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM agent_tools WHERE tool_id = ?")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| AppError::Internal(format!("tool ref count: {e}")))?;
+    let cnt: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_tools WHERE tool_id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(format!("tool ref count: {e}")))?;
     if cnt.0 > 0 {
         return Err(AppError::ResourceInUse(format!(
             "tool 被 {} 个 agent 引用，无法删除",

@@ -1,9 +1,9 @@
 //! Function API handlers (T084 / US2)
 
 use axum::{
+    Json, Router,
     extract::{Extension, Path, Query, State},
     routing::get,
-    Json, Router,
 };
 use serde::Deserialize;
 
@@ -24,22 +24,37 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    #[serde(default)] pub offset: Option<i64>,
-    #[serde(default)] pub limit: Option<i64>,
-    #[serde(default)] pub search: Option<String>,
-    #[serde(default)] pub category_id: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub category_id: Option<i64>,
     /// "builtin" | "custom"
-    #[serde(default)] pub kind: Option<String>,
-    #[serde(default)] pub identifier: Option<String>,
-    #[serde(default)] pub name: Option<String>,
-    #[serde(default)] pub plugin_id: Option<i64>,
-    #[serde(default)] pub plugin_identifier: Option<String>,
-    #[serde(default)] pub required_capabilities: Option<String>,
-    #[serde(default)] pub tag_id: Option<i64>,
-    #[serde(default)] pub created_at_start: Option<String>,
-    #[serde(default)] pub created_at_end: Option<String>,
-    #[serde(default)] pub updated_at_start: Option<String>,
-    #[serde(default)] pub updated_at_end: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub identifier: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub plugin_id: Option<i64>,
+    #[serde(default)]
+    pub plugin_identifier: Option<String>,
+    #[serde(default)]
+    pub required_capabilities: Option<String>,
+    #[serde(default)]
+    pub tag_id: Option<i64>,
+    #[serde(default)]
+    pub created_at_start: Option<String>,
+    #[serde(default)]
+    pub created_at_end: Option<String>,
+    #[serde(default)]
+    pub updated_at_start: Option<String>,
+    #[serde(default)]
+    pub updated_at_end: Option<String>,
 }
 
 async fn list_fns(
@@ -174,7 +189,9 @@ async fn audit_event(
     detail: serde_json::Value,
 ) -> anyhow::Result<()> {
     use crate::services::admin as admin_svc;
-    let admin_id = claims.admin_id.ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
+    let admin_id = claims
+        .admin_id
+        .ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
     let operator = admin_svc::get_admin_by_id(pool, admin_id).await?;
     let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
     if let Err(e) = audit_svc::record(

@@ -8,10 +8,10 @@
 
 mod common;
 
-use common::{mint_jwt, seed_admin, post_json_auth, get, post_json, delete_auth};
 use axum::Router;
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use common::{delete_auth, get, mint_jwt, post_json, post_json_auth, seed_admin};
+use serde_json::{Value, json};
 
 /// Helper: create a chat session as a given admin, return session id.
 async fn create_session(app: &Router, token: &str) -> anyhow::Result<i64> {
@@ -28,11 +28,15 @@ async fn create_session(app: &Router, token: &str) -> anyhow::Result<i64> {
 
 /// Helper: POST a message to a chat session (just to trigger ownership check;
 /// we don't need the SSE stream to complete for this test).
-async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(StatusCode, Value)> {
+async fn post_message(
+    app: &Router,
+    token: &str,
+    session_id: i64,
+) -> anyhow::Result<(StatusCode, Value)> {
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use tower::ServiceExt;
     use std::convert::Infallible;
+    use tower::ServiceExt;
 
     let req = axum::http::Request::builder()
         .method("POST")
@@ -47,16 +51,24 @@ async fn post_message(app: &Router, token: &str, session_id: i64) -> anyhow::Res
     let body: Value = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::String(
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ))
+        serde_json::from_slice(&bytes)
+            .unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     };
     Ok((status, body))
 }
 
 /// Helper: GET messages from a session
-async fn get_messages(app: &Router, token: &str, session_id: i64) -> anyhow::Result<(StatusCode, Value)> {
-    get(app, &format!("/api/admin-chat/sessions/{session_id}/messages"), Some(token)).await
+async fn get_messages(
+    app: &Router,
+    token: &str,
+    session_id: i64,
+) -> anyhow::Result<(StatusCode, Value)> {
+    get(
+        app,
+        &format!("/api/admin-chat/sessions/{session_id}/messages"),
+        Some(token),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -78,7 +90,11 @@ async fn t164_admin_cannot_access_other_admin_session() -> anyhow::Result<()> {
         status.is_client_error(),
         "admin B must be denied access to admin A's session; got {status} {body}"
     );
-    assert_eq!(code, Some(2001), "expected error code 2001 (insufficient permission); got {body}");
+    assert_eq!(
+        code,
+        Some(2001),
+        "expected error code 2001 (insufficient permission); got {body}"
+    );
 
     // Admin B tries to GET messages from Admin A's session → 403
     let (status, body) = get_messages(&app, &admin_b.token()?, session_id).await?;
@@ -87,7 +103,11 @@ async fn t164_admin_cannot_access_other_admin_session() -> anyhow::Result<()> {
         status.is_client_error(),
         "admin B must be denied read access to admin A's session; got {status} {body}"
     );
-    assert_eq!(code, Some(2001), "expected error code 2001 (insufficient permission); got {body}");
+    assert_eq!(
+        code,
+        Some(2001),
+        "expected error code 2001 (insufficient permission); got {body}"
+    );
 
     Ok(())
 }
@@ -104,7 +124,10 @@ async fn t164_admin_can_access_own_session() -> anyhow::Result<()> {
 
     // Admin A can GET messages from own session (200, even if empty)
     let (status, body) = get_messages(&app, &admin_a.token()?, session_id).await?;
-    assert_eq!(status, 200, "admin A must read own session; got {status} {body}");
+    assert_eq!(
+        status, 200,
+        "admin A must read own session; got {status} {body}"
+    );
 
     Ok(())
 }
@@ -142,7 +165,12 @@ async fn t164_non_super_cannot_access_deleted_admin_session() -> anyhow::Result<
     let session_id = create_session(&app, &admin_a.token()?).await?;
 
     // Delete Admin A (sets session admin_id to NULL via ON DELETE SET NULL)
-    delete_auth(&app, &format!("/api/admins/{}", admin_a.id), &admin_a.bearer()?).await?;
+    delete_auth(
+        &app,
+        &format!("/api/admins/{}", admin_a.id),
+        &admin_a.bearer()?,
+    )
+    .await?;
 
     // Admin B tries to read the now-orphaned session → 403 (only Super can access)
     let (status, body) = get_messages(&app, &admin_b.token()?, session_id).await?;

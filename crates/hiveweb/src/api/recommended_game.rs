@@ -1,7 +1,7 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::get,
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,24 +13,38 @@ use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/recommended-games", get(list_recommended_games).post(create_recommended_game))
-        .route("/recommended-games/:id", get(get_recommended_game).put(update_recommended_game).delete(delete_recommended_game))
+        .route(
+            "/recommended-games",
+            get(list_recommended_games).post(create_recommended_game),
+        )
+        .route(
+            "/recommended-games/:id",
+            get(get_recommended_game)
+                .put(update_recommended_game)
+                .delete(delete_recommended_game),
+        )
 }
 
 pub fn router_public() -> Router<AppState> {
-    Router::new()
-        .route("/recommended-games/top", get(top_recommended_games))
+    Router::new().route("/recommended-games/top", get(top_recommended_games))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    #[serde(default)] pub q: Option<String>,
-    #[serde(default = "default_page")] pub page: i64,
-    #[serde(default = "default_page_size")] pub page_size: i64,
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default = "default_page")]
+    pub page: i64,
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
 }
 
-fn default_page() -> i64 { 1 }
-fn default_page_size() -> i64 { 20 }
+fn default_page() -> i64 {
+    1
+}
+fn default_page_size() -> i64 {
+    20
+}
 
 #[derive(Debug, Serialize)]
 pub struct ListResponse {
@@ -71,14 +85,18 @@ async fn create_recommended_game(
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
         Err(_) => {
-            return Err(AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response())
+            return Err(
+                AppError::InsufficientPermission("Invalid role in token".to_string())
+                    .into_response(),
+            );
         }
     };
 
     if !caller_role.can_manage_recommended_games() {
-        return Err(AppError::InsufficientPermission("Insufficient permissions".to_string())
-            .into_response());
+        return Err(
+            AppError::InsufficientPermission("Insufficient permissions".to_string())
+                .into_response(),
+        );
     }
 
     svc::create(&state.pool, meta)
@@ -96,14 +114,18 @@ async fn update_recommended_game(
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
         Err(_) => {
-            return Err(AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response())
+            return Err(
+                AppError::InsufficientPermission("Invalid role in token".to_string())
+                    .into_response(),
+            );
         }
     };
 
     if !caller_role.can_manage_recommended_games() {
-        return Err(AppError::InsufficientPermission("Insufficient permissions".to_string())
-            .into_response());
+        return Err(
+            AppError::InsufficientPermission("Insufficient permissions".to_string())
+                .into_response(),
+        );
     }
 
     svc::update(&state.pool, id, meta)
@@ -120,14 +142,18 @@ async fn delete_recommended_game(
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
         Err(_) => {
-            return Err(AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response())
+            return Err(
+                AppError::InsufficientPermission("Invalid role in token".to_string())
+                    .into_response(),
+            );
         }
     };
 
     if !caller_role.can_delete_recommended_games() {
-        return Err(AppError::InsufficientPermission("Insufficient permissions".to_string())
-            .into_response());
+        return Err(
+            AppError::InsufficientPermission("Insufficient permissions".to_string())
+                .into_response(),
+        );
     }
 
     match svc::delete(&state.pool, id).await {

@@ -1,14 +1,14 @@
 //! Tag API handlers (T134 / US7)
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::get,
-    Json, Router,
 };
 use serde::Deserialize;
 
 use crate::api::AppState;
-use crate::services::tag::{self as svc, CreateMeta, TagWithCount, UpdateMeta};
+use crate::services::tag::{self as svc, CreateMeta, UpdateMeta};
 use crate::utils::error::ApiResponse;
 
 pub fn router() -> Router<AppState> {
@@ -19,9 +19,12 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    #[serde(default)] pub q: Option<String>,
-    #[serde(default)] pub offset: Option<i64>,
-    #[serde(default)] pub limit: Option<i64>,
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
 }
 
 async fn list_tags(
@@ -31,9 +34,14 @@ async fn list_tags(
     let offset = q.offset.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
 
-    let (items, total) = svc::list(&state.pool, q.q.as_deref().filter(|s| !s.is_empty()), offset, limit)
-        .await
-        .map_err(|e| e.into_response())?;
+    let (items, total) = svc::list(
+        &state.pool,
+        q.q.as_deref().filter(|s| !s.is_empty()),
+        offset,
+        limit,
+    )
+    .await
+    .map_err(|e| e.into_response())?;
 
     let resp = serde_json::json!({
         "items": items,

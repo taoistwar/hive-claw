@@ -17,7 +17,11 @@ mod common;
 use sqlx::MySqlPool;
 
 /// Helper: insert a test plugin row directly into the database for pool testing.
-async fn insert_test_plugin(pool: &MySqlPool, identifier: &str, sha256_hex: &str) -> anyhow::Result<i64> {
+async fn insert_test_plugin(
+    pool: &MySqlPool,
+    identifier: &str,
+    sha256_hex: &str,
+) -> anyhow::Result<i64> {
     let s3_key = format!("plugins/{identifier}/1.0.0.wasm");
     let result = sqlx::query(
         r#"

@@ -32,7 +32,10 @@ async fn t104_login_with_new_password_after_change() -> anyhow::Result<()> {
     )
     .await?;
 
-    assert_eq!(status, 200, "login with new password must succeed, got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "login with new password must succeed, got {status}: {body}"
+    );
     assert_eq!(body["code"], 0, "expected code=0 on login success");
     Ok(())
 }
@@ -66,6 +69,9 @@ async fn t104_login_with_old_password_fails_after_change() -> anyhow::Result<()>
         status.is_client_error(),
         "login with old password must fail after change, got {status}: {body}"
     );
-    assert_eq!(body["code"], 1001, "expected error code 1001 (wrong password)");
+    assert_eq!(
+        body["code"], 1001,
+        "expected error code 1001 (wrong password)"
+    );
     Ok(())
 }

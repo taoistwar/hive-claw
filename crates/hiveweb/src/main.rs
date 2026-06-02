@@ -14,7 +14,7 @@ mod utils;
 #[derive(Parser)]
 #[command(name = "hiveweb", about = "HiveClaw Admin Center")]
 struct Cli {
-    /// Port to listen on (overrides HIVWEB_PORT env var)
+    /// Port to listen on (overrides HIVEWEB_PORT env var)
     #[arg(long)]
     port: Option<u16>,
 }
@@ -107,9 +107,9 @@ fn try_init_langfuse() {
             );
             providers::set_langfuse_client(Some(std::sync::Arc::new(client)));
             langfuse::lf_debug!(
-                "hiveweb::try_init_langfuse: Langfuse LLM tracing initialised successfully"
+                "hiveweb::try_init_langfuse: Langfuse LLM tracing initialized successfully"
             );
-            tracing::info!("Langfuse LLM tracing initialised");
+            tracing::info!("Langfuse LLM tracing initialized");
         }
         None => {
             langfuse::lf_debug!("hiveweb::try_init_langfuse: LangfuseClient::new returned None!");
@@ -155,12 +155,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialise Langfuse LLM observability (non-blocking, async ingestion)
     try_init_langfuse();
 
-    let host = std::env::var("HIVWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = cli.port.unwrap_or_else(|| {
-        std::env::var("HIVWEB_PORT")
+        std::env::var("HIVEWEB_PORT")
             .unwrap_or_else(|_| "3000".to_string())
             .parse::<u16>()
-            .expect("HIVWEB_PORT must be a valid number")
+            .expect("HIVEWEB_PORT must be a valid number")
     });
     println!("Host: {}, Port: {}", host, port);
 

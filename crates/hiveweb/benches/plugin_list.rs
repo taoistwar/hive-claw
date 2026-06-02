@@ -4,7 +4,7 @@
 //!
 //! TODO: 需要 DB 中预置 500 条 Plugin 数据 + FULLTEXT 索引才能运行完整基准。
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_plugin_list_stub(c: &mut Criterion) {
     let mut group = c.benchmark_group("plugin_list_stub");

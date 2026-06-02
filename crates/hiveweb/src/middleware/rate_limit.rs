@@ -1,10 +1,4 @@
-use axum::{
-    body::Body,
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::Request, http::StatusCode, middleware::Next, response::Response};
 use std::{
     collections::HashMap,
     sync::Arc,

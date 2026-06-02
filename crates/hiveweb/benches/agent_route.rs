@@ -4,7 +4,7 @@
 //!
 //! TODO: 需要 mock LLM provider + agent tree 初始化才能运行完整基准。
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_agent_route_stub(c: &mut Criterion) {
     let mut group = c.benchmark_group("agent_route_stub");

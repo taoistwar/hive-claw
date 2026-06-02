@@ -13,9 +13,9 @@ mod common;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
-use common::{seed_admin, post_json_auth, get, delete_auth};
 use axum::Router;
-use serde_json::{json, Value};
+use common::{delete_auth, get, post_json_auth, seed_admin};
+use serde_json::{Value, json};
 
 /// Helper: upload a minimal valid WASM plugin and return plugin id.
 async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::Result<i64> {
@@ -48,7 +48,9 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
 
     // file field
     body.extend_from_slice(b"------WebKitFormBoundaryTest123\r\n");
-    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"test.wasm\"\r\n");
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"test.wasm\"\r\n",
+    );
     body.extend_from_slice(b"Content-Type: application/wasm\r\n\r\n");
     body.extend_from_slice(&wasm_bytes);
     body.extend_from_slice(b"\r\n");
@@ -57,7 +59,10 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
     let req = Request::builder()
         .method("POST")
         .uri("/api/plugins")
-        .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={}", boundary),
+        )
         .header("authorization", format!("Bearer {}", token))
         .body(Body::from(body))?;
 
@@ -65,12 +70,21 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
     let status = resp.status();
     let bytes = resp.into_body().collect().await?.to_bytes();
     let resp_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    assert_eq!(status, StatusCode::OK, "upload plugin failed: {status} {resp_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "upload plugin failed: {status} {resp_body}"
+    );
     Ok(resp_body["data"]["id"].as_i64().expect("missing plugin id"))
 }
 
 /// Helper: create a function referencing a plugin, return function id.
-async fn create_function(app: &Router, token: &str, plugin_id: i64, identifier: &str) -> anyhow::Result<i64> {
+async fn create_function(
+    app: &Router,
+    token: &str,
+    plugin_id: i64,
+    identifier: &str,
+) -> anyhow::Result<i64> {
     let (status, body) = post_json_auth(
         app,
         "/api/functions",
@@ -91,7 +105,11 @@ async fn create_function(app: &Router, token: &str, plugin_id: i64, identifier: 
 }
 
 /// Helper: soft-delete a plugin
-async fn delete_plugin(app: &Router, token: &str, plugin_id: i64) -> anyhow::Result<(axum::http::StatusCode, Value)> {
+async fn delete_plugin(
+    app: &Router,
+    token: &str,
+    plugin_id: i64,
+) -> anyhow::Result<(axum::http::StatusCode, Value)> {
     delete_auth(app, &format!("/api/plugins/{plugin_id}"), token).await
 }
 
@@ -196,7 +214,8 @@ async fn t165_concurrent_delete_and_create_no_race() -> anyhow::Result<()> {
     if func_created && !plugin_deleted {
         let code = delete_body["code"].as_i64();
         assert_eq!(
-            code, Some(4093),
+            code,
+            Some(4093),
             "delete must be blocked when function was created first; got {delete_body}"
         );
     }
@@ -220,7 +239,10 @@ async fn t165_delete_succeeds_when_no_functions() -> anyhow::Result<()> {
 
     // Delete should succeed (no references)
     let (status, body) = delete_plugin(&app, &token, plugin_id).await?;
-    assert_eq!(status, 200, "delete must succeed when no functions reference plugin; got {status} {body}");
+    assert_eq!(
+        status, 200,
+        "delete must succeed when no functions reference plugin; got {status} {body}"
+    );
 
     // Verify soft-delete flag
     let (status, body) = get(&app, &format!("/api/plugins/{plugin_id}"), Some(&token)).await?;

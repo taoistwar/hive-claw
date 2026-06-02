@@ -1,9 +1,9 @@
 //! Category API handlers (T133 / US7)
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::get,
-    Json, Router,
 };
 use serde::Deserialize;
 
@@ -16,13 +16,16 @@ pub fn router() -> Router<AppState> {
         .route("/categories", get(list_categories).post(create_category))
         .route(
             "/categories/:id",
-            get(get_category).put(update_category).delete(delete_category),
+            get(get_category)
+                .put(update_category)
+                .delete(delete_category),
         )
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    #[serde(default)] pub flat: Option<u8>,
+    #[serde(default)]
+    pub flat: Option<u8>,
 }
 
 #[derive(Debug, serde::Serialize)]

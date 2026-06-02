@@ -24,16 +24,19 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(24 * 3600);
 
-    tracing::info!(retention_days, interval_secs, "chat_retention cron starting");
+    tracing::info!(
+        retention_days,
+        interval_secs,
+        "chat_retention cron starting"
+    );
 
     loop {
         let t0 = std::time::Instant::now();
-        let result = sqlx::query(
-            "DELETE FROM chat_sessions WHERE updated_at < (NOW() - INTERVAL ? DAY)",
-        )
-        .bind(retention_days)
-        .execute(&pool)
-        .await;
+        let result =
+            sqlx::query("DELETE FROM chat_sessions WHERE updated_at < (NOW() - INTERVAL ? DAY)")
+                .bind(retention_days)
+                .execute(&pool)
+                .await;
         match result {
             Ok(r) => tracing::info!(
                 rows_deleted = r.rows_affected(),

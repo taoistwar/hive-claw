@@ -4,7 +4,7 @@
 //!
 //! TODO: 需要真实 S3 连接 + WASM 文件才能运行完整基准。
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_plugin_upload_stub(c: &mut Criterion) {
     let mut group = c.benchmark_group("plugin_upload_stub");

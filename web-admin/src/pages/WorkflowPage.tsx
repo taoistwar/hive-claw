@@ -20,6 +20,7 @@ import {
 } from '../services/workflow';
 import { listCategoriesTree, type CategoryNode } from '../services/category';
 import { listTags, type TagItem } from '../services/tag';
+import { listCapabilities, type CapabilityItem } from '../services/capability';
 
 const { RangePicker } = DatePicker;
 
@@ -76,18 +77,21 @@ export default function WorkflowPage() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [filterForm] = Form.useForm<FilterValues>();
   const [allTags, setAllTags] = useState<TagItem[]>([]);
+  const [capabilities, setCapabilities] = useState<CapabilityItem[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(5);
 
   const loadCategoryTree = async () => {
     setTreeLoading(true);
     try {
-      const [tree, tags] = await Promise.all([
+      const [tree, tags, caps] = await Promise.all([
         listCategoriesTree(),
         listTags(),
+        listCapabilities(),
       ]);
       setCategoryTree(tree);
       setAllTags(tags.items);
+      setCapabilities(caps[0]);
       const allKeys: React.Key[] = [];
       const collect = (nodes: CategoryNode[]) => {
         nodes.forEach((n) => {
@@ -169,6 +173,7 @@ export default function WorkflowPage() {
     description?: string;
     timeout_ms?: number;
     category_id?: number;
+    required_capabilities?: string[];
     tag_ids?: number[];
   }) => {
     try {
@@ -189,6 +194,7 @@ export default function WorkflowPage() {
       description: wf.description,
       timeout_ms: wf.timeout_ms,
       category_id: wf.category_id,
+      required_capabilities: wf.required_capabilities || [],
       tag_ids: wf.tags?.map((t) => t.id),
     });
     setEditOpen(true);
@@ -199,6 +205,7 @@ export default function WorkflowPage() {
     description?: string;
     timeout_ms?: number;
     category_id?: number;
+    required_capabilities?: string[];
     tag_ids?: number[];
   }) => {
     if (!editingWf) return;
@@ -565,6 +572,22 @@ export default function WorkflowPage() {
             <Form.Item name="category_id" label="分类">
               <CategoryTreeSelect placeholder="选择分类" />
             </Form.Item>
+            <Form.Item name="required_capabilities" label="权限要求" tooltip="该 workflow 执行时需要的能力，执行时会校验 Agent 是否被授权">
+              <Select
+                mode="multiple"
+                placeholder="选择所需权限"
+                allowClear
+                options={capabilities.map((c) => ({
+                  label: (
+                    <span>
+                      {c.name}
+                      {c.is_dangerous && <Tag color="red" style={{ marginLeft: 4 }}>危险</Tag>}
+                    </span>
+                  ),
+                  value: c.name,
+                }))}
+              />
+            </Form.Item>
             <Form.Item name="tag_ids" label="标签">
               <Select
                 mode="multiple"
@@ -600,6 +623,22 @@ export default function WorkflowPage() {
             </Form.Item>
             <Form.Item name="category_id" label="分类">
               <CategoryTreeSelect placeholder="选择分类" />
+            </Form.Item>
+            <Form.Item name="required_capabilities" label="权限要求" tooltip="该 workflow 执行时需要的能力，执行时会校验 Agent 是否被授权">
+              <Select
+                mode="multiple"
+                placeholder="选择所需权限"
+                allowClear
+                options={capabilities.map((c) => ({
+                  label: (
+                    <span>
+                      {c.name}
+                      {c.is_dangerous && <Tag color="red" style={{ marginLeft: 4 }}>危险</Tag>}
+                    </span>
+                  ),
+                  value: c.name,
+                }))}
+              />
             </Form.Item>
             <Form.Item name="tag_ids" label="标签">
               <Select

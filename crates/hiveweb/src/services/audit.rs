@@ -22,6 +22,9 @@ pub enum Operation {
     Delete,
     Enable,
     Disable,
+    GameAliasCreate,
+    GameAliasUpdate,
+    GameAliasDelete,
 }
 
 impl Operation {
@@ -32,6 +35,9 @@ impl Operation {
             Operation::Delete => "delete",
             Operation::Enable => "enable",
             Operation::Disable => "disable",
+            Operation::GameAliasCreate => "game_alias_create",
+            Operation::GameAliasUpdate => "game_alias_update",
+            Operation::GameAliasDelete => "game_alias_delete",
         }
     }
 }
@@ -59,6 +65,34 @@ pub async fn record(
     .bind(operator_phone)
     .bind(target_admin_id)
     .bind(target_phone)
+    .bind(op.as_str())
+    .bind(encode_detail(detail))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn record_game_alias(
+    pool: &MySqlPool,
+    operator_id: i64,
+    operator_phone: &str,
+    game_id: i64,
+    game_name: &str,
+    op: Operation,
+    detail: Option<Value>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO admin_audit_logs
+            (operator_id, operator_phone_snapshot,
+             target_admin_id, target_phone_snapshot,
+             operation, detail, occurred_at)
+        VALUES (?, ?, NULL, ?, ?, ?, NOW())
+        "#,
+    )
+    .bind(operator_id)
+    .bind(operator_phone)
+    .bind(game_name)
     .bind(op.as_str())
     .bind(encode_detail(detail))
     .execute(pool)

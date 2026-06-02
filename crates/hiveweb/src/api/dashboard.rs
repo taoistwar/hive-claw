@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Query, State},
     Router,
+    extract::{Query, State},
 };
 use serde::Deserialize;
 
@@ -8,9 +8,7 @@ use crate::api::AppState;
 use crate::services::dashboard;
 use crate::utils::error::{ApiResponse, AppError};
 
-pub async fn get_stats(
-    State(state): State<AppState>,
-) -> ApiResponse<dashboard::DashboardStats> {
+pub async fn get_stats(State(state): State<AppState>) -> ApiResponse<dashboard::DashboardStats> {
     match dashboard::get_stats(&state.pool).await {
         Ok(stats) => ApiResponse::success(stats),
         Err(e) => {

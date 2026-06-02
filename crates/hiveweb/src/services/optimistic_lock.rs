@@ -34,9 +34,7 @@ pub async fn check_and_bump(
         .map_err(|e| AppError::Internal(format!("optimistic_lock fetch failed: {e}")))?;
 
     let Some((db_updated_at,)) = row else {
-        return Err(AppError::NotFound(format!(
-            "{table} id={id} not found"
-        )));
+        return Err(AppError::NotFound(format!("{table} id={id} not found")));
     };
 
     // MySQL DATETIME 仅秒级精度；比较时强制对齐到秒，避免亚秒级差异误判冲突。

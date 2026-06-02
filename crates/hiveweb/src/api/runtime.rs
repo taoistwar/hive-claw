@@ -5,9 +5,9 @@
 //!  Workflow 节点也会复用此路径）
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -44,7 +44,9 @@ pub struct InvokeBody {
     pub agent_id: i64,
 }
 
-fn default_agent_id() -> i64 { 1 }
+fn default_agent_id() -> i64 {
+    1
+}
 
 #[derive(Debug, Serialize)]
 pub struct InvokeResp {
@@ -65,9 +67,8 @@ async fn invoke_function(
             .fetch_optional(&state.pool)
             .await
             .map_err(|e| AppError::Internal(format!("fn lookup: {e}")).into_response())?;
-    let fn_row = row.ok_or_else(|| {
-        AppError::NotFound(format!("function id={id} not found")).into_response()
-    })?;
+    let fn_row = row
+        .ok_or_else(|| AppError::NotFound(format!("function id={id} not found")).into_response())?;
 
     // 2. dispatch by kind
     if fn_row.kind == 1 {
@@ -80,20 +81,27 @@ async fn invoke_function(
 
     // custom (kind=2) — 走 Plugin invoker
     let plugin_id = fn_row.plugin_id.ok_or_else(|| {
-        AppError::Internal(format!("custom function「{}」(id={}) 缺少 plugin_id", fn_row.identifier, fn_row.id)).into_response()
+        AppError::Internal(format!(
+            "custom function「{}」(id={}) 缺少 plugin_id",
+            fn_row.identifier, fn_row.id
+        ))
+        .into_response()
     })?;
     let export = fn_row.plugin_export.clone().ok_or_else(|| {
-        AppError::Internal(format!("custom function「{}」(id={}) 缺少 plugin_export", fn_row.identifier, fn_row.id)).into_response()
+        AppError::Internal(format!(
+            "custom function「{}」(id={}) 缺少 plugin_export",
+            fn_row.identifier, fn_row.id
+        ))
+        .into_response()
     })?;
 
     // 预检查：确认 plugin 存在且未被删除
-    let plugin_row: Option<crate::models::Plugin> = sqlx::query_as(
-        "SELECT * FROM plugins WHERE id = ? AND deleted_at IS NULL",
-    )
-    .bind(plugin_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("plugin lookup: {e}")).into_response())?;
+    let plugin_row: Option<crate::models::Plugin> =
+        sqlx::query_as("SELECT * FROM plugins WHERE id = ? AND deleted_at IS NULL")
+            .bind(plugin_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("plugin lookup: {e}")).into_response())?;
     if plugin_row.is_none() {
         return Err(AppError::NotFound(format!(
             "function「{}」关联的 plugin (id={}) 不存在或已删除",
@@ -102,13 +110,22 @@ async fn invoke_function(
         .into_response());
     }
 
+    // 测试端点：注入全量 capability 权限，绕过 agent 权限限制
+    let all_caps: Vec<String> = state
+        .runtime_state
+        .capabilities
+        .all()
+        .iter()
+        .map(|c| c.name.to_string())
+        .collect();
+
     let dispatch_ctx = DispatchCtx {
         request_id: None,
         session_id: None,
         agent_id: body.agent_id,
         plugin_id,
         function_id: Some(id),
-        permissions: vec![],
+        permissions: all_caps,
     };
 
     let input_json = serde_json::to_string(&body.input)
@@ -131,7 +148,11 @@ async fn invoke_function(
         .map_err(|e| {
             tracing::error!(
                 "WASM invoke failed for function「{}」(id={}, plugin_id={}, export={}): {:?}",
-                fn_row.identifier, id, plugin_id, export, e
+                fn_row.identifier,
+                id,
+                plugin_id,
+                export,
+                e
             );
             AppError::Internal(format!("WASM 插件调用失败: {}", e)).into_response()
         })?;

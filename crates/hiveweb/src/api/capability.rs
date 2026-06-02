@@ -1,7 +1,7 @@
 use axum::{
-    extract::{Path, Query, State},
-    routing::{get, post, put, delete},
     Json, Router,
+    extract::{Path, Query, State},
+    routing::get,
 };
 use serde::Deserialize;
 
@@ -11,10 +11,15 @@ use crate::utils::error::ApiResponse;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/capabilities", get(list_capabilities).post(create_capability))
+        .route(
+            "/capabilities",
+            get(list_capabilities).post(create_capability),
+        )
         .route(
             "/capabilities/:name",
-            get(get_capability).put(update_capability).delete(delete_capability),
+            get(get_capability)
+                .put(update_capability)
+                .delete(delete_capability),
         )
 }
 

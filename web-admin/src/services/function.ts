@@ -102,7 +102,7 @@ export async function deleteFunction(id: number): Promise<void> {
 }
 
 export interface InvokeFunctionRequest {
-  input: Record<string, unknown>;
+  input: unknown;
   agent_id?: number;
 }
 

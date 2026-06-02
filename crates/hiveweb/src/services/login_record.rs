@@ -33,7 +33,11 @@ impl LoginRecordFilter {
 
         if let Some(success) = self.success {
             conditions.push("success = ?");
-            params.push(if success { "1".to_string() } else { "0".to_string() });
+            params.push(if success {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            });
         }
 
         if let Some(ref reason) = self.failure_reason {
@@ -106,11 +110,7 @@ async fn build_record_list_query(
     Ok(records)
 }
 
-async fn build_count_query(
-    sql: &str,
-    params: Vec<String>,
-    pool: &MySqlPool,
-) -> Result<u64> {
+async fn build_count_query(sql: &str, params: Vec<String>, pool: &MySqlPool) -> Result<u64> {
     let mut query = sqlx::query(sql);
     for p in params {
         query = query.bind(p);
@@ -121,12 +121,10 @@ async fn build_count_query(
 }
 
 pub async fn get_login_record_by_id(pool: &MySqlPool, id: i64) -> Result<Option<LoginRecord>> {
-    let record = sqlx::query_as::<_, LoginRecord>(
-        "SELECT * FROM login_records WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+    let record = sqlx::query_as::<_, LoginRecord>("SELECT * FROM login_records WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
 
     Ok(record)
 }

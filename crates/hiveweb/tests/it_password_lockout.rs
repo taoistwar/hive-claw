@@ -37,6 +37,9 @@ async fn t105_lockout_after_five_wrong_old_password_attempts() -> anyhow::Result
         status.is_client_error(),
         "expected 4xx after lockout, got {status}: {body}"
     );
-    assert_eq!(body["code"], 1003, "expected error code 1003 (account locked)");
+    assert_eq!(
+        body["code"], 1003,
+        "expected error code 1003 (account locked)"
+    );
     Ok(())
 }

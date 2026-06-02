@@ -11,11 +11,9 @@ async fn main() -> anyhow::Result<()> {
     let password = "admin123";
     let nickname = "超级管理员";
 
-    let exists: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM admins WHERE role = 3"
-    )
-    .fetch_one(&pool)
-    .await?;
+    let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM admins WHERE role = 3")
+        .fetch_one(&pool)
+        .await?;
 
     if exists.0 > 0 {
         println!("Super admin already exists. Skipping seed.");

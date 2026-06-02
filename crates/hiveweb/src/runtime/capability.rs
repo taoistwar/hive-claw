@@ -10,7 +10,7 @@
 
 use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -45,21 +45,81 @@ pub struct Capability {
 }
 
 pub const CAPABILITIES: &[Capability] = &[
-    Capability { name: NETWORK_HTTP, description: "HTTP/HTTPS access (allowlisted hosts; SSRF-blocked)", is_dangerous: true },
-    Capability { name: FS_READ,      description: "/tmp/plugin/ 内文件读", is_dangerous: false },
-    Capability { name: FS_WRITE,     description: "/tmp/plugin/ 内文件写", is_dangerous: false },
-    Capability { name: S3_READ,      description: "Rustfs 桶 GET", is_dangerous: false },
-    Capability { name: S3_WRITE,     description: "Rustfs 桶 PUT / DELETE", is_dangerous: false },
-    Capability { name: DB_QUERY,     description: "宿主预注册命名 SELECT 查询", is_dangerous: false },
-    Capability { name: DB_EXECUTE,   description: "宿主预注册命名 DML（永不自由 SQL）", is_dangerous: true },
-    Capability { name: LLM_INVOKE,   description: "LLM 调用（走 Agent.model_preset 解析）", is_dangerous: false },
-    Capability { name: SECRET_GET,   description: "allowlist 内的密钥读取", is_dangerous: true },
-    Capability { name: TIME_NOW,     description: "服务器当前时间", is_dangerous: false },
-    Capability { name: LOG_EMIT,     description: "结构化日志写入（rate-limited）", is_dangerous: false },
-    Capability { name: CHAT_RESPOND, description: "提交 Agent 最终用户可见回复", is_dangerous: false },
-    Capability { name: EXEC_RUN,     description: "Shell 命令执行（受 workspace 边界约束）", is_dangerous: true },
-    Capability { name: AGENT_SPAWN,  description: "生成子 Agent 执行独立任务", is_dangerous: false },
-    Capability { name: CRON_MANAGE,  description: "管理定时 Cron 任务", is_dangerous: false },
+    Capability {
+        name: NETWORK_HTTP,
+        description: "HTTP/HTTPS access (allowlisted hosts; SSRF-blocked)",
+        is_dangerous: true,
+    },
+    Capability {
+        name: FS_READ,
+        description: "/tmp/plugin/ 内文件读",
+        is_dangerous: false,
+    },
+    Capability {
+        name: FS_WRITE,
+        description: "/tmp/plugin/ 内文件写",
+        is_dangerous: false,
+    },
+    Capability {
+        name: S3_READ,
+        description: "Rustfs 桶 GET",
+        is_dangerous: false,
+    },
+    Capability {
+        name: S3_WRITE,
+        description: "Rustfs 桶 PUT / DELETE",
+        is_dangerous: false,
+    },
+    Capability {
+        name: DB_QUERY,
+        description: "宿主预注册命名 SELECT 查询",
+        is_dangerous: false,
+    },
+    Capability {
+        name: DB_EXECUTE,
+        description: "宿主预注册命名 DML（永不自由 SQL）",
+        is_dangerous: true,
+    },
+    Capability {
+        name: LLM_INVOKE,
+        description: "LLM 调用（走 Agent.model_preset 解析）",
+        is_dangerous: false,
+    },
+    Capability {
+        name: SECRET_GET,
+        description: "allowlist 内的密钥读取",
+        is_dangerous: true,
+    },
+    Capability {
+        name: TIME_NOW,
+        description: "服务器当前时间",
+        is_dangerous: false,
+    },
+    Capability {
+        name: LOG_EMIT,
+        description: "结构化日志写入（rate-limited）",
+        is_dangerous: false,
+    },
+    Capability {
+        name: CHAT_RESPOND,
+        description: "提交 Agent 最终用户可见回复",
+        is_dangerous: false,
+    },
+    Capability {
+        name: EXEC_RUN,
+        description: "Shell 命令执行（受 workspace 边界约束）",
+        is_dangerous: true,
+    },
+    Capability {
+        name: AGENT_SPAWN,
+        description: "生成子 Agent 执行独立任务",
+        is_dangerous: false,
+    },
+    Capability {
+        name: CRON_MANAGE,
+        description: "管理定时 Cron 任务",
+        is_dangerous: false,
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -131,15 +191,28 @@ pub struct ReplyEnvelope {
 
 impl ReplyEnvelope {
     pub fn ok(data: Value) -> Self {
-        Self { ok: true, data: Some(data), code: None, message: None }
+        Self {
+            ok: true,
+            data: Some(data),
+            code: None,
+            message: None,
+        }
     }
     pub fn err(code: u16, message: impl Into<String>) -> Self {
-        Self { ok: false, data: None, code: Some(code), message: Some(message.into()) }
+        Self {
+            ok: false,
+            data: None,
+            code: Some(code),
+            message: Some(message.into()),
+        }
     }
 }
 
 /// 从 DB 查 agent 的 capability 集合（带简易 in-memory 缓存可在 invoker 层加）。
-async fn load_agent_permissions(pool: &MySqlPool, agent_id: i64) -> Result<HashSet<String>, sqlx::Error> {
+async fn load_agent_permissions(
+    pool: &MySqlPool,
+    agent_id: i64,
+) -> Result<HashSet<String>, sqlx::Error> {
     let rows: Vec<(String,)> =
         sqlx::query_as("SELECT capability FROM agent_permissions WHERE agent_id = ?")
             .bind(agent_id)
@@ -164,11 +237,7 @@ impl std::fmt::Debug for DispatcherDeps {
 }
 
 /// Dispatcher 主入口。返回的 JSON 字符串会被 Plugin 侧解码成 ReplyEnvelope。
-pub async fn dispatch(
-    deps: &DispatcherDeps,
-    ctx: &DispatchCtx,
-    envelope_str: &str,
-) -> String {
+pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &str) -> String {
     let pool = &deps.pool;
     let registry = &deps.registry;
     let t0 = Instant::now();
@@ -238,10 +307,7 @@ pub async fn dispatch(
         }
     };
     if !granted.contains(&cap_name) {
-        let reply = ReplyEnvelope::err(
-            4030,
-            format!("当前 Agent 未授权调用能力「{cap_name}」"),
-        );
+        let reply = ReplyEnvelope::err(4030, format!("当前 Agent 未授权调用能力「{cap_name}」"));
         runtime_audit::record(
             pool,
             AuditRecord {
@@ -276,7 +342,10 @@ pub async fn dispatch(
             Err(e) => (ReplyEnvelope::err(4000, e.clone()), "error", Some(e)),
         }
     }
-    fn args_err(label: &str, e: serde_json::Error) -> (ReplyEnvelope, &'static str, Option<String>) {
+    fn args_err(
+        label: &str,
+        e: serde_json::Error,
+    ) -> (ReplyEnvelope, &'static str, Option<String>) {
         (
             ReplyEnvelope::err(4000, format!("{label} args: {e}")),
             "error",
@@ -285,7 +354,11 @@ pub async fn dispatch(
     }
 
     let (reply, outcome, err_msg) = match cap_name.as_str() {
-        TIME_NOW => (ReplyEnvelope::ok(capabilities::utility::time_now()), "success", None),
+        TIME_NOW => (
+            ReplyEnvelope::ok(capabilities::utility::time_now()),
+            "success",
+            None,
+        ),
         LOG_EMIT => match serde_json::from_value(envelope.args.clone()) {
             Ok(args) => {
                 let data =

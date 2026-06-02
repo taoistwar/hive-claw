@@ -4,8 +4,7 @@ use std::env;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override()?;
 
-    let database_url = env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let pool = sqlx::MySqlPool::connect(&database_url).await?;
 
@@ -47,7 +46,9 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "--help" | "-h" => {
-                println!("Usage: create-super-admin --phone <PHONE> --password <PASSWORD> --nickname <NICKNAME>");
+                println!(
+                    "Usage: create-super-admin --phone <PHONE> --password <PASSWORD> --nickname <NICKNAME>"
+                );
                 println!();
                 println!("Options:");
                 println!("  --phone      Phone number (11 digits)");
@@ -66,7 +67,9 @@ async fn main() -> anyhow::Result<()> {
     // Validate inputs
     if phone.is_empty() || password.is_empty() || nickname.is_empty() {
         eprintln!("Error: --phone, --password, and --nickname are required");
-        eprintln!("Usage: create-super-admin --phone <PHONE> --password <PASSWORD> --nickname <NICKNAME>");
+        eprintln!(
+            "Usage: create-super-admin --phone <PHONE> --password <PASSWORD> --nickname <NICKNAME>"
+        );
         std::process::exit(1);
     }
 
@@ -98,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         INSERT INTO admins (phone, nickname, password_hash, role, status)
         VALUES (?, ?, ?, 3, 1)
         ON DUPLICATE KEY UPDATE nickname = VALUES(nickname)
-        "#
+        "#,
     )
     .bind(&phone)
     .bind(&nickname)

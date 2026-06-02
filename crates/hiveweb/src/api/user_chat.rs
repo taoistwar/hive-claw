@@ -97,12 +97,12 @@ async fn get_messages(
 async fn post_message_sse(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
-    Path(id): Path<i64>,
+    Path(session_id): Path<i64>,
     Json(body): Json<svc::PostMessage>,
 ) -> Response {
     let user_id = claims.user_id.unwrap_or_default();
 
-    let session = match svc::fetch_session_user(&state.pool, id).await {
+    let session = match svc::fetch_session_user(&state.pool, session_id).await {
         Ok(s) => s,
         Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
     };
@@ -122,7 +122,7 @@ async fn post_message_sse(
         is_admin: false,
     };
 
-    match svc::append_user_message_user(&state.pool, id, user_id, &body.content).await {
+    match svc::append_user_message_user(&state.pool, session_id, user_id, &body.content).await {
         Ok(m) => m,
         Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
     };
@@ -132,13 +132,13 @@ async fn post_message_sse(
         let title = body.content.chars().take(30).collect::<String>();
         let _ = sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
             .bind(&title)
-            .bind(id)
+            .bind(session_id)
             .execute(&state.pool)
             .await;
     }
 
     let pool = state.pool.clone();
-    let session_id = id;
+    let session_id = session_id;
     let user_content = body.content.clone();
 
     let history: Vec<crate::models::ChatMessageUser> =

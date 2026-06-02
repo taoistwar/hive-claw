@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
     Router,
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
 use sqlx::Row;
@@ -134,20 +134,30 @@ pub async fn list_runtime_audit_logs(
     };
 
     let count_sql = format!("SELECT COUNT(*) FROM runtime_audit_logs {}", where_clause);
-    let total = match execute_count_query(&count_sql, &string_params, &i64_params, &state.pool).await {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!("Database error: {}", e);
-            return AppError::Internal("Service unavailable".to_string()).into_response();
-        }
-    };
+    let total =
+        match execute_count_query(&count_sql, &string_params, &i64_params, &state.pool).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("Database error: {}", e);
+                return AppError::Internal("Service unavailable".to_string()).into_response();
+            }
+        };
 
     let data_sql = format!(
         "SELECT * FROM runtime_audit_logs {} ORDER BY occurred_at DESC LIMIT ? OFFSET ?",
         where_clause
     );
 
-    let rows = match execute_list_query(&data_sql, &string_params, &i64_params, query.limit, query.offset, &state.pool).await {
+    let rows = match execute_list_query(
+        &data_sql,
+        &string_params,
+        &i64_params,
+        query.limit,
+        query.offset,
+        &state.pool,
+    )
+    .await
+    {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("Database error: {}", e);
@@ -155,7 +165,10 @@ pub async fn list_runtime_audit_logs(
         }
     };
 
-    let items: Vec<RuntimeAuditLogPublic> = rows.iter().map(|row| row_to_runtime_audit_log(row)).collect();
+    let items: Vec<RuntimeAuditLogPublic> = rows
+        .iter()
+        .map(|row| row_to_runtime_audit_log(row))
+        .collect();
 
     ApiResponse::success(PaginatedResponse {
         items,
@@ -214,7 +227,8 @@ pub async fn get_runtime_audit_log(
         Ok(row) => row,
         Err(e) => {
             if e.to_string().contains("not found") || e.to_string().contains("returned no rows") {
-                return AppError::NotFound("Runtime audit log not found".to_string()).into_response();
+                return AppError::NotFound("Runtime audit log not found".to_string())
+                    .into_response();
             }
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -226,6 +240,12 @@ pub async fn get_runtime_audit_log(
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/runtime-audit-logs", axum::routing::get(list_runtime_audit_logs))
-        .route("/runtime-audit-logs/:id", axum::routing::get(get_runtime_audit_log))
+        .route(
+            "/runtime-audit-logs",
+            axum::routing::get(list_runtime_audit_logs),
+        )
+        .route(
+            "/runtime-audit-logs/:id",
+            axum::routing::get(get_runtime_audit_log),
+        )
 }

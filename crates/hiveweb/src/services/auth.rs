@@ -50,7 +50,6 @@ pub async fn create_login_record(
     Ok(record)
 }
 
-
 pub async fn is_account_locked(redis: &RedisClient, phone: &str) -> Result<bool> {
     // Redis TTL semantics:
     //   -2 → key does not exist

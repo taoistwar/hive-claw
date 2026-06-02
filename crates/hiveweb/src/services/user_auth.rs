@@ -26,17 +26,15 @@ pub async fn register_user(
         return Err(AppError::Conflict("Phone already registered".to_string()));
     }
 
-    let password_hash = hash_password(password)
-        .map_err(|e| AppError::Internal(format!("password hash: {e}")))?;
+    let password_hash =
+        hash_password(password).map_err(|e| AppError::Internal(format!("password hash: {e}")))?;
 
-    let res = sqlx::query(
-        "INSERT INTO users (phone, password_hash, status) VALUES (?, ?, 1)",
-    )
-    .bind(phone)
-    .bind(&password_hash)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("user insert: {e}")))?;
+    let res = sqlx::query("INSERT INTO users (phone, password_hash, status) VALUES (?, ?, 1)")
+        .bind(phone)
+        .bind(&password_hash)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("user insert: {e}")))?;
 
     let id = res.last_insert_id() as i64;
     sqlx::query_as::<_, User>(
@@ -48,24 +46,24 @@ pub async fn register_user(
         .map_err(|e| AppError::Internal(format!("user refetch: {e}")))
 }
 
-pub async fn login_user(
-    pool: &MySqlPool,
-    phone: &str,
-    password: &str,
-) -> Result<User, AppError> {
+pub async fn login_user(pool: &MySqlPool, phone: &str, password: &str) -> Result<User, AppError> {
     let user = find_user_by_phone(pool, phone)
         .await?
         .ok_or_else(|| AppError::WrongPassword("Invalid phone or password".to_string()))?;
 
     if user.status != 1 {
-        return Err(AppError::AccountDisabled("Account has been disabled".to_string()));
+        return Err(AppError::AccountDisabled(
+            "Account has been disabled".to_string(),
+        ));
     }
 
     let valid = verify_password(password, &user.password_hash)
         .map_err(|e| AppError::Internal(format!("password verify: {e}")))?;
 
     if !valid {
-        return Err(AppError::WrongPassword("Invalid phone or password".to_string()));
+        return Err(AppError::WrongPassword(
+            "Invalid phone or password".to_string(),
+        ));
     }
 
     Ok(user)

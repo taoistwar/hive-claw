@@ -6,15 +6,11 @@
 //! 无法直接从 bench 调用纯校验函数。需要重构 service 层将 validate_graph
 //! 提取为独立 pub fn 以支持无 DB 依赖的基准测试。
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_dag_cycle_detection(c: &mut Criterion) {
     let mut group = c.benchmark_group("dag_cycle_detection_stub");
-    group.bench_function("stub", |b| {
-        b.iter(|| {
-            black_box(0)
-        })
-    });
+    group.bench_function("stub", |b| b.iter(|| black_box(0)));
     group.finish();
 }
 

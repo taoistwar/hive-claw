@@ -107,6 +107,7 @@ export async function createWorkflow(meta: {
   description?: string;
   timeout_ms?: number;
   category_id?: number;
+  required_capabilities?: string[];
   tag_ids?: number[];
 }): Promise<WorkflowMeta> {
   const resp = await apiClient.post<WorkflowMeta>('/workflows', meta);
@@ -137,6 +138,7 @@ export async function updateWorkflow(
     description?: string;
     timeout_ms?: number;
     category_id?: number;
+    required_capabilities?: string[];
     tag_ids?: number[];
     updated_at: string;
   },

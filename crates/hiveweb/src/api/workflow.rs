@@ -11,18 +11,16 @@
 //!   POST   /api/workflows/:id/execute    — run（占位；T110 接通）
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::api::AppState;
-use crate::services::workflow::{
-    self as svc, CreateMeta, GraphPut, UpdateMeta,
-};
+use crate::services::workflow::{self as svc, CreateMeta, GraphPut, UpdateMeta};
 use crate::utils::error::{ApiResponse, AppError};
 
 pub fn router() -> Router<AppState> {
@@ -30,7 +28,9 @@ pub fn router() -> Router<AppState> {
         .route("/workflows", get(list_workflows).post(create_workflow))
         .route(
             "/workflows/:id",
-            get(get_workflow).put(update_workflow).delete(delete_workflow),
+            get(get_workflow)
+                .put(update_workflow)
+                .delete(delete_workflow),
         )
         .route(
             "/workflows/:id/graph",
@@ -41,21 +41,36 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    #[serde(default)] pub offset: Option<i64>,
-    #[serde(default)] pub limit: Option<i64>,
-    #[serde(default)] pub id: Option<i64>,
-    #[serde(default)] pub identifier: Option<String>,
-    #[serde(default)] pub name: Option<String>,
-    #[serde(default)] pub search: Option<String>,
-    #[serde(default)] pub category_id: Option<i64>,
-    #[serde(default)] pub tag_id: Option<i64>,
-    #[serde(default)] pub required_capabilities: Option<String>,
-    #[serde(default)] pub timeout_ms_from: Option<i64>,
-    #[serde(default)] pub timeout_ms_to: Option<i64>,
-    #[serde(default)] pub created_at_from: Option<DateTime<Utc>>,
-    #[serde(default)] pub created_at_to: Option<DateTime<Utc>>,
-    #[serde(default)] pub updated_at_from: Option<DateTime<Utc>>,
-    #[serde(default)] pub updated_at_to: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default)]
+    pub identifier: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub category_id: Option<i64>,
+    #[serde(default)]
+    pub tag_id: Option<i64>,
+    #[serde(default)]
+    pub required_capabilities: Option<String>,
+    #[serde(default)]
+    pub timeout_ms_from: Option<i64>,
+    #[serde(default)]
+    pub timeout_ms_to: Option<i64>,
+    #[serde(default)]
+    pub created_at_from: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub created_at_to: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub updated_at_from: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub updated_at_to: Option<DateTime<Utc>>,
 }
 
 async fn list_workflows(
@@ -156,7 +171,9 @@ pub struct ExecuteBody {
     #[serde(default = "default_input")]
     pub input: Value,
 }
-fn default_input() -> Value { Value::Object(serde_json::Map::new()) }
+fn default_input() -> Value {
+    Value::Object(serde_json::Map::new())
+}
 
 async fn execute_workflow(
     State(state): State<AppState>,

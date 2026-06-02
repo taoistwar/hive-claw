@@ -82,9 +82,7 @@ pub async fn list(
             .fetch_one(pool)
             .await
             .map_err(|e| AppError::Internal(format!("tag count: {e}")))?;
-        let sql = format!(
-            "{base_sql} WHERE t.name LIKE ? ORDER BY t.name LIMIT ? OFFSET ?"
-        );
+        let sql = format!("{base_sql} WHERE t.name LIKE ? ORDER BY t.name LIMIT ? OFFSET ?");
         let rows: Vec<Row> = sqlx::query_as(&sql)
             .bind(&like)
             .bind(limit)
@@ -122,19 +120,26 @@ pub async fn list(
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tag, AppError> {
     if let Some(updated_at) = meta.updated_at {
-        crate::services::optimistic_lock::check_and_bump(pool, "tags", id, updated_at).await
+        crate::services::optimistic_lock::check_and_bump(pool, "tags", id, updated_at)
+            .await
             .or_else(|e| {
                 // tags 表没有 updated_at 列；保留接口但跳过
-                if matches!(e, AppError::Internal(_)) { Ok(()) } else { Err(e) }
+                if matches!(e, AppError::Internal(_)) {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
             })?;
     }
-    sqlx::query("UPDATE tags SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE id = ?")
-        .bind(&meta.name)
-        .bind(&meta.color)
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("tag update: {e}")))?;
+    sqlx::query(
+        "UPDATE tags SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE id = ?",
+    )
+    .bind(&meta.name)
+    .bind(&meta.color)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("tag update: {e}")))?;
     fetch_by_id(pool, id).await
 }
 

@@ -15,12 +15,12 @@
 //!
 //! 运行: `cargo bench --bench chat_e2e`
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use providers::LLMProvider;
 use serde_json::json;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use providers::LLMProvider;
 use tokio::runtime::Runtime;
 
 // ============================================================================
@@ -92,7 +92,8 @@ fn bench_sse_event_construction(c: &mut Criterion) {
     // fallback_used event
     group.bench_function("fallback_used_event", |b| {
         b.iter(|| {
-            let payload = json!({ "from": "gpt-4o", "to": "gpt-4o-mini", "reason": "429 rate limited" });
+            let payload =
+                json!({ "from": "gpt-4o", "to": "gpt-4o-mini", "reason": "429 rate limited" });
             let data = payload.to_string();
             let event = format!("event: fallback_used\ndata: {data}\n\n");
             black_box(event);
@@ -264,7 +265,8 @@ fn bench_full_session_mock(c: &mut Criterion) {
                 tokio::time::sleep(Duration::from_millis(800)).await;
 
                 // routed event
-                let routed = json!({ "agent_id": 2, "agent_identifier": "coding-expert" }).to_string();
+                let routed =
+                    json!({ "agent_id": 2, "agent_identifier": "coding-expert" }).to_string();
                 let _ = tx_clone.send(Ok(format!("event: routed\ndata: {routed}\n\n")));
 
                 // Hop 2: 子 agent LLM call (800ms)

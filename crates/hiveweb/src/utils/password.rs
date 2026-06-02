@@ -26,13 +26,11 @@ pub fn validate_password(password: &str) -> Result<(), AppError> {
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     validate_password(password)?;
-    bcrypt::hash(password, bcrypt::DEFAULT_COST).map_err(|e| {
-        AppError::Internal(format!("Failed to hash password: {}", e))
-    })
+    bcrypt::hash(password, bcrypt::DEFAULT_COST)
+        .map_err(|e| AppError::Internal(format!("Failed to hash password: {}", e)))
 }
 
 pub fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
-    bcrypt::verify(password, hash).map_err(|e| {
-        AppError::Internal(format!("Failed to verify password: {}", e))
-    })
+    bcrypt::verify(password, hash)
+        .map_err(|e| AppError::Internal(format!("Failed to verify password: {}", e)))
 }

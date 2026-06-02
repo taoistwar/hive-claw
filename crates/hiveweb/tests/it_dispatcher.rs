@@ -36,7 +36,10 @@ async fn t046_unknown_capability_returns_4045() -> anyhow::Result<()> {
     let resp = capability::dispatch(&deps, &ctx, envelope).await;
     let v: serde_json::Value = serde_json::from_str(&resp)?;
     assert_eq!(v["ok"], false);
-    assert_eq!(v["code"], 4045, "unknown capability must return 4045; got {resp}");
+    assert_eq!(
+        v["code"], 4045,
+        "unknown capability must return 4045; got {resp}"
+    );
     Ok(())
 }
 
@@ -69,7 +72,10 @@ async fn t047_known_but_not_granted_returns_4030() -> anyhow::Result<()> {
     let resp = capability::dispatch(&deps, &ctx, &envelope).await;
     let v: serde_json::Value = serde_json::from_str(&resp)?;
     assert_eq!(v["ok"], false);
-    assert_eq!(v["code"], 4030, "ungranted capability must return 4030; got {resp}");
+    assert_eq!(
+        v["code"], 4030,
+        "ungranted capability must return 4030; got {resp}"
+    );
     Ok(())
 }
 
@@ -85,12 +91,10 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
     };
 
     // 准备：给 main agent (id=1) 临时授权 time.now
-    sqlx::query(
-        "INSERT IGNORE INTO agent_permissions (agent_id, capability) VALUES (1, ?)",
-    )
-    .bind(TIME_NOW)
-    .execute(&pool)
-    .await?;
+    sqlx::query("INSERT IGNORE INTO agent_permissions (agent_id, capability) VALUES (1, ?)")
+        .bind(TIME_NOW)
+        .execute(&pool)
+        .await?;
 
     let ctx = DispatchCtx {
         request_id: None,
@@ -104,7 +108,10 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
     let resp = capability::dispatch(&deps, &ctx, &envelope).await;
     let v: serde_json::Value = serde_json::from_str(&resp)?;
     assert_eq!(v["ok"], true, "granted time.now should succeed; got {resp}");
-    assert!(v["data"]["unix_ms"].is_number(), "data.unix_ms missing: {resp}");
+    assert!(
+        v["data"]["unix_ms"].is_number(),
+        "data.unix_ms missing: {resp}"
+    );
     assert!(v["data"]["iso"].is_string(), "data.iso missing: {resp}");
 
     // 清理（恢复原状）

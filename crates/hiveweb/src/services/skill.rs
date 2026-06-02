@@ -150,7 +150,9 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<SkillList, App
         where_clauses.push("updated_at <= ?".into());
     }
     if filter.search.is_some() {
-        where_clauses.push("(name LIKE ? OR identifier LIKE ? OR description LIKE ? OR content LIKE ?)".into());
+        where_clauses.push(
+            "(name LIKE ? OR identifier LIKE ? OR description LIKE ? OR content LIKE ?)".into(),
+        );
     }
     let where_sql = if where_clauses.is_empty() {
         String::new()
@@ -291,7 +293,11 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Skill
     .bind(&meta.content)
     .bind(meta.is_always.map(|v| v as i8))
     .bind(meta.category_id)
-    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
+    .bind(
+        meta.required_capabilities
+            .as_ref()
+            .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
+    )
     .bind(id)
     .execute(pool)
     .await

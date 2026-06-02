@@ -19,10 +19,7 @@ fn resolve(path_arg: &str) -> Result<PathBuf, String> {
     };
     let canon = p.clone();
     if !canon.starts_with(Path::new(ALLOWED_PREFIX)) {
-        return Err(format!(
-            "路径 {} 越出 /tmp/plugin/ 沙箱",
-            canon.display()
-        ));
+        return Err(format!("路径 {} 越出 /tmp/plugin/ 沙箱", canon.display()));
     }
     Ok(canon)
 }
@@ -46,7 +43,10 @@ pub async fn fs_read(args: FsReadArgs) -> Result<FsReadReply, String> {
         .map_err(|e| format!("read {}: {e}", path.display()))?;
     let size_bytes = bytes.len() as u64;
     let content = String::from_utf8(bytes).map_err(|_| "content 非 UTF-8".to_string())?;
-    Ok(FsReadReply { content, size_bytes })
+    Ok(FsReadReply {
+        content,
+        size_bytes,
+    })
 }
 
 #[derive(Debug, Deserialize)]

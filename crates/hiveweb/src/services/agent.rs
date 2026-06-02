@@ -127,12 +127,11 @@ pub async fn create(
 
     // 计算 depth
     let depth = if let Some(pid) = meta.parent_agent_id {
-        let p: Option<(i8,)> =
-            sqlx::query_as("SELECT depth FROM agents WHERE id = ?")
-                .bind(pid)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| AppError::Internal(format!("parent lookup: {e}")))?;
+        let p: Option<(i8,)> = sqlx::query_as("SELECT depth FROM agents WHERE id = ?")
+            .bind(pid)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("parent lookup: {e}")))?;
         let parent_depth = p
             .ok_or_else(|| AppError::NotFound(format!("parent agent id={pid} not found")))?
             .0;
@@ -192,14 +191,12 @@ pub async fn create(
             .map_err(|e| AppError::Internal(format!("agent_skills: {e}")))?;
     }
     for cap in &meta.permissions {
-        sqlx::query(
-            "INSERT IGNORE INTO agent_permissions (agent_id, capability) VALUES (?, ?)",
-        )
-        .bind(id)
-        .bind(cap)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(format!("agent_permissions: {e}")))?;
+        sqlx::query("INSERT IGNORE INTO agent_permissions (agent_id, capability) VALUES (?, ?)")
+            .bind(id)
+            .bind(cap)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal(format!("agent_permissions: {e}")))?;
     }
 
     tx.commit()
@@ -253,11 +250,10 @@ pub async fn fetch_detail(pool: &MySqlPool, id: i64) -> Result<AgentDetail, AppE
 }
 
 pub async fn list_tree(pool: &MySqlPool) -> Result<Vec<AgentTreeNode>, AppError> {
-    let rows: Vec<Agent> =
-        sqlx::query_as("SELECT * FROM agents ORDER BY parent_agent_id, name")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("agent list: {e}")))?;
+    let rows: Vec<Agent> = sqlx::query_as("SELECT * FROM agents ORDER BY parent_agent_id, name")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("agent list: {e}")))?;
 
     use std::collections::HashMap;
     let mut by_parent: HashMap<Option<i64>, Vec<Agent>> = HashMap::new();
@@ -310,34 +306,30 @@ pub async fn update(
     }
 
     // 计算 depth（如果 parent_agent_id 有变更）
-    let new_depth: Option<i8> = if meta.parent_agent_id.is_some()
-        && meta.parent_agent_id != existing.parent_agent_id
-    {
-        let pid = meta.parent_agent_id.unwrap();
-        // 不允许设置自己为父
-        if pid == id {
-            return Err(AppError::BadRequest(
-                "parent_agent_id 不能指向自身".into(),
-            ));
-        }
-        let p: Option<(i8,)> =
-            sqlx::query_as("SELECT depth FROM agents WHERE id = ?")
+    let new_depth: Option<i8> =
+        if meta.parent_agent_id.is_some() && meta.parent_agent_id != existing.parent_agent_id {
+            let pid = meta.parent_agent_id.unwrap();
+            // 不允许设置自己为父
+            if pid == id {
+                return Err(AppError::BadRequest("parent_agent_id 不能指向自身".into()));
+            }
+            let p: Option<(i8,)> = sqlx::query_as("SELECT depth FROM agents WHERE id = ?")
                 .bind(pid)
                 .fetch_optional(pool)
                 .await
                 .map_err(|e| AppError::Internal(format!("parent lookup: {e}")))?;
-        let parent_depth = p
-            .ok_or_else(|| AppError::NotFound(format!("parent agent id={pid} not found")))?
-            .0;
-        if parent_depth + 1 > MAX_DEPTH {
-            return Err(AppError::AgentDepthExceeded(format!(
-                "Agent 层级已达最大深度 {MAX_DEPTH}"
-            )));
-        }
-        Some(parent_depth + 1)
-    } else {
-        None
-    };
+            let parent_depth = p
+                .ok_or_else(|| AppError::NotFound(format!("parent agent id={pid} not found")))?
+                .0;
+            if parent_depth + 1 > MAX_DEPTH {
+                return Err(AppError::AgentDepthExceeded(format!(
+                    "Agent 层级已达最大深度 {MAX_DEPTH}"
+                )));
+            }
+            Some(parent_depth + 1)
+        } else {
+            None
+        };
 
     crate::services::optimistic_lock::check_and_bump(pool, "agents", id, meta.updated_at).await?;
 
@@ -424,12 +416,11 @@ pub async fn update(
 }
 
 pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT identifier FROM agents WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT identifier FROM agents WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
     let Some((ident,)) = row else {
         return Err(AppError::NotFound(format!("agent id={id} not found")));
     };
@@ -439,13 +430,11 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         ));
     }
     // 有子 Agent → 4093
-    let cnt: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM agents WHERE parent_agent_id = ?",
-    )
-    .bind(id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("agent child count: {e}")))?;
+    let cnt: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agents WHERE parent_agent_id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("agent child count: {e}")))?;
     if cnt.0 > 0 {
         return Err(AppError::ResourceInUse(format!(
             "agent 有 {} 个子 Agent，无法删除",

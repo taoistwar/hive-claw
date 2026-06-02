@@ -82,10 +82,40 @@ pub struct ListFilter {
 }
 
 fn validate_schema(schema: &Value, label: &str) -> Result<(), AppError> {
+    // 前置检查：常见 JSON Schema 错误，提供更友好的中文提示
+    if let Some(required) = schema.get("required") {
+        if required.is_boolean() {
+            return Err(AppError::BadRequest(format!(
+                "{label} 中 required 字段格式错误：required 应为字符串数组（例如 [\"field1\", \"field2\"]），不能是布尔值 true/false。若 schema 的顶层 type 为 string / number / boolean 等基础类型，请移除 required 字段。"
+            )));
+        }
+        if !required.is_array() {
+            return Err(AppError::BadRequest(format!(
+                "{label} 中 required 字段格式错误：required 应为字符串数组，例如 [\"field1\", \"field2\"]。"
+            )));
+        }
+    }
+
+    if !schema.is_object() {
+        return Err(AppError::BadRequest(format!(
+            "{label} 必须是 JSON 对象，不能是 {}。",
+            if schema.is_array() {
+                "数组"
+            } else if schema.is_string() {
+                "字符串"
+            } else if schema.is_number() {
+                "数字"
+            } else {
+                "布尔值或其他类型"
+            }
+        )));
+    }
+
+    // 无 type 的空 schema {} 是合法的，表示接受任意值，交由 jsonschema 校验
+
     // 轻量 JSON Schema 校验：仅尝试编译，编译通过即认为格式合法
-    jsonschema::JSONSchema::compile(schema).map_err(|e| {
-        AppError::BadRequest(format!("{label} 不是合法 JSON Schema: {e}"))
-    })?;
+    jsonschema::JSONSchema::compile(schema)
+        .map_err(|e| AppError::BadRequest(format!("{label} 不是合法 JSON Schema: {e}")))?;
     Ok(())
 }
 
@@ -94,15 +124,17 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
     validate_schema(&meta.output_schema, "output_schema")?;
 
     // Plugin 必须存在且未软删
-    let plugin_row: Option<(i64, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, deleted_at FROM plugins WHERE id = ?",
-    )
-    .bind(meta.plugin_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("plugin lookup: {e}")))?;
+    let plugin_row: Option<(i64, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT id, deleted_at FROM plugins WHERE id = ?")
+            .bind(meta.plugin_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("plugin lookup: {e}")))?;
     let Some((_, deleted_at)) = plugin_row else {
-        return Err(AppError::NotFound(format!("plugin id={} not found", meta.plugin_id)));
+        return Err(AppError::NotFound(format!(
+            "plugin id={} not found",
+            meta.plugin_id
+        )));
     };
     if deleted_at.is_some() {
         return Err(AppError::Conflict(format!(
@@ -185,7 +217,10 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         where_clauses.push("JSON_CONTAINS(f.required_capabilities, ?)".into());
     }
     if filter.tag_id.is_some() {
-        where_clauses.push("f.id IN (SELECT entity_id FROM taggings WHERE entity_type='function' AND tag_id=?)".into());
+        where_clauses.push(
+            "f.id IN (SELECT entity_id FROM taggings WHERE entity_type='function' AND tag_id=?)"
+                .into(),
+        );
     }
     if filter.created_at_start.is_some() {
         where_clauses.push("f.created_at >= ?".into());
@@ -200,9 +235,7 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         where_clauses.push("f.updated_at <= ?".into());
     }
     if filter.search.is_some() {
-        where_clauses.push(
-            "(f.name LIKE ? OR f.description LIKE ? OR f.identifier LIKE ?)".into(),
-        );
+        where_clauses.push("(f.name LIKE ? OR f.description LIKE ? OR f.identifier LIKE ?)".into());
     }
     let where_sql = if where_clauses.is_empty() {
         String::new()
@@ -210,7 +243,9 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         format!("WHERE {}", where_clauses.join(" AND "))
     };
 
-    let count_sql = format!("SELECT COUNT(*) FROM functions f LEFT JOIN plugins p ON p.id = f.plugin_id {where_sql}");
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM functions f LEFT JOIN plugins p ON p.id = f.plugin_id {where_sql}"
+    );
     let list_sql = format!(
         "SELECT f.*, p.identifier AS plugin_identifier \
          FROM functions f LEFT JOIN plugins p ON p.id = f.plugin_id \
@@ -355,22 +390,33 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Funct
 
     // 内置函数仅允许编辑 category_id 和 tag
     if is_builtin && meta.name.is_some() {
-        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+        return Err(AppError::Conflict(
+            "内置 function 仅可编辑分类和标签".into(),
+        ));
     }
     if is_builtin && meta.description.is_some() {
-        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+        return Err(AppError::Conflict(
+            "内置 function 仅可编辑分类和标签".into(),
+        ));
     }
     if is_builtin && meta.input_schema.is_some() {
-        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+        return Err(AppError::Conflict(
+            "内置 function 仅可编辑分类和标签".into(),
+        ));
     }
     if is_builtin && meta.output_schema.is_some() {
-        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+        return Err(AppError::Conflict(
+            "内置 function 仅可编辑分类和标签".into(),
+        ));
     }
     if is_builtin && meta.required_capabilities.is_some() {
-        return Err(AppError::Conflict("内置 function 仅可编辑分类和标签".into()));
+        return Err(AppError::Conflict(
+            "内置 function 仅可编辑分类和标签".into(),
+        ));
     }
 
-    crate::services::optimistic_lock::check_and_bump(pool, "functions", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(pool, "functions", id, meta.updated_at)
+        .await?;
 
     if !is_builtin {
         if let Some(ref s) = meta.input_schema {
@@ -395,7 +441,11 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Funct
         .bind(meta.category_id)
         .bind(&meta.input_schema)
         .bind(&meta.output_schema)
-        .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
+        .bind(
+            meta.required_capabilities
+                .as_ref()
+                .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
+        )
         .bind(id)
         .execute(pool)
         .await

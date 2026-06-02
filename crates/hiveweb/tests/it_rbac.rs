@@ -18,8 +18,14 @@ async fn t026h_normal_role_cannot_create_admin() -> anyhow::Result<()> {
     )
     .await?;
 
-    assert!(status.is_client_error(), "Normal must not create admin, got {status}: {body}");
-    assert_eq!(body["code"], 2001, "must return code 2001 (insufficient permission)");
+    assert!(
+        status.is_client_error(),
+        "Normal must not create admin, got {status}: {body}"
+    );
+    assert_eq!(
+        body["code"], 2001,
+        "must return code 2001 (insufficient permission)"
+    );
     Ok(())
 }
 
@@ -65,7 +71,10 @@ async fn t026h_super_role_can_list_admins() -> anyhow::Result<()> {
     )
     .await?;
 
-    assert_eq!(status, 200, "Super must be able to list admins, got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "Super must be able to list admins, got {status}: {body}"
+    );
     Ok(())
 }
 
@@ -74,6 +83,9 @@ async fn t026h_unauthenticated_probe_returns_1004() -> anyhow::Result<()> {
     let app = common::test_app().await?;
     let (status, body) = common::get(&app, "/api/admins?offset=0&limit=10", None).await?;
     assert_eq!(status, 401, "no auth header → 401");
-    assert_eq!(body["code"], 1004, "no auth header → spec code 1004 (token invalid)");
+    assert_eq!(
+        body["code"], 1004,
+        "no auth header → spec code 1004 (token invalid)"
+    );
     Ok(())
 }

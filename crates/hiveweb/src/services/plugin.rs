@@ -48,7 +48,9 @@ pub struct UploadMeta {
     pub tag_ids: Vec<i64>,
 }
 
-fn default_runtime() -> String { "extism".into() }
+fn default_runtime() -> String {
+    "extism".into()
+}
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateMeta {
@@ -141,10 +143,7 @@ pub async fn upload(
             .await
             .map_err(|e| AppError::Internal(format!("tag check: {e}")))?;
         if exists.is_none() {
-            return Err(AppError::BadRequest(format!(
-                "tag_id={} 不存在",
-                tag_id
-            )));
+            return Err(AppError::BadRequest(format!("tag_id={} 不存在", tag_id)));
         }
     }
 
@@ -268,9 +267,7 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, Ap
         where_clauses.push("p.updated_at <= ?".into());
     }
     if filter.search.is_some() {
-        like_clauses.push(
-            "(p.name LIKE ? OR p.description LIKE ? OR p.identifier LIKE ?)".into(),
-        );
+        like_clauses.push("(p.name LIKE ? OR p.description LIKE ? OR p.identifier LIKE ?)".into());
     }
     if !filter.tag_ids.is_empty() {
         let placeholders = vec!["?"; filter.tag_ids.len()].join(",");
@@ -436,13 +433,12 @@ pub async fn soft_delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
 
     // 行锁
-    let plugin: Option<(i64, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, deleted_at FROM plugins WHERE id = ? FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(format!("plugin lock: {e}")))?;
+    let plugin: Option<(i64, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT id, deleted_at FROM plugins WHERE id = ? FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal(format!("plugin lock: {e}")))?;
 
     let Some((_, deleted_at)) = plugin else {
         return Err(AppError::NotFound(format!("plugin id={id} not found")));
@@ -452,13 +448,11 @@ pub async fn soft_delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
     }
 
     // 引用检查（同事务，覆盖 SC-009 race window）
-    let cnt: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM functions WHERE plugin_id = ?",
-    )
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(format!("plugin ref count: {e}")))?;
+    let cnt: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM functions WHERE plugin_id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(format!("plugin ref count: {e}")))?;
 
     if cnt.0 > 0 {
         return Err(AppError::ResourceInUse(format!(

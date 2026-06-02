@@ -9,12 +9,12 @@
 
 mod common;
 
-use common::{mint_jwt, seed_admin, test_app};
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
+use common::{mint_jwt, seed_admin, test_app};
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// Build a POST /api/admin-chat/sessions/:id/messages request with SSE Accept header.
@@ -39,7 +39,10 @@ async fn send_sse_status(app: &Router, req: Request<Body>) -> anyhow::Result<Sta
         let bytes = resp.into_body().collect().await?.to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         if let Some(code) = body.get("code").and_then(|v| v.as_u64()) {
-            assert_eq!(code, 4291, "expected code 4291 for concurrency limit, got {code}");
+            assert_eq!(
+                code, 4291,
+                "expected code 4291 for concurrency limit, got {code}"
+            );
         }
     }
     Ok(status)
@@ -87,10 +90,7 @@ async fn sse_concurrency_limit_third_request_gets_429() -> anyhow::Result<()> {
     let req1 = sse_request(&app, &token, session_id)?;
     let req2 = sse_request(&app, &token, session_id)?;
 
-    let (status1, status2) = tokio::join!(
-        send_sse_full(&app, req1),
-        send_sse_full(&app, req2),
-    );
+    let (status1, status2) = tokio::join!(send_sse_full(&app, req1), send_sse_full(&app, req2),);
 
     // Both should be 200 OK (or possibly fail for other reasons, but not 429)
     let (s1, _b1) = status1?;

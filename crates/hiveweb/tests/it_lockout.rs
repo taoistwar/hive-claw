@@ -30,8 +30,14 @@ async fn t026g_lockout_engages_after_five_failures() -> anyhow::Result<()> {
         json!({ "phone": admin.phone, "password": "test-pass-123" }),
     )
     .await?;
-    assert!(status.is_client_error(), "6th attempt must be rejected, got {status}");
-    assert_eq!(body["code"], 1003, "after 5 failures, code must be 1003 (locked)");
+    assert!(
+        status.is_client_error(),
+        "6th attempt must be rejected, got {status}"
+    );
+    assert_eq!(
+        body["code"], 1003,
+        "after 5 failures, code must be 1003 (locked)"
+    );
 
     // The 15-minute expiry leg of FR-017 needs a clock-injection harness to
     // verify deterministically; deferred. We've at least pinned the lockout

@@ -63,7 +63,9 @@ pub struct HttpReply {
 pub async fn http_request(args: HttpArgs) -> Result<HttpReply, String> {
     let method = args.method.to_ascii_uppercase();
     if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "DELETE") {
-        return Err(format!("method {method} 不允许；仅支持 GET/POST/PUT/DELETE"));
+        return Err(format!(
+            "method {method} 不允许；仅支持 GET/POST/PUT/DELETE"
+        ));
     }
 
     let url = reqwest::Url::parse(&args.url).map_err(|e| format!("url parse: {e}"))?;
@@ -112,10 +114,7 @@ pub async fn http_request(args: HttpArgs) -> Result<HttpReply, String> {
     }
     if let Some(body) = args.body.as_deref() {
         if body.len() > BODY_MAX_BYTES {
-            return Err(format!(
-                "request body 大小 {} 超过 4 MB 上限",
-                body.len()
-            ));
+            return Err(format!("request body 大小 {} 超过 4 MB 上限", body.len()));
         }
         req = req.body(body.to_string());
     }
@@ -130,10 +129,7 @@ pub async fn http_request(args: HttpArgs) -> Result<HttpReply, String> {
         .iter()
         .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-    let body_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read body: {e}"))?;
+    let body_bytes = resp.bytes().await.map_err(|e| format!("read body: {e}"))?;
     let body_truncated = body_bytes.len() > BODY_MAX_BYTES;
     let body_slice = if body_truncated {
         &body_bytes[..BODY_MAX_BYTES]

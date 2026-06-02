@@ -22,10 +22,17 @@ async fn t037_plugins_list_returns_envelope() -> anyhow::Result<()> {
     let pool = common::test_pool().await?;
     let admin = common::seed_admin(&pool, 2 /* System */, 1, "test-pass-123").await?;
 
-    let (status, body) =
-        common::get(&app, "/api/plugins?offset=0&limit=20", Some(&admin.token()?)).await?;
+    let (status, body) = common::get(
+        &app,
+        "/api/plugins?offset=0&limit=20",
+        Some(&admin.token()?),
+    )
+    .await?;
 
-    assert_eq!(status, 200, "GET /api/plugins must return 200; got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "GET /api/plugins must return 200; got {status}: {body}"
+    );
     // contracts/api.md §0 envelope: { code: 0, message, data: { items, total, offset, limit } }
     assert_eq!(body["code"], 0, "envelope code must be 0");
     let data = &body["data"];
@@ -70,19 +77,18 @@ async fn t040_plugin_delete_blocks_when_referenced() -> anyhow::Result<()> {
     .execute(&pool)
     .await?;
 
-    let (status, body) = common::delete_auth(
-        &app,
-        &format!("/api/plugins/{plugin_id}"),
-        &admin.token()?,
-    )
-    .await?;
+    let (status, body) =
+        common::delete_auth(&app, &format!("/api/plugins/{plugin_id}"), &admin.token()?).await?;
 
     // contracts §Errors: 4093 ResourceInUse → HTTP 409
     assert_eq!(
         status, 409,
         "deleting referenced plugin must return 409; got {status}: {body}"
     );
-    assert_eq!(body["code"], 4093, "business code must be 4093 ResourceInUse");
+    assert_eq!(
+        body["code"], 4093,
+        "business code must be 4093 ResourceInUse"
+    );
 
     // Cleanup
     sqlx::query("DELETE FROM functions WHERE plugin_id = ?")

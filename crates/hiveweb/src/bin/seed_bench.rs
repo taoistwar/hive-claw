@@ -15,14 +15,8 @@ use std::env;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override()?;
     let args: Vec<String> = env::args().collect();
-    let n_admins: usize = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100);
-    let logins_per_admin: usize = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100);
+    let n_admins: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
+    let logins_per_admin: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100);
 
     let url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = sqlx::MySqlPool::connect(&url).await?;
@@ -39,7 +33,9 @@ async fn main() -> anyhow::Result<()> {
     sqlx::query("DELETE FROM login_records WHERE admin_id IS NULL OR admin_id IN (SELECT id FROM admins WHERE role <> 3)")
         .execute(&pool)
         .await?;
-    sqlx::query("DELETE FROM admins WHERE role <> 3").execute(&pool).await?;
+    sqlx::query("DELETE FROM admins WHERE role <> 3")
+        .execute(&pool)
+        .await?;
 
     let password_hash = bcrypt::hash("bench-pass-1", bcrypt::DEFAULT_COST)?;
 

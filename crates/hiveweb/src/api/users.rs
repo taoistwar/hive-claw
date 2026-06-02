@@ -1,17 +1,13 @@
 //! User authentication API
 
-use axum::{
-    extract::State,
-    routing::get,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State};
 use serde::Deserialize;
 
 use crate::api::AppState;
 use crate::models::User;
 use crate::services::user_auth;
 use crate::utils::error::{ApiResponse, AppError};
-use crate::utils::jwt::{create_user_token, Claims};
+use crate::utils::jwt::{Claims, create_user_token};
 use crate::utils::password::hash_password;
 use crate::utils::password::verify_password as bcrypt_verify;
 
@@ -60,11 +56,10 @@ pub async fn register(
         .await
         .map_err(|e| e.into_response())?;
 
-    let token = create_user_token(user.id)
-        .map_err(|e| {
-            tracing::error!("Token creation failed: {}", e);
-            AppError::Internal("Failed to generate token".to_string()).into_response()
-        })?;
+    let token = create_user_token(user.id).map_err(|e| {
+        tracing::error!("Token creation failed: {}", e);
+        AppError::Internal("Failed to generate token".to_string()).into_response()
+    })?;
 
     Ok(ApiResponse::success(AuthResponse {
         token,
@@ -82,11 +77,10 @@ pub async fn login(
 
     let _ = user_auth::update_last_login(&state.pool, user.id).await;
 
-    let token = create_user_token(user.id)
-        .map_err(|e| {
-            tracing::error!("Token creation failed: {}", e);
-            AppError::Internal("Failed to generate token".to_string()).into_response()
-        })?;
+    let token = create_user_token(user.id).map_err(|e| {
+        tracing::error!("Token creation failed: {}", e);
+        AppError::Internal("Failed to generate token".to_string()).into_response()
+    })?;
 
     Ok(ApiResponse::success(AuthResponse {
         token,
@@ -144,7 +138,9 @@ pub async fn change_password(
         AppError::Internal("Failed to verify password".to_string()).into_response()
     })?;
     if !valid {
-        return Err(AppError::WrongPassword("Old password is incorrect".to_string()).into_response());
+        return Err(
+            AppError::WrongPassword("Old password is incorrect".to_string()).into_response(),
+        );
     }
 
     let new_hash = match hash_password(&req.new_password) {
@@ -186,19 +182,18 @@ pub async fn get_dashboard_stats(
         None => return Err(AppError::NotFound("User not found".to_string()).into_response()),
     };
 
-    let sessions: (Option<i64>,) = match sqlx::query_as(
-        "SELECT COUNT(*) FROM chat_sessions_user WHERE user_id = ?"
-    )
-    .bind(user_id)
-    .fetch_one(&state.pool)
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("Stats query failed: {}", e);
-            return Err(AppError::Internal("Failed to get stats".to_string()).into_response());
-        }
-    };
+    let sessions: (Option<i64>,) =
+        match sqlx::query_as("SELECT COUNT(*) FROM chat_sessions_user WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Stats query failed: {}", e);
+                return Err(AppError::Internal("Failed to get stats".to_string()).into_response());
+            }
+        };
 
     let messages: (Option<i64>,) = match sqlx::query_as(
         "SELECT COUNT(*) FROM chat_messages_user cmu INNER JOIN chat_sessions_user csu ON cmu.session_id = csu.id WHERE csu.user_id = ?"
@@ -215,7 +210,7 @@ pub async fn get_dashboard_stats(
     };
 
     let active_days: (Option<i64>,) = match sqlx::query_as(
-        "SELECT COUNT(DISTINCT DATE(created_at)) FROM chat_sessions_user WHERE user_id = ?"
+        "SELECT COUNT(DISTINCT DATE(created_at)) FROM chat_sessions_user WHERE user_id = ?",
     )
     .bind(user_id)
     .fetch_one(&state.pool)
@@ -228,19 +223,18 @@ pub async fn get_dashboard_stats(
         }
     };
 
-    let last_session: Option<(chrono::DateTime<chrono::Utc>,)> = match sqlx::query_as(
-        "SELECT MAX(created_at) FROM chat_sessions_user WHERE user_id = ?"
-    )
-    .bind(user_id)
-    .fetch_optional(&state.pool)
-    .await
-    {
-        Ok(ls) => ls,
-        Err(e) => {
-            tracing::error!("Stats query failed: {}", e);
-            return Err(AppError::Internal("Failed to get stats".to_string()).into_response());
-        }
-    };
+    let last_session: Option<(chrono::DateTime<chrono::Utc>,)> =
+        match sqlx::query_as("SELECT MAX(created_at) FROM chat_sessions_user WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            Ok(ls) => ls,
+            Err(e) => {
+                tracing::error!("Stats query failed: {}", e);
+                return Err(AppError::Internal("Failed to get stats".to_string()).into_response());
+            }
+        };
 
     Ok(ApiResponse::success(DashboardStats {
         total_sessions: sessions.0.unwrap_or(0),
@@ -259,6 +253,12 @@ pub fn router_public() -> Router<AppState> {
 pub fn router_protected() -> Router<AppState> {
     Router::new()
         .route("/users/me", axum::routing::get(get_current_user))
-        .route("/users/change-password", axum::routing::post(change_password))
-        .route("/users/dashboard/stats", axum::routing::get(get_dashboard_stats))
+        .route(
+            "/users/change-password",
+            axum::routing::post(change_password),
+        )
+        .route(
+            "/users/dashboard/stats",
+            axum::routing::get(get_dashboard_stats),
+        )
 }

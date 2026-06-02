@@ -58,12 +58,10 @@ impl AdminFilter {
 }
 
 pub async fn find_admin_by_phone(pool: &MySqlPool, phone: &str) -> Result<Option<Admin>> {
-    let admin = sqlx::query_as::<_, Admin>(
-        "SELECT * FROM admins WHERE phone = ?",
-    )
-    .bind(phone)
-    .fetch_optional(pool)
-    .await?;
+    let admin = sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE phone = ?")
+        .bind(phone)
+        .fetch_optional(pool)
+        .await?;
 
     Ok(admin)
 }
@@ -128,11 +126,7 @@ async fn build_admin_list_query(
     Ok(admins)
 }
 
-async fn build_count_query(
-    sql: &str,
-    filter: &AdminFilter,
-    pool: &MySqlPool,
-) -> Result<u64> {
+async fn build_count_query(sql: &str, filter: &AdminFilter, pool: &MySqlPool) -> Result<u64> {
     let mut query = sqlx::query(sql);
     query = bind_params(query, filter);
     let row = query.fetch_one(pool).await?;
@@ -203,20 +197,14 @@ pub async fn create_admin(
     Ok(admin)
 }
 
-pub async fn update_admin(
-    pool: &MySqlPool,
-    id: i64,
-    nickname: &str,
-    role: i8,
-) -> Result<Admin> {
-    let result = sqlx::query(
-        "UPDATE admins SET nickname = ?, role = ?, updated_at = NOW() WHERE id = ?",
-    )
-    .bind(nickname)
-    .bind(role)
-    .bind(id)
-    .execute(pool)
-    .await?;
+pub async fn update_admin(pool: &MySqlPool, id: i64, nickname: &str, role: i8) -> Result<Admin> {
+    let result =
+        sqlx::query("UPDATE admins SET nickname = ?, role = ?, updated_at = NOW() WHERE id = ?")
+            .bind(nickname)
+            .bind(role)
+            .bind(id)
+            .execute(pool)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(anyhow::anyhow!("Admin not found"));
@@ -228,11 +216,11 @@ pub async fn update_admin(
 }
 
 pub async fn delete_admin(pool: &MySqlPool, id: i64) -> Result<()> {
-    let admin = get_admin_by_id(pool, id).await?
+    let admin = get_admin_by_id(pool, id)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Admin not found"))?;
 
-    let role = Role::try_from(admin.role)
-        .map_err(|_| anyhow::anyhow!("Invalid role"))?;
+    let role = Role::try_from(admin.role).map_err(|_| anyhow::anyhow!("Invalid role"))?;
 
     if role == Role::Super {
         return Err(anyhow::anyhow!("Cannot delete super admin"));
@@ -246,23 +234,18 @@ pub async fn delete_admin(pool: &MySqlPool, id: i64) -> Result<()> {
     Ok(())
 }
 
-pub async fn toggle_admin_status(
-    pool: &MySqlPool,
-    id: i64,
-    status: i8,
-) -> Result<Admin> {
-    let admin = get_admin_by_id(pool, id).await?
+pub async fn toggle_admin_status(pool: &MySqlPool, id: i64, status: i8) -> Result<Admin> {
+    let admin = get_admin_by_id(pool, id)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Admin not found"))?;
 
-    let role = Role::try_from(admin.role)
-        .map_err(|_| anyhow::anyhow!("Invalid role"))?;
+    let role = Role::try_from(admin.role).map_err(|_| anyhow::anyhow!("Invalid role"))?;
 
     if role == Role::Super && status == 0 {
-        let super_admin_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM admins WHERE role = 3 AND status = 1",
-        )
-        .fetch_one(pool)
-        .await?;
+        let super_admin_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM admins WHERE role = 3 AND status = 1")
+                .fetch_one(pool)
+                .await?;
 
         if super_admin_count.0 <= 1 {
             return Err(anyhow::anyhow!(
@@ -287,13 +270,12 @@ pub async fn update_admin_password(
     id: i64,
     new_password_hash: &str,
 ) -> Result<()> {
-    let result = sqlx::query(
-        "UPDATE admins SET password_hash = ?, updated_at = NOW() WHERE id = ?",
-    )
-    .bind(new_password_hash)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE admins SET password_hash = ?, updated_at = NOW() WHERE id = ?")
+            .bind(new_password_hash)
+            .bind(id)
+            .execute(pool)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(anyhow::anyhow!("Admin not found"));

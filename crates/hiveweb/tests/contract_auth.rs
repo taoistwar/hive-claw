@@ -19,10 +19,19 @@ async fn t026a_login_returns_token_on_valid_credentials() -> anyhow::Result<()> 
     )
     .await?;
 
-    assert_eq!(status, 200, "expected 200 OK for valid login, got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "expected 200 OK for valid login, got {status}: {body}"
+    );
     assert_eq!(body["code"], 0, "expected code=0 on success");
-    assert!(body["data"]["token"].is_string(), "expected token string in response");
-    assert!(body["data"]["admin"].is_object(), "expected admin object in response");
+    assert!(
+        body["data"]["token"].is_string(),
+        "expected token string in response"
+    );
+    assert!(
+        body["data"]["admin"].is_object(),
+        "expected admin object in response"
+    );
     Ok(())
 }
 
@@ -43,7 +52,10 @@ async fn t026a_login_rejects_wrong_password() -> anyhow::Result<()> {
         status.is_client_error(),
         "expected 4xx for wrong password, got {status}: {body}"
     );
-    assert_eq!(body["code"], 1001, "expected error code 1001 (wrong password)");
+    assert_eq!(
+        body["code"], 1001,
+        "expected error code 1001 (wrong password)"
+    );
     Ok(())
 }
 
@@ -69,8 +81,14 @@ async fn t026a_login_locks_after_five_failures() -> anyhow::Result<()> {
     )
     .await?;
 
-    assert!(status.is_client_error(), "expected 4xx after lockout, got {status}: {body}");
-    assert_eq!(body["code"], 1003, "expected error code 1003 (account locked)");
+    assert!(
+        status.is_client_error(),
+        "expected 4xx after lockout, got {status}: {body}"
+    );
+    assert_eq!(
+        body["code"], 1003,
+        "expected error code 1003 (account locked)"
+    );
     Ok(())
 }
 
@@ -86,6 +104,9 @@ async fn t026b_me_requires_token() -> anyhow::Result<()> {
 async fn t026b_me_rejects_invalid_token() -> anyhow::Result<()> {
     let app = common::test_app().await?;
     let (status, body) = common::get(&app, "/api/auth/me", Some("not-a-real-jwt")).await?;
-    assert_eq!(status, 401, "invalid token must return 401, got {status}: {body}");
+    assert_eq!(
+        status, 401,
+        "invalid token must return 401, got {status}: {body}"
+    );
     Ok(())
 }

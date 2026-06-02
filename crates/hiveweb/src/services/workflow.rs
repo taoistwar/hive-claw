@@ -26,6 +26,7 @@ pub struct CreateMeta {
     pub description: Option<String>,
     pub timeout_ms: Option<i32>,
     pub category_id: Option<i64>,
+    pub required_capabilities: Option<Vec<String>>,
     #[serde(default)]
     pub tag_ids: Vec<i64>,
 }
@@ -36,6 +37,7 @@ pub struct UpdateMeta {
     pub description: Option<String>,
     pub timeout_ms: Option<i32>,
     pub category_id: Option<i64>,
+    pub required_capabilities: Option<Vec<String>>,
     #[serde(default)]
     pub tag_ids: Option<Vec<i64>>,
     pub updated_at: DateTime<Utc>,
@@ -136,13 +138,14 @@ pub struct GraphPut {
 
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Workflow, AppError> {
     let res = sqlx::query(
-        "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id, required_capabilities) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&meta.identifier)
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(meta.timeout_ms.unwrap_or(30000))
     .bind(meta.category_id)
+    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
     .execute(pool)
     .await
     .map_err(|e| {
@@ -178,12 +181,14 @@ async fn apply_tags(pool: &MySqlPool, entity_id: i64, tag_ids: &[i64]) -> Result
         .await
         .map_err(|e| AppError::Internal(format!("taggings clear: {e}")))?;
     for &tid in tag_ids {
-        sqlx::query("INSERT INTO taggings (tag_id, entity_type, entity_id) VALUES (?, 'workflow', ?)")
-            .bind(tid)
-            .bind(entity_id)
-            .execute(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("tagging insert: {e}")))?;
+        sqlx::query(
+            "INSERT INTO taggings (tag_id, entity_type, entity_id) VALUES (?, 'workflow', ?)",
+        )
+        .bind(tid)
+        .bind(entity_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("tagging insert: {e}")))?;
     }
     Ok(())
 }
@@ -197,7 +202,12 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<Workflow, AppError
         .ok_or_else(|| AppError::NotFound(format!("workflow id={id} not found")))
 }
 
-pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter) -> Result<WorkflowList, AppError> {
+pub async fn list(
+    pool: &MySqlPool,
+    offset: i64,
+    limit: i64,
+    filter: ListFilter,
+) -> Result<WorkflowList, AppError> {
     let mut where_clauses: Vec<String> = Vec::new();
     let mut search_pattern: Option<String> = None;
     let mut params: Vec<String> = Vec::new();
@@ -265,7 +275,11 @@ pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter)
 
     let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
     if let Some(ref pattern) = search_pattern {
-        count_q = count_q.bind(pattern).bind(pattern).bind(pattern).bind(pattern);
+        count_q = count_q
+            .bind(pattern)
+            .bind(pattern)
+            .bind(pattern)
+            .bind(pattern);
     }
     for p in &params {
         count_q = count_q.bind(p);
@@ -275,7 +289,9 @@ pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter)
         .await
         .map_err(|e| AppError::Internal(format!("workflow count: {e}")))?;
 
-    let list_sql = format!("SELECT w.* FROM workflows w {where_sql} ORDER BY w.created_at DESC LIMIT ? OFFSET ?");
+    let list_sql = format!(
+        "SELECT w.* FROM workflows w {where_sql} ORDER BY w.created_at DESC LIMIT ? OFFSET ?"
+    );
 
     let mut q = sqlx::query_as::<_, Workflow>(&list_sql);
     if let Some(ref pattern) = search_pattern {
@@ -297,23 +313,33 @@ pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter)
         items.push(WorkflowListItem { workflow: wf, tags });
     }
 
-    Ok(WorkflowList { items, total: total.0 })
+    Ok(WorkflowList {
+        items,
+        total: total.0,
+    })
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Workflow, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, "workflows", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(pool, "workflows", id, meta.updated_at)
+        .await?;
     sqlx::query(
         r#"UPDATE workflows SET
               name = COALESCE(?, name),
               description = COALESCE(?, description),
               timeout_ms = COALESCE(?, timeout_ms),
-              category_id = COALESCE(?, category_id)
+              category_id = COALESCE(?, category_id),
+              required_capabilities = COALESCE(?, required_capabilities)
            WHERE id = ?"#,
     )
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(meta.timeout_ms)
     .bind(meta.category_id)
+    .bind(
+        meta.required_capabilities
+            .as_ref()
+            .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
+    )
     .bind(id)
     .execute(pool)
     .await
@@ -337,12 +363,11 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         .await
         .map_err(|e| AppError::Internal(format!("workflow lock: {e}")))?;
     // 被 tool kind=2 引用 → 4093
-    let cnt: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM tools WHERE workflow_id = ?")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| AppError::Internal(format!("workflow ref count: {e}")))?;
+    let cnt: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tools WHERE workflow_id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(format!("workflow ref count: {e}")))?;
     if cnt.0 > 0 {
         return Err(AppError::ResourceInUse(format!(
             "workflow 被 {} 个 tool 引用，无法删除",
@@ -364,20 +389,18 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
 
 pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, AppError> {
     let wf = fetch_by_id(pool, id).await?;
-    let nodes: Vec<WorkflowNode> = sqlx::query_as(
-        "SELECT * FROM workflow_nodes WHERE workflow_id = ? ORDER BY id",
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("nodes list: {e}")))?;
-    let edges: Vec<WorkflowEdge> = sqlx::query_as(
-        "SELECT * FROM workflow_edges WHERE workflow_id = ? ORDER BY id",
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("edges list: {e}")))?;
+    let nodes: Vec<WorkflowNode> =
+        sqlx::query_as("SELECT * FROM workflow_nodes WHERE workflow_id = ? ORDER BY id")
+            .bind(id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("nodes list: {e}")))?;
+    let edges: Vec<WorkflowEdge> =
+        sqlx::query_as("SELECT * FROM workflow_edges WHERE workflow_id = ? ORDER BY id")
+            .bind(id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("edges list: {e}")))?;
 
     // db id → node_key 反查
     let id_to_key: HashMap<i64, String> =
@@ -449,7 +472,8 @@ pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, App
     // - 没有入边的 db 节点 → 从 start 连过来
     // - 没有出边的 db 节点 → 连到 end
     let has_inbound: HashSet<String> = graph_edges.iter().map(|e| e.dst_node_key.clone()).collect();
-    let has_outbound: HashSet<String> = graph_edges.iter().map(|e| e.src_node_key.clone()).collect();
+    let has_outbound: HashSet<String> =
+        graph_edges.iter().map(|e| e.src_node_key.clone()).collect();
     let empty_mapping = serde_json::json!({});
     for n in &all_nodes {
         if n.node_key == "start" || n.node_key == "end" {
@@ -497,32 +521,53 @@ pub async fn put_graph(
     let wf = fetch_by_id(pool, id).await?;
 
     // 分离起始节点、结束节点和需要入库的节点
-    let start_node = graph.nodes.iter().find(|n| n.node_type == NodeType::StartNode || n.node_key == "start");
-    let start_input_schema = start_node.and_then(|n| n.position.as_ref())
+    let start_node = graph
+        .nodes
+        .iter()
+        .find(|n| n.node_type == NodeType::StartNode || n.node_key == "start");
+    let start_input_schema = start_node
+        .and_then(|n| n.position.as_ref())
         .and_then(|p| p.get("input_schema"))
         .cloned()
         .or_else(|| wf.input_schema.clone());
-    let start_desc = start_node.and_then(|n| n.position.as_ref())
+    let start_desc = start_node
+        .and_then(|n| n.position.as_ref())
         .and_then(|p| p.get("start_description").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .or_else(|| wf.start_description.clone());
 
-    let end_node = graph.nodes.iter().find(|n| n.node_type == NodeType::EndNode || n.node_key == "end");
-    let end_output_schema = end_node.and_then(|n| n.position.as_ref())
+    let end_node = graph
+        .nodes
+        .iter()
+        .find(|n| n.node_type == NodeType::EndNode || n.node_key == "end");
+    let end_output_schema = end_node
+        .and_then(|n| n.position.as_ref())
         .and_then(|p| p.get("output_schema"))
         .cloned()
         .or_else(|| wf.output_schema.clone());
 
     // 需要入库的节点：function_node + generate_answer_node（start/end 是虚拟节点不入库）
-    let db_nodes: Vec<&GraphNode> = graph.nodes.iter()
-        .filter(|n| n.node_type != NodeType::StartNode && n.node_key != "start"
-                 && n.node_type != NodeType::EndNode && n.node_key != "end")
+    let db_nodes: Vec<&GraphNode> = graph
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.node_type != NodeType::StartNode
+                && n.node_key != "start"
+                && n.node_type != NodeType::EndNode
+                && n.node_key != "end"
+        })
         .collect();
 
     // 过滤掉起始节点和结束节点相关的边
-    let db_edges: Vec<&GraphEdge> = graph.edges.iter()
-        .filter(|e| e.src_node_key != "start" && e.dst_node_key != "start"
-                 && e.src_node_key != "end" && e.dst_node_key != "end")
+    let db_edges: Vec<&GraphEdge> = graph
+        .edges
+        .iter()
+        .filter(|e| {
+            e.src_node_key != "start"
+                && e.dst_node_key != "start"
+                && e.src_node_key != "end"
+                && e.dst_node_key != "end"
+        })
         .collect();
 
     // 1. node_key 唯一性
@@ -538,7 +583,8 @@ pub async fn put_graph(
 
     // 2. function_id 存在性 + 拉取 input_schema/output_schema 供 mapping 校验
     //    只检查 function_node 类型的节点（answer 节点无 function_id）
-    let function_ids: Vec<i64> = db_nodes.iter()
+    let function_ids: Vec<i64> = db_nodes
+        .iter()
         .filter(|n| n.node_type == NodeType::FunctionNode)
         .filter_map(|n| n.function_id)
         .collect();
@@ -557,8 +603,10 @@ pub async fn put_graph(
             .fetch_all(pool)
             .await
             .map_err(|e| AppError::Internal(format!("function schemas: {e}")))?;
-        let found: HashMap<i64, (Value, Value, Option<Value>)> =
-            rows.into_iter().map(|(i, a, b, c)| (i, (a, b, c))).collect();
+        let found: HashMap<i64, (Value, Value, Option<Value>)> = rows
+            .into_iter()
+            .map(|(i, a, b, c)| (i, (a, b, c)))
+            .collect();
         for fid in &function_ids {
             if !found.contains_key(fid) {
                 return Err(AppError::NotFound(format!("function id={fid} not found")));
@@ -605,11 +653,16 @@ pub async fn put_graph(
     let mut inbound_by_node: HashMap<&str, Vec<&serde_json::Map<String, Value>>> = HashMap::new();
     for e in &db_edges {
         if let Some(m) = e.mapping.as_object() {
-            inbound_by_node.entry(e.dst_node_key.as_str()).or_default().push(m);
+            inbound_by_node
+                .entry(e.dst_node_key.as_str())
+                .or_default()
+                .push(m);
         }
     }
     for n in &db_nodes {
-        let Some(fid) = n.function_id else { continue; };
+        let Some(fid) = n.function_id else {
+            continue;
+        };
         let Some((input_schema, _output_schema, _caps)) = function_schemas.get(&fid) else {
             continue;
         };
@@ -656,7 +709,9 @@ pub async fn put_graph(
     } else {
         let mut caps_vec: Vec<String> = all_caps.into_iter().collect();
         caps_vec.sort();
-        Some(Value::Array(caps_vec.into_iter().map(Value::String).collect()))
+        Some(Value::Array(
+            caps_vec.into_iter().map(Value::String).collect(),
+        ))
     };
 
     // 6+7. 事务内重建
@@ -764,11 +819,8 @@ fn detect_cycle<'a>(adj: &HashMap<&'a str, Vec<&'a str>>) -> Option<Vec<&'a str>
                     }
                     Color::Gray => {
                         // 找到环；返回从 next 开始的环段
-                        let mut cycle: Vec<&str> = path
-                            .iter()
-                            .skip_while(|&&p| p != next)
-                            .copied()
-                            .collect();
+                        let mut cycle: Vec<&str> =
+                            path.iter().skip_while(|&&p| p != next).copied().collect();
                         cycle.push(next);
                         return Some(cycle);
                     }
@@ -788,7 +840,9 @@ fn detect_cycle<'a>(adj: &HashMap<&'a str, Vec<&'a str>>) -> Option<Vec<&'a str>
 mod tests {
     use super::*;
 
-    fn key_to_str(adj: &[(&'static str, &[&'static str])]) -> HashMap<&'static str, Vec<&'static str>> {
+    fn key_to_str(
+        adj: &[(&'static str, &[&'static str])],
+    ) -> HashMap<&'static str, Vec<&'static str>> {
         adj.iter().map(|(k, v)| (*k, v.to_vec())).collect()
     }
 

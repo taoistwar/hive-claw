@@ -98,7 +98,8 @@ pub async fn list_tree(pool: &MySqlPool) -> Result<Vec<CategoryNode>, AppError> 
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Category, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, "categories", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(pool, "categories", id, meta.updated_at)
+        .await?;
     sqlx::query(
         r#"UPDATE categories SET
               name = COALESCE(?, name),

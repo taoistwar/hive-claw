@@ -23,7 +23,10 @@ async fn t103_change_password_success() -> anyhow::Result<()> {
     )
     .await?;
 
-    assert_eq!(status, 200, "expected 200 OK for valid password change, got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "expected 200 OK for valid password change, got {status}: {body}"
+    );
     assert_eq!(body["code"], 0, "expected code=0 on success");
     Ok(())
 }
@@ -48,7 +51,10 @@ async fn t103_change_password_wrong_old_password() -> anyhow::Result<()> {
         status.is_client_error(),
         "expected 4xx for wrong old password, got {status}: {body}"
     );
-    assert_eq!(body["code"], 1001, "expected error code 1001 (wrong password)");
+    assert_eq!(
+        body["code"], 1001,
+        "expected error code 1001 (wrong password)"
+    );
     Ok(())
 }
 
@@ -72,7 +78,10 @@ async fn t103_change_password_same_as_old() -> anyhow::Result<()> {
         status.is_client_error(),
         "expected 4xx when new password same as old, got {status}: {body}"
     );
-    assert_eq!(body["code"], 3008, "expected error code 3008 (new password same as old)");
+    assert_eq!(
+        body["code"], 3008,
+        "expected error code 3008 (new password same as old)"
+    );
     Ok(())
 }
 
@@ -87,6 +96,9 @@ async fn t103_change_password_requires_auth() -> anyhow::Result<()> {
     )
     .await?;
 
-    assert_eq!(status, 401, "unauthenticated change-password must return 401");
+    assert_eq!(
+        status, 401,
+        "unauthenticated change-password must return 401"
+    );
     Ok(())
 }

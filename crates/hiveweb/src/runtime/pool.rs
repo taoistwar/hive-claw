@@ -50,7 +50,10 @@ pub struct PoolConfig {
 impl PoolConfig {
     pub fn from_env() -> Self {
         fn env<T: std::str::FromStr>(name: &str, default: T) -> T {
-            std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
         }
         Self {
             max_per_plugin: env("PLUGIN_POOL_MAX_PER_PLUGIN", 8),

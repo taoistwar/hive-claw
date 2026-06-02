@@ -5,13 +5,11 @@
 //! TODO: 当前 dispatch 是 async fn 且需要 DispatcherDeps（含 pool, registry, handlers）。
 //! 需要构造 mock deps 以在无 DB 环境下进行基准测试。
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_host_call_dispatch_stub(c: &mut Criterion) {
     let mut group = c.benchmark_group("host_call_dispatch_stub");
-    group.bench_function("stub", |b| {
-        b.iter(|| black_box(0))
-    });
+    group.bench_function("stub", |b| b.iter(|| black_box(0)));
     group.finish();
 }
 

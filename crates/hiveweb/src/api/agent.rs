@@ -1,14 +1,14 @@
 //! Agent API (T117 / US5)
 
 use axum::{
+    Json, Router,
     extract::{Extension, Path, State},
     routing::get,
-    Json, Router,
 };
 
 use crate::api::AppState;
-use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::agent::{self as svc, CreateMeta, UpdateMeta};
+use crate::services::audit::{self as audit_svc, Operation};
 use crate::utils::error::ApiResponse;
 use crate::utils::jwt::Claims;
 
@@ -116,7 +116,11 @@ async fn delete_agent(
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
     let prev = svc::fetch_detail(&state.pool, id).await.ok();
     let target_id = prev.as_ref().map(|d| d.agent.id);
-    let target_name = prev.as_ref().map(|d| &d.agent.name).cloned().unwrap_or_default();
+    let target_name = prev
+        .as_ref()
+        .map(|d| &d.agent.name)
+        .cloned()
+        .unwrap_or_default();
 
     match svc::delete(&state.pool, id).await {
         Ok(()) => {
@@ -154,7 +158,9 @@ async fn audit_event(
     detail: serde_json::Value,
 ) -> anyhow::Result<()> {
     use crate::services::admin as admin_svc;
-    let admin_id = claims.admin_id.ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
+    let admin_id = claims
+        .admin_id
+        .ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
     let operator = admin_svc::get_admin_by_id(pool, admin_id).await?;
     let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
     if let Err(e) = audit_svc::record(

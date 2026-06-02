@@ -1,5 +1,5 @@
-use aws_sdk_s3::Client;
 use aws_config::BehaviorVersion;
+use aws_sdk_s3::Client;
 
 pub async fn create_client() -> anyhow::Result<Client> {
     let config = aws_config::defaults(BehaviorVersion::v2025_01_17())

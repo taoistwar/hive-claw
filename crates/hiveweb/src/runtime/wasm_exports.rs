@@ -3,7 +3,7 @@
 //! Parses a WASM binary and extracts the names of all exported functions.
 //! Used to populate the `plugin_export` dropdown in the Function creation form.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use wasmparser::{Parser, Payload};
 
 /// Extract all exported function names from a WASM binary.

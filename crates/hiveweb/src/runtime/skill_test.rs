@@ -4,12 +4,12 @@
 
 use providers::{ChatRequest, RetryMode};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::time::Instant;
 
 use super::orchestrator::{
-    build_tools_schema_simple, handle_workspace_tool, AgentContext, OrchestratorDeps, ToolRef,
+    AgentContext, OrchestratorDeps, ToolRef, build_tools_schema_simple, handle_workspace_tool,
 };
 use crate::services::runtime_audit::{self, AuditRecord};
 
@@ -47,13 +47,11 @@ pub async fn run_skill_test(
     req: TestSkillRequest,
 ) -> Result<TestSkillResult, String> {
     // 1. 查询目标 skill
-    let skill_row: Option<(String,)> = sqlx::query_as(
-        "SELECT content FROM skills WHERE id = ?",
-    )
-    .bind(skill_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("skill lookup: {e}"))?;
+    let skill_row: Option<(String,)> = sqlx::query_as("SELECT content FROM skills WHERE id = ?")
+        .bind(skill_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("skill lookup: {e}"))?;
 
     let Some((skill_content,)) = skill_row else {
         return Err(format!("skill id={skill_id} not found"));
@@ -64,54 +62,66 @@ pub async fn run_skill_test(
     }
 
     // 2. 加载 all tools（全部工具暴露给 Skill 测试，让 Skill 有机会调用任何工具）
-    let tool_rows: Vec<(i64, String, String, String, i8, Option<i64>, Option<i64>, Value, Option<i64>, Option<String>, Option<Value>)> =
-        sqlx::query_as(
-            r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
+    let tool_rows: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        i8,
+        Option<i64>,
+        Option<i64>,
+        Value,
+        Option<i64>,
+        Option<String>,
+        Option<Value>,
+    )> = sqlx::query_as(
+        r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
                       f.plugin_id, f.plugin_export,
                       t.required_capabilities
                FROM tools t
                LEFT JOIN functions f ON f.id = t.function_id"#,
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("tools: {e}"))?;
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("tools: {e}"))?;
 
     // 3. 构建 ToolRef 列表（全部 tools）
     let tools: Vec<ToolRef> = tool_rows
         .into_iter()
-        .map(|(id, ident, name, desc, kind, fid, wid, input_schema, pid, pexport, caps_raw)| {
-            let is_builtin = kind == 1 && pid.is_none();
-            let is_meta = kind == 1 && fid.is_none();
-            let required_capabilities: Vec<String> = caps_raw
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default();
-            ToolRef {
-                id,
-                identifier: ident,
-                name,
-                description: desc,
-                kind,
-                function_id: fid,
-                workflow_id: wid,
-                input_schema,
-                plugin_id: pid,
-                plugin_export: pexport,
-                is_builtin_function: is_builtin,
-                is_meta_tool: is_meta,
-                required_capabilities,
-            }
-        })
+        .map(
+            |(id, ident, name, desc, kind, fid, wid, input_schema, pid, pexport, caps_raw)| {
+                let is_builtin = kind == 1 && pid.is_none();
+                let is_meta = kind == 1 && fid.is_none();
+                let required_capabilities: Vec<String> = caps_raw
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                ToolRef {
+                    id,
+                    identifier: ident,
+                    name,
+                    description: desc,
+                    kind,
+                    function_id: fid,
+                    workflow_id: wid,
+                    input_schema,
+                    plugin_id: pid,
+                    plugin_export: pexport,
+                    is_builtin_function: is_builtin,
+                    is_meta_tool: is_meta,
+                    required_capabilities,
+                }
+            },
+        )
         .collect();
 
     // 4. 加载 always skills（排除目标 skill）+ 目标 skill 拼入 system prompt
-    let always_skills: Vec<(String,)> = sqlx::query_as(
-        "SELECT content FROM skills WHERE is_always = 1 AND id != ?",
-    )
-    .bind(skill_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("always skills: {e}"))?;
+    let always_skills: Vec<(String,)> =
+        sqlx::query_as("SELECT content FROM skills WHERE is_always = 1 AND id != ?")
+            .bind(skill_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("always skills: {e}"))?;
 
     let mut system_prompt = "You are a test assistant. Follow the skill instructions carefully and use available tools when appropriate.".to_string();
 
@@ -142,7 +152,9 @@ pub async fn run_skill_test(
     };
 
     // 5. 构建 LLM request
-    let (provider, model) = deps.llm.build_primary(ctx.model_preset.as_deref())
+    let (provider, model) = deps
+        .llm
+        .build_primary(ctx.model_preset.as_deref())
         .map_err(|e| format!("LLM provider: {e}"))?;
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
@@ -157,13 +169,19 @@ pub async fn run_skill_test(
         messages,
         max_tokens: 4096,
         temperature: 0.7,
-        tools: if tools_schema.is_empty() { None } else { Some(tools_schema) },
+        tools: if tools_schema.is_empty() {
+            None
+        } else {
+            Some(tools_schema)
+        },
         tool_choice: None,
         reasoning_effort: None,
     };
 
     let llm_started = Instant::now();
-    let resp = provider.chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None, None).await;
+    let resp = provider
+        .chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None, None)
+        .await;
     let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
 
     if resp.is_error() {
@@ -244,7 +262,11 @@ pub async fn run_skill_test(
                 (true, o.payload, None)
             }
             o => {
-                let error = o.payload.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let error = o
+                    .payload
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 (false, o.payload, error)
             }
         };

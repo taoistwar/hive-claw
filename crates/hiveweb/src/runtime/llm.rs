@@ -4,9 +4,7 @@
 //! MVP：providers crate 集成留 TODO（actual primary+fallback provider construction）；
 //! 本 commit 只完成 toml 解析 + default 标记校验 + Agent.model_preset 存在性校验。
 
-use providers::{
-    Backend, FallbackPreset, FallbackProvider, LLMProvider, ProviderBuildConfig,
-};
+use providers::{Backend, FallbackPreset, FallbackProvider, LLMProvider, ProviderBuildConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -228,28 +226,26 @@ fn build_one(cfg: &ProviderConfig) -> Result<Arc<dyn LLMProvider>, LlmAdapterErr
         other => {
             return Err(LlmAdapterError::Parse(format!(
                 "未知 provider kind: {other}"
-            )))
+            )));
         }
     };
-    let api_key = cfg
-        .api_key_env
-        .as_deref()
-        .and_then(|val| {
-            // 优先按环境变量名读取
-            std::env::var(val).ok()
-                // 如果环境变量不存在，则当作直接的 API Key 使用
-                .or_else(|| {
-                    if !val.is_empty() {
-                        tracing::debug!(
-                            env_name = val,
-                            "api_key_env not found in env, treating as direct key"
-                        );
-                        Some(val.to_string())
-                    } else {
-                        None
-                    }
-                })
-        });
+    let api_key = cfg.api_key_env.as_deref().and_then(|val| {
+        // 优先按环境变量名读取
+        std::env::var(val)
+            .ok()
+            // 如果环境变量不存在，则当作直接的 API Key 使用
+            .or_else(|| {
+                if !val.is_empty() {
+                    tracing::debug!(
+                        env_name = val,
+                        "api_key_env not found in env, treating as direct key"
+                    );
+                    Some(val.to_string())
+                } else {
+                    None
+                }
+            })
+    });
     let build = ProviderBuildConfig {
         model: cfg.model.clone().unwrap_or_default(),
         api_key,

@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
     Router,
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
 
@@ -87,13 +87,16 @@ pub async fn list_login_records(
         login_at_end: query.login_at_end.clone(),
     };
 
-    let (records, total) = match login_record::list_login_records(&state.pool, query.offset, query.limit, &filter).await {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!("Database error: {}", e);
-            return AppError::Internal("Service unavailable".to_string()).into_response();
-        }
-    };
+    let (records, total) =
+        match login_record::list_login_records(&state.pool, query.offset, query.limit, &filter)
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("Database error: {}", e);
+                return AppError::Internal("Service unavailable".to_string()).into_response();
+            }
+        };
 
     let items: Vec<LoginRecordPublic> = records.into_iter().map(|r| r.into()).collect();
 
@@ -111,7 +114,9 @@ pub async fn get_login_record(
 ) -> ApiResponse<LoginRecordPublic> {
     let record = match login_record::get_login_record_by_id(&state.pool, id).await {
         Ok(Some(record)) => record,
-        Ok(None) => return AppError::NotFound("Login record not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::NotFound("Login record not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();

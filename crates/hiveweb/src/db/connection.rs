@@ -1,5 +1,5 @@
-use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
+use sqlx::mysql::MySqlPoolOptions;
 
 pub async fn create_pool(database_url: &str) -> anyhow::Result<MySqlPool> {
     let pool = MySqlPoolOptions::new()

@@ -1,5 +1,6 @@
 // FunctionTester — 动态根据 input_schema 生成表单并测试 Function (US2 扩展)
 
+import { useMemo } from 'react';
 import { useState } from 'react';
 import {
   Button,
@@ -32,38 +33,81 @@ interface FunctionTesterProps {
   onClose: () => void;
 }
 
+/** 用于非 object 顶级 schema 的虚拟字段名 */
+const PRIMITIVE_INPUT_KEY = '__value__';
+
 /**
- * 从 JSON Schema 中解析 properties，生成表单字段配置
- * 支持类型：string, number, integer, boolean, enum
+ * 从 JSON Schema 解析输入字段配置。
+ *
+ * - `type: "object"` + `properties` → 按属性列表生成多字段
+ * - `type: "string" / "number" / "integer" / "boolean"` → 生成单个虚拟字段
+ * - 空 / 异常 → 返回空数组
  */
-function parseSchemaProperties(schema: unknown): Array<{ key: string; prop: SchemaProperty }> {
-  if (!schema || typeof schema !== 'object') return [];
+function parseSchemaFields(schema: unknown): {
+  fields: Array<{ key: string; prop: SchemaProperty }>;
+  /** 非 object 顶级 schema 时，其 type 值；否则为 null */
+  primitiveType: string | null;
+} {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return { fields: [], primitiveType: null };
+  }
   const schemaObj = schema as Record<string, unknown>;
+
+  const schemaType = typeof schemaObj.type === 'string' ? schemaObj.type : null;
+
+  // 基础类型的顶级 schema（string / number / integer / boolean）
+  if (schemaType && schemaType !== 'object') {
+    const prop: SchemaProperty = {
+      type: schemaType,
+      description: typeof schemaObj.description === 'string' ? schemaObj.description : undefined,
+    };
+    if (schemaObj.enum && Array.isArray(schemaObj.enum)) {
+      prop.enum = schemaObj.enum;
+    }
+    if ('default' in schemaObj) {
+      prop.default = schemaObj.default;
+    }
+    return {
+      fields: [{ key: PRIMITIVE_INPUT_KEY, prop }],
+      primitiveType: schemaType,
+    };
+  }
+
+  // object 类型 → 解析 properties
   const properties = schemaObj.properties as Record<string, SchemaProperty> | undefined;
-  if (!properties) return [];
-  return Object.entries(properties).map(([key, prop]) => ({ key, prop }));
+  if (!properties) {
+    return { fields: [], primitiveType: null };
+  }
+  return {
+    fields: Object.entries(properties).map(([key, prop]) => ({ key, prop })),
+    primitiveType: null,
+  };
 }
 
 /** 渲染单个表单字段 */
 function renderFormField(key: string, prop: SchemaProperty) {
   const type = prop.type ?? 'string';
-  const label = prop.description ? (
-    <span>
-      {key}
-      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-        {prop.description}
-      </Text>
-    </span>
-  ) : (
-    key
-  );
+  const isPrimitive = key === PRIMITIVE_INPUT_KEY;
+
+  const label = isPrimitive
+    ? '值'
+    : prop.description
+    ? (
+        <span>
+          {key}
+          <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+            {prop.description}
+          </Text>
+        </span>
+      )
+    : key;
 
   switch (type) {
     case 'string':
       if (prop.enum && Array.isArray(prop.enum)) {
         return (
           <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
-            <Select placeholder={`选择 ${key}`}>
+            <Select placeholder={`选择 ${isPrimitive ? '值' : key}`}>
               {prop.enum.map((v) => (
                 <Select.Option key={String(v)} value={v}>
                   {String(v)}
@@ -75,7 +119,7 @@ function renderFormField(key: string, prop: SchemaProperty) {
       }
       return (
         <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
-          <Input placeholder={`输入 ${key}`} />
+          <Input placeholder={isPrimitive ? '输入字符串值' : `输入 ${key}`} />
         </Form.Item>
       );
 
@@ -84,7 +128,7 @@ function renderFormField(key: string, prop: SchemaProperty) {
       return (
         <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
           <InputNumber
-            placeholder={`输入 ${key}`}
+            placeholder={isPrimitive ? '输入数值' : `输入 ${key}`}
             style={{ width: '100%' }}
             step={type === 'integer' ? 1 : 0.1}
           />
@@ -101,7 +145,7 @@ function renderFormField(key: string, prop: SchemaProperty) {
     default:
       return (
         <Form.Item key={key} name={key} label={label} initialValue={prop.default}>
-          <Input placeholder={`输入 ${key} (${type})`} />
+          <Input placeholder={`输入 ${isPrimitive ? '值' : key} (${type})`} />
         </Form.Item>
       );
   }
@@ -113,7 +157,10 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
   const [result, setResult] = useState<{ output: unknown; elapsed_ms: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fields = parseSchemaProperties(functionItem.input_schema);
+  const { fields, primitiveType } = useMemo(
+    () => parseSchemaFields(functionItem.input_schema),
+    [functionItem.input_schema],
+  );
 
   const handleTest = async () => {
     try {
@@ -122,7 +169,9 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
       setError(null);
       setResult(null);
 
-      const resp = await invokeFunction(functionItem.id, { input: values });
+      // 非 object 顶级 schema：取虚拟字段的裸值；object schema：整体对象
+      const input = primitiveType ? values[PRIMITIVE_INPUT_KEY] : values;
+      const resp = await invokeFunction(functionItem.id, { input });
       setResult({ output: resp.output, elapsed_ms: resp.elapsed_ms });
       void message.success(`调用成功 (${resp.elapsed_ms}ms)`);
     } catch (e: unknown) {
@@ -194,6 +243,11 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
             </Form>
           ) : (
             <Text type="secondary">该函数无输入参数（空 schema）</Text>
+          )}
+          {primitiveType && (
+            <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              输入类型：{primitiveType}
+            </Text>
           )}
         </div>
 

@@ -67,7 +67,12 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<RecommendedGame, A
         .ok_or_else(|| AppError::NotFound(format!("recommended_game id={id} not found")))
 }
 
-pub async fn list(pool: &MySqlPool, q: Option<&str>, page: i64, page_size: i64) -> Result<(Vec<RecommendedGame>, i64), AppError> {
+pub async fn list(
+    pool: &MySqlPool,
+    q: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> Result<(Vec<RecommendedGame>, i64), AppError> {
     let where_clause = if let Some(keyword) = q {
         let like = format!("%{keyword}%");
         format!("WHERE name LIKE ? OR game_name LIKE ? OR game_id LIKE ?")
@@ -85,9 +90,7 @@ pub async fn list(pool: &MySqlPool, q: Option<&str>, page: i64, page_size: i64) 
             .fetch_one(pool)
             .await
     } else {
-        sqlx::query_as(&count_sql)
-            .fetch_one(pool)
-            .await
+        sqlx::query_as(&count_sql).fetch_one(pool).await
     }
     .map_err(|e| AppError::Internal(format!("recommended_game count: {e}")))?;
 
@@ -117,9 +120,14 @@ pub async fn list(pool: &MySqlPool, q: Option<&str>, page: i64, page_size: i64) 
     Ok((items, total.0))
 }
 
-pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<RecommendedGame, AppError> {
+pub async fn update(
+    pool: &MySqlPool,
+    id: i64,
+    meta: UpdateMeta,
+) -> Result<RecommendedGame, AppError> {
     if let Some(updated_at) = meta.updated_at {
-        crate::services::optimistic_lock::check_and_bump(pool, "recommended_games", id, updated_at).await?;
+        crate::services::optimistic_lock::check_and_bump(pool, "recommended_games", id, updated_at)
+            .await?;
     }
     sqlx::query(
         "UPDATE recommended_games SET name = COALESCE(?, name), reply = COALESCE(?, reply), reason = COALESCE(?, reason), tag = COALESCE(?, tag), game_category = COALESCE(?, game_category), game_image = COALESCE(?, game_image), sort_value = COALESCE(?, sort_value), game_id = COALESCE(?, game_id), game_name = COALESCE(?, game_name) WHERE id = ?"
@@ -154,14 +162,16 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         .await
         .map_err(|e| AppError::Internal(format!("recommended_game delete: {e}")))?;
     if res.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("recommended_game id={id} not found")));
+        return Err(AppError::NotFound(format!(
+            "recommended_game id={id} not found"
+        )));
     }
     Ok(())
 }
 
 pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame>, AppError> {
     sqlx::query_as::<_, RecommendedGame>(
-        "SELECT * FROM recommended_games ORDER BY sort_value DESC, created_at DESC LIMIT ?"
+        "SELECT * FROM recommended_games ORDER BY sort_value DESC, created_at DESC LIMIT ?",
     )
     .bind(n)
     .fetch_all(pool)

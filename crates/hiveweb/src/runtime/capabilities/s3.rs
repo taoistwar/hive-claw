@@ -37,7 +37,10 @@ pub async fn s3_read(client: &S3Client, args: S3ReadArgs) -> Result<S3ReadReply,
         .map_err(|e| format!("s3 get_object: {e}"))?;
     let size_bytes = bytes.len() as u64;
     let content = String::from_utf8(bytes).map_err(|_| "content 非 UTF-8".to_string())?;
-    Ok(S3ReadReply { content, size_bytes })
+    Ok(S3ReadReply {
+        content,
+        size_bytes,
+    })
 }
 
 #[derive(Debug, Deserialize)]

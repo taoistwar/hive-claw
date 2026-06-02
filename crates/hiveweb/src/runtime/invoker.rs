@@ -48,9 +48,8 @@ pub fn host_call(
 ) -> Result<(), ExtismError> {
     let envelope: String = plugin.memory_get_val(&inputs[0])?;
     let ctx = plugin.host_context::<Arc<HostInvocationCtx>>()?.clone();
-    let result = tokio::runtime::Handle::current().block_on(async move {
-        capability::dispatch(&ctx.deps, &ctx.dispatch, &envelope).await
-    });
+    let result = tokio::runtime::Handle::current()
+        .block_on(async move { capability::dispatch(&ctx.deps, &ctx.dispatch, &envelope).await });
     let handle = plugin.memory_new(&result)?;
     if !outputs.is_empty() {
         outputs[0] = plugin.memory_to_val(handle);
@@ -77,9 +76,9 @@ impl From<InvokerError> for AppError {
         match e {
             InvokerError::PluginMissing(_) => AppError::NotFound(e.to_string()),
             InvokerError::PoolBusy => AppError::PoolBusy("plugin pool busy".into()),
-            InvokerError::Timeout(ms) => AppError::PluginInvocationTimeout(format!(
-                "Plugin 执行超过 {ms} 毫秒已被中止"
-            )),
+            InvokerError::Timeout(ms) => {
+                AppError::PluginInvocationTimeout(format!("Plugin 执行超过 {ms} 毫秒已被中止"))
+            }
             InvokerError::PluginError(m) => AppError::Internal(m),
             InvokerError::Pool(m) => AppError::Internal(m.to_string()),
         }
@@ -119,13 +118,12 @@ impl Invoker {
         let t0 = Instant::now();
 
         // 1. resolve plugin row
-        let row: Option<PluginRow> = sqlx::query_as(
-            "SELECT * FROM plugins WHERE id = ? AND deleted_at IS NULL",
-        )
-        .bind(plugin_id)
-        .fetch_optional(db_pool)
-        .await
-        .map_err(|e| InvokerError::PluginError(format!("plugin lookup: {e}")))?;
+        let row: Option<PluginRow> =
+            sqlx::query_as("SELECT * FROM plugins WHERE id = ? AND deleted_at IS NULL")
+                .bind(plugin_id)
+                .fetch_optional(db_pool)
+                .await
+                .map_err(|e| InvokerError::PluginError(format!("plugin lookup: {e}")))?;
         let row = row.ok_or(InvokerError::PluginMissing(plugin_id))?;
 
         // 2. 准备 host_call 构建闭包（spawn_blocking 内执行）
@@ -162,9 +160,11 @@ impl Invoker {
         let input = input_json;
         let plugin_id_local = plugin_id;
         let call_result = tokio::task::spawn_blocking(move || {
-            let res = inst
-                .plugin
-                .call_with_host_context::<&str, String, _>(&export, input.as_str(), host_ctx);
+            let res = inst.plugin.call_with_host_context::<&str, String, _>(
+                &export,
+                input.as_str(),
+                host_ctx,
+            );
             // 调用后尝试 reset（FR-029）— 成功才能复用
             let reset_ok = inst.plugin.reset().is_ok();
             (res, inst, reset_ok)
@@ -176,7 +176,7 @@ impl Invoker {
             Err(e) => {
                 return Err(InvokerError::PluginError(format!(
                     "spawn_blocking join: {e}"
-                )))
+                )));
             }
         };
 

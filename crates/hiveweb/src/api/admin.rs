@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
     Json, Router,
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
 
@@ -100,7 +100,7 @@ pub async fn list_admins(
         Ok(role) => role,
         Err(_) => {
             return AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response()
+                .into_response();
         }
     };
 
@@ -120,13 +120,14 @@ pub async fn list_admins(
         last_login_end: query.last_login_end.clone(),
     };
 
-    let (admins, total) = match admin::list_admins(&state.pool, query.offset, query.limit, &filter).await {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!("Database error: {}", e);
-            return AppError::Internal("Service unavailable".to_string()).into_response();
-        }
-    };
+    let (admins, total) =
+        match admin::list_admins(&state.pool, query.offset, query.limit, &filter).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("Database error: {}", e);
+                return AppError::Internal("Service unavailable".to_string()).into_response();
+            }
+        };
 
     let items: Vec<AdminPublic> = admins.into_iter().map(|a| a.into()).collect();
 
@@ -163,7 +164,7 @@ pub async fn create_admin(
         Ok(role) => role,
         Err(_) => {
             return AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response()
+                .into_response();
         }
     };
 
@@ -242,7 +243,7 @@ pub async fn update_admin(
         Ok(role) => role,
         Err(_) => {
             return AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response()
+                .into_response();
         }
     };
 
@@ -274,7 +275,7 @@ pub async fn update_admin(
                 .unwrap();
             if !caller_role.can_modify_target_admin(&admin_role) {
                 return AppError::InsufficientPermission(
-                    "Cannot modify this admin's profile".to_string()
+                    "Cannot modify this admin's profile".to_string(),
                 )
                 .into_response();
             }
@@ -313,7 +314,7 @@ pub async fn delete_admin(
         Ok(role) => role,
         Err(_) => {
             return AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response()
+                .into_response();
         }
     };
 
@@ -332,10 +333,8 @@ pub async fn delete_admin(
             .map_err(|_| anyhow::anyhow!("Invalid role"))
             .unwrap();
         if !caller_role.can_delete_target_admin(&admin_role) {
-            return AppError::InsufficientPermission(
-                "Cannot delete this admin".to_string()
-            )
-            .into_response();
+            return AppError::InsufficientPermission("Cannot delete this admin".to_string())
+                .into_response();
         }
     }
 
@@ -379,7 +378,7 @@ pub async fn toggle_admin_status(
         Ok(role) => role,
         Err(_) => {
             return AppError::InsufficientPermission("Invalid role in token".to_string())
-                .into_response()
+                .into_response();
         }
     };
 
@@ -400,7 +399,7 @@ pub async fn toggle_admin_status(
             .unwrap();
         if !caller_role.can_toggle_target_admin_status(&admin_role) {
             return AppError::InsufficientPermission(
-                "Cannot toggle this admin's status".to_string()
+                "Cannot toggle this admin's status".to_string(),
             )
             .into_response();
         }
@@ -408,7 +407,11 @@ pub async fn toggle_admin_status(
 
     match admin::toggle_admin_status(&state.pool, id, req.status).await {
         Ok(admin) => {
-            let op = if req.status == 1 { Operation::Enable } else { Operation::Disable };
+            let op = if req.status == 1 {
+                Operation::Enable
+            } else {
+                Operation::Disable
+            };
             if let Err(e) = audit_event(
                 &state.pool,
                 &claims,
@@ -449,7 +452,9 @@ async fn audit_event(
     target_phone: &str,
     detail: serde_json::Value,
 ) -> anyhow::Result<()> {
-    let admin_id = claims.admin_id.ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
+    let admin_id = claims
+        .admin_id
+        .ok_or_else(|| anyhow::anyhow!("No admin ID in claims"))?;
     let operator = admin::get_admin_by_id(pool, admin_id).await?;
     let operator_phone = operator.map(|a| a.phone).unwrap_or_default();
     if let Err(e) = audit::record(
@@ -471,7 +476,18 @@ async fn audit_event(
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/admins", axum::routing::get(list_admins).post(create_admin))
-        .route("/admins/:id", axum::routing::get(get_admin).put(update_admin).delete(delete_admin))
-        .route("/admins/:id/status", axum::routing::patch(toggle_admin_status))
+        .route(
+            "/admins",
+            axum::routing::get(list_admins).post(create_admin),
+        )
+        .route(
+            "/admins/:id",
+            axum::routing::get(get_admin)
+                .put(update_admin)
+                .delete(delete_admin),
+        )
+        .route(
+            "/admins/:id/status",
+            axum::routing::patch(toggle_admin_status),
+        )
 }

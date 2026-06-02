@@ -16,7 +16,10 @@ async fn t026j_successful_login_updates_last_login_at_and_writes_record() -> any
         json!({ "phone": admin.phone, "password": "test-pass-123" }),
     )
     .await?;
-    assert_eq!(status, 200, "login must succeed for seeded admin, got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "login must succeed for seeded admin, got {status}: {body}"
+    );
 
     // (a) admins.last_login_at advanced
     let row: (Option<chrono::NaiveDateTime>,) =
@@ -30,12 +33,11 @@ async fn t026j_successful_login_updates_last_login_at_and_writes_record() -> any
     );
 
     // (b) a login_records row written with success=1
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM login_records WHERE admin_id = ? AND success = 1",
-    )
-    .bind(admin.id)
-    .fetch_one(&pool)
-    .await?;
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM login_records WHERE admin_id = ? AND success = 1")
+            .bind(admin.id)
+            .fetch_one(&pool)
+            .await?;
     assert!(
         count.0 >= 1,
         "FR-015: successful login must produce a login_records row, got {} rows",

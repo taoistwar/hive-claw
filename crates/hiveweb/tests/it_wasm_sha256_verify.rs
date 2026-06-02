@@ -12,13 +12,17 @@
 
 mod common;
 
-use common::{seed_admin};
 use axum::Router;
-use serde_json::{json, Value};
+use common::seed_admin;
+use serde_json::{Value, json};
 use sqlx::MySqlPool;
 
 /// Helper: upload a minimal valid WASM plugin and return (plugin_id, sha256).
-async fn upload_plugin_for_sha256(app: &Router, token: &str, identifier: &str) -> anyhow::Result<(i64, String)> {
+async fn upload_plugin_for_sha256(
+    app: &Router,
+    token: &str,
+    identifier: &str,
+) -> anyhow::Result<(i64, String)> {
     // Create a minimal WASM binary (valid magic bytes + version)
     let wasm_bytes: Vec<u8> = vec![
         0x00, 0x61, 0x73, 0x6d, // magic \0asm
@@ -26,7 +30,7 @@ async fn upload_plugin_for_sha256(app: &Router, token: &str, identifier: &str) -
     ];
 
     // Compute expected sha256
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&wasm_bytes);
     let digest = hasher.finalize();
@@ -55,7 +59,9 @@ async fn upload_plugin_for_sha256(app: &Router, token: &str, identifier: &str) -
 
     // file field
     body.extend_from_slice(b"------WebKitFormBoundaryShaTest123\r\n");
-    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"test.wasm\"\r\n");
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"test.wasm\"\r\n",
+    );
     body.extend_from_slice(b"Content-Type: application/wasm\r\n\r\n");
     body.extend_from_slice(&wasm_bytes);
     body.extend_from_slice(b"\r\n");
@@ -64,7 +70,10 @@ async fn upload_plugin_for_sha256(app: &Router, token: &str, identifier: &str) -
     let req = Request::builder()
         .method("POST")
         .uri("/api/plugins")
-        .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={}", boundary),
+        )
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(body))?;
 
@@ -84,23 +93,23 @@ async fn upload_plugin_for_sha256(app: &Router, token: &str, identifier: &str) -
 
 /// Helper: get the stored sha256 from DB for a plugin
 async fn get_plugin_sha256(pool: &MySqlPool, plugin_id: i64) -> anyhow::Result<String> {
-    let row: (String,) = sqlx::query_as(
-        "SELECT sha256 FROM plugins WHERE id = ?",
-    )
-    .bind(plugin_id)
-    .fetch_one(pool)
-    .await?;
+    let row: (String,) = sqlx::query_as("SELECT sha256 FROM plugins WHERE id = ?")
+        .bind(plugin_id)
+        .fetch_one(pool)
+        .await?;
     Ok(row.0)
 }
 
 /// Helper: tamper with the S3 WASM file by flipping one byte
-async fn tamper_s3_wasm(pool: &MySqlPool, s3_client: &aws_sdk_s3::Client, plugin_id: i64) -> anyhow::Result<()> {
-    let row: (String,) = sqlx::query_as(
-        "SELECT s3_key FROM plugins WHERE id = ?",
-    )
-    .bind(plugin_id)
-    .fetch_one(pool)
-    .await?;
+async fn tamper_s3_wasm(
+    pool: &MySqlPool,
+    s3_client: &aws_sdk_s3::Client,
+    plugin_id: i64,
+) -> anyhow::Result<()> {
+    let row: (String,) = sqlx::query_as("SELECT s3_key FROM plugins WHERE id = ?")
+        .bind(plugin_id)
+        .fetch_one(pool)
+        .await?;
     let s3_key = row.0;
 
     // Download current content
@@ -121,7 +130,10 @@ async fn tamper_s3_wasm(pool: &MySqlPool, s3_client: &aws_sdk_s3::Client, plugin
     // Re-upload tampered content
     hiveweb::storage::s3::put_wasm(s3_client, &s3_key, tampered).await?;
 
-    tracing::info!("t167: tampered S3 WASM at s3_key={s3_key}, flipped byte at index {}", flip_idx);
+    tracing::info!(
+        "t167: tampered S3 WASM at s3_key={s3_key}, flipped byte at index {}",
+        flip_idx
+    );
 
     Ok(())
 }
@@ -133,7 +145,8 @@ async fn t167_upload_records_correct_sha256() -> anyhow::Result<()> {
     let admin = seed_admin(&pool, 3, 1, "test123").await?;
     let token = admin.token()?;
 
-    let (plugin_id, expected_sha256) = upload_plugin_for_sha256(&app, &token, "sha-verify-test").await?;
+    let (plugin_id, expected_sha256) =
+        upload_plugin_for_sha256(&app, &token, "sha-verify-test").await?;
 
     // Verify DB stores the correct sha256
     let db_sha256 = get_plugin_sha256(&pool, plugin_id).await?;
@@ -143,7 +156,12 @@ async fn t167_upload_records_correct_sha256() -> anyhow::Result<()> {
     );
 
     // Verify sha256 is 64 hex characters
-    assert_eq!(db_sha256.len(), 64, "sha256 must be 64 hex chars; got {} chars", db_sha256.len());
+    assert_eq!(
+        db_sha256.len(),
+        64,
+        "sha256 must be 64 hex chars; got {} chars",
+        db_sha256.len()
+    );
 
     Ok(())
 }
@@ -157,7 +175,8 @@ async fn t167_tampered_wasm_detected_via_sha256_mismatch() -> anyhow::Result<()>
     let token = admin.token()?;
 
     // Upload a normal plugin
-    let (plugin_id, original_sha256) = upload_plugin_for_sha256(&app, &token, "tamper-test").await?;
+    let (plugin_id, original_sha256) =
+        upload_plugin_for_sha256(&app, &token, "tamper-test").await?;
 
     // Verify initial sha256
     let db_sha256 = get_plugin_sha256(&pool, plugin_id).await?;
@@ -167,17 +186,15 @@ async fn t167_tampered_wasm_detected_via_sha256_mismatch() -> anyhow::Result<()>
     tamper_s3_wasm(&pool, &s3, plugin_id).await?;
 
     // Download the tampered file and recompute sha256
-    let row: (String,) = sqlx::query_as(
-        "SELECT s3_key FROM plugins WHERE id = ?",
-    )
-    .bind(plugin_id)
-    .fetch_one(&pool)
-    .await?;
+    let row: (String,) = sqlx::query_as("SELECT s3_key FROM plugins WHERE id = ?")
+        .bind(plugin_id)
+        .fetch_one(&pool)
+        .await?;
     let s3_key = row.0;
 
     let tampered_bytes = hiveweb::storage::s3::get_wasm(&s3, &s3_key).await?;
 
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&tampered_bytes);
     let digest = hasher.finalize();
@@ -195,7 +212,9 @@ async fn t167_tampered_wasm_detected_via_sha256_mismatch() -> anyhow::Result<()>
 
     tracing::info!(
         "t167: sha256 mismatch detected - original={} db={} actual={}",
-        original_sha256, db_sha256, actual_sha256
+        original_sha256,
+        db_sha256,
+        actual_sha256
     );
 
     // The pool's sha256 verification path would reject this instance.
@@ -233,12 +252,11 @@ async fn t167_sha256_mismatch_triggers_audit_log() -> anyhow::Result<()> {
     .await;
 
     // Verify the audit entry was written
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM runtime_audit_logs WHERE request_id = ?",
-    )
-    .bind("test-t167")
-    .fetch_one(&pool)
-    .await?;
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM runtime_audit_logs WHERE request_id = ?")
+            .bind("test-t167")
+            .fetch_one(&pool)
+            .await?;
 
     assert!(count.0 >= 1, "audit entry must exist for sha256 mismatch");
 

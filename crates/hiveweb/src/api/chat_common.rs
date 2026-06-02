@@ -3,10 +3,10 @@
 //! Contains SSE concurrency control, query structs, and common helpers.
 
 use axum::{
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
     },
 };
 use futures::stream::Stream;
@@ -25,8 +25,14 @@ pub struct SseSlotConfig {
 }
 
 impl SseSlotConfig {
-    pub const ADMIN: Self = Self { env_var: "CHAT_SSE_MAX_CONCURRENT_PER_ADMIN", default_cap: 2 };
-    pub const USER: Self = Self { env_var: "CHAT_SSE_MAX_CONCURRENT_PER_USER", default_cap: 2 };
+    pub const ADMIN: Self = Self {
+        env_var: "CHAT_SSE_MAX_CONCURRENT_PER_ADMIN",
+        default_cap: 2,
+    };
+    pub const USER: Self = Self {
+        env_var: "CHAT_SSE_MAX_CONCURRENT_PER_USER",
+        default_cap: 2,
+    };
 }
 
 /// Per-actor SSE counter registry.

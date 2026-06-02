@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 
@@ -31,6 +31,16 @@ pub mod codes {
     pub const NOT_FOUND: u16 = 4040;
     pub const CONFLICT: u16 = 4090;
     pub const INTERNAL: u16 = 5000;
+
+    // ----- 006 Game Alias Management -----
+    pub const GAME_ALIAS_NOT_FOUND: u16 = 4001;
+    pub const GAME_NAME_ALREADY_EXISTS: u16 = 4002;
+    pub const GAME_NAME_EMPTY: u16 = 4003;
+    pub const GAME_NAME_TOO_LONG: u16 = 4004;
+    pub const ALIASES_EMPTY: u16 = 4005;
+    pub const ALIAS_TOO_LONG: u16 = 4006;
+    pub const ALIASES_TOO_MANY: u16 = 4007;
+    pub const ALIAS_ALREADY_IN_USE: u16 = 4008;
 
     // ----- 004 Agent Runtime（contracts/api.md §Errors） -----
     pub const CAPABILITY_DENIED_RUNTIME: u16 = 4030;
@@ -94,7 +104,9 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         0 => StatusCode::OK,
         // Auth
         codes::WRONG_PASSWORD | codes::TOKEN_INVALID => StatusCode::UNAUTHORIZED,
-        codes::ACCOUNT_DISABLED | codes::ACCOUNT_LOCKED | codes::NOT_ADMINISTRATOR => StatusCode::FORBIDDEN,
+        codes::ACCOUNT_DISABLED | codes::ACCOUNT_LOCKED | codes::NOT_ADMINISTRATOR => {
+            StatusCode::FORBIDDEN
+        }
         // Permission
         codes::INSUFFICIENT_PERMISSION => StatusCode::FORBIDDEN,
         // Admin domain
@@ -109,6 +121,14 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         codes::NOT_FOUND => StatusCode::NOT_FOUND,
         codes::CONFLICT => StatusCode::CONFLICT,
         codes::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR,
+        // 006 — Game Alias Management HTTP 映射
+        codes::GAME_ALIAS_NOT_FOUND => StatusCode::NOT_FOUND,
+        codes::GAME_NAME_EMPTY
+        | codes::GAME_NAME_TOO_LONG
+        | codes::ALIASES_EMPTY
+        | codes::ALIAS_TOO_LONG
+        | codes::ALIASES_TOO_MANY => StatusCode::BAD_REQUEST,
+        codes::GAME_NAME_ALREADY_EXISTS | codes::ALIAS_ALREADY_IN_USE => StatusCode::CONFLICT,
         // 004 — contracts/api.md §Errors HTTP 映射
         codes::CAPABILITY_DENIED_RUNTIME => StatusCode::FORBIDDEN,
         codes::TAG_IN_USE
@@ -155,6 +175,16 @@ pub enum AppError {
     Conflict(String),
     Internal(String),
 
+    // ----- 006 Game Alias Management -----
+    GameAliasNotFound(String),
+    GameNameAlreadyExists(String),
+    GameNameEmpty(String),
+    GameNameTooLong(String),
+    AliasesEmpty(String),
+    AliasTooLong(String),
+    AliasesTooMany(String),
+    AliasAlreadyInUse(String),
+
     // ----- 004 Agent Runtime（contracts/api.md §Errors） -----
     CapabilityDeniedRuntime(String),
     CapabilityUnknown(String),
@@ -193,6 +223,15 @@ impl AppError {
             AppError::NotFound(_) => codes::NOT_FOUND,
             AppError::Conflict(_) => codes::CONFLICT,
             AppError::Internal(_) => codes::INTERNAL,
+            // 006 Game Alias Management
+            AppError::GameAliasNotFound(_) => codes::GAME_ALIAS_NOT_FOUND,
+            AppError::GameNameAlreadyExists(_) => codes::GAME_NAME_ALREADY_EXISTS,
+            AppError::GameNameEmpty(_) => codes::GAME_NAME_EMPTY,
+            AppError::GameNameTooLong(_) => codes::GAME_NAME_TOO_LONG,
+            AppError::AliasesEmpty(_) => codes::ALIASES_EMPTY,
+            AppError::AliasTooLong(_) => codes::ALIAS_TOO_LONG,
+            AppError::AliasesTooMany(_) => codes::ALIASES_TOO_MANY,
+            AppError::AliasAlreadyInUse(_) => codes::ALIAS_ALREADY_IN_USE,
             // 004 Agent Runtime
             AppError::CapabilityDeniedRuntime(_) => codes::CAPABILITY_DENIED_RUNTIME,
             AppError::CapabilityUnknown(_) => codes::CAPABILITY_UNKNOWN,
@@ -247,6 +286,14 @@ impl AppError {
             | AppError::BuiltinSkillProtected(m)
             | AppError::PoolBusy(m)
             | AppError::BuiltinToolProtected(m)
+            | AppError::GameAliasNotFound(m)
+            | AppError::GameNameAlreadyExists(m)
+            | AppError::GameNameEmpty(m)
+            | AppError::GameNameTooLong(m)
+            | AppError::AliasesEmpty(m)
+            | AppError::AliasTooLong(m)
+            | AppError::AliasesTooMany(m)
+            | AppError::AliasAlreadyInUse(m)
             | AppError::NewPasswordSameAsOld(m) => m,
         }
     }

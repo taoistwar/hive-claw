@@ -25,7 +25,7 @@ pub fn secret_get(args: SecretGetArgs) -> Result<SecretGetReply, String> {
     if !allowlist.iter().any(|k| k == &args.key) {
         return Err(format!("secret key '{}' 不在 allowlist 内", args.key));
     }
-    let value = std::env::var(&args.key)
-        .map_err(|_| format!("secret key '{}' 未设置 env 值", args.key))?;
+    let value =
+        std::env::var(&args.key).map_err(|_| format!("secret key '{}' 未设置 env 值", args.key))?;
     Ok(SecretGetReply { value })
 }

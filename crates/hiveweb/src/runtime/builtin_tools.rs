@@ -32,7 +32,8 @@ pub const WRITE_FILE_INPUT_SCHEMA: &str = r#"{
   "required": ["path", "content"]
 }"#;
 
-pub const WRITE_FILE_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Confirmation or error message" }"#;
+pub const WRITE_FILE_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Confirmation or error message" }"#;
 
 pub const EDIT_FILE_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -45,7 +46,8 @@ pub const EDIT_FILE_INPUT_SCHEMA: &str = r#"{
   "required": ["path", "old_text", "new_text"]
 }"#;
 
-pub const EDIT_FILE_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Confirmation or error message" }"#;
+pub const EDIT_FILE_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Confirmation or error message" }"#;
 
 pub const LIST_DIR_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -69,7 +71,8 @@ pub const WEB_FETCH_INPUT_SCHEMA: &str = r#"{
   "required": ["url"]
 }"#;
 
-pub const WEB_FETCH_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Extracted text content from the page" }"#;
+pub const WEB_FETCH_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Extracted text content from the page" }"#;
 
 pub const WEB_SEARCH_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -114,7 +117,8 @@ pub const GREP_INPUT_SCHEMA: &str = r#"{
   "required": ["pattern"]
 }"#;
 
-pub const GREP_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Match lines in FILE:LINE:CONTENT format" }"#;
+pub const GREP_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Match lines in FILE:LINE:CONTENT format" }"#;
 
 pub const MY_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -131,7 +135,8 @@ pub const MY_INPUT_SCHEMA: &str = r#"{
   "required": ["action"]
 }"#;
 
-pub const MY_OUTPUT_SCHEMA: &str = r#"{ "type": "object", "description": "Action result (varies by action)" }"#;
+pub const MY_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "object", "description": "Action result (varies by action)" }"#;
 
 pub const NOTEBOOK_EDIT_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -145,7 +150,8 @@ pub const NOTEBOOK_EDIT_INPUT_SCHEMA: &str = r#"{
   "required": ["notebook", "source"]
 }"#;
 
-pub const NOTEBOOK_EDIT_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Confirmation of notebook edit" }"#;
+pub const NOTEBOOK_EDIT_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Confirmation of notebook edit" }"#;
 
 pub const SPAWN_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -156,7 +162,8 @@ pub const SPAWN_INPUT_SCHEMA: &str = r#"{
   "required": ["task"]
 }"#;
 
-pub const SPAWN_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Spawn status/result message" }"#;
+pub const SPAWN_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Spawn status/result message" }"#;
 
 pub const CRON_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -182,7 +189,8 @@ pub const GENERATE_IMAGE_INPUT_SCHEMA: &str = r#"{
   "required": ["prompt"]
 }"#;
 
-pub const GENERATE_IMAGE_OUTPUT_SCHEMA: &str = r#"{ "type": "object", "description": "Generated image URL(s) or local path(s)" }"#;
+pub const GENERATE_IMAGE_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "object", "description": "Generated image URL(s) or local path(s)" }"#;
 
 pub const MESSAGE_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -194,7 +202,8 @@ pub const MESSAGE_INPUT_SCHEMA: &str = r#"{
   "required": ["content"]
 }"#;
 
-pub const MESSAGE_OUTPUT_SCHEMA: &str = r#"{ "type": "object", "description": "Message send status" }"#;
+pub const MESSAGE_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "object", "description": "Message send status" }"#;
 
 pub const LONG_TASK_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -206,7 +215,8 @@ pub const LONG_TASK_INPUT_SCHEMA: &str = r#"{
   "required": ["action"]
 }"#;
 
-pub const LONG_TASK_OUTPUT_SCHEMA: &str = r#"{ "type": "object", "description": "Long task status or result" }"#;
+pub const LONG_TASK_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "object", "description": "Long task status or result" }"#;
 
 pub const COMPLETE_GOAL_INPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -218,7 +228,8 @@ pub const COMPLETE_GOAL_INPUT_SCHEMA: &str = r#"{
   "required": ["goal"]
 }"#;
 
-pub const COMPLETE_GOAL_OUTPUT_SCHEMA: &str = r#"{ "type": "string", "description": "Goal completion confirmation" }"#;
+pub const COMPLETE_GOAL_OUTPUT_SCHEMA: &str =
+    r#"{ "type": "string", "description": "Goal completion confirmation" }"#;
 
 // ---------------------------------------------------------------------------
 // Definition struct and registry
@@ -400,7 +411,8 @@ pub const BUILTIN_TOOLS: &[BuiltinToolDef] = &[
 /// and corresponding tools (source='builtin', kind=1).
 pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
     for bt in BUILTIN_TOOLS {
-        let caps_json = serde_json::to_string(bt.required_capabilities).unwrap_or_else(|_| "[]".to_string());
+        let caps_json =
+            serde_json::to_string(bt.required_capabilities).unwrap_or_else(|_| "[]".to_string());
 
         // 1. Upsert function (kind=1 = builtin, no plugin needed)
         sqlx::query(
@@ -454,6 +466,9 @@ pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error
         .await?;
     }
 
-    tracing::info!(count = BUILTIN_TOOLS.len(), "builtin agent tools (functions + tool wrappers) upserted");
+    tracing::info!(
+        count = BUILTIN_TOOLS.len(),
+        "builtin agent tools (functions + tool wrappers) upserted"
+    );
     Ok(())
 }

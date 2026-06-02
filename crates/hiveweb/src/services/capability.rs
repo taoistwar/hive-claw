@@ -49,7 +49,12 @@ impl From<&CapabilityModel> for CapabilityItem {
     }
 }
 
-pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter) -> Result<(Vec<CapabilityItem>, i64), AppError> {
+pub async fn list(
+    pool: &MySqlPool,
+    offset: i64,
+    limit: i64,
+    filter: ListFilter,
+) -> Result<(Vec<CapabilityItem>, i64), AppError> {
     let mut where_clauses: Vec<String> = Vec::new();
     let mut params: Vec<String> = Vec::new();
 
@@ -63,7 +68,11 @@ pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter)
     }
     if let Some(dangerous) = filter.is_dangerous {
         where_clauses.push("is_dangerous = ?".to_string());
-        params.push(if dangerous { "1".to_string() } else { "0".to_string() });
+        params.push(if dangerous {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        });
     }
     if let Some(cid) = filter.category_id {
         where_clauses.push("category_id = ?".to_string());
@@ -86,7 +95,8 @@ pub async fn list(pool: &MySqlPool, offset: i64, limit: i64, filter: ListFilter)
         .await
         .map_err(|e| AppError::Internal(format!("capability count: {e}")))?;
 
-    let list_sql = format!("SELECT * FROM capabilities {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?");
+    let list_sql =
+        format!("SELECT * FROM capabilities {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?");
     let mut q = sqlx::query_as::<_, CapabilityModel>(&list_sql);
     for p in &params {
         q = q.bind(p);
@@ -132,7 +142,11 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<CapabilityMode
     fetch_by_name(pool, &meta.name).await
 }
 
-pub async fn update(pool: &MySqlPool, name: &str, meta: UpdateMeta) -> Result<CapabilityModel, AppError> {
+pub async fn update(
+    pool: &MySqlPool,
+    name: &str,
+    meta: UpdateMeta,
+) -> Result<CapabilityModel, AppError> {
     sqlx::query(
         r#"UPDATE capabilities SET
               description = COALESCE(?, description),

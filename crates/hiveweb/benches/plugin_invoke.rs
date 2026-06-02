@@ -5,7 +5,7 @@
 //! TODO: 需要真实 Extism plugin WASM 文件 + pool 初始化才能运行完整基准。
 //! 当前 plugin_invoke 需要 pool.acquire + extism invoke 链路。
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_plugin_invoke_stub(c: &mut Criterion) {
     let mut group = c.benchmark_group("plugin_invoke_stub");

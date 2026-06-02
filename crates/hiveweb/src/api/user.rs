@@ -1,9 +1,9 @@
 //! User management API handlers
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::get,
-    Json, Router,
 };
 use serde::Deserialize;
 
@@ -25,8 +25,12 @@ pub struct ListUsersQuery {
     pub search: Option<String>,
 }
 
-fn default_page() -> u32 { 1 }
-fn default_page_size() -> u32 { 10 }
+fn default_page() -> u32 {
+    1
+}
+fn default_page_size() -> u32 {
+    10
+}
 
 #[derive(serde::Serialize)]
 pub struct UserListResponse {
@@ -85,17 +89,22 @@ pub async fn list_users(
     };
 
     let search_pattern = format!("%{}%", search);
-    let total: (i64,) = match sqlx::query_as(&format!("SELECT COUNT(*) FROM users {}", where_clause))
-        .bind(if search.is_empty() { "%" } else { &search_pattern })
-        .fetch_one(pool)
-        .await
-    {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!("Count query failed: {}", e);
-            return AppError::Internal("Service unavailable".to_string()).into_response();
-        }
-    };
+    let total: (i64,) =
+        match sqlx::query_as(&format!("SELECT COUNT(*) FROM users {}", where_clause))
+            .bind(if search.is_empty() {
+                "%"
+            } else {
+                &search_pattern
+            })
+            .fetch_one(pool)
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Count query failed: {}", e);
+                return AppError::Internal("Service unavailable".to_string()).into_response();
+            }
+        };
 
     let offset = ((query.page - 1) * query.page_size) as i64;
     let limit = query.page_size as i64;
@@ -173,21 +182,23 @@ pub async fn create_user(
         }
     };
 
-    let result = match sqlx::query("INSERT INTO users (phone, password_hash, status) VALUES (?, ?, 1)")
-        .bind(&req.phone)
-        .bind(hash)
-        .execute(&state.pool)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) if e.to_string().contains("UNIQUE") => {
-            return AppError::PhoneAlreadyExists(format!("手机号 {} 已存在", req.phone)).into_response()
-        }
-        Err(e) => {
-            tracing::error!("Create user failed: {}", e);
-            return AppError::Internal("Failed to create user".to_string()).into_response();
-        }
-    };
+    let result =
+        match sqlx::query("INSERT INTO users (phone, password_hash, status) VALUES (?, ?, 1)")
+            .bind(&req.phone)
+            .bind(hash)
+            .execute(&state.pool)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) if e.to_string().contains("UNIQUE") => {
+                return AppError::PhoneAlreadyExists(format!("手机号 {} 已存在", req.phone))
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!("Create user failed: {}", e);
+                return AppError::Internal("Failed to create user".to_string()).into_response();
+            }
+        };
 
     let user_id = result.last_insert_id();
     let user = match sqlx::query_as::<_, User>(
@@ -257,7 +268,11 @@ pub async fn delete_user(
         }
     };
 
-    let user_phone = user_opt.as_ref().map(|u| u.phone.as_str()).unwrap_or("").to_string();
+    let user_phone = user_opt
+        .as_ref()
+        .map(|u| u.phone.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let result = match sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(id)
@@ -323,9 +338,17 @@ pub async fn toggle_user_status(
         }
     };
 
-    let user_phone = user_opt.as_ref().map(|u| u.phone.as_str()).unwrap_or("").to_string();
+    let user_phone = user_opt
+        .as_ref()
+        .map(|u| u.phone.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    let op = if req.status == 1 { Operation::Enable } else { Operation::Disable };
+    let op = if req.status == 1 {
+        Operation::Enable
+    } else {
+        Operation::Disable
+    };
 
     let result = match sqlx::query("UPDATE users SET status = ?, updated_at = NOW() WHERE id = ?")
         .bind(req.status)
@@ -381,5 +404,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/users", get(list_users).post(create_user))
         .route("/users/:id", axum::routing::delete(delete_user))
-        .route("/users/:id/status", axum::routing::patch(toggle_user_status))
+        .route(
+            "/users/:id/status",
+            axum::routing::patch(toggle_user_status),
+        )
 }

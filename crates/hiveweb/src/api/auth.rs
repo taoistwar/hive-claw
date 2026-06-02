@@ -1,16 +1,13 @@
-use axum::{
-    extract::State,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State};
 use serde::Deserialize;
 
 use crate::api::AppState;
 use crate::models::{Admin, Role};
 use crate::services::{admin, auth as auth_service};
 use crate::utils::error::{ApiResponse, AppError};
-use crate::utils::jwt::{create_admin_token, Claims};
+use crate::utils::jwt::{Claims, create_admin_token};
 use crate::utils::logging::mask_phone;
-use crate::utils::password::{verify_password, hash_password};
+use crate::utils::password::{hash_password, verify_password};
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -77,7 +74,8 @@ pub async fn login(
         Ok(Some(admin)) => admin,
         Ok(None) => {
             let _ = auth_service::increment_failed_attempts(&state.redis, &req.phone).await;
-            return AppError::WrongPassword("Invalid phone or password".to_string()).into_response();
+            return AppError::WrongPassword("Invalid phone or password".to_string())
+                .into_response();
         }
         Err(e) => {
             tracing::error!("Database error: {}", e);
@@ -113,13 +111,14 @@ pub async fn login(
     };
 
     if !password_valid {
-        let failed_count = match auth_service::increment_failed_attempts(&state.redis, &req.phone).await {
-            Ok(count) => count,
-            Err(e) => {
-                tracing::error!("Redis increment failed: {}", e);
-                return AppError::Internal("Service unavailable".to_string()).into_response();
-            }
-        };
+        let failed_count =
+            match auth_service::increment_failed_attempts(&state.redis, &req.phone).await {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::error!("Redis increment failed: {}", e);
+                    return AppError::Internal("Service unavailable".to_string()).into_response();
+                }
+            };
 
         let remaining = 5 - failed_count;
 
@@ -299,7 +298,10 @@ pub async fn change_password(
     };
 
     if old_matches_new {
-        return AppError::NewPasswordSameAsOld("New password cannot be the same as old password".to_string()).into_response();
+        return AppError::NewPasswordSameAsOld(
+            "New password cannot be the same as old password".to_string(),
+        )
+        .into_response();
     }
 
     if let Err(e) = crate::utils::password::validate_password(&req.new_password) {
@@ -333,13 +335,15 @@ pub async fn change_password(
 }
 
 pub fn router_public() -> Router<AppState> {
-    Router::new()
-        .route("/auth/login", axum::routing::post(login))
+    Router::new().route("/auth/login", axum::routing::post(login))
 }
 
 pub fn router_protected() -> Router<AppState> {
     Router::new()
         .route("/auth/logout", axum::routing::post(logout))
         .route("/auth/me", axum::routing::get(get_current_user))
-        .route("/auth/change-password", axum::routing::post(change_password))
+        .route(
+            "/auth/change-password",
+            axum::routing::post(change_password),
+        )
 }

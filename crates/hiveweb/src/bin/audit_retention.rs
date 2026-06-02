@@ -26,7 +26,11 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(24 * 3600);
 
-    tracing::info!(retention_days, interval_secs, "audit_retention cron starting");
+    tracing::info!(
+        retention_days,
+        interval_secs,
+        "audit_retention cron starting"
+    );
 
     loop {
         let t0 = std::time::Instant::now();

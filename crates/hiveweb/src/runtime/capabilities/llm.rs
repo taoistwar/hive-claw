@@ -79,7 +79,9 @@ pub async fn llm_invoke(
         reasoning_effort: None,
     };
 
-    let resp = provider.chat_with_retry(req, RetryMode::Standard, None, None).await;
+    let resp = provider
+        .chat_with_retry(req, RetryMode::Standard, None, None)
+        .await;
     if resp.is_error() {
         let msg = resp
             .content
@@ -91,10 +93,7 @@ pub async fn llm_invoke(
 
     let usage_value =
         serde_json::to_value(&resp.usage).unwrap_or(Value::Object(serde_json::Map::new()));
-    let usage_map = usage_value
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let usage_map = usage_value.as_object().cloned().unwrap_or_default();
 
     Ok(LlmInvokeReply {
         content: resp.content.clone(),

@@ -1,4 +1,4 @@
-import { Form, Input, Button, message, Tabs } from 'antd';
+import { Form, Input, Button, App } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
@@ -12,6 +12,7 @@ const LoginForm: React.FC = () => {
   const { loginAdmin } = useAuth();
   const navigate = useNavigate();
   const [form] = Form.useForm<LoginFormValues>();
+  const { message } = App.useApp();
 
   const onFinishAdmin = async (values: LoginFormValues) => {
     try {

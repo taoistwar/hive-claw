@@ -41,12 +41,18 @@ fn try_init_langfuse() {
         .map(|k| !k.is_empty())
         .unwrap_or(false);
 
-    langfuse::lf_debug!("hiveweb::try_init_langfuse: enabled='{}' has_pk={} has_sk={}",
-        enabled, has_public_key, has_secret_key);
+    langfuse::lf_debug!(
+        "hiveweb::try_init_langfuse: enabled='{}' has_pk={} has_sk={}",
+        enabled,
+        has_public_key,
+        has_secret_key
+    );
 
     if enabled != "true" && enabled != "1" && enabled != "yes" {
         if has_public_key && has_secret_key {
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: auto-detect enabled, keys present but LANGFUSE_ENABLED not set");
+            langfuse::lf_debug!(
+                "hiveweb::try_init_langfuse: auto-detect enabled, keys present but LANGFUSE_ENABLED not set"
+            );
             tracing::warn!(
                 "LANGFUSE_ENABLED not set, but LANGFUSE_PUBLIC_KEY and SECRET_KEY are present. \
                  Enabling Langfuse tracing automatically. \
@@ -75,11 +81,15 @@ fn try_init_langfuse() {
             return;
         }
     };
-    let host = std::env::var("LANGFUSE_HOST")
-        .unwrap_or_else(|_| "https://cloud.langfuse.com".to_string());
+    let host =
+        std::env::var("LANGFUSE_HOST").unwrap_or_else(|_| "https://cloud.langfuse.com".to_string());
 
-    langfuse::lf_debug!("hiveweb::try_init_langfuse: creating config host={} pk_len={} sk_len={}",
-        host, public_key.len(), secret_key.len());
+    langfuse::lf_debug!(
+        "hiveweb::try_init_langfuse: creating config host={} pk_len={} sk_len={}",
+        host,
+        public_key.len(),
+        secret_key.len()
+    );
     let cfg = langfuse::LangfuseConfig {
         public_key,
         secret_key,
@@ -92,9 +102,13 @@ fn try_init_langfuse() {
     langfuse::lf_debug!("hiveweb::try_init_langfuse: calling LangfuseClient::new");
     match langfuse::LangfuseClient::new(cfg) {
         Some(client) => {
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: client created, calling set_langfuse_client");
+            langfuse::lf_debug!(
+                "hiveweb::try_init_langfuse: client created, calling set_langfuse_client"
+            );
             providers::set_langfuse_client(Some(std::sync::Arc::new(client)));
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: Langfuse LLM tracing initialised successfully");
+            langfuse::lf_debug!(
+                "hiveweb::try_init_langfuse: Langfuse LLM tracing initialised successfully"
+            );
             tracing::info!("Langfuse LLM tracing initialised");
         }
         None => {
@@ -128,8 +142,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|_| EnvFilter::new("debug"))
             .add_directive("hiveweb=debug".parse().unwrap())
     } else {
-        EnvFilter::from_default_env()
-            .add_directive("hiveweb=info".parse()?)
+        EnvFilter::from_default_env().add_directive("hiveweb=info".parse()?)
     };
 
     tracing_subscriber::fmt()
@@ -152,8 +165,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Host: {}, Port: {}", host, port);
 
     // Initialize database connection pool
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = db::connection::create_pool(&database_url).await?;
 
     // Mask password from database URL for logging
@@ -161,14 +173,35 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Database initialized: {}", db_url_display);
 
     // Initialize Redis connection
-    let redis_url = std::env::var("REDIS_URL")
-        .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     let redis = cache::redis::create_pool(&redis_url).await?;
     tracing::info!("Redis initialized: {}", mask_url_password(&redis_url));
 
     // Initialize S3 client
     let s3_client = storage::s3::create_client().await?;
     tracing::info!("S3 storage client initialized");
+
+    // Initialize external read-only database for assistant API
+    let ext_pool = match std::env::var("EXTERNAL_DB_URL") {
+        Ok(url) if !url.is_empty() => match db::connection::create_pool(&url).await {
+            Ok(p) => {
+                tracing::info!("External DB initialized: {}", mask_url_password(&url));
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "External DB connection failed ({}), assistant API will be unavailable",
+                    e
+                );
+                None
+            }
+        },
+        _ => {
+            tracing::info!("EXTERNAL_DB_URL not set, assistant API will be unavailable");
+            None
+        }
+    };
 
     // Startup step 4 (plan §Startup Initialization Order): builtin function upsert
     if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
@@ -177,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create router
-    let app = api::create_router(pool, redis, s3_client);
+    let app = api::create_router(pool, redis, s3_client, ext_pool);
     tracing::info!("HTTP router initialized with CORS and rate limiting");
 
     // Start server

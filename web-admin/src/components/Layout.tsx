@@ -21,6 +21,7 @@ import {
   SunOutlined,
   MoonOutlined,
   LockOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../hooks/useTheme';
@@ -58,6 +59,11 @@ const AppLayout: React.FC = () => {
                   key: '/recommended-games',
                   icon: <StarOutlined />,
                   label: '推荐游戏',
+                },
+                {
+                  key: '/game-aliases',
+                  icon: <TagsOutlined />,
+                  label: '游戏别名管理',
                 },
               ],
             },
@@ -142,6 +148,11 @@ const AppLayout: React.FC = () => {
                   key: '/runtime-audit-logs',
                   icon: <FileTextOutlined />,
                   label: 'Agent 审计日志',
+                },
+                {
+                  key: '/global-configs',
+                  icon: <SettingOutlined />,
+                  label: '全局配置',
                 },
               ],
             },

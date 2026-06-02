@@ -10,11 +10,11 @@
 
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -36,13 +36,14 @@ pub async fn test_app() -> Result<Router> {
              Run `./scripts/dev-up.sh -d` and export DATABASE_URL."
         )
     })?;
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
     let pool = hiveweb::db::connection::create_pool(&database_url).await?;
     let redis = hiveweb::cache::redis::create_pool(&redis_url).await?;
     let s3 = hiveweb::storage::s3::create_client().await?;
 
-    Ok(hiveweb::api::create_router(pool, redis, s3))
+    Ok(hiveweb::api::create_router(pool, redis, s3, None))
 }
 
 /// Open a direct MySQL pool from `DATABASE_URL` for seed / cleanup operations.
@@ -224,9 +225,8 @@ async fn send(app: &Router, req: Request<Body>) -> Result<(StatusCode, Value)> {
     let body: Value = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::String(
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ))
+        serde_json::from_slice(&bytes)
+            .unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     };
     Ok((status, body))
 }

@@ -28,6 +28,7 @@ serde_json = { workspace = true }
 # Authentication
 jsonwebtoken = { workspace = true }
 bcrypt = { workspace = true }
+md5 = "0.7"
 
 # Object storage (S3 compatible)
 aws-sdk-s3 = { workspace = true }

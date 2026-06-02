@@ -189,6 +189,19 @@ const MIGRATIONS: &[Migration] = &[
         version: "V043__drop_seq_from_chat_messages",
         sql: include_str!("../../migrations/V043__drop_seq_from_chat_messages.sql"),
     },
+    Migration {
+        version: "V044__create_global_configs",
+        sql: include_str!("../../migrations/V044__create_global_configs.sql"),
+    },
+    // ---------- 006 Game Alias Management ----------
+    Migration {
+        version: "V045__create_games_table",
+        sql: include_str!("../../migrations/V045__create_games_table.sql"),
+    },
+    Migration {
+        version: "V046__create_game_alias_entries_table",
+        sql: include_str!("../../migrations/V046__create_game_alias_entries_table.sql"),
+    },
 ];
 
 #[tokio::main]
@@ -247,11 +260,7 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         .lines()
         .map(|line| {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("--") {
-                ""
-            } else {
-                line
-            }
+            if trimmed.starts_with("--") { "" } else { line }
         })
         .collect::<Vec<_>>()
         .join("\n");

@@ -1,1 +1,3 @@
-{"feature_directory":"specs/004-agent-runtime"}
+{
+  "feature_directory": "specs/007-external-assistant-api"
+}

@@ -1,34 +1,33 @@
-pub mod auth;
 pub mod admin;
-pub mod dashboard;
 pub mod admin_audit_log;
-pub mod runtime_audit_log;
+pub mod auth;
+pub mod dashboard;
 pub mod login_record;
+pub mod runtime_audit_log;
 
 // 004 Agent Runtime
+pub mod admin_chat;
 pub mod agent;
+pub mod assistant;
 pub mod capability;
 pub mod category;
+pub mod chat_common;
 pub mod function;
+pub mod game;
+pub mod global_config;
 pub mod plugin;
+pub mod recommended_game;
 pub mod runtime;
 pub mod skill;
-pub mod admin_chat;
-pub mod chat_common;
-pub mod user_chat;
 pub mod tag;
 pub mod tool;
 pub mod user;
-pub mod workflow;
-pub mod recommended_game;
+pub mod user_chat;
 pub mod users;
+pub mod workflow;
 
-use axum::{
-    http::HeaderValue,
-    middleware,
-    Router,
-};
 use aws_sdk_s3::Client;
+use axum::{Router, http::HeaderValue, middleware};
 use redis::Client as RedisClient;
 use sqlx::MySqlPool;
 use tower_http::{
@@ -38,9 +37,9 @@ use tower_http::{
 use tracing::Level;
 
 use crate::middleware::auth::{admin_auth_middleware, user_auth_middleware};
-use crate::middleware::rate_limit::{rate_limit_middleware, RateLimitState};
-use crate::middleware::request_id::request_id_middleware;
+use crate::middleware::rate_limit::{RateLimitState, rate_limit_middleware};
 use crate::middleware::request_body_log::log_request_body_middleware;
+use crate::middleware::request_id::request_id_middleware;
 use crate::runtime::{
     CapabilityRegistry, InstancePool, Invoker, LlmRegistry, PoolConfig, RuntimeState,
     WorkflowExecutor,
@@ -55,6 +54,8 @@ pub struct AppState {
     pub s3: Client,
     /// 004 Agent Runtime — capability registry / instance pool / invoker / workflow / llm
     pub runtime_state: RuntimeState,
+    /// 外部只读数据库连接（assistant API 用户校验等）
+    pub ext_pool: Option<MySqlPool>,
 }
 
 /// 启动期严格 12 步顺序（plan §Startup Initialization Order）：
@@ -73,7 +74,12 @@ pub struct AppState {
 ///
 /// 当前 create_router 完成 9 + 10；3..8 + 11 在 main.rs 的 setup 阶段调用具体
 /// services（Phase 3..7 实现后接入）。
-pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router {
+pub fn create_router(
+    pool: MySqlPool,
+    redis: RedisClient,
+    s3: Client,
+    ext_pool: Option<MySqlPool>,
+) -> Router {
     let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
 
     let cors = if allowed_origins == "*" {
@@ -94,7 +100,8 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
     // ---- 004 Runtime state (steps 6+9; plan §Startup Initialization Order) ----
     let pool_inst = InstancePool::new(PoolConfig::from_env());
     let invoker = Arc::new(Invoker::new(pool_inst.clone()));
-    let llm_path = std::env::var("LLM_PRESETS_PATH").unwrap_or_else(|_| "./llm_presets.toml".to_string());
+    let llm_path =
+        std::env::var("LLM_PRESETS_PATH").unwrap_or_else(|_| "./llm_presets.toml".to_string());
     let llm = match LlmRegistry::load_from_path(&llm_path) {
         Ok(reg) => reg,
         Err(e) => {
@@ -110,7 +117,13 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         llm,
     };
 
-    let state = AppState { pool, redis, s3, runtime_state };
+    let state = AppState {
+        pool,
+        redis,
+        s3,
+        runtime_state,
+        ext_pool,
+    };
 
     // Rate-limit window is per-IP. Defaults: 100 req / 60 s.
     // Tune via env vars RATE_LIMIT_MAX and RATE_LIMIT_WINDOW_SECS.
@@ -132,7 +145,8 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
     let public_routes = Router::new()
         .merge(auth::router_public())
         .merge(users::router_public())
-        .merge(recommended_game::router_public());
+        .merge(recommended_game::router_public())
+        .merge(assistant::router());
 
     let admin_protected_routes = Router::new()
         .merge(auth::router_protected())
@@ -154,14 +168,22 @@ pub fn create_router(pool: MySqlPool, redis: RedisClient, s3: Client) -> Router 
         .merge(user::router())
         .merge(recommended_game::router())
         .merge(admin_chat::admin_router())
+        .merge(global_config::router())
+        .merge(game::router())
         .layer(middleware::from_fn(admin_auth_middleware))
-        .layer(middleware::from_fn_with_state(rate_limit_state.clone(), rate_limit_middleware));
+        .layer(middleware::from_fn_with_state(
+            rate_limit_state.clone(),
+            rate_limit_middleware,
+        ));
 
     let user_protected_routes = Router::new()
         .merge(users::router_protected())
         .merge(user_chat::user_router())
         .layer(middleware::from_fn(user_auth_middleware))
-        .layer(middleware::from_fn_with_state(rate_limit_state, rate_limit_middleware));
+        .layer(middleware::from_fn_with_state(
+            rate_limit_state,
+            rate_limit_middleware,
+        ));
 
     let api_routes = Router::new()
         .merge(public_routes)

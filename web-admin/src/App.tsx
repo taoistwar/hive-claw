@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { ConfigProvider, theme as antdTheme } from 'antd'
+import { ConfigProvider, theme as antdTheme, App as AntdApp } from 'antd'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import AdminPage from './pages/AdminPage'
@@ -20,6 +20,8 @@ import AdminAuditLogPage from './pages/AdminAuditLogPage'
 import LoginRecordPage from './pages/LoginRecordPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
 import UserManagementPage from './pages/UserManagementPage'
+import GlobalConfigPage from './pages/GlobalConfigPage'
+import GameAliasPage from './pages/GameAliasPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
@@ -155,6 +157,8 @@ function AppRoutes() {
           <Route path="runtime-audit-logs" element={<RuntimeAuditLogPage />} />
           <Route path="login-records" element={<LoginRecordPage />} />
           <Route path="settings/change-password" element={<ChangePasswordPage />} />
+          <Route path="global-configs" element={<GlobalConfigPage />} />
+          <Route path="game-aliases" element={<GameAliasPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -166,9 +170,11 @@ function App() {
   return (
     <ThemeProvider>
       <ThemeConfigProvider>
-        <AuthProvider>
-          <AppRoutes />
-        </AuthProvider>
+        <AntdApp>
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        </AntdApp>
       </ThemeConfigProvider>
     </ThemeProvider>
   )

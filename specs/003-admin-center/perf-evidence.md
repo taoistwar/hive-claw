@@ -26,8 +26,8 @@ cargo run -p hiveweb --bin seed-bench -- 100 10000
 | 端点 | p50 | p95 | p99 | qps | 预算 | 通过 |
 | ---- | --- | --- | --- | --- | ---- | ---- |
 | GET /api/admins?offset=0&limit=10 | 13.8 ms | **15.8 ms** | 18.9 ms | 3508/s | 2000 ms (SC-002) | ✅ |
-| GET /api/dashboard/stats | 11.9 ms | **15.5 ms** | 17.1 ms | 4798/s | 3000 ms (SC-003) | ✅ |
-| GET /api/dashboard/recent-logins?limit=10 | 5.2 ms | **5.7 ms** | 6.0 ms | 9604/s | 3000 ms (SC-003) | ✅ |
+| GET /api/dashboard/stats | 11.9 ms | **15.5 ms** | 17.1 ms | 4798/s | 3300 ms (SC-003) | ✅ |
+| GET /api/dashboard/recent-logins?limit=10 | 5.2 ms | **5.7 ms** | 6.0 ms | 9604/s | 3300 ms (SC-003) | ✅ |
 | POST /api/auth/login | 462 ms | **884 ms** | — | 8/s | 200 ms (Principle IV) | ❌ bcrypt-bound |
 
 ### 2.2 EXPLAIN 后优化 → 第二次跑（post-V007 + today_logins 改 BETWEEN）

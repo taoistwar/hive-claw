@@ -44,10 +44,11 @@ All notable changes to this feature branch since fork from `main` (003 admin-cen
 ### Fixed
 
 - V018 seed semicolon in capability description string was splitting migrate.rs statement parser → replaced `;` with `,` (commit ae366a4)
+- `POST /api/functions/:id/invoke` builtin 函数调用：移除占位错误 "待 US5 接入 ToolRegistry"，改为直接通过 `builtins::lookup()` + handler 执行（与 orchestrator 同路径）
 
 ### Deferred to follow-up
 
-- T079/T080 Builtin function trait impls + startup upsert (depends on agent::ToolRegistry assembly with DB tools)
+- T079/T080 Builtin function impls + DB upsert 已完成；`agent::ToolRegistry` 装配（让 orchestrator 通过 ToolRegistry 而非直接 handler 调度）仍推迟
 - T110 Workflow execute() topological run (deps on invoker; orchestrator currently returns "not yet wired" for kind=2 workspace tools)
 - T111 Workflow-wrapped Tool registration
 - `db.query` / `db.execute` / `llm.invoke` capability handlers (need named_queries.toml + providers chain reuse)

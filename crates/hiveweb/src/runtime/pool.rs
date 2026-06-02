@@ -60,7 +60,7 @@ impl PoolConfig {
             max_total: env("PLUGIN_POOL_MAX_TOTAL", 64),
             idle_timeout: Duration::from_secs(env("PLUGIN_POOL_IDLE_TIMEOUT_SEC", 600u64)),
             acquire_timeout: Duration::from_millis(env("PLUGIN_POOL_ACQUIRE_TIMEOUT_MS", 5000u64)),
-            call_timeout_ms: env("PLUGIN_CALL_TIMEOUT_MS", 30000u64),
+            call_timeout_ms: env("PLUGIN_CALL_TIMEOUT_MS", 33000u64),
             call_memory_mb: env("PLUGIN_CALL_MAX_MEMORY_MB", 128u64),
         }
     }

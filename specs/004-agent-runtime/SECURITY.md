@@ -128,7 +128,7 @@ INTERVAL N DAY`.
 | `SECRET_ALLOWLIST` | empty | Comma-separated env var names readable via secret.get |
 | `JWT_SECRET` | (placeholder) | **MUST** be rotated per deployment |
 | `PLUGIN_MAX_BYTES` | 16777216 | Cap per-Plugin upload bytes |
-| `PLUGIN_CALL_TIMEOUT_MS` | 30000 | Hard kill switch for plugin invocation |
+| `PLUGIN_CALL_TIMEOUT_MS` | 33000 | Hard kill switch for plugin invocation |
 | `PLUGIN_CALL_MAX_MEMORY_MB` | 128 | WASM linear memory cap |
 | `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` | 2 | Per-admin SSE stream cap |
 

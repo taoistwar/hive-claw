@@ -1,11 +1,32 @@
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::Client;
+use aws_sdk_s3::{Client, config::Region};
 
 pub async fn create_client() -> anyhow::Result<Client> {
-    let config = aws_config::defaults(BehaviorVersion::v2025_01_17())
+    let endpoint_url = std::env::var("AWS_ENDPOINT_URL")
+        .map_err(|_| anyhow::anyhow!("AWS_ENDPOINT_URL env var missing"))?;
+    let access_key = std::env::var("AWS_ACCESS_KEY_ID")
+        .map_err(|_| anyhow::anyhow!("AWS_ACCESS_KEY_ID env var missing"))?;
+    let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
+        .map_err(|_| anyhow::anyhow!("AWS_SECRET_ACCESS_KEY env var missing"))?;
+    let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+
+    let config = aws_config::defaults(BehaviorVersion::v2025_08_07())
+        .endpoint_url(endpoint_url)
+        .credentials_provider(aws_sdk_s3::config::Credentials::new(
+            access_key,
+            secret_key,
+            None,
+            None,
+            "env",
+        ))
         .load()
         .await;
-    let client = Client::new(&config);
+    
+    let client = Client::from_conf(
+        aws_sdk_s3::config::Builder::from(&config)
+            .region(Region::new(region))
+            .build(),
+    );
 
     tracing::info!("S3 client initialized successfully");
     Ok(client)

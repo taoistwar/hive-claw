@@ -346,7 +346,9 @@ export default function ChatPage() {
                 `,
               }}
             >
-              {history.map((m, index) => (
+              {history
+                .filter((m) => m.role !== 'tool')
+                .map((m, index) => (
                 <div
                   key={m.id}
                   style={{

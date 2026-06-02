@@ -566,8 +566,8 @@ export default function WorkflowPage() {
             <Form.Item name="description" label="description">
               <Input.TextArea rows={2} />
             </Form.Item>
-            <Form.Item name="timeout_ms" label="timeout_ms (默认 30000)">
-              <InputNumber min={1000} max={300000} style={{ width: '100%' }} />
+            <Form.Item name="timeout_ms" label="timeout_ms (默认 33000)">
+              <InputNumber min={1000} max={330000} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="category_id" label="分类">
               <CategoryTreeSelect placeholder="选择分类" />
@@ -619,7 +619,7 @@ export default function WorkflowPage() {
               <Input.TextArea rows={3} />
             </Form.Item>
             <Form.Item name="timeout_ms" label="timeout_ms">
-              <InputNumber min={1000} max={300000} style={{ width: '100%' }} />
+              <InputNumber min={1000} max={330000} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="category_id" label="分类">
               <CategoryTreeSelect placeholder="选择分类" />

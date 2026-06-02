@@ -158,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = cli.port.unwrap_or_else(|| {
         std::env::var("HIVEWEB_PORT")
-            .unwrap_or_else(|_| "3000".to_string())
+            .unwrap_or_else(|_| "3300".to_string())
             .parse::<u16>()
             .expect("HIVEWEB_PORT must be a valid number")
     });

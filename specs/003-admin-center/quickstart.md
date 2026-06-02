@@ -49,7 +49,7 @@ cargo run --bin create-super-admin -- \
 
 # 启动后端服务器
 cargo run
-# 默认运行在 http://localhost:3000
+# 默认运行在 http://localhost:3300
 ```
 
 ### 3. 前端设置 (web-admin)
@@ -344,7 +344,7 @@ Error: Address already in use
 **解决**:
 ```bash
 # 修改端口
-export HIVWEB_PORT=3001
+export HIVEWEB_PORT=3001
 cargo run
 ```
 
@@ -371,11 +371,11 @@ Network Error: Unable to connect to backend
 **解决**:
 ```bash
 # 检查后端是否启动
-curl http://localhost:3000/api/health
+curl http://localhost:3300/api/health
 
 # 检查前端配置
 cat web-admin/.env
-# 确保 VITE_API_URL=http://localhost:3000
+# 确保 VITE_API_URL=http://localhost:3300
 ```
 
 ## Environment Variables
@@ -384,8 +384,8 @@ cat web-admin/.env
 
 ```env
 # 服务器配置
-HIVWEB_HOST=127.0.0.1
-HIVWEB_PORT=3000
+HIVEWEB_HOST=127.0.0.1
+HIVEWEB_PORT=3300
 
 # 数据库配置
 DATABASE_URL=mysql://user:password@localhost:3306/hiveweb
@@ -403,7 +403,7 @@ RUST_LOG=info,hiveweb=debug
 
 ```env
 # API 地址
-VITE_API_URL=http://localhost:3000
+VITE_API_URL=http://localhost:3300
 
 # 应用配置
 VITE_APP_TITLE=管理中心
@@ -449,7 +449,7 @@ server {
 
     # 后端 API 代理
     location /api/ {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:3300;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }

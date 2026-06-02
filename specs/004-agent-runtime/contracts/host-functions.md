@@ -116,7 +116,7 @@ args:
   "url": "https://...",   // 必须匹配宿主白名单（hosts allowlist，由 Agent 间接控制）
   "headers": { "Authorization": "Bearer ..." } /* optional */,
   "body": "string"        /* optional, only for POST/PUT/PATCH */,
-  "timeout_ms": 5000      /* optional, capped at 30000 */
+  "timeout_ms": 5000      /* optional, capped at 33000 */
 }
 ```
 data:

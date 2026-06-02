@@ -72,14 +72,44 @@ async fn invoke_function(
 
     // 2. dispatch by kind
     if fn_row.kind == 1 {
-        // builtin: 待 US5 接入 ToolRegistry 后正式调；此处占位
-        return Err(AppError::Internal(
-            "builtin function invocation 待 US5 接入 ToolRegistry".into(),
-        )
+        // builtin — 直接调用宿主 handler（与 orchestrator 走相同路径）
+        let Some(builtin) = crate::runtime::builtins::lookup(&fn_row.identifier) else {
+            return Err(AppError::Internal(format!(
+                "builtin function「{}」未找到 handler",
+                fn_row.identifier
+            ))
+            .into_response());
+        };
+        let bctx = crate::runtime::builtins::BuiltinContext {
+            pool: &state.pool,
+            ext_pool: state.ext_pool.as_ref(),
+        };
+        match (builtin.handler)(body.input, &bctx) {
+            Ok(output) => {
+                return Ok(ApiResponse::success(InvokeResp {
+                    output,
+                    elapsed_ms: t0.elapsed().as_millis() as i32,
+                }));
+            }
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "builtin「{}」执行失败: {}",
+                    fn_row.identifier, e
+                ))
+                .into_response());
+            }
+        }
+    }
+
+    // 仅 kind=2 (custom function) 走 Plugin invoker；其他 kind 拒绝
+    if fn_row.kind != 2 {
+        return Err(AppError::BadRequest(format!(
+            "unsupported function kind={} for id={}",
+            fn_row.kind, id
+        ))
         .into_response());
     }
 
-    // custom (kind=2) — 走 Plugin invoker
     let plugin_id = fn_row.plugin_id.ok_or_else(|| {
         AppError::Internal(format!(
             "custom function「{}」(id={}) 缺少 plugin_id",

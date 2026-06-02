@@ -257,6 +257,7 @@ pub async fn run_tool_test(
         tools,
         permissions,
         children: vec![],
+        hooks: std::collections::HashMap::new(),
     };
     logger.log(&format!(
         "STEP4 OK: AgentContext built, tools_count={}",

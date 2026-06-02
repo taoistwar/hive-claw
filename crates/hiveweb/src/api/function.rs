@@ -68,7 +68,7 @@ async fn list_fns(
     });
     let filter = ListFilter {
         offset: q.offset.unwrap_or(0).max(0),
-        limit: q.limit.unwrap_or(20).clamp(1, 100),
+        limit: q.limit.unwrap_or(20).clamp(1, 1000),
         search: q.search.filter(|s| !s.is_empty()),
         category_id: q.category_id,
         kind,

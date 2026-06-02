@@ -21,7 +21,7 @@
 - [x] T002 Create `web-user/tsconfig.json` and `web-user/tsconfig.node.json`
 - [x] T003 Create `web-user/vite.config.ts`
 - [x] T004 Create `web-user/index.html`
-- [x] T005 Create `web-user/.env.example` with `VITE_API_URL=http://localhost:3000`
+- [x] T005 Create `web-user/.env.example` with `VITE_API_URL=http://localhost:3300`
 - [x] T006 Create `web-user/.gitignore`
 
 ---

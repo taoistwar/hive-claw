@@ -17,22 +17,28 @@
 //!   6. 外部 DB cc_user_membership VIP 判定（effective_end_time >= now）
 //!   7. Redis 日访问次数限流（VIP: vip_ask_times, 普通: normal_ask_times）
 //!   8. 内部 DB 同步用户（users 表，不存在则创建）
-//!   9. 调用 Main Agent（crates/agent AgentRunner）处理消息并返回结果（失败时回滚配额）
+//!   9. 获取或创建 session → append_user_message_user → 更新 title →
+//!      构建 OrchestratorDeps → run_session_user（SSE，与 post_message_sse 相同）
 
 use axum::{
-    Json, Router,
+    Router,
     extract::{Query, State},
+    response::{IntoResponse, Response},
     routing::post,
 };
+use axum::response::sse::Event;
+use futures::stream::{self, Stream};
 use redis::AsyncCommands;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Deserialize;
 use sqlx::MySqlPool;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::convert::Infallible;
+use std::sync::{Arc, OnceLock};
 
 use crate::api::AppState;
-use crate::utils::error::{ApiResponse, AppError};
+use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, sse_response, try_acquire_slot};
+use crate::services::chat_user as svc;
+use crate::utils::error::AppError;
 
 /// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
 static SECRET: OnceLock<String> = OnceLock::new();
@@ -52,13 +58,6 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 pub struct AssistantRequest {
     pub user_id: i64,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AssistantResponse {
-    pub success: bool,
-    pub reply: Option<String>,
     pub message: String,
 }
 
@@ -87,18 +86,16 @@ async fn assistant_chat(
     headers: axum::http::HeaderMap,
     Query(params): Query<HashMap<String, String>>,
     body: String,
-) -> Result<Json<ApiResponse<AssistantResponse>>, Json<ApiResponse<()>>> {
+) -> Response {
     // 0. Content-Type 校验
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if content_type != "application/json; charset=UTF-8" {
-        return Ok(Json(ApiResponse::success(AssistantResponse {
-            success: false,
-            reply: None,
-            message: "Invalid Content-Type, must be: application/json; charset=UTF-8".to_string(),
-        })));
+        return AppError::BadRequest("Invalid Content-Type, must be: application/json; charset=UTF-8".into())
+            .into_response::<()>()
+            .into_response();
     }
 
     // 1. MD5 签名校验
@@ -106,11 +103,9 @@ async fn assistant_chat(
     if !secret.is_empty() {
         let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
         if !verify_sign(secret, &body, sign) {
-            return Ok(Json(ApiResponse::success(AssistantResponse {
-                success: false,
-                reply: None,
-                message: "Invalid signature".to_string(),
-            })));
+            return AppError::BadRequest("Invalid signature".into())
+                .into_response::<()>()
+                .into_response();
         }
     }
 
@@ -118,50 +113,40 @@ async fn assistant_chat(
     let req: AssistantRequest = match serde_json::from_str(&body) {
         Ok(r) => r,
         Err(_) => {
-            return Ok(Json(ApiResponse::success(AssistantResponse {
-                success: false,
-                reply: None,
-                message: "Invalid request body".to_string(),
-            })));
+            return AppError::BadRequest("Invalid request body".into())
+                .into_response::<()>()
+                .into_response();
         }
     };
 
-    // 3. user_id > 0 校验（先校验，不消耗配额）
+    // 3. user_id > 0 校验
     if req.user_id <= 0 {
-        return Ok(Json(ApiResponse::success(AssistantResponse {
-            success: false,
-            reply: None,
-            message: "user_id must be positive".to_string(),
-        })));
+        return AppError::BadRequest("user_id must be positive".into())
+            .into_response::<()>()
+            .into_response();
     }
 
-    // 4. message 非空校验（空白字符也视为空，先校验，不消耗配额）
+    // 4. message 非空校验
     if req.message.trim().is_empty() {
-        return Ok(Json(ApiResponse::success(AssistantResponse {
-            success: false,
-            reply: None,
-            message: "message must not be empty".to_string(),
-        })));
+        return AppError::BadRequest("message must not be empty".into())
+            .into_response::<()>()
+            .into_response();
     }
 
     let ext_pool = match &state.ext_pool {
         Some(p) => p,
         None => {
-            return Ok(Json(ApiResponse::success(AssistantResponse {
-                success: false,
-                reply: None,
-                message: "Assistant service unavailable".to_string(),
-            })));
+            return AppError::Internal("Assistant service unavailable".into())
+                .into_response::<()>()
+                .into_response();
         }
     };
 
     // 5. 校验 user_id 是否存在于外部 cloud_user 表
     if !user_exists_in_cloud(ext_pool, req.user_id).await {
-        return Ok(Json(ApiResponse::success(AssistantResponse {
-            success: false,
-            reply: None,
-            message: "User not found".to_string(),
-        })));
+        return AppError::BadRequest("User not found".into())
+            .into_response::<()>()
+            .into_response();
     }
 
     // 6. 获取会员等级 & 判断是否 VIP
@@ -176,42 +161,95 @@ async fn assistant_chat(
     };
 
     if let Err(msg) = check_and_incr_daily_limit(&state.redis, &limit_key, max_times).await {
-        return Ok(Json(ApiResponse::success(AssistantResponse {
-            success: false,
-            reply: None,
-            message: msg,
-        })));
+        return AppError::BadRequest(msg).into_response::<()>().into_response();
     }
 
     // 8. 内部 users 表同步（不存在则创建）
     if let Err(e) = ensure_internal_user(&state.pool, req.user_id).await {
-        // 同步失败 → 回滚配额
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
-        return Err(Json(
-            AppError::Internal(format!("user sync: {e}")).into_response(),
-        ));
+        return AppError::Internal(format!("user sync: {e}"))
+            .into_response::<()>()
+            .into_response();
     }
 
-    // 9. 调用 Main Agent（crates/agent 编排）
-    let reply = match call_main_agent(&state, &req.message).await {
-        Ok(text) => text,
+    // 9. 获取最新 session 或创建新 session（与 post_message_sse 相同的业务逻辑）
+    let session = match get_or_create_session(&state.pool, req.user_id).await {
+        Ok(s) => s,
         Err(e) => {
-            // LLM 失败 → 回滚配额
             let _ = decr_daily_limit(&state.redis, &limit_key).await;
-            tracing::warn!(user_id = req.user_id, error = %e, "LLM call failed, quota rolled back");
-            return Ok(Json(ApiResponse::success(AssistantResponse {
-                success: false,
-                reply: None,
-                message: "Service busy, please retry later".to_string(),
-            })));
+            return e.into_response::<()>().into_response();
         }
     };
+    let session_id = session.id;
 
-    Ok(Json(ApiResponse::success(AssistantResponse {
-        success: true,
-        reply: Some(reply),
-        message: "ok".to_string(),
-    })))
+    // 10. Append user message
+    if let Err(e) = svc::append_user_message_user(&state.pool, session_id, req.user_id, &req.message).await {
+        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        return e.into_response::<()>().into_response();
+    }
+
+    // 11. Auto-generate title from first message (first 30 chars)
+    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
+        let title = req.message.chars().take(30).collect::<String>();
+        let _ = sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
+            .bind(&title)
+            .bind(session_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    // 12. SSE concurrency guard
+    if !try_acquire_slot(req.user_id, SseSlotConfig::USER).await {
+        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        return AppError::SseConcurrencyExceeded(
+            "并发会话过多，请关闭其它对话窗口后重试".into(),
+        )
+        .into_response::<()>()
+        .into_response();
+    }
+    let _guard = SseConcurrencyGuard {
+        actor_id: req.user_id,
+        is_admin: false,
+    };
+
+    // 13. Build OrchestratorDeps + spawn run_session_user (same as post_message_sse)
+    let pool = state.pool.clone();
+    let user_content = req.message.clone();
+
+    let history: Vec<crate::models::ChatMessageUser> =
+        svc::list_messages_user(&state.pool, session_id)
+            .await
+            .unwrap_or_default();
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+
+    let deps = crate::runtime::orchestrator::OrchestratorDeps {
+        pool: pool.clone(),
+        s3: state.s3.clone(),
+        llm: Arc::clone(&state.runtime_state.llm),
+        registry: Arc::clone(&state.runtime_state.capabilities),
+        invoker: Arc::clone(&state.runtime_state.invoker),
+        ext_pool: state.ext_pool.clone(),
+    };
+    tokio::spawn(async move {
+        crate::runtime::orchestrator::run_session_user(
+            deps,
+            session_id,
+            1,
+            req.user_id,
+            history,
+            user_content,
+            tx,
+        )
+        .await;
+    });
+
+    let final_stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        }));
+
+    sse_response(final_stream)
 }
 
 // ── 签名校验 ──
@@ -345,72 +383,28 @@ async fn ensure_internal_user(pool: &MySqlPool, user_id: i64) -> Result<(), anyh
     Ok(())
 }
 
-// ── Agent 调用（crates/agent 编排） ──
+// ── Session 获取/创建（与 post_message_sse 相同的 chat_sessions_user 逻辑） ──
 
-/// Main Agent 的数据库快照
-struct MainAgentCtx {
-    system_prompt: String,
-    model_preset: Option<String>,
-}
+/// 获取用户最新的 session，如果不存在则创建一个
+async fn get_or_create_session(
+    pool: &MySqlPool,
+    user_id: i64,
+) -> Result<crate::models::ChatSessionUser, AppError> {
+    // 查找最新 session（按 updated_at DESC）
+    let existing: Option<crate::models::ChatSessionUser> = sqlx::query_as(
+        "SELECT * FROM chat_sessions_user WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("session lookup: {e}")))?;
 
-/// 从 agents 表加载 Main Agent（默认 agent_id=1，V018 seed）
-async fn load_main_agent(pool: &MySqlPool) -> Result<MainAgentCtx, String> {
-    let row: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT system_prompt, model_preset FROM agents WHERE id = 1")
-            .bind(1i64)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| format!("agent fetch: {e}"))?;
-    let (system_prompt, model_preset) =
-        row.ok_or_else(|| "Main Agent (id=1) not found".to_string())?;
-    Ok(MainAgentCtx {
-        system_prompt,
-        model_preset,
-    })
-}
+    if let Some(session) = existing {
+        return Ok(session);
+    }
 
-/// 加载 Main Agent 并通过 AgentRunner 处理消息，返回最终文本。
-/// 无持久化 session，每次请求独立执行。
-async fn call_main_agent(state: &AppState, message: &str) -> Result<String, String> {
-    // 1. 加载 Main Agent 上下文
-    let ctx = load_main_agent(&state.pool)
-        .await
-        .map_err(|e| format!("agent load error: {e}"))?;
-
-    // 2. 构建 LLM provider
-    let (provider, model) = state
-        .runtime_state
-        .llm
-        .build_primary(ctx.model_preset.as_deref())
-        .map_err(|e| format!("LLM build error: {e}"))?;
-
-    // 3. 创建 AgentRunner
-    let runner = agent::runner::AgentRunner::new(provider);
-
-    // 4. 构建 initial_messages（OpenAI 格式）
-    let initial_messages = vec![
-        json!({"role": "system", "content": ctx.system_prompt}),
-        json!({"role": "user", "content": message}),
-    ];
-
-    // 5. 构建 AgentRunSpec
-    let spec = agent::runner::AgentRunSpec::new(
-        initial_messages,
-        agent::tools::ToolRegistry::new(),
-        model,
-        5,      // max_iterations
-        40_000, // max_tool_result_chars
-    );
-
-    // 6. 执行
-    let result = runner.run(spec).await;
-
-    // 7. 返回最终文本
-    result.final_content.ok_or_else(|| {
-        result
-            .error
-            .unwrap_or_else(|| "unknown agent error".to_string())
-    })
+    // 创建新 session
+    svc::create_user_session(pool, user_id, None).await
 }
 
 // ── 测试 ──
@@ -519,32 +513,6 @@ mod tests {
     }
 
     // ── JSON 序列化 ──
-
-    #[test]
-    fn assistant_response_serializes_correctly() {
-        let resp = AssistantResponse {
-            success: true,
-            reply: Some("hello".into()),
-            message: "ok".into(),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["success"], true);
-        assert_eq!(json["reply"], "hello");
-        assert_eq!(json["message"], "ok");
-    }
-
-    #[test]
-    fn assistant_response_error_serializes_without_reply() {
-        let resp = AssistantResponse {
-            success: false,
-            reply: None,
-            message: "User not found".into(),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["success"], false);
-        assert!(json["reply"].is_null());
-        assert_eq!(json["message"], "User not found");
-    }
 
     #[test]
     fn assistant_request_deserializes_correctly() {

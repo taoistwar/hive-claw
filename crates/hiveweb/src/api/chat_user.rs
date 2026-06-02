@@ -17,7 +17,8 @@ use crate::api::AppState;
 use crate::api::chat_common::{
     ListSessionsQuery, SseConcurrencyGuard, SseSlotConfig, sse_response, try_acquire_slot,
 };
-use crate::services::chat as svc;
+use crate::services::chat::{CreateSession, PostMessage, SessionList};
+use crate::services::chat_user as svc;
 use crate::utils::error::ApiResponse;
 use crate::utils::jwt::Claims;
 
@@ -40,7 +41,7 @@ pub fn user_router() -> Router<AppState> {
 async fn create_session(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
-    Json(body): Json<svc::CreateSession>,
+    Json(body): Json<CreateSession>,
 ) -> Result<ApiResponse<crate::models::ChatSessionUser>, ApiResponse<()>> {
     let user_id = claims.user_id.unwrap_or_default();
     svc::create_user_session(&state.pool, user_id, body.title)
@@ -53,7 +54,7 @@ async fn list_sessions(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Query(query): Query<ListSessionsQuery>,
-) -> Result<ApiResponse<svc::SessionList>, ApiResponse<()>> {
+) -> Result<ApiResponse<SessionList>, ApiResponse<()>> {
     let user_id = claims.user_id.unwrap_or_default();
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(50);
@@ -98,7 +99,7 @@ async fn post_message_sse(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Path(session_id): Path<i64>,
-    Json(body): Json<svc::PostMessage>,
+    Json(body): Json<PostMessage>,
 ) -> Response {
     let user_id = claims.user_id.unwrap_or_default();
 

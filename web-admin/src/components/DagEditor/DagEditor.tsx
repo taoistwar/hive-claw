@@ -318,12 +318,15 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       try {
         const cached = localStorage.getItem(STORAGE_KEY);
         if (cached) {
-          const { nodes: cachedNodes, edges: cachedEdges, functions: cachedFunctions, executionResult: cachedResult, lastRunInput: cachedInput } = JSON.parse(cached);
+          const { nodes: cachedNodes, edges: cachedEdges, executionResult: cachedResult, lastRunInput: cachedInput } = JSON.parse(cached);
           setNodes(cachedNodes);
           setEdges(cachedEdges);
-          setFunctions(cachedFunctions);
           if (cachedResult) setExecutionResult(cachedResult);
           if (cachedInput) setLastRunInput(cachedInput);
+          // 始终从 API 获取最新的函数列表，避免缓存导致新函数不显示
+          listFunctions({ limit: 500 })
+            .then((fnList) => setFunctions(fnList.items))
+            .catch(() => {});
           return;
         }
       } catch { /* ignore parse error, fallback to API */ }
@@ -332,7 +335,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     try {
       const [graph, fnList] = await Promise.all([
         getWorkflowGraph(workflowId),
-        listFunctions({ limit: 100 }),
+        listFunctions({ limit: 500 }),
       ]);
       setWorkflow(graph.workflow);
       setFunctions(fnList.items);
@@ -1053,7 +1056,13 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
             onChange={setPickedFn}
             style={{ width: '100%' }}
             showSearch
-            optionFilterProp="label"
+            filterOption={(input, option) => {
+              if (!option || option.value === undefined) return false;
+              const fn = functions.find((f) => f.id === option.value);
+              if (!fn) return false;
+              const searchText = `${fn.name} ${fn.identifier} ${fn.description || ''}`.toLowerCase();
+              return searchText.includes(input.toLowerCase());
+            }}
             options={functions.map((f) => ({
               value: f.id,
               label: `${f.name} (${f.identifier})`,

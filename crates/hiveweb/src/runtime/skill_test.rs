@@ -149,6 +149,7 @@ pub async fn run_skill_test(
         tools,
         permissions,
         children: vec![],
+        hooks: std::collections::HashMap::new(),
     };
 
     // 5. 构建 LLM request

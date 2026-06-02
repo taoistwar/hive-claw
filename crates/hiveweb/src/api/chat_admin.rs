@@ -18,7 +18,11 @@ use crate::api::AppState;
 use crate::api::chat_common::{
     ListSessionsQuery, SseConcurrencyGuard, SseSlotConfig, sse_response, try_acquire_slot,
 };
-use crate::services::chat::{self as svc, PostMessage};
+use crate::models::chat_admin::ChatSessionAdmin;
+use crate::services::chat::{CreateSession, PostMessage, SessionList};
+use crate::services::chat_admin::{
+    append_user_message_admin, check_ownership_admin, create_session_admin, delete_session_admin, fetch_session_admin, list_messages_admin, list_sessions_admin
+};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
 
@@ -44,13 +48,13 @@ pub fn admin_router() -> Router<AppState> {
 async fn admin_create_session(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
-    Json(body): Json<svc::CreateSession>,
-) -> Result<ApiResponse<crate::models::ChatSessionAdmin>, ApiResponse<()>> {
+    Json(body): Json<CreateSession>,
+) -> Result<ApiResponse<ChatSessionAdmin>, ApiResponse<()>> {
     let admin_id = match claims.admin_id {
         Some(id) => id,
         None => return Err(AppError::Internal("No admin context".to_string()).into_response()),
     };
-    svc::create_session(&state.pool, admin_id, body.title)
+    create_session_admin(&state.pool, admin_id, body.title)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -60,11 +64,11 @@ async fn admin_list_sessions(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Query(query): Query<ListSessionsQuery>,
-) -> Result<ApiResponse<svc::SessionList>, ApiResponse<()>> {
+) -> Result<ApiResponse<SessionList>, ApiResponse<()>> {
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(50);
     let search = query.search.as_deref();
-    svc::list_sessions_admin(
+    list_sessions_admin(
         &state.pool,
         claims.admin_id,
         claims.role,
@@ -82,12 +86,11 @@ async fn admin_delete_session(
     Extension(claims): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<()>, ApiResponse<()>> {
-    let session = svc::fetch_session_admin(&state.pool, id)
+    let session = fetch_session_admin(&state.pool, id)
         .await
         .map_err(|e| e.into_response())?;
-    svc::check_ownership_admin(&session, claims.admin_id, claims.role)
-        .map_err(|e| e.into_response())?;
-    svc::delete_session_admin(&state.pool, id)
+    check_ownership_admin(&session, claims.admin_id, claims.role).map_err(|e| e.into_response())?;
+    delete_session_admin(&state.pool, id)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -98,12 +101,11 @@ async fn admin_get_messages(
     Extension(claims): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<Vec<crate::models::ChatMessageAdmin>>, ApiResponse<()>> {
-    let session = svc::fetch_session_admin(&state.pool, id)
+    let session = fetch_session_admin(&state.pool, id)
         .await
         .map_err(|e| e.into_response())?;
-    svc::check_ownership_admin(&session, claims.admin_id, claims.role)
-        .map_err(|e| e.into_response())?;
-    svc::list_messages_admin(&state.pool, id)
+    check_ownership_admin(&session, claims.admin_id, claims.role).map_err(|e| e.into_response())?;
+    list_messages_admin(&state.pool, id)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -155,11 +157,11 @@ async fn admin_post_message_sse(
         Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
     };
 
-    let session = match svc::fetch_session_admin(&state.pool, id).await {
+    let session = match fetch_session_admin(&state.pool, id).await {
         Ok(s) => s,
         Err(e) => return IntoResponse::into_response(AppError::into_response::<()>(e)),
     };
-    if let Err(e) = svc::check_ownership_admin(&session, claims.admin_id, claims.role) {
+    if let Err(e) = check_ownership_admin(&session, claims.admin_id, claims.role) {
         return IntoResponse::into_response(AppError::into_response::<()>(e));
     }
 
@@ -173,11 +175,10 @@ async fn admin_post_message_sse(
         is_admin: true,
     };
 
-    let user_msg =
-        match svc::append_user_message_admin(&state.pool, id, admin_id, &body.content).await {
-            Ok(m) => m,
-            Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
-        };
+    let user_msg = match append_user_message_admin(&state.pool, id, admin_id, &body.content).await {
+        Ok(m) => m,
+        Err(e) => return IntoResponse::into_response(e.into_response::<()>()),
+    };
 
     // Auto-generate title from first message (first 30 chars)
     if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
@@ -195,7 +196,7 @@ async fn admin_post_message_sse(
     let _ = user_msg.id;
 
     let history: Vec<crate::models::ChatMessageAdmin> =
-        svc::list_messages_admin(&state.pool, session_id)
+        list_messages_admin(&state.pool, session_id)
             .await
             .unwrap_or_default();
 

@@ -49,14 +49,14 @@ npm run dev
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
-  "http://localhost:3000/api/game-aliases?page=1&page_size=10"
+  "http://localhost:3300/api/game-aliases?page=1&page_size=10"
 ```
 
 ### Search Game Aliases
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
-  "http://localhost:3000/api/game-aliases?q=王者"
+  "http://localhost:3300/api/game-aliases?q=王者"
 ```
 
 ### Create Game Alias
@@ -65,7 +65,7 @@ curl -H "Authorization: Bearer <token>" \
 curl -X POST -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"name":"王者荣耀","aliases":["Honor of Kings","王者农药","WZRY"]}' \
-  "http://localhost:3000/api/game-aliases"
+  "http://localhost:3300/api/game-aliases"
 ```
 
 ### Update Game Alias
@@ -74,14 +74,14 @@ curl -X POST -H "Authorization: Bearer <token>" \
 curl -X PUT -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"name":"王者荣耀（国服）","aliases":["Honor of Kings","王者农药"]}' \
-  "http://localhost:3000/api/game-aliases/1"
+  "http://localhost:3300/api/game-aliases/1"
 ```
 
 ### Delete Game Alias
 
 ```bash
 curl -X DELETE -H "Authorization: Bearer <token>" \
-  "http://localhost:3000/api/game-aliases/1"
+  "http://localhost:3300/api/game-aliases/1"
 ```
 
 ### Permission Test (Normal Admin)
@@ -91,7 +91,7 @@ curl -X DELETE -H "Authorization: Bearer <token>" \
 curl -X POST -H "Authorization: Bearer <normal-token>" \
   -H "Content-Type: application/json" \
   -d '{"name":"Test","aliases":["test1"]}' \
-  "http://localhost:3000/api/game-aliases"
+  "http://localhost:3300/api/game-aliases"
 
 # Expected response:
 # {"code": 2001, "data": null, "message": "权限不足，无法添加游戏别名"}
@@ -104,7 +104,7 @@ curl -X POST -H "Authorization: Bearer <normal-token>" \
 curl -X POST -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"name":"Test Game","aliases":["Honor of Kings"]}' \
-  "http://localhost:3000/api/game-aliases"
+  "http://localhost:3300/api/game-aliases"
 
 # Expected response:
 # {"code": 4008, "data": null, "message": "别名已被其他游戏使用"}

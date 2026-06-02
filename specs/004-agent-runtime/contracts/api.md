@@ -138,6 +138,7 @@ Response 201：plugin 对象。
 | POST | `/api/functions` | builtin 由代码注册不开放 API；只允许 kind=custom |
 | PUT | `/api/functions/:id` | 仅允许修改 name / description / category / tags / schemas（注意：改 schema 是破坏性的，前端二次确认） |
 | DELETE | `/api/functions/:id` | builtin 拒绝；custom 软删除？暂硬删（无引用时） |
+| POST | `/api/functions/:id/invoke` | RPC 式调用单个 Function（builtin 走宿主 handler，custom 走 WASM Plugin invoker） |
 
 Body for POST:
 ```json
@@ -154,6 +155,31 @@ Body for POST:
 }
 ```
 
+### POST /api/functions/:id/invoke
+
+将 Function 当作单一 RPC 调用执行。builtin（kind=1）直接走宿主 handler，custom（kind=2）走 WASM Plugin invoker。
+
+Body:
+```json
+{
+  "input": { "template": "Hello {name}", "vars": { "name": "World" } },
+  "agent_id": 1
+}
+```
+- `input`: 对应 Function 的 `input_schema`，必须是 JSON object
+- `agent_id`: 可选，默认 1（main agent），用于 Capability 鉴权
+
+Response 200:
+```json
+{
+  "code": 0,
+  "data": {
+    "output": "Hello World",
+    "elapsed_ms": 3
+  }
+}
+```
+
 ---
 
 ## 6. Workflows
@@ -165,7 +191,7 @@ metadata CRUD（不含节点/边）；其中 POST/PUT 只接受 `{identifier, na
 Returns full DAG:
 ```json
 {
-  "workflow": {"id": 5, "identifier": "ingest", "name": "Ingest pipeline", "timeout_ms": 30000},
+  "workflow": {"id": 5, "identifier": "ingest", "name": "Ingest pipeline", "timeout_ms": 33000},
   "nodes": [
     {"id": 11, "node_key": "fetch", "function_id": 21, "position": {"x": 100, "y": 50}},
     {"id": 12, "node_key": "parse", "function_id": 22, "position": {"x": 300, "y": 50}}

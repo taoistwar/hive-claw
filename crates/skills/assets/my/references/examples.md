@@ -16,7 +16,7 @@ Concrete scenarios showing when and how to use the my tool effectively.
 → my(action="check", key="max_iterations")
   → 40
 → my(action="check", key="_last_usage")
-  → {"prompt_tokens": 62000, "completion_tokens": 3000}
+  → {"prompt_tokens": 62000, "completion_tokens": 3300}
 → "I hit the iteration limit (40). The task was complex. I can ask the user if they want to increase it."
 ```
 

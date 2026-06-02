@@ -35,17 +35,17 @@ export interface SessionListParams {
 }
 
 export async function listSessions(params?: SessionListParams): Promise<SessionList> {
-  const resp = await apiClient.get<SessionList>('/chat/sessions', { params });
+  const resp = await apiClient.get<SessionList>('/admin-chat/sessions', { params });
   return resp.data;
 }
 
 export async function createSession(title?: string): Promise<ChatSession> {
-  const resp = await apiClient.post<ChatSession>('/chat/sessions', { title });
+  const resp = await apiClient.post<ChatSession>('/admin-chat/sessions', { title });
   return resp.data;
 }
 
 export async function getMessages(sessionId: number): Promise<ChatMessage[]> {
-  const resp = await apiClient.get<ChatMessage[]>(`/chat/sessions/${sessionId}/messages`);
+  const resp = await apiClient.get<ChatMessage[]>(`/admin-chat/sessions/${sessionId}/messages`);
   return resp.data;
 }
 
@@ -77,9 +77,9 @@ export async function sendMessageStream(
   const baseUrl =
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_URL ||
-    'http://localhost:3000/api';
+    'http://localhost:3300/api';
   const token = localStorage.getItem('auth_token') ?? '';
-  const resp = await fetch(`${baseUrl}/chat/sessions/${sessionId}/messages`, {
+  const resp = await fetch(`${baseUrl}/admin-chat/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -9,7 +9,7 @@
 
 ## Base URL
 
-- Development: `http://localhost:3000/api`
+- Development: `http://localhost:3300/api`
 - Production: `https://admin.example.com/api`
 
 ## Authentication

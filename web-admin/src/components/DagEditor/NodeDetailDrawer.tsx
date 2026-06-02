@@ -1115,10 +1115,27 @@ export function NodeDetailDrawer(props: NodeDetailDrawerProps) {
   const upstreamNodes = useMemo(() => {
     if (!props.allNodes || !props.allEdges) return [];
     const nodeMap = new Map(props.allNodes.map((n) => [n.id, n]));
-    const upstreamKeys = props.allEdges
-      .filter((e) => e.target === props.nodeKey)
-      .map((e) => e.source!);
-    return upstreamKeys.map((key) => {
+    // 构建 source -> targets 的邻接表，用于追溯上游
+    const parentMap = new Map<string, string[]>();
+    for (const e of props.allEdges) {
+      if (!e.source || !e.target) continue;
+      const parents = parentMap.get(e.target) || [];
+      parents.push(e.source);
+      parentMap.set(e.target, parents);
+    }
+    // BFS 收集所有祖先节点（不含当前节点自身）
+    const visited = new Set<string>();
+    const queue: string[] = [...(parentMap.get(props.nodeKey) || [])];
+    while (queue.length > 0) {
+      const key = queue.shift()!;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const ancestors = parentMap.get(key) || [];
+      for (const a of ancestors) {
+        if (!visited.has(a)) queue.push(a);
+      }
+    }
+    return Array.from(visited).map((key) => {
       const node = nodeMap.get(key);
       const data = node?.data as Record<string, unknown> | undefined;
       const fnId = data?.function_id as number | null | undefined;

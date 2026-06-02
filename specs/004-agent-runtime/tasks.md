@@ -43,7 +43,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T004 [P] 创建配置文件骨架 `crates/hiveweb/llm_presets.toml.example`，含 `default = "cheap-fast"` + 一两个示例 preset（primary + fallback）
 - [x] T005 [P] 创建 examples 目录 `examples/plugins/README.md`，说明 Rust PDK 编写 + 编译流程
 - [x] T149 [P] 创建 `crates/hiveweb/.env.example` 集中声明 004 新增 env var（在 003 已有基础上），共 15 项：
-  - **Plugin 上传 & 调用**：`PLUGIN_MAX_BYTES=16777216`、`PLUGIN_CALL_TIMEOUT_MS=30000`、`PLUGIN_CALL_MAX_MEMORY_MB=128`、`PLUGIN_CALL_FUEL=10000000000`
+  - **Plugin 上传 & 调用**：`PLUGIN_MAX_BYTES=16777216`、`PLUGIN_CALL_TIMEOUT_MS=33000`、`PLUGIN_CALL_MAX_MEMORY_MB=128`、`PLUGIN_CALL_FUEL=10000000000`
   - **Instance Pool**：`PLUGIN_POOL_MAX_PER_PLUGIN=8`、`PLUGIN_POOL_MAX_TOTAL=64`、`PLUGIN_POOL_IDLE_TIMEOUT_SEC=600`、`PLUGIN_POOL_ACQUIRE_TIMEOUT_MS=5000`
   - **Agent / Chat**：`AGENT_MAX_HOPS=5`、`CHAT_RETENTION_DAYS=30`、`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN=2`
   - **LLM / Audit**：`LLM_PRESETS_PATH=./llm_presets.toml`、`LLM_NODE_TIMEOUT_MS=25000`、`LLM_CHAIN_TIMEOUT_MS=45000`、`AUDIT_RETENTION_DAYS=90`

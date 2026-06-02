@@ -228,15 +228,24 @@ pub const CHAT_RESPOND_OUTPUT_SCHEMA: &str = r#"{
 
 // ---------- game_list ----------
 
-/// sync wrapper：在 tokio runtime 内桥接 async DB 查询
+/// sync wrapper：通过 `block_in_place` 在 tokio runtime 内桥接 async DB 查询。
+/// 不能用 `Handle::block_on` —— 当 caller 已经在 tokio worker 线程上（如 axum handler）
+/// 会 panic "Cannot start a runtime from within a runtime"。
 pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
-    let handle = tokio::runtime::Handle::try_current()
-        .map_err(|e| BuiltinError::Exec(format!("no tokio runtime: {e}")))?;
-    handle.block_on(game_list_async(ctx))
+    let pool = ctx.pool.clone();
+    let ext_pool = ctx.ext_pool.cloned();
+    tokio::task::block_in_place(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            game_list_async_impl(&pool, ext_pool.as_ref()).await
+        })
+    })
 }
 
 /// 合并内部 games 表 + 外部 cc_logic_game 表的游戏列表，格式化为文本
-async fn game_list_async(ctx: &BuiltinContext<'_>) -> BuiltinResult {
+async fn game_list_async_impl(
+    pool: &sqlx::MySqlPool,
+    ext_pool: Option<&sqlx::MySqlPool>,
+) -> BuiltinResult {
     // 1. 内部 games 表（含别名）
     let internal =
         sqlx::query_as::<_, (String, Option<String>)>(
@@ -244,7 +253,7 @@ async fn game_list_async(ctx: &BuiltinContext<'_>) -> BuiltinResult {
              LEFT JOIN game_alias_entries gae ON gae.game_id = g.id
              ORDER BY g.name",
         )
-        .fetch_all(ctx.pool)
+        .fetch_all(pool)
         .await
         .map_err(|e| BuiltinError::Exec(format!("game_list internal query: {e}")))?;
 
@@ -266,7 +275,7 @@ async fn game_list_async(ctx: &BuiltinContext<'_>) -> BuiltinResult {
     }
 
     // 2. 外部 cc_logic_game 表
-    if let Some(ext_pool) = ctx.ext_pool {
+    if let Some(ext_pool) = ext_pool {
         let external =
             sqlx::query_as::<_, (String,)>("SELECT name FROM cc_logic_game ORDER BY name")
                 .fetch_all(ext_pool)
@@ -292,7 +301,12 @@ async fn game_list_async(ctx: &BuiltinContext<'_>) -> BuiltinResult {
         })
         .collect();
 
-    Ok(Value::String(lines.join("\n")))
+    Ok(Value::Object(
+        serde_json::Map::from_iter([(
+            "data".to_string(),
+            Value::String(lines.join("\n")),
+        )]),
+    ))
 }
 
 pub const GAME_LIST_INPUT_SCHEMA: &str = r#"{
@@ -302,8 +316,13 @@ pub const GAME_LIST_INPUT_SCHEMA: &str = r#"{
 }"#;
 
 pub const GAME_LIST_OUTPUT_SCHEMA: &str = r#"{
-  "type": "string",
-  "description": "Formatted game list with aliases"
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "string",
+      "description": "Formatted game list with aliases"
+    }
+  }
 }"#;
 
 // ---------- Registry ----------
@@ -507,44 +526,68 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn format_template_basic() {
-        let r = format_template(json!({
-            "template": "Hello {name}, you are {age} years old",
-            "vars": {"name": "Alice", "age": 30}
-        }))
+    /// 测试用空 context — connect_lazy 不会真正连接 DB，仅满足签名要求
+    async fn test_ctx() -> BuiltinContext<'static> {
+        let test_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "mysql://root:root@localhost:3306/hive_claw_test".to_string());
+        let pool = Box::leak(Box::new(
+            sqlx::MySqlPool::connect_lazy(&test_url).expect("connect_lazy"),
+        ));
+        BuiltinContext {
+            pool,
+            ext_pool: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn format_template_basic() {
+        let ctx = test_ctx().await;
+        let r = format_template(
+            json!({
+                "template": "Hello {name}, you are {age} years old",
+                "vars": {"name": "Alice", "age": 30}
+            }),
+            &ctx,
+        )
         .unwrap();
         assert_eq!(r, Value::String("Hello Alice, you are 30 years old".into()));
     }
 
-    #[test]
-    fn json_parse_roundtrip() {
-        let r = json_parse(json!({"text": r#"{"a":1}"#})).unwrap();
+    #[tokio::test]
+    async fn json_parse_roundtrip() {
+        let ctx = test_ctx().await;
+        let r = json_parse(json!({"text": r#"{"a":1}"#}), &ctx).unwrap();
         assert_eq!(r, json!({"a": 1}));
     }
 
-    #[test]
-    fn json_stringify_pretty() {
-        let r = json_stringify(json!({"value": {"a": 1}, "pretty": true})).unwrap();
+    #[tokio::test]
+    async fn json_stringify_pretty() {
+        let ctx = test_ctx().await;
+        let r = json_stringify(json!({"value": {"a": 1}, "pretty": true}), &ctx).unwrap();
         let s = r.as_str().unwrap();
         assert!(s.contains("\n"));
     }
 
-    #[test]
-    fn regex_capture_groups() {
-        let r = text_regex_match(json!({
-            "text": "name=alice id=42",
-            "pattern": r"(\w+)=(\w+)",
-            "all": true
-        }))
+    #[tokio::test]
+    async fn regex_capture_groups() {
+        let ctx = test_ctx().await;
+        let r = text_regex_match(
+            json!({
+                "text": "name=alice id=42",
+                "pattern": r"(\w+)=(\w+)",
+                "all": true
+            }),
+            &ctx,
+        )
         .unwrap();
         let matches = r.get("matches").and_then(|m| m.as_array()).unwrap();
         assert_eq!(matches.len(), 2);
     }
 
-    #[test]
-    fn chat_respond_wraps() {
-        let r = chat_respond(json!({"content": "final answer"})).unwrap();
+    #[tokio::test]
+    async fn chat_respond_wraps() {
+        let ctx = test_ctx().await;
+        let r = chat_respond(json!({"content": "final answer"}), &ctx).unwrap();
         assert_eq!(r["final_content"], "final answer");
     }
 }

@@ -58,7 +58,7 @@ cargo run --bin create-super-admin -- \
 
 # 启动后端服务器
 cargo run
-# 访问 http://localhost:3000
+# 访问 http://localhost:3300
 ```
 
 ### 3. 管理中心前端 (web-admin)
@@ -186,7 +186,7 @@ npm run build
 docker build -t hiveweb .
 
 # 运行容器
-docker run -p 3000:3000 hiveweb
+docker run -p 3300:3300 hiveweb
 ```
 
 ## 环境变量
@@ -195,8 +195,8 @@ docker run -p 3000:3000 hiveweb
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `HIVWEB_HOST` | 服务器地址 | 127.0.0.1 |
-| `HIVWEB_PORT` | 服务器端口 | 3000 |
+| `HIVEWEB_HOST` | 服务器地址 | 127.0.0.1 |
+| `HIVEWEB_PORT` | 服务器端口 | 3300 |
 | `DATABASE_URL` | MySQL 连接字符串 | (必填) |
 | `REDIS_URL` | Redis 连接字符串 | redis://127.0.0.1:6379 |
 | `JWT_SECRET` | JWT 密钥 | (必填，至少 32 字符) |
@@ -210,7 +210,7 @@ docker run -p 3000:3000 hiveweb
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `VITE_API_URL` | 后端 API 地址 | http://localhost:3000 |
+| `VITE_API_URL` | 后端 API 地址 | http://localhost:3300 |
 | `VITE_APP_TITLE` | 应用标题 | 管理中心 |
 
 ## 常见问题
@@ -237,7 +237,7 @@ redis-cli ping
 修改端口：
 
 ```bash
-export HIVWEB_PORT=3001
+export HIVEWEB_PORT=3001
 cargo run
 ```
 

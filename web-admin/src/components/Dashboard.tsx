@@ -6,7 +6,7 @@ import { DashboardStats, LoginRecord, getDashboardStats, getRecentLogins } from 
 
 const { Title, Text } = Typography;
 
-const REFRESH_INTERVAL = 30000;
+const REFRESH_INTERVAL = 33000;
 
 const CARD_CONFIGS = [
   {

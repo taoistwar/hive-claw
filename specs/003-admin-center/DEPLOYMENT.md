@@ -26,8 +26,8 @@ For local development, `scripts/docker-compose.yml` provisions all infrastructur
 
 ```env
 # Server
-HIVWEB_HOST=0.0.0.0
-HIVWEB_PORT=3000
+HIVEWEB_HOST=0.0.0.0
+HIVEWEB_PORT=3300
 
 # MySQL
 DATABASE_URL=mysql://hiveweb:hiveweb@127.0.0.1:3306/hiveweb
@@ -128,7 +128,7 @@ Re-running with the same phone is rejected (uniqueness). To seed test data, use 
 cd crates/hiveweb
 cargo build --release
 ./target/release/migrate                     # apply migrations
-./target/release/hiveweb                     # start API on $HIVWEB_HOST:$HIVWEB_PORT
+./target/release/hiveweb                     # start API on $HIVEWEB_HOST:$HIVEWEB_PORT
 ```
 
 Recommended systemd unit (`/etc/systemd/system/hiveweb.service`):
@@ -181,7 +181,7 @@ server {
 
     # API
     location /api/ {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:3300;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;

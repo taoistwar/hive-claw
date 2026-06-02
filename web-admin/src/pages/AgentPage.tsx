@@ -1,9 +1,11 @@
 // AgentPage — Agent 树 + 详情 + 完整创建/编辑 (T125 + T124)
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Drawer, Modal, Space, Tag, Typography, message } from 'antd';
+import { Button, Drawer, Modal, Space, Tabs, Tag, Typography, message } from 'antd';
 
 import { AgentEditor, type AgentFormPayload } from '../components/AgentEditor';
+import AgentHookEditor from '../components/AgentHookEditor/AgentHookEditor';
+import HookExecutionLog from '../components/AgentHookEditor/HookExecutionLog';
 import { AgentTree } from '../components/AgentTree';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -222,16 +224,43 @@ export default function AgentPage() {
       <Drawer
         title={editing ? `编辑 Agent — ${editing.identifier}` : ''}
         open={!!editing}
-        width={680}
+        width={720}
         onClose={() => setEditing(null)}
         destroyOnHidden
       >
         {editing && (
-          <AgentEditor
-            initial={editing}
-            currentRole={admin?.role ?? 0}
-            onSubmit={onSubmit}
-            onCancel={() => setEditing(null)}
+          <Tabs
+            defaultActiveKey="basic"
+            items={[
+              {
+                key: 'basic',
+                label: '基本信息',
+                children: (
+                  <AgentEditor
+                    initial={editing}
+                    currentRole={admin?.role ?? 0}
+                    onSubmit={onSubmit}
+                    onCancel={() => setEditing(null)}
+                  />
+                ),
+              },
+              {
+                key: 'hooks',
+                label: 'Hook 配置',
+                children: (
+                  <AgentHookEditor
+                    agentId={editing.id}
+                    isMainAgent={editing.identifier === 'main'}
+                    currentRole={admin?.role ?? 0}
+                  />
+                ),
+              },
+              {
+                key: 'executions',
+                label: '执行历史',
+                children: <HookExecutionLog agentId={editing.id} />,
+              },
+            ]}
           />
         )}
       </Drawer>

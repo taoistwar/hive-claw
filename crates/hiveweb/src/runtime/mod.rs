@@ -13,6 +13,7 @@ pub mod builtin_tools;
 pub mod builtins;
 pub mod capabilities;
 pub mod capability;
+pub mod hook;
 pub mod invoker;
 pub mod llm;
 pub mod orchestrator;

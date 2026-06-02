@@ -1,4 +1,6 @@
 pub mod admin;
+pub mod agent;
+pub mod agent_hook;
 pub mod audit;
 pub mod auth;
 pub mod capability;
@@ -6,7 +8,6 @@ pub mod dashboard;
 pub mod login_record;
 
 // 004 Agent Runtime
-pub mod agent;
 pub mod category;
 pub mod chat;
 pub mod function;
@@ -23,3 +24,5 @@ pub mod tag;
 pub mod tool;
 pub mod user_auth;
 pub mod workflow;
+pub mod chat_admin;
+pub mod chat_user;

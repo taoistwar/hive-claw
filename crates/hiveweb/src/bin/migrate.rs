@@ -202,6 +202,23 @@ const MIGRATIONS: &[Migration] = &[
         version: "V046__create_game_alias_entries_table",
         sql: include_str!("../../migrations/V046__create_game_alias_entries_table.sql"),
     },
+    Migration {
+        version: "V047__add_user_id_to_chat_messages",
+        sql: include_str!("../../migrations/V047__add_user_id_to_chat_messages.sql"),
+    },
+    Migration {
+        version: "V048__add_elapsed_ms_to_chat_messages_user",
+        sql: include_str!("../../migrations/V048__add_elapsed_ms_to_chat_messages_user.sql"),
+    },
+    // ---------- 008 Agent Hook ----------
+    Migration {
+        version: "V049__create_agent_hooks_table",
+        sql: include_str!("../../migrations/V049__create_agent_hooks_table.sql"),
+    },
+    Migration {
+        version: "V050__create_hook_executions_table",
+        sql: include_str!("../../migrations/V050__create_hook_executions_table.sql"),
+    },
 ];
 
 #[tokio::main]

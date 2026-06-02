@@ -29,6 +29,9 @@ use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 use crate::services::chat as chat_svc;
+use crate::services::chat_admin::{append_assistant_message_admin, append_assistant_with_tool_calls_admin, append_tool_message_admin};
+use crate::services::chat_user::append_assistant_message_user;
+use crate::runtime::hook::{self, HookContext};
 use crate::services::runtime_audit::{self, AuditRecord};
 
 pub const ROUTE_TOOL_NAME: &str = "route_to_subagent";
@@ -59,7 +62,7 @@ pub async fn run_session_admin(
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
-    run_session_internal_admin(
+    run_session_internal_impl(
         deps,
         session_id,
         starting_agent_id,
@@ -67,6 +70,7 @@ pub async fn run_session_admin(
         &history,
         &user_content,
         &tx,
+        AppendVariant::Admin,
     )
     .await;
 }
@@ -80,7 +84,7 @@ pub async fn run_session_user(
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
 ) {
-    run_session_internal_user(
+    run_session_internal_impl(
         deps,
         session_id,
         starting_agent_id,
@@ -88,55 +92,12 @@ pub async fn run_session_user(
         &history,
         &user_content,
         &tx,
-    )
-    .await;
-}
-
-// ============================ Admin session internal ============================
-
-async fn run_session_internal_admin(
-    deps: OrchestratorDeps,
-    session_id: i64,
-    starting_agent_id: i64,
-    actor_id: i64,
-    history: &[crate::models::ChatMessageAdmin],
-    user_content: &str,
-    tx: &UnboundedSender<Result<Event, Infallible>>,
-) {
-    run_session_internal_impl(
-        deps,
-        session_id,
-        starting_agent_id,
-        actor_id,
-        history,
-        user_content,
-        tx,
-        AppendVariant::Admin,
-    )
-    .await;
-}
-
-async fn run_session_internal_user(
-    deps: OrchestratorDeps,
-    session_id: i64,
-    starting_agent_id: i64,
-    actor_id: i64,
-    history: &[crate::models::ChatMessageUser],
-    user_content: &str,
-    tx: &UnboundedSender<Result<Event, Infallible>>,
-) {
-    run_session_internal_impl(
-        deps,
-        session_id,
-        starting_agent_id,
-        actor_id,
-        history,
-        user_content,
-        tx,
         AppendVariant::User,
     )
     .await;
 }
+
+// ============================ Core implementation ============================
 
 enum AppendVariant {
     Admin,
@@ -211,9 +172,32 @@ async fn run_session_internal_impl<T>(
             Ok(c) => c,
             Err(e) => {
                 emit_error(&tx, 5000, format!("agent context: {e}"));
-                break;
+                break; // hooks not loaded — skip on_agent_error here (intentional, see spec edge case)
             }
         };
+
+        // ★ before_agent_start hook (blocking-capable)
+        {
+            let hctx = HookContext {
+                agent_id: ctx.agent_id,
+                identifier: ctx.identifier.clone(),
+                session_id,
+                actor_id,
+                request_id: String::new(),
+                trigger_point: "before_agent_start".into(),
+            };
+            if let Err(e) = hook::run_hooks(
+                Arc::new(deps.pool.clone()),
+                &ctx.hooks,
+                "before_agent_start",
+                &hctx,
+            )
+            .await
+            {
+                emit_error(&tx, 6005, e.to_string());
+                break;
+            }
+        }
 
         // 2. 构造 provider
         let (provider, model) = match deps.llm.build_primary(ctx.model_preset.as_deref()) {
@@ -251,6 +235,30 @@ async fn run_session_internal_impl<T>(
             let ev = Event::default().event("token").data(payload.to_string());
             let _ = tx_inner.send(Ok::<_, Infallible>(ev));
         });
+
+        // ★ before_llm_call hook (blocking-capable)
+        {
+            let hctx = HookContext {
+                agent_id: ctx.agent_id,
+                identifier: ctx.identifier.clone(),
+                session_id,
+                actor_id,
+                request_id: String::new(),
+                trigger_point: "before_llm_call".into(),
+            };
+            if let Err(e) = hook::run_hooks(
+                Arc::new(deps.pool.clone()),
+                &ctx.hooks,
+                "before_llm_call",
+                &hctx,
+            )
+            .await
+            {
+                emit_error(&tx, 6005, e.to_string());
+                break;
+            }
+        }
+
         let resp = provider
             .chat_stream_with_retry(
                 req,
@@ -270,7 +278,44 @@ async fn run_session_internal_impl<T>(
                 .unwrap_or_else(|| "LLM error".into());
             emit_error(&tx, resp.error_status_code.unwrap_or(5000) as u16, msg);
             audit_llm(&deps.pool, current_agent_id, "error", elapsed_start, &model).await;
+            // ★ on_agent_error hook (audit-only)
+            {
+                let hctx = HookContext {
+                    agent_id: ctx.agent_id,
+                    identifier: ctx.identifier.clone(),
+                    session_id,
+                    actor_id,
+                    request_id: String::new(),
+                    trigger_point: "on_agent_error".into(),
+                };
+                let _ = hook::run_hooks(
+                    Arc::new(deps.pool.clone()),
+                    &ctx.hooks,
+                    "on_agent_error",
+                    &hctx,
+                )
+                .await;
+            }
             break;
+        }
+
+        // ★ after_llm_call hook (audit-only)
+        {
+            let hctx = HookContext {
+                agent_id: ctx.agent_id,
+                identifier: ctx.identifier.clone(),
+                session_id,
+                actor_id,
+                request_id: String::new(),
+                trigger_point: "after_llm_call".into(),
+            };
+            let _ = hook::run_hooks(
+                Arc::new(deps.pool.clone()),
+                &ctx.hooks,
+                "after_llm_call",
+                &hctx,
+            )
+            .await;
         }
 
         // assistant content + tool_calls 都加入 messages，下一轮接 tool messages
@@ -317,7 +362,7 @@ async fn run_session_internal_impl<T>(
                 .iter()
                 .map(|tc| tc.to_openai_tool_call())
                 .collect();
-            let _ = chat_svc::append_assistant_with_tool_calls_admin(
+            let _ = append_assistant_with_tool_calls_admin(
                 &deps.pool,
                 session_id,
                 actor_id,
@@ -329,6 +374,42 @@ async fn run_session_internal_impl<T>(
         }
 
         for tc in &tool_calls {
+            // ★ before_tool_call hook (blocking-capable)
+            {
+                let hctx = HookContext {
+                    agent_id: ctx.agent_id,
+                    identifier: ctx.identifier.clone(),
+                    session_id,
+                    actor_id,
+                    request_id: String::new(),
+                    trigger_point: "before_tool_call".into(),
+                };
+                if let Err(e) = hook::run_hooks(
+                    Arc::new(deps.pool.clone()),
+                    &ctx.hooks,
+                    "before_tool_call",
+                    &hctx,
+                )
+                .await
+                {
+                    emit_error(&tx, 6005, e.to_string());
+                    // On hook abort, finalize without processing this tool
+                    return finalize_with_variant(
+                        &deps.pool,
+                        session_id,
+                        actor_id,
+                        &tx,
+                        elapsed_start,
+                        Some("Hook blocked tool execution".into()),
+                        current_agent_id,
+                        variant,
+                        Some(&ctx.hooks),
+                        Some(&ctx.identifier),
+                    )
+                    .await;
+                }
+            }
+
             // emit tool_call event
             let tc_payload = json!({
                 "tool_call_id": tc.id,
@@ -358,13 +439,32 @@ async fn run_session_internal_impl<T>(
 
             // Persist tool message to DB
             if matches!(variant, AppendVariant::Admin) {
-                let _ = chat_svc::append_tool_message_admin(
+                let _ = append_tool_message_admin(
                     &deps.pool,
                     session_id,
                     actor_id,
                     &tc.id,
                     &tc.name,
                     &serde_json::to_string(&result.payload).unwrap_or_default(),
+                )
+                .await;
+            }
+
+            // ★ after_tool_call hook (audit-only)
+            {
+                let hctx = HookContext {
+                    agent_id: ctx.agent_id,
+                    identifier: ctx.identifier.clone(),
+                    session_id,
+                    actor_id,
+                    request_id: String::new(),
+                    trigger_point: "after_tool_call".into(),
+                };
+                let _ = hook::run_hooks(
+                    Arc::new(deps.pool.clone()),
+                    &ctx.hooks,
+                    "after_tool_call",
+                    &hctx,
                 )
                 .await;
             }
@@ -394,6 +494,8 @@ async fn run_session_internal_impl<T>(
                         final_content,
                         final_agent_id,
                         variant,
+                        Some(&ctx.hooks),
+                        Some(&ctx.identifier),
                     )
                     .await;
                 }
@@ -435,6 +537,8 @@ async fn run_session_internal_impl<T>(
         final_content,
         final_agent_id,
         variant,
+        None,
+        None,  // ctx not available outside the loop
     )
     .await;
 }
@@ -448,6 +552,8 @@ async fn finalize_with_variant(
     content: Option<String>,
     final_agent_id: i64,
     variant: AppendVariant,
+    hooks: Option<&std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>>,
+    agent_identifier: Option<&str>,
 ) {
     let elapsed = started.elapsed().as_millis() as i32;
     if let Some(text) = content {
@@ -458,7 +564,7 @@ async fn finalize_with_variant(
                 } else {
                     None
                 };
-                let _ = chat_svc::append_assistant_message_admin(
+                let _ = append_assistant_message_admin(
                     pool,
                     session_id,
                     actor_id,
@@ -469,7 +575,7 @@ async fn finalize_with_variant(
                 .await;
             }
             AppendVariant::User => {
-                let _ = chat_svc::append_assistant_message_user(
+                let _ = append_assistant_message_user(
                     pool,
                     session_id,
                     actor_id,
@@ -480,6 +586,26 @@ async fn finalize_with_variant(
             }
         }
     }
+
+    // ★ after_agent_end hook (audit-only, before done event)
+    if let (Some(hooks_map), Some(ident)) = (hooks, agent_identifier) {
+        let hctx = HookContext {
+            agent_id: final_agent_id,
+            identifier: ident.to_string(),
+            session_id,
+            actor_id,
+            request_id: String::new(),
+            trigger_point: "after_agent_end".into(),
+        };
+        let _ = hook::run_hooks(
+            Arc::new(pool.clone()),
+            hooks_map,
+            "after_agent_end",
+            &hctx,
+        )
+        .await;
+    }
+
     let done = json!({
         "elapsed_ms": elapsed,
         "final_agent_id": if final_agent_id != 1 { Some(final_agent_id) } else { None },
@@ -504,6 +630,7 @@ pub(crate) struct AgentContext {
     pub(crate) tools: Vec<ToolRef>,
     pub(crate) permissions: Vec<String>,
     pub(crate) children: Vec<ChildAgent>,
+    pub(crate) hooks: std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>,
 }
 
 #[derive(Debug, Clone)]
@@ -666,6 +793,10 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
         })
         .collect();
 
+    let hooks = crate::services::agent_hook::load_hooks_for_agent(pool, agent_id)
+        .await
+        .unwrap_or_default();
+
     Ok(AgentContext {
         agent_id,
         identifier,
@@ -674,6 +805,7 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
         tools,
         permissions: perms.into_iter().map(|(c,)| c).collect(),
         children,
+        hooks,
     })
 }
 

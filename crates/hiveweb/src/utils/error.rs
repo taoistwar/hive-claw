@@ -62,6 +62,14 @@ pub mod codes {
     pub const BUILTIN_SKILL_PROTECTED: u16 = 5008;
     pub const POOL_BUSY: u16 = 5009;
     pub const BUILTIN_TOOL_PROTECTED: u16 = 5010;
+
+    // ----- 008 Agent Hook 配置管理（6001-6010） -----
+    pub const HOOK_TRIGGER_LIMIT_EXCEEDED: u16 = 6001;
+    pub const HOOK_REFERENCE_INVALID: u16 = 6002;
+    pub const HOOK_WEBHOOK_URL_INVALID: u16 = 6003;
+    pub const HOOK_EXECUTION_TIMEOUT: u16 = 6004;
+    pub const HOOK_BLOCKING_FAILED: u16 = 6005;
+    pub const HOOK_NOT_FOUND: u16 = 6006;
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +154,12 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         | codes::MODEL_PRESET_UNKNOWN => StatusCode::UNPROCESSABLE_ENTITY,
         codes::PLUGIN_INVOCATION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
         codes::POOL_BUSY => StatusCode::SERVICE_UNAVAILABLE,
+        // 008 — Agent Hook HTTP 映射
+        codes::HOOK_TRIGGER_LIMIT_EXCEEDED | codes::HOOK_REFERENCE_INVALID => StatusCode::UNPROCESSABLE_ENTITY,
+        codes::HOOK_WEBHOOK_URL_INVALID => StatusCode::BAD_REQUEST,
+        codes::HOOK_EXECUTION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
+        codes::HOOK_BLOCKING_FAILED => StatusCode::INTERNAL_SERVER_ERROR,
+        codes::HOOK_NOT_FOUND => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -203,6 +217,14 @@ pub enum AppError {
     BuiltinSkillProtected(String),
     PoolBusy(String),
     BuiltinToolProtected(String),
+
+    // ----- 008 Agent Hook（6001-6006） -----
+    HookTriggerLimitExceeded(String),
+    HookReferenceInvalid(String),
+    HookWebhookUrlInvalid(String),
+    HookExecutionTimeout(String),
+    HookBlockingFailed(String),
+    HookNotFound(String),
 }
 
 impl AppError {
@@ -250,6 +272,13 @@ impl AppError {
             AppError::BuiltinSkillProtected(_) => codes::BUILTIN_SKILL_PROTECTED,
             AppError::PoolBusy(_) => codes::POOL_BUSY,
             AppError::BuiltinToolProtected(_) => codes::BUILTIN_TOOL_PROTECTED,
+            // 008 Agent Hook
+            AppError::HookTriggerLimitExceeded(_) => codes::HOOK_TRIGGER_LIMIT_EXCEEDED,
+            AppError::HookReferenceInvalid(_) => codes::HOOK_REFERENCE_INVALID,
+            AppError::HookWebhookUrlInvalid(_) => codes::HOOK_WEBHOOK_URL_INVALID,
+            AppError::HookExecutionTimeout(_) => codes::HOOK_EXECUTION_TIMEOUT,
+            AppError::HookBlockingFailed(_) => codes::HOOK_BLOCKING_FAILED,
+            AppError::HookNotFound(_) => codes::HOOK_NOT_FOUND,
         }
     }
 
@@ -286,6 +315,12 @@ impl AppError {
             | AppError::BuiltinSkillProtected(m)
             | AppError::PoolBusy(m)
             | AppError::BuiltinToolProtected(m)
+            | AppError::HookTriggerLimitExceeded(m)
+            | AppError::HookReferenceInvalid(m)
+            | AppError::HookWebhookUrlInvalid(m)
+            | AppError::HookExecutionTimeout(m)
+            | AppError::HookBlockingFailed(m)
+            | AppError::HookNotFound(m)
             | AppError::GameAliasNotFound(m)
             | AppError::GameNameAlreadyExists(m)
             | AppError::GameNameEmpty(m)

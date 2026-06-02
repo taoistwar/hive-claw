@@ -4,9 +4,11 @@ pub mod role;
 
 // 004 Agent Runtime
 pub mod agent;
+pub mod agent_hook;
 pub mod capability;
 pub mod category;
-pub mod chat;
+pub mod chat_admin;
+pub mod chat_user;
 pub mod function;
 pub mod game;
 pub mod global_config;
@@ -29,7 +31,8 @@ pub use role::Role;
 pub use agent::Agent;
 pub use capability::Capability;
 pub use category::Category;
-pub use chat::{ChatMessageAdmin, ChatMessageUser, ChatSessionAdmin, ChatSessionUser};
+pub use chat_admin::{ChatMessageAdmin, ChatSessionAdmin};
+pub use chat_user::{ChatMessageUser, ChatSessionUser};
 pub use function::Function;
 pub use plugin::Plugin;
 pub use recommended_game::RecommendedGame;

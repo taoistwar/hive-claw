@@ -6,9 +6,10 @@ pub mod login_record;
 pub mod runtime_audit_log;
 
 // 004 Agent Runtime
-pub mod admin_chat;
+pub mod chat_admin;
 pub mod agent;
-pub mod assistant;
+pub mod agent_hook;
+pub mod chat_assistant;
 pub mod capability;
 pub mod category;
 pub mod chat_common;
@@ -22,7 +23,7 @@ pub mod skill;
 pub mod tag;
 pub mod tool;
 pub mod user;
-pub mod user_chat;
+pub mod chat_user;
 pub mod users;
 pub mod workflow;
 
@@ -146,7 +147,7 @@ pub fn create_router(
         .merge(auth::router_public())
         .merge(users::router_public())
         .merge(recommended_game::router_public())
-        .merge(assistant::router());
+        .merge(chat_assistant::router());
 
     let admin_protected_routes = Router::new()
         .merge(auth::router_protected())
@@ -164,10 +165,11 @@ pub fn create_router(
         .merge(runtime_audit_log::router())
         .merge(login_record::router())
         .merge(agent::router())
+        .merge(agent_hook::router())
         .merge(workflow::router())
         .merge(user::router())
         .merge(recommended_game::router())
-        .merge(admin_chat::admin_router())
+        .merge(chat_admin::admin_router())
         .merge(global_config::router())
         .merge(game::router())
         .layer(middleware::from_fn(admin_auth_middleware))
@@ -178,7 +180,7 @@ pub fn create_router(
 
     let user_protected_routes = Router::new()
         .merge(users::router_protected())
-        .merge(user_chat::user_router())
+        .merge(chat_user::user_router())
         .layer(middleware::from_fn(user_auth_middleware))
         .layer(middleware::from_fn_with_state(
             rate_limit_state,

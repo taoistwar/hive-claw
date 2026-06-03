@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 
 use config::paths::get_media_dir;
 
-const WORKSPACE_BOUNDARY_NOTE: &str =
-    " (this is a hard policy boundary, not a transient failure; \
+const WORKSPACE_BOUNDARY_NOTE: &str = " (this is a hard policy boundary, not a transient failure; \
      do not retry with shell tricks or alternative tools, and ask \
      the user how to proceed if the resource is genuinely required)";
 
@@ -65,8 +64,8 @@ mod tests {
     #[test]
     fn test_resolve_relative_path() {
         let workspace = Path::new("/workspace");
-        let result = resolve_workspace_path("subdir/file.txt", Some(workspace), None, None)
-            .unwrap();
+        let result =
+            resolve_workspace_path("subdir/file.txt", Some(workspace), None, None).unwrap();
         assert_eq!(result, Path::new("/workspace/subdir/file.txt"));
     }
 }

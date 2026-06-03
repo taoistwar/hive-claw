@@ -45,13 +45,9 @@ static BLOCKED_DEVICE_PATHS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     ])
 });
 
-static PROC_FD_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^/proc/\d+/fd/[012]$").unwrap()
-});
+static PROC_FD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^/proc/\d+/fd/[012]$").unwrap());
 
-static PROC_SELF_FD_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^/proc/self/fd/[012]$").unwrap()
-});
+static PROC_SELF_FD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^/proc/self/fd/[012]$").unwrap());
 
 fn is_blocked_device<P: AsRef<Path>>(path: P) -> bool {
     let raw = path.as_ref().to_string_lossy();
@@ -60,7 +56,9 @@ fn is_blocked_device<P: AsRef<Path>>(path: P) -> bool {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| raw.to_string());
 
-    if BLOCKED_DEVICE_PATHS.contains(raw.as_ref()) || BLOCKED_DEVICE_PATHS.contains(resolved.as_str()) {
+    if BLOCKED_DEVICE_PATHS.contains(raw.as_ref())
+        || BLOCKED_DEVICE_PATHS.contains(resolved.as_str())
+    {
         return true;
     }
     if PROC_FD_RE.is_match(&raw) || PROC_SELF_FD_RE.is_match(&raw) {
@@ -255,7 +253,11 @@ impl Tool for ReadFileTool {
             return Ok(Value::String(format!("Error: Not a file: {path}")));
         }
 
-        let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let ext = fp
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
 
         if ext == "pdf" {
             return Ok(Value::String(read_pdf(&fp, pages)));
@@ -448,7 +450,11 @@ impl QuoteTable {
                 continue;
             }
             let prev = if i > 0 { chars[i - 1] } else { ' ' };
-            let next = if i + 1 < chars.len() { chars[i + 1] } else { ' ' };
+            let next = if i + 1 < chars.len() {
+                chars[i + 1]
+            } else {
+                ' '
+            };
             if prev.is_alphanumeric() && next.is_alphanumeric() {
                 out.push('\u{2019}');
                 continue;
@@ -461,7 +467,9 @@ impl QuoteTable {
 }
 
 fn preserve_quote_style(old_text: &str, actual_text: &str, new_text: &str) -> String {
-    if QuoteTable::normalize(old_text.trim()) != QuoteTable::normalize(actual_text.trim()) || old_text == actual_text {
+    if QuoteTable::normalize(old_text.trim()) != QuoteTable::normalize(actual_text.trim())
+        || old_text == actual_text
+    {
         return new_text.to_string();
     }
     let mut styled = new_text.to_string();
@@ -612,7 +620,9 @@ fn find_trim_matches(content: &str, old_text: &str, normalize_quotes: bool) -> V
 
         let start = offsets[i];
         let mut end = offsets[i + window_size];
-        if content_lines[i + window_size - 1].ends_with('\n') || (i + window_size < content_lines.len()) {
+        if content_lines[i + window_size - 1].ends_with('\n')
+            || (i + window_size < content_lines.len())
+        {
             end = end.saturating_sub(1);
         }
         matches.push(MatchSpan {
@@ -672,13 +682,19 @@ fn diagnose_near_match(old_text: &str, actual_text: &str) -> Vec<String> {
     if old_text.to_lowercase() == actual_text.to_lowercase() && old_text != actual_text {
         hints.push("letter case differs".to_string());
     }
-    if collapse_internal_whitespace(old_text) == collapse_internal_whitespace(actual_text) && old_text != actual_text {
+    if collapse_internal_whitespace(old_text) == collapse_internal_whitespace(actual_text)
+        && old_text != actual_text
+    {
         hints.push("whitespace differs".to_string());
     }
-    if old_text.trim_end_matches('\n') == actual_text.trim_end_matches('\n') && old_text != actual_text {
+    if old_text.trim_end_matches('\n') == actual_text.trim_end_matches('\n')
+        && old_text != actual_text
+    {
         hints.push("trailing newline differs".to_string());
     }
-    if QuoteTable::normalize(old_text) == QuoteTable::normalize(actual_text) && old_text != actual_text {
+    if QuoteTable::normalize(old_text) == QuoteTable::normalize(actual_text)
+        && old_text != actual_text
+    {
         hints.push("quote style differs".to_string());
     }
     hints
@@ -721,7 +737,10 @@ fn similarity_ratio(a: &[&str], b: &[&str]) -> f64 {
 }
 
 fn strip_trailing_ws(text: &str) -> String {
-    text.lines().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn file_not_found_msg(path: &str, fp: &Path) -> String {
@@ -738,8 +757,15 @@ fn file_not_found_msg(path: &str, fp: &Path) -> String {
                         }
                     }
                 }
-                let close = fuzzy_close_matches(fp.file_name().and_then(|n| n.to_str()).unwrap_or(""), &siblings, 3);
-                suggestions = close.into_iter().map(|s| p.join(s).display().to_string()).collect();
+                let close = fuzzy_close_matches(
+                    fp.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                    &siblings,
+                    3,
+                );
+                suggestions = close
+                    .into_iter()
+                    .map(|s| p.join(s).display().to_string())
+                    .collect();
             }
         }
     }
@@ -790,7 +816,10 @@ fn not_found_msg(old_text: &str, content: &str, path: &str) -> String {
     if best_ratio > 0.5 {
         let diff = unified_diff(
             &old_text.lines().collect::<Vec<_>>(),
-            &best_window_lines.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            &best_window_lines
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
             "old_text (provided)",
             &format!("{} (actual, line {})", path, best_start),
         );
@@ -809,7 +838,10 @@ fn not_found_msg(old_text: &str, content: &str, path: &str) -> String {
     }
 
     if hints.is_empty() {
-        format!("Error: old_text not found in {}. No similar text found. Verify the file content.", path)
+        format!(
+            "Error: old_text not found in {}. No similar text found. Verify the file content.",
+            path
+        )
     } else {
         format!(
             "Error: old_text not found in {}. Possible cause: {}. Copy the exact text from read_file and try again.",
@@ -1051,11 +1083,14 @@ impl Tool for EditFileTool {
         let norm_old = old_text.replace("\r\n", "\n");
         let norm_new = new_text.replace("\r\n", "\n");
 
-        let is_markdown = fp.extension()
+        let is_markdown = fp
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| {
                 let lower = e.to_lowercase();
-                MARKDOWN_EXTS.iter().any(|ext| lower == *ext.trim_start_matches('.'))
+                MARKDOWN_EXTS
+                    .iter()
+                    .any(|ext| lower == *ext.trim_start_matches('.'))
             })
             .unwrap_or(false);
         let norm_new = if is_markdown {
@@ -1070,7 +1105,11 @@ impl Tool for EditFileTool {
         }
         let count = matches.len();
         if count > 1 && !replace_all {
-            let line_numbers: Vec<String> = matches.iter().take(3).map(|m| format!("line {}", m.line)).collect();
+            let line_numbers: Vec<String> = matches
+                .iter()
+                .take(3)
+                .map(|m| format!("line {}", m.line))
+                .collect();
             let mut preview = line_numbers.join(", ");
             if matches.len() > 3 {
                 preview.push_str(", ...");
@@ -1082,8 +1121,7 @@ impl Tool for EditFileTool {
             };
             return Ok(Value::String(format!(
                 "Warning: old_text appears {} times{}. Provide more context to make it unique, or set replace_all=true.",
-                count,
-                location_hint
+                count, location_hint
             )));
         }
 

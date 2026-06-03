@@ -6,7 +6,7 @@
 //!   Content-Type: application/json; charset=UTF-8
 //!
 //! 请求体：
-//!   { "user_id": 123, "message": "你好" }
+//!   { "user_id": 123, "message": "你好", "channel": "app", "platform": "android", "app_version": "1.0.0" }
 //!
 //! 处理流程：
 //!   1. Content-Type 校验
@@ -18,7 +18,7 @@
 //!   7. Redis 日访问次数限流（VIP: vip_ask_times, 普通: normal_ask_times）
 //!   8. 内部 DB 同步用户（users 表，不存在则创建）
 //!   9. 获取或创建 session → append_user_message_user → 更新 title →
-//!      构建 OrchestratorDeps → run_session_user（SSE，与 post_message_sse 相同）
+//!      构建 OrchestratorDeps → run_session_user → 收集完整回复 → 返回 JSON
 
 use axum::{
     Router,
@@ -27,16 +27,15 @@ use axum::{
     routing::post,
 };
 use axum::response::sse::Event;
-use futures::stream::{self, Stream};
 use redis::AsyncCommands;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 
 use crate::api::AppState;
-use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, sse_response, try_acquire_slot};
+use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
 use crate::services::chat_user as svc;
 use crate::utils::error::AppError;
 
@@ -59,6 +58,12 @@ pub fn router() -> Router<AppState> {
 pub struct AssistantRequest {
     pub user_id: i64,
     pub message: String,
+    /// 渠道（如 "app", "web", "api" 等）
+    pub channel: String,
+    /// 端：android、iphone、ipad、web 等
+    pub platform: String,
+    /// 客户端版本号
+    pub app_version: String,
 }
 
 // ── 外部数据库模型 ──
@@ -142,6 +147,8 @@ async fn assistant_chat(
         }
     };
 
+
+
     // 5. 校验 user_id 是否存在于外部 cloud_user 表
     if !user_exists_in_cloud(ext_pool, req.user_id).await {
         return AppError::BadRequest("User not found".into())
@@ -155,50 +162,15 @@ async fn assistant_chat(
     // 7. 日访问次数限流
     let limit_key = format!("assistant:daily:{}", req.user_id);
     let max_times = if is_vip {
-        get_config_number(&state.pool, "vip_ask_times", 50).await
+        get_config_number_cached(&state.redis, &state.pool, "vip_ask_times", 50).await
     } else {
-        get_config_number(&state.pool, "normal_ask_times", 5).await
+        get_config_number_cached(&state.redis, &state.pool, "normal_ask_times", 5).await
     };
 
     if let Err(msg) = check_and_incr_daily_limit(&state.redis, &limit_key, max_times).await {
         return AppError::BadRequest(msg).into_response::<()>().into_response();
     }
-
-    // 8. 内部 users 表同步（不存在则创建）
-    if let Err(e) = ensure_internal_user(&state.pool, req.user_id).await {
-        let _ = decr_daily_limit(&state.redis, &limit_key).await;
-        return AppError::Internal(format!("user sync: {e}"))
-            .into_response::<()>()
-            .into_response();
-    }
-
-    // 9. 获取最新 session 或创建新 session（与 post_message_sse 相同的业务逻辑）
-    let session = match get_or_create_session(&state.pool, req.user_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = decr_daily_limit(&state.redis, &limit_key).await;
-            return e.into_response::<()>().into_response();
-        }
-    };
-    let session_id = session.id;
-
-    // 10. Append user message
-    if let Err(e) = svc::append_user_message_user(&state.pool, session_id, req.user_id, &req.message).await {
-        let _ = decr_daily_limit(&state.redis, &limit_key).await;
-        return e.into_response::<()>().into_response();
-    }
-
-    // 11. Auto-generate title from first message (first 30 chars)
-    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
-        let title = req.message.chars().take(30).collect::<String>();
-        let _ = sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
-            .bind(&title)
-            .bind(session_id)
-            .execute(&state.pool)
-            .await;
-    }
-
-    // 12. SSE concurrency guard
+    // 8. SSE concurrency guard
     if !try_acquire_slot(req.user_id, SseSlotConfig::USER).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
         return AppError::SseConcurrencyExceeded(
@@ -212,7 +184,41 @@ async fn assistant_chat(
         is_admin: false,
     };
 
-    // 13. Build OrchestratorDeps + spawn run_session_user (same as post_message_sse)
+    // 9. 内部 users 表同步（不存在则创建）
+    if let Err(e) = ensure_internal_user(&state.pool, req.user_id).await {
+        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        return AppError::Internal(format!("user sync: {e}"))
+            .into_response::<()>()
+            .into_response();
+    }
+
+    // 10. 获取最新 session 或创建新 session（与 post_message_sse 相同的业务逻辑）
+    let session = match get_or_create_session(&state.pool, req.user_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            return e.into_response::<()>().into_response();
+        }
+    };
+    let session_id = session.id;
+
+    // 12. Append user message
+    if let Err(e) = svc::append_user_message_user(&state.pool, session_id, req.user_id, &req.message).await {
+        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        return e.into_response::<()>().into_response();
+    }
+
+    // 12. Auto-generate title from first message (first 30 chars)
+    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
+        let title = req.message.chars().take(30).collect::<String>();
+        let _ = sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
+            .bind(&title)
+            .bind(session_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    // 13. Build OrchestratorDeps + run session (collect full response, return JSON)
     let pool = state.pool.clone();
     let user_content = req.message.clone();
 
@@ -221,7 +227,7 @@ async fn assistant_chat(
             .await
             .unwrap_or_default();
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: pool.clone(),
@@ -230,8 +236,12 @@ async fn assistant_chat(
         registry: Arc::clone(&state.runtime_state.capabilities),
         invoker: Arc::clone(&state.runtime_state.invoker),
         ext_pool: state.ext_pool.clone(),
+        message: req.message.clone(),
+        channel: req.channel.clone(),
+        platform: req.platform.clone(),
+        app_version: req.app_version.clone(),
     };
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         crate::runtime::orchestrator::run_session_user(
             deps,
             session_id,
@@ -244,12 +254,142 @@ async fn assistant_chat(
         .await;
     });
 
-    let final_stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
-        Box::pin(stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
-        }));
+    // Collect all SSE events and build the full response
+    let mut reply = String::new();
+    let mut elapsed_ms: Option<u64> = None;
+    let mut first_error: Option<String> = None;
+    let mut extensions: Vec<serde_json::Value> = Vec::new();
 
-    sse_response(final_stream)
+    while let Some(result) = rx.recv().await {
+        match result {
+            Ok(event) => {
+                let sse_text = event_to_sse_text(&event);
+                let (event_type, data) = parse_sse_event(&sse_text);
+                match event_type.as_deref() {
+                    Some("token") => {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Some(text) = parsed.get("text").and_then(|v| v.as_str()) {
+                                reply.push_str(text);
+                            }
+                        }
+                    }
+                    Some("done") => {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                            elapsed_ms = parsed.get("elapsed_ms").and_then(|v| v.as_u64());
+                        }
+                    }
+                    Some("extensions") => {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Some(exts) = parsed.get("extensions").and_then(|v| v.as_array()) {
+                                extensions = exts.clone();
+                            }
+                        }
+                    }
+                    Some("error") => {
+                        if first_error.is_none() {
+                            first_error = Some(data);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(_) => {} // Infallible
+        }
+    }
+
+    // Ensure the spawned task completes
+    let _ = handle.await;
+
+    // If run_session_user emitted an error, roll back quota and return error
+    if let Some(err_msg) = first_error {
+        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        return AppError::Internal(err_msg)
+            .into_response::<()>()
+            .into_response();
+    }
+
+    let response = AssistantResponse {
+        reply,
+        elapsed_ms,
+        extensions: if extensions.is_empty() { None } else { Some(extensions) },
+    };
+
+    axum::Json(response).into_response()
+}
+
+/// Extract the SSE-formatted text from an axum 0.7 `Event` by parsing its Debug output.
+///
+/// axum 0.7's `Event` stores data in a `pub(crate) buffer: BytesMut` field,
+/// which does not expose its contents publicly. We recover the raw SSE text
+/// by parsing the `Debug` representation of the struct.
+fn event_to_sse_text(event: &Event) -> String {
+    let debug = format!("{:?}", event);
+    // Debug format: Event { buffer: b"event: ...\ndata: ...\n", flags: EventFlags(N) }
+    if let Some(start) = debug.find("buffer: b\"") {
+        let rest = &debug[start + 10..]; // skip "buffer: b\""
+        if let Some(end) = rest.rfind('"') {
+            let escaped = &rest[..end];
+            return unescape_bytesmut_debug(escaped);
+        }
+    }
+    String::new()
+}
+
+/// Unescape a string produced by `bytes::BytesMut`'s `Debug` implementation.
+fn unescape_bytesmut_debug(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('0') => out.push('\0'),
+                Some('x') => {
+                    // hex escape: \xNN
+                    let h1 = chars.next().unwrap_or('0');
+                    let h2 = chars.next().unwrap_or('0');
+                    if let Ok(b) = u8::from_str_radix(&format!("{h1}{h2}"), 16) {
+                        out.push(b as char);
+                    }
+                }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Parse a single SSE-formatted event text into (event_type, data).
+fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
+    let mut event_type = None;
+    let mut data = String::new();
+    for line in sse_text.lines() {
+        if let Some(rest) = line.strip_prefix("event: ") {
+            event_type = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("data: ") {
+            data = rest.to_string();
+        }
+    }
+    (event_type, data)
+}
+
+#[derive(Serialize)]
+struct AssistantResponse {
+    reply: String, 
+    elapsed_ms: Option<u64>,
+    /// AgentContext extensions (cards, images, suggestions, etc.) from hook/function execution
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extensions: Option<Vec<serde_json::Value>>,
 }
 
 // ── 签名校验 ──
@@ -348,13 +488,78 @@ fn seconds_until_midnight() -> u64 {
     (dur.num_seconds() + 1).max(60) as u64
 }
 
-// ── 全局配置读取 ──
+// ── 全局配置读取（Redis 优先，回退 DB） ──
 
+/// 从 Redis 读取配置值，如果不存在则从 DB 加载并写入 Redis。
+async fn get_config_number_cached(
+    redis: &redis::Client,
+    pool: &MySqlPool,
+    key: &str,
+    default: i64,
+) -> i64 {
+    let cache_key = format!("config:{}", key);
+
+    // 1. 尝试从 Redis 读取
+    let mut conn = match redis.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Redis connection failed, falling back to DB for config '{key}': {e}");
+            return get_config_number(pool, key, default).await;
+        }
+    };
+
+    let cached: Option<String> = conn.get(&cache_key).await.unwrap_or(None);
+    if let Some(val) = cached {
+        if let Ok(n) = val.parse::<i64>() {
+            return n;
+        }
+    }
+
+    // 2. Redis 没有，从 DB 读取
+    let value = get_config_number(pool, key, default).await;
+
+    // 3. 写入 Redis，TTL 1 小时
+    let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
+
+    value
+}
+
+/// 直接从 DB 读取配置值（fallback）
 async fn get_config_number(pool: &MySqlPool, key: &str, default: i64) -> i64 {
     match crate::services::global_config::fetch_by_key(pool, key).await {
         Ok(cfg) => cfg.data["value"].as_i64().unwrap_or(default),
         Err(_) => default,
     }
+}
+
+/// 需要缓存的配置 key 列表（用于 admin 修改后刷新 Redis 缓存）
+pub const CACHED_CONFIG_KEYS: &[&str] = &["vip_ask_times", "normal_ask_times"];
+
+/// 将指定 key 的配置值同步到 Redis（用于 admin 修改配置后主动刷新缓存）。
+pub async fn sync_config_to_redis(redis: &redis::Client, pool: &MySqlPool, key: &str) {
+    let cache_key = format!("config:{}", key);
+    let value = get_config_number(pool, key, -1).await;
+    if value < 0 {
+        // 配置不存在，删除 Redis 缓存
+        let mut conn = match redis.get_multiplexed_async_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Redis connection failed during config cache delete '{key}': {e}");
+                return;
+            }
+        };
+        let _: Result<(), _> = conn.del(&cache_key).await;
+        return;
+    }
+    let mut conn = match redis.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Redis connection failed during config cache sync '{key}': {e}");
+            return;
+        }
+    };
+    let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
+    tracing::info!(key, value, "config cache synced to Redis");
 }
 
 // ── 内部用户同步 ──
@@ -516,10 +721,13 @@ mod tests {
 
     #[test]
     fn assistant_request_deserializes_correctly() {
-        let body = r#"{"user_id":42,"message":"hi"}"#;
+        let body = r#"{"user_id":42,"message":"hi","channel":"app","platform":"android","app_version":"1.0.0"}"#;
         let req: AssistantRequest = serde_json::from_str(body).unwrap();
         assert_eq!(req.user_id, 42);
         assert_eq!(req.message, "hi");
+        assert_eq!(req.channel, "app");
+        assert_eq!(req.platform, "android");
+        assert_eq!(req.app_version, "1.0.0");
     }
 
     #[test]

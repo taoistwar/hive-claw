@@ -518,6 +518,33 @@ impl AgentContext {
         Ok(())
     }
 
+    /// Record an agent delegation (sub-agent invocation) in the audit log.
+    ///
+    /// Public API for external orchestrators to record sub-agent fork/merge events.
+    pub fn record_delegation(
+        &self,
+        subagent_id: String,
+        delegation_chain: String,
+        input: serde_json::Value,
+        output: Option<serde_json::Value>,
+        success: bool,
+        started_at: chrono::DateTime<chrono::Utc>,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), ContextError> {
+        self.check_write_allowed()?;
+        self.audit_logger.record_delegation(
+            &mut self.audit_log.write().unwrap(),
+            subagent_id,
+            delegation_chain,
+            input,
+            output,
+            success,
+            started_at,
+            completed_at,
+        );
+        Ok(())
+    }
+
     /// Get the full audit log (snapshot).
     pub fn get_audit_log(&self) -> Vec<AuditRecord> {
         self.audit_log.read().map(|g| g.clone()).unwrap_or_default()

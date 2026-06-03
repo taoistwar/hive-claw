@@ -15,7 +15,6 @@ import { SchemaEditor } from '../SchemaEditor';
 import { ModelPresetSelect } from '../ModelPresetSelect';
 import { AgentTree } from '../AgentTree';
 import { CapabilityPicker } from '../CapabilityPicker';
-import { ChatStream } from '../ChatStream';
 
 // Mock services so isolated components don't fire HTTP
 vi.mock('../../services/capability', () => ({
@@ -117,37 +116,4 @@ describe('a11y — 004 SC-008 gate', () => {
     await expectNoCriticalA11yViolations(container);
   });
 
-  it('T161 ChatStream (idle) has no critical/serious violations', async () => {
-    const { container } = render(
-      <ChatStream events={[]} tokenBuffer="" pending={false} />,
-    );
-    await expectNoCriticalA11yViolations(container);
-  });
-
-  it('T161 ChatStream (with events) has no critical/serious violations', async () => {
-    const { container } = render(
-      <ChatStream
-        events={[
-          { type: 'token', text: 'Hello ' },
-          {
-            type: 'tool_call',
-            tool_call_id: 'tc1',
-            name: 'weather.lookup',
-            args: { city: 'Tokyo' },
-          },
-          {
-            type: 'tool_result',
-            tool_call_id: 'tc1',
-            result: { temp_c: 21, summary: 'Sunny' },
-          },
-          { type: 'routed', agent_id: 2, agent_identifier: 'rust-expert' },
-          { type: 'fallback_used', from: 'gpt-4o-mini', to: 'claude-haiku', reason: '5xx' },
-          { type: 'done', elapsed_ms: 1842, final_agent_id: 2 },
-        ]}
-        tokenBuffer="Hello world"
-        pending={false}
-      />,
-    );
-    await expectNoCriticalA11yViolations(container);
-  });
 });

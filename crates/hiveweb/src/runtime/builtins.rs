@@ -9,6 +9,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
+use std::sync::Arc;
+
+use agent::context::AgentContext;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuiltinError {
@@ -20,10 +23,13 @@ pub enum BuiltinError {
 
 pub type BuiltinResult = Result<Value, BuiltinError>;
 
-/// 内置函数执行时需要的上下文（DB 连接池）
+/// 内置函数执行时需要的上下文（DB 连接池 + AgentContext）
 pub struct BuiltinContext<'a> {
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
+    /// AgentContext for reading/writing runtime state during hook/tool execution.
+    /// `None` when called from contexts without AgentContext (e.g., workflow executor).
+    pub agent_ctx: Option<Arc<AgentContext>>,
 }
 
 // ---------- format.template ----------
@@ -536,6 +542,7 @@ mod tests {
         BuiltinContext {
             pool,
             ext_pool: None,
+            agent_ctx: None,
         }
     }
 

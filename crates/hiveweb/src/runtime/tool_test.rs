@@ -9,8 +9,9 @@ use sqlx::MySqlPool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use agent::context::{AgentContext, ContextConfig, UserInput};
 use super::orchestrator::{
-    AgentContext, OrchestratorDeps, ToolRef, build_tools_schema_simple, handle_workspace_tool,
+    AgentContent, OrchestratorDeps, ToolRef, build_tools_schema_simple, handle_workspace_tool,
 };
 use crate::services::runtime_audit::{self, AuditRecord};
 
@@ -249,7 +250,7 @@ pub async fn run_tool_test(
         .map(|c| c.name.to_string())
         .collect();
 
-    let ctx = AgentContext {
+    let ctx = AgentContent {
         agent_id: 0, // 测试模式，不需要真实 agent_id
         identifier: format!("test_tool_{}", tool_id),
         system_prompt,
@@ -401,7 +402,18 @@ pub async fn run_tool_test(
             idx, tool_ref.kind
         ));
 
-        let outcome = handle_workspace_tool(deps, &ctx, tool_ref, tc, 0).await;
+        let agent_ctx = Arc::new(AgentContext::new(
+            "tool-test".into(),
+            UserInput {
+                raw_text: String::new(),
+                session_id: None,
+                message_id: None,
+                timestamp: chrono::Utc::now(),
+                metadata: std::collections::HashMap::new(),
+            },
+            ContextConfig::default(),
+        ));
+        let outcome = handle_workspace_tool(deps, &ctx, tool_ref, tc, 0, agent_ctx).await;
         logger.log(&format!(
             "STEP9.{}: handle_workspace_tool returned, payload_keys={:?}",
             idx,

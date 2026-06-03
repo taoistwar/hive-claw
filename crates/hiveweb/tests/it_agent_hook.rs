@@ -713,13 +713,28 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
 /// Runs `run_hooks()` 1000 times against an empty hook map and reports p50/p95/p99.
 #[tokio::test]
 async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
-    use hiveweb::runtime::hook::{run_hooks, HookContext};
+    use hiveweb::runtime::hook::{run_hooks, HookContext, HookDeps};
+    use hiveweb::runtime::capability::CapabilityRegistry;
+    use hiveweb::runtime::llm::LlmRegistry;
+    use hiveweb::runtime::invoker::Invoker;
+    use hiveweb::runtime::pool::{InstancePool, PoolConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
 
     let pool = common::test_pool().await?;
     let pool = Arc::new(pool);
+
+    // Build minimal HookDeps (never accessed when hooks list is empty)
+    let s3_client = hiveweb::storage::s3::create_client().await?;
+    let instance_pool = InstancePool::new(PoolConfig::from_env());
+    let deps = HookDeps {
+        s3: s3_client,
+        llm: Arc::new(LlmRegistry::new()),
+        registry: Arc::new(CapabilityRegistry::new()),
+        invoker: Arc::new(Invoker::new(instance_pool)),
+        ext_pool: None,
+    };
 
     let ctx = HookContext {
         agent_id: 1,
@@ -728,6 +743,10 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
         actor_id: 1,
         request_id: "req-bench".into(),
         trigger_point: "before_agent_start".into(),
+        message: String::new(),
+        channel: String::new(),
+        platform: String::new(),
+        app_version: String::new(),
     };
     let empty_hooks: HashMap<String, Vec<hiveweb::models::agent_hook::AgentHook>> = HashMap::new();
 
@@ -736,7 +755,7 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
 
     for _ in 0..ITERATIONS {
         let start = Instant::now();
-        let _ = run_hooks(pool.clone(), &empty_hooks, "before_agent_start", &ctx).await;
+        let _ = run_hooks(pool.clone(), &empty_hooks, "before_agent_start", &ctx, &deps).await;
         durations.push(start.elapsed().as_micros() as f64 / 1000.0); // ms
     }
 

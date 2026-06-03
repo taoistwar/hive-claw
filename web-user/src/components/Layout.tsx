@@ -1,61 +1,13 @@
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Dropdown, Avatar, Typography, Button } from 'antd';
-import {
-  DashboardOutlined,
-  LogoutOutlined,
-  UserOutlined,
-  MessageOutlined,
-  SunOutlined,
-  MoonOutlined,
-  LockOutlined,
-} from '@ant-design/icons';
-import { useAuth } from '../hooks/useAuth';
+import { Outlet } from 'react-router-dom';
+import { Layout, Button, Typography } from 'antd';
+import { MessageOutlined, SunOutlined, MoonOutlined } from '@ant-design/icons';
 import { useTheme } from '../hooks/useTheme';
 
 const { Header, Content, Sider } = Layout;
 const { Text } = Typography;
 
 const AppLayout: React.FC = () => {
-  const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const menuItems = [
-    {
-      key: '/',
-      icon: <DashboardOutlined />,
-      label: 'Dashboard',
-    },
-    {
-      key: '/chat',
-      icon: <MessageOutlined />,
-      label: '聊天',
-    },
-  ];
-
-  const userMenuItems = [
-    {
-      key: 'change-password',
-      icon: <LockOutlined />,
-      label: '修改密码',
-      onClick: () => {
-        navigate('/settings/change-password');
-      },
-    },
-    {
-      type: 'divider' as const,
-    },
-    {
-      key: 'logout',
-      icon: <LogoutOutlined />,
-      label: 'Logout',
-      onClick: () => {
-        logout();
-        navigate('/login');
-      },
-    },
-  ];
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
@@ -86,16 +38,21 @@ const AppLayout: React.FC = () => {
             用户中心
           </Text>
         </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[location.pathname === '/' ? '/' : location.pathname]}
-          items={menuItems}
-          onClick={({ key }) => navigate(key)}
+        <div
           style={{
-            background: 'transparent',
-            borderRight: 'none',
+            padding: '12px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            color: 'var(--accent-primary)',
+            background: 'var(--accent-glow)',
+            borderRadius: 'var(--radius-sm)',
+            margin: '0 8px',
           }}
-        />
+        >
+          <MessageOutlined />
+          <Text style={{ color: 'var(--accent-primary)', fontWeight: 500 }}>聊天</Text>
+        </div>
       </Sider>
 
       <Layout>
@@ -132,35 +89,6 @@ const AppLayout: React.FC = () => {
               e.currentTarget.style.background = 'var(--theme-toggle-bg)';
             }}
           />
-
-          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                cursor: 'pointer',
-                padding: '6px 12px',
-                borderRadius: 'var(--radius-sm)',
-                transition: 'background var(--transition-fast)',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
-              }}
-            >
-              <Avatar
-                size="small"
-                icon={<UserOutlined />}
-                style={{ background: 'var(--gradient-primary)' }}
-              />
-              <Text style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-                {user?.phone}
-              </Text>
-            </div>
-          </Dropdown>
         </Header>
 
         <Content

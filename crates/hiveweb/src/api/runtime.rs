@@ -83,6 +83,7 @@ async fn invoke_function(
         let bctx = crate::runtime::builtins::BuiltinContext {
             pool: &state.pool,
             ext_pool: state.ext_pool.as_ref(),
+            agent_ctx: None,
         };
         match (builtin.handler)(body.input, &bctx) {
             Ok(output) => {

@@ -3,11 +3,11 @@ use log::{debug, error, info, warn};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use super::base::{Tool, ToolExecError};
 use super::registry::ToolRegistry;
@@ -60,17 +60,11 @@ pub trait McpSession: Send + Sync {
         timeout_secs: u64,
     ) -> Result<McpPromptResult, McpError>;
 
-    async fn list_tools(
-        &self,
-    ) -> Result<Vec<McpToolDefinition>, McpError>;
+    async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpError>;
 
-    async fn list_resources(
-        &self,
-    ) -> Result<Vec<McpResourceDefinition>, McpError>;
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpError>;
 
-    async fn list_prompts(
-        &self,
-    ) -> Result<Vec<McpPromptDefinition>, McpError>;
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpError>;
 }
 
 pub struct McpToolDefinition {
@@ -163,13 +157,9 @@ pub async fn probe_http_url(url: &str, timeout_secs: f64) -> bool {
     };
 
     let host = parsed.host_str().unwrap_or("127.0.0.1");
-    let port = parsed.port().unwrap_or_else(|| {
-        if parsed.scheme() == "https" {
-            443
-        } else {
-            80
-        }
-    });
+    let port = parsed
+        .port()
+        .unwrap_or_else(|| if parsed.scheme() == "https" { 443 } else { 80 });
 
     let timeout = std::time::Duration::from_secs_f64(timeout_secs);
 
@@ -281,7 +271,10 @@ pub fn normalize_schema_for_openai(schema: &Value) -> Value {
     let mut normalized = obj;
 
     if let Some(raw_type) = normalized.get("type").and_then(|v| v.as_array()) {
-        let non_null: Vec<&Value> = raw_type.iter().filter(|i| i.as_str() != Some("null")).collect();
+        let non_null: Vec<&Value> = raw_type
+            .iter()
+            .filter(|i| i.as_str() != Some("null"))
+            .collect();
         if raw_type.iter().any(|i| i.as_str() == Some("null")) && non_null.len() == 1 {
             normalized.insert("type".into(), non_null[0].clone());
             normalized.insert("nullable".into(), Value::Bool(true));
@@ -357,8 +350,12 @@ impl MCPToolWrapper {
     ) -> Self {
         let original_name = tool_def.name.clone();
         let name = sanitize_name(&format!("mcp_{}_{}", server_name, tool_def.name));
-        let description = tool_def.description.unwrap_or_else(|| tool_def.name.clone());
-        let raw_schema = tool_def.input_schema.unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+        let description = tool_def
+            .description
+            .unwrap_or_else(|| tool_def.name.clone());
+        let raw_schema = tool_def
+            .input_schema
+            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
         let parameters = normalize_schema_for_openai(&raw_schema);
 
         Self {
@@ -464,8 +461,13 @@ impl MCPResourceWrapper {
         resource_timeout: u64,
     ) -> Self {
         let uri = resource_def.uri.clone();
-        let name = sanitize_name(&format!("mcp_{}_resource_{}", server_name, resource_def.name));
-        let desc = resource_def.description.unwrap_or_else(|| resource_def.name.clone());
+        let name = sanitize_name(&format!(
+            "mcp_{}_resource_{}",
+            server_name, resource_def.name
+        ));
+        let desc = resource_def
+            .description
+            .unwrap_or_else(|| resource_def.name.clone());
         let description = format!("[MCP Resource] {}\nURI: {}", desc, uri);
 
         Self {
@@ -515,7 +517,9 @@ impl Tool for MCPResourceWrapper {
                         .iter()
                         .map(|block| match block {
                             McpResourceContent::Text(t) => t.clone(),
-                            McpResourceContent::Blob(size) => format!("[Binary resource: {} bytes]", size),
+                            McpResourceContent::Blob(size) => {
+                                format!("[Binary resource: {} bytes]", size)
+                            }
                             McpResourceContent::Other(s) => s.clone(),
                         })
                         .collect();
@@ -572,7 +576,9 @@ impl MCPPromptWrapper {
     ) -> Self {
         let prompt_name = prompt_def.name.clone();
         let name = sanitize_name(&format!("mcp_{}_prompt_{}", server_name, prompt_def.name));
-        let desc = prompt_def.description.unwrap_or_else(|| prompt_def.name.clone());
+        let desc = prompt_def
+            .description
+            .unwrap_or_else(|| prompt_def.name.clone());
         let description = format!(
             "[MCP Prompt] {}\nReturns a filled prompt template that can be used as a workflow guide.",
             desc
@@ -716,11 +722,7 @@ pub struct McpServerHandle {
 }
 
 impl McpServerHandle {
-    pub fn new(
-        name: String,
-        session: Arc<dyn McpSession>,
-        cmd_tx: mpsc::Sender<String>,
-    ) -> Self {
+    pub fn new(name: String, session: Arc<dyn McpSession>, cmd_tx: mpsc::Sender<String>) -> Self {
         Self {
             name,
             session,
@@ -782,7 +784,12 @@ impl McpSessionImpl {
         MSG_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn send_request(&self, method: &str, params: Value, timeout_secs: u64) -> Result<Value, McpError> {
+    async fn send_request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout_secs: u64,
+    ) -> Result<Value, McpError> {
         let id = Self::next_id();
         let message = json!({
             "jsonrpc": "2.0",
@@ -869,8 +876,15 @@ impl McpSessionImpl {
                                     let mut pending_map = pending.write().await;
                                     if let Some(pending_req) = pending_map.remove(&id) {
                                         if let Some(error) = response.get("error") {
-                                            let _code = error.get("code").and_then(|c| c.as_i64()).map(|c| c as i32);
-                                            let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string();
+                                            let _code = error
+                                                .get("code")
+                                                .and_then(|c| c.as_i64())
+                                                .map(|c| c as i32);
+                                            let message = error
+                                                .get("message")
+                                                .and_then(|m| m.as_str())
+                                                .unwrap_or("Unknown error")
+                                                .to_string();
                                             let _ = pending_req.tx.send(Err(message));
                                         } else if let Some(result) = response.get("result") {
                                             let _ = pending_req.tx.send(Ok(result.clone()));
@@ -928,7 +942,9 @@ impl McpSession for McpSessionImpl {
             "name": name,
             "arguments": args_map,
         });
-        let result = self.send_request("tools/call", params, timeout_secs).await?;
+        let result = self
+            .send_request("tools/call", params, timeout_secs)
+            .await?;
 
         let content = result
             .get("content")
@@ -957,7 +973,9 @@ impl McpSession for McpSessionImpl {
         let params = json!({
             "uri": uri,
         });
-        let result = self.send_request("resources/read", params, timeout_secs).await?;
+        let result = self
+            .send_request("resources/read", params, timeout_secs)
+            .await?;
 
         let contents = result
             .get("contents")
@@ -991,7 +1009,9 @@ impl McpSession for McpSessionImpl {
             "name": name,
             "arguments": args_map,
         });
-        let result = self.send_request("prompts/get", params, timeout_secs).await?;
+        let result = self
+            .send_request("prompts/get", params, timeout_secs)
+            .await?;
 
         let messages = result
             .get("messages")
@@ -999,7 +1019,11 @@ impl McpSession for McpSessionImpl {
             .map(|arr| {
                 arr.iter()
                     .map(|msg| {
-                        if let Some(text) = msg.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+                        if let Some(text) = msg
+                            .get("content")
+                            .and_then(|c| c.get("text"))
+                            .and_then(|t| t.as_str())
+                        {
                             McpPromptMessage::Text(text.to_string())
                         } else {
                             McpPromptMessage::Other(msg.to_string())
@@ -1021,8 +1045,15 @@ impl McpSession for McpSessionImpl {
             .map(|arr| {
                 arr.iter()
                     .map(|tool| McpToolDefinition {
-                        name: tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        description: tool.get("description").and_then(|v| v.as_str()).map(String::from),
+                        name: tool
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        description: tool
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                         input_schema: tool.get("inputSchema").cloned(),
                     })
                     .collect()
@@ -1041,9 +1072,20 @@ impl McpSession for McpSessionImpl {
             .map(|arr| {
                 arr.iter()
                     .map(|res| McpResourceDefinition {
-                        uri: res.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        name: res.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        description: res.get("description").and_then(|v| v.as_str()).map(String::from),
+                        uri: res
+                            .get("uri")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        name: res
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        description: res
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                     })
                     .collect()
             })
@@ -1067,17 +1109,34 @@ impl McpSession for McpSessionImpl {
                             .map(|arr| {
                                 arr.iter()
                                     .map(|arg| McpPromptArgument {
-                                        name: arg.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                        description: arg.get("description").and_then(|v| v.as_str()).map(String::from),
-                                        required: arg.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                                        name: arg
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        description: arg
+                                            .get("description")
+                                            .and_then(|v| v.as_str())
+                                            .map(String::from),
+                                        required: arg
+                                            .get("required")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false),
                                     })
                                     .collect()
                             })
                             .unwrap_or_default();
 
                         McpPromptDefinition {
-                            name: prompt.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            description: prompt.get("description").and_then(|v| v.as_str()).map(String::from),
+                            name: prompt
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            description: prompt
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
                             arguments: args,
                         }
                     })
@@ -1139,7 +1198,8 @@ async fn connect_sse_transport(
                                     &event_data,
                                     &message_id,
                                     &pending_clone,
-                                ).await;
+                                )
+                                .await;
                                 event_type.clear();
                                 event_data.clear();
                                 message_id.clear();
@@ -1183,7 +1243,8 @@ async fn connect_sse_transport(
         while let Some(request_str) = cmd_rx.recv().await {
             if let Ok(_req) = serde_json::from_str::<Value>(&request_str) {
                 let post_url = base_url.clone();
-                let response = client_clone.post(&post_url)
+                let response = client_clone
+                    .post(&post_url)
                     .header("Content-Type", "application/json")
                     .body(request_str)
                     .send()
@@ -1197,7 +1258,11 @@ async fn connect_sse_transport(
                                     let mut pending_map = pending_clone2.write().await;
                                     if let Some(pending_req) = pending_map.remove(&id) {
                                         if let Some(error) = response_val.get("error") {
-                                            let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string();
+                                            let message = error
+                                                .get("message")
+                                                .and_then(|m| m.as_str())
+                                                .unwrap_or("Unknown error")
+                                                .to_string();
                                             let _ = pending_req.tx.send(Err(message));
                                         } else if let Some(result) = response_val.get("result") {
                                             let _ = pending_req.tx.send(Ok(result.clone()));
@@ -1291,7 +1356,8 @@ async fn connect_streamable_http_transport(
                                             &event_data,
                                             &message_id,
                                             &pending_clone,
-                                        ).await;
+                                        )
+                                        .await;
                                         event_type.clear();
                                         event_data.clear();
                                         message_id.clear();
@@ -1331,7 +1397,11 @@ async fn connect_streamable_http_transport(
                         let mut pending_map = pending_clone.write().await;
                         if let Some(pending_req) = pending_map.remove(&id) {
                             if let Some(error) = response_val.get("error") {
-                                let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string();
+                                let message = error
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("Unknown error")
+                                    .to_string();
                                 let _ = pending_req.tx.send(Err(message));
                             } else if let Some(result) = response_val.get("result") {
                                 let _ = pending_req.tx.send(Ok(result.clone()));
@@ -1357,8 +1427,7 @@ async fn connect_streamable_http_transport(
 }
 
 fn build_http_client(headers: Option<&HashMap<String, String>>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5));
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(5));
 
     if let Some(h) = headers {
         let mut default_headers = reqwest::header::HeaderMap::new();
@@ -1390,7 +1459,11 @@ async fn process_sse_event(
             let mut pending_map = pending.write().await;
             if let Some(pending_req) = pending_map.remove(&id) {
                 if let Some(error) = response.get("error") {
-                    let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string();
+                    let message = error
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Unknown error")
+                        .to_string();
                     let _ = pending_req.tx.send(Err(message));
                 } else if let Some(result) = response.get("result") {
                     let _ = pending_req.tx.send(Ok(result.clone()));
@@ -1421,14 +1494,20 @@ async fn connect_single_server(
 
     if transport_type != "stdio" && transport_type != "sse" && transport_type != "streamableHttp" {
         if cfg.command.is_none() && cfg.url.is_none() {
-            warn!("MCP server '{}': no command or url configured, skipping", name);
+            warn!(
+                "MCP server '{}': no command or url configured, skipping",
+                name
+            );
             return Err("No command or url configured".to_string());
         }
     }
 
     let (cmd_tx, _done_rx, session) = match transport_type.as_str() {
         "stdio" => {
-            let command = cfg.command.as_ref().ok_or("stdio transport requires command")?;
+            let command = cfg
+                .command
+                .as_ref()
+                .ok_or("stdio transport requires command")?;
             let args = cfg.args.as_deref().unwrap_or(&[]);
             let env = cfg.env.as_ref();
             let (cmd, normalized_args, normalized_env) =
@@ -1446,9 +1525,9 @@ async fn connect_single_server(
                 }
             }
 
-            let child = child_cmd.spawn().map_err(|e| {
-                format!("Failed to spawn stdio process '{}': {}", cmd, e)
-            })?;
+            let child = child_cmd
+                .spawn()
+                .map_err(|e| format!("Failed to spawn stdio process '{}': {}", cmd, e))?;
 
             let session = McpSessionImpl::new(mpsc::channel(1).0);
             let (tx, _done) = McpSessionImpl::spawn_stdio_handler(session.pending.clone(), child);
@@ -1468,7 +1547,9 @@ async fn connect_single_server(
             });
 
             let init_str = serde_json::to_string(&msg).unwrap();
-            tx.send(init_str).await.map_err(|e| format!("Failed to send initialize: {}", e))?;
+            tx.send(init_str)
+                .await
+                .map_err(|e| format!("Failed to send initialize: {}", e))?;
             let (init_tx, init_rx) = tokio::sync::oneshot::channel();
             {
                 let mut pending = session.pending.write().await;
@@ -1488,7 +1569,9 @@ async fn connect_single_server(
                 "method": "notifications/initialized"
             });
             let notify_str = serde_json::to_string(&notify_msg).unwrap();
-            tx.send(notify_str).await.map_err(|e| format!("Failed to send initialized notification: {}", e))?;
+            tx.send(notify_str)
+                .await
+                .map_err(|e| format!("Failed to send initialized notification: {}", e))?;
 
             (tx, _done, Arc::new(session))
         }
@@ -1503,64 +1586,86 @@ async fn connect_single_server(
 
             let (cmd_tx, _done_rx) = connect_sse_transport(url, cfg.headers.as_ref()).await?;
 
-            let pending: Arc<RwLock<HashMap<u64, PendingRequest>>> = Arc::new(RwLock::new(HashMap::new()));
+            let pending: Arc<RwLock<HashMap<u64, PendingRequest>>> =
+                Arc::new(RwLock::new(HashMap::new()));
             let shutdown_tx = mpsc::channel(1).0;
             let session = Arc::new(McpSessionImpl {
                 pending: pending.clone(),
                 shutdown_tx,
             });
 
-            let result = session.send_request("initialize", json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "hive-claw",
-                    "version": "0.1.0"
-                }
-            }), 30).await;
+            let result = session
+                .send_request(
+                    "initialize",
+                    json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "hive-claw",
+                            "version": "0.1.0"
+                        }
+                    }),
+                    30,
+                )
+                .await;
 
             match result {
                 Ok(_) => {}
                 Err(e) => return Err(format!("Initialize failed: {}", e.message)),
             }
 
-            let _ = session.send_request("notifications/initialized", json!({}), 5).await;
+            let _ = session
+                .send_request("notifications/initialized", json!({}), 5)
+                .await;
 
             (cmd_tx, _done_rx, session)
         }
 
         "streamableHttp" => {
-            let url = cfg.url.as_ref().ok_or("streamableHttp transport requires url")?;
+            let url = cfg
+                .url
+                .as_ref()
+                .ok_or("streamableHttp transport requires url")?;
 
             if !probe_http_url(url, 3.0).await {
                 warn!("MCP server '{}': {} unreachable, skipping", name, url);
                 return Err(format!("URL {} unreachable", url));
             }
 
-            let (cmd_tx, _done_rx) = connect_streamable_http_transport(url, cfg.headers.as_ref()).await?;
+            let (cmd_tx, _done_rx) =
+                connect_streamable_http_transport(url, cfg.headers.as_ref()).await?;
 
-            let pending: Arc<RwLock<HashMap<u64, PendingRequest>>> = Arc::new(RwLock::new(HashMap::new()));
+            let pending: Arc<RwLock<HashMap<u64, PendingRequest>>> =
+                Arc::new(RwLock::new(HashMap::new()));
             let shutdown_tx = mpsc::channel(1).0;
             let session = Arc::new(McpSessionImpl {
                 pending: pending.clone(),
                 shutdown_tx,
             });
 
-            let result = session.send_request("initialize", json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "hive-claw",
-                    "version": "0.1.0"
-                }
-            }), 30).await;
+            let result = session
+                .send_request(
+                    "initialize",
+                    json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "hive-claw",
+                            "version": "0.1.0"
+                        }
+                    }),
+                    30,
+                )
+                .await;
 
             match result {
                 Ok(_) => {}
                 Err(e) => return Err(format!("Initialize failed: {}", e.message)),
             }
 
-            let _ = session.send_request("notifications/initialized", json!({}), 5).await;
+            let _ = session
+                .send_request("notifications/initialized", json!({}), 5)
+                .await;
 
             (cmd_tx, _done_rx, session)
         }
@@ -1571,16 +1676,18 @@ async fn connect_single_server(
         }
     };
 
-    let tools = session.list_tools().await.map_err(|e| {
-        format!("Failed to list tools: {}", e.message)
-    })?;
+    let tools = session
+        .list_tools()
+        .await
+        .map_err(|e| format!("Failed to list tools: {}", e.message))?;
 
     let enabled_tools: std::collections::HashSet<&String> = cfg.enabled_tools.iter().collect();
     let allow_all_tools = enabled_tools.contains(&"*".to_string());
     let mut registered_count = 0;
 
     let available_raw_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    let available_wrapped_names: Vec<String> = tools.iter()
+    let available_wrapped_names: Vec<String> = tools
+        .iter()
         .map(|t| sanitize_name(&format!("mcp_{}_{}", name, t.name)))
         .collect();
 
@@ -1609,7 +1716,10 @@ async fn connect_single_server(
         );
         let wrapper_name = wrapper.name().to_string();
         registry.register(Arc::new(wrapper)).await;
-        debug!("MCP: registered tool '{}' from server '{}'", wrapper_name, name);
+        debug!(
+            "MCP: registered tool '{}' from server '{}'",
+            wrapper_name, name
+        );
         registered_count += 1;
     }
 
@@ -1623,14 +1733,30 @@ async fn connect_single_server(
             .filter(|n| enabled_tools.contains(n))
             .collect();
 
-        let unmatched: Vec<&String> = cfg.enabled_tools.iter().filter(|t| !matched.contains(*t)).collect();
+        let unmatched: Vec<&String> = cfg
+            .enabled_tools
+            .iter()
+            .filter(|t| !matched.contains(*t))
+            .collect();
         if !unmatched.is_empty() {
             warn!(
                 "MCP server '{}': enabledTools entries not found: {}. Available raw names: {}. Available wrapped names: {}",
                 name,
-                unmatched.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
-                available_raw_names.join(", ").is_empty().then(|| "(none)").unwrap_or(&available_raw_names.join(", ")),
-                available_wrapped_names.join(", ").is_empty().then(|| "(none)").unwrap_or(&available_wrapped_names.join(", ")),
+                unmatched
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                available_raw_names
+                    .join(", ")
+                    .is_empty()
+                    .then(|| "(none)")
+                    .unwrap_or(&available_raw_names.join(", ")),
+                available_wrapped_names
+                    .join(", ")
+                    .is_empty()
+                    .then(|| "(none)")
+                    .unwrap_or(&available_wrapped_names.join(", ")),
             );
         }
     }
@@ -1638,35 +1764,50 @@ async fn connect_single_server(
     match session.list_resources().await {
         Ok(resources) => {
             for res_def in resources {
-                let wrapper = MCPResourceWrapper::new(session.clone(), name, res_def, cfg.tool_timeout);
+                let wrapper =
+                    MCPResourceWrapper::new(session.clone(), name, res_def, cfg.tool_timeout);
                 let wrapper_name = wrapper.name().to_string();
                 registry.register(Arc::new(wrapper)).await;
                 registered_count += 1;
-                debug!("MCP: registered resource '{}' from server '{}'", wrapper_name, name);
+                debug!(
+                    "MCP: registered resource '{}' from server '{}'",
+                    wrapper_name, name
+                );
             }
         }
         Err(e) => {
-            debug!("MCP server '{}': resources not supported or failed: {}", name, e.message);
+            debug!(
+                "MCP server '{}': resources not supported or failed: {}",
+                name, e.message
+            );
         }
     }
 
     match session.list_prompts().await {
         Ok(prompts) => {
             for prompt_def in prompts {
-                let wrapper = MCPPromptWrapper::new(session.clone(), name, prompt_def, cfg.tool_timeout);
+                let wrapper =
+                    MCPPromptWrapper::new(session.clone(), name, prompt_def, cfg.tool_timeout);
                 let wrapper_name = wrapper.name().to_string();
                 registry.register(Arc::new(wrapper)).await;
                 registered_count += 1;
-                debug!("MCP: registered prompt '{}' from server '{}'", wrapper_name, name);
+                debug!(
+                    "MCP: registered prompt '{}' from server '{}'",
+                    wrapper_name, name
+                );
             }
         }
         Err(e) => {
-            debug!("MCP server '{}': prompts not supported or failed: {}", name, e.message);
+            debug!(
+                "MCP server '{}': prompts not supported or failed: {}",
+                name, e.message
+            );
         }
     }
 
     info!(
-        "MCP server '{}': connected, {} capabilities registered", name, registered_count
+        "MCP server '{}': connected, {} capabilities registered",
+        name, registered_count
     );
 
     Ok((session, cmd_tx))

@@ -5,7 +5,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::base::{Tool, ToolExecError};
 use super::context::{ContextAware, RequestContext};
@@ -92,7 +92,9 @@ impl std::error::Error for ImageGenerationError {}
 
 pub type ProviderConfig = ImageGenerationProviderConfig;
 
-pub type GenerateFuture<'a> = Pin<Box<dyn Future<Output = Result<ImageGenerationResponse, ImageGenerationError>> + Send + 'a>>;
+pub type GenerateFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<ImageGenerationResponse, ImageGenerationError>> + Send + 'a>,
+>;
 
 pub trait ImageGenerationProvider: Send + Sync {
     fn missing_key_message() -> Option<&'static str>
@@ -109,7 +111,8 @@ pub trait ImageGenerationProvider: Send + Sync {
     ) -> GenerateFuture<'a>;
 }
 
-type ImageGenerationProviderCtor = fn(&ImageGenerationProviderConfig) -> Box<dyn ImageGenerationProvider>;
+type ImageGenerationProviderCtor =
+    fn(&ImageGenerationProviderConfig) -> Box<dyn ImageGenerationProvider>;
 
 pub fn get_image_gen_provider(_provider: &str) -> Option<ImageGenerationProviderCtor> {
     todo!("TODO: implement provider registry")
@@ -189,9 +192,7 @@ impl ImageGenerationTool {
         _config.enabled
     }
 
-    pub fn create(
-        ctx: &super::context::ToolContext,
-    ) -> Self {
+    pub fn create(ctx: &super::context::ToolContext) -> Self {
         Self {
             workspace: PathBuf::from(&ctx.workspace),
             config: ImageGenerationToolConfig::default(),
@@ -220,10 +221,7 @@ impl ImageGenerationTool {
         if let Some(ctor) = get_image_gen_provider(&self.config.provider) {
             todo!("TODO: implement missing key message retrieval")
         }
-        format!(
-            "Error: {} API key is not configured.",
-            self.config.provider
-        )
+        format!("Error: {} API key is not configured.", self.config.provider)
     }
 
     fn resolve_reference_image(&self, value: &str) -> Result<String, ImageGenerationError> {
@@ -234,13 +232,14 @@ impl ImageGenerationTool {
             self.workspace.join(&raw_path)
         };
 
-        let resolved = path.canonicalize().map_err(|e| {
-            ImageGenerationError {
-                message: format!("reference image not found: {}: {}", value, e),
-            }
+        let resolved = path.canonicalize().map_err(|e| ImageGenerationError {
+            message: format!("reference image not found: {}: {}", value, e),
         })?;
 
-        let workspace_resolved = self.workspace.canonicalize().unwrap_or_else(|_| self.workspace.clone());
+        let workspace_resolved = self
+            .workspace
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace.clone());
         let media_dir = get_media_dir();
         let media_resolved = media_dir.canonicalize().unwrap_or(media_dir);
 
@@ -249,7 +248,8 @@ impl ImageGenerationTool {
 
         if !is_relative_to_workspace && !is_relative_to_media {
             return Err(ImageGenerationError {
-                message: "reference_images must be inside the workspace or nanobot media directory".into(),
+                message: "reference_images must be inside the workspace or nanobot media directory"
+                    .into(),
             });
         }
 
@@ -259,10 +259,8 @@ impl ImageGenerationTool {
             });
         }
 
-        let bytes = std::fs::read(&resolved).map_err(|e| {
-            ImageGenerationError {
-                message: format!("failed to read reference image: {}", e),
-            }
+        let bytes = std::fs::read(&resolved).map_err(|e| ImageGenerationError {
+            message: format!("failed to read reference image: {}", e),
         })?;
 
         if detect_image_mime(&bytes).is_none() {
@@ -367,13 +365,19 @@ impl Tool for ImageGenerationTool {
         let prompt = params
             .get("prompt")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolExecError::InvalidParams("missing required parameter: prompt".into()))?
+            .ok_or_else(|| {
+                ToolExecError::InvalidParams("missing required parameter: prompt".into())
+            })?
             .to_string();
 
         let reference_images = params
             .get("reference_images")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
 
         let aspect_ratio = params
             .get("aspect_ratio")

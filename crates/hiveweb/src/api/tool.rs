@@ -190,6 +190,10 @@ async fn test_tool(
         registry: state.runtime_state.capabilities.clone(),
         invoker: state.runtime_state.invoker.clone(),
         ext_pool: state.ext_pool.clone(),
+        message: String::new(),
+        channel: String::new(),
+        platform: String::new(),
+        app_version: String::new(),
     };
     let req_with_trace = test_svc::TestToolRequest {
         message: req.message,

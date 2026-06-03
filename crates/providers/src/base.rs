@@ -812,7 +812,7 @@ const RETRY_HEARTBEAT_CHUNK: u64 = 30;
 // Global Langfuse client (set once at startup)
 // ---------------------------------------------------------------------------
 
-static LANGIFUSE_CLIENT: OnceLock<Option<std::sync::Arc<langfuse::LangfuseClient>>> = OnceLock::new();
+static LANGFUSE_CLIENT: OnceLock<Option<std::sync::Arc<langfuse::LangfuseClient>>> = OnceLock::new();
 
 /// Initialise the global Langfuse client.
 ///
@@ -820,7 +820,7 @@ static LANGIFUSE_CLIENT: OnceLock<Option<std::sync::Arc<langfuse::LangfuseClient
 /// Pass `None` to disable tracing.
 pub fn set_langfuse_client(client: Option<std::sync::Arc<langfuse::LangfuseClient>>) {
     langfuse::lf_debug!("providers::set_langfuse_client called, client_is_some={}", client.is_some());
-    match LANGIFUSE_CLIENT.set(client) {
+    match LANGFUSE_CLIENT.set(client) {
         Ok(()) => {
             langfuse::lf_debug!("providers::set_langfuse_client -> OK (global client set)");
             log::info!("Langfuse: global client set successfully");
@@ -834,11 +834,11 @@ pub fn set_langfuse_client(client: Option<std::sync::Arc<langfuse::LangfuseClien
 
 /// Returns a reference to the global Langfuse client, if initialized.
 pub fn get_langfuse_client() -> Option<&'static std::sync::Arc<langfuse::LangfuseClient>> {
-    let client = LANGIFUSE_CLIENT.get();
+    let client = LANGFUSE_CLIENT.get();
     match client {
         None => {
             langfuse::lf_debug!("providers::get_langfuse_client -> None (OnceLock not initialized)");
-            log::warn!("Langfuse: LANGIFUSE_CLIENT OnceLock not initialized");
+            log::warn!("Langfuse: LANGFUSE_CLIENT OnceLock not initialized");
             None
         }
         Some(None) => {

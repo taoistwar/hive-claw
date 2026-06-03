@@ -181,6 +181,10 @@ async fn test_skill(
         registry: state.runtime_state.capabilities.clone(),
         invoker: state.runtime_state.invoker.clone(),
         ext_pool: state.ext_pool.clone(),
+        message: String::new(),
+        channel: String::new(),
+        platform: String::new(),
+        app_version: String::new(),
     };
     match test_svc::run_skill_test(&state.pool, &deps, id, req).await {
         Ok(result) => Ok(ApiResponse::success(result)),

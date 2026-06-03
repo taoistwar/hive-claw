@@ -4,7 +4,7 @@
 use std::fs;
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use super::base::{Tool, ToolExecError};
@@ -194,14 +194,12 @@ impl Tool for NotebookEditTool {
                 let idx = cell_index as usize;
                 if let Some(cell) = cells[idx].as_object_mut() {
                     cell.insert("source".into(), Value::String(new_source.into()));
-                    let current_type = cell
-                        .get("cell_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let current_type = cell.get("cell_type").and_then(|v| v.as_str()).unwrap_or("");
                     if current_type != cell_type {
                         cell.insert("cell_type".into(), Value::String(cell_type.into()));
                         if cell_type == "code" {
-                            cell.entry("outputs").or_insert_with(|| Value::Array(Vec::new()));
+                            cell.entry("outputs")
+                                .or_insert_with(|| Value::Array(Vec::new()));
                             cell.entry("execution_count").or_insert(Value::Null);
                         } else {
                             cell.remove("outputs");

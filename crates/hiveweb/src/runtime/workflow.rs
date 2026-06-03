@@ -514,6 +514,7 @@ async fn execute_node(
         let ctx = crate::runtime::builtins::BuiltinContext {
             pool: &deps.pool,
             ext_pool: None,
+            agent_ctx: None,
         };
         let out = (result.handler)(input, &ctx).map_err(|e| WorkflowError::NodeFailure {
             node_key: node_key.clone(),

@@ -1,10 +1,8 @@
-//! Chat service — admin and user tables are completely separate.
+//! Chat service — user chat tables only.
 //!
-//! Admin tables: chat_sessions_admin + chat_messages_admin
-//! User tables: chat_sessions_user + chat_messages_user
+//! Tables: chat_sessions_user + chat_messages_user
 //!
 //! Ownership semantics:
-//!   - Admin session: admin_id must match JWT admin_id (or Super)
 //!   - User session: user_id must match JWT user_id
 
 use sqlx::MySqlPool;
@@ -146,7 +144,7 @@ pub async fn append_user_message_user(
         .begin()
         .await
         .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
-    let res = sqlx::query(
+    let _res = sqlx::query(
         r#"INSERT INTO chat_messages_user (session_id, user_id, role, content) VALUES (?, ?, 'user', ?)"#,
     )
     .bind(session_id)

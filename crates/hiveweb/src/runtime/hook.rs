@@ -3,17 +3,23 @@
 //! Hooks are **read-only observers**: results are written only to `hook_executions`
 //! audit table and never injected into agent state (system_prompt, tools, etc.).
 
+use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
+use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 use crate::models::agent_hook::AgentHook;
+use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
+use crate::runtime::invoker::Invoker;
+use crate::runtime::llm::LlmRegistry;
 
 /// Context passed to each hook invocation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HookContext {
     pub agent_id: i64,
     pub identifier: String,
@@ -21,13 +27,33 @@ pub struct HookContext {
     pub actor_id: i64,
     pub request_id: String,
     pub trigger_point: String,
+    /// 用户输入消息
+    pub message: String,
+    /// 渠道（如 "app", "web", "api" 等）
+    pub channel: String,
+    /// 端：android、iphone、ipad、web 等
+    pub platform: String,
+    /// 客户端版本号
+    pub app_version: String,
+}
+
+/// Dependencies needed by hook actions (call_function, call_workflow).
+#[derive(Clone)]
+pub struct HookDeps {
+    pub s3: S3Client,
+    pub llm: Arc<LlmRegistry>,
+    pub registry: Arc<CapabilityRegistry>,
+    pub invoker: Arc<Invoker>,
+    pub ext_pool: Option<MySqlPool>,
+    /// AgentContext for functions/workflows to read/write runtime state
+    pub agent_ctx: Arc<AgentContext>,
 }
 
 /// Run all enabled hooks for a given trigger point.
 ///
 /// Non-blocking mode: individual failures do not prevent subsequent hooks.
 /// Blocking mode: first failure aborts the agent flow and returns `Err`.
-#[tracing::instrument(skip(pool, hooks, ctx), fields(
+#[tracing::instrument(skip(pool, hooks, ctx, deps), fields(
     agent_id = %ctx.agent_id,
     identifier = %ctx.identifier,
     trigger_point = %point,
@@ -38,6 +64,7 @@ pub async fn run_hooks(
     hooks: &HashMap<String, Vec<AgentHook>>,
     point: &str,
     ctx: &HookContext,
+    deps: &HookDeps,
 ) -> Result<(), HookError> {
     let list = match hooks.get(point) {
         Some(h) => h,
@@ -65,7 +92,7 @@ pub async fn run_hooks(
 
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
-            execute_hook_action(hook, ctx, pool.clone()),
+            execute_hook_action(hook, ctx, pool.clone(), deps),
         )
         .await;
 
@@ -125,64 +152,214 @@ async fn execute_hook_action(
     hook: &AgentHook,
     ctx: &HookContext,
     pool: Arc<MySqlPool>,
+    deps: &HookDeps,
 ) -> Result<(), ActionError> {
     match hook.action_type.as_str() {
-        "call_function" => Err(ActionError("call_function not yet integrated".into())),
-        "call_workflow" => Err(ActionError("call_workflow not yet integrated".into())),
-        "http_webhook" => {
-            let url = hook
-                .action_params
-                .get("webhook_url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ActionError("webhook_url is required for http_webhook".into()))?;
+        "call_function" => execute_call_function(hook, ctx, pool, deps).await,
+        "call_workflow" => execute_call_workflow(hook, ctx, pool, deps).await,
+        "http_webhook" => execute_http_webhook(hook, ctx, pool).await,
+        other => Err(ActionError(format!("Unknown action type: {other}"))),
+    }
+}
 
-            if !url.starts_with("https://") {
-                return Err(ActionError("Webhook URL must use HTTPS".into()));
+async fn execute_call_function(
+    hook: &AgentHook,
+    ctx: &HookContext,
+    pool: Arc<MySqlPool>,
+    deps: &HookDeps,
+) -> Result<(), ActionError> {
+    let function_id = hook
+        .action_params
+        .get("function_id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| ActionError("call_function: function_id is required".into()))?;
+
+    // Query function info from DB
+    let func_row: Option<(String, i8, Option<i64>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT identifier, kind, plugin_id, plugin_export FROM functions WHERE id = ?",
+        )
+        .bind(function_id)
+        .fetch_optional(pool.as_ref())
+        .await
+        .map_err(|e| ActionError(format!("function lookup: {e}")))?;
+
+    let Some((func_ident, func_kind, plugin_id, plugin_export)) = func_row else {
+        return Err(ActionError(format!(
+            "call_function: function id={function_id} 不存在"
+        )));
+    };
+
+    // Build input from hook context + AgentContext snapshot
+    let mut function_input = serde_json::to_value(ctx)
+        .map_err(|e| ActionError(format!("context serialize: {e}")))?;
+
+    // ★ Inject AgentContext snapshot for function read access
+    inject_agent_context_snapshot(&mut function_input, &deps.agent_ctx);
+
+    match func_kind {
+        1 if plugin_id.is_none() => {
+            // Builtin function — direct call
+            let Some(builtin) = super::builtins::lookup(&func_ident) else {
+                return Err(ActionError(format!(
+                    "call_function: builtin「{func_ident}」handler 未找到"
+                )));
+            };
+            let bctx = super::builtins::BuiltinContext {
+                pool: &pool,
+                ext_pool: deps.ext_pool.as_ref(),
+                agent_ctx: Some(Arc::clone(&deps.agent_ctx)),
+            };
+            let output = (builtin.handler)(function_input, &bctx)
+                .map_err(|e| ActionError(format!("builtin function 执行失败: {e}")))?;
+            // ★ Apply AgentContext updates from function output
+            apply_agent_context_updates(&deps.agent_ctx, &output);
+        }
+        1 | 2 => {
+            // Plugin-based or custom function — via invoker
+            let Some(pid) = plugin_id else {
+                return Err(ActionError("call_function: function 缺 plugin_id".into()));
+            };
+            let Some(ref export) = plugin_export else {
+                return Err(ActionError("call_function: function 缺 plugin_export".into()));
+            };
+            let input_json = serde_json::to_string(&function_input)
+                .map_err(|e| ActionError(format!("args serialize: {e}")))?;
+            let dispatch_ctx = DispatchCtx {
+                request_id: None,
+                session_id: Some(ctx.session_id),
+                agent_id: ctx.agent_id,
+                plugin_id: pid,
+                function_id: Some(function_id),
+                permissions: Vec::new(),
+            };
+            let output_str = deps.invoker
+                .invoke(
+                    &pool,
+                    &deps.s3,
+                    Arc::clone(&deps.registry),
+                    Arc::clone(&deps.llm),
+                    pid,
+                    export,
+                    input_json,
+                    dispatch_ctx,
+                )
+                .await
+                .map_err(|e| ActionError(format!("plugin invoke failed: {e}")))?;
+            // ★ Parse output and apply AgentContext updates
+            if let Ok(output_val) = serde_json::from_str::<Value>(&output_str) {
+                apply_agent_context_updates(&deps.agent_ctx, &output_val);
             }
+        }
+        _ => {
+            return Err(ActionError(format!(
+                "call_function: function「{func_ident}」kind={func_kind} 不支持"
+            )));
+        }
+    }
+    Ok(())
+}
 
-            let payload = json!({
-                "agent_identifier": ctx.identifier,
-                "session_id": ctx.session_id,
-                "trigger_point": ctx.trigger_point,
-                "timestamp": Utc::now().to_rfc3339(),
-                "hook_name": hook.name,
-            });
+async fn execute_call_workflow(
+    hook: &AgentHook,
+    ctx: &HookContext,
+    pool: Arc<MySqlPool>,
+    deps: &HookDeps,
+) -> Result<(), ActionError> {
+    let workflow_id = hook
+        .action_params
+        .get("workflow_id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| ActionError("call_workflow: workflow_id is required".into()))?;
 
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(hook.timeout_ms.max(1000) as u64))
-                .build()
-                .map_err(|e| ActionError(format!("webhook client: {e}")))?;
+    // Build input from hook context + AgentContext snapshot
+    let mut workflow_input = serde_json::to_value(ctx)
+        .map_err(|e| ActionError(format!("context serialize: {e}")))?;
 
-            let mut req = client.post(url).json(&payload);
+    // ★ Inject AgentContext snapshot for workflow read access
+    inject_agent_context_snapshot(&mut workflow_input, &deps.agent_ctx);
 
-            if let Some(headers) = hook.action_params.get("headers").and_then(|v| v.as_object()) {
-                for (key, val) in headers {
-                    if let Some(v_str) = val.as_str() {
-                        if key.contains('\r') || key.contains('\n') || v_str.contains('\r') || v_str.contains('\n') {
-                            return Err(ActionError("Header contains illegal characters".into()));
-                        }
-                        if key.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-                            req = req.header(key.as_str(), v_str);
-                        }
-                    }
+    let executor_deps = super::workflow::ExecutorDeps {
+        pool: (*pool).clone(),
+        s3: deps.s3.clone(),
+        registry: Arc::clone(&deps.registry),
+        llm: Arc::clone(&deps.llm),
+        invoker: Arc::clone(&deps.invoker),
+    };
+    let executor = super::workflow::WorkflowExecutor::new();
+    let output = executor
+        .execute(&executor_deps, workflow_id, workflow_input, ctx.agent_id)
+        .await
+        .map_err(|e| ActionError(format!("workflow execute: {e}")))?;
+
+    // ★ Apply AgentContext updates from workflow output
+    {
+        let output_val = serde_json::Value::Object(
+            serde_json::Map::from_iter(output.into_iter()),
+        );
+        apply_agent_context_updates(&deps.agent_ctx, &output_val);
+    }
+
+    Ok(())
+}
+
+async fn execute_http_webhook(
+    hook: &AgentHook,
+    ctx: &HookContext,
+    pool: Arc<MySqlPool>,
+) -> Result<(), ActionError> {
+    let url = hook
+        .action_params
+        .get("webhook_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ActionError("webhook_url is required for http_webhook".into()))?;
+
+    if !url.starts_with("https://") {
+        return Err(ActionError("Webhook URL must use HTTPS".into()));
+    }
+
+    let payload = json!({
+        "agent_identifier": ctx.identifier,
+        "session_id": ctx.session_id,
+        "trigger_point": ctx.trigger_point,
+        "timestamp": Utc::now().to_rfc3339(),
+        "hook_name": hook.name,
+        "message": ctx.message,
+        "channel": ctx.channel,
+        "platform": ctx.platform,
+        "app_version": ctx.app_version,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(hook.timeout_ms.max(1000) as u64))
+        .build()
+        .map_err(|e| ActionError(format!("webhook client: {e}")))?;
+
+    let mut req = client.post(url).json(&payload);
+
+    if let Some(headers) = hook.action_params.get("headers").and_then(|v| v.as_object()) {
+        for (key, val) in headers {
+            if let Some(v_str) = val.as_str() {
+                if key.contains('\r') || key.contains('\n') || v_str.contains('\r') || v_str.contains('\n') {
+                    return Err(ActionError("Header contains illegal characters".into()));
                 }
-            }
-
-            match req.send().await {
-                Ok(resp) if resp.status().is_success() => Ok(()),
-                Ok(resp) => {
-                    // Spawn async retry
-                    spawn_webhook_retry(pool, hook, ctx, &payload);
-                    Err(ActionError(format!("Webhook returned HTTP {}", resp.status())))
-                }
-                Err(_e) => {
-                    spawn_webhook_retry(pool, hook, ctx, &payload);
-                    // Return Err so blocking hooks can abort; retry handles async audit
-                    Err(ActionError("Webhook connection failed — pending async retry".into()))
+                if key.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+                    req = req.header(key.as_str(), v_str);
                 }
             }
         }
-        other => Err(ActionError(format!("Unknown action type: {other}"))),
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => Ok(()),
+        Ok(resp) => {
+            spawn_webhook_retry(pool, hook, ctx, &payload);
+            Err(ActionError(format!("Webhook returned HTTP {}", resp.status())))
+        }
+        Err(_e) => {
+            spawn_webhook_retry(pool, hook, ctx, &payload);
+            Err(ActionError("Webhook connection failed — pending async retry".into()))
+        }
     }
 }
 
@@ -274,6 +451,10 @@ async fn audit_hook_exec(
         "agent_identifier": ctx.agent_id,
         "session_id": ctx.session_id,
         "trigger_point": trigger_point,
+        "message": ctx.message,
+        "channel": ctx.channel,
+        "platform": ctx.platform,
+        "app_version": ctx.app_version,
     });
     let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
     let snapshot_final: Option<Value> = if snapshot_str.len() > 4096 {
@@ -303,6 +484,119 @@ async fn audit_hook_exec(
     .bind(&ctx.request_id)
     .execute(pool)
     .await;
+}
+
+// ── AgentContext helpers for function/workflow integration ──
+
+/// Inject a read-only snapshot of AgentContext into the function/workflow input
+/// as `_agent_context` field, so the function can inspect current runtime state.
+pub(crate) fn inject_agent_context_snapshot(input: &mut Value, agent_ctx: &AgentContext) {
+    let snapshot = json!({
+        "context_id": agent_ctx.to_json().ok().and_then(|s| {
+            serde_json::from_str::<Value>(&s).ok()
+        }).unwrap_or(Value::Null),
+        "tool_results": agent_ctx.get_category(Category::ToolResults)
+            .unwrap_or_default()
+            .iter()
+            .map(|r| json!({"key": r.key, "value": r.value, "source": r.source}))
+            .collect::<Vec<_>>(),
+        "entities": agent_ctx.get_category(Category::Entities)
+            .unwrap_or_default()
+            .iter()
+            .map(|r| json!({"key": r.key, "value": r.value, "source": r.source}))
+            .collect::<Vec<_>>(),
+        "state_changes": agent_ctx.get_category(Category::StateChanges)
+            .unwrap_or_default()
+            .iter()
+            .map(|r| json!({"key": r.key, "value": r.value, "source": r.source}))
+            .collect::<Vec<_>>(),
+        "extensions": agent_ctx.get_extensions()
+            .iter()
+            .map(|e| json!({"content_type": e.content_type.to_string(), "data": e.data}))
+            .collect::<Vec<_>>(),
+    });
+
+    if let Value::Object(map) = input {
+        map.insert("_agent_context".to_string(), snapshot);
+    }
+}
+
+/// Extract `_agent_context_updates` from a function/workflow output and
+/// apply them back to the AgentContext.
+///
+/// Supported update actions:
+/// - `records`: array of `{category, key, value}` → calls `set_record`
+/// - `extensions`: array of `{id, content_type, data}` → calls `add_extension`
+pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Value) {
+    let updates = match output.get("_agent_context_updates") {
+        Some(u) => u,
+        None => return,
+    };
+
+    // Apply record updates
+    if let Some(records) = updates.get("records").and_then(|v| v.as_array()) {
+        for record in records {
+            let category_str = record.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            let key = record.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            let value = record.get("value").cloned().unwrap_or(Value::Null);
+            let source = record
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("hook_function")
+                .to_string();
+            let iteration = record
+                .get("iteration")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+
+            let cat = match category_str {
+                "Entities" => Category::Entities,
+                "Intentions" => Category::Intentions,
+                "ToolResults" => Category::ToolResults,
+                "QueryResults" => Category::QueryResults,
+                "WorkflowResults" => Category::WorkflowResults,
+                "ReasoningResults" => Category::ReasoningResults,
+                "Extensions" => Category::Extensions,
+                "StateChanges" => Category::StateChanges,
+                "SubagentResults" => Category::SubagentResults,
+                _ => {
+                    tracing::warn!("Unknown category in _agent_context_updates: {category_str}");
+                    continue;
+                }
+            };
+
+            if let Err(e) = agent_ctx.set_record(cat, key.to_string(), value, source, iteration) {
+                tracing::warn!("Failed to apply _agent_context_updates record: {e}");
+            }
+        }
+    }
+
+    // Apply extension updates
+    if let Some(extensions) = updates.get("extensions").and_then(|v| v.as_array()) {
+        for ext in extensions {
+            let id = ext.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let content_type_str = ext
+                .get("content_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("card");
+            let data = ext.get("data").cloned().unwrap_or(Value::Null);
+            let content_type = match content_type_str {
+                "card" => ExtensionType::Card,
+                "image" => ExtensionType::Image,
+                "suggestion" => ExtensionType::Suggestion,
+                "link" => ExtensionType::Link,
+                "button" => ExtensionType::Button,
+                "table" => ExtensionType::Table,
+                "chart" => ExtensionType::Chart,
+                "object_ref" => ExtensionType::ObjectRef,
+                _ => ExtensionType::Card,
+            };
+            let content = ExtensionContent::new(content_type, data);
+            if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
+                tracing::warn!("Failed to apply _agent_context_updates extension: {e}");
+            }
+        }
+    }
 }
 
 // ── Error types ──

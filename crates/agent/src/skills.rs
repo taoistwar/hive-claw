@@ -62,7 +62,12 @@ impl SkillsLoader {
         self
     }
 
-    fn fs_entries(&self, base: &Path, source: SkillSource, skip: &HashSet<String>) -> Vec<SkillEntry> {
+    fn fs_entries(
+        &self,
+        base: &Path,
+        source: SkillSource,
+        skip: &HashSet<String>,
+    ) -> Vec<SkillEntry> {
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(base) else {
             return out;
@@ -116,8 +121,7 @@ impl SkillsLoader {
     pub fn list_skills(&self, filter_unavailable: bool) -> Vec<SkillEntry> {
         let empty = HashSet::new();
         let mut entries = self.fs_entries(&self.workspace_skills, SkillSource::Workspace, &empty);
-        let workspace_names: HashSet<String> =
-            entries.iter().map(|e| e.name.clone()).collect();
+        let workspace_names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
         entries.extend(self.builtin_entries(&workspace_names));
 
         if !self.disabled_skills.is_empty() {
@@ -202,12 +206,8 @@ impl SkillsLoader {
             .filter(|e| {
                 let meta = self.skill_metadata(&e.name).unwrap_or_default();
                 let parsed_meta = parse_nanobot_metadata(meta.get("metadata"));
-                parsed_meta
-                    .get("always")
-                    .is_some_and(is_truthy)
-                    || meta
-                        .get("always")
-                        .is_some_and(is_truthy)
+                parsed_meta.get("always").is_some_and(is_truthy)
+                    || meta.get("always").is_some_and(is_truthy)
             })
             .map(|e| e.name)
             .collect()
@@ -315,7 +315,9 @@ fn is_truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
-        Value::Number(n) => n.as_i64().is_some_and(|n| n != 0) || n.as_f64().is_some_and(|n| n != 0.0),
+        Value::Number(n) => {
+            n.as_i64().is_some_and(|n| n != 0) || n.as_f64().is_some_and(|n| n != 0.0)
+        }
         Value::String(s) => !s.is_empty(),
         Value::Array(a) => !a.is_empty(),
         Value::Object(o) => !o.is_empty(),

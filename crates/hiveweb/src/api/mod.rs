@@ -6,10 +6,10 @@ pub mod login_record;
 pub mod runtime_audit_log;
 
 // 004 Agent Runtime
-pub mod chat_admin;
 pub mod agent;
 pub mod agent_hook;
 pub mod chat_assistant;
+pub mod chat_messages;
 pub mod capability;
 pub mod category;
 pub mod chat_common;
@@ -37,7 +37,7 @@ use tower_http::{
 };
 use tracing::Level;
 
-use crate::middleware::auth::{admin_auth_middleware, user_auth_middleware};
+use crate::middleware::auth::admin_auth_middleware;
 use crate::middleware::rate_limit::{RateLimitState, rate_limit_middleware};
 use crate::middleware::request_body_log::log_request_body_middleware;
 use crate::middleware::request_id::request_id_middleware;
@@ -126,12 +126,12 @@ pub fn create_router(
         ext_pool,
     };
 
-    // Rate-limit window is per-IP. Defaults: 100 req / 60 s.
+    // Rate-limit window is per-IP. Defaults: 180 req / 60 s.
     // Tune via env vars RATE_LIMIT_MAX and RATE_LIMIT_WINDOW_SECS.
     let rl_max: u64 = std::env::var("RATE_LIMIT_MAX")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(100);
+        .unwrap_or(180);
     let rl_window: u64 = std::env::var("RATE_LIMIT_WINDOW_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -145,9 +145,9 @@ pub fn create_router(
 
     let public_routes = Router::new()
         .merge(auth::router_public())
-        .merge(users::router_public())
         .merge(recommended_game::router_public())
-        .merge(chat_assistant::router());
+        .merge(chat_assistant::router())
+        .merge(chat_messages::router());
 
     let admin_protected_routes = Router::new()
         .merge(auth::router_protected())
@@ -169,19 +169,9 @@ pub fn create_router(
         .merge(workflow::router())
         .merge(user::router())
         .merge(recommended_game::router())
-        .merge(chat_admin::admin_router())
         .merge(global_config::router())
         .merge(game::router())
         .layer(middleware::from_fn(admin_auth_middleware))
-        .layer(middleware::from_fn_with_state(
-            rate_limit_state.clone(),
-            rate_limit_middleware,
-        ));
-
-    let user_protected_routes = Router::new()
-        .merge(users::router_protected())
-        .merge(chat_user::user_router())
-        .layer(middleware::from_fn(user_auth_middleware))
         .layer(middleware::from_fn_with_state(
             rate_limit_state,
             rate_limit_middleware,
@@ -190,7 +180,6 @@ pub fn create_router(
     let api_routes = Router::new()
         .merge(public_routes)
         .merge(admin_protected_routes)
-        .merge(user_protected_routes)
         .with_state(state);
 
     Router::new()

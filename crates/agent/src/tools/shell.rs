@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use log::warn;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -23,8 +23,7 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_OUTPUT_CHARS: usize = 10_000;
 
-const WORKSPACE_BOUNDARY_NOTE: &str =
-    "\n\nNote: this is a hard policy boundary, not a transient failure. \
+const WORKSPACE_BOUNDARY_NOTE: &str = "\n\nNote: this is a hard policy boundary, not a transient failure. \
      Do NOT retry with shell tricks (symlinks, base64 piping, alternative \
      tools, working_dir overrides). If the user genuinely needs this \
      resource, tell them you cannot reach it under the current \
@@ -35,7 +34,7 @@ static DEFAULT_DENY_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         r"\brm\s+-[rf]{1,2}\b",
         r"\bdel\s+/[fq]\b",
         r"\brmdir\s+/s\b",
-        r"(?:^|[;&|]\s*)format(?!=)\b",   // format (as standalone command only)
+        r"(?:^|[;&|]\s*)format(?!=)\b", // format (as standalone command only)
         r"\b(mkfs|diskpart)\b",
         r"\bdd\s+if=",
         r">\s*/dev/sd",
@@ -52,8 +51,9 @@ static DEFAULT_DENY_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     .collect()
 });
 
-static WIN_PATH_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?:[A-Za-z]:[^\s"'|><;]*|\\[^\s"'|><;]+(?:\\[^\s"'|><;]+)*)"#).unwrap());
+static WIN_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?:[A-Za-z]:[^\s"'|><;]*|\\[^\s"'|><;]+(?:\\[^\s"'|><;]+)*)"#).unwrap()
+});
 static POSIX_PATH_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?:^|[\s|>'"])(/[^\s"'>;|<]+)"#).unwrap());
 static HOME_PATH_RE: Lazy<Regex> =
@@ -146,7 +146,9 @@ impl ExecTool {
                 }
             }
             if !self.allow_patterns.is_empty() {
-                return Some("Error: Command blocked by allowlist filter (not in allowlist)".into());
+                return Some(
+                    "Error: Command blocked by allowlist filter (not in allowlist)".into(),
+                );
             }
         }
 
@@ -158,14 +160,13 @@ impl ExecTool {
         if self.restrict_to_workspace {
             if cmd.contains("..\\") || cmd.contains("../") {
                 return Some(
-                    "Error: Command blocked by safety guard (path traversal detected)"
-                        .to_string()
+                    "Error: Command blocked by safety guard (path traversal detected)".to_string()
                         + WORKSPACE_BOUNDARY_NOTE,
                 );
             }
             let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-            let media_path = std::fs::canonicalize(&get_media_dir(None))
-                .unwrap_or_else(|_| get_media_dir(None));
+            let media_path =
+                std::fs::canonicalize(&get_media_dir(None)).unwrap_or_else(|_| get_media_dir(None));
             for raw in extract_absolute_paths(cmd) {
                 let expanded = shellexpand(raw.trim());
                 if is_benign_device_path(&expanded.to_string_lossy()) {
@@ -185,8 +186,7 @@ impl ExecTool {
                     continue;
                 }
                 return Some(
-                    "Error: Command blocked by safety guard (path outside working dir)"
-                        .to_string()
+                    "Error: Command blocked by safety guard (path outside working dir)".to_string()
                         + WORKSPACE_BOUNDARY_NOTE,
                 );
             }
@@ -300,13 +300,11 @@ impl Tool for ExecTool {
 
         if self.restrict_to_workspace {
             if let Some(ws) = &self.working_dir {
-                let requested =
-                    std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+                let requested = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
                 let root = std::fs::canonicalize(ws).unwrap_or_else(|_| ws.clone());
                 if requested != root && !requested.starts_with(&root) {
                     return Ok(Value::String(
-                        "Error: working_dir is outside the configured workspace"
-                            .to_string()
+                        "Error: working_dir is outside the configured workspace".to_string()
                             + WORKSPACE_BOUNDARY_NOTE,
                     ));
                 }
@@ -320,14 +318,16 @@ impl Tool for ExecTool {
         let mut effective_cwd = effective_cwd;
         if !self.sandbox.is_empty() {
             if cfg!(windows) {
-                warn!("Sandbox '{}' not supported on Windows; running unsandboxed", self.sandbox);
+                warn!(
+                    "Sandbox '{}' not supported on Windows; running unsandboxed",
+                    self.sandbox
+                );
             } else {
                 let workspace = self.working_dir.clone().unwrap_or(effective_cwd.clone());
                 match wrap_command(&self.sandbox, &command_str, &workspace, &effective_cwd) {
                     Ok(wrapped) => {
                         command_str = wrapped;
-                        effective_cwd =
-                            std::fs::canonicalize(&workspace).unwrap_or(workspace);
+                        effective_cwd = std::fs::canonicalize(&workspace).unwrap_or(workspace);
                     }
                     Err(e) => return Ok(Value::String(format!("Error: {e}"))),
                 }
@@ -347,7 +347,10 @@ impl Tool for ExecTool {
                 p.push_str(&self.path_append);
             } else {
                 env.insert("NANOBOT_PATH_APPEND".to_string(), self.path_append.clone());
-                command_str = format!("export PATH=\"$PATH:$NANOBOT_PATH_APPEND\"; {}", command_str);
+                command_str = format!(
+                    "export PATH=\"$PATH:$NANOBOT_PATH_APPEND\"; {}",
+                    command_str
+                );
             }
         }
 
@@ -453,10 +456,7 @@ mod tests {
     #[tokio::test]
     async fn guard_blocks_rm_rf() {
         let tool = ExecTool::new();
-        let res = tool
-            .execute(json!({"command":"rm -rf /"}))
-            .await
-            .unwrap();
+        let res = tool.execute(json!({"command":"rm -rf /"})).await.unwrap();
         assert!(res.as_str().unwrap().contains("blocked"));
     }
 

@@ -53,7 +53,11 @@ impl AutoCompact {
     }
 
     fn format_summary(text: &str, last_active: DateTime<Local>) -> String {
-        format!("Previous conversation summary (last active {}):\n{}", last_active.to_rfc3339(), text)
+        format!(
+            "Previous conversation summary (last active {}):\n{}",
+            last_active.to_rfc3339(),
+            text
+        )
     }
 
     /// Enqueue archival for idle sessions (except those with in-flight tasks).
@@ -106,7 +110,10 @@ impl AutoCompact {
     }
 
     async fn archive_inner(&self, key: &str) -> Result<(), String> {
-        let summary = self.consolidator.compact_idle_session(key, RECENT_SUFFIX_MESSAGES).await;
+        let summary = self
+            .consolidator
+            .compact_idle_session(key, RECENT_SUFFIX_MESSAGES)
+            .await;
         if let Some(ref text) = summary {
             if !text.is_empty() && text != "(nothing)" {
                 let mut mgr = self.sessions.lock().await;
@@ -119,7 +126,9 @@ impl AutoCompact {
                     Value::String(last_active.to_rfc3339()),
                 );
                 let mut session = session;
-                session.metadata.insert("_last_summary".into(), Value::Object(entry));
+                session
+                    .metadata
+                    .insert("_last_summary".into(), Value::Object(entry));
                 mgr.save(session, false).map_err(|e| e.to_string())?;
                 self.inner
                     .lock()
@@ -134,8 +143,7 @@ impl AutoCompact {
     /// Inspect an incoming session and inject a stored summary if one exists.
     pub async fn prepare_session(&self, session: Session, key: &str) -> (Session, Option<String>) {
         let is_archiving = self.inner.lock().unwrap().archiving.contains(key);
-        let session = if is_archiving || self.is_expired(Some(session.updated_at), Local::now())
-        {
+        let session = if is_archiving || self.is_expired(Some(session.updated_at), Local::now()) {
             info!(
                 "Auto-compact: reloading session {key} (archiving={})",
                 is_archiving
@@ -168,4 +176,3 @@ impl AutoCompact {
         (session, None)
     }
 }
-

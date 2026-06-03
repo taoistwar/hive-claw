@@ -137,7 +137,12 @@ impl FileStates {
     }
 
     /// Return `true` if file was previously read with same params and content is unchanged.
-    pub fn is_unchanged<P: AsRef<Path>>(&self, path: P, offset: usize, limit: Option<usize>) -> bool {
+    pub fn is_unchanged<P: AsRef<Path>>(
+        &self,
+        path: P,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> bool {
         let p = Self::canonical(path.as_ref());
         let mut state = self.state.lock().unwrap();
         let Some(entry) = state.get_mut(&p) else {
@@ -231,9 +236,7 @@ thread_local! {
 
 /// Return the `FileStates` bound to the current async task, or a fallback.
 pub fn current_file_states(fallback: &Arc<FileStates>) -> Arc<FileStates> {
-    CURRENT_FILE_STATES.with(|cell| {
-        cell.borrow().clone().unwrap_or_else(|| fallback.clone())
-    })
+    CURRENT_FILE_STATES.with(|cell| cell.borrow().clone().unwrap_or_else(|| fallback.clone()))
 }
 
 /// Bind `file_states` for the current async task. Returns a token for reset.

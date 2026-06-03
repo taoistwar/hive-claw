@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use log::warn;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -188,7 +188,8 @@ impl Tool for LongTaskTool {
             Some(s) => s,
             None => {
                 return Ok(Value::String(
-                    "Error: long_task requires an active chat session (missing routing context).".into(),
+                    "Error: long_task requires an active chat session (missing routing context)."
+                        .into(),
                 ));
             }
         };
@@ -212,7 +213,11 @@ impl Tool for LongTaskTool {
         let blob = GoalState {
             status: "active".into(),
             objective: goal.trim().to_string(),
-            ui_summary: if summary.is_empty() { None } else { Some(summary.clone()) },
+            ui_summary: if summary.is_empty() {
+                None
+            } else {
+                Some(summary.clone())
+            },
             started_at: Some(iso_now()),
             completed_at: None,
             recap: None,
@@ -220,7 +225,9 @@ impl Tool for LongTaskTool {
 
         let blob_value = serde_json::to_value(&blob).unwrap_or(Value::Null);
         if let Some(session_mut) = Arc::get_mut(&mut session.clone()) {
-            session_mut.metadata.insert(GOAL_STATE_KEY.into(), blob_value);
+            session_mut
+                .metadata
+                .insert(GOAL_STATE_KEY.into(), blob_value);
             discard_legacy_goal_state_key(&mut session_mut.metadata);
         } else {
             warn!("Could not get mutable reference to session for goal state update");
@@ -353,16 +360,25 @@ impl Tool for CompleteGoalTool {
 
         let blob = GoalState {
             status: "completed".into(),
-            objective: prior.as_ref().map(|p| p.objective.clone()).unwrap_or_default(),
+            objective: prior
+                .as_ref()
+                .map(|p| p.objective.clone())
+                .unwrap_or_default(),
             ui_summary: prior.as_ref().and_then(|p| p.ui_summary.clone()),
             started_at: prior.as_ref().and_then(|p| p.started_at.clone()),
             completed_at: Some(ended.clone()),
-            recap: if recap_str.is_empty() { None } else { Some(recap_str.clone()) },
+            recap: if recap_str.is_empty() {
+                None
+            } else {
+                Some(recap_str.clone())
+            },
         };
 
         let blob_value = serde_json::to_value(&blob).unwrap_or(Value::Null);
         if let Some(session_mut) = Arc::get_mut(&mut session.clone()) {
-            session_mut.metadata.insert(GOAL_STATE_KEY.into(), blob_value);
+            session_mut
+                .metadata
+                .insert(GOAL_STATE_KEY.into(), blob_value);
             discard_legacy_goal_state_key(&mut session_mut.metadata);
         } else {
             warn!("Could not get mutable reference to session for goal state update");

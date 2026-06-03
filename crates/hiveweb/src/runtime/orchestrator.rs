@@ -17,6 +17,7 @@
 
 use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
+use chrono::Utc;
 use providers::{ChatRequest, RetryMode, ToolCallRequest};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
@@ -25,13 +26,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+use agent::context::{
+    AgentContext, Category, ContextConfig, LifecycleState, ResponsePayload, ToolCallStatus,
+    UserInput,
+};
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
-use crate::services::chat as chat_svc;
-use crate::services::chat_admin::{append_assistant_message_admin, append_assistant_with_tool_calls_admin, append_tool_message_admin};
+use crate::runtime::hook::{self, apply_agent_context_updates, inject_agent_context_snapshot, HookContext, HookDeps};
 use crate::services::chat_user::append_assistant_message_user;
-use crate::runtime::hook::{self, HookContext};
 use crate::services::runtime_audit::{self, AuditRecord};
 
 pub const ROUTE_TOOL_NAME: &str = "route_to_subagent";
@@ -51,28 +54,10 @@ pub struct OrchestratorDeps {
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
     pub ext_pool: Option<MySqlPool>,
-}
-
-pub async fn run_session_admin(
-    deps: OrchestratorDeps,
-    session_id: i64,
-    starting_agent_id: i64,
-    actor_id: i64,
-    history: Vec<crate::models::ChatMessageAdmin>,
-    user_content: String,
-    tx: UnboundedSender<Result<Event, Infallible>>,
-) {
-    run_session_internal_impl(
-        deps,
-        session_id,
-        starting_agent_id,
-        actor_id,
-        &history,
-        &user_content,
-        &tx,
-        AppendVariant::Admin,
-    )
-    .await;
+    pub message: String,
+    pub channel: String,
+    pub platform: String,
+    pub app_version: String,
 }
 
 pub async fn run_session_user(
@@ -92,30 +77,16 @@ pub async fn run_session_user(
         &history,
         &user_content,
         &tx,
-        AppendVariant::User,
     )
     .await;
 }
 
 // ============================ Core implementation ============================
 
-enum AppendVariant {
-    Admin,
-    User,
-}
-
 /// Trait for accessing role + content on chat messages generically
 trait HasRoleContent {
     fn role_ref(&self) -> &str;
     fn content_ref(&self) -> Option<&str>;
-}
-impl HasRoleContent for crate::models::ChatMessageAdmin {
-    fn role_ref(&self) -> &str {
-        &self.role
-    }
-    fn content_ref(&self) -> Option<&str> {
-        self.content.as_deref()
-    }
 }
 impl HasRoleContent for crate::models::ChatMessageUser {
     fn role_ref(&self) -> &str {
@@ -134,11 +105,37 @@ async fn run_session_internal_impl<T>(
     history: &[T],
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
-    variant: AppendVariant,
 ) where
     T: HasRoleContent,
 {
     let elapsed_start = Instant::now();
+
+    // ★ Create AgentContext FIRST — needed by HookDeps for function/workflow hooks
+    let agent_ctx = Arc::new(AgentContext::new(
+        format!("session-{session_id}-agent-{starting_agent_id}"),
+        UserInput {
+            raw_text: user_content.to_string(),
+            session_id: Some(session_id.to_string()),
+            message_id: None,
+            timestamp: Utc::now(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("channel".into(), deps.channel.clone());
+                m.insert("platform".into(), deps.platform.clone());
+                m
+            },
+        },
+        ContextConfig::default(),
+    ));
+
+    let hook_deps = HookDeps {
+        s3: deps.s3.clone(),
+        llm: Arc::clone(&deps.llm),
+        registry: Arc::clone(&deps.registry),
+        invoker: Arc::clone(&deps.invoker),
+        ext_pool: deps.ext_pool.clone(),
+        agent_ctx: Arc::clone(&agent_ctx),
+    };
     let mut current_agent_id = starting_agent_id;
     let mut visited: Vec<i64> = vec![starting_agent_id];
     let max_hops = max_hops();
@@ -168,7 +165,7 @@ async fn run_session_internal_impl<T>(
 
     for hop in 0..max_hops {
         // 1. 装配当前 agent 资源
-        let ctx = match build_agent_context(&deps.pool, current_agent_id).await {
+        let agent_content = match build_agent_content(&deps.pool, current_agent_id).await {
             Ok(c) => c,
             Err(e) => {
                 emit_error(&tx, 5000, format!("agent context: {e}"));
@@ -178,19 +175,24 @@ async fn run_session_internal_impl<T>(
 
         // ★ before_agent_start hook (blocking-capable)
         {
-            let hctx = HookContext {
-                agent_id: ctx.agent_id,
-                identifier: ctx.identifier.clone(),
+            let hook_context = HookContext {
+                agent_id: agent_content.agent_id,
+                identifier: agent_content.identifier.clone(),
                 session_id,
                 actor_id,
                 request_id: String::new(),
                 trigger_point: "before_agent_start".into(),
+                message: deps.message.clone(),
+                channel: deps.channel.clone(),
+                platform: deps.platform.clone(),
+                app_version: deps.app_version.clone(),
             };
             if let Err(e) = hook::run_hooks(
                 Arc::new(deps.pool.clone()),
-                &ctx.hooks,
+                &agent_content.hooks,
                 "before_agent_start",
-                &hctx,
+                &hook_context,
+                &hook_deps,
             )
             .await
             {
@@ -200,7 +202,7 @@ async fn run_session_internal_impl<T>(
         }
 
         // 2. 构造 provider
-        let (provider, model) = match deps.llm.build_primary(ctx.model_preset.as_deref()) {
+        let (provider, model) = match deps.llm.build_primary(agent_content.model_preset.as_deref()) {
             Ok(p) => p,
             Err(e) => {
                 emit_error(&tx, 5007, format!("preset error: {e}"));
@@ -210,10 +212,10 @@ async fn run_session_internal_impl<T>(
 
         // 3. 准备 system + tools
         let mut hop_msgs: Vec<Value> =
-            vec![json!({"role": "system", "content": ctx.system_prompt})];
+            vec![json!({"role": "system", "content": agent_content.system_prompt})];
         hop_msgs.extend(messages.clone());
 
-        let tools_schema = build_tools_schema(&ctx);
+        let tools_schema = build_tools_schema(&agent_content);
         let req = ChatRequest {
             model: Some(model.clone()),
             messages: hop_msgs,
@@ -239,18 +241,23 @@ async fn run_session_internal_impl<T>(
         // ★ before_llm_call hook (blocking-capable)
         {
             let hctx = HookContext {
-                agent_id: ctx.agent_id,
-                identifier: ctx.identifier.clone(),
+                agent_id: agent_content.agent_id,
+                identifier: agent_content.identifier.clone(),
                 session_id,
                 actor_id,
                 request_id: String::new(),
                 trigger_point: "before_llm_call".into(),
+                message: deps.message.clone(),
+                channel: deps.channel.clone(),
+                platform: deps.platform.clone(),
+                app_version: deps.app_version.clone(),
             };
             if let Err(e) = hook::run_hooks(
                 Arc::new(deps.pool.clone()),
-                &ctx.hooks,
+                &agent_content.hooks,
                 "before_llm_call",
                 &hctx,
+                &hook_deps,
             )
             .await
             {
@@ -281,39 +288,51 @@ async fn run_session_internal_impl<T>(
             // ★ on_agent_error hook (audit-only)
             {
                 let hctx = HookContext {
-                    agent_id: ctx.agent_id,
-                    identifier: ctx.identifier.clone(),
+                    agent_id: agent_content.agent_id,
+                    identifier: agent_content.identifier.clone(),
                     session_id,
                     actor_id,
                     request_id: String::new(),
                     trigger_point: "on_agent_error".into(),
+                    message: deps.message.clone(),
+                    channel: deps.channel.clone(),
+                    platform: deps.platform.clone(),
+                    app_version: deps.app_version.clone(),
                 };
                 let _ = hook::run_hooks(
                     Arc::new(deps.pool.clone()),
-                    &ctx.hooks,
+                    &agent_content.hooks,
                     "on_agent_error",
                     &hctx,
+                    &hook_deps,
                 )
                 .await;
             }
+            // ★ AgentContext: LLM error → terminate
+            let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
             break;
         }
 
         // ★ after_llm_call hook (audit-only)
         {
             let hctx = HookContext {
-                agent_id: ctx.agent_id,
-                identifier: ctx.identifier.clone(),
+                agent_id: agent_content.agent_id,
+                identifier: agent_content.identifier.clone(),
                 session_id,
                 actor_id,
                 request_id: String::new(),
                 trigger_point: "after_llm_call".into(),
+                message: deps.message.clone(),
+                channel: deps.channel.clone(),
+                platform: deps.platform.clone(),
+                app_version: deps.app_version.clone(),
             };
             let _ = hook::run_hooks(
                 Arc::new(deps.pool.clone()),
-                &ctx.hooks,
+                &agent_content.hooks,
                 "after_llm_call",
                 &hctx,
+                &hook_deps,
             )
             .await;
         }
@@ -356,43 +375,36 @@ async fn run_session_internal_impl<T>(
         // 6. 处理 tool_calls
         let mut routed_to: Option<i64> = None;
 
-        // Persist assistant message with tool_calls to DB
-        if matches!(variant, AppendVariant::Admin) {
-            let tc_json: Vec<Value> = tool_calls
-                .iter()
-                .map(|tc| tc.to_openai_tool_call())
-                .collect();
-            let _ = append_assistant_with_tool_calls_admin(
-                &deps.pool,
-                session_id,
-                actor_id,
-                &assistant_content,
-                &serde_json::to_string(&tc_json).unwrap_or_default(),
-                None,
-            )
-            .await;
-        }
-
         for tc in &tool_calls {
             // ★ before_tool_call hook (blocking-capable)
             {
                 let hctx = HookContext {
-                    agent_id: ctx.agent_id,
-                    identifier: ctx.identifier.clone(),
+                    agent_id: agent_content.agent_id,
+                    identifier: agent_content.identifier.clone(),
                     session_id,
                     actor_id,
                     request_id: String::new(),
                     trigger_point: "before_tool_call".into(),
+                    message: deps.message.clone(),
+                    channel: deps.channel.clone(),
+                    platform: deps.platform.clone(),
+                    app_version: deps.app_version.clone(),
                 };
                 if let Err(e) = hook::run_hooks(
                     Arc::new(deps.pool.clone()),
-                    &ctx.hooks,
+                    &agent_content.hooks,
                     "before_tool_call",
                     &hctx,
+                    &hook_deps,
                 )
                 .await
                 {
                     emit_error(&tx, 6005, e.to_string());
+                    // ★ AgentContext: hook abort → terminate
+                    let _ = agent_ctx.set_response_payload(
+                        ResponsePayload::new("Hook blocked tool execution".to_string()),
+                    );
+                    let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
                     // On hook abort, finalize without processing this tool
                     return finalize_with_variant(
                         &deps.pool,
@@ -402,9 +414,13 @@ async fn run_session_internal_impl<T>(
                         elapsed_start,
                         Some("Hook blocked tool execution".into()),
                         current_agent_id,
-                        variant,
-                        Some(&ctx.hooks),
-                        Some(&ctx.identifier),
+                        Some(&agent_content.hooks),
+                        Some(&agent_content.identifier),
+                        deps.message.clone(),
+                        deps.channel.clone(),
+                        deps.platform.clone(),
+                        deps.app_version.clone(),
+                        &hook_deps,
                     )
                     .await;
                 }
@@ -421,9 +437,9 @@ async fn run_session_internal_impl<T>(
                 .data(tc_payload.to_string())));
 
             let result = if tc.name == ROUTE_TOOL_NAME {
-                handle_route_tool(&deps.pool, &ctx, &visited, tc).await
-            } else if let Some(tool_ref) = ctx.tools.iter().find(|t| t.identifier == tc.name) {
-                handle_workspace_tool(&deps, &ctx, tool_ref, tc, session_id).await
+                handle_route_tool(&deps.pool, &agent_content, &visited, tc).await
+            } else if let Some(tool_ref) = agent_content.tools.iter().find(|t| t.identifier == tc.name) {
+                handle_workspace_tool(&deps, &agent_content, tool_ref, tc, session_id, Arc::clone(&agent_ctx)).await
             } else {
                 ToolOutcome::error(format!("未知工具：{}", tc.name))
             };
@@ -437,36 +453,53 @@ async fn run_session_internal_impl<T>(
                 .event("tool_result")
                 .data(tr_payload.to_string())));
 
-            // Persist tool message to DB
-            if matches!(variant, AppendVariant::Admin) {
-                let _ = append_tool_message_admin(
-                    &deps.pool,
-                    session_id,
-                    actor_id,
-                    &tc.id,
-                    &tc.name,
-                    &serde_json::to_string(&result.payload).unwrap_or_default(),
-                )
-                .await;
-            }
-
             // ★ after_tool_call hook (audit-only)
             {
                 let hctx = HookContext {
-                    agent_id: ctx.agent_id,
-                    identifier: ctx.identifier.clone(),
+                    agent_id: agent_content.agent_id,
+                    identifier: agent_content.identifier.clone(),
                     session_id,
                     actor_id,
                     request_id: String::new(),
                     trigger_point: "after_tool_call".into(),
+                    message: deps.message.clone(),
+                    channel: deps.channel.clone(),
+                    platform: deps.platform.clone(),
+                    app_version: deps.app_version.clone(),
                 };
                 let _ = hook::run_hooks(
                     Arc::new(deps.pool.clone()),
-                    &ctx.hooks,
+                    &agent_content.hooks,
                     "after_tool_call",
                     &hctx,
+                    &hook_deps,
                 )
                 .await;
+            }
+
+            // ★ AgentContext: record tool execution (audit + category store)
+            {
+                let tool_status = if result.payload.get("error").is_some() {
+                    ToolCallStatus::Failure
+                } else {
+                    ToolCallStatus::Success
+                };
+                let now = Utc::now();
+                let _ = agent_ctx.record_tool_call(
+                    tc.name.clone(),
+                    serde_json::Value::Object(tc.arguments.clone()),
+                    Some(result.payload.clone()),
+                    tool_status,
+                    now,
+                    Some(now),
+                );
+                let _ = agent_ctx.set_record(
+                    Category::ToolResults,
+                    format!("{}-{}", tc.name, tc.id),
+                    result.payload.clone(),
+                    tc.name.clone(),
+                    hop,
+                );
             }
 
             // tool message → 加入 history
@@ -485,6 +518,11 @@ async fn run_session_internal_impl<T>(
                     );
                     final_content = Some(assistant_content.clone());
                     final_agent_id = current_agent_id;
+                    // ★ AgentContext: route loop detected → terminate
+                    let _ = agent_ctx.set_response_payload(
+                        ResponsePayload::new(assistant_content.clone()),
+                    );
+                    let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
                     return finalize_with_variant(
                         &deps.pool,
                         session_id,
@@ -493,9 +531,13 @@ async fn run_session_internal_impl<T>(
                         elapsed_start,
                         final_content,
                         final_agent_id,
-                        variant,
-                        Some(&ctx.hooks),
-                        Some(&ctx.identifier),
+                        Some(&agent_content.hooks),
+                        Some(&agent_content.identifier),
+                        deps.message.clone(),
+                        deps.channel.clone(),
+                        deps.platform.clone(),
+                        deps.app_version.clone(),
+                        &hook_deps,
                     )
                     .await;
                 }
@@ -510,11 +552,43 @@ async fn run_session_internal_impl<T>(
                     .event("routed")
                     .data(routed_payload.to_string())));
                 audit_route(&deps.pool, current_agent_id, next_agent).await;
+
+                // ★ AgentContext: record delegation
+                {
+                    let now = Utc::now();
+                    let _ = agent_ctx.record_delegation(
+                        next_agent.to_string(),
+                        String::new(),
+                        json!({"from_agent": current_agent_id, "via": "route_to_subagent"}),
+                        None,
+                        true,
+                        now,
+                        None,
+                    );
+                    // Record state change for routing
+                    let _ = agent_ctx.set_record(
+                        Category::StateChanges,
+                        format!("route-hop-{}", hop),
+                        json!({"event": "routed", "from": current_agent_id, "to": next_agent}),
+                        "orchestrator".into(),
+                        hop,
+                    );
+                }
             }
         }
 
         if let Some(next) = routed_to {
             current_agent_id = next;
+            // ★ AgentContext: record hop iteration state before routing continue
+            {
+                let _ = agent_ctx.set_record(
+                    Category::StateChanges,
+                    format!("hop-{}-routed", hop),
+                    json!({"iteration": hop, "event": "agent_routed", "to_agent": next}),
+                    "orchestrator".into(),
+                    hop,
+                );
+            }
             // 路由后下一轮继续；保持 messages 累积让新 agent 看到上下文
             continue;
         }
@@ -524,7 +598,34 @@ async fn run_session_internal_impl<T>(
             emit_error(&tx, 5006, format!("已达最大 hop {max_hops}"));
             final_content = Some(assistant_content);
             final_agent_id = current_agent_id;
+            // ★ AgentContext: max hops reached → terminate
+            let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
             break;
+        }
+    }
+
+    // ★ AgentContext: set final response payload and lifecycle state
+    {
+        if let Some(ref text) = final_content {
+            let _ = agent_ctx.set_response_payload(ResponsePayload::new(text.clone()));
+            let _ = agent_ctx.set_lifecycle_state(LifecycleState::Completed);
+        } else {
+            let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
+        }
+
+        // ★ Emit AgentContext extensions as an SSE event for API consumers
+        let exts = agent_ctx.get_extensions();
+        if !exts.is_empty() {
+            let exts_payload = json!({
+                "extensions": exts.iter().map(|e| json!({
+                    "content_type": e.content_type.to_string(),
+                    "data": e.data,
+                    "render_hints": e.render_hints,
+                })).collect::<Vec<_>>(),
+            });
+            let _ = tx.send(Ok(Event::default()
+                .event("extensions")
+                .data(exts_payload.to_string())));
         }
     }
 
@@ -536,9 +637,13 @@ async fn run_session_internal_impl<T>(
         elapsed_start,
         final_content,
         final_agent_id,
-        variant,
         None,
         None,  // ctx not available outside the loop
+        deps.message.clone(),
+        deps.channel.clone(),
+        deps.platform.clone(),
+        deps.app_version.clone(),
+        &hook_deps,
     )
     .await;
 }
@@ -551,40 +656,24 @@ async fn finalize_with_variant(
     started: Instant,
     content: Option<String>,
     final_agent_id: i64,
-    variant: AppendVariant,
     hooks: Option<&std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>>,
     agent_identifier: Option<&str>,
+    message: String,
+    channel: String,
+    platform: String,
+    app_version: String,
+    hook_deps: &HookDeps,
 ) {
     let elapsed = started.elapsed().as_millis() as i32;
     if let Some(text) = content {
-        match variant {
-            AppendVariant::Admin => {
-                let routed = if final_agent_id != 1 {
-                    Some(final_agent_id)
-                } else {
-                    None
-                };
-                let _ = append_assistant_message_admin(
-                    pool,
-                    session_id,
-                    actor_id,
-                    &text,
-                    routed,
-                    Some(elapsed),
-                )
-                .await;
-            }
-            AppendVariant::User => {
-                let _ = append_assistant_message_user(
-                    pool,
-                    session_id,
-                    actor_id,
-                    &text,
-                    Some(elapsed),
-                )
-                .await;
-            }
-        }
+        let _ = append_assistant_message_user(
+            pool,
+            session_id,
+            actor_id,
+            &text,
+            Some(elapsed),
+        )
+        .await;
     }
 
     // ★ after_agent_end hook (audit-only, before done event)
@@ -596,12 +685,17 @@ async fn finalize_with_variant(
             actor_id,
             request_id: String::new(),
             trigger_point: "after_agent_end".into(),
+            message: message.clone(),
+            channel: channel.clone(),
+            platform: platform.clone(),
+            app_version: app_version.clone(),
         };
         let _ = hook::run_hooks(
             Arc::new(pool.clone()),
             hooks_map,
             "after_agent_end",
             &hctx,
+            hook_deps,
         )
         .await;
     }
@@ -622,7 +716,7 @@ fn emit_error(tx: &UnboundedSender<Result<Event, Infallible>>, code: u16, messag
 // ============================ Agent context ============================
 
 #[derive(Debug, Clone)]
-pub(crate) struct AgentContext {
+pub(crate) struct AgentContent {
     pub(crate) agent_id: i64,
     pub(crate) identifier: String,
     pub(crate) system_prompt: String,
@@ -661,7 +755,7 @@ pub(crate) struct ChildAgent {
     pub(crate) description: Option<String>,
 }
 
-async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentContext, String> {
+async fn build_agent_content(pool: &MySqlPool, agent_id: i64) -> Result<AgentContent, String> {
     let row: Option<(String, String, Option<String>)> =
         sqlx::query_as("SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?")
             .bind(agent_id)
@@ -797,7 +891,7 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
         .await
         .unwrap_or_default();
 
-    Ok(AgentContext {
+    Ok(AgentContent {
         agent_id,
         identifier,
         system_prompt,
@@ -810,7 +904,7 @@ async fn build_agent_context(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
 }
 
 /// 组装 LLM-side tools schema（OpenAI function-calling format）
-pub(crate) fn build_tools_schema(ctx: &AgentContext) -> Vec<Value> {
+pub(crate) fn build_tools_schema(ctx: &AgentContent) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     // route_to_subagent（仅当存在子 agent 时暴露）
     if !ctx.children.is_empty() {
@@ -920,7 +1014,7 @@ impl ToolOutcome {
 
 async fn handle_route_tool(
     pool: &MySqlPool,
-    parent_ctx: &AgentContext,
+    parent_ctx: &AgentContent,
     visited: &[i64],
     tc: &ToolCallRequest,
 ) -> ToolOutcome {
@@ -956,10 +1050,11 @@ async fn handle_route_tool(
 
 async fn handle_meta_tool(
     deps: &OrchestratorDeps,
-    ctx: &AgentContext,
+    ctx: &AgentContent,
     tool_ref: &ToolRef,
     tc: &ToolCallRequest,
     session_id: i64,
+    agent_ctx: Arc<AgentContext>,
 ) -> ToolOutcome {
     match tool_ref.identifier.as_str() {
         "invoke_function" => {
@@ -973,7 +1068,7 @@ async fn handle_meta_tool(
                     return ToolOutcome::error("invoke_function: function_identifier 缺失".into());
                 }
             };
-            let function_input = match tc.arguments.get("function_input") {
+            let mut function_input = match tc.arguments.get("function_input") {
                 Some(v) => v.clone(),
                 None => return ToolOutcome::error("invoke_function: function_input 缺失".into()),
             };
@@ -1017,9 +1112,12 @@ async fn handle_meta_tool(
                 }
             }
 
+            // ★ Inject AgentContext snapshot so function can read runtime state
+            inject_agent_context_snapshot(&mut function_input, &agent_ctx);
+
             match func_kind {
                 1 if plugin_id.is_none() => {
-                    // builtin function — 直接调用
+                    // builtin function — direct call with AgentContext
                     let Some(builtin) = super::builtins::lookup(&func_ident) else {
                         return ToolOutcome::error(format!(
                             "builtin function「{func_ident}」未找到 handler"
@@ -1028,9 +1126,14 @@ async fn handle_meta_tool(
                     let bctx = super::builtins::BuiltinContext {
                         pool: &deps.pool,
                         ext_pool: deps.ext_pool.as_ref(),
+                        agent_ctx: Some(Arc::clone(&agent_ctx)),
                     };
                     match (builtin.handler)(function_input, &bctx) {
-                        Ok(result) => ToolOutcome::ok(result),
+                        Ok(result) => {
+                            // ★ Apply AgentContext updates from function output
+                            apply_agent_context_updates(&agent_ctx, &result);
+                            ToolOutcome::ok(result)
+                        }
                         Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
                     }
                 }
@@ -1071,6 +1174,8 @@ async fn handle_meta_tool(
                         Ok(out_str) => {
                             let parsed: Value = serde_json::from_str(&out_str)
                                 .unwrap_or_else(|_| Value::String(out_str));
+                            // ★ Apply AgentContext updates from plugin function output
+                            apply_agent_context_updates(&agent_ctx, &parsed);
                             ToolOutcome::ok(parsed)
                         }
                         Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
@@ -1092,10 +1197,14 @@ async fn handle_meta_tool(
                     return ToolOutcome::error("invoke_workflow: workflow_identifier 缺失".into());
                 }
             };
-            let workflow_input = match tc.arguments.get("workflow_input") {
+            let mut workflow_input = match tc.arguments.get("workflow_input") {
                 Some(v) => v.clone(),
                 None => return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into()),
             };
+
+            // ★ Inject AgentContext snapshot so workflow can read runtime state
+            inject_agent_context_snapshot(&mut workflow_input, &agent_ctx);
+
             // 查询 workflow id
             let wf_row: Option<(i64,)> =
                 sqlx::query_as("SELECT id FROM workflows WHERE identifier = ?")
@@ -1123,7 +1232,10 @@ async fn handle_meta_tool(
             {
                 Ok(out) => {
                     let obj = serde_json::Map::from_iter(out.into_iter());
-                    ToolOutcome::ok(Value::Object(obj))
+                    let result = Value::Object(obj);
+                    // ★ Apply AgentContext updates from workflow output
+                    apply_agent_context_updates(&agent_ctx, &result);
+                    ToolOutcome::ok(result)
                 }
                 Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
             }
@@ -1134,10 +1246,11 @@ async fn handle_meta_tool(
 
 pub(crate) async fn handle_workspace_tool(
     deps: &OrchestratorDeps,
-    ctx: &AgentContext,
+    ctx: &AgentContent,
     tool_ref: &ToolRef,
     tc: &ToolCallRequest,
     session_id: i64,
+    agent_ctx: Arc<AgentContext>,
 ) -> ToolOutcome {
     // Capability check: 如果 tool 声明了 required_capabilities，校验 agent 权限
     if !tool_ref.required_capabilities.is_empty() {
@@ -1162,7 +1275,7 @@ pub(crate) async fn handle_workspace_tool(
         1 => {
             if tool_ref.is_meta_tool {
                 // 元工具 — 根据 identifier 分发到 invoke_function / invoke_workflow
-                handle_meta_tool(deps, ctx, tool_ref, tc, session_id).await
+                handle_meta_tool(deps, ctx, tool_ref, tc, session_id, Arc::clone(&agent_ctx)).await
             } else if tool_ref.is_builtin_function {
                 if tool_ref.function_id.is_none() {
                     return ToolOutcome::error("builtin function 缺 function_id".into());
@@ -1173,13 +1286,19 @@ pub(crate) async fn handle_workspace_tool(
                         tool_ref.identifier
                     ));
                 };
-                let args_value: Value = Value::Object(tc.arguments.clone());
+                let mut args_value: Value = Value::Object(tc.arguments.clone());
+                // ★ Inject AgentContext snapshot for builtin function in tool path
+                inject_agent_context_snapshot(&mut args_value, &agent_ctx);
                 let bctx = super::builtins::BuiltinContext {
                     pool: &deps.pool,
                     ext_pool: deps.ext_pool.as_ref(),
+                    agent_ctx: Some(Arc::clone(&agent_ctx)),
                 };
                 match (builtin.handler)(args_value, &bctx) {
-                    Ok(result) => ToolOutcome::ok(result),
+                    Ok(result) => {
+                        apply_agent_context_updates(&agent_ctx, &result);
+                        ToolOutcome::ok(result)
+                    }
                     Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
                 }
             } else {

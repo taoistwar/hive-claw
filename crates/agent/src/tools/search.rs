@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 use async_trait::async_trait;
 use globset::{Glob, GlobMatcher};
 use regex::RegexBuilder;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use walkdir::WalkDir;
 
 use super::base::{Tool, ToolExecError};
@@ -210,8 +210,14 @@ impl Tool for GrepTool {
             return Ok(Value::String("Error: pattern required".into()));
         };
         let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let glob_pat = params.get("glob").and_then(|v| v.as_str()).map(String::from);
-        let type_kind = params.get("type").and_then(|v| v.as_str()).map(String::from);
+        let glob_pat = params
+            .get("glob")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let type_kind = params
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let case_insensitive = params
             .get("case_insensitive")
             .and_then(|v| v.as_bool())
@@ -234,10 +240,7 @@ impl Tool for GrepTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
         let head_limit = params.get("head_limit").and_then(|v| v.as_u64());
-        let offset = params
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let limit: Option<usize> = match head_limit {
             Some(0) => None,
             Some(n) => Some(n as usize),
@@ -288,10 +291,7 @@ impl Tool for GrepTool {
         };
 
         'outer: for file_path in files {
-            let name = file_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let name = file_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             let rel_path = file_path
                 .strip_prefix(&root)
                 .unwrap_or(&file_path)
@@ -361,13 +361,8 @@ impl Tool for GrepTool {
                                 break;
                             }
                         }
-                        let block = format_block(
-                            &display,
-                            &lines,
-                            line_no,
-                            context_before,
-                            context_after,
-                        );
+                        let block =
+                            format_block(&display, &lines, line_no, context_before, context_after);
                         let extra_sep = if blocks.is_empty() { 0 } else { 2 };
                         if result_chars + extra_sep + block.len() > MAX_RESULT_CHARS {
                             size_truncated = true;
@@ -457,7 +452,9 @@ impl Tool for GrepTool {
             notes.push(format!("(pagination: offset={offset})"));
         }
         if skipped_binary > 0 {
-            notes.push(format!("(skipped {skipped_binary} binary/unreadable files)"));
+            notes.push(format!(
+                "(skipped {skipped_binary} binary/unreadable files)"
+            ));
         }
         if skipped_large > 0 {
             notes.push(format!("(skipped {skipped_large} large files)"));
@@ -518,10 +515,7 @@ mod tests {
     async fn grep_files_with_matches() {
         let ws = setup("grep");
         let tool = GrepTool(fs_tool(&ws));
-        let out = tool
-            .execute(json!({"pattern":"hello"}))
-            .await
-            .unwrap();
+        let out = tool.execute(json!({"pattern":"hello"})).await.unwrap();
         let out = out.as_str().unwrap();
         assert!(out.contains("a.rs"));
         assert!(out.contains("b.md"));

@@ -11,6 +11,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
+use sqlx::MySqlPool;
 
 use crate::api::AppState;
 use crate::models::Role;
@@ -130,6 +131,20 @@ async fn update_global_config(
 
     svc::update(&state.pool, id, meta)
         .await
+        .map(|cfg| {
+            // 如果更新的是需要缓存的配置，同步到 Redis
+            if crate::api::chat_assistant::CACHED_CONFIG_KEYS.contains(&cfg.key.as_str()) {
+                tokio::spawn({
+                    let redis = state.redis.clone();
+                    let pool = state.pool.clone();
+                    let key = cfg.key.clone();
+                    async move {
+                        crate::api::chat_assistant::sync_config_to_redis(&redis, &pool, &key).await;
+                    }
+                });
+            }
+            cfg
+        })
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
 }

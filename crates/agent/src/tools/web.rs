@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use log;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use security::{validate_resolved_url, validate_url_target};
 
@@ -27,10 +27,8 @@ const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36";
 const MAX_REDIRECTS: u32 = 5;
 
-static SCRIPT_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<script[\s\S]*?</script>").unwrap());
-static STYLE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<style[\s\S]*?</style>").unwrap());
+static SCRIPT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<script[\s\S]*?</script>").unwrap());
+static STYLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<style[\s\S]*?</style>").unwrap());
 static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
 static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]+").unwrap());
 static MULTINL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
@@ -54,10 +52,7 @@ fn html_decode(s: &str) -> String {
 
 fn normalize(text: &str) -> String {
     let squashed = WS_RE.replace_all(text, " ");
-    MULTINL_RE
-        .replace_all(&squashed, "\n\n")
-        .trim()
-        .to_string()
+    MULTINL_RE.replace_all(&squashed, "\n\n").trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +136,9 @@ impl Tool for WebFetchTool {
         let Some(url) = params.get("url").and_then(|v| v.as_str()) else {
             return Ok(Value::String("Error: url required".into()));
         };
-        let url = url.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        let url = url
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'' || c == '`');
         let max_chars = params
             .get("maxChars")
             .or_else(|| params.get("max_chars"))
@@ -225,7 +222,10 @@ impl Tool for WebFetchTool {
         let (mut text, extractor) = if ctype.contains("application/json") {
             (body, "json".to_string())
         } else if ctype.contains("text/html")
-            || body.trim_start().to_ascii_lowercase().starts_with("<!doctype")
+            || body
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("<!doctype")
             || body.trim_start().to_ascii_lowercase().starts_with("<html")
         {
             if self.use_jina_reader {
@@ -287,9 +287,8 @@ impl WebFetchTool {
         );
         headers.insert(
             "User-Agent",
-            reqwest::header::HeaderValue::from_str(&self.user_agent).unwrap_or_else(|_| {
-                reqwest::header::HeaderValue::from_static(DEFAULT_USER_AGENT)
-            }),
+            reqwest::header::HeaderValue::from_str(&self.user_agent)
+                .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(DEFAULT_USER_AGENT)),
         );
         if let Ok(key) = std::env::var("JINA_API_KEY") {
             if !key.is_empty() {
@@ -302,8 +301,7 @@ impl WebFetchTool {
         }
 
         let jina_url = format!("https://r.jina.ai/{url}");
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30));
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
         if let Some(p) = &self.proxy {
             if let Ok(proxy) = reqwest::Proxy::all(p) {
                 builder = builder.proxy(proxy);
@@ -322,9 +320,20 @@ impl WebFetchTool {
         }
 
         let body: Value = resp.json().await.map_err(|e| e.to_string())?;
-        let text = body.get("data").and_then(|d| d.get("content")).and_then(|c| c.as_str());
-        let title = body.get("data").and_then(|d| d.get("title")).and_then(|t| t.as_str()).unwrap_or(url);
-        let final_url = body.get("data").and_then(|d| d.get("url")).and_then(|u| u.as_str()).unwrap_or(url);
+        let text = body
+            .get("data")
+            .and_then(|d| d.get("content"))
+            .and_then(|c| c.as_str());
+        let title = body
+            .get("data")
+            .and_then(|d| d.get("title"))
+            .and_then(|t| t.as_str())
+            .unwrap_or(url);
+        let final_url = body
+            .get("data")
+            .and_then(|d| d.get("url"))
+            .and_then(|u| u.as_str())
+            .unwrap_or(url);
 
         if let Some(text) = text {
             let truncated = text.chars().count() > max_chars;
@@ -388,8 +397,10 @@ const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const DDG_LITE_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
 
 static DDG_RESULT_A_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)<a\b[^>]*\bclass="[^"]*\bresult__a\b[^"]*"[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>"#)
-        .unwrap()
+    Regex::new(
+        r#"(?is)<a\b[^>]*\bclass="[^"]*\bresult__a\b[^"]*"[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>"#,
+    )
+    .unwrap()
 });
 
 static DDG_SNIPPET_RE: Lazy<Regex> = Lazy::new(|| {
@@ -431,18 +442,27 @@ impl DuckDuckGoBackend {
                 .header("Accept", "text/html,application/xhtml+xml")
                 .send()
         };
-        match tokio::time::timeout(self.timeout + Duration::from_secs(2), do_post(DDG_HTML_ENDPOINT))
-            .await
+        match tokio::time::timeout(
+            self.timeout + Duration::from_secs(2),
+            do_post(DDG_HTML_ENDPOINT),
+        )
+        .await
         {
-            Ok(Ok(resp)) if resp.status().is_success() => resp.text().await.map_err(|e| e.to_string()),
+            Ok(Ok(resp)) if resp.status().is_success() => {
+                resp.text().await.map_err(|e| e.to_string())
+            }
             Ok(Ok(resp)) => {
                 log::warn!("DDG html endpoint returned {}, trying lite", resp.status());
-                let resp = do_post(DDG_LITE_ENDPOINT).await.map_err(|e| e.to_string())?;
+                let resp = do_post(DDG_LITE_ENDPOINT)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 resp.text().await.map_err(|e| e.to_string())
             }
             Ok(Err(e)) => {
                 log::warn!("DDG html endpoint error: {e}, trying lite");
-                let resp = do_post(DDG_LITE_ENDPOINT).await.map_err(|e| e.to_string())?;
+                let resp = do_post(DDG_LITE_ENDPOINT)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 resp.text().await.map_err(|e| e.to_string())
             }
             Err(_) => Err("DuckDuckGo request timed out".into()),

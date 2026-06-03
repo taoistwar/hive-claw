@@ -6,6 +6,8 @@ Plugin contract:
 - `lookup(args_json) -> result_json` export
 - `host_call(envelope_json) -> reply_json` to use the host `network.http`
   capability
+- **AgentContext read**: `_agent_context` → cache hit optimization
+- **AgentContext write**: `_agent_context_updates.extensions` → weather card in API response
 - proper error propagation via Extism `FnResult`
 
 ## Prerequisites
@@ -74,6 +76,8 @@ curl -X POST http://localhost:3300/api/functions \
   }'
 ```
 
+> **Note**: The plugin also accepts `_agent_context` in input and returns `_agent_context_updates` in output, but these are **not** part of the Function's declared schema — they're injected/extracted transparently by the orchestrator.
+
 ## Wrap as a Tool
 
 ```bash
@@ -104,6 +108,73 @@ NETWORK_HTTP_ALLOWLIST=.wttr.in
 
 Without an allowlist entry, every call returns
 `{"ok":false,"code":4030,"message":"hostname wttr.in 不在 allowlist 内"}`.
+
+## AgentContext Integration
+
+This plugin demonstrates the full read → write AgentContext cycle.
+
+### Read: cache hit via `_agent_context`
+
+When the orchestrator calls this plugin, it automatically injects an
+AgentContext snapshot into the input:
+
+```json
+{
+  "city": "Beijing",
+  "_agent_context": {
+    "tool_results": [
+      {"key": "weather_invoke_function-call_001", "value": {...}, "source": "weather"}
+    ]
+  }
+}
+```
+
+The plugin checks if a previous weather lookup for the same city exists
+in `tool_results`. If found, it returns the cached data **without** making
+a new HTTP call. This is a built-in cache optimization that costs nothing
+for plugins that don't use it.
+
+### Write: weather card as extension
+
+The plugin returns `_agent_context_updates` with an extension card:
+
+```json
+{
+  "city": "Beijing",
+  "temp_c": 25.0,
+  "summary": "Sunny",
+  "_agent_context_updates": {
+    "extensions": [
+      {
+        "id": "weather_card_beijing",
+        "content_type": "card",
+        "data": {
+          "title": "Beijing 天气",
+          "temperature": "25°C",
+          "condition": "Sunny",
+          "icon": "☀️"
+        }
+      }
+    ]
+  }
+}
+```
+
+The orchestrator automatically extracts `_agent_context_updates`, adds the
+extension to AgentContext, and emits an SSE `extensions` event. The
+`/api/assistant` endpoint then includes it in the JSON response under
+`"extensions"`.
+
+### Data flow
+
+```
+Plugin 返回 JSON
+  → invoker.invoke() 返回字符串
+    → orchestrator: apply_agent_context_updates(&agent_ctx, &parsed)
+      → agent_ctx.add_extension("weather_card_beijing", ExtensionContent::new(Card, {...}))
+        → SSE "extensions" event
+          → /api/assistant response: { "extensions": [...] }
+```
 
 ## Invoke
 

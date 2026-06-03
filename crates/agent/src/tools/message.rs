@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use bus::{MessageBus, OutboundMessage};
 use utils::helpers::strip_think;
@@ -85,7 +85,8 @@ impl MessageTool {
                     resolved.push((self.workspace.join(path)).to_string_lossy().to_string());
                 }
             } else {
-                match resolve_workspace_path(p, Some(&self.workspace), allowed_dir.as_deref(), None) {
+                match resolve_workspace_path(p, Some(&self.workspace), allowed_dir.as_deref(), None)
+                {
                     Ok(r) => resolved.push(r.to_string_lossy().to_string()),
                     Err(e) => return Err(format!("media path is not allowed: {e}")),
                 }
@@ -218,19 +219,14 @@ impl Tool for MessageTool {
         };
 
         let mut metadata: Map<String, Value> = if same_target {
-            default_metadata
-                .into_iter()
-                .map(|(k, v)| (k, v))
-                .collect()
+            default_metadata.into_iter().map(|(k, v)| (k, v)).collect()
         } else {
             Map::new()
         };
         if let Some(mid) = &message_id {
             metadata.insert("message_id".into(), Value::String(mid.clone()));
         }
-        if metadata.get("_record_channel_delivery").is_none()
-            && (!media.is_empty())
-        {
+        if metadata.get("_record_channel_delivery").is_none() && (!media.is_empty()) {
             metadata.insert("_record_channel_delivery".into(), Value::Bool(true));
         }
 

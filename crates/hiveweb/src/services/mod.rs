@@ -24,5 +24,4 @@ pub mod tag;
 pub mod tool;
 pub mod user_auth;
 pub mod workflow;
-pub mod chat_admin;
 pub mod chat_user;

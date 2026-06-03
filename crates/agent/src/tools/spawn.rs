@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::base::{Tool, ToolExecError};
 use super::context::RequestContext;
@@ -27,8 +27,7 @@ pub struct SpawnRequest {
 
 /// Async callback that performs the actual spawn and returns a
 /// human-readable status string.
-pub type SpawnCallback =
-    Arc<dyn Fn(SpawnRequest) -> BoxFuture<'static, String> + Send + Sync>;
+pub type SpawnCallback = Arc<dyn Fn(SpawnRequest) -> BoxFuture<'static, String> + Send + Sync>;
 
 #[derive(Clone, Default, Debug)]
 pub struct SpawnContext {
@@ -104,7 +103,9 @@ impl Tool for SpawnTool {
     }
 
     fn set_tool_context(&self, ctx: &RequestContext) {
-        let session_key = ctx.session_key.clone()
+        let session_key = ctx
+            .session_key
+            .clone()
             .unwrap_or_else(|| format!("{}:{}", ctx.channel, ctx.chat_id));
         let mut guard = self.context.lock().unwrap();
         guard.origin_channel = ctx.channel.clone();

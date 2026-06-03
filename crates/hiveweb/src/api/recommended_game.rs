@@ -167,13 +167,43 @@ pub struct TopQuery {
     pub n: i64,
 }
 
+/// 对外公开的推荐游戏精简响应（去除内部字段）
+#[derive(Debug, Serialize)]
+pub struct TopRecommendedGame {
+    pub name: String,
+    pub reply: String,
+    pub reason: Option<String>,
+    pub tag: Option<String>,
+    pub game_category: Option<String>,
+    pub game_image: Option<String>,
+    pub game_id: String,
+    pub game_name: String,
+}
+
+impl From<crate::models::RecommendedGame> for TopRecommendedGame {
+    fn from(g: crate::models::RecommendedGame) -> Self {
+        Self {
+            name: g.name,
+            reply: g.reply,
+            reason: g.reason,
+            tag: g.tag,
+            game_category: g.game_category,
+            game_image: g.game_image,
+            game_id: g.game_id,
+            game_name: g.game_name,
+        }
+    }
+}
+
 async fn top_recommended_games(
     State(state): State<AppState>,
     Query(q): Query<TopQuery>,
-) -> Result<ApiResponse<Vec<crate::models::RecommendedGame>>, ApiResponse<()>> {
+) -> Result<ApiResponse<Vec<TopRecommendedGame>>, ApiResponse<()>> {
     let n = q.n.clamp(1, 10);
-    svc::fetch_top_n(&state.pool, n)
+    let games = svc::fetch_top_n(&state.pool, n)
         .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+        .map_err(|e| e.into_response())?;
+    Ok(ApiResponse::success(
+        games.into_iter().map(TopRecommendedGame::from).collect(),
+    ))
 }

@@ -1,4 +1,4 @@
-use log::{warn};
+use log::warn;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -10,8 +10,17 @@ use super::registry::ToolRegistry;
 
 #[allow(dead_code)]
 const SKIP_MODULES: &[&str] = &[
-    "base", "schema", "registry", "context", "loader", "config",
-    "file_state", "sandbox", "mcp", "__init__", "runtime_state",
+    "base",
+    "schema",
+    "registry",
+    "context",
+    "loader",
+    "config",
+    "file_state",
+    "sandbox",
+    "mcp",
+    "__init__",
+    "runtime_state",
 ];
 
 pub type ToolConstructor = fn(&ToolContext) -> Arc<dyn Tool>;
@@ -89,10 +98,8 @@ impl ToolLoader {
         let builtin_tools = self.discover().await;
         let plugin_tools = self.discover_plugins().await;
 
-        let sources: Vec<(Vec<ToolConstructor>, bool)> = vec![
-            (builtin_tools, false),
-            (plugin_tools, true),
-        ];
+        let sources: Vec<(Vec<ToolConstructor>, bool)> =
+            vec![(builtin_tools, false), (plugin_tools, true)];
 
         for (source, is_plugin_source) in sources {
             for tool_ctor in source {

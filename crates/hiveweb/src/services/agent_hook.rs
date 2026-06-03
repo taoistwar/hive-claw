@@ -228,7 +228,7 @@ pub async fn update_hook(
     let blocking_mode = meta.blocking_mode.unwrap_or(existing.blocking_mode);
     let timeout_ms = meta.timeout_ms.unwrap_or(existing.timeout_ms);
 
-    let updated = sqlx::query_as::<_, AgentHook>(
+    let result = sqlx::query(
         r#"UPDATE agent_hooks SET
             name = ?, description = ?, trigger_point = ?, action_type = ?,
             action_params = ?, enabled = ?, sort_order = ?, blocking_mode = ?,
@@ -245,9 +245,21 @@ pub async fn update_hook(
     .bind(blocking_mode)
     .bind(timeout_ms)
     .bind(hook_id)
-    .fetch_one(pool)
+    .execute(pool)
     .await
     .map_err(|e| AppError::Internal(format!("hook update: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::HookNotFound("Hook 配置不存在".into()));
+    }
+
+    let updated = sqlx::query_as::<_, AgentHook>(
+        "SELECT * FROM agent_hooks WHERE id = ?",
+    )
+    .bind(hook_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("hook fetch after update: {e}")))?;
 
     Ok(updated)
 }

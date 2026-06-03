@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use super::base::{Tool};
+use super::base::Tool;
 use super::context::RequestContext;
 
 const ERROR_HINT: &str = "\n\n[Analyze the error above and try a different approach.]";
@@ -221,9 +221,9 @@ fn schema_name(schema: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::base::ToolExecError;
     use super::*;
     use async_trait::async_trait;
-    use super::super::base::{ToolExecError};
 
     struct FakeTool {
         name_: &'static str,
@@ -260,9 +260,7 @@ mod tests {
     async fn prepare_call_casts_and_validates() {
         let reg = ToolRegistry::new();
         reg.register(Arc::new(FakeTool { name_: "t1" })).await;
-        let out = reg
-            .prepare_call("t1", serde_json::json!({"x": "42"}))
-            .await;
+        let out = reg.prepare_call("t1", serde_json::json!({"x": "42"})).await;
         assert!(out.error.is_none());
         assert_eq!(out.params["x"], 42);
     }

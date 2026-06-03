@@ -6,10 +6,12 @@ use providers::{ChatRequest, RetryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
+use std::sync::Arc;
 use std::time::Instant;
 
+use agent::context::{AgentContext, ContextConfig, UserInput};
 use super::orchestrator::{
-    AgentContext, OrchestratorDeps, ToolRef, build_tools_schema_simple, handle_workspace_tool,
+    AgentContent, OrchestratorDeps, ToolRef, build_tools_schema_simple, handle_workspace_tool,
 };
 use crate::services::runtime_audit::{self, AuditRecord};
 
@@ -141,7 +143,7 @@ pub async fn run_skill_test(
         .map(|c| c.name.to_string())
         .collect();
 
-    let ctx = AgentContext {
+    let ctx = AgentContent {
         agent_id: 0, // 测试模式，不需要真实 agent_id
         identifier: format!("test_skill_{}", skill_id),
         system_prompt,
@@ -256,7 +258,18 @@ pub async fn run_skill_test(
             continue;
         };
 
-        let outcome = handle_workspace_tool(deps, &ctx, tool_ref, &tc, 0).await;
+        let agent_ctx = Arc::new(AgentContext::new(
+            "skill-test".into(),
+            UserInput {
+                raw_text: String::new(),
+                session_id: None,
+                message_id: None,
+                timestamp: chrono::Utc::now(),
+                metadata: std::collections::HashMap::new(),
+            },
+            ContextConfig::default(),
+        ));
+        let outcome = handle_workspace_tool(deps, &ctx, tool_ref, &tc, 0, agent_ctx).await;
 
         let (success, content, error) = match outcome {
             o if matches!(o.payload, Value::Object(_)) && !o.payload.get("error").is_some() => {

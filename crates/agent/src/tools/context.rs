@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use config::schema::Config;
+use super::file_state::FileStateStore;
+use super::image_generation::ImageGenerationProviderConfig;
+use crate::loop_::ProviderSnapshot;
 use crate::subagent::SubagentManager;
+use config::schema::Config;
 use cron::service::CronService;
 use session::manager::SessionManager;
-use super::file_state::FileStateStore;
-use crate::loop_::ProviderSnapshot;
-use super::image_generation::ImageGenerationProviderConfig;
 
 /// Per-request context injected into tools at message-processing time.
 #[derive(Debug, Clone, Default)]

@@ -146,7 +146,10 @@ impl MemoryStore {
         let mut raw = entry.trim_end().to_string();
         if raw.len() > limit {
             if !self.oversize_logged.load(Ordering::Relaxed)
-                && self.oversize_logged.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+                && self
+                    .oversize_logged
+                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
             {
                 log::warn!(
                     "history entry exceeds {} chars ({}); truncating. Usually means a caller forgot its own cap; further occurrences suppressed.",
@@ -231,7 +234,10 @@ impl MemoryStore {
         }
         if let Some(p) = poisoned {
             if !self.corruption_logged.load(Ordering::Relaxed)
-                && self.corruption_logged.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+                && self
+                    .corruption_logged
+                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
             {
                 log::warn!(
                     "history.jsonl contains a non-int cursor ({}); dropping it. Usually caused by an external writer; further occurrences suppressed.",
@@ -344,10 +350,7 @@ impl MemoryStore {
     pub fn raw_archive(&self, messages: &[Value], max_chars: Option<usize>) -> std::io::Result<()> {
         let limit = max_chars.unwrap_or(RAW_ARCHIVE_MAX_CHARS);
         let formatted = truncate_text(&Self::format_messages(messages), limit);
-        let text = format!(
-            "[RAW] {} messages\n{formatted}",
-            messages.len(),
-        );
+        let text = format!("[RAW] {} messages\n{formatted}", messages.len(),);
         self.append_history(&text, None)?;
         warn!(
             "Memory consolidation degraded: raw-archived {} messages",
@@ -569,16 +572,18 @@ pub trait Consolidator: Send + Sync {
     /// Hard-truncate an idle session under the consolidation lock.
     /// Returns the summary text on success, `None` if the LLM failed,
     /// or `Some("")` if there was nothing to archive.
-    async fn compact_idle_session(
-        &self,
-        _session_key: &str,
-        _max_suffix: usize,
-    ) -> Option<String> {
+    async fn compact_idle_session(&self, _session_key: &str, _max_suffix: usize) -> Option<String> {
         None
     }
 
     /// Update the provider and model used for consolidation.
-    fn set_provider(&mut self, _provider: Arc<dyn LLMProvider>, _model: String, _context_window_tokens: u32) {}
+    fn set_provider(
+        &mut self,
+        _provider: Arc<dyn LLMProvider>,
+        _model: String,
+        _context_window_tokens: u32,
+    ) {
+    }
 }
 
 /// Nightly memory processor. Mirrors `nanobot.agent.memory.Dream`.
@@ -602,9 +607,7 @@ use serde_json::json;
 use providers::{ChatRequest, LLMProvider, RetryMode};
 
 use crate::runner::{AgentRunSpec, AgentRunner};
-use crate::tools::{
-    EditFileTool, FsTool, ReadFileTool, Tool, ToolRegistry, WriteFileTool,
-};
+use crate::tools::{EditFileTool, FsTool, ReadFileTool, Tool, ToolRegistry, WriteFileTool};
 
 const STALE_THRESHOLD_DAYS: i64 = 14;
 
@@ -702,9 +705,15 @@ impl MemoryDream {
             Vec::new(),
         ));
 
-        self.tools.register(Arc::new(read_tool) as Arc<dyn Tool>).await;
-        self.tools.register(Arc::new(edit_tool) as Arc<dyn Tool>).await;
-        self.tools.register(Arc::new(write_tool) as Arc<dyn Tool>).await;
+        self.tools
+            .register(Arc::new(read_tool) as Arc<dyn Tool>)
+            .await;
+        self.tools
+            .register(Arc::new(edit_tool) as Arc<dyn Tool>)
+            .await;
+        self.tools
+            .register(Arc::new(write_tool) as Arc<dyn Tool>)
+            .await;
 
         if let Some(parent) = self.skill_creator_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -774,12 +783,12 @@ impl MemoryDream {
         }
         let had_trailing = content.ends_with('\n');
         let lines: Vec<&str> = content.split('\n').collect();
-        let lines: Vec<&str> = if had_trailing && lines.last().map(|s| s.is_empty()).unwrap_or(false)
-        {
-            lines[..lines.len() - 1].to_vec()
-        } else {
-            lines
-        };
+        let lines: Vec<&str> =
+            if had_trailing && lines.last().map(|s| s.is_empty()).unwrap_or(false) {
+                lines[..lines.len() - 1].to_vec()
+            } else {
+                lines
+            };
         if lines.len() != ages.len() {
             debug!(
                 "line_ages length mismatch for memory/MEMORY.md (lines={}, ages={}); skipping annotation",
@@ -854,12 +863,7 @@ impl Dream for MemoryDream {
             .join("\n");
 
         let now = Local::now();
-        let current_date = format!(
-            "{:04}-{:02}-{:02}",
-            now.year(),
-            now.month(),
-            now.day()
-        );
+        let current_date = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
 
         let raw_memory = self.store.read_memory();
         let raw_memory = if raw_memory.is_empty() {
@@ -876,12 +880,20 @@ impl Dream for MemoryDream {
 
         let raw_soul = self.store.read_soul();
         let current_soul = truncate_text(
-            if raw_soul.is_empty() { "(empty)" } else { &raw_soul },
+            if raw_soul.is_empty() {
+                "(empty)"
+            } else {
+                &raw_soul
+            },
             SOUL_FILE_MAX_CHARS,
         );
         let raw_user = self.store.read_user();
         let current_user = truncate_text(
-            if raw_user.is_empty() { "(empty)" } else { &raw_user },
+            if raw_user.is_empty() {
+                "(empty)"
+            } else {
+                &raw_user
+            },
             USER_FILE_MAX_CHARS,
         );
 
@@ -897,10 +909,7 @@ impl Dream for MemoryDream {
 
         let phase1_system = render_template_dream(
             include_str!("prompts/dream_phase1.md.tpl"),
-            &[(
-                "stale_threshold_days",
-                STALE_THRESHOLD_DAYS.to_string(),
-            )],
+            &[("stale_threshold_days", STALE_THRESHOLD_DAYS.to_string())],
         );
         let phase1_user = format!("## Conversation History\n{history_text}\n\n{file_context}");
 
@@ -928,10 +937,7 @@ impl Dream for MemoryDream {
         if phase1_response.finish_reason == "error" {
             warn!(
                 "Dream Phase 1 failed: {}",
-                phase1_response
-                    .content
-                    .as_deref()
-                    .unwrap_or("<no detail>")
+                phase1_response.content.as_deref().unwrap_or("<no detail>")
             );
             return false;
         }
@@ -962,9 +968,8 @@ impl Dream for MemoryDream {
                 self.skill_creator_path.to_string_lossy().into_owned(),
             )],
         );
-        let phase2_user = format!(
-            "## Analysis Result\n{analysis}\n\n{file_context}{skills_section}"
-        );
+        let phase2_user =
+            format!("## Analysis Result\n{analysis}\n\n{file_context}{skills_section}");
         let messages = vec![
             json!({"role":"system","content": phase2_system}),
             json!({"role":"user","content": phase2_user}),

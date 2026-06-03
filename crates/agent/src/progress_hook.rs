@@ -193,10 +193,7 @@ impl AgentHook for ProgressHook {
     }
 
     async fn after_iteration(&self, ctx: &mut AgentHookContext) {
-        if self.on_progress.is_some()
-            && !ctx.tool_calls.is_empty()
-            && !ctx.tool_events.is_empty()
-        {
+        if self.on_progress.is_some() && !ctx.tool_calls.is_empty() && !ctx.tool_events.is_empty() {
             let events: Vec<ToolEventPayload> = ctx
                 .tool_events
                 .iter()

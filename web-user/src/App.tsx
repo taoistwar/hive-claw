@@ -1,12 +1,8 @@
 import { useMemo } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ConfigProvider, theme as antdTheme, App as AntdApp } from 'antd'
-import LoginPage from './pages/LoginPage'
-import DashboardPage from './pages/DashboardPage'
 import ChatPage from './pages/ChatPage'
-import ChangePasswordPage from './pages/ChangePasswordPage'
 import Layout from './components/Layout'
-import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
 
 const THEME_TOKENS = {
@@ -120,11 +116,8 @@ function AppRoutes() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<Layout />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="chat" element={<ChatPage />} />
-          <Route path="settings/change-password" element={<ChangePasswordPage />} />
+          <Route index element={<ChatPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -136,11 +129,9 @@ function App() {
   return (
     <ThemeProvider>
       <ThemeConfigProvider>
-        <AuthProvider>
-          <AntdApp>
-            <AppRoutes />
-          </AntdApp>
-        </AuthProvider>
+        <AntdApp>
+          <AppRoutes />
+        </AntdApp>
       </ThemeConfigProvider>
     </ThemeProvider>
   )

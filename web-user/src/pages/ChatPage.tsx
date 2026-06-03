@@ -1,143 +1,110 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Input, List, Space, Typography, Pagination, App } from 'antd';
-import { PlusOutlined, SendOutlined, DeleteOutlined, MessageOutlined, SearchOutlined } from '@ant-design/icons';
-import { ChatStream } from '../components/ChatStream';
+import { Button, Input, Typography, App } from 'antd';
+import { SendOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons';
 import {
-  createSession,
-  deleteSession,
+  sendMessage,
   getMessages,
-  listSessions,
-  sendMessageStream,
   type ChatMessage,
-  type ChatSession,
-  type SseEvent,
 } from '../services/chat';
 
 const { Title, Text } = Typography;
 
-const PAGE_SIZE = 5;
+/** 获取当前时间字符串 (YYYY-MM-DD HH:MM:SS) */
+function nowStr(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
 
 export default function ChatPage() {
-  const { message } = App.useApp();
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [total, setTotal] = useState(0);
-  const [active, setActive] = useState<ChatSession | null>(null);
+  const { message: appMessage } = App.useApp();
+  const [userId, setUserId] = useState<number>(0);
   const [history, setHistory] = useState<ChatMessage[]>([]);
-  const [events, setEvents] = useState<SseEvent[]>([]);
-  const [tokenBuf, setTokenBuf] = useState('');
-  const [pending, setPending] = useState(false);
   const [draft, setDraft] = useState('');
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
-  const abortRef = useRef<AbortController | null>(null);
+  const [pending, setPending] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const historyEndRef = useRef<HTMLDivElement>(null);
 
-  const doFetchSessions = useCallback(async (currentPage: number, currentSearch: string) => {
+  const scrollToBottom = () => {
+    historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // 加载历史消息
+  const loadHistory = useCallback(async () => {
+    if (userId <= 0) return;
+    setLoadingHistory(true);
     try {
-      const list = await listSessions({
-        offset: (currentPage - 1) * PAGE_SIZE,
-        limit: PAGE_SIZE,
-        search: currentSearch || undefined,
-      });
-      setSessions(list.items);
-      setTotal(list.total);
+      const msgs = await getMessages({ user_id: userId, date: nowStr() });
+      // API 返回按时间倒序，前端渲染需要正序
+      setHistory(msgs.reverse());
     } catch (e) {
-      void message.error(`加载失败：${(e as Error).message}`);
+      void appMessage.error(`加载历史失败：${(e as Error).message}`);
+    } finally {
+      setLoadingHistory(false);
     }
-  }, []);
+  }, [userId]);
 
-  const refreshSessions = useCallback(async () => {
-    doFetchSessions(page, search);
-  }, [page, search, doFetchSessions]);
-
+  // userId 变化时重置并加载历史
+  const prevUserId = useRef<number>(0);
   useEffect(() => {
-    void refreshSessions();
-  }, [refreshSessions]);
+    if (userId <= 0 || userId === prevUserId.current) return;
+    prevUserId.current = userId;
+    setHistory([]);
+    void loadHistory();
+  }, [userId, loadHistory]);
 
-  const onSelectSession = async (s: ChatSession) => {
-    setActive(s);
-    setEvents([]);
-    setTokenBuf('');
-    try {
-      const msgs = await getMessages(s.id);
-      setHistory(msgs);
-    } catch (e) {
-      void message.error(`历史加载失败：${(e as Error).message}`);
-    }
-  };
+  // 新消息到达时滚动到底部
+  useEffect(() => {
+    scrollToBottom();
+  }, [history]);
 
-  const onNewSession = async () => {
-    try {
-      const s = await createSession(`会话 ${new Date().toLocaleString('zh-CN')}`);
-      setPage(1);
-      setSearch('');
-      await doFetchSessions(1, '');
-      await onSelectSession(s);
-    } catch (e) {
-      void message.error(`创建失败：${(e as Error).message}`);
-    }
-  };
-
-  const onDeleteSession = async (s: ChatSession) => {
-    try {
-      await deleteSession(s.id);
-      void message.success('已删除');
-      if (active?.id === s.id) {
-        setActive(null);
-        setHistory([]);
-        setEvents([]);
-        setTokenBuf('');
-      }
-      await refreshSessions();
-    } catch (e) {
-      void message.error(`删除失败：${(e as Error).message}`);
-    }
-  };
-
+  // 发送消息
   const onSend = async () => {
-    if (!active || !draft.trim()) return;
-    const text = draft;
+    if (userId <= 0 || !draft.trim() || pending) return;
+    const text = draft.trim();
     setDraft('');
-    setEvents([]);
-    setTokenBuf('');
     setPending(true);
-    abortRef.current = new AbortController();
 
-    setHistory((h) => [
-      ...h,
-      {
-        id: -Date.now(),
-        session_id: active.id,
-        role: 'user',
-        content: text,
-        created_at: new Date().toISOString(),
-      },
-    ]);
+    const userMsg: ChatMessage = {
+      id: -Date.now(),
+      session_id: 0,
+      user_id: userId,
+      role: 'user',
+      content: text,
+      elapsed_ms: null,
+      created_at: new Date().toISOString(),
+    };
+    setHistory((h) => [...h, userMsg]);
 
     try {
-      await sendMessageStream(
-        active.id,
-        text,
-        (e) => {
-          setEvents((evs) => [...evs, e]);
-          if (e.type === 'token') {
-            setTokenBuf((s) => s + e.text);
-          }
-          if (e.type === 'done' || e.type === 'error') {
-            setPending(false);
-          }
-        },
-        abortRef.current.signal,
-      );
+      const resp = await sendMessage({
+        user_id: userId,
+        message: text,
+        channel: 'web',
+        platform: 'web',
+        app_version: '1.0.0',
+      });
+
+      const assistantMsg: ChatMessage = {
+        id: -(Date.now() + 1),
+        session_id: 0,
+        user_id: userId,
+        role: 'assistant',
+        content: resp.reply,
+        elapsed_ms: resp.elapsed_ms || null,
+        created_at: new Date().toISOString(),
+      };
+      setHistory((h) => [...h, assistantMsg]);
     } catch (e) {
-      void message.error(`流错误：${(e as Error).message}`);
+      void appMessage.error(`发送失败：${(e as Error).message}`);
+      setHistory((h) => h.filter((m) => m.id !== userMsg.id));
     } finally {
       setPending(false);
-      try {
-        const msgs = await getMessages(active.id);
-        setHistory(msgs);
-      } catch {
-        // ignore
-      }
     }
   };
 
@@ -145,310 +112,116 @@ export default function ChatPage() {
     <div
       style={{
         display: 'flex',
-        gap: '20px',
-        height: 'calc(100vh - 200px)',
-        animation: 'fadeIn 400ms ease-out',
+        flexDirection: 'column',
+        height: 'calc(100vh - 160px)',
+        maxWidth: '900px',
+        margin: '0 auto',
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-md)',
+        boxShadow: 'var(--shadow-sm)',
+        overflow: 'hidden',
       }}
     >
+      {/* 顶栏：user_id 输入 + 刷新 */}
       <div
         style={{
-          width: '320px',
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: 'var(--radius-md)',
-          padding: '16px',
+          padding: '12px 24px',
+          borderBottom: '1px solid var(--border-subtle)',
+          background: 'var(--bg-secondary)',
           display: 'flex',
-          flexDirection: 'column',
-          boxShadow: 'var(--shadow-sm)',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '16px',
         }}
       >
-        <Space
-          style={{
-            marginBottom: '12px',
-            width: '100%',
-            justifyContent: 'space-between',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <MessageOutlined style={{ color: 'var(--accent-primary)' }} />
-            <Title level={5} style={{ margin: 0, color: 'var(--text-primary)' }}>
-              会话
-            </Title>
-          </div>
-          <Button
-            type="primary"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={onNewSession}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+          <Title level={5} style={{ margin: 0, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+            AI 助手聊天
+          </Title>
+          <Input
+            prefix={<UserOutlined style={{ color: 'var(--text-muted)' }} />}
+            placeholder="输入 User ID"
+            type="number"
             style={{
-              background: 'var(--gradient-primary)',
-              border: 'none',
+              maxWidth: '180px',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
               borderRadius: 'var(--radius-sm)',
-              boxShadow: '0 2px 8px rgba(102, 126, 234, 0.3)',
+              color: 'var(--text-primary)',
             }}
-          >
-            新建
-          </Button>
-        </Space>
-
-        <Input
-          prefix={<SearchOutlined style={{ color: 'var(--text-muted)' }} />}
-          placeholder="搜索会话..."
-          allowClear
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(1);
-          }}
-          onPressEnter={() => {
-            setPage(1);
-            void doFetchSessions(1, search);
-          }}
-          style={{
-            marginBottom: '12px',
-            background: 'var(--bg-input)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-sm)',
-            color: 'var(--text-primary)',
-            transition: 'all var(--transition-fast)',
-          }}
-        />
-
-        <div style={{ flex: 1, overflowY: 'auto', marginBottom: '12px' }}>
-          {sessions.length === 0 ? (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '32px 0',
-                color: 'var(--text-muted)',
-                fontSize: '13px',
-              }}
-            >
-              <MessageOutlined style={{ fontSize: '24px', marginBottom: '8px', opacity: 0.4 }} />
-              {search ? '未找到匹配的会话' : '暂无会话'}
-            </div>
-          ) : (
-            <List
-              dataSource={sessions}
-              renderItem={(s) => (
-                <List.Item
-                  onClick={() => void onSelectSession(s)}
-                  style={{
-                    cursor: 'pointer',
-                    padding: '12px',
-                    background: active?.id === s.id ? 'var(--accent-glow)' : 'transparent',
-                    border: `1px solid ${active?.id === s.id ? 'var(--border-accent)' : 'transparent'}`,
-                    borderRadius: 'var(--radius-sm)',
-                    marginBottom: '8px',
-                    transition: 'all var(--transition-fast)',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (active?.id !== s.id) {
-                      e.currentTarget.style.background = 'var(--theme-toggle-hover)';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (active?.id !== s.id) {
-                      e.currentTarget.style.background = 'transparent';
-                    }
-                  }}
-                  actions={[
-                    <Button
-                      key="del"
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<DeleteOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void onDeleteSession(s);
-                      }}
-                    />,
-                  ]}
-                >
-                  <List.Item.Meta
-                    title={
-                      <Text
-                        style={{
-                          color: active?.id === s.id ? 'var(--text-primary)' : 'var(--text-secondary)',
-                          fontWeight: active?.id === s.id ? 600 : 400,
-                        }}
-                      >
-                        {s.title ?? `Session #${s.id}`}
-                      </Text>
-                    }
-                    description={
-                      <Text style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                        {s.updated_at?.slice(0, 19)}
-                      </Text>
-                    }
-                  />
-                </List.Item>
-              )}
-            />
-          )}
+            onPressEnter={(e) => {
+              const val = parseInt((e.target as HTMLInputElement).value, 10);
+              if (!isNaN(val) && val > 0) {
+                setUserId(val);
+              }
+            }}
+            onBlur={(e) => {
+              const val = parseInt(e.target.value, 10);
+              if (!isNaN(val) && val > 0) {
+                setUserId(val);
+              }
+            }}
+          />
         </div>
-
-        {total > PAGE_SIZE && (
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <Pagination
-              size="small"
-              current={page}
-              pageSize={PAGE_SIZE}
-              total={total}
-              onChange={(p) => {
-                setPage(p);
-                void doFetchSessions(p, search);
-              }}
-              showSizeChanger={false}
-              hideOnSinglePage
-              style={{ fontSize: '12px' }}
-            />
-          </div>
-        )}
+        <Button
+          size="small"
+          icon={<ReloadOutlined />}
+          onClick={() => void loadHistory()}
+          loading={loadingHistory}
+          disabled={userId <= 0}
+          style={{ borderRadius: 'var(--radius-sm)' }}
+        >
+          刷新
+        </Button>
       </div>
 
+      {/* 消息区域 */}
       <div
         style={{
           flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-sm)',
-          overflow: 'hidden',
+          overflowY: 'auto',
+          padding: '24px',
+          background: `linear-gradient(180deg, var(--bg-card) 0%, var(--bg-secondary) 100%)`,
         }}
       >
-        {active ? (
-          <>
-            <div
-              style={{
-                flex: 1,
-                overflowY: 'auto',
-                padding: '24px',
-                background: `linear-gradient(180deg, var(--bg-card) 0%, var(--bg-secondary) 100%)`,
-              }}
-            >
-              {history.map((m, index) => (
-                <div
-                  key={m.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
-                    marginBottom: '20px',
-                    animation: 'fadeIn 300ms ease-out',
-                    animationDelay: `${index * 50}ms`,
-                    animationFillMode: 'both',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: '32px',
-                      height: '32px',
-                      borderRadius: '50%',
-                      background: m.role === 'user' ? 'var(--gradient-primary)' : 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      marginRight: m.role === 'user' ? '0' : '12px',
-                      marginLeft: m.role === 'user' ? '12px' : '0',
-                      order: m.role === 'user' ? '1' : '0',
-                      flexShrink: 0,
-                      fontSize: '14px',
-                    }}
-                  >
-                    {m.role === 'user' ? '👤' : '🤖'}
-                  </div>
-
-                  <div
-                    style={{
-                      maxWidth: '70%',
-                      padding: '12px 16px',
-                      borderRadius: m.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                      background: m.role === 'user' ? 'var(--gradient-primary)' : 'var(--bg-input)',
-                      border: m.role === 'user' ? 'none' : '1px solid var(--border-subtle)',
-                      boxShadow: m.role === 'user' ? '0 2px 12px rgba(102, 126, 234, 0.2)' : 'var(--shadow-sm)',
-                    }}
-                  >
-                    <pre
-                      style={{
-                        margin: 0,
-                        whiteSpace: 'pre-wrap',
-                        fontFamily: 'inherit',
-                        fontSize: '14px',
-                        lineHeight: '1.6',
-                        color: m.role === 'user' ? 'white' : 'var(--text-primary)',
-                        background: 'transparent',
-                      }}
-                    >
-                      {m.content}
-                    </pre>
-                  </div>
-                </div>
-              ))}
-              <ChatStream events={events} tokenBuffer={tokenBuf} pending={pending} />
-            </div>
-
-            <div
-              style={{
-                padding: '16px 24px',
-                borderTop: '1px solid var(--border-subtle)',
-                background: 'var(--bg-secondary)',
-                display: 'flex',
-                gap: '12px',
-                alignItems: 'flex-end',
-              }}
-            >
-              <Input.TextArea
-                rows={2}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onPressEnter={(e) => {
-                  if (!e.shiftKey) {
-                    e.preventDefault();
-                    void onSend();
-                  }
-                }}
-                placeholder="输入消息（Enter 发送，Shift+Enter 换行）"
-                style={{
-                  background: 'var(--bg-input)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  color: 'var(--text-primary)',
-                  resize: 'none',
-                  transition: 'all var(--transition-fast)',
-                }}
-                autoSize={{ minRows: 2, maxRows: 6 }}
-              />
-              <Button
-                type="primary"
-                icon={<SendOutlined />}
-                onClick={() => void onSend()}
-                disabled={pending || !draft.trim()}
-                style={{
-                  height: 'auto',
-                  padding: '12px 20px',
-                  background: 'var(--gradient-primary)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-sm)',
-                  boxShadow: '0 2px 12px rgba(102, 126, 234, 0.3)',
-                  transition: 'all var(--transition-fast)',
-                }}
-              />
-            </div>
-          </>
-        ) : (
+        {userId <= 0 ? (
           <div
             style={{
-              flex: 1,
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
+              height: '100%',
+              gap: '16px',
+            }}
+          >
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: 'var(--accent-glow)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '28px',
+              }}
+            >
+              💬
+            </div>
+            <Text style={{ color: 'var(--text-secondary)' }}>
+              请在上方输入 User ID 开始聊天
+            </Text>
+          </div>
+        ) : history.length === 0 && !loadingHistory ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
               gap: '16px',
             }}
           >
@@ -471,11 +244,181 @@ export default function ChatPage() {
               开始对话
             </Title>
             <Text style={{ color: 'var(--text-secondary)' }}>
-              从左侧选择一个会话或创建新会话
+              在下方输入消息开始与 AI 助手对话
             </Text>
           </div>
+        ) : (
+          <>
+            {history.map((m, index) => (
+              <div
+                key={m.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  marginBottom: '20px',
+                  animation: `fadeIn 300ms ease-out`,
+                  animationDelay: `${index * 30}ms`,
+                  animationFillMode: 'both',
+                }}
+              >
+                <div
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background:
+                      m.role === 'user'
+                        ? 'var(--gradient-primary)'
+                        : 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginRight: m.role === 'user' ? '0' : '12px',
+                    marginLeft: m.role === 'user' ? '12px' : '0',
+                    order: m.role === 'user' ? '1' : '0',
+                    flexShrink: 0,
+                    fontSize: '14px',
+                  }}
+                >
+                  {m.role === 'user' ? '👤' : '🤖'}
+                </div>
+                <div
+                  style={{
+                    maxWidth: '70%',
+                    padding: '12px 16px',
+                    borderRadius:
+                      m.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                    background:
+                      m.role === 'user' ? 'var(--gradient-primary)' : 'var(--bg-input)',
+                    border: m.role === 'user' ? 'none' : '1px solid var(--border-subtle)',
+                    boxShadow:
+                      m.role === 'user'
+                        ? '0 2px 12px rgba(102, 126, 234, 0.2)'
+                        : 'var(--shadow-sm)',
+                  }}
+                >
+                  <pre
+                    style={{
+                      margin: 0,
+                      whiteSpace: 'pre-wrap',
+                      fontFamily: 'inherit',
+                      fontSize: '14px',
+                      lineHeight: '1.6',
+                      color: m.role === 'user' ? 'white' : 'var(--text-primary)',
+                      background: 'transparent',
+                    }}
+                  >
+                    {m.content}
+                  </pre>
+                  {m.elapsed_ms && m.role === 'assistant' ? (
+                    <Text
+                      style={{
+                        display: 'block',
+                        color: 'var(--text-muted)',
+                        fontSize: '11px',
+                        marginTop: '4px',
+                        textAlign: 'right',
+                      }}
+                    >
+                      {(m.elapsed_ms / 1000).toFixed(1)}s
+                    </Text>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+            {pending && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '20px' }}>
+                <div
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginRight: '12px',
+                    flexShrink: 0,
+                    fontSize: '14px',
+                  }}
+                >
+                  🤖
+                </div>
+                <div
+                  style={{
+                    padding: '16px 24px',
+                    borderRadius: '16px 16px 16px 4px',
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span className="dot-pulse" />
+                  <Text style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
+                    AI 正在思考...
+                  </Text>
+                </div>
+              </div>
+            )}
+            <div ref={historyEndRef} />
+          </>
         )}
       </div>
+
+      {/* 输入区域 */}
+      {userId > 0 && (
+        <div
+          style={{
+            padding: '16px 24px',
+            borderTop: '1px solid var(--border-subtle)',
+            background: 'var(--bg-secondary)',
+            display: 'flex',
+            gap: '12px',
+            alignItems: 'flex-end',
+          }}
+        >
+          <Input.TextArea
+            rows={2}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                void onSend();
+              }
+            }}
+            placeholder="输入消息（Enter 发送，Shift+Enter 换行）"
+            disabled={pending}
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-primary)',
+              resize: 'none',
+              transition: 'all var(--transition-fast)',
+            }}
+            autoSize={{ minRows: 2, maxRows: 6 }}
+          />
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            onClick={() => void onSend()}
+            disabled={pending || !draft.trim()}
+            loading={pending}
+            style={{
+              height: 'auto',
+              padding: '12px 20px',
+              background: 'var(--gradient-primary)',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: '0 2px 12px rgba(102, 126, 234, 0.3)',
+              transition: 'all var(--transition-fast)',
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

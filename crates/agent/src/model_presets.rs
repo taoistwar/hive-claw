@@ -16,7 +16,11 @@ pub type PresetSnapshotLoader = Arc<dyn Fn(&str) -> ProviderSnapshot + Send + Sy
 /// Since the original Python uses opaque tuple elements, this Rust version
 /// accepts a length and returns the truncated count.
 pub fn default_selection_signature(signature_len: usize) -> usize {
-    if signature_len == 0 { 0 } else { signature_len.min(2) }
+    if signature_len == 0 {
+        0
+    } else {
+        signature_len.min(2)
+    }
 }
 
 /// Collect configured model presets plus a resolved `"default"` entry.

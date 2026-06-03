@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, TimeZone};
 use chrono_tz::Tz;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use cron::service::{CronService, RemoveOutcome};
 use cron::types::{CronJob, CronPayload, CronSchedule, ScheduleKind};
@@ -72,7 +72,10 @@ impl CronTool {
                 None => "every ?".into(),
             },
             ScheduleKind::At => match schedule.at_ms {
-                Some(ms) => format!("at {}", Self::format_timestamp(ms, self.display_tz(schedule))),
+                Some(ms) => format!(
+                    "at {}",
+                    Self::format_timestamp(ms, self.display_tz(schedule))
+                ),
                 None => "at ?".into(),
             },
         }
@@ -163,21 +166,13 @@ impl CronTool {
             .get("deliver")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let every_seconds = params
-            .get("every_seconds")
-            .and_then(|v| v.as_i64());
+        let every_seconds = params.get("every_seconds").and_then(|v| v.as_i64());
         let cron_expr = params
             .get("cron_expr")
             .and_then(|v| v.as_str())
             .map(String::from);
-        let tz = params
-            .get("tz")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let at = params
-            .get("at")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let tz = params.get("tz").and_then(|v| v.as_str()).map(String::from);
+        let at = params.get("at").and_then(|v| v.as_str()).map(String::from);
 
         let (channel, chat_id) = {
             let ctx = self.context.lock().unwrap();
@@ -227,9 +222,9 @@ impl CronTool {
                         .ok()
                         .and_then(|ndt| {
                             let tz: Tz = self.default_timezone.parse().unwrap_or(chrono_tz::UTC);
-                            tz.from_local_datetime(&ndt).single().map(|dt| {
-                                dt.with_timezone(&FixedOffset::east_opt(0).unwrap())
-                            })
+                            tz.from_local_datetime(&ndt)
+                                .single()
+                                .map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
                         })
                 });
             let Some(dt) = parsed else {
@@ -252,7 +247,17 @@ impl CronTool {
 
         match self
             .service
-            .add_job(&name, schedule, message, deliver, Some(channel), Some(chat_id), delete_after, None, None)
+            .add_job(
+                &name,
+                schedule,
+                message,
+                deliver,
+                Some(channel),
+                Some(chat_id),
+                delete_after,
+                None,
+                None,
+            )
             .await
         {
             Ok(job) => format!("Created job '{}' (id: {})", job.name, job.id),

@@ -156,6 +156,10 @@ async fn post_message_sse(
         registry: Arc::clone(&state.runtime_state.capabilities),
         invoker: Arc::clone(&state.runtime_state.invoker),
         ext_pool: state.ext_pool.clone(),
+        message: user_content.clone(),
+        channel: String::new(),
+        platform: String::new(),
+        app_version: String::new(),
     };
     // Use the same Agent orchestrator as admin, but writes to user chat tables
     tokio::spawn(async move {

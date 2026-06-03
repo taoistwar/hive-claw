@@ -1,32 +1,60 @@
 //! Example Plugin: weather lookup
 //!
-//! Demonstrates the Agent Runtime host_call ABI:
-//!   - Export `lookup(args_json: String) -> String`
-//!   - Call host_call(envelope_json) to use `network.http` capability
-//!   - Parse response + return result JSON
+//! Demonstrates:
+//!   - Agent Runtime host_call ABI (network.http capability)
+//!   - AgentContext integration: writing results as extensions
 //!
 //! Build:
 //!   cargo build --target wasm32-unknown-unknown --release
 //!   # output: target/wasm32-unknown-unknown/release/weather_plugin.wasm
-//!
-//! Upload via management UI or curl (see examples/plugins/README.md).
 
 use extism_pdk::*;
 use serde::{Deserialize, Serialize};
 
 /// Args for the `lookup` export
+///
+/// `_agent_context` is automatically injected by the orchestrator;
+/// the plugin can read it to access previous tool results, entities, etc.
 #[derive(Debug, Deserialize)]
 struct LookupArgs {
     /// City name to query (e.g. "Beijing", "Tokyo")
     city: String,
+
+    /// AgentContext snapshot injected by infrastructure (read-only)
+    #[serde(default)]
+    _agent_context: Option<serde_json::Value>,
 }
 
 /// Result returned to the orchestrator / LLM
+///
+/// Includes `_agent_context_updates` so the infrastructure can
+/// automatically persist the weather card as an AgentContext extension.
 #[derive(Debug, Serialize)]
 struct LookupResult {
     city: String,
     temp_c: f64,
     summary: String,
+
+    /// AgentContext updates: weather result as a card extension
+    #[serde(skip_serializing_if = "Option::is_none")]
+    _agent_context_updates: Option<AgentContextUpdates>,
+}
+
+/// Updates to write back to AgentContext after execution.
+#[derive(Debug, Serialize)]
+struct AgentContextUpdates {
+    extensions: Vec<ExtensionEntry>,
+}
+
+/// A single extension entry to add to AgentContext.
+#[derive(Debug, Serialize)]
+struct ExtensionEntry {
+    /// Unique identifier for this extension
+    id: String,
+    /// Extension type: "card", "image", "suggestion", "link", "button", "table", "chart"
+    content_type: String,
+    /// Structured data for this extension
+    data: serde_json::Value,
 }
 
 /// Host call envelope — must match contracts/host-functions.md §2
@@ -67,6 +95,22 @@ struct HttpReply {
 pub fn lookup(args_json: String) -> FnResult<String> {
     let args: LookupArgs = serde_json::from_str(&args_json)
         .map_err(|e| Error::msg(format!("invalid args: {e}")))?;
+
+    // ★ Read AgentContext: check if we already have weather data
+    //    for this city in previous tool results (e.g., cache hit).
+    if let Some(ref ctx) = args._agent_context {
+        if let Some(cached) = find_cached_weather(ctx, &args.city) {
+            let out = LookupResult {
+                city: args.city.clone(),
+                temp_c: cached.temp_c,
+                summary: cached.summary.clone(),
+                _agent_context_updates: Some(AgentContextUpdates {
+                    extensions: vec![weather_card(&args.city, cached.temp_c, &cached.summary)],
+                }),
+            };
+            return Ok(serde_json::to_string(&out)?);
+        }
+    }
 
     // Build the host_call envelope to fetch a weather feed.
     // wttr.in returns plain text by default; format=j1 gives JSON.
@@ -110,11 +154,79 @@ pub fn lookup(args_json: String) -> FnResult<String> {
         .to_string();
 
     let out = LookupResult {
-        city: args.city,
+        city: args.city.clone(),
         temp_c,
-        summary,
+        summary: summary.clone(),
+        _agent_context_updates: Some(AgentContextUpdates {
+            extensions: vec![weather_card(&args.city, temp_c, &summary)],
+        }),
     };
     Ok(serde_json::to_string(&out)?)
+}
+
+/// Build a weather card extension entry.
+fn weather_card(city: &str, temp: f64, condition: &str) -> ExtensionEntry {
+    ExtensionEntry {
+        id: format!("weather_card_{}", city.to_lowercase()),
+        content_type: "card".into(),
+        data: serde_json::json!({
+            "title": format!("{} 天气", city),
+            "temperature": format!("{}°C", temp),
+            "condition": condition,
+            "icon": weather_icon(condition),
+        }),
+    }
+}
+
+/// Search the AgentContext snapshot for a cached weather result for the given city.
+///
+/// Looks through `tool_results` entries where the key starts with "weather_"
+/// and the value contains the target city.
+#[derive(Debug, Deserialize)]
+struct CachedWeather {
+    temp_c: f64,
+    summary: String,
+}
+
+fn find_cached_weather(ctx: &serde_json::Value, city: &str) -> Option<CachedWeather> {
+    let tool_results = ctx.get("tool_results")?.as_array()?;
+    for entry in tool_results {
+        let key = entry.get("key")?.as_str()?;
+        let value = entry.get("value")?;
+
+        // Match: key like "weather_weathered_Beijing" containing the city
+        if key.starts_with("weather_") && key.to_lowercase().contains(&city.to_lowercase()) {
+            // Try to extract cached temperature & summary
+            if let (Some(temp_c), Some(summary)) = (
+                value.get("temp_c").and_then(|v| v.as_f64()),
+                value.get("summary").and_then(|v| v.as_str()),
+            ) {
+                return Some(CachedWeather {
+                    temp_c,
+                    summary: summary.to_string(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Map weather description to a simple emoji icon.
+fn weather_icon(summary: &str) -> &'static str {
+    let lower = summary.to_lowercase();
+    if lower.contains("sun") || lower.contains("clear") {
+        "☀️"
+    } else if lower.contains("cloud") || lower.contains("overcast") {
+        "☁️"
+    } else if lower.contains("rain") || lower.contains("drizzle") {
+        "🌧️"
+    } else if lower.contains("snow") {
+        "❄️"
+    } else if lower.contains("fog") || lower.contains("mist") {
+        "🌫️"
+    } else {
+        "🌤️"
+    }
 }
 
 // The host_call host function (provided by the host runtime).

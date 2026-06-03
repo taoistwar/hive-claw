@@ -151,35 +151,30 @@ enum IngestEvent {
     #[serde(rename = "span-create")]
     SpanCreate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: SpanBody,
     },
     #[serde(rename = "span-update")]
     SpanUpdate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: SpanUpdateBody,
     },
     #[serde(rename = "generation-create")]
     GenerationCreate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: GenerationBody,
     },
     #[serde(rename = "generation-update")]
     GenerationUpdate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: GenerationUpdateBody,
     },
     #[serde(rename = "event-create")]
     EventCreate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: EventBody,
     },
@@ -192,14 +187,12 @@ enum IngestEvent {
     #[serde(rename = "tool-create")]
     ToolCreate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: ToolBody,
     },
     #[serde(rename = "tool-update")]
     ToolUpdate {
         id: String,
-        trace_id: String,
         timestamp: String,
         body: ToolUpdateBody,
     },
@@ -856,7 +849,6 @@ impl TraceHandle {
 
         let event = IngestEvent::SpanCreate {
             id: span_id.clone(),
-            trace_id: self.id.clone(),
             timestamp: now,
             body: SpanBody {
                 id: span_id.clone(),
@@ -912,7 +904,6 @@ impl TraceHandle {
 
         let event = IngestEvent::GenerationCreate {
             id: gen_id.clone(),
-            trace_id: self.id.clone(),
             timestamp: now.clone(),
             body: GenerationBody {
                 id: gen_id.clone(),
@@ -957,7 +948,6 @@ impl TraceHandle {
 
         let ingest_event = IngestEvent::EventCreate {
             id: event_id,
-            trace_id: self.id.clone(),
             timestamp: now,
             body: EventBody {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -1035,7 +1025,6 @@ impl TraceHandle {
 
         let event = IngestEvent::ToolCreate {
             id: tool_id.clone(),
-            trace_id: self.id.clone(),
             timestamp: now.clone(),
             body: ToolBody {
                 id: tool_id.clone(),
@@ -1098,7 +1087,6 @@ impl SpanHandle {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         self.send(IngestEvent::SpanUpdate {
             id: self.id.clone(),
-            trace_id: self.trace_id.clone(),
             timestamp: now,
             body: SpanUpdateBody {
                 id: self.id.clone(),
@@ -1117,10 +1105,8 @@ impl SpanHandle {
     pub fn end(self) {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let span_id = self.id.clone();
-        let trace_id = self.trace_id.clone();
         self.send(IngestEvent::SpanUpdate {
             id: span_id.clone(),
-            trace_id: trace_id.clone(),
             timestamp: now.clone(),
             body: SpanUpdateBody {
                 id: span_id,
@@ -1175,7 +1161,6 @@ impl ToolHandle {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         self.send(IngestEvent::ToolUpdate {
             id: self.id.clone(),
-            trace_id: self.trace_id.clone(),
             timestamp: now,
             body: ToolUpdateBody {
                 id: self.id.clone(),
@@ -1224,7 +1209,6 @@ impl ToolHandle {
 
         let event = IngestEvent::ToolUpdate {
             id: self.id.clone(),
-            trace_id: self.trace_id.clone(),
             timestamp: now.clone(),
             body: ToolUpdateBody {
                 id: tool_id_copy,
@@ -1317,7 +1301,6 @@ impl GenerationHandle {
 
         let event = IngestEvent::GenerationUpdate {
             id: self.id.clone(),
-            trace_id: self.trace_id.clone(),
             timestamp: now.clone(),
             body: GenerationUpdateBody {
                 id: gen_id_copy,
@@ -1371,7 +1354,6 @@ impl GenerationHandle {
 
                 let tool_create = IngestEvent::ToolCreate {
                     id: tool_id.to_string(),
-                    trace_id: self.trace_id.clone(),
                     timestamp: now.clone(),
                     body: ToolBody {
                         id: tool_id.to_string(),
@@ -1405,7 +1387,6 @@ impl GenerationHandle {
 
                 let tool_update = IngestEvent::ToolUpdate {
                     id: tool_id.to_string(),
-                    trace_id: self.trace_id.clone(),
                     timestamp: now.clone(),
                     body: ToolUpdateBody {
                         id: tool_id.to_string(),

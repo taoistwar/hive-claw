@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use log::info;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -69,7 +69,10 @@ pub struct MyTool {
 use std::sync::Arc;
 
 impl MyTool {
-    pub fn new(runtime_state: Arc<std::sync::RwLock<Box<dyn RuntimeState>>>, modify_allowed: bool) -> Self {
+    pub fn new(
+        runtime_state: Arc<std::sync::RwLock<Box<dyn RuntimeState>>>,
+        modify_allowed: bool,
+    ) -> Self {
         Self {
             runtime_state,
             modify_allowed,
@@ -87,14 +90,29 @@ impl MyTool {
     }
 
     const BLOCKED: &[&str] = &[
-        "bus", "provider", "_running", "tools",
+        "bus",
+        "provider",
+        "_running",
+        "tools",
         "_runtime_vars",
-        "runner", "sessions", "consolidator",
-        "dream", "auto_compact", "context", "commands",
-        "_mcp_servers", "_mcp_stacks", "_pending_queues",
-        "_session_locks", "_active_tasks", "_background_tasks",
-        "restrict_to_workspace", "channels_config",
-        "_concurrency_gate", "_unified_session", "_extra_hooks",
+        "runner",
+        "sessions",
+        "consolidator",
+        "dream",
+        "auto_compact",
+        "context",
+        "commands",
+        "_mcp_servers",
+        "_mcp_stacks",
+        "_pending_queues",
+        "_session_locks",
+        "_active_tasks",
+        "_background_tasks",
+        "restrict_to_workspace",
+        "channels_config",
+        "_concurrency_gate",
+        "_unified_session",
+        "_extra_hooks",
     ];
 
     const READ_ONLY: &[&str] = &[
@@ -105,16 +123,39 @@ impl MyTool {
     ];
 
     const DENIED_ATTRS: &[&str] = &[
-        "__class__", "__dict__", "__bases__", "__subclasses__", "__mro__",
-        "__init__", "__new__", "__reduce__", "__getstate__", "__setstate__",
-        "__del__", "__call__", "__getattr__", "__setattr__", "__delattr__",
-        "__code__", "__globals__", "func_globals", "func_code",
-        "__wrapped__", "__closure__",
+        "__class__",
+        "__dict__",
+        "__bases__",
+        "__subclasses__",
+        "__mro__",
+        "__init__",
+        "__new__",
+        "__reduce__",
+        "__getstate__",
+        "__setstate__",
+        "__del__",
+        "__call__",
+        "__getattr__",
+        "__setattr__",
+        "__delattr__",
+        "__code__",
+        "__globals__",
+        "func_globals",
+        "func_code",
+        "__wrapped__",
+        "__closure__",
     ];
 
     const SENSITIVE_NAMES: &[&str] = &[
-        "api_key", "secret", "password", "token", "credential",
-        "private_key", "access_token", "refresh_token", "auth",
+        "api_key",
+        "secret",
+        "password",
+        "token",
+        "credential",
+        "private_key",
+        "access_token",
+        "refresh_token",
+        "auth",
     ];
 
     fn is_sensitive_field_name(name: &str) -> bool {
@@ -122,7 +163,9 @@ impl MyTool {
         if Self::SENSITIVE_NAMES.contains(&lowered.as_str()) {
             return true;
         }
-        lowered.split('_').any(|part| Self::SENSITIVE_NAMES.contains(&part))
+        lowered
+            .split('_')
+            .any(|part| Self::SENSITIVE_NAMES.contains(&part))
     }
 
     const MAX_RUNTIME_KEYS: usize = 64;
@@ -195,11 +238,7 @@ impl MyTool {
                 indent, st.phase, st.iteration, elapsed
             ),
             format!("{}tools: {}", indent, tool_summary_str),
-            format!(
-                "{}usage: {}",
-                indent,
-                st.usage.as_deref().unwrap_or("n/a")
-            ),
+            format!("{}usage: {}", indent, st.usage.as_deref().unwrap_or("n/a")),
         ];
 
         if let Some(ref err) = st.error {
@@ -313,8 +352,13 @@ impl MyTool {
 
         if let Some(obj) = state_value.as_object() {
             for k in &[
-                "workspace", "provider_retry_mode", "max_tool_result_chars",
-                "_current_iteration", "web_config", "exec_config", "subagents",
+                "workspace",
+                "provider_retry_mode",
+                "max_tool_result_chars",
+                "_current_iteration",
+                "web_config",
+                "exec_config",
+                "subagents",
             ] {
                 if let Some(v) = obj.get(*k) {
                     parts.push(Self::format_value(v, k));
@@ -351,7 +395,14 @@ impl MyTool {
                 let (obj, err) = self.resolve_path(k);
                 if let Some(e) = err {
                     if k == "scratchpad" {
-                        if let Some(obj) = self.runtime_state.read().unwrap().serialize_state().as_object().cloned() {
+                        if let Some(obj) = self
+                            .runtime_state
+                            .read()
+                            .unwrap()
+                            .serialize_state()
+                            .as_object()
+                            .cloned()
+                        {
                             if let Some(rv) = obj.get("_runtime_vars") {
                                 if !rv.is_null() {
                                     return Self::format_value(rv, "scratchpad");
@@ -361,7 +412,14 @@ impl MyTool {
                         }
                     }
                     if !k.contains('.') {
-                        if let Some(obj) = self.runtime_state.read().unwrap().serialize_state().as_object().cloned() {
+                        if let Some(obj) = self
+                            .runtime_state
+                            .read()
+                            .unwrap()
+                            .serialize_state()
+                            .as_object()
+                            .cloned()
+                        {
                             if let Some(rv) = obj.get("_runtime_vars").and_then(|v| v.as_object()) {
                                 if let Some(v) = rv.get(k) {
                                     return Self::format_value(v, k);
@@ -384,7 +442,10 @@ impl MyTool {
     fn modify(&self, key: Option<&str>, value: &Value) -> String {
         let key = match key {
             Some(k) => k,
-            None => return Self::validate_key(None, "key").unwrap_or_else(|| "Error: 'key' cannot be empty or whitespace".into()),
+            None => {
+                return Self::validate_key(None, "key")
+                    .unwrap_or_else(|| "Error: 'key' cannot be empty or whitespace".into());
+            }
         };
 
         if let Some(err) = Self::validate_key(Some(key), "key") {
@@ -499,14 +560,21 @@ impl MyTool {
 
         let old = self
             .runtime_state
-            .read().unwrap()
+            .read()
+            .unwrap()
             .get_field(key)
             .unwrap_or(Value::Null);
 
-        self.runtime_state.write().unwrap().set_field(key, value.clone());
+        self.runtime_state
+            .write()
+            .unwrap()
+            .set_field(key, value.clone());
 
         if key == "model" {
-            self.runtime_state.write().unwrap().set_field("_active_preset", Value::Null);
+            self.runtime_state
+                .write()
+                .unwrap()
+                .set_field("_active_preset", Value::Null);
         }
         if key == "max_iterations" {
             todo!("TODO: sync subagent runtime limits if applicable")
@@ -520,7 +588,8 @@ impl MyTool {
         if has_real_attr(self.runtime_state.read().unwrap().as_ref(), key) {
             let old = self
                 .runtime_state
-                .read().unwrap()
+                .read()
+                .unwrap()
                 .get_field(key)
                 .unwrap_or(Value::Null);
 
@@ -536,15 +605,15 @@ impl MyTool {
                                 key, old_type, new_type
                             ),
                         );
-                        return format!(
-                            "Error: '{}' expects {}, got {}",
-                            key, old_type, new_type
-                        );
+                        return format!("Error: '{}' expects {}, got {}", key, old_type, new_type);
                     }
                 }
             }
 
-            self.runtime_state.write().unwrap().set_field(key, value.clone());
+            self.runtime_state
+                .write()
+                .unwrap()
+                .set_field(key, value.clone());
             self.audit("modify", &format!("{}: {:?} -> {:?}", key, old, value));
             return format!("Set {} = {:?} (was {:?})", key, value, old);
         }
@@ -561,7 +630,11 @@ impl MyTool {
             if !rv.contains_key(key) && rv.len() >= Self::MAX_RUNTIME_KEYS {
                 self.audit(
                     "modify",
-                    &format!("REJECTED {}: max keys ({}) reached", key, Self::MAX_RUNTIME_KEYS),
+                    &format!(
+                        "REJECTED {}: max keys ({}) reached",
+                        key,
+                        Self::MAX_RUNTIME_KEYS
+                    ),
                 );
                 return format!(
                     "Error: scratchpad is full (max {} keys). Remove unused keys first.",
@@ -571,8 +644,14 @@ impl MyTool {
         }
 
         let old = self.runtime_state.read().unwrap().get_runtime_var(key);
-        self.runtime_state.write().unwrap().set_runtime_var(key, value.clone());
-        self.audit("modify", &format!("scratchpad.{}: {:?} -> {:?}", key, old, value));
+        self.runtime_state
+            .write()
+            .unwrap()
+            .set_runtime_var(key, value.clone());
+        self.audit(
+            "modify",
+            &format!("scratchpad.{}: {:?} -> {:?}", key, old, value),
+        );
         format!("Set scratchpad.{} = {:?}", key, value)
     }
 
@@ -592,8 +671,12 @@ impl MyTool {
             }
             Value::Object(map) => {
                 for (k, v) in map {
-                    if k.parse::<i64>().is_err() && k.parse::<f64>().is_err() && k != "true" && k != "false" && k != "null" {
-                    }
+                    if k.parse::<i64>().is_err()
+                        && k.parse::<f64>().is_err()
+                        && k != "true"
+                        && k != "false"
+                        && k != "null"
+                    {}
                     if let Some(err) = Self::validate_json_safe(v, depth + 1) {
                         return Some(format!("dict key '{}' contains {}", k, err));
                     }
@@ -697,7 +780,9 @@ impl Tool for MyTool {
         let action = params
             .get("action")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolExecError::InvalidParams("missing required parameter: action".into()))?;
+            .ok_or_else(|| {
+                ToolExecError::InvalidParams("missing required parameter: action".into())
+            })?;
 
         let key = params.get("key").and_then(|v| v.as_str());
         let value = params.get("value").cloned().unwrap_or(Value::Null);

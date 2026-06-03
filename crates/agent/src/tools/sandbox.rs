@@ -167,7 +167,8 @@ pub fn shell_quote(s: &str) -> String {
         return "''".into();
     }
     let safe = s.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-' | '_')
+        c.is_ascii_alphanumeric()
+            || matches!(c, '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-' | '_')
     });
     if safe {
         s.to_string()

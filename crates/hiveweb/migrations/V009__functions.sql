@@ -9,6 +9,7 @@ CREATE TABLE functions (
     plugin_id BIGINT NULL COMMENT 'custom 必填',
     plugin_export VARCHAR(64) NULL COMMENT 'extism export 函数名，custom 必填',
     category_id BIGINT NULL,
+    required_capabilities JSON NULL COMMENT '声明该 function 执行所需的 capabilities',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_functions_plugin (plugin_id),

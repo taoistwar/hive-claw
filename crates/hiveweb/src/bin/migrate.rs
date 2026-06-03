@@ -16,6 +16,7 @@ struct Migration {
 }
 
 const MIGRATIONS: &[Migration] = &[
+    // ---------- 003 Admin Center ----------
     Migration {
         version: "V001__create_admins_table",
         sql: include_str!("../../migrations/V001__create_admins_table.sql"),
@@ -29,195 +30,87 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/V003__seed_super_admin.sql"),
     },
     Migration {
-        version: "V004__login_records_set_null_and_snapshots",
-        sql: include_str!("../../migrations/V004__login_records_set_null_and_snapshots.sql"),
-    },
-    Migration {
-        version: "V005__login_records_idx_login_at_desc",
-        sql: include_str!("../../migrations/V005__login_records_idx_login_at_desc.sql"),
-    },
-    Migration {
-        version: "V006__audit_logs",
-        sql: include_str!("../../migrations/V006__audit_logs.sql"),
-    },
-    Migration {
-        version: "V007__admins_idx_created_at",
-        sql: include_str!("../../migrations/V007__admins_idx_created_at.sql"),
+        version: "V004__audit_logs",
+        sql: include_str!("../../migrations/V004__audit_logs.sql"),
     },
     // ---------- 004 Agent Runtime ----------
     Migration {
-        version: "V008__capabilities",
-        sql: include_str!("../../migrations/V008__capabilities.sql"),
+        version: "V005__categories",
+        sql: include_str!("../../migrations/V005__categories.sql"),
     },
     Migration {
-        version: "V009__categories",
-        sql: include_str!("../../migrations/V009__categories.sql"),
+        version: "V006__capabilities",
+        sql: include_str!("../../migrations/V006__capabilities.sql"),
     },
     Migration {
-        version: "V010__tags",
-        sql: include_str!("../../migrations/V010__tags.sql"),
+        version: "V007__tags",
+        sql: include_str!("../../migrations/V007__tags.sql"),
     },
     Migration {
-        version: "V011__plugins",
-        sql: include_str!("../../migrations/V011__plugins.sql"),
+        version: "V008__plugins",
+        sql: include_str!("../../migrations/V008__plugins.sql"),
     },
     Migration {
-        version: "V012__functions",
-        sql: include_str!("../../migrations/V012__functions.sql"),
+        version: "V009__functions",
+        sql: include_str!("../../migrations/V009__functions.sql"),
     },
     Migration {
-        version: "V013__workflows",
-        sql: include_str!("../../migrations/V013__workflows.sql"),
+        version: "V010__workflows",
+        sql: include_str!("../../migrations/V010__workflows.sql"),
     },
     Migration {
-        version: "V014__tools_skills",
-        sql: include_str!("../../migrations/V014__tools_skills.sql"),
+        version: "V011__tools_skills",
+        sql: include_str!("../../migrations/V011__tools_skills.sql"),
     },
     Migration {
-        version: "V015__agents",
-        sql: include_str!("../../migrations/V015__agents.sql"),
+        version: "V012__agents",
+        sql: include_str!("../../migrations/V012__agents.sql"),
     },
     Migration {
-        version: "V016__chat",
-        sql: include_str!("../../migrations/V016__chat.sql"),
+        version: "V013__runtime_audit_logs",
+        sql: include_str!("../../migrations/V013__runtime_audit_logs.sql"),
     },
     Migration {
-        version: "V017__runtime_audit_logs",
-        sql: include_str!("../../migrations/V017__runtime_audit_logs.sql"),
+        version: "V014__seed",
+        sql: include_str!("../../migrations/V014__seed.sql"),
     },
     Migration {
-        version: "V018__seed",
-        sql: include_str!("../../migrations/V018__seed.sql"),
+        version: "V015__recommended_games",
+        sql: include_str!("../../migrations/V015__recommended_games.sql"),
     },
     Migration {
-        version: "V019__tools_source",
-        sql: include_str!("../../migrations/V019__tools_source.sql"),
+        version: "V016__seed_capability_categories",
+        sql: include_str!("../../migrations/V016__seed_capability_categories.sql"),
     },
     Migration {
-        version: "V020__tools_is_always",
-        sql: include_str!("../../migrations/V020__tools_is_always.sql"),
+        version: "V017__users_table",
+        sql: include_str!("../../migrations/V017__users_table.sql"),
     },
     Migration {
-        version: "V021__skills_is_always",
-        sql: include_str!("../../migrations/V021__skills_is_always.sql"),
+        version: "V018__split_chat_tables",
+        sql: include_str!("../../migrations/V018__split_chat_tables.sql"),
     },
     Migration {
-        version: "V022__recommended_games",
-        sql: include_str!("../../migrations/V022__recommended_games.sql"),
-    },
-    Migration {
-        version: "V023__recommended_games_add_card_content",
-        sql: include_str!("../../migrations/V023__recommended_games_add_card_content.sql"),
-    },
-    Migration {
-        version: "V024__recommended_games_add_sort_value",
-        sql: include_str!("../../migrations/V024__recommended_games_add_sort_value.sql"),
-    },
-    Migration {
-        version: "V025__recommended_games_add_fields",
-        sql: include_str!("../../migrations/V025__recommended_games_add_fields.sql"),
-    },
-    Migration {
-        version: "V026__tools_category",
-        sql: include_str!("../../migrations/V026__tools_category.sql"),
-    },
-    Migration {
-        version: "V027__skills_category",
-        sql: include_str!("../../migrations/V027__skills_category.sql"),
-    },
-    Migration {
-        version: "V028__rename_audit_logs_to_admin_audit_logs",
-        sql: include_str!("../../migrations/V028__rename_audit_logs_to_admin_audit_logs.sql"),
-    },
-    Migration {
-        version: "V029__function_tool_capabilities",
-        sql: include_str!("../../migrations/V029__function_tool_capabilities.sql"),
-    },
-    Migration {
-        version: "V030__workflow_required_capabilities",
-        sql: include_str!("../../migrations/V030__workflow_required_capabilities.sql"),
-    },
-    Migration {
-        version: "V031__skill_required_capabilities",
-        sql: include_str!("../../migrations/V031__skill_required_capabilities.sql"),
-    },
-    Migration {
-        version: "V032__workflow_category",
-        sql: include_str!("../../migrations/V032__workflow_category.sql"),
-    },
-    Migration {
-        version: "V033__workflow_input_schema",
-        sql: include_str!("../../migrations/V033__workflow_input_schema.sql"),
-    },
-    Migration {
-        version: "V034__workflow_node_type",
-        sql: include_str!("../../migrations/V034__workflow_node_type.sql"),
-    },
-    Migration {
-        version: "V035__workflow_output_schema",
-        sql: include_str!("../../migrations/V035__workflow_output_schema.sql"),
-    },
-    Migration {
-        version: "V036__workflow_answer_node",
-        sql: include_str!("../../migrations/V036__workflow_answer_node.sql"),
-    },
-    Migration {
-        version: "V037__capabilities_category",
-        sql: include_str!("../../migrations/V037__capabilities_category.sql"),
-    },
-    Migration {
-        version: "V038__seed_capability_categories",
-        sql: include_str!("../../migrations/V038__seed_capability_categories.sql"),
-    },
-    Migration {
-        version: "V039__users_table",
-        sql: include_str!("../../migrations/V039__users_table.sql"),
-    },
-    Migration {
-        version: "V040__chat_sessions_user_id",
-        sql: include_str!("../../migrations/V040__chat_sessions_user_id.sql"),
-    },
-    Migration {
-        version: "V041__users_status",
-        sql: include_str!("../../migrations/V041__users_status.sql"),
-    },
-    Migration {
-        version: "V042__split_chat_tables",
-        sql: include_str!("../../migrations/V042__split_chat_tables.sql"),
-    },
-    Migration {
-        version: "V043__drop_seq_from_chat_messages",
-        sql: include_str!("../../migrations/V043__drop_seq_from_chat_messages.sql"),
-    },
-    Migration {
-        version: "V044__create_global_configs",
-        sql: include_str!("../../migrations/V044__create_global_configs.sql"),
+        version: "V019__create_global_configs",
+        sql: include_str!("../../migrations/V019__create_global_configs.sql"),
     },
     // ---------- 006 Game Alias Management ----------
     Migration {
-        version: "V045__create_games_table",
-        sql: include_str!("../../migrations/V045__create_games_table.sql"),
+        version: "V020__create_games_table",
+        sql: include_str!("../../migrations/V020__create_games_table.sql"),
     },
     Migration {
-        version: "V046__create_game_alias_entries_table",
-        sql: include_str!("../../migrations/V046__create_game_alias_entries_table.sql"),
-    },
-    Migration {
-        version: "V047__add_user_id_to_chat_messages",
-        sql: include_str!("../../migrations/V047__add_user_id_to_chat_messages.sql"),
-    },
-    Migration {
-        version: "V048__add_elapsed_ms_to_chat_messages_user",
-        sql: include_str!("../../migrations/V048__add_elapsed_ms_to_chat_messages_user.sql"),
+        version: "V021__create_game_alias_entries_table",
+        sql: include_str!("../../migrations/V021__create_game_alias_entries_table.sql"),
     },
     // ---------- 008 Agent Hook ----------
     Migration {
-        version: "V049__create_agent_hooks_table",
-        sql: include_str!("../../migrations/V049__create_agent_hooks_table.sql"),
+        version: "V022__create_agent_hooks_table",
+        sql: include_str!("../../migrations/V022__create_agent_hooks_table.sql"),
     },
     Migration {
-        version: "V050__create_hook_executions_table",
-        sql: include_str!("../../migrations/V050__create_hook_executions_table.sql"),
+        version: "V023__create_hook_executions_table",
+        sql: include_str!("../../migrations/V023__create_hook_executions_table.sql"),
     },
 ];
 

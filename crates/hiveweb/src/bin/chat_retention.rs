@@ -1,7 +1,7 @@
 //! Chat retention cron (T132 / FR-027 v7 / CHAT_RETENTION_DAYS)
 //!
-//! 按 `CHAT_RETENTION_DAYS`（默认 30）清理超期 chat_sessions。
-//! chat_messages 因 FK ON DELETE CASCADE 一并清除。
+//! 按 `CHAT_RETENTION_DAYS`（默认 30）清理超期 chat_sessions_user。
+//! chat_messages_user 因 FK ON DELETE CASCADE 一并清除。
 
 use sqlx::MySqlPool;
 use std::time::Duration;
@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     loop {
         let t0 = std::time::Instant::now();
         let result =
-            sqlx::query("DELETE FROM chat_sessions WHERE updated_at < (NOW() - INTERVAL ? DAY)")
+            sqlx::query("DELETE FROM chat_sessions_user WHERE updated_at < (NOW() - INTERVAL ? DAY)")
                 .bind(retention_days)
                 .execute(&pool)
                 .await;

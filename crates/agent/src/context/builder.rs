@@ -46,7 +46,11 @@ const RUNTIME_CONTEXT_END: &str = "[/Runtime Context]";
 const MAX_RECENT_HISTORY: usize = 50;
 
 impl ContextBuilder {
-    pub fn new(workspace: PathBuf, timezone: Option<String>, disabled_skills: Option<Vec<String>>) -> Self {
+    pub fn new(
+        workspace: PathBuf,
+        timezone: Option<String>,
+        disabled_skills: Option<Vec<String>>,
+    ) -> Self {
         let memory = MemoryStore::new(&workspace, None);
         let disabled_set = disabled_skills.map(|v| v.into_iter().collect::<HashSet<_>>());
         let skills = SkillsLoader::new(workspace.clone(), disabled_set);
@@ -91,7 +95,7 @@ impl ContextBuilder {
         let summary = self.skills.build_skills_summary(Some(&always_set));
         if !summary.is_empty() {
             let rendered = render_template_str(
-                include_str!("prompts/skills_section.md.tpl"),
+                include_str!("../prompts/skills_section.md.tpl"),
                 &[("skills_summary", Value::String(summary))],
             );
             parts.push(rendered);
@@ -106,14 +110,8 @@ impl ContextBuilder {
             let lines: Vec<String> = capped
                 .iter()
                 .map(|e| {
-                    let ts = e
-                        .get("timestamp")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let content = e
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let ts = e.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?");
+                    let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     format!("- [{ts}] {content}")
                 })
                 .collect();
@@ -139,7 +137,7 @@ impl ContextBuilder {
         };
         let runtime = format!("{os_name} {arch}, Rust");
         render_template_str(
-            include_str!("prompts/identity.md.tpl"),
+            include_str!("../prompts/identity.md.tpl"),
             &[
                 ("workspace_path", Value::String(workspace_path)),
                 ("runtime", Value::String(runtime)),
@@ -351,14 +349,20 @@ fn to_blocks(val: Value) -> Vec<Value> {
                 if item.is_object() {
                     item
                 } else {
-                    let s = item.as_str().map(String::from).unwrap_or_else(|| item.to_string());
+                    let s = item
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| item.to_string());
                     serde_json::json!({"type":"text","text":s})
                 }
             })
             .collect(),
         Value::Null => Vec::new(),
         other => {
-            let s = other.as_str().map(String::from).unwrap_or_else(|| other.to_string());
+            let s = other
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| other.to_string());
             vec![serde_json::json!({"type":"text","text":s})]
         }
     }
@@ -380,4 +384,3 @@ fn format_hint_for_channel(channel: Option<&str>) -> String {
         _ => String::new(),
     }
 }
-

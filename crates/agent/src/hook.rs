@@ -157,7 +157,10 @@ impl SDKCaptureHook {
 #[async_trait]
 impl AgentHook for SDKCaptureHook {
     async fn after_iteration(&self, ctx: &mut AgentHookContext) {
-        self.tools_used.lock().unwrap().extend(ctx.tool_calls.iter().map(|tc| tc.name.clone()));
+        self.tools_used
+            .lock()
+            .unwrap()
+            .extend(ctx.tool_calls.iter().map(|tc| tc.name.clone()));
         *self.messages.lock().unwrap() = ctx.messages.clone();
     }
 }
@@ -197,8 +200,7 @@ mod tests {
                 content.map(|s| format!("{s}{}", self.0))
             }
         }
-        let c =
-            CompositeHook::new(vec![Arc::new(Appender(" a")), Arc::new(Appender(" b"))]);
+        let c = CompositeHook::new(vec![Arc::new(Appender(" a")), Arc::new(Appender(" b"))]);
         let mut ctx = AgentHookContext::default();
         let out = c.finalize_content(&mut ctx, Some("x".into()));
         assert_eq!(out, Some("x a b".to_string()));

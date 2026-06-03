@@ -38,9 +38,9 @@ use crate::memory::Consolidator as ConsolidatorTrait;
 use crate::memory::Dream as DreamTrait;
 use crate::runner::{AgentRunResult, AgentRunSpec, AgentRunner};
 use crate::subagent::SubagentManager;
-use crate::tools::{CronTool, MessageTool, SpawnCallback, SpawnTool, ToolRegistry};
-use crate::tools::file_state::{bind_file_states, reset_file_states, FileStateStore};
+use crate::tools::file_state::{FileStateStore, bind_file_states, reset_file_states};
 use crate::tools::mcp::{self as mcp_impl, McpServerHandle};
+use crate::tools::{CronTool, MessageTool, SpawnCallback, SpawnTool, ToolRegistry};
 use config::schema::McpServerConfig as ConfigMcpServerConfig;
 
 // ============================================================================
@@ -408,7 +408,17 @@ impl BuiltinPrefilter {
             let info = info.clone();
             let model_switch_callback = model_switch_callback.clone();
             let msg = msg.clone();
-            async move { dispatch_prefilter(&msg, &sessions, &tools, &info, model_switch_callback.as_ref()).await }.boxed()
+            async move {
+                dispatch_prefilter(
+                    &msg,
+                    &sessions,
+                    &tools,
+                    &info,
+                    model_switch_callback.as_ref(),
+                )
+                .await
+            }
+            .boxed()
         })
     }
 }
@@ -495,10 +505,7 @@ async fn status_text(
     )
 }
 
-async fn clear_session(
-    sessions: &Arc<Mutex<SessionManager>>,
-    session_key: &str,
-) -> String {
+async fn clear_session(sessions: &Arc<Mutex<SessionManager>>, session_key: &str) -> String {
     let mut mgr = sessions.lock().await;
     let mut s = mgr.get_or_create(session_key);
     let removed = s.messages.len();
@@ -511,10 +518,7 @@ async fn clear_session(
     }
 }
 
-async fn model_cmd(
-    info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
-    args: &str,
-) -> String {
+async fn model_cmd(info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>, args: &str) -> String {
     if args.is_empty() {
         let snap = info.read().await;
         return format!("Current model: {}", snap.model);
@@ -630,7 +634,8 @@ fn compute_config_signature(cfg: &Config) -> u64 {
 pub type SnapshotLoaderFn = Arc<dyn Fn() -> Result<ProviderSnapshot, String> + Send + Sync>;
 
 /// Type alias for a preset snapshot loader function.
-pub type PresetSnapshotLoaderFn = Arc<dyn Fn(&str) -> Result<ProviderSnapshot, String> + Send + Sync>;
+pub type PresetSnapshotLoaderFn =
+    Arc<dyn Fn(&str) -> Result<ProviderSnapshot, String> + Send + Sync>;
 
 /// Type alias for a runtime model publisher function.
 pub type RuntimeModelPublisherFn = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
@@ -659,7 +664,8 @@ impl WebuiTurnCoordinator {
     /// Capture LLM runtime context for later title generation.
     pub fn capture_title_context(&mut self, session_key: &str, msg: &InboundMessage) {
         if msg.channel == "websocket"
-            && msg.metadata
+            && msg
+                .metadata
                 .get("webui")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
@@ -680,7 +686,10 @@ impl WebuiTurnCoordinator {
             return;
         }
         let mut meta = msg.metadata.clone();
-        meta.insert("_turn_status".into(), serde_json::Value::String(status.to_string()));
+        meta.insert(
+            "_turn_status".into(),
+            serde_json::Value::String(status.to_string()),
+        );
         let content = format!(
             "{{\"status\":\"{}\",\"session_key\":\"{}\"}}",
             status,
@@ -709,11 +718,15 @@ impl WebuiTurnCoordinator {
             return;
         }
 
-        let mut turn_metadata: std::collections::HashMap<String, serde_json::Value> = msg.metadata.clone();
+        let mut turn_metadata: std::collections::HashMap<String, serde_json::Value> =
+            msg.metadata.clone();
         turn_metadata.insert("_turn_end".into(), serde_json::Value::Bool(true));
 
         if let Some(latency) = latency_ms {
-            turn_metadata.insert("latency_ms".into(), serde_json::Value::Number(latency.into()));
+            turn_metadata.insert(
+                "latency_ms".into(),
+                serde_json::Value::Number(latency.into()),
+            );
         }
 
         let mut sessions = self.sessions.lock().await;
@@ -735,14 +748,18 @@ impl WebuiTurnCoordinator {
         // Schedule title update if title context exists
         let has_title_context = self._title_contexts.remove(session_key).is_some();
         if has_title_context
-            && msg.metadata
+            && msg
+                .metadata
                 .get("webui")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         {
             let mut title_meta = msg.metadata.clone();
             title_meta.insert("_session_updated".into(), serde_json::Value::Bool(true));
-            title_meta.insert("_session_update_scope".into(), serde_json::Value::String("metadata".into()));
+            title_meta.insert(
+                "_session_update_scope".into(),
+                serde_json::Value::String("metadata".into()),
+            );
             self.bus
                 .publish_outbound(OutboundMessage {
                     channel: msg.channel.clone(),
@@ -785,6 +802,8 @@ pub struct AgentLoop {
     _last_usage: std::sync::Mutex<HashMap<String, u64>>,
     _pending_turn_latency_ms: std::sync::Mutex<HashMap<String, u64>>,
     _extra_hooks: Vec<Arc<dyn crate::hook::AgentHook + Send + Sync>>,
+    /// Optional AgentContext for execution state management (specs/009-agent-context)
+    agent_context: Option<Arc<crate::context::core::AgentContext>>,
     _webui_turns: Option<Arc<Mutex<WebuiTurnCoordinator>>>,
     _file_state_store: Option<Arc<std::sync::Mutex<FileStateStore>>>,
     subagents: Option<Arc<Mutex<SubagentManager>>>,
@@ -798,7 +817,8 @@ pub struct AgentLoop {
     _active_tasks: Arc<std::sync::Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
     _background_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     _session_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-    _pending_queues: Arc<std::sync::Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<InboundMessage>>>>,
+    _pending_queues:
+        Arc<std::sync::Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<InboundMessage>>>>,
     _concurrency_gate: Option<Arc<Semaphore>>,
     consolidator: Option<Arc<Mutex<dyn ConsolidatorTrait>>>,
     auto_compact: Option<Arc<Mutex<AutoCompactInner>>>,
@@ -853,6 +873,7 @@ impl AgentLoop {
             _last_usage: std::sync::Mutex::new(HashMap::new()),
             _pending_turn_latency_ms: std::sync::Mutex::new(HashMap::new()),
             _extra_hooks: Vec::new(),
+            agent_context: None,
             _webui_turns: None,
             _file_state_store: None,
             subagents: None,
@@ -950,9 +971,9 @@ impl AgentLoop {
                 Config::from_config(None)
             };
             let presets = &cfg.model_presets;
-            let preset = presets.get(name).ok_or_else(|| {
-                format!("Preset '{}' not found", name)
-            })?;
+            let preset = presets
+                .get(name)
+                .ok_or_else(|| format!("Preset '{}' not found", name))?;
             ProviderSnapshot::from_preset(preset, &cfg)
         });
         self.preset_snapshot_loader = Some(preset_loader);
@@ -963,10 +984,13 @@ impl AgentLoop {
             None
         };
         let _ = info_clone;
-        let publisher: RuntimeModelPublisherFn = Arc::new(move |model: &str, preset: Option<&str>| {
-            let preset_info = preset.map(|p| format!(" (preset: {})", p)).unwrap_or_default();
-            info!("Model hotswap: {}{}", model, preset_info);
-        });
+        let publisher: RuntimeModelPublisherFn =
+            Arc::new(move |model: &str, preset: Option<&str>| {
+                let preset_info = preset
+                    .map(|p| format!(" (preset: {})", p))
+                    .unwrap_or_default();
+                info!("Model hotswap: {}{}", model, preset_info);
+            });
         self.runtime_model_publisher = Some(publisher);
 
         let cfg = if let Some(ref path) = config_path {
@@ -1028,6 +1052,14 @@ impl AgentLoop {
         self.command_prefilter = Some(filter);
     }
 
+    /// Set the optional AgentContext for execution state management.
+    ///
+    /// When set, the AgentContextSyncHook is automatically registered to
+    /// sync turn state into the context (T081-T083, specs/009-agent-context).
+    pub fn set_agent_context(&mut self, ctx: Arc<crate::context::core::AgentContext>) {
+        self.agent_context = Some(ctx);
+    }
+
     /// Wire the consolidator for memory-quality features (history summarization,
     /// token-based compaction). The consolidator is optional; if not set, the
     /// ContextBuilder's token budget prevents context overflow.
@@ -1073,7 +1105,8 @@ impl AgentLoop {
     // ========================================================================
 
     pub fn current_iteration(&self) -> u32 {
-        self._current_iteration.load(std::sync::atomic::Ordering::SeqCst)
+        self._current_iteration
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn tool_names(&self) -> impl std::future::Future<Output = Vec<String>> + '_ {
@@ -1109,8 +1142,10 @@ impl AgentLoop {
     /// Swap model/provider for future turns without disturbing an active one.
     pub async fn apply_provider_snapshot(&self, snapshot: ProviderSnapshot, publish_update: bool) {
         let old_model = self.config.model.clone();
-        self.context_window_tokens
-            .store(snapshot.context_window_tokens, std::sync::atomic::Ordering::SeqCst);
+        self.context_window_tokens.store(
+            snapshot.context_window_tokens,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         *self.runner.lock().unwrap() = Arc::new(AgentRunner::new(snapshot.provider.clone()));
         *self.provider_signature.lock().await = Some(snapshot.signature);
 
@@ -1130,7 +1165,10 @@ impl AgentLoop {
 
         if publish_update {
             if let Some(ref publisher) = self.runtime_model_publisher {
-                publisher(&snapshot.model, self._active_preset.lock().unwrap().as_deref());
+                publisher(
+                    &snapshot.model,
+                    self._active_preset.lock().unwrap().as_deref(),
+                );
             }
         }
         info!(
@@ -1186,7 +1224,11 @@ impl AgentLoop {
     ///
     /// If `reload_provider` is true, rebuilds the provider from config.
     /// Otherwise only updates the model name in the runtime info.
-    pub async fn switch_model(&self, model_name: &str, reload_provider: bool) -> Result<String, String> {
+    pub async fn switch_model(
+        &self,
+        model_name: &str,
+        reload_provider: bool,
+    ) -> Result<String, String> {
         let old_model = self.config.model.clone();
 
         if reload_provider {
@@ -1228,7 +1270,13 @@ impl AgentLoop {
                     None
                 }
             })
-            .ok_or_else(|| format!("Preset '{}' not found. Available: {}", preset_name, self.list_presets()))?;
+            .ok_or_else(|| {
+                format!(
+                    "Preset '{}' not found. Available: {}",
+                    preset_name,
+                    self.list_presets()
+                )
+            })?;
 
         let snapshot = ProviderSnapshot::from_preset(&preset, &cfg)
             .map_err(|e| format!("Failed to build preset snapshot: {}", e))?;
@@ -1236,7 +1284,10 @@ impl AgentLoop {
         self.apply_provider_snapshot(snapshot, true).await;
         *self._active_preset.lock().unwrap() = Some(preset_name.to_string());
 
-        Ok(format!("Switched to preset '{}': model={}", preset_name, preset.model))
+        Ok(format!(
+            "Switched to preset '{}': model={}",
+            preset_name, preset.model
+        ))
     }
 
     /// List available model presets as a comma-separated string.
@@ -1248,12 +1299,16 @@ impl AgentLoop {
 
     /// Get the current active model name.
     pub fn current_model(&self) -> String {
-        self.config.model.clone().unwrap_or_else(|| self.provider.default_model())
+        self.config
+            .model
+            .clone()
+            .unwrap_or_else(|| self.provider.default_model())
     }
 
     /// Get the current context window tokens.
     pub fn current_context_window(&self) -> u32 {
-        self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst)
+        self.context_window_tokens
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Register default tools via plugin loader.
@@ -1271,13 +1326,18 @@ impl AgentLoop {
     /// it spawns a background task so the agent loop can continue while
     /// connections are being set up.
     pub async fn connect_mcp(&self) {
-        if self._mcp_connected.load(std::sync::atomic::Ordering::SeqCst)
-            || self._mcp_connecting.load(std::sync::atomic::Ordering::SeqCst)
+        if self
+            ._mcp_connected
+            .load(std::sync::atomic::Ordering::SeqCst)
+            || self
+                ._mcp_connecting
+                .load(std::sync::atomic::Ordering::SeqCst)
             || self._mcp_servers.is_empty()
         {
             return;
         }
-        self._mcp_connecting.store(true, std::sync::atomic::Ordering::SeqCst);
+        self._mcp_connecting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let config_servers = self._mcp_servers.clone();
         let registry = self.tools.clone();
@@ -1513,7 +1573,9 @@ impl AgentLoop {
 
     /// Derive a token budget for session history replay from the context window.
     pub fn replay_token_budget(&self) -> u32 {
-        let ctx = self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst);
+        let ctx = self
+            .context_window_tokens
+            .load(std::sync::atomic::Ordering::SeqCst);
         if ctx == 0 {
             return 0;
         }
@@ -1553,7 +1615,10 @@ impl AgentLoop {
         );
         spec.workspace = Some(self.config.workspace.clone());
         spec.session_key = session_key.map(String::from);
-        spec.context_window_tokens = Some(self.context_window_tokens.load(std::sync::atomic::Ordering::SeqCst));
+        spec.context_window_tokens = Some(
+            self.context_window_tokens
+                .load(std::sync::atomic::Ordering::SeqCst),
+        );
         spec.provider_retry_mode = self.provider_retry_mode;
 
         // Bind file state store for this session (matches Python bind_file_states)
@@ -1590,10 +1655,14 @@ impl AgentLoop {
             msg,
             session_key: key.clone(),
             state: TurnState::Restore,
-            turn_id: format!("{}:{}", key, std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()),
+            turn_id: format!(
+                "{}:{}",
+                key,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ),
             session: None,
             history: Vec::new(),
             initial_messages: Vec::new(),
@@ -1692,7 +1761,10 @@ impl AgentLoop {
 
         let mut meta = msg.metadata.clone();
         if let Some(latency) = turn_latency_ms {
-            meta.insert("latency_ms".into(), Value::Number(serde_json::Number::from(latency)));
+            meta.insert(
+                "latency_ms".into(),
+                Value::Number(serde_json::Number::from(latency)),
+            );
         }
 
         Some(OutboundMessage {
@@ -1728,10 +1800,14 @@ impl AgentLoop {
             }
             let session = ctx.session.as_mut().unwrap();
             if self.restore_runtime_checkpoint(session) {
-                sessions.save(session.clone(), false).map_err(|e| e.to_string())?;
+                sessions
+                    .save(session.clone(), false)
+                    .map_err(|e| e.to_string())?;
             }
             if self.restore_pending_user_turn(session) {
-                sessions.save(session.clone(), false).map_err(|e| e.to_string())?;
+                sessions
+                    .save(session.clone(), false)
+                    .map_err(|e| e.to_string())?;
             }
         }
 
@@ -1785,10 +1861,8 @@ impl AgentLoop {
         if let Some(ref consolidator) = self.consolidator {
             let estimate = {
                 let c = consolidator.lock().await;
-                c.estimate_session_prompt_tokens(
-                    &ctx.session_key,
-                    ctx.history.len(),
-                ).await
+                c.estimate_session_prompt_tokens(&ctx.session_key, ctx.history.len())
+                    .await
             };
 
             let budget = self.replay_token_budget() as usize;
@@ -1812,7 +1886,11 @@ impl AgentLoop {
             &ctx.msg.channel,
             &ctx.msg.chat_id,
             ctx.msg.metadata.get("message_id").and_then(|v| v.as_str()),
-            &ctx.msg.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            &ctx.msg
+                .metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             Some(&ctx.session_key),
         );
 
@@ -1836,11 +1914,8 @@ impl AgentLoop {
         {
             let mut sessions = self.sessions.lock().await;
             let mut session = sessions.get_or_create(&ctx.session_key);
-            ctx.user_persisted_early = self.persist_user_message_early(
-                &ctx.msg,
-                &mut session,
-                HashMap::new(),
-            );
+            ctx.user_persisted_early =
+                self.persist_user_message_early(&ctx.msg, &mut session, HashMap::new());
         }
 
         Ok("ok".to_string())
@@ -1848,11 +1923,9 @@ impl AgentLoop {
 
     /// Run the agent loop.
     async fn state_run(&self, ctx: &mut TurnContext) -> Result<String, String> {
-        let result = self.run_agent_loop(
-            ctx.initial_messages.clone(),
-            Some(&ctx.session_key),
-            None,
-        ).await;
+        let result = self
+            .run_agent_loop(ctx.initial_messages.clone(), Some(&ctx.session_key), None)
+            .await;
 
         ctx.final_content = result.final_content.clone();
         ctx.tools_used = result.tools_used.clone();
@@ -1865,7 +1938,13 @@ impl AgentLoop {
 
     /// Save the turn to session history.
     async fn state_save(&self, ctx: &mut TurnContext) -> Result<String, String> {
-        if ctx.final_content.is_none() || ctx.final_content.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+        if ctx.final_content.is_none()
+            || ctx
+                .final_content
+                .as_ref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+        {
             ctx.final_content = Some("Sorry, I couldn't generate a response.".to_string());
         }
 
@@ -1877,7 +1956,8 @@ impl AgentLoop {
                 .unwrap_or_default()
                 .as_secs_f64()
                 - ctx.turn_wall_started_at)
-                .max(0.0) as u64 * 1000,
+                .max(0.0) as u64
+                * 1000,
         );
 
         {
@@ -1933,7 +2013,10 @@ impl AgentLoop {
         if msg.content.is_empty() {
             return false;
         }
-        let task_id = msg.metadata.get("subagent_task_id").and_then(|v| v.as_str());
+        let task_id = msg
+            .metadata
+            .get("subagent_task_id")
+            .and_then(|v| v.as_str());
         if let Some(tid) = task_id {
             let already_exists = session.messages.iter().any(|m| {
                 m.get("injected_event").and_then(|v| v.as_str()) == Some("subagent_result")
@@ -1945,7 +2028,10 @@ impl AgentLoop {
         }
         let mut extra: HashMap<String, Value> = HashMap::new();
         extra.insert("sender_id".into(), Value::String(msg.sender_id.clone()));
-        extra.insert("injected_event".into(), Value::String("subagent_result".into()));
+        extra.insert(
+            "injected_event".into(),
+            Value::String("subagent_result".into()),
+        );
         if let Some(tid) = task_id {
             extra.insert("subagent_task_id".into(), Value::String(tid.into()));
         }
@@ -1962,12 +2048,18 @@ impl AgentLoop {
     /// Takes [`Arc<Self>`] so spawned tasks can hold a reference to the loop
     /// for concurrent message processing.
     pub async fn run(self_arc: Arc<Self>) {
-        self_arc._running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self_arc
+            ._running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self_arc.connect_mcp().await;
         info!(
             "Agent loop running (workspace={}, model={})",
             self_arc.config.workspace.display(),
-            self_arc.config.model.as_deref().unwrap_or("<provider default>")
+            self_arc
+                .config
+                .model
+                .as_deref()
+                .unwrap_or("<provider default>")
         );
 
         let this = &*self_arc;
@@ -1988,7 +2080,12 @@ impl AgentLoop {
                     let effective_key = this.effective_session_key(&msg);
 
                     // If session has active pending queue, route there
-                    if this._pending_queues.lock().unwrap().contains_key(&effective_key) {
+                    if this
+                        ._pending_queues
+                        .lock()
+                        .unwrap()
+                        .contains_key(&effective_key)
+                    {
                         let _raw = raw;
                         let _effective_key = effective_key;
                         continue;
@@ -2132,8 +2229,35 @@ impl AgentLoop {
         spec.context_window_tokens = self.config.context_window_tokens;
         spec.provider_retry_mode = self.config.provider_retry_mode;
 
+        // Wire AgentContextSyncHook if AgentContext is configured
+        let agent_context_hook = self.agent_context.as_ref().map(|ctx| {
+            Arc::new(crate::context::AgentContextSyncHook::new(Arc::clone(ctx)))
+                as Arc<dyn crate::hook::AgentHook>
+        });
+        if let Some(ctx_hook) = &self.agent_context {
+            // Record user input in context before execution begins
+            let _ = ctx_hook.set_lifecycle_state(crate::context::LifecycleState::Active);
+        }
+
         let runner = self.runner.lock().unwrap().clone();
+        spec.hook = agent_context_hook;
         let result = runner.run(spec).await;
+
+        // Update lifecycle state based on execution outcome
+        if let Some(ctx) = &self.agent_context {
+            let final_state = if result.stop_reason == "tool_error" || result.error.is_some() {
+                crate::context::LifecycleState::Terminated
+            } else {
+                crate::context::LifecycleState::Completed
+            };
+            let _ = ctx.set_lifecycle_state(final_state);
+
+            // Store response payload if available
+            if let Some(ref content) = result.final_content {
+                let _ =
+                    ctx.set_response_payload(crate::context::ResponsePayload::new(content.clone()));
+            }
+        }
 
         // Record the exchange so subsequent turns see it.
         if let Some(_content) = result.final_content.clone() {
@@ -2280,17 +2404,15 @@ impl AgentLoop {
                 session.metadata.insert(k.clone(), v.clone());
             }
         }
-        session.metadata.insert(
-            RUNTIME_CHECKPOINT_KEY.to_string(),
-            payload,
-        );
+        session
+            .metadata
+            .insert(RUNTIME_CHECKPOINT_KEY.to_string(), payload);
     }
 
     fn mark_pending_user_turn(&self, session: &mut session::manager::Session) {
-        session.metadata.insert(
-            PENDING_USER_TURN_KEY.to_string(),
-            Value::Bool(true),
-        );
+        session
+            .metadata
+            .insert(PENDING_USER_TURN_KEY.to_string(), Value::Bool(true));
     }
 
     fn clear_pending_user_turn(&self, session: &mut session::manager::Session) {
@@ -2442,13 +2564,12 @@ impl AgentLoop {
             }
             if block_type == "text" {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    let text = if should_truncate_text
-                        && text.len() > self.config.max_tool_result_chars
-                    {
-                        truncate_text_fn(text, self.config.max_tool_result_chars)
-                    } else {
-                        text.to_string()
-                    };
+                    let text =
+                        if should_truncate_text && text.len() > self.config.max_tool_result_chars {
+                            truncate_text_fn(text, self.config.max_tool_result_chars)
+                        } else {
+                            text.to_string()
+                        };
                     let mut clone = block.clone();
                     if let Value::Object(ref mut m) = clone {
                         m.insert("text".into(), Value::String(text));
@@ -2492,11 +2613,8 @@ impl AgentLoop {
                     }
                 }
                 if let Some(Value::Array(blocks)) = content {
-                    let sanitized = self.sanitize_persisted_blocks(
-                        &Value::Array(blocks.clone()),
-                        true,
-                        false,
-                    );
+                    let sanitized =
+                        self.sanitize_persisted_blocks(&Value::Array(blocks.clone()), true, false);
                     if sanitized.is_none() && !has_tool_calls {
                         continue;
                     }
@@ -2512,18 +2630,14 @@ impl AgentLoop {
                 let mut entry = m.clone();
                 if let Some(Value::String(s)) = content {
                     if s.len() > self.config.max_tool_result_chars {
-                        let truncated =
-                            truncate_text_fn(s, self.config.max_tool_result_chars);
+                        let truncated = truncate_text_fn(s, self.config.max_tool_result_chars);
                         if let Value::Object(ref mut obj) = entry {
                             obj.insert("content".into(), Value::String(truncated));
                         }
                     }
                 } else if let Some(Value::Array(_)) = content {
-                    let sanitized = self.sanitize_persisted_blocks(
-                        content.as_ref().unwrap(),
-                        true,
-                        false,
-                    );
+                    let sanitized =
+                        self.sanitize_persisted_blocks(content.as_ref().unwrap(), true, false);
                     if sanitized.is_none() {
                         continue;
                     }
@@ -2589,24 +2703,32 @@ impl AgentLoop {
         }
         let handles = {
             let mut stacks = self._mcp_stacks.lock().unwrap();
-            stacks.drain().map(|(name, h)| (name, h)).collect::<Vec<_>>()
+            stacks
+                .drain()
+                .map(|(name, h)| (name, h))
+                .collect::<Vec<_>>()
         };
         for (name, handle) in handles {
             info!("Shutting down MCP server '{}'", name);
             handle.shutdown();
         }
-        self._mcp_connected.store(false, std::sync::atomic::Ordering::SeqCst);
+        self._mcp_connected
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Schedule a coroutine as a tracked background task.
-    pub fn schedule_background(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+    pub fn schedule_background(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
         let handle = tokio::spawn(future);
         self._background_tasks.lock().unwrap().push(handle);
     }
 
     /// Stop the agent loop.
     pub fn stop(&self) {
-        self._running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self._running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         info!("Agent loop stopping");
     }
 
@@ -2647,7 +2769,10 @@ impl AgentLoop {
             &channel,
             &chat_id,
             msg.metadata.get("message_id").and_then(|v| v.as_str()),
-            &msg.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            &msg.metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             session_key.as_deref(),
         );
 
@@ -2670,13 +2795,11 @@ impl AgentLoop {
             None,
         );
 
-        let result = self.run_agent_loop(
-            messages,
-            Some(&key),
-            None,
-        ).await;
+        let result = self.run_agent_loop(messages, Some(&key), None).await;
 
-        let final_content = result.final_content.unwrap_or_else(|| "Background task completed.".to_string());
+        let final_content = result
+            .final_content
+            .unwrap_or_else(|| "Background task completed.".to_string());
 
         let mut outbound_metadata: HashMap<String, Value> = HashMap::new();
         if let Some(origin_id) = msg.metadata.get("origin_message_id") {
@@ -2747,7 +2870,16 @@ fn find_message_overlap(existing: &[Value], restored: &[Value]) -> usize {
     0
 }
 
-fn message_key(msg: &Value) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>, Option<&Value>, Option<&Value>) {
+fn message_key(
+    msg: &Value,
+) -> (
+    Option<&str>,
+    Option<&str>,
+    Option<&str>,
+    Option<&str>,
+    Option<&Value>,
+    Option<&Value>,
+) {
     (
         msg.get("role").and_then(|v| v.as_str()),
         msg.get("content").and_then(|v| v.as_str()),

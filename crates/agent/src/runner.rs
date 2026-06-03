@@ -25,8 +25,8 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use utils::file_edit_events::StreamingFileEditTracker;
 use utils::helpers::{
-    build_assistant_message, estimate_message_tokens, estimate_prompt_tokens,
-    extract_reasoning, extract_think, find_legal_message_start, IncrementalThinkExtractor,
+    IncrementalThinkExtractor, build_assistant_message, estimate_message_tokens,
+    estimate_prompt_tokens, extract_reasoning, extract_think, find_legal_message_start,
     maybe_persist_tool_result, strip_think, truncate_text,
 };
 use utils::progress_events::on_progress_accepts_file_edit_events;
@@ -40,8 +40,10 @@ use crate::tools::ToolRegistry;
 
 const DEFAULT_ERROR_MESSAGE: &str = "Sorry, I encountered an error calling the AI model.";
 const EMPTY_FINAL_RESPONSE_MESSAGE: &str = "(No response from model)";
-const FINALIZATION_RETRY_MESSAGE: &str = "Your last response appeared to be empty. Please provide your answer.";
-const LENGTH_RECOVERY_MESSAGE: &str = "Your response was truncated. Please continue from where you left off.";
+const FINALIZATION_RETRY_MESSAGE: &str =
+    "Your last response appeared to be empty. Please provide your answer.";
+const LENGTH_RECOVERY_MESSAGE: &str =
+    "Your response was truncated. Please continue from where you left off.";
 const MAX_EMPTY_RETRIES: u32 = 2;
 const MAX_LENGTH_RECOVERIES: u32 = 3;
 const MAX_REPEAT_WORKSPACE_VIOLATIONS: u32 = 2;
@@ -51,23 +53,26 @@ const SNIP_SAFETY_BUFFER: usize = 1024;
 const MICROCOMPACT_KEEP_RECENT: usize = 10;
 const MICROCOMPACT_MIN_CHARS: usize = 500;
 const BACKFILL_CONTENT: &str = "[Tool result unavailable — call was interrupted or lost]";
-const COMPACTABLE_TOOLS: &[&str] = &["read_file", "exec", "grep", "web_search", "web_fetch", "list_dir"];
+const COMPACTABLE_TOOLS: &[&str] = &[
+    "read_file",
+    "exec",
+    "grep",
+    "web_search",
+    "web_fetch",
+    "list_dir",
+];
 
 /// Callback invoked at iteration checkpoints (awaiting_tools / tools_completed / ...).
-pub type CheckpointCallback =
-    Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type CheckpointCallback = Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Callback invoked when the runner wants to drain pending user injections.
-pub type InjectionCallback =
-    Arc<dyn Fn(usize) -> BoxFuture<'static, Vec<Value>> + Send + Sync>;
+pub type InjectionCallback = Arc<dyn Fn(usize) -> BoxFuture<'static, Vec<Value>> + Send + Sync>;
 
 /// Callback invoked with progress updates (status messages, tool execution info).
-pub type ProgressCallback =
-    Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type ProgressCallback = Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Callback invoked when the runner is waiting between retries (rate limits, etc).
-pub type RetryWaitCallback =
-    Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type RetryWaitCallback = Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Configuration for a single agent execution.
 #[derive(Clone)]
@@ -194,7 +199,10 @@ impl AgentRunner {
                     }
                 }
                 if role == "tool" {
-                    let tid = msg.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
+                    let tid = msg
+                        .get("tool_call_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
                     if !tid.is_empty() && !declared.contains(tid) {
                         if updated.is_none() {
                             updated = Some(messages[..idx].iter().map(|m| m.clone()).collect());
@@ -280,7 +288,10 @@ impl AgentRunner {
             .iter()
             .enumerate()
             .filter(|(_, msg)| {
-                match (msg.get("role").and_then(Value::as_str), msg.get("name").and_then(Value::as_str)) {
+                match (
+                    msg.get("role").and_then(Value::as_str),
+                    msg.get("name").and_then(Value::as_str),
+                ) {
                     (Some("tool"), Some(name)) => COMPACTABLE_TOOLS.contains(&name),
                     _ => false,
                 }
@@ -292,15 +303,22 @@ impl AgentRunner {
             return messages;
         }
 
-        let stale_indices = &compactable_indices[..compactable_indices.len() - MICROCOMPACT_KEEP_RECENT];
+        let stale_indices =
+            &compactable_indices[..compactable_indices.len() - MICROCOMPACT_KEEP_RECENT];
         let mut updated: Option<Vec<Value>> = None;
 
         for &idx in stale_indices {
-            let content = messages[idx].get("content").and_then(Value::as_str).unwrap_or("");
+            let content = messages[idx]
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             if content.len() < MICROCOMPACT_MIN_CHARS {
                 continue;
             }
-            let name = messages[idx].get("name").and_then(Value::as_str).unwrap_or("tool");
+            let name = messages[idx]
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
             let summary = format!("[{} result omitted from context]", name);
             let u = updated.get_or_insert_with(|| messages.clone());
             u[idx] = serde_json::json!({
@@ -326,7 +344,11 @@ impl AgentRunner {
                 .and_then(Value::as_str)
                 .unwrap_or(&format!("tool_{}", idx))
                 .to_string();
-            let tool_name = msg.get("name").and_then(Value::as_str).unwrap_or("tool").to_string();
+            let tool_name = msg
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
             let content = msg.get("content").cloned().unwrap_or(Value::Null);
 
             let normalized = normalize_tool_result(spec, &tool_call_id, &tool_name, content);
@@ -352,15 +374,15 @@ impl AgentRunner {
             _ => return messages,
         };
 
-        let provider_max: u32 = spec
-            .max_tokens
-            .unwrap_or_else(|| {
-                // Fallback — provider generation max_tokens not directly accessible here
-                4096
-            });
+        let provider_max: u32 = spec.max_tokens.unwrap_or_else(|| {
+            // Fallback — provider generation max_tokens not directly accessible here
+            4096
+        });
 
         let budget = spec.context_block_limit.unwrap_or_else(|| {
-            context_window.saturating_sub(provider_max).saturating_sub(SNIP_SAFETY_BUFFER as u32)
+            context_window
+                .saturating_sub(provider_max)
+                .saturating_sub(SNIP_SAFETY_BUFFER as u32)
         });
 
         if budget == 0 {
@@ -388,7 +410,8 @@ impl AgentRunner {
         }
 
         let system_tokens: usize = system.iter().map(|m| estimate_message_tokens(m)).sum();
-        let remaining_budget: usize = std::cmp::max(128, budget as usize).saturating_sub(system_tokens);
+        let remaining_budget: usize =
+            std::cmp::max(128, budget as usize).saturating_sub(system_tokens);
 
         let mut kept: Vec<Value> = Vec::new();
         let mut kept_tokens = 0;
@@ -405,7 +428,9 @@ impl AgentRunner {
 
         // Ensure we start with a user message (GLM rejects system→assistant)
         if !kept.is_empty() {
-            let first_user = kept.iter().position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+            let first_user = kept
+                .iter()
+                .position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
             if let Some(i) = first_user {
                 kept = kept[i..].to_vec();
             } else {
@@ -451,10 +476,8 @@ impl AgentRunner {
             {
                 // Merge with last user message
                 let last = messages[msg_len - 1].clone();
-                let merged_content = merge_message_content(
-                    last.get("content"),
-                    injection.get("content"),
-                );
+                let merged_content =
+                    merge_message_content(last.get("content"), injection.get("content"));
                 if let Value::Object(ref mut obj) = messages[msg_len - 1] {
                     obj.insert("content".into(), merged_content);
                 }
@@ -580,20 +603,21 @@ impl AgentRunner {
     // ========================================================================
 
     pub async fn run(&self, spec: AgentRunSpec) -> AgentRunResult {
-        let hook: Arc<dyn AgentHook> = spec
-            .hook
-            .clone()
-            .unwrap_or_else(|| Arc::new(NoopHook));
+        let hook: Arc<dyn AgentHook> = spec.hook.clone().unwrap_or_else(|| Arc::new(NoopHook));
         let mut messages = spec.initial_messages.clone();
         let mut final_content: Option<String> = None;
         let mut tools_used: Vec<String> = Vec::new();
-        let mut usage: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::from([("prompt_tokens".into(), 0), ("completion_tokens".into(), 0)]);
+        let mut usage: std::collections::HashMap<String, i64> = std::collections::HashMap::from([
+            ("prompt_tokens".into(), 0),
+            ("completion_tokens".into(), 0),
+        ]);
         let mut error: Option<String> = None;
         let mut stop_reason: String = "completed".into();
         let mut tool_events: Vec<ToolEvent> = Vec::new();
-        let mut external_lookup_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-        let mut workspace_violation_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut external_lookup_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+        let mut workspace_violation_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut empty_retries: u32 = 0;
         let mut length_recoveries: u32 = 0;
         let mut had_injections = false;
@@ -664,7 +688,11 @@ impl AgentRunner {
 
                 // Publish progress update: tools about to execute
                 if let Some(ref progress_cb) = spec.progress_callback {
-                    let tool_names: Vec<String> = response.tool_calls.iter().map(|tc| tc.name.clone()).collect();
+                    let tool_names: Vec<String> = response
+                        .tool_calls
+                        .iter()
+                        .map(|tc| tc.name.clone())
+                        .collect();
                     let msg = format!("Executing: {}", tool_names.join(", "));
                     progress_cb(&msg).await;
                 }
@@ -684,7 +712,12 @@ impl AgentRunner {
 
                 hook.before_execute_tools(&mut ctx).await;
                 let (results, events, fatal) = self
-                    .execute_tools(&spec, &response.tool_calls, &mut external_lookup_counts, &mut workspace_violation_counts)
+                    .execute_tools(
+                        &spec,
+                        &response.tool_calls,
+                        &mut external_lookup_counts,
+                        &mut workspace_violation_counts,
+                    )
                     .await;
                 tool_events.extend(events.iter().cloned());
                 ctx.tool_events = events.clone();
@@ -713,9 +746,16 @@ impl AgentRunner {
                     ctx.stop_reason = Some(stop_reason.clone());
                     await_hook_after_iteration(&hook, &mut ctx).await;
 
-                    let (cont, cycles) = self.try_drain_injections(
-                        &spec, &mut messages, None, injection_cycles, None, &spec,
-                    ).await;
+                    let (cont, cycles) = self
+                        .try_drain_injections(
+                            &spec,
+                            &mut messages,
+                            None,
+                            injection_cycles,
+                            None,
+                            &spec,
+                        )
+                        .await;
                     injection_cycles = cycles;
                     if cont {
                         had_injections = true;
@@ -747,9 +787,9 @@ impl AgentRunner {
                 length_recoveries = 0;
 
                 // Checkpoint 1: drain injections after tools, before next LLM call
-                let (drained, cycles) = self.try_drain_injections(
-                    &spec, &mut messages, None, injection_cycles, None, &spec,
-                ).await;
+                let (drained, cycles) = self
+                    .try_drain_injections(&spec, &mut messages, None, injection_cycles, None, &spec)
+                    .await;
                 injection_cycles = cycles;
                 if drained {
                     had_injections = true;
@@ -808,11 +848,21 @@ impl AgentRunner {
                 ctx.tool_calls = retry_response.tool_calls.clone();
                 let retry_clean = hook.finalize_content(&mut ctx, retry_response.content.clone());
                 // Fall through with the retry content
-                return self.handle_final_content(
-                    &spec, &hook, messages, retry_clean, retry_response,
-                    empty_retries, length_recoveries, iteration as u32,
-                    injection_cycles, &mut had_injections, &mut usage,
-                ).await;
+                return self
+                    .handle_final_content(
+                        &spec,
+                        &hook,
+                        messages,
+                        retry_clean,
+                        retry_response,
+                        empty_retries,
+                        length_recoveries,
+                        iteration as u32,
+                        injection_cycles,
+                        &mut had_injections,
+                        &mut usage,
+                    )
+                    .await;
             }
 
             // Length recovery
@@ -839,11 +889,21 @@ impl AgentRunner {
             }
 
             // Final content processing (delegated)
-            return self.handle_final_content(
-                &spec, &hook, messages, clean, response,
-                empty_retries, length_recoveries, iteration as u32,
-                injection_cycles, &mut had_injections, &mut usage,
-            ).await;
+            return self
+                .handle_final_content(
+                    &spec,
+                    &hook,
+                    messages,
+                    clean,
+                    response,
+                    empty_retries,
+                    length_recoveries,
+                    iteration as u32,
+                    injection_cycles,
+                    &mut had_injections,
+                    &mut usage,
+                )
+                .await;
         }
 
         // Max iterations reached
@@ -858,9 +918,9 @@ impl AgentRunner {
             append_final_message(&mut messages, final_content.as_deref());
 
             // Drain injections so they are appended instead of re-published
-            let _ = self.try_drain_injections(
-                &spec, &mut messages, None, injection_cycles, None, &spec,
-            ).await;
+            let _ = self
+                .try_drain_injections(&spec, &mut messages, None, injection_cycles, None, &spec)
+                .await;
             had_injections = true;
         }
 
@@ -910,17 +970,24 @@ impl AgentRunner {
             None
         };
 
-        let (should_continue, cycles) = self.try_drain_injections(
-            spec, &mut messages, assistant_msg.clone(), injection_cycles,
-            None, spec,
-        ).await;
+        let (should_continue, cycles) = self
+            .try_drain_injections(
+                spec,
+                &mut messages,
+                assistant_msg.clone(),
+                injection_cycles,
+                None,
+                spec,
+            )
+            .await;
         injection_cycles = cycles;
         if should_continue {
             *had_injections = true;
         }
 
         if hook.wants_streaming() {
-            hook.on_stream_end(&mut AgentHookContext::default(), should_continue).await;
+            hook.on_stream_end(&mut AgentHookContext::default(), should_continue)
+                .await;
         }
 
         if should_continue {
@@ -943,7 +1010,9 @@ impl AgentRunner {
 
         if response.finish_reason == "error" {
             let fc = clean.unwrap_or_else(|| {
-                spec.error_message.clone().unwrap_or_else(|| DEFAULT_ERROR_MESSAGE.to_string())
+                spec.error_message
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_ERROR_MESSAGE.to_string())
             });
             stop_reason = "error".into();
             final_content = Some(fc.clone());
@@ -958,9 +1027,9 @@ impl AgentRunner {
             };
             await_hook_after_iteration(hook, &mut ctx).await;
 
-            let (cont, cycles) = self.try_drain_injections(
-                spec, &mut messages, None, injection_cycles, None, spec,
-            ).await;
+            let (cont, cycles) = self
+                .try_drain_injections(spec, &mut messages, None, injection_cycles, None, spec)
+                .await;
             injection_cycles = cycles;
             if cont {
                 *had_injections = true;
@@ -992,9 +1061,9 @@ impl AgentRunner {
             };
             await_hook_after_iteration(hook, &mut ctx).await;
 
-            let (cont, cycles) = self.try_drain_injections(
-                spec, &mut messages, None, injection_cycles, None, spec,
-            ).await;
+            let (cont, cycles) = self
+                .try_drain_injections(spec, &mut messages, None, injection_cycles, None, spec)
+                .await;
             injection_cycles = cycles;
             if cont {
                 *had_injections = true;
@@ -1077,14 +1146,13 @@ impl AgentRunner {
         };
 
         let wants_streaming = hook.wants_streaming();
-        let wants_progress_streaming = !wants_streaming
-            && spec.stream_progress_deltas
-            && spec.progress_callback.is_some();
+        let wants_progress_streaming =
+            !wants_streaming && spec.stream_progress_deltas && spec.progress_callback.is_some();
 
         // Check if we should emit file edit progress events (matches Python
         // on_progress_accepts_file_edit_events check)
-        let emit_file_edit_events = spec.progress_callback.is_some()
-            && on_progress_accepts_file_edit_events();
+        let emit_file_edit_events =
+            spec.progress_callback.is_some() && on_progress_accepts_file_edit_events();
 
         if wants_streaming || wants_progress_streaming {
             let accumulator: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -1097,32 +1165,32 @@ impl AgentRunner {
             let reasoning_tx_for_progress = reasoning_tx.clone();
 
             // Set up file edit tracker if we're emitting file edit events
-            let live_file_edits: Option<Arc<tokio::sync::Mutex<StreamingFileEditTracker>>> = if emit_file_edit_events {
-                let progress_cb = spec.progress_callback.clone().unwrap();
-                let workspace = spec.workspace.clone();
-                // The emit callback serializes file edit events to JSON and
-                // sends them through the progress_callback (matches Python
-                // invoke_file_edit_progress pattern).
-                let emit_fn = Arc::new(move |events: Vec<serde_json::Value>| {
-                    let cb = progress_cb.clone();
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    tokio::spawn(async move {
-                        for event in events {
-                            if let Ok(json) = serde_json::to_string(&event) {
-                                cb(&json).await;
+            let live_file_edits: Option<Arc<tokio::sync::Mutex<StreamingFileEditTracker>>> =
+                if emit_file_edit_events {
+                    let progress_cb = spec.progress_callback.clone().unwrap();
+                    let workspace = spec.workspace.clone();
+                    // The emit callback serializes file edit events to JSON and
+                    // sends them through the progress_callback (matches Python
+                    // invoke_file_edit_progress pattern).
+                    let emit_fn = Arc::new(move |events: Vec<serde_json::Value>| {
+                        let cb = progress_cb.clone();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        tokio::spawn(async move {
+                            for event in events {
+                                if let Ok(json) = serde_json::to_string(&event) {
+                                    cb(&json).await;
+                                }
                             }
-                        }
-                        let _ = tx.send(());
+                            let _ = tx.send(());
+                        });
+                        rx
                     });
-                    rx
-                });
-                Some(Arc::new(tokio::sync::Mutex::new(StreamingFileEditTracker::new(
-                    workspace,
-                    emit_fn,
-                ))))
-            } else {
-                None
-            };
+                    Some(Arc::new(tokio::sync::Mutex::new(
+                        StreamingFileEditTracker::new(workspace, emit_fn),
+                    )))
+                } else {
+                    None
+                };
 
             let acc_ref = accumulator.clone();
             let think_acc_ref = thinking_accumulator.clone();
@@ -1146,19 +1214,22 @@ impl AgentRunner {
             });
 
             // Set up tool call delta callback for file edit tracking
-            let on_tool_call_delta: Option<providers::base::ToolCallDeltaCallback> = if emit_file_edit_events {
-                let file_edits_ref = live_file_edits.clone().unwrap();
-                Some(Arc::new(move |delta: serde_json::Map<String, serde_json::Value>| {
-                    let edits = file_edits_ref.clone();
-                    let event = serde_json::Value::Object(delta);
-                    tokio::spawn(async move {
-                        let tracker = edits.lock().await;
-                        let _ = tracker.update(&event).await;
-                    });
-                }))
-            } else {
-                None
-            };
+            let on_tool_call_delta: Option<providers::base::ToolCallDeltaCallback> =
+                if emit_file_edit_events {
+                    let file_edits_ref = live_file_edits.clone().unwrap();
+                    Some(Arc::new(
+                        move |delta: serde_json::Map<String, serde_json::Value>| {
+                            let edits = file_edits_ref.clone();
+                            let event = serde_json::Value::Object(delta);
+                            tokio::spawn(async move {
+                                let tracker = edits.lock().await;
+                                let _ = tracker.update(&event).await;
+                            });
+                        },
+                    ))
+                } else {
+                    None
+                };
 
             let stream_future = self.provider.chat_stream_with_retry(
                 req,
@@ -1201,12 +1272,16 @@ impl AgentRunner {
                     let tracker = edits.lock().await;
                     tracker.flush().await;
                     if response.should_execute_tools() {
-                        let tool_call_values: Vec<serde_json::Value> = response.tool_calls.iter()
-                            .map(|tc| serde_json::json!({
-                                "id": tc.id,
-                                "name": tc.name,
-                                "arguments": tc.arguments,
-                            }))
+                        let tool_call_values: Vec<serde_json::Value> = response
+                            .tool_calls
+                            .iter()
+                            .map(|tc| {
+                                serde_json::json!({
+                                    "id": tc.id,
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                })
+                            })
                             .collect();
                         tracker.apply_final_call_ids(&tool_call_values).await;
                     } else {
@@ -1293,12 +1368,16 @@ impl AgentRunner {
                     let tracker = edits.lock().await;
                     tracker.flush().await;
                     if response.should_execute_tools() {
-                        let tool_call_values: Vec<serde_json::Value> = response.tool_calls.iter()
-                            .map(|tc| serde_json::json!({
-                                "id": tc.id,
-                                "name": tc.name,
-                                "arguments": tc.arguments,
-                            }))
+                        let tool_call_values: Vec<serde_json::Value> = response
+                            .tool_calls
+                            .iter()
+                            .map(|tc| {
+                                serde_json::json!({
+                                    "id": tc.id,
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                })
+                            })
                             .collect();
                         tracker.apply_final_call_ids(&tool_call_values).await;
                     } else {
@@ -1317,7 +1396,11 @@ impl AgentRunner {
 
             let mut response = response;
             if response.content.is_none()
-                || response.content.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                || response
+                    .content
+                    .as_ref()
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true)
             {
                 response.content = if content_empty {
                     None
@@ -1344,7 +1427,8 @@ impl AgentRunner {
             let timeout_dur = std::time::Duration::from_secs_f64(timeout_s);
             timeout(
                 timeout_dur,
-                self.provider.chat_with_retry(req, spec.provider_retry_mode, None, None),
+                self.provider
+                    .chat_with_retry(req, spec.provider_retry_mode, None, None),
             )
             .await
             .unwrap_or_else(|_| LLMResponse::error("LLM request timed out"))
@@ -1393,11 +1477,9 @@ impl AgentRunner {
     ) -> (Value, ToolEvent, Option<String>) {
         let hint = "\n\n[Analyze the error above and try a different approach.]";
         let args_value = Value::Object(tc.arguments.clone());
-        if let Some(err) = repeated_external_lookup_error(
-            &tc.name,
-            &args_value,
-            external_lookup_counts,
-        ) {
+        if let Some(err) =
+            repeated_external_lookup_error(&tc.name, &args_value, external_lookup_counts)
+        {
             return (
                 Value::String(format!("{}{}", err, hint)),
                 ToolEvent {
@@ -1409,10 +1491,7 @@ impl AgentRunner {
             );
         }
         let _ = external_lookup_signature(&tc.name, &args_value);
-        let result = spec
-            .tools
-            .execute(&tc.name, args_value)
-            .await;
+        let result = spec.tools.execute(&tc.name, args_value).await;
         let raw_result = match &result {
             Value::String(s) => s.clone(),
             other => other.to_string(),
@@ -1425,25 +1504,33 @@ impl AgentRunner {
             detail,
         };
         if is_error {
-                if let Some((payload, evt, fatal_opt)) = self.classify_violation(
-                    &raw_result,
-                    &raw_result,
-                    &mut event,
-                    tc,
-                    workspace_violation_counts,
-                ) {
-                    if let Some(f) = &fatal_opt {
-                        if spec.fail_on_tool_error {
-                            return (payload.clone(), evt, Some(f.clone()));
-                        }
+            if let Some((payload, evt, fatal_opt)) = self.classify_violation(
+                &raw_result,
+                &raw_result,
+                &mut event,
+                tc,
+                workspace_violation_counts,
+            ) {
+                if let Some(f) = &fatal_opt {
+                    if spec.fail_on_tool_error {
+                        return (payload.clone(), evt, Some(f.clone()));
                     }
-                    return (payload, evt, None);
                 }
-                if spec.fail_on_tool_error {
-                    return (Value::String(format!("{}{}", raw_result, hint)), event, Some(raw_result.clone()));
-                }
-                return (Value::String(format!("{}{}", raw_result, hint)), event, None);
+                return (payload, evt, None);
             }
+            if spec.fail_on_tool_error {
+                return (
+                    Value::String(format!("{}{}", raw_result, hint)),
+                    event,
+                    Some(raw_result.clone()),
+                );
+            }
+            return (
+                Value::String(format!("{}{}", raw_result, hint)),
+                event,
+                None,
+            );
+        }
         (result, event, None)
     }
 
@@ -1468,12 +1555,14 @@ impl AgentRunner {
                     let spec_ref = spec.clone();
                     let tc_clone = tc.clone();
                     futures.push(async move {
-                        self_ref.execute_single_tool(
-                            &spec_ref,
-                            &tc_clone,
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                        ).await
+                        self_ref
+                            .execute_single_tool(
+                                &spec_ref,
+                                &tc_clone,
+                                &mut HashMap::new(),
+                                &mut HashMap::new(),
+                            )
+                            .await
                     });
                 }
                 let batch_results = futures::future::join_all(futures).await;
@@ -1487,9 +1576,14 @@ impl AgentRunner {
             } else {
                 // Sequential execution
                 for tc in &batch {
-                    let (result, event, fatal_opt) = self.execute_single_tool(
-                        spec, tc, external_lookup_counts, workspace_violation_counts,
-                    ).await;
+                    let (result, event, fatal_opt) = self
+                        .execute_single_tool(
+                            spec,
+                            tc,
+                            external_lookup_counts,
+                            workspace_violation_counts,
+                        )
+                        .await;
                     if let Some(f) = fatal_opt {
                         fatal = Some(f);
                         results.push(result);
@@ -1566,14 +1660,20 @@ fn to_blocks(val: Value) -> Vec<Value> {
                 if item.is_object() {
                     item
                 } else {
-                    let s = item.as_str().map(String::from).unwrap_or_else(|| item.to_string());
+                    let s = item
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| item.to_string());
                     serde_json::json!({"type":"text","text":s})
                 }
             })
             .collect(),
         Value::Null => Vec::new(),
         other => {
-            let s = other.as_str().map(String::from).unwrap_or_else(|| other.to_string());
+            let s = other
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| other.to_string());
             vec![serde_json::json!({"type":"text","text":s})]
         }
     }
@@ -1588,7 +1688,10 @@ fn append_model_error_placeholder(messages: &mut Vec<Value>) {
     // message without tool_calls (matches Python _append_model_error_placeholder)
     if let Some(last) = messages.last() {
         if last.get("role").and_then(Value::as_str) == Some("assistant")
-            && !last.get("tool_calls").map(|v| !v.is_null()).unwrap_or(false)
+            && !last
+                .get("tool_calls")
+                .map(|v| !v.is_null())
+                .unwrap_or(false)
         {
             return;
         }
@@ -1669,7 +1772,9 @@ impl AgentRunner {
         if Self::is_ssrf_violation(&lowered) {
             return true;
         }
-        WORKSPACE_VIOLATION_MARKERS.iter().any(|m| lowered.contains(m))
+        WORKSPACE_VIOLATION_MARKERS
+            .iter()
+            .any(|m| lowered.contains(m))
     }
 
     fn classify_violation(
@@ -1684,7 +1789,12 @@ impl AgentRunner {
             warn!(
                 "Tool {} blocked by SSRF guard; returning non-retryable tool error: {}",
                 tool_call.name,
-                raw_text.replace('\n', " ").trim().chars().take(200).collect::<String>(),
+                raw_text
+                    .replace('\n', " ")
+                    .trim()
+                    .chars()
+                    .take(200)
+                    .collect::<String>(),
             );
             event.detail = Self::event_detail("ssrf_violation: ", raw_text, 160);
             let payload = Self::ssrf_soft_payload(raw_text);
@@ -1785,7 +1895,10 @@ fn repeated_workspace_violation_error(
         &signature[..signature.len().min(160)],
         count,
     );
-    let target = signature.splitn(2, "violation:").nth(1).unwrap_or(&signature);
+    let target = signature
+        .splitn(2, "violation:")
+        .nth(1)
+        .unwrap_or(&signature);
     Some(format!(
         "Error: refusing repeated workspace-bypass attempts.\n\
          You have tried to access '{}' (or an equivalent path) \

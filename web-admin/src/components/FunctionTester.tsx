@@ -156,6 +156,8 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ output: unknown; elapsed_ms: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 是否展开 UserInput 上下文配置 */
+  const [showContext, setShowContext] = useState(false);
 
   const { fields, primitiveType } = useMemo(
     () => parseSchemaFields(functionItem.input_schema),
@@ -169,9 +171,27 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
       setError(null);
       setResult(null);
 
-      // 非 object 顶级 schema：取虚拟字段的裸值；object schema：整体对象
-      const input = primitiveType ? values[PRIMITIVE_INPUT_KEY] : values;
-      const resp = await invokeFunction(functionItem.id, { input });
+      // 非 object 顶级 schema：取虚拟字段的裸值；object schema：整体对象（去掉 _ctx_ 前缀的上下文键）
+      const input = primitiveType
+        ? values[PRIMITIVE_INPUT_KEY]
+        : Object.fromEntries(
+            Object.entries(values).filter(([k]) => !k.startsWith('_ctx_')),
+          );
+
+      // 提取 UserInput 上下文字段
+      const user_input =
+        values._ctx_raw_text || values._ctx_actor_id || values._ctx_channel ||
+        values._ctx_platform || values._ctx_app_version
+          ? {
+              raw_text: values._ctx_raw_text || undefined,
+              actor_id: values._ctx_actor_id || undefined,
+              channel: values._ctx_channel || undefined,
+              platform: values._ctx_platform || undefined,
+              app_version: values._ctx_app_version || undefined,
+            }
+          : undefined;
+
+      const resp = await invokeFunction(functionItem.id, { input, user_input });
       setResult({ output: resp.output, elapsed_ms: resp.elapsed_ms });
       void message.success(`调用成功 (${resp.elapsed_ms}ms)`);
     } catch (e: unknown) {
@@ -200,6 +220,7 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
     form.resetFields();
     setResult(null);
     setError(null);
+    setShowContext(false);
   };
 
   return (
@@ -248,6 +269,106 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
             <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
               输入类型：{primitiveType}
             </Text>
+          )}
+        </div>
+
+        {/* UserInput 上下文配置（可选，用于依赖 AgentContext 的函数） */}
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 8,
+              cursor: 'pointer',
+            }}
+            onClick={() => setShowContext(!showContext)}
+          >
+            <Text strong>UserInput 上下文（可选）：</Text>
+            <Button size="small" type="link">
+              {showContext ? '收起 ▲' : '展开 ▼'}
+            </Button>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              用于依赖用户上下文的函数（如 query_balance 需要 actor_id）
+            </Text>
+          </div>
+          {showContext && (
+            <div
+              style={{
+                border: '1px solid #d9d9d9',
+                borderRadius: 6,
+                padding: '12px 16px',
+                background: '#fafafa',
+              }}
+            >
+              <Form form={form} layout="vertical" size="small">
+                <Form.Item
+                  name="_ctx_raw_text"
+                  label={
+                    <span>
+                      raw_text
+                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        用户原始输入文本
+                      </Text>
+                    </span>
+                  }
+                >
+                  <Input placeholder="例如：帮我查一下余额" />
+                </Form.Item>
+                <Form.Item
+                  name="_ctx_actor_id"
+                  label={
+                    <span>
+                      actor_id
+                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        用户/玩家 ID
+                      </Text>
+                    </span>
+                  }
+                >
+                  <Input placeholder="例如：10086" />
+                </Form.Item>
+                <Form.Item
+                  name="_ctx_channel"
+                  label={
+                    <span>
+                      channel
+                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        来源渠道
+                      </Text>
+                    </span>
+                  }
+                >
+                  <Input placeholder="例如：weixin / qq" />
+                </Form.Item>
+                <Form.Item
+                  name="_ctx_platform"
+                  label={
+                    <span>
+                      platform
+                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        平台
+                      </Text>
+                    </span>
+                  }
+                >
+                  <Input placeholder="例如：ios / android" />
+                </Form.Item>
+                <Form.Item
+                  name="_ctx_app_version"
+                  label={
+                    <span>
+                      app_version
+                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        应用版本
+                      </Text>
+                    </span>
+                  }
+                >
+                  <Input placeholder="例如：3.2.1" />
+                </Form.Item>
+              </Form>
+            </div>
           )}
         </div>
 

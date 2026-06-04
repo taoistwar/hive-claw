@@ -512,7 +512,7 @@ pub(crate) fn inject_agent_context_snapshot(input: &mut Value, agent_ctx: &Agent
             .collect::<Vec<_>>(),
         "extensions": agent_ctx.get_extensions()
             .iter()
-            .map(|e| e.to_api_value())
+            .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
             .collect::<Vec<_>>(),
     });
 
@@ -590,7 +590,12 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 "object_ref" => ExtensionType::ObjectRef,
                 _ => ExtensionType::Card,
             };
-            let content = ExtensionContent::new(content_type, ext.clone());
+            let content = ExtensionContent::new(
+                id.to_string(),
+                content_type,
+                ext.get("reply").cloned(),
+                ext.clone(),
+            );
             if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
                 tracing::warn!("Failed to apply _agent_context_updates extension: {e}");
             }

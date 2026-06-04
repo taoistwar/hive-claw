@@ -636,7 +636,7 @@ async fn run_session_internal_impl<T>(
         let exts = agent_ctx.get_extensions();
         if !exts.is_empty() {
             let exts_payload = json!({
-                "extensions": exts.iter().map(|e| e.to_api_value()).collect::<Vec<_>>(),
+                "extensions": exts.iter().map(|e| serde_json::to_value(e).unwrap_or(Value::Null)).collect::<Vec<_>>(),
             });
             let _ = tx.send(Ok(Event::default()
                 .event("extensions")

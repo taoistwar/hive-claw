@@ -104,6 +104,14 @@ export async function deleteFunction(id: number): Promise<void> {
 export interface InvokeFunctionRequest {
   input: unknown;
   agent_id?: number;
+  /** 可选的用户上下文，用于依赖 AgentContext 的函数（如 query_balance） */
+  user_input?: {
+    raw_text?: string;
+    actor_id?: string;
+    channel?: string;
+    platform?: string;
+    app_version?: string;
+  };
 }
 
 export interface InvokeFunctionResponse {

@@ -9,9 +9,13 @@ use axum::{
     extract::{Path, State},
     routing::{get, post},
 };
+use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use agent::context::{AgentContext, ContextConfig, UserInput};
 
 use crate::api::AppState;
 use crate::runtime::capability::DispatchCtx;
@@ -42,10 +46,30 @@ pub struct InvokeBody {
     /// 当前调用 Agent；用于 Capability 鉴权（默认 main agent id=1）
     #[serde(default = "default_agent_id")]
     pub agent_id: i64,
+    /// 可选的用户上下文，用于依赖 AgentContext 的函数（如 query_balance）
+    /// 当提供时，后台会构建 AgentContext 注入到函数执行中
+    #[serde(default)]
+    pub user_input: Option<InvokeUserInput>,
 }
 
 fn default_agent_id() -> i64 {
     1
+}
+
+/// 测试/调试时由前端配置的 UserInput 字段
+#[derive(Debug, serde::Deserialize)]
+pub struct InvokeUserInput {
+    /// 用户原始输入文本
+    #[serde(default)]
+    pub raw_text: Option<String>,
+    /// 用户/玩家 ID（对应 UserInput.metadata["actor_id"]）
+    pub actor_id: Option<String>,
+    /// 来源渠道（对应 UserInput.metadata["channel"]）
+    pub channel: Option<String>,
+    /// 平台（对应 UserInput.metadata["platform"]）
+    pub platform: Option<String>,
+    /// 应用版本（对应 UserInput.metadata["app_version"]）
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,10 +104,50 @@ async fn invoke_function(
             ))
             .into_response());
         };
+
+        // 构建 AgentContext（如果提供了 user_input）
+        let agent_ctx: Option<Arc<AgentContext>> = match body.user_input {
+            Some(ref ui) => {
+                let mut metadata: HashMap<String, String> = HashMap::new();
+                if let Some(ref v) = ui.actor_id {
+                    metadata.insert("actor_id".into(), v.clone());
+                }
+                if let Some(ref v) = ui.channel {
+                    metadata.insert("channel".into(), v.clone());
+                }
+                if let Some(ref v) = ui.platform {
+                    metadata.insert("platform".into(), v.clone());
+                }
+                if let Some(ref v) = ui.app_version {
+                    metadata.insert("app_version".into(), v.clone());
+                }
+                tracing::info!(
+                    actor_id = ?ui.actor_id,
+                    raw_text = ?ui.raw_text,
+                    "invoke_function: 使用前端提供的 UserInput 构建 AgentContext"
+                );
+                Some(Arc::new(AgentContext::new(
+                    format!("test-ctx-{}", uuid::Uuid::new_v4()),
+                    UserInput {
+                        raw_text: ui.raw_text.clone().unwrap_or_default(),
+                        session_id: None,
+                        message_id: None,
+                        timestamp: Utc::now(),
+                        metadata,
+                    },
+                    ContextConfig::default(),
+                )))
+            }
+            None => {
+                tracing::info!("invoke_function: 未提供 user_input，AgentContext 为 None");
+                None
+            }
+        };
+
         let bctx = crate::runtime::builtins::BuiltinContext {
             pool: &state.pool,
             ext_pool: state.ext_pool.as_ref(),
-            agent_ctx: None,
+            agent_ctx,
         };
         match (builtin.handler)(body.input, &bctx) {
             Ok(output) => {

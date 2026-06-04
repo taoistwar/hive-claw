@@ -97,6 +97,7 @@ export default function ChatPage() {
         role: 'assistant',
         content: resp.reply,
         elapsed_ms: resp.elapsed_ms || null,
+        extensions: resp.extensions || null,
         created_at: new Date().toISOString(),
       };
       setHistory((h) => [...h, assistantMsg]);
@@ -310,6 +311,23 @@ export default function ChatPage() {
                   >
                     {m.content}
                   </pre>
+                  {m.extensions && m.extensions.length > 0 && m.role === 'assistant' ? (
+                    <pre
+                      style={{
+                        margin: '8px 0 0 0',
+                        padding: '8px 12px',
+                        background: 'rgba(0,0,0,0.06)',
+                        borderRadius: '8px',
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                        fontSize: '12px',
+                        lineHeight: '1.5',
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      {JSON.stringify(m.extensions, null, 2)}
+                    </pre>
+                  ) : null}
                   {m.elapsed_ms && m.role === 'assistant' ? (
                     <Text
                       style={{

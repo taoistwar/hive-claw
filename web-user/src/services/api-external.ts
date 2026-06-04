@@ -21,6 +21,7 @@ export interface ChatMessage {
   role: string;
   content: string | null;
   elapsed_ms: number | null;
+  extensions: unknown[] | null;
   created_at: string;
 }
 

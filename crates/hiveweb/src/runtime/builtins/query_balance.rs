@@ -171,16 +171,12 @@ LEFT JOIN (
         .as_ref()
         .and_then(|m| m.total_coins)
         .unwrap_or(Decimal::ZERO);
-    let avg_daily_coin = membership
-        .as_ref()
-        .and_then(|m| m.avg_daily_coin)
-        .unwrap_or(Decimal::ZERO);
+
     let coins_low = total_coins < Decimal::from(500);
     let play_times_7d = membership
         .as_ref()
         .and_then(|m| m.play_times_7d)
         .unwrap_or(0);
-    let high_usage_non_member = !has_membership && play_times_7d >= 5;
 
     // 2. 构造返回结果
     let mut result = json!({});
@@ -189,8 +185,6 @@ LEFT JOIN (
         "effective_end_time": m.effective_end_time.map(|t| t.to_string()).unwrap_or_default(),
         "membership_category": m.membership_category.as_deref().unwrap_or(""),
         "level_name": m.level_name.as_deref().unwrap_or(""),
-        "disk_total_size": m.disk_total_size.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
-        "play_times_7d": m.play_times_7d.unwrap_or(0),
         "total_coins": m.total_coins.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
         "avg_daily_coin": m.avg_daily_coin.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
         "expire_coins_7d": m.expire_coins_7d.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),

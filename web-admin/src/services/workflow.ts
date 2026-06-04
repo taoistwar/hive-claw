@@ -147,6 +147,20 @@ export async function updateWorkflow(
   return resp.data;
 }
 
+/** 可选的用户上下文，用于依赖 AgentContext 的函数（如 query_balance） */
+export interface WorkflowUserInput {
+  raw_text?: string;
+  actor_id?: string;
+  channel?: string;
+  platform?: string;
+  app_version?: string;
+}
+
+export interface WorkflowExecuteRequest {
+  input?: Record<string, unknown>;
+  user_input?: WorkflowUserInput;
+}
+
 export interface WorkflowExecuteResult {
   workflow_id: number;
   node_results: Record<string, unknown>;
@@ -155,8 +169,8 @@ export interface WorkflowExecuteResult {
 
 export async function executeWorkflow(
   id: number,
-  input: Record<string, unknown> = {},
+  params: WorkflowExecuteRequest = {},
 ): Promise<WorkflowExecuteResult> {
-  const resp = await apiClient.post<WorkflowExecuteResult>(`/workflows/${id}/execute`, { input });
+  const resp = await apiClient.post<WorkflowExecuteResult>(`/workflows/${id}/execute`, params);
   return resp.data;
 }

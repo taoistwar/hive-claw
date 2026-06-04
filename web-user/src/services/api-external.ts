@@ -14,6 +14,13 @@ function computeSign(secret: string, signString: string): string {
 
 // ── 对外 API 类型 ──
 
+export interface ExtensionContent {
+  id: string;
+  content_type: string;
+  data?: unknown;
+  reply?: string;
+}
+
 export interface ChatMessage {
   id: number;
   session_id: number;
@@ -21,7 +28,8 @@ export interface ChatMessage {
   role: string;
   content: string | null;
   elapsed_ms: number | null;
-  extensions: unknown[] | null;
+  extension?: ExtensionContent | null;
+  extensions?: unknown[] | null;
   created_at: string;
 }
 
@@ -32,7 +40,8 @@ export interface MessagesResponse {
 export interface AssistantResponse {
   reply: string;
   elapsed_ms: number | null;
-  extensions: unknown[] | null;
+  extension?: ExtensionContent | null;
+  extensions?: unknown[] | null;
 }
 
 // ── 对外 API 函数 ──

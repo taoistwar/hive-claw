@@ -65,6 +65,9 @@ pub struct AssistantRequest {
     pub platform: String,
     /// 客户端版本号
     pub app_version: String,
+    /// 是否创建新会话（`true` 时强制创建新 session，`false`/省略时复用最新 session）
+    #[serde(default)]
+    pub new_session: bool,
 }
 
 // ── 外部数据库模型 ──
@@ -200,12 +203,22 @@ async fn assistant_chat(
             .into_response();
     }
 
-    // 10. 获取最新 session 或创建新 session（与 post_message_sse 相同的业务逻辑）
-    let session = match get_or_create_session(&state.pool, req.user_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = decr_daily_limit(&state.redis, &limit_key).await;
-            return e.into_response::<()>().into_response();
+    // 10. 获取 session：new_session=true 时强制创建新 session，否则复用最新
+    let session = if req.new_session {
+        match svc::create_user_session(&state.pool, req.user_id, None).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = decr_daily_limit(&state.redis, &limit_key).await;
+                return e.into_response::<()>().into_response();
+            }
+        }
+    } else {
+        match get_or_create_session(&state.pool, req.user_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = decr_daily_limit(&state.redis, &limit_key).await;
+                return e.into_response::<()>().into_response();
+            }
         }
     };
     let session_id = session.id;
@@ -316,10 +329,17 @@ async fn assistant_chat(
             .into_response();
     }
 
+    // extensions 数组：有数据时返回，否则省略
+    let extensions_opt = if extensions.is_empty() {
+        None
+    } else {
+        Some(extensions)
+    };
+
     let response = AssistantResponse {
         reply,
         elapsed_ms,
-        extensions: if extensions.is_empty() { None } else { Some(extensions) },
+        extensions: extensions_opt,
     };
 
     axum::Json(response).into_response()

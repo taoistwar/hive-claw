@@ -285,10 +285,17 @@ async fn execute_call_workflow(
         registry: Arc::clone(&deps.registry),
         llm: Arc::clone(&deps.llm),
         invoker: Arc::clone(&deps.invoker),
+        ext_pool: deps.ext_pool.clone(),
     };
     let executor = super::workflow::WorkflowExecutor::new();
     let output = executor
-        .execute(&executor_deps, workflow_id, workflow_input, ctx.agent_id)
+        .execute(
+            &executor_deps,
+            workflow_id,
+            workflow_input,
+            ctx.agent_id,
+            Arc::clone(&deps.agent_ctx),
+        )
         .await
         .map_err(|e| ActionError(format!("workflow execute: {e}")))?;
 
@@ -590,11 +597,26 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 "object_ref" => ExtensionType::ObjectRef,
                 _ => ExtensionType::Card,
             };
+            // Use explicit "data" key if present; otherwise fall back
+            // to the whole object minus meta keys (content_type / id / reply).
+            let data = if let Some(d) = ext.get("data") {
+                d.clone()
+            } else {
+                // Strip meta fields from the extension object
+                let mut obj = match ext.as_object() {
+                    Some(o) => o.clone(),
+                    None => continue,
+                };
+                obj.remove("content_type");
+                obj.remove("id");
+                obj.remove("reply");
+                Value::Object(obj)
+            };
             let content = ExtensionContent::new(
                 id.to_string(),
                 content_type,
                 ext.get("reply").cloned(),
-                ext.clone(),
+                data,
             );
             if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
                 tracing::warn!("Failed to apply _agent_context_updates extension: {e}");

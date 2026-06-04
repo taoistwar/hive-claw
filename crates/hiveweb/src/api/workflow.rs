@@ -18,6 +18,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::api::AppState;
 use crate::services::workflow::{self as svc, CreateMeta, GraphPut, UpdateMeta};
@@ -170,9 +171,52 @@ async fn put_graph_handler(
 pub struct ExecuteBody {
     #[serde(default = "default_input")]
     pub input: Value,
+    /// 可选的用户上下文，用于依赖 AgentContext 的内置函数（如 query_balance）
+    #[serde(default)]
+    pub user_input: Option<ExecuteUserInput>,
 }
 fn default_input() -> Value {
     Value::Object(serde_json::Map::new())
+}
+
+/// 测试/调试时由前端配置的 UserInput 字段
+#[derive(Debug, Deserialize)]
+pub struct ExecuteUserInput {
+    #[serde(default)]
+    pub raw_text: Option<String>,
+    /// 用户/玩家 ID（对应 UserInput.metadata["actor_id"]）
+    pub actor_id: Option<String>,
+    /// 来源渠道（对应 UserInput.metadata["channel"]）
+    pub channel: Option<String>,
+    /// 平台（对应 UserInput.metadata["platform"]）
+    pub platform: Option<String>,
+    /// 应用版本（对应 UserInput.metadata["app_version"]）
+    pub app_version: Option<String>,
+}
+
+/// 将 ExecuteUserInput 转换为 AgentContext 所需的 UserInput + metadata
+fn build_user_input_metadata(ui: &ExecuteUserInput) -> agent::context::UserInput {
+    use agent::context::UserInput;
+    let mut metadata: HashMap<String, String> = HashMap::new();
+    if let Some(ref v) = ui.actor_id {
+        metadata.insert("actor_id".into(), v.clone());
+    }
+    if let Some(ref v) = ui.channel {
+        metadata.insert("channel".into(), v.clone());
+    }
+    if let Some(ref v) = ui.platform {
+        metadata.insert("platform".into(), v.clone());
+    }
+    if let Some(ref v) = ui.app_version {
+        metadata.insert("app_version".into(), v.clone());
+    }
+    UserInput {
+        raw_text: ui.raw_text.clone().unwrap_or_default(),
+        session_id: None,
+        message_id: None,
+        timestamp: chrono::Utc::now(),
+        metadata,
+    }
 }
 
 async fn execute_workflow(
@@ -180,21 +224,85 @@ async fn execute_workflow(
     Path(id): Path<i64>,
     Json(body): Json<ExecuteBody>,
 ) -> Result<ApiResponse<Value>, ApiResponse<()>> {
+    use crate::runtime::hook::apply_agent_context_updates;
     use crate::runtime::workflow::ExecutorDeps;
+    use agent::context::{AgentContext, Category, ContextConfig};
+    use std::sync::Arc;
     let t0 = std::time::Instant::now();
+
+    // 构建 AgentContext（始终创建，注入到每个函数节点的输入中）
+    let agent_ctx: Arc<AgentContext> = match body.user_input {
+        Some(ref ui) => {
+            tracing::info!(
+                actor_id = ?ui.actor_id,
+                raw_text = ?ui.raw_text,
+                "execute_workflow: 使用前端提供的 UserInput 构建 AgentContext"
+            );
+            Arc::new(AgentContext::new(
+                format!("test-ctx-{}", uuid::Uuid::new_v4()),
+                build_user_input_metadata(ui),
+                ContextConfig::default(),
+            ))
+        }
+        None => {
+            tracing::info!("execute_workflow: 未提供 user_input，创建空 AgentContext");
+            Arc::new(AgentContext::new(
+                format!("test-ctx-{}", uuid::Uuid::new_v4()),
+                agent::context::UserInput {
+                    raw_text: String::new(),
+                    session_id: None,
+                    message_id: None,
+                    timestamp: chrono::Utc::now(),
+                    metadata: HashMap::new(),
+                },
+                ContextConfig::default(),
+            ))
+        }
+    };
+
     let deps = ExecutorDeps {
         pool: state.pool.clone(),
         s3: state.s3.clone(),
         registry: std::sync::Arc::clone(&state.runtime_state.capabilities),
         llm: std::sync::Arc::clone(&state.runtime_state.llm),
         invoker: std::sync::Arc::clone(&state.runtime_state.invoker),
+        ext_pool: state.ext_pool.clone(),
     };
     let outputs = state
         .runtime_state
         .workflows
-        .execute(&deps, id, body.input, 1 /* main agent */)
+        .execute(&deps, id, body.input, 1 /* main agent */, agent_ctx.clone())
         .await
         .map_err(|e| AppError::Internal(format!("workflow execute: {e}")).into_response())?;
+
+    // 将每个函数节点的结果写回 AgentContext（Category::WorkflowResults）
+    // 同时应用节点 output 中自带的 _agent_context_updates（与 hook / orchestrator 行为一致）
+    {
+        let ctx = &agent_ctx;
+        for (node_key, node_output) in &outputs {
+            // 跳过 start / end 等特殊节点
+            if node_key == "start" || node_key == "end" {
+                continue;
+            }
+            // 1) 应用节点 output 中自带的 _agent_context_updates
+            apply_agent_context_updates(ctx, node_output);
+            // 2) 将整个节点结果作为 WorkflowResults 记录
+            if let Err(e) = ctx.set_record(
+                Category::WorkflowResults,
+                node_key.clone(),
+                node_output.clone(),
+                "workflow_node".to_string(),
+                0,
+            ) {
+                tracing::warn!(
+                    node_key = %node_key,
+                    error = %e,
+                    "execute_workflow: 写回 WorkflowResults 失败"
+                );
+            }
+        }
+    }
+
     let elapsed_ms = t0.elapsed().as_millis() as i32;
     Ok(ApiResponse::success(serde_json::json!({
         "workflow_id": id,

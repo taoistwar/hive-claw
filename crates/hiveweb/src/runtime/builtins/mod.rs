@@ -342,18 +342,9 @@ pub const QUERY_BALANCE_INPUT_SCHEMA: &str = r#"{
 pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
-    "user_id": { "type": "integer", "description": "用户 ID" },
-    "balance": { "type": "number", "description": "用户余额" },
-    "currency": { "type": "string", "description": "货币类型" },
-    "has_membership": { "type": "boolean", "description": "是否有有效会员" },
-    "membership": {
-      "type": "object",
-      "description": "会员信息（如果有）",
-      "properties": {
-        "effective_end_time": { "type": "string" },
-        "membership_category": { "type": "string" },
-        "level_name": { "type": "string" }
-      }
+    "message": {
+      "type": "string",
+      "description": "查询结果的文本描述，适合直接展示给用户。"
     }
   }
 }"#;

@@ -173,16 +173,18 @@ pub async fn append_assistant_message_user(
     user_id: i64,
     content: &str,
     elapsed_ms: Option<i32>,
+    extensions: Option<serde_json::Value>,
 ) -> Result<(), AppError> {
     sqlx::query(
         r#"INSERT INTO chat_messages_user
-           (session_id, user_id, role, content, elapsed_ms)
-           VALUES (?, ?, 'assistant', ?, ?)"#,
+           (session_id, user_id, role, content, elapsed_ms, extensions)
+           VALUES (?, ?, 'assistant', ?, ?, ?)"#,
     )
     .bind(session_id)
     .bind(user_id)
     .bind(content)
     .bind(elapsed_ms)
+    .bind(extensions)
     .execute(pool)
     .await
     .map_err(|e| AppError::Internal(format!("user assistant insert: {e}")))?;

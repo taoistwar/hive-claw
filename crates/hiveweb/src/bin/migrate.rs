@@ -112,6 +112,10 @@ const MIGRATIONS: &[Migration] = &[
         version: "V023__create_hook_executions_table",
         sql: include_str!("../../migrations/V023__create_hook_executions_table.sql"),
     },
+    Migration {
+        version: "V024__add_extensions_to_chat_messages_user",
+        sql: include_str!("../../migrations/V024__add_extensions_to_chat_messages_user.sql"),
+    },
 ];
 
 #[tokio::main]

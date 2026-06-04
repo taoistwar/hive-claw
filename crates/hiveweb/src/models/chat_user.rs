@@ -24,5 +24,7 @@ pub struct ChatMessageUser {
     pub role: String,
     pub content: Option<String>,
     pub elapsed_ms: Option<i32>,
+    /// AgentContext 扩展数据（cards, images, suggestions 等）
+    pub extensions: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }

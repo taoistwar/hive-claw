@@ -118,7 +118,7 @@ async fn list_messages(
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
     let messages: Vec<ChatMessageUser> = match sqlx::query_as(
-        "SELECT id, session_id, user_id, role, content, elapsed_ms, created_at \
+        "SELECT id, session_id, user_id, role, content, elapsed_ms, extensions, created_at \
          FROM chat_messages_user \
          WHERE user_id = ? AND created_at < ? \
          ORDER BY created_at DESC \

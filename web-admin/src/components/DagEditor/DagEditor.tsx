@@ -53,6 +53,7 @@ import {
   type GraphNode,
   type NodeType,
   type WorkflowExecuteResult,
+  type WorkflowUserInput,
 } from '../../services/workflow';
 
 const { Text, Paragraph } = Typography;
@@ -111,6 +112,27 @@ function extractOutputFields(
     }
   }
   return extracted;
+}
+
+/** 从 form values 中分离工作流输入参数和 UserInput 上下文（_ctx_ 前缀） */
+function splitRunValues(values: Record<string, unknown>): {
+  input: Record<string, unknown>;
+  user_input?: WorkflowUserInput;
+} {
+  const input: Record<string, unknown> = {};
+  const ctx: Record<string, string> = {};
+  for (const [k, v] of Object.entries(values)) {
+    if (k.startsWith('_ctx_')) {
+      const field = k.slice('_ctx_'.length);
+      if (typeof v === 'string' && v.length > 0) {
+        ctx[field] = v;
+      }
+    } else {
+      input[k] = v;
+    }
+  }
+  const user_input = Object.keys(ctx).length > 0 ? (ctx as WorkflowUserInput) : undefined;
+  return { input, user_input };
 }
 
 /** 渲染单个表单字段 */
@@ -310,6 +332,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     nodeKey: string;
     result: unknown;
   } | null>(null);
+  /** 是否展开 UserInput 上下文配置 */
+  const [showContext, setShowContext] = useState(false);
 
   const STORAGE_KEY = `dag_editor_v2_${workflowId}`;
 
@@ -837,8 +861,10 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       const values = await form.validateFields();
       setIsRunning(true);
       setExecutionResult(null); // 清除上次结果，准备新执行
-      setLastRunInput(values); // 保存输入，供开始节点查看
-      const result = await executeWorkflow(workflowId, values);
+      // 分离工作流输入参数和 UserInput 上下文（带 _ctx_ 前缀）
+      const { input, user_input } = splitRunValues(values);
+      setLastRunInput(input); // 保存输入，供开始节点查看
+      const result = await executeWorkflow(workflowId, { input, user_input });
       setExecutionResult(result);
       // 保持在弹窗内展示结果，不关闭
       void message.success(`执行成功，耗时 ${result.elapsed_ms}ms`);
@@ -919,6 +945,106 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
               }
               return <Text type="secondary">该工作流无输入参数（空 schema）</Text>;
             })()}
+          </div>
+
+          {/* UserInput 上下文配置（可选，用于依赖 AgentContext 的内置函数） */}
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 8,
+                cursor: 'pointer',
+              }}
+              onClick={() => setShowContext(!showContext)}
+            >
+              <Text strong>UserInput 上下文（可选）：</Text>
+              <Button size="small" type="link">
+                {showContext ? '收起 ▲' : '展开 ▼'}
+              </Button>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                用于依赖用户上下文的函数（如 query_balance 需要 actor_id）
+              </Text>
+            </div>
+            {showContext && (
+              <div
+                style={{
+                  border: '1px solid #d9d9d9',
+                  borderRadius: 6,
+                  padding: '12px 16px',
+                  background: '#fafafa',
+                }}
+              >
+                <Form form={form} layout="vertical" size="small">
+                  <Form.Item
+                    name="_ctx_raw_text"
+                    label={
+                      <span>
+                        raw_text
+                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                          用户原始输入文本
+                        </Text>
+                      </span>
+                    }
+                  >
+                    <Input placeholder="例如：帮我查一下余额" />
+                  </Form.Item>
+                  <Form.Item
+                    name="_ctx_actor_id"
+                    label={
+                      <span>
+                        actor_id
+                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                          用户/玩家 ID
+                        </Text>
+                      </span>
+                    }
+                  >
+                    <Input placeholder="例如：10086" />
+                  </Form.Item>
+                  <Form.Item
+                    name="_ctx_channel"
+                    label={
+                      <span>
+                        channel
+                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                          来源渠道
+                        </Text>
+                      </span>
+                    }
+                  >
+                    <Input placeholder="例如：weixin / qq" />
+                  </Form.Item>
+                  <Form.Item
+                    name="_ctx_platform"
+                    label={
+                      <span>
+                        platform
+                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                          平台
+                        </Text>
+                      </span>
+                    }
+                  >
+                    <Input placeholder="例如：ios / android" />
+                  </Form.Item>
+                  <Form.Item
+                    name="_ctx_app_version"
+                    label={
+                      <span>
+                        app_version
+                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                          应用版本
+                        </Text>
+                      </span>
+                    }
+                  >
+                    <Input placeholder="例如：3.2.1" />
+                  </Form.Item>
+                </Form>
+              </div>
+            )}
           </div>
 
           {/* 执行结果展示 — 显示结束节点的最终输出（按 output_schema 提取字段） */}

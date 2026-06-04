@@ -98,7 +98,8 @@ MD5(ASSISTANT_SECRET + "/api/assistant" + "?body=" + 请求体 JSON 字符串)
   "message": "你好，请推荐一款游戏",
   "channel": "app",
   "platform": "android",
-  "app_version": "1.0.0"
+  "app_version": "1.0.0",
+  "new_session": false
 }
 ```
 
@@ -109,6 +110,7 @@ MD5(ASSISTANT_SECRET + "/api/assistant" + "?body=" + 请求体 JSON 字符串)
 | `channel` | `String` | 是 | 渠道标识（如 `app`、`web`、`api`） |
 | `platform` | `String` | 是 | 客户端平台（`android`、`iphone`、`ipad`、`web`） |
 | `app_version` | `String` | 是 | 客户端版本号 |
+| `new_session` | `bool` | 否 | 是否创建新会话，默认 `false`。`true` 时强制创建新 session；`false`/省略时复用最新 session |
 
 **限流策略：**
 
@@ -134,15 +136,66 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 {
   "reply": "您好！以下是为您推荐的游戏...",
   "elapsed_ms": 1523,
-  "extensions": []
+  "extension": {
+    "content_type": "card",
+    "payload": {
+      "type": "goPay",
+      "info": {
+        "effective_end_time": "",
+        "membership_category": "",
+        "level_name": "",
+        "total_coins": 900000.0,
+        "expire_coins_7d": 5000.0
+      }
+    }
+  }
 }
 ```
+
+> **注意：** 当扩展对象只有 **1 条**时，API 返回 `extension`（单数，对象格式）；
+> 当有 **2 条及以上**时，返回 `extensions`（复数，数组格式）；
+> 无扩展数据时，两个字段均省略。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `reply` | `String` | AI 助手的完整回复文本 |
 | `elapsed_ms` | `Option<u64>` | LLM 处理耗时（毫秒） |
-| `extensions` | `Option<Vec<Value>>` | AgentContext 扩展数据（可选） |
+| `extension` | `Option<Value>` | 单个扩展对象，仅当扩展数量为 1 时出现 |
+| `extensions` | `Option<Vec<Value>>` | 扩展对象数组，仅当扩展数量 ≥ 2 时出现 |
+
+**扩展对象 structure：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `content_type` | `String` | 内容类型：`card` / `image` / `suggestion` / `link` / `button` / `table` / `chart` / `object_ref` |
+| `payload.type` | `String` | 卡片类型（当 `content_type` 为 `card` 时） |
+| `payload.info` | `Object` | 负载数据（当 `type` 为 `goPay`/`subscribe`/`upgrade`/`sufficient`/`repay` 时） |
+
+
+**卡片类型说明：**
+
+| type | 触发条件 | 说明 |
+|------|----------|------|
+| `goPay` | 金币不足（余额 < 500） | 充值卡片 |
+| `subscribe` | 无有效会员 | 会员订购卡片 |
+| `upgrade` | 建议升级 | 会员升级卡片 |
+| `repay` | 会员即将到期（≤ 7 天） | 会员订购/续费卡片 |
+| `sufficient` | 用户已有充足权益 | 可轻提示当前权益充足，不强推 |
+| `game` | 用户已有充足权益 | 可轻提示当前权益充足，不强推 |
+
+
+
+**`info` 对象字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `effective_end_time` | `String` | 会员有效期截止时间（无会员时为空字符串） |
+| `membership_category` | `String` | 会员类别：SUBSCRIPTION-订阅型，E_TIME-一次性 |
+| `membership_level` | `String` | 等级编码 |
+| `total_coins` | `f64` | 总金币数 |
+| `expire_coins_7d` | `f64` | 7 天内即将过期的金币数 |
+
+`game`卡片时，`info`对象的内容和接口`获取热门推荐游戏`的`data`对象内容一致
 
 **错误响应：**
 
@@ -230,6 +283,19 @@ curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
       "role": "assistant",
       "content": "您好！以下是为您推荐的游戏...",
       "elapsed_ms": 1523,
+      "extension": {
+        "content_type": "card",
+        "payload": {
+          "type": "goPay",
+          "info": {
+            "effective_end_time": "",
+            "membership_category": "",
+            "level_name": "",
+            "total_coins": 900000.0,
+            "expire_coins_7d": 5000.0
+          }
+        }
+      },
       "created_at": "2026-06-02T14:30:00Z"
     },
     {
@@ -239,6 +305,8 @@ curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
       "role": "user",
       "content": "推荐一款游戏",
       "elapsed_ms": null,
+      "extension": null,
+      "extensions": null,
       "created_at": "2026-06-02T14:29:55Z"
     }
   ]
@@ -256,6 +324,8 @@ curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
 | `messages[].role` | `String` | 角色：`user` / `assistant` / `tool` / `system` |
 | `messages[].content` | `Option<String>` | 消息文本内容 |
 | `messages[].elapsed_ms` | `Option<i32>` | assistant 消息的处理耗时（毫秒），user 消息为 null |
+| `messages[].extension` | `Option<Value>` | 单个扩展对象（仅 1 条时出现），结构与 `/api/assistant` 一致 |
+| `messages[].extensions` | `Option<Vec<Value>>` | 扩展对象数组（≥ 2 条时出现），结构与 `/api/assistant` 一致 |
 | `messages[].created_at` | `DateTime` | 消息创建时间（UTC） |
 
 **错误响应：**

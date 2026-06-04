@@ -184,9 +184,9 @@ LEFT JOIN (
     let reply = json!({
         "effective_end_time": m.effective_end_time.map(|t| t.to_string()).unwrap_or_default(),
         "membership_category": m.membership_category.as_deref().unwrap_or(""),
-        "level_name": m.level_name.as_deref().unwrap_or(""),
+        "level_name": m.level_name.as_deref().unwrap_or(""),//level code
         "total_coins": m.total_coins.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
-        "avg_daily_coin": m.avg_daily_coin.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
+        // "avg_daily_coin": m.avg_daily_coin.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
         "expire_coins_7d": m.expire_coins_7d.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
     });
 
@@ -199,7 +199,7 @@ LEFT JOIN (
             extension_list.push(json!({
                 "content_type": "card",
                 "payload": {
-                    "type": "goPay",
+                    "type": "subscribe",
                     "info":reply,
                 },
             }));
@@ -208,7 +208,7 @@ LEFT JOIN (
             extension_list.push(json!({
                 "content_type": "card",
                 "payload": {
-                    "type": "subscribe",
+                    "type": "goPay",
                     "info":reply,
                 },
             }));
@@ -218,7 +218,7 @@ LEFT JOIN (
             let text = format!("会员将于 {} 天后到期", days_left.max(0));
             extension_list.push(json!({
                 "content_type": "card",
-                "payload": {"type": "repay", "reply":reply,},
+                "payload": {"type": "repay", "info":reply,},
             }));
         } else if upgrade_suggested {
             // 升级建议卡

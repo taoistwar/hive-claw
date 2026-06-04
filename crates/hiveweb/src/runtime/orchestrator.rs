@@ -27,8 +27,8 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 use agent::context::{
-    AgentContext, Category, ContextConfig, LifecycleState, ResponsePayload, ToolCallStatus,
-    UserInput,
+    AgentContext, Category, ContextConfig, ExtensionContent, LifecycleState, ResponsePayload,
+    ToolCallStatus, UserInput,
 };
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::invoker::Invoker;
@@ -44,6 +44,22 @@ fn max_hops() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5)
+}
+
+/// 将 ExtensionContent 扁平化为 { content_type, ...data_fields } 格式，
+/// 去掉 id / reply / render_hints / data 等包装层。
+fn flatten_extension(e: &ExtensionContent) -> Value {
+    let mut flat = serde_json::Map::new();
+    flat.insert(
+        "content_type".to_string(),
+        json!(e.content_type.to_string()),
+    );
+    if let Value::Object(data_obj) = &e.data {
+        for (k, v) in data_obj {
+            flat.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(flat)
 }
 
 /// 单次会话调用入口（spawned task）
@@ -636,7 +652,7 @@ async fn run_session_internal_impl<T>(
         let exts = agent_ctx.get_extensions();
         if !exts.is_empty() {
             let exts_payload = json!({
-                "extensions": exts.iter().map(|e| serde_json::to_value(e).unwrap_or(Value::Null)).collect::<Vec<_>>(),
+                "extensions": exts.iter().map(|e| flatten_extension(e)).collect::<Vec<_>>(),
             });
             let _ = tx.send(Ok(Event::default()
                 .event("extensions")
@@ -680,6 +696,16 @@ async fn finalize_with_variant(
     hook_deps: &HookDeps,
 ) {
     let elapsed = started.elapsed().as_millis() as i32;
+
+    // Collect extensions from AgentContext for persistence (flattened)
+    let exts = hook_deps.agent_ctx.get_extensions();
+    let extensions_json: Option<Value> = if exts.is_empty() {
+        None
+    } else {
+        let arr: Vec<Value> = exts.iter().map(|e| flatten_extension(e)).collect();
+        Some(Value::Array(arr))
+    };
+
     if let Some(text) = content {
         let _ = append_assistant_message_user(
             pool,
@@ -687,6 +713,7 @@ async fn finalize_with_variant(
             actor_id,
             &text,
             Some(elapsed),
+            extensions_json,
         )
         .await;
     }
@@ -1239,10 +1266,17 @@ async fn handle_meta_tool(
                 registry: Arc::clone(&deps.registry),
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
+                ext_pool: deps.ext_pool.clone(),
             };
             let executor = crate::runtime::workflow::WorkflowExecutor::new();
             match executor
-                .execute(&executor_deps, workflow_id, workflow_input, ctx.agent_id)
+                .execute(
+                    &executor_deps,
+                    workflow_id,
+                    workflow_input,
+                    ctx.agent_id,
+                    Arc::clone(&agent_ctx),
+                )
                 .await
             {
                 Ok(out) => {
@@ -1373,11 +1407,18 @@ pub(crate) async fn handle_workspace_tool(
                 registry: Arc::clone(&deps.registry),
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
+                ext_pool: deps.ext_pool.clone(),
             };
             // 临时构造 executor — 直接用 sentinel；workflows 持有也行
             let executor = crate::runtime::workflow::WorkflowExecutor::new();
             match executor
-                .execute(&executor_deps, workflow_id, args_value, ctx.agent_id)
+                .execute(
+                    &executor_deps,
+                    workflow_id,
+                    args_value,
+                    ctx.agent_id,
+                    Arc::clone(&agent_ctx),
+                )
                 .await
             {
                 Ok(out) => {

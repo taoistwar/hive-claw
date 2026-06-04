@@ -14,8 +14,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
+use agent::context::AgentContext;
 use crate::runtime::builtins;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
+use crate::runtime::hook::inject_agent_context_snapshot;
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 
@@ -46,6 +48,8 @@ pub struct ExecutorDeps {
     pub registry: Arc<CapabilityRegistry>,
     pub llm: Arc<LlmRegistry>,
     pub invoker: Arc<Invoker>,
+    /// 外部数据库连接池（用于依赖外部 DB 的内置函数，如 query_balance）
+    pub ext_pool: Option<MySqlPool>,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +68,7 @@ impl WorkflowExecutor {
         workflow_id: i64,
         external_input: Value,
         invoking_agent_id: i64,
+        agent_ctx: Arc<AgentContext>,
     ) -> Result<HashMap<String, Value>, WorkflowError> {
         // 1. Load workflow + nodes + edges
         let wf_row: Option<(i32, Option<Value>)> =
@@ -157,6 +162,7 @@ impl WorkflowExecutor {
                 invoking_agent_id,
                 workflow_id,
                 &agent_perms,
+                agent_ctx,
             ),
         )
         .await;
@@ -220,6 +226,7 @@ async fn run_layers(
     invoking_agent_id: i64,
     workflow_id: i64,
     agent_perms: &[String],
+    agent_ctx: Arc<AgentContext>,
 ) -> Result<HashMap<String, Value>, WorkflowError> {
     let mut outputs: HashMap<String, Value> = HashMap::new();
     let mut remaining: HashSet<String> = nodes.iter().map(|(_, k, _, _, _)| k.clone()).collect();
@@ -275,6 +282,7 @@ async fn run_layers(
                 invoking_agent_id,
                 workflow_id,
                 agent_perms,
+                Arc::clone(&agent_ctx),
             ));
         }
 
@@ -475,6 +483,7 @@ async fn execute_node(
     invoking_agent_id: i64,
     workflow_id: i64,
     agent_perms: &[String],
+    agent_ctx: Arc<AgentContext>,
 ) -> Result<(String, Value), WorkflowError> {
     let _ = workflow_id;
 
@@ -511,12 +520,14 @@ async fn execute_node(
             node_key: node_key.clone(),
             message: format!("unknown builtin: {identifier}"),
         })?;
+        let mut node_input = input;
+        inject_agent_context_snapshot(&mut node_input, &agent_ctx);
         let ctx = crate::runtime::builtins::BuiltinContext {
             pool: &deps.pool,
-            ext_pool: None,
-            agent_ctx: None,
+            ext_pool: deps.ext_pool.as_ref(),
+            agent_ctx: Some(Arc::clone(&agent_ctx)),
         };
-        let out = (result.handler)(input, &ctx).map_err(|e| WorkflowError::NodeFailure {
+        let out = (result.handler)(node_input, &ctx).map_err(|e| WorkflowError::NodeFailure {
             node_key: node_key.clone(),
             message: format!("{e}"),
         })?;
@@ -532,7 +543,9 @@ async fn execute_node(
         node_key: node_key.clone(),
         message: "custom function missing plugin_export".into(),
     })?;
-    let input_json = serde_json::to_string(&input).map_err(|e| WorkflowError::NodeFailure {
+    let mut node_input = input;
+    inject_agent_context_snapshot(&mut node_input, &agent_ctx);
+    let input_json = serde_json::to_string(&node_input).map_err(|e| WorkflowError::NodeFailure {
         node_key: node_key.clone(),
         message: format!("input serialize: {e}"),
     })?;

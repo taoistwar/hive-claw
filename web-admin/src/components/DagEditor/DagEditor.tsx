@@ -800,7 +800,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           position: {
             x: n.position.x,
             y: n.position.y,
-            ...(isStart && n.data.input_schema && { input_schema: n.data.input_schema }),
+            ...(isStart && { input_schema: n.data.input_schema ?? { type: 'object', properties: {} } }),
             ...(isEnd && n.data.output_schema && { output_schema: n.data.output_schema }),
           },
           ...(isAnswer && n.data.node_config && {

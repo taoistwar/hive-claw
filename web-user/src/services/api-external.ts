@@ -14,13 +14,7 @@ function computeSign(secret: string, signString: string): string {
 
 // ── 对外 API 类型 ──
 
-export interface ExtensionContent {
-  id: string;
-  content_type: string;
-  data?: unknown;
-  reply?: string;
-}
-
+/** 单条聊天消息（与后端 chat_messages_user 表对应） */
 export interface ChatMessage {
   id: number;
   session_id: number;
@@ -28,6 +22,7 @@ export interface ChatMessage {
   role: string;
   content: string | null;
   elapsed_ms: number | null;
+  /** 扩展数据数组：cards、images、suggestions 等（flattened） */
   extensions?: unknown[] | null;
   created_at: string;
 }
@@ -36,22 +31,17 @@ export interface MessagesResponse {
   messages: ChatMessage[];
 }
 
-export interface AssistantResponse {
-  reply: string;
-  elapsed_ms: number | null;
-  extensions?: unknown[] | null;
-}
-
 // ── 对外 API 函数 ──
 
-/** 发送消息到 AI 助手 (POST /api/assistant) */
+/** 发送消息到 AI 助手，返回完整持久化的 ChatMessage 记录 (POST /api/assistant?sign={md5}) */
 export async function sendMessage(params: {
   user_id: number;
   message: string;
   channel: string;
   platform: string;
   app_version: string;
-}): Promise<AssistantResponse> {
+  new_session?: boolean;
+}): Promise<ChatMessage> {
   const body = JSON.stringify(params);
   const secret = getSecret();
 

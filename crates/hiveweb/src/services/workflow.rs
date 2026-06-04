@@ -137,14 +137,16 @@ pub struct GraphPut {
 // ============================== CRUD metadata ==============================
 
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Workflow, AppError> {
+    let default_schema = serde_json::json!({ "type": "object", "properties": {} });
     let res = sqlx::query(
-        "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id, required_capabilities) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id, input_schema, required_capabilities) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&meta.identifier)
     .bind(&meta.name)
     .bind(&meta.description)
     .bind(meta.timeout_ms.unwrap_or(33000))
     .bind(meta.category_id)
+    .bind(&default_schema)
     .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
     .execute(pool)
     .await
@@ -407,11 +409,13 @@ pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, App
         nodes.iter().map(|n| (n.id, n.node_key.clone())).collect();
 
     // 构造起始节点
+    let input_schema = wf
+        .input_schema
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
     let mut start_position = serde_json::json!({"x": 100, "y": 300});
-    if let Some(ref schema) = wf.input_schema {
-        if let Some(obj) = start_position.as_object_mut() {
-            obj.insert("input_schema".to_string(), schema.clone());
-        }
+    if let Some(obj) = start_position.as_object_mut() {
+        obj.insert("input_schema".to_string(), input_schema);
     }
 
     let start_node = GraphNode {
@@ -529,7 +533,8 @@ pub async fn put_graph(
         .and_then(|n| n.position.as_ref())
         .and_then(|p| p.get("input_schema"))
         .cloned()
-        .or_else(|| wf.input_schema.clone());
+        .or_else(|| wf.input_schema.clone())
+        .or_else(|| Some(serde_json::json!({ "type": "object", "properties": {} })));
     let start_desc = start_node
         .and_then(|n| n.position.as_ref())
         .and_then(|p| p.get("start_description").and_then(|v| v.as_str()))

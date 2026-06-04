@@ -191,9 +191,9 @@ pub async fn run_tool_test(
     // 目标 tool
     tools.push(ToolRef {
         id: tid,
-        identifier: t_ident,
-        name: t_name,
-        description: t_desc,
+        identifier: t_ident.clone(),
+        name: t_name.clone(),
+        description: t_desc.clone(),
         kind: t_kind,
         function_id: t_fid,
         workflow_id: t_wid,
@@ -237,8 +237,19 @@ pub async fn run_tool_test(
         .map_err(|e| format!("always skills: {e}"))?;
     logger.log(&format!("STEP3 OK: loaded {} skills", skills.len()));
 
-    let mut system_prompt =
-        "You are a test assistant. Use the available tools when appropriate.".to_string();
+    let mut system_prompt = format!(
+        "You are a tool execution test harness.\n\
+         The target tool under test is `{t_ident}` (display name: \"{t_name}\").\n\
+         Goal: You MUST invoke the target tool `{t_ident}` at least once so its real execution result can be verified.\n\
+         Steps:\n\
+         1. Read the target tool's `description` and `parameters` schema.\n\
+         2. Construct valid arguments (use sensible defaults if the schema has no required fields).\n\
+         3. Call the tool by issuing a `tool_calls` entry — do NOT just describe what the tool would do.\n\
+         4. After receiving the tool result, summarize the outcome briefly for the user.\n\
+         You may also use any `is_always` tools if they are clearly needed, but the primary objective is to execute `{t_ident}` itself.",
+        t_ident = t_ident,
+        t_name = t_name,
+    );
     for (md,) in &skills {
         system_prompt.push_str("\n\n--- SKILL ---\n\n");
         system_prompt.push_str(md);

@@ -28,7 +28,7 @@ use axum::{
 };
 use axum::response::sse::Event;
 use redis::AsyncCommands;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -69,6 +69,8 @@ pub struct AssistantRequest {
     #[serde(default)]
     pub new_session: bool,
 }
+
+// 响应：直接返回 chat_messages_user 中保存的 ChatMessageUser 记录（与 /api/messages 单条形态一致）
 
 // ── 外部数据库模型 ──
 
@@ -272,77 +274,58 @@ async fn assistant_chat(
             user_content,
             tx,
         )
-        .await;
+        .await
     });
 
-    // Collect all SSE events and build the full response
-    let mut reply = String::new();
-    let mut elapsed_ms: Option<u64> = None;
+    // Drain SSE events; the orchestrator already saved the assistant message and returns
+    // the persisted record via the JoinHandle, so we only need to detect early errors here.
     let mut first_error: Option<String> = None;
-    let mut extensions: Vec<serde_json::Value> = Vec::new();
 
     while let Some(result) = rx.recv().await {
         match result {
             Ok(event) => {
                 let sse_text = event_to_sse_text(&event);
                 let (event_type, data) = parse_sse_event(&sse_text);
-                match event_type.as_deref() {
-                    Some("token") => {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Some(text) = parsed.get("text").and_then(|v| v.as_str()) {
-                                reply.push_str(text);
-                            }
-                        }
+                if event_type.as_deref() == Some("error") {
+                    if first_error.is_none() {
+                        first_error = Some(data);
                     }
-                    Some("done") => {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
-                            elapsed_ms = parsed.get("elapsed_ms").and_then(|v| v.as_u64());
-                        }
-                    }
-                    Some("extensions") => {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Some(exts) = parsed.get("extensions").and_then(|v| v.as_array()) {
-                                extensions = exts.clone();
-                            }
-                        }
-                    }
-                    Some("error") => {
-                        if first_error.is_none() {
-                            first_error = Some(data);
-                        }
-                    }
-                    _ => {}
                 }
             }
             Err(_) => {} // Infallible
         }
     }
 
-    // Ensure the spawned task completes
-    let _ = handle.await;
-
     // If run_session_user emitted an error, roll back quota and return error
-    if let Some(err_msg) = first_error {
+    if let Some(err_msg) = &first_error {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
-        return AppError::Internal(err_msg)
+        return AppError::Internal(err_msg.clone())
             .into_response::<()>()
             .into_response();
     }
 
-    // extensions 数组：有数据时返回，否则省略
-    let extensions_opt = if extensions.is_empty() {
-        None
-    } else {
-        Some(extensions)
+    // Ensure the spawned task completes and grab the saved ChatMessageUser record
+    let saved = match handle.await {
+        Ok(msg) => msg,
+        Err(e) => {
+            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            return AppError::Internal(format!("orchestrator join: {e}"))
+                .into_response::<()>()
+                .into_response();
+        }
     };
 
-    let response = AssistantResponse {
-        reply,
-        elapsed_ms,
-        extensions: extensions_opt,
+    let saved = match saved {
+        Some(m) => m,
+        None => {
+            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            return AppError::Internal("assistant message was not persisted".into())
+                .into_response::<()>()
+                .into_response();
+        }
     };
 
-    axum::Json(response).into_response()
+    axum::Json(saved).into_response()
 }
 
 /// Extract the SSE-formatted text from an axum 0.7 `Event` by parsing its Debug output.
@@ -415,15 +398,6 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
         }
     }
     (event_type, data)
-}
-
-#[derive(Serialize)]
-struct AssistantResponse {
-    reply: String,
-    elapsed_ms: Option<u64>,
-    /// AgentContext extensions (cards, images, suggestions, etc.) from hook/function execution
-    #[serde(skip_serializing_if = "Option::is_none")]
-    extensions: Option<Vec<serde_json::Value>>,
 }
 
 // ── 签名校验 ──

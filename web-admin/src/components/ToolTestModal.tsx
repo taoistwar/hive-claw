@@ -42,7 +42,9 @@ const ToolTestModal: React.FC<Props> = ({ visible, toolId, toolName, inputSchema
     setLoading(true);
     setResult(null);
     try {
-      const res = await testTool(toolId, { message: inputMessage.trim() || '执行工具' });
+      const res = await testTool(toolId, {
+        message: inputMessage.trim() || `请调用工具 ${toolName} 执行一次并返回结果`,
+      });
       setResult(res);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
@@ -122,7 +124,7 @@ const ToolTestModal: React.FC<Props> = ({ visible, toolId, toolName, inputSchema
             type="info"
             showIcon
             message="该工具无需输入参数"
-            description="点击下方"测试"按钮即可直接调用该工具。"
+            description='点击下方"测试"按钮即可直接调用该工具。'
             style={{ marginBottom: 12 }}
           />
         ) : (

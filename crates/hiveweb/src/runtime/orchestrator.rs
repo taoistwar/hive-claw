@@ -36,6 +36,7 @@ use crate::runtime::llm::LlmRegistry;
 use crate::runtime::hook::{self, apply_agent_context_updates, inject_agent_context_snapshot, HookContext, HookDeps};
 use crate::services::chat_user::append_assistant_message_user;
 use crate::services::runtime_audit::{self, AuditRecord};
+use crate::models::ChatMessageUser;
 
 pub const ROUTE_TOOL_NAME: &str = "route_to_subagent";
 
@@ -84,7 +85,7 @@ pub async fn run_session_user(
     history: Vec<crate::models::ChatMessageUser>,
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
-) {
+) -> Option<ChatMessageUser> {
     run_session_internal_impl(
         deps,
         session_id,
@@ -94,9 +95,8 @@ pub async fn run_session_user(
         &user_content,
         &tx,
     )
-    .await;
+    .await
 }
-
 // ============================ Core implementation ============================
 
 /// Trait for accessing role + content on chat messages generically
@@ -121,7 +121,8 @@ async fn run_session_internal_impl<T>(
     history: &[T],
     user_content: &str,
     tx: &UnboundedSender<Result<Event, Infallible>>,
-) where
+) -> Option<ChatMessageUser>
+where
     T: HasRoleContent,
 {
     let elapsed_start = Instant::now();
@@ -676,9 +677,8 @@ async fn run_session_internal_impl<T>(
         deps.app_version.clone(),
         &hook_deps,
     )
-    .await;
+    .await
 }
-
 async fn finalize_with_variant(
     pool: &MySqlPool,
     session_id: i64,
@@ -694,7 +694,7 @@ async fn finalize_with_variant(
     platform: String,
     app_version: String,
     hook_deps: &HookDeps,
-) {
+) -> Option<ChatMessageUser> {
     let elapsed = started.elapsed().as_millis() as i32;
 
     // Collect extensions from AgentContext for persistence (flattened)
@@ -706,17 +706,21 @@ async fn finalize_with_variant(
         Some(Value::Array(arr))
     };
 
-    if let Some(text) = content {
-        let _ = append_assistant_message_user(
+    let saved = if content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
+        None
+    } else {
+        let text = content.as_deref().unwrap_or("");
+        append_assistant_message_user(
             pool,
             session_id,
             actor_id,
-            &text,
+            text,
             Some(elapsed),
             extensions_json,
         )
-        .await;
-    }
+        .await
+        .ok()
+    };
 
     // ★ after_agent_end hook (audit-only, before done event)
     if let (Some(hooks_map), Some(ident)) = (hooks, agent_identifier) {
@@ -747,6 +751,8 @@ async fn finalize_with_variant(
         "final_agent_id": if final_agent_id != 1 { Some(final_agent_id) } else { None },
     });
     let _ = tx.send(Ok(Event::default().event("done").data(done.to_string())));
+
+    saved
 }
 
 fn emit_error(tx: &UnboundedSender<Result<Event, Infallible>>, code: u16, message: String) {

@@ -81,7 +81,7 @@ export default function ChatPage() {
     setHistory((h) => [...h, userMsg]);
 
     try {
-      const resp = await sendMessage({
+      const saved = await sendMessage({
         user_id: userId,
         message: text,
         channel: 'web',
@@ -89,17 +89,10 @@ export default function ChatPage() {
         app_version: '1.0.0',
       });
 
-      const assistantMsg: ChatMessage = {
-        id: -(Date.now() + 1),
-        session_id: 0,
-        user_id: userId,
-        role: 'assistant',
-        content: resp.reply,
-        elapsed_ms: resp.elapsed_ms || null,
-        extensions: resp.extensions || null,
-        created_at: new Date().toISOString(),
-      };
-      setHistory((h) => [...h, assistantMsg]);
+      // 后端返回完整持久化的 Assistant ChatMessage 记录
+      // (id、session_id、role=assistant、content、elapsed_ms、extensions、created_at)
+      // 追加到历史中；用户消息保持不变
+      setHistory((h) => [...h, saved]);
     } catch (e) {
       void appMessage.error(`发送失败：${(e as Error).message}`);
       setHistory((h) => h.filter((m) => m.id !== userMsg.id));

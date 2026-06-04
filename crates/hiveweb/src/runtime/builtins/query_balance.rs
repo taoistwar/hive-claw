@@ -26,14 +26,19 @@ use crate::runtime::builtins::BuiltinResult;
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
 /// user_id is extracted from AgentContext, not from LLM args.
 pub fn query_balance(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
-    let agent_ctx = ctx
+    // Try to get user_id from context; if not available (e.g. test without user_input), return a structured response
+    let user_id: Option<i64> = ctx
         .agent_ctx
         .as_ref()
-        .ok_or_else(|| BuiltinError::Exec("AgentContext 不可用".into()))?;
-    let user_id: i64 = agent_ctx
-        .get_user_metadata("actor_id")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| BuiltinError::Exec("无法从上下文获取用户ID".into()))?;
+        .and_then(|agent_ctx| agent_ctx.get_user_metadata("actor_id"))
+        .and_then(|s| s.parse().ok());
+
+    let Some(user_id) = user_id else {
+        return Ok(json!({
+            "message": "未配置用户ID，请在测试输入中提供 actor_id"
+        }));
+    };
+
     let ext_pool = ctx
         .ext_pool
         .ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?
@@ -60,15 +65,12 @@ pub async fn query_balance_async_impl(
         expire_coins_7d: Option<Decimal>,
         effective_end_time: Option<chrono::NaiveDateTime>,
         membership_category: Option<String>,
-        level_name: Option<String>,
-        disk_total_size: Option<Decimal>,
-        avg_daily_coin: Option<Decimal>,
-        play_times_7d: Option<i64>,
+        membership_level: Option<String>,
     }
 
     let membership: Option<MembershipRow> = sqlx::query_as(
             r#"select
-	m7.total_coins, m2.expire_coins_7d, m3.effective_end_time, m3.membership_category, m3.level_name,m4.disk_total_size,m5.avg_daily_coin,m6.play_times_7d
+	m7.total_coins, m2.expire_coins_7d, m3.effective_end_time, m3.membership_category, m3.membership_level
 from
 (
 	select ? as user_id
@@ -83,60 +85,27 @@ left join
 	group by user_id
 ) m2 on m1.user_id = m2.user_id
 LEFT JOIN (
-	select user_id, effective_end_time,membership_category, level_name from (
+	select user_id, effective_end_time,membership_category, membership_level from (
 	    select
 	        t1.user_id as user_id, t1.effective_end_time as  effective_end_time, t1.membership_category as membership_category,
-	        t2.level_order as level_order, t2.level_name as level_name
+	        t1.membership_level, t2.level_order as level_order
 	    from (
-	        select user_id, membership_level, effective_end_time,membership_category from cc_user_membership
-	        where user_id = ?
-	        and effective_end_time > now()
+	        select user_id, membership_level, effective_start_time,effective_end_time,membership_category from cc_user_membership
+	        where user_id = ? and effective_start_time < now() and effective_end_time > now()
 	    ) t1 left join cc_membership_level t2
 	    on t1.membership_level =t2.level_code
 	) t3
 	order by t3.level_order desc
 	limit 1
 ) m3 on m1.user_id = m3.user_id
-left JOIN(
-	SELECT
-		user_id,
-		sum(size/1024/1024/1024) as disk_total_size
-	from cc_user_disk
-	where user_id=?
-	and end_time > UNIX_TIMESTAMP()*1000
-	group by user_id
-) m4 on m1.user_id = m4.user_id
 LEFT JOIN (
-	SELECT
-	    user_id,
-	        CASE
-	        WHEN COUNT(DISTINCT DATE(create_time)) > 0
-	        THEN ROUND(COALESCE(SUM(value), 0) / COUNT(DISTINCT DATE(create_time)), 2)
-	        ELSE 0
-	        END AS avg_daily_coin
-	FROM cc_order_consume_detail
-	WHERE user_id = ?
-	  AND create_time BETWEEN DATE_SUB(NOW(), INTERVAL 7 DAY) AND now()
-	  AND value > 0
-	group by user_id
-) m5 on m1.user_id = m5.user_id
-LEFT JOIN (
-	SELECT
-		user_id, count(1) as play_times_7d
-	FROM cc_game_history
-	WHERE user_id = ?
-	  AND create_time > DATE_SUB(NOW(), INTERVAL 7 DAY) AND now()
-	GROUP BY user_id
-) m6 on m1.user_id = m6.user_id
-LEFT JOIN (
-	select user_id, IFNULL(sum(value), 0) as total_coins from cc_user_asset_coin where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0
+	select user_id, IFNULL(sum(value), 0) as total_coins
+	from cc_user_asset_coin
+  where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0
 	group by user_id
 ) m7 on m1.user_id = m7.user_id
- "#,
+"#,
         )
-        .bind(user_id)
-        .bind(user_id)
-        .bind(user_id)
         .bind(user_id)
         .bind(user_id)
         .bind(user_id)
@@ -173,10 +142,7 @@ LEFT JOIN (
         .unwrap_or(Decimal::ZERO);
 
     let coins_low = total_coins < Decimal::from(500);
-    let play_times_7d = membership
-        .as_ref()
-        .and_then(|m| m.play_times_7d)
-        .unwrap_or(0);
+
 
     // 2. 构造返回结果
     let mut result = json!({});
@@ -184,9 +150,8 @@ LEFT JOIN (
     let reply = json!({
         "effective_end_time": m.effective_end_time.map(|t| t.to_string()).unwrap_or_default(),
         "membership_category": m.membership_category.as_deref().unwrap_or(""),
-        "level_name": m.level_name.as_deref().unwrap_or(""),//level code
+        "membership_level": m.membership_level.as_deref().unwrap_or(""),
         "total_coins": m.total_coins.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
-        // "avg_daily_coin": m.avg_daily_coin.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
         "expire_coins_7d": m.expire_coins_7d.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
     });
 

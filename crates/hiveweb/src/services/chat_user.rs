@@ -174,8 +174,8 @@ pub async fn append_assistant_message_user(
     content: &str,
     elapsed_ms: Option<i32>,
     extensions: Option<serde_json::Value>,
-) -> Result<(), AppError> {
-    sqlx::query(
+) -> Result<ChatMessageUser, AppError> {
+    let res = sqlx::query(
         r#"INSERT INTO chat_messages_user
            (session_id, user_id, role, content, elapsed_ms, extensions)
            VALUES (?, ?, 'assistant', ?, ?, ?)"#,
@@ -188,7 +188,19 @@ pub async fn append_assistant_message_user(
     .execute(pool)
     .await
     .map_err(|e| AppError::Internal(format!("user assistant insert: {e}")))?;
-    Ok(())
+    fetch_message_user(pool, res.last_insert_id() as i64).await
+}
+
+pub async fn fetch_message_user(
+    pool: &MySqlPool,
+    id: i64,
+) -> Result<ChatMessageUser, AppError> {
+    sqlx::query_as::<_, ChatMessageUser>("SELECT * FROM chat_messages_user WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("user message fetch: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("user message id={id} not found")))
 }
 
 // --- Delete ---

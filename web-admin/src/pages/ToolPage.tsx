@@ -428,6 +428,7 @@ const ToolPage = () => {
         visible={testModalVisible}
         toolId={testingTool?.id ?? null}
         toolName={testingTool?.name ?? ''}
+        inputSchema={testingTool?.input_schema}
         onCancel={() => { setTestModalVisible(false); setTestingTool(null); }}
       />
       </div>

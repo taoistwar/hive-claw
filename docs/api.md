@@ -283,7 +283,7 @@ curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
       "role": "assistant",
       "content": "您好！以下是为您推荐的游戏...",
       "elapsed_ms": 1523,
-      "extension": {
+      "extensions": [{
         "content_type": "card",
         "payload": {
           "type": "goPay",
@@ -295,7 +295,7 @@ curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
             "expire_coins_7d": 5000.0
           }
         }
-      },
+      }],
       "created_at": "2026-06-02T14:30:00Z"
     },
     {
@@ -324,7 +324,6 @@ curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
 | `messages[].role` | `String` | 角色：`user` / `assistant` / `tool` / `system` |
 | `messages[].content` | `Option<String>` | 消息文本内容 |
 | `messages[].elapsed_ms` | `Option<i32>` | assistant 消息的处理耗时（毫秒），user 消息为 null |
-| `messages[].extension` | `Option<Value>` | 单个扩展对象（仅 1 条时出现），结构与 `/api/assistant` 一致 |
 | `messages[].extensions` | `Option<Vec<Value>>` | 扩展对象数组（≥ 2 条时出现），结构与 `/api/assistant` 一致 |
 | `messages[].created_at` | `DateTime` | 消息创建时间（UTC） |
 

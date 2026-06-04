@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Modal, Input, Button, Spin, Typography, Collapse, Tag, message } from 'antd';
+import { useState, useMemo } from 'react';
+import { Modal, Input, Button, Spin, Typography, Collapse, Tag, message, Alert } from 'antd';
 import { CaretRightOutlined, LoadingOutlined } from '@ant-design/icons';
 import type { ToolTestResult, ToolTestCall } from '../services/tool';
 import { testTool } from '../services/tool';
@@ -12,24 +12,37 @@ interface Props {
   visible: boolean;
   toolId: number | null;
   toolName: string;
+  inputSchema?: unknown;
   onCancel: () => void;
 }
 
-const ToolTestModal: React.FC<Props> = ({ visible, toolId, toolName, onCancel }) => {
+/** 检查 input_schema 是否无需任何输入参数 */
+function isEmptyInputSchema(schema: unknown): boolean {
+  if (!schema || typeof schema !== 'object') return false;
+  const s = schema as Record<string, unknown>;
+  if (s.type !== 'object') return false;
+  const props = s.properties;
+  if (!props || typeof props !== 'object') return true;
+  return Object.keys(props as object).length === 0;
+}
+
+const ToolTestModal: React.FC<Props> = ({ visible, toolId, toolName, inputSchema, onCancel }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ToolTestResult | null>(null);
 
+  const hasNoInput = useMemo(() => isEmptyInputSchema(inputSchema), [inputSchema]);
+
   const handleTest = async () => {
     if (!toolId) return;
-    if (!inputMessage.trim()) {
+    if (!hasNoInput && !inputMessage.trim()) {
       message.warning('请输入测试消息');
       return;
     }
     setLoading(true);
     setResult(null);
     try {
-      const res = await testTool(toolId, { message: inputMessage.trim() });
+      const res = await testTool(toolId, { message: inputMessage.trim() || '执行工具' });
       setResult(res);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
@@ -104,17 +117,29 @@ const ToolTestModal: React.FC<Props> = ({ visible, toolId, toolName, onCancel })
       destroyOnHidden
     >
       <div style={{ marginBottom: 16 }}>
-        <Text strong>输入测试消息：</Text>
-        <TextArea
-          rows={3}
-          value={inputMessage}
-          onChange={(e) => setInputMessage(e.target.value)}
-          placeholder="输入消息，观察 LLM 是否调用目标工具..."
-          style={{ marginTop: 8 }}
-          onPressEnter={(e) => {
-            if (e.ctrlKey) handleTest();
-          }}
-        />
+        {hasNoInput ? (
+          <Alert
+            type="info"
+            showIcon
+            message="该工具无需输入参数"
+            description="点击下方"测试"按钮即可直接调用该工具。"
+            style={{ marginBottom: 12 }}
+          />
+        ) : (
+          <>
+            <Text strong>输入测试消息：</Text>
+            <TextArea
+              rows={3}
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              placeholder="输入消息，观察 LLM 是否调用目标工具..."
+              style={{ marginTop: 8 }}
+              onPressEnter={(e) => {
+                if (e.ctrlKey) handleTest();
+              }}
+            />
+          </>
+        )}
         <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
           <Button
             type="primary"
@@ -125,9 +150,11 @@ const ToolTestModal: React.FC<Props> = ({ visible, toolId, toolName, onCancel })
             {loading ? '测试中...' : '测试'}
           </Button>
           <Button onClick={handleReset}>重置</Button>
-          <Text type="secondary" style={{ fontSize: 12, lineHeight: '32px' }}>
-            Ctrl+Enter 快捷发送
-          </Text>
+          {!hasNoInput && (
+            <Text type="secondary" style={{ fontSize: 12, lineHeight: '32px' }}>
+              Ctrl+Enter 快捷发送
+            </Text>
+          )}
         </div>
       </div>
 

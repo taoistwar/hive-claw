@@ -28,7 +28,6 @@ export interface ChatMessage {
   role: string;
   content: string | null;
   elapsed_ms: number | null;
-  extension?: ExtensionContent | null;
   extensions?: unknown[] | null;
   created_at: string;
 }
@@ -40,7 +39,6 @@ export interface MessagesResponse {
 export interface AssistantResponse {
   reply: string;
   elapsed_ms: number | null;
-  extension?: ExtensionContent | null;
   extensions?: unknown[] | null;
 }
 

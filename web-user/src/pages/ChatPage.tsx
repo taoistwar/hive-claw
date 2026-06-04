@@ -6,8 +6,6 @@ import {
   getMessages,
   type ChatMessage,
 } from '../services/chat';
-import type { ExtensionContent } from '../services/api-external';
-
 const { Title, Text } = Typography;
 
 /** 获取当前时间字符串 (YYYY-MM-DD HH:MM:SS) */
@@ -20,115 +18,6 @@ function nowStr(): string {
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
-}
-
-/** Extension 内容卡片渲染组件 */
-function ExtensionCard({ extension }: { extension: ExtensionContent }) {
-  const contentType = extension.content_type;
-  const data = extension.data as Record<string, unknown> | undefined;
-  const reply = extension.reply;
-
-  return (
-    <div
-      style={{
-        margin: '8px 0 0 0',
-        padding: '12px 16px',
-        background: 'rgba(0,0,0,0.04)',
-        borderRadius: '8px',
-        border: '1px solid var(--border-subtle)',
-      }}
-    >
-      {/* content_type 标签 */}
-      <div
-        style={{
-          fontSize: '11px',
-          color: 'var(--text-muted)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.5px',
-          marginBottom: '8px',
-        }}
-      >
-        {contentType}
-      </div>
-
-      {/* Card 类型渲染 */}
-      {contentType === 'Card' && data ? (
-        <div
-          style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '6px',
-            padding: '12px',
-          }}
-        >
-          {/* 显示 payload */}
-          {data.payload != null ? (
-            <pre
-              style={{
-                margin: 0,
-                whiteSpace: 'pre-wrap',
-                fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                fontSize: '12px',
-                lineHeight: '1.5',
-                color: 'var(--text-primary)',
-                background: 'transparent',
-              }}
-            >
-              {JSON.stringify(data.payload, null, 2)}
-            </pre>
-          ) : null}
-          {/* 显示 reply（如果有） */}
-          {reply && (
-            <div
-              style={{
-                marginTop: '8px',
-                padding: '8px 12px',
-                background: 'rgba(0,0,0,0.03)',
-                borderRadius: '4px',
-                fontSize: '13px',
-                lineHeight: '1.5',
-                color: 'var(--text-secondary)',
-              }}
-            >
-              {reply}
-            </div>
-          )}
-        </div>
-      ) : (
-        /* 默认：JSON 序列化显示 */
-        <pre
-          style={{
-            margin: 0,
-            whiteSpace: 'pre-wrap',
-            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-            fontSize: '12px',
-            lineHeight: '1.5',
-            color: 'var(--text-primary)',
-            background: 'transparent',
-          }}
-        >
-          {JSON.stringify(extension, null, 2)}
-        </pre>
-      )}
-
-      {/* reply 显示（非 Card 类型时单独显示） */}
-      {contentType !== 'Card' && reply && (
-        <div
-          style={{
-            marginTop: '8px',
-            padding: '8px 12px',
-            background: 'rgba(0,0,0,0.03)',
-            borderRadius: '4px',
-            fontSize: '13px',
-            lineHeight: '1.5',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          {reply}
-        </div>
-      )}
-    </div>
-  );
 }
 
 export default function ChatPage() {
@@ -207,7 +96,6 @@ export default function ChatPage() {
         role: 'assistant',
         content: resp.reply,
         elapsed_ms: resp.elapsed_ms || null,
-        extension: resp.extension || null,
         extensions: resp.extensions || null,
         created_at: new Date().toISOString(),
       };
@@ -422,9 +310,6 @@ export default function ChatPage() {
                   >
                     {m.content}
                   </pre>
-                  {m.role === 'assistant' && m.extension ? (
-                    <ExtensionCard extension={m.extension} />
-                  ) : null}
                   {m.role === 'assistant' && m.extensions && m.extensions.length > 0 ? (
                     <pre
                       style={{

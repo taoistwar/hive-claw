@@ -939,6 +939,16 @@ impl Default for ImageGenerationToolConfig {
     }
 }
 
+/// Balance query tool configuration — connects to an external database.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceToolConfig {
+    /// Database connection URL for the external balance database.
+    /// e.g. "mysql://user:password@host:3306/database"
+    #[serde(default)]
+    pub db_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolsConfig {
@@ -950,6 +960,8 @@ pub struct ToolsConfig {
     pub my: MyToolConfig,
     #[serde(default)]
     pub image_generation: ImageGenerationToolConfig,
+    #[serde(default)]
+    pub balance: BalanceToolConfig,
     /// Restrict all tool access to workspace directory.
     #[serde(default)]
     pub restrict_to_workspace: bool,

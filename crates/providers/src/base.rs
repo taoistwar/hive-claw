@@ -766,7 +766,7 @@ pub fn pick_delay(resp: &LLMResponse) -> Option<f64> {
 ///
 /// `messages` and `tools` follow OpenAI's JSON schema shape but are kept
 /// as `serde_json::Value` so providers can adapt to their own wire formats.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ChatRequest {
     pub messages: Vec<Value>,
     pub tools: Option<Vec<Value>>,
@@ -1195,6 +1195,7 @@ pub trait LLMProvider: Send + Sync {
         let mut last_response: Option<LLMResponse>;
         let mut images_stripped = false;
 
+        println!("HOP llm: req={:?}", req);
         loop {
             attempt += 1;
             let response = self.chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone()).await;

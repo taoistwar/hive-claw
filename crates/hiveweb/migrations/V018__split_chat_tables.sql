@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS chat_sessions_user (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL COMMENT '关联的普通用户',
-    user_phone_snapshot VARCHAR(11) NOT NULL DEFAULT '' COMMENT '快照：user 删除后仍可追溯',
+    user_phone_snapshot VARCHAR(100) NOT NULL DEFAULT '' COMMENT '快照：user 删除后仍可追溯',
     user_nickname_snapshot VARCHAR(64) NOT NULL DEFAULT '' COMMENT '快照：user 删除后仍可追溯',
     title VARCHAR(128) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

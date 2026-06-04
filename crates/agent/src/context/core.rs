@@ -296,6 +296,11 @@ impl AgentContext {
         self.response_payload.read().ok().and_then(|g| g.clone())
     }
 
+    /// Get a value from user_input.metadata by key (e.g., "actor_id").
+    pub fn get_user_metadata(&self, key: &str) -> Option<String> {
+        self.user_input.metadata.get(key).cloned()
+    }
+
     /// Create a read-only view for concurrent access.
     pub fn read_view(&self) -> super::read_view::ReadView {
         super::read_view::ReadView::new(self)
@@ -468,6 +473,24 @@ impl AgentContext {
             .map_err(|_| ContextError::MergeFailed("Response lock poisoned".into()))?;
         *response = Some(payload);
         Ok(())
+    }
+
+    /// Set a custom metadata key-value pair.
+    pub fn set_metadata(&self, key: String, value: String) -> Result<(), ContextError> {
+        let mut meta = self
+            .metadata
+            .write()
+            .map_err(|_| ContextError::MergeFailed("Metadata lock poisoned".into()))?;
+        meta.insert(key, value);
+        Ok(())
+    }
+
+    /// Get a metadata value by key.
+    pub fn get_metadata(&self, key: &str) -> Option<String> {
+        self.metadata
+            .read()
+            .ok()
+            .and_then(|m| m.get(key).cloned())
     }
 
     // --- Audit Operations ---

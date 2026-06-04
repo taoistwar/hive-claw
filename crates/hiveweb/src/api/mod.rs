@@ -23,7 +23,6 @@ pub mod skill;
 pub mod tag;
 pub mod tool;
 pub mod user;
-pub mod chat_user;
 pub mod users;
 pub mod workflow;
 

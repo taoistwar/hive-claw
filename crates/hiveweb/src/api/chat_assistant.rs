@@ -35,6 +35,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 
 use crate::api::AppState;
+use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
 use crate::services::chat_user as svc;
 use crate::utils::error::AppError;
@@ -69,18 +70,11 @@ pub struct AssistantRequest {
 // ── 外部数据库模型 ──
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-struct CloudUser {
-    #[allow(dead_code)]
-    #[sqlx(rename = "ID")]
-    id: i64,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
 struct CcUserMembership {
     #[allow(dead_code)]
     id: i64,
     #[allow(dead_code)]
-    membership_level: Option<i32>,
+    membership_level: Option<String>,
     effective_end_time: Option<chrono::NaiveDateTime>,
 }
 
@@ -107,7 +101,7 @@ async fn assistant_chat(
     let secret = get_secret();
     if !secret.is_empty() {
         let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
-        if !verify_sign(secret, &body, sign) {
+        if !chat_common::verify_sign(secret, "/api/assistant", &body, sign) {
             return AppError::BadRequest("Invalid signature".into())
                 .into_response::<()>()
                 .into_response();
@@ -150,14 +144,28 @@ async fn assistant_chat(
 
 
     // 5. 校验 user_id 是否存在于外部 cloud_user 表
-    if !user_exists_in_cloud(ext_pool, req.user_id).await {
-        return AppError::BadRequest("User not found".into())
-            .into_response::<()>()
-            .into_response();
+    match user_exists_in_cloud(ext_pool, req.user_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return AppError::BadRequest("User not found".into())
+                .into_response::<()>()
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(user_id = req.user_id, error = %e, "user_exists_in_cloud 查询失败");
+            return AppError::Internal("用户数据查询失败，请稍后重试".into())
+                .into_response::<()>()
+                .into_response();
+        }
     }
 
     // 6. 获取会员等级 & 判断是否 VIP
-    let is_vip = check_vip_membership(ext_pool, req.user_id).await;
+    let is_vip = check_vip_membership(ext_pool, req.user_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(user_id = req.user_id, error = %e, "check_vip_membership 查询失败，降级为非VIP");
+            false
+        });
 
     // 7. 日访问次数限流
     let limit_key = format!("assistant:daily:{}", req.user_id);
@@ -336,37 +344,43 @@ fn event_to_sse_text(event: &Event) -> String {
 }
 
 /// Unescape a string produced by `bytes::BytesMut`'s `Debug` implementation.
+///
+/// Collects bytes into a `Vec<u8>` so that multi-byte UTF-8 sequences (e.g. Chinese
+/// characters) are reconstructed correctly, then converts via `String::from_utf8_lossy`.
 fn unescape_bytesmut_debug(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('\\') => out.push('\\'),
-                Some('"') => out.push('"'),
-                Some('0') => out.push('\0'),
+                Some('n') => bytes.push(b'\n'),
+                Some('r') => bytes.push(b'\r'),
+                Some('t') => bytes.push(b'\t'),
+                Some('\\') => bytes.push(b'\\'),
+                Some('"') => bytes.push(b'"'),
+                Some('0') => bytes.push(b'\0'),
                 Some('x') => {
                     // hex escape: \xNN
                     let h1 = chars.next().unwrap_or('0');
                     let h2 = chars.next().unwrap_or('0');
                     if let Ok(b) = u8::from_str_radix(&format!("{h1}{h2}"), 16) {
-                        out.push(b as char);
+                        bytes.push(b);
                     }
                 }
                 Some(other) => {
-                    out.push('\\');
-                    out.push(other);
+                    bytes.push(b'\\');
+                    // Push the character as UTF-8 bytes
+                    let mut buf = [0u8; 4];
+                    bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
                 }
-                None => out.push('\\'),
+                None => bytes.push(b'\\'),
             }
         } else {
-            out.push(c);
+            // ASCII-range chars in debug output are literal bytes
+            bytes.push(c as u8);
         }
     }
-    out
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Parse a single SSE-formatted event text into (event_type, data).
@@ -385,7 +399,7 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
 
 #[derive(Serialize)]
 struct AssistantResponse {
-    reply: String, 
+    reply: String,
     elapsed_ms: Option<u64>,
     /// AgentContext extensions (cards, images, suggestions, etc.) from hook/function execution
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -394,42 +408,30 @@ struct AssistantResponse {
 
 // ── 签名校验 ──
 
-fn verify_sign(secret: &str, body: &str, expected_sign: &str) -> bool {
-    let sign_string = format!("{}{}?body={}", secret, "/api/assistant", body);
-    let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
-    digest == expected_sign
-}
+
 
 // ── 外部 DB 查询 ──
 
-async fn user_exists_in_cloud(pool: &MySqlPool, user_id: i64) -> bool {
-    sqlx::query_as::<_, CloudUser>("SELECT ID FROM cloud_user WHERE ID = ?")
+async fn user_exists_in_cloud(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM cloud_user WHERE ID = ?")
         .bind(user_id)
-        .fetch_optional(pool)
+        .fetch_one(pool)
         .await
-        .map(|r| r.is_some())
-        .unwrap_or(false)
+        .map(|count| count > 0)
 }
 
-async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> bool {
-    let row = sqlx::query_as::<_, CcUserMembership>(
+async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_as::<_, CcUserMembership>(
         "SELECT id, membership_level, effective_end_time FROM cc_user_membership WHERE id = ? LIMIT 1",
     )
     .bind(user_id)
     .fetch_optional(pool)
-    .await;
-
-    match row {
-        Ok(Some(m)) => {
-            if let Some(end) = m.effective_end_time {
-                end >= chrono::Utc::now().naive_utc() // 包含边界（Clarify Q3）
-            } else {
-                // 无过期时间 → 永久有效
-                true
-            }
-        }
-        _ => false,
-    }
+    .await
+    .map(|row| {
+        row.map_or(false, |m| {
+            m.effective_end_time.map_or(true, |end| end >= chrono::Utc::now().naive_utc())
+        })
+    })
 }
 
 // ── 日访问次数限流（Redis） ──
@@ -626,14 +628,14 @@ mod tests {
         let body = r#"{"user_id":123,"message":"hello"}"#;
         let sign_string = format!("{}/api/assistant?body={}", secret, body);
         let expected = format!("{:x}", md5::compute(sign_string.as_bytes()));
-        assert!(verify_sign(secret, body, &expected));
+        assert!(chat_common::verify_sign(secret, "/api/assistant", body, &expected));
     }
 
     #[test]
     fn verify_sign_rejects_wrong_signature() {
         let secret = "abc123";
         let body = r#"{"user_id":123,"message":"hello"}"#;
-        assert!(!verify_sign(secret, body, "wrong_sign"));
+        assert!(!chat_common::verify_sign(secret, "/api/assistant", body, "wrong_sign"));
     }
 
     #[test]
@@ -644,12 +646,12 @@ mod tests {
         let original_body = r#"{"user_id":123,"message":"hello"}"#;
         let sign_string = format!("{}/api/assistant?body={}", secret, original_body);
         let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
-        assert!(!verify_sign(secret, body_tampered, &sign));
+        assert!(!chat_common::verify_sign(secret, "/api/assistant", body_tampered, &sign));
     }
 
     #[test]
     fn verify_sign_empty_sign_fails() {
-        assert!(!verify_sign("secret", "body", ""));
+        assert!(!chat_common::verify_sign("secret", "/api/assistant", "body", ""));
     }
 
     #[test]
@@ -659,7 +661,7 @@ mod tests {
         let sign_string = format!("{}/api/assistant?body={}", secret, body);
         let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
         // uppercase should not match
-        assert!(!verify_sign(secret, body, &sign.to_uppercase()));
+        assert!(!chat_common::verify_sign(secret, "/api/assistant", body, &sign.to_uppercase()));
     }
 
     // ── T033: 日限流 TTL 计算 ──

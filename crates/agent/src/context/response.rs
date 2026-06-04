@@ -46,34 +46,37 @@ impl std::fmt::Display for ExtensionType {
 
 /// A single piece of extension content.
 ///
-/// Extension content is flexible: the actual data is a `serde_json::Value`
-/// and the interpretation depends on the `content_type`. `render_hints`
-/// provides UI-level rendering guidance.
+/// `content_type` is validated via the enum; all other extension fields
+/// (id, data, reply, render_hints, etc.) are transparently stored in `raw`
+/// and forwarded to the API without modification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionContent {
-    /// The type of this extension content
+    /// The type of this extension content (validated)
     pub content_type: ExtensionType,
-    /// Structured data for this extension
-    pub data: serde_json::Value,
-    /// Rendering hints (key-value pairs for UI consumption)
-    #[serde(default)]
-    pub render_hints: HashMap<String, String>,
+    /// Complete extension payload — all fields except content_type.
+    /// Transparent pass-through to API consumers.
+    pub raw: serde_json::Value,
 }
 
 impl ExtensionContent {
     /// Create a new `ExtensionContent`.
-    pub fn new(content_type: ExtensionType, data: serde_json::Value) -> Self {
-        Self {
-            content_type,
-            data,
-            render_hints: HashMap::new(),
-        }
+    /// `raw` should contain all extension fields (id, data, reply, etc.);
+    /// any `content_type` inside `raw` is ignored in favour of the validated param.
+    pub fn new(content_type: ExtensionType, raw: serde_json::Value) -> Self {
+        Self { content_type, raw }
     }
 
-    /// Add a render hint.
-    pub fn with_hint(mut self, key: &str, value: &str) -> Self {
-        self.render_hints.insert(key.to_string(), value.to_string());
-        self
+    /// Produce the merged API representation: content_type string + all raw fields.
+    pub fn to_api_value(&self) -> serde_json::Value {
+        let mut obj = match &self.raw {
+            serde_json::Value::Object(m) => m.clone(),
+            _ => serde_json::Map::new(),
+        };
+        obj.insert(
+            "content_type".into(),
+            serde_json::Value::String(self.content_type.to_string()),
+        );
+        serde_json::Value::Object(obj)
     }
 }
 
@@ -149,7 +152,7 @@ mod tests {
         let payload = ResponsePayload::new("Hello!")
             .with_extension(ExtensionContent::new(
                 ExtensionType::Card,
-                serde_json::json!({"title": "Game Card"}),
+                serde_json::json!({"id": "test_card", "data": {"title": "Game Card"}}),
             ))
             .with_suggestion("Tell me more");
 
@@ -160,16 +163,16 @@ mod tests {
     }
 
     #[test]
-    fn extension_content_with_hints() {
+    fn extension_content_to_api_value() {
         let ext = ExtensionContent::new(
             ExtensionType::Image,
-            serde_json::json!({"url": "http://example.com/img.png"}),
-        )
-        .with_hint("width", "800")
-        .with_hint("height", "600");
-
-        assert_eq!(ext.render_hints.get("width"), Some(&"800".to_string()));
-        assert_eq!(ext.render_hints.get("height"), Some(&"600".to_string()));
+            serde_json::json!({"id": "test", "data": {"url": "http://example.com/img.png"}, "render_hints": {"width": "800", "height": "600"}}),
+        );
+        let api = ext.to_api_value();
+        assert_eq!(api["content_type"], "image");
+        assert_eq!(api["id"], "test");
+        assert_eq!(api["data"]["url"], "http://example.com/img.png");
+        assert_eq!(api["render_hints"]["width"], "800");
     }
 
     #[test]

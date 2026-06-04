@@ -512,7 +512,7 @@ pub(crate) fn inject_agent_context_snapshot(input: &mut Value, agent_ctx: &Agent
             .collect::<Vec<_>>(),
         "extensions": agent_ctx.get_extensions()
             .iter()
-            .map(|e| json!({"content_type": e.content_type.to_string(), "data": e.data}))
+            .map(|e| e.to_api_value())
             .collect::<Vec<_>>(),
     });
 
@@ -579,7 +579,6 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 .get("content_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("card");
-            let data = ext.get("data").cloned().unwrap_or(Value::Null);
             let content_type = match content_type_str {
                 "card" => ExtensionType::Card,
                 "image" => ExtensionType::Image,
@@ -591,9 +590,20 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 "object_ref" => ExtensionType::ObjectRef,
                 _ => ExtensionType::Card,
             };
-            let content = ExtensionContent::new(content_type, data);
+            let content = ExtensionContent::new(content_type, ext.clone());
             if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
                 tracing::warn!("Failed to apply _agent_context_updates extension: {e}");
+            }
+        }
+    }
+
+    // Apply metadata updates (e.g., agent_loop_break)
+    if let Some(metadata) = updates.get("metadata").and_then(|v| v.as_object()) {
+        for (key, val) in metadata {
+            if let Some(s) = val.as_str() {
+                if let Err(e) = agent_ctx.set_metadata(key.clone(), s.to_string()) {
+                    tracing::warn!("Failed to apply _agent_context_updates metadata: {e}");
+                }
             }
         }
     }

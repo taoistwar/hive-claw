@@ -16,7 +16,8 @@ tokio = { version = "1", features = ["full"] }
 clap = { workspace = true }
 
 # Database — 004 加 json feature 以便序列化 JSON 列
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono", "json"] }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono", "json", "rust_decimal"] }
+rust_decimal = { workspace = true }
 
 # Redis
 redis = { workspace = true }

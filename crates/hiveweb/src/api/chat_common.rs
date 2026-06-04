@@ -1,6 +1,6 @@
 //! Shared chat utilities for admin and user chat APIs.
 //!
-//! Contains SSE concurrency control, query structs, and common helpers.
+//! Contains SSE concurrency control, query structs, common helpers, and MD5 sign verification.
 
 use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -116,6 +116,16 @@ pub struct ListSessionsQuery {
     pub offset: Option<i64>,
     pub limit: Option<i64>,
     pub search: Option<String>,
+}
+
+// --- MD5 Sign Verification ---
+
+/// Verify MD5 signature: `MD5(SECRET + "{path}?body={body}")`
+pub fn verify_sign(secret: &str, path: &str, body: &str, expected_sign: &str) -> bool {
+    let sign_string = format!("{}{}?body={}", secret, path, body);
+    println!("Verifying sign with string: '{}'", sign_string);
+    let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
+    digest == expected_sign
 }
 
 // --- SSE Response Builder ---

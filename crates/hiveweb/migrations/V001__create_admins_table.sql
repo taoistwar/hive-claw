@@ -1,7 +1,7 @@
 -- 管理员表（data-model.md §Admin）
 CREATE TABLE IF NOT EXISTS admins (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    phone VARCHAR(11) NOT NULL UNIQUE,
+    phone VARCHAR(100) NOT NULL UNIQUE,
     nickname VARCHAR(20) NOT NULL,
     password_hash VARCHAR(60) NOT NULL,
     role TINYINT NOT NULL DEFAULT 1 COMMENT '1=Normal, 2=System, 3=Super',

@@ -161,7 +161,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 ### 3. 获取用户历史消息
 
 ```
-GET /api/messages?user_id={id}&date={YYYY-MM-DD HH:MM:SS}&sign={md5}
+POST /api/messages?sign={md5}
 ```
 
 获取指定时间之前的最近 10 条用户聊天记录。
@@ -170,20 +170,38 @@ GET /api/messages?user_id={id}&date={YYYY-MM-DD HH:MM:SS}&sign={md5}
 
 **鉴权方式：**
 
-请求需要附带 `sign` 查询参数，其值为：
+请求 URL 中需要附带 `sign` 查询参数，其值为：
 
 ```
-MD5(ASSISTANT_SECRET + "/api/messages?user_id={user_id}&date={date}")
+MD5(ASSISTANT_SECRET + "/api/messages?body=" + json_body)
 ```
 
 > 若环境变量 `ASSISTANT_SECRET` 为空，则跳过签名校验。
 
-**查询参数：**
+**请求头：**
 
-| 参数 | 类型 | 必填 | 说明 |
+| Header | 值 |
+|--------|-----|
+| `Content-Type` | `application/json; charset=UTF-8` |
+
+**请求体：**
+
+```json
+{
+  "user_id": 12345,
+  "date": "2026-06-03 14:30:00"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `user_id` | `i64` | 是 | 用户 ID，必须大于 0 |
 | `date` | `String` | 是 | 最后一条聊天记录的时间，格式 `YYYY-MM-DD HH:MM:SS`，返回该时间之前的最近 10 条 |
+
+**URL 查询参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
 | `sign` | `String` | 否* | MD5 签名（`ASSISTANT_SECRET` 非空时必填） |
 
 **示例请求：**
@@ -191,12 +209,13 @@ MD5(ASSISTANT_SECRET + "/api/messages?user_id={user_id}&date={date}")
 ```bash
 USER_ID=12345
 DATE="2026-06-03 14:30:00"
-SIGN_STRING="/api/messages?user_id=${USER_ID}&date=${DATE}"
-SIGN=$(echo -n "${ASSISTANT_SECRET}${SIGN_STRING}" | md5sum | awk '{print $1}')
-# 空格需要 URL 编码为 %20
-DATE_ENCODED="2026-06-03%2014%3A30%3A00"
+BODY="{\"user_id\":${USER_ID},\"date\":\"${DATE}\"}"
+SIGN_STR="/api/messages?body=${BODY}"
+SIGN=$(echo -n "${ASSISTANT_SECRET}${SIGN_STR}" | md5sum | awk '{print $1}')
 
-curl -X GET "http://localhost:3300/api/messages?user_id=${USER_ID}&date=${DATE_ENCODED}&sign=${SIGN}"
+curl -X POST "http://localhost:3300/api/messages?sign=${SIGN}" \
+  -H "Content-Type: application/json; charset=UTF-8" \
+  -d "${BODY}"
 ```
 
 **成功响应 `200 OK`：**

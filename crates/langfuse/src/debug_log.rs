@@ -36,7 +36,7 @@ pub fn debug_log(msg: &str) {
     let line = format!("[{}] {}\n", ts, msg);
 
     // Always print to stderr so the user can see it immediately.
-    eprint!("[lf:debug] {}", line);
+    // eprint!("[lf:debug] {}", line);
 
     if let Ok(mut guard) = DEBUG_LOG.lock() {
         if let Some(ref mut writer) = *guard {

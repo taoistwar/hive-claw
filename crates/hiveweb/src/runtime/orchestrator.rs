@@ -122,6 +122,8 @@ async fn run_session_internal_impl<T>(
                 let mut m = std::collections::HashMap::new();
                 m.insert("channel".into(), deps.channel.clone());
                 m.insert("platform".into(), deps.platform.clone());
+                m.insert("app_version".into(), deps.app_version.clone());
+                m.insert("actor_id".into(), actor_id.to_string());
                 m
             },
         },
@@ -347,11 +349,13 @@ async fn run_session_internal_impl<T>(
                 .iter()
                 .map(|tc| tc.to_openai_tool_call())
                 .collect();
-            messages.push(json!({
-                "role": "assistant",
-                "content": assistant_content.clone(),
-                "tool_calls": tc_json,
-            }));
+            if assistant_content.len()> 0 {
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": assistant_content.clone(),
+                    "tool_calls": tc_json,
+                }));
+            }
         } else {
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }
@@ -577,6 +581,21 @@ async fn run_session_internal_impl<T>(
             }
         }
 
+        // ★ AgentContext: check if a tool requested agent_loop_break
+        if agent_ctx.get_metadata("agent_loop_break").as_deref() == Some("true") {
+            final_content = Some(String::new());
+            final_agent_id = current_agent_id;
+            let _ = agent_ctx.set_record(
+                Category::StateChanges,
+                format!("hop-{}-loop-break", hop),
+                json!({"iteration": hop, "event": "agent_loop_break", "triggered_by": "tool_metadata"}),
+                "orchestrator".into(),
+                hop,
+            );
+            let _ = agent_ctx.set_lifecycle_state(LifecycleState::Completed);
+            break;
+        }
+
         if let Some(next) = routed_to {
             current_agent_id = next;
             // ★ AgentContext: record hop iteration state before routing continue
@@ -617,11 +636,7 @@ async fn run_session_internal_impl<T>(
         let exts = agent_ctx.get_extensions();
         if !exts.is_empty() {
             let exts_payload = json!({
-                "extensions": exts.iter().map(|e| json!({
-                    "content_type": e.content_type.to_string(),
-                    "data": e.data,
-                    "render_hints": e.render_hints,
-                })).collect::<Vec<_>>(),
+                "extensions": exts.iter().map(|e| e.to_api_value()).collect::<Vec<_>>(),
             });
             let _ = tx.send(Ok(Event::default()
                 .event("extensions")

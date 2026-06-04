@@ -4,13 +4,15 @@
 //! 调用入口：当 orchestrator 选中 kind=1 Tool 时直接走宿主代码，绕过 Plugin invoker。
 //!
 //! 内置不可删除；可被禁用（disabled 字段暂未引入 — 后续 schema 扩展时加）。
-
+mod query_balance;
 use regex::Regex;
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 use std::sync::Arc;
-
+use query_balance::query_balance;
 use agent::context::AgentContext;
 
 #[derive(Debug, thiserror::Error)]
@@ -331,6 +333,31 @@ pub const GAME_LIST_OUTPUT_SCHEMA: &str = r#"{
   }
 }"#;
 
+pub const QUERY_BALANCE_INPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {},
+  "description": "查询当前对话用户的余额与会员等级。user_id 从 AgentContext 隐式获取。"
+}"#;
+
+pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "user_id": { "type": "integer", "description": "用户 ID" },
+    "balance": { "type": "number", "description": "用户余额" },
+    "currency": { "type": "string", "description": "货币类型" },
+    "has_membership": { "type": "boolean", "description": "是否有有效会员" },
+    "membership": {
+      "type": "object",
+      "description": "会员信息（如果有）",
+      "properties": {
+        "effective_end_time": { "type": "string" },
+        "membership_category": { "type": "string" },
+        "level_name": { "type": "string" }
+      }
+    }
+  }
+}"#;
+
 // ---------- Registry ----------
 
 #[derive(Debug, Clone, Copy)]
@@ -398,6 +425,15 @@ pub const BUILTINS: &[BuiltinDef] = &[
         output_schema: GAME_LIST_OUTPUT_SCHEMA,
         required_capabilities: &[],
         handler: game_list,
+    },
+    BuiltinDef {
+        identifier: "query_balance",
+        name: "Query Balance",
+        description: "查询用户余额与会员等级：从外部数据库查询 cc_user_asset_coin 资产总和及 cc_user_membership 会员信息。无有效会员时自动推送 firstPay 卡片。",
+        input_schema: QUERY_BALANCE_INPUT_SCHEMA,
+        output_schema: QUERY_BALANCE_OUTPUT_SCHEMA,
+        required_capabilities: &[],
+        handler: query_balance,
     },
 ];
 

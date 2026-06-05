@@ -32,10 +32,12 @@ import {
 import {
   Alert,
   Button,
+  Col,
   Form,
   Input,
   InputNumber,
   Modal,
+  Row,
   Select,
   Space,
   Spin,
@@ -918,187 +920,172 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
             执行
           </Button>,
         ]}
-        width={executionResult ? 800 : 700}
+        width={executionResult ? 1200 : 700}
       >
-        <Space direction="vertical" style={{ width: '100%' }} size="large">
-          {/* 工作流信息 */}
-          <div>
-            <Text strong>工作流信息：</Text>
-            {workflow?.description && (
-              <Paragraph type="secondary" style={{ margin: '8px 0 0 0' }}>
-                {workflow.description}
-              </Paragraph>
-            )}
-          </div>
+        <Row gutter={16}>
+          {/* 左侧：工作流信息 + 输入参数 + UserInput 上下文 */}
+          <Col span={executionResult ? 11 : 24}>
+            <Space direction="vertical" style={{ width: '100%' }} size="large">
+              {/* 工作流信息 */}
+              <div>
+                <Text strong>工作流信息：</Text>
+                {workflow?.description && (
+                  <Paragraph type="secondary" style={{ margin: '8px 0 0 0' }}>
+                    {workflow.description}
+                  </Paragraph>
+                )}
+              </div>
 
-          {/* 输入表单 */}
-          <div>
-            <Text strong style={{ marginBottom: 8, display: 'block' }}>输入参数：</Text>
-            {(() => {
-              const fields = parseSchemaProperties(startInputSchema);
-              if (fields.length > 0) {
-                return (
-                  <Form form={form} layout="vertical" size="small">
-                    {fields.map(({ key, prop }) => renderFormField(key, prop))}
-                  </Form>
-                );
-              }
-              return <Text type="secondary">该工作流无输入参数（空 schema）</Text>;
-            })()}
-          </div>
+              {/* 输入表单 */}
+              <div>
+                <Text strong style={{ marginBottom: 8, display: 'block' }}>输入参数：</Text>
+                {(() => {
+                  const fields = parseSchemaProperties(startInputSchema);
+                  if (fields.length > 0) {
+                    return (
+                      <Form form={form} layout="vertical" size="small">
+                        {fields.map(({ key, prop }) => renderFormField(key, prop))}
+                      </Form>
+                    );
+                  }
+                  return <Text type="secondary">该工作流无输入参数（空 schema）</Text>;
+                })()}
+              </div>
 
-          {/* UserInput 上下文配置（可选，用于依赖 AgentContext 的内置函数） */}
-          <div>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 8,
-                cursor: 'pointer',
-              }}
-              onClick={() => setShowContext(!showContext)}
-            >
-              <Text strong>UserInput 上下文（可选）：</Text>
-              <Button size="small" type="link">
-                {showContext ? '收起 ▲' : '展开 ▼'}
-              </Button>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                用于依赖用户上下文的函数（如 query_balance 需要 actor_id）
-              </Text>
-            </div>
-            {showContext && (
+              {/* UserInput 上下文配置（可选，用于依赖 AgentContext 的内置函数） */}
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    marginBottom: 8,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setShowContext(!showContext)}
+                >
+                  <Text strong>UserInput 上下文（可选）：</Text>
+                  <Button size="small" type="link">
+                    {showContext ? '收起 ▲' : '展开 ▼'}
+                  </Button>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    用于依赖用户上下文的函数（如 query_balance 需要 actor_id）
+                  </Text>
+                </div>
+                {showContext && (
+                  <div
+                    style={{
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 6,
+                      padding: '12px 16px',
+                      background: '#fafafa',
+                    }}
+                  >
+                    <Form form={form} layout="vertical" size="small">
+                      <Form.Item
+                        name="_ctx_raw_text"
+                        label={
+                          <span>
+                            raw_text
+                            <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                              用户原始输入文本
+                            </Text>
+                          </span>
+                        }
+                      >
+                        <Input placeholder="例如：帮我查一下余额" />
+                      </Form.Item>
+                      <Form.Item
+                        name="_ctx_actor_id"
+                        label={
+                          <span>
+                            actor_id
+                            <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                              用户/玩家 ID
+                            </Text>
+                          </span>
+                        }
+                      >
+                        <Input placeholder="例如：10086" />
+                      </Form.Item>
+                      <Form.Item
+                        name="_ctx_channel"
+                        label={
+                          <span>
+                            channel
+                            <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                              来源渠道
+                            </Text>
+                          </span>
+                        }
+                      >
+                        <Input placeholder="例如：weixin / qq" />
+                      </Form.Item>
+                      <Form.Item
+                        name="_ctx_platform"
+                        label={
+                          <span>
+                            platform
+                            <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                              平台
+                            </Text>
+                          </span>
+                        }
+                      >
+                        <Input placeholder="例如：ios / android" />
+                      </Form.Item>
+                      <Form.Item
+                        name="_ctx_app_version"
+                        label={
+                          <span>
+                            app_version
+                            <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                              应用版本
+                            </Text>
+                          </span>
+                        }
+                      >
+                        <Input placeholder="例如：3.2.1" />
+                      </Form.Item>
+                    </Form>
+                  </div>
+                )}
+              </div>
+            </Space>
+          </Col>
+
+          {/* 右侧：执行结果 */}
+          {executionResult && (
+            <Col span={13}>
               <div
                 style={{
-                  border: '1px solid #d9d9d9',
-                  borderRadius: 6,
-                  padding: '12px 16px',
-                  background: '#fafafa',
+                  borderLeft: '1px solid #f0f0f0',
+                  paddingLeft: 16,
+                  height: '100%',
                 }}
               >
-                <Form form={form} layout="vertical" size="small">
-                  <Form.Item
-                    name="_ctx_raw_text"
-                    label={
-                      <span>
-                        raw_text
-                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                          用户原始输入文本
-                        </Text>
-                      </span>
-                    }
-                  >
-                    <Input placeholder="例如：帮我查一下余额" />
-                  </Form.Item>
-                  <Form.Item
-                    name="_ctx_actor_id"
-                    label={
-                      <span>
-                        actor_id
-                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                          用户/玩家 ID
-                        </Text>
-                      </span>
-                    }
-                  >
-                    <Input placeholder="例如：10086" />
-                  </Form.Item>
-                  <Form.Item
-                    name="_ctx_channel"
-                    label={
-                      <span>
-                        channel
-                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                          来源渠道
-                        </Text>
-                      </span>
-                    }
-                  >
-                    <Input placeholder="例如：weixin / qq" />
-                  </Form.Item>
-                  <Form.Item
-                    name="_ctx_platform"
-                    label={
-                      <span>
-                        platform
-                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                          平台
-                        </Text>
-                      </span>
-                    }
-                  >
-                    <Input placeholder="例如：ios / android" />
-                  </Form.Item>
-                  <Form.Item
-                    name="_ctx_app_version"
-                    label={
-                      <span>
-                        app_version
-                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                          应用版本
-                        </Text>
-                      </span>
-                    }
-                  >
-                    <Input placeholder="例如：3.2.1" />
-                  </Form.Item>
-                </Form>
+                <Text strong style={{ marginBottom: 8, display: 'block' }}>
+                  执行结果（耗时 {executionResult.elapsed_ms}ms）：
+                </Text>
+                <pre
+                  style={{
+                    background: '#fafafa',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: 6,
+                    padding: 12,
+                    fontSize: 12,
+                    overflow: 'auto',
+                    maxHeight: 'calc(100vh - 360px)',
+                    minHeight: 200,
+                    margin: 0,
+                  }}
+                >
+                  {JSON.stringify(executionResult, null, 2)}
+                </pre>
               </div>
-            )}
-          </div>
-
-          {/* 执行结果展示 — 显示结束节点的最终输出（按 output_schema 提取字段） */}
-          {executionResult && (
-            <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-              <Text strong style={{ marginBottom: 8, display: 'block' }}>
-                执行结果（耗时 {executionResult.elapsed_ms}ms）：
-              </Text>
-              {(() => {
-                // 收集所有上游结果，按结束节点的 output_schema 提取
-                const allUpstream: Record<string, unknown> = {};
-                for (const key of finalOutputNodeKeys) {
-                  const r = executionResult.node_results[key];
-                  if (r !== undefined && typeof r === 'object' && r !== null) {
-                    Object.assign(allUpstream, r as Record<string, unknown>);
-                  }
-                }
-                const endResult = extractOutputFields(endOutputSchema, allUpstream);
-                if (endResult !== null && Object.keys(endResult).length > 0) {
-                  return (
-                    <div
-                      style={{
-                        background: '#fff7e6',
-                        border: '1px solid #ffd591',
-                        borderRadius: 6,
-                        padding: 12,
-                      }}
-                    >
-                      <div style={{ marginBottom: 8 }}>
-                        <Text strong style={{ fontSize: 13, color: '#fa541c' }}>
-                          结束节点输出
-                        </Text>
-                      </div>
-                      <pre
-                        style={{
-                          background: '#fffbf0',
-                          padding: 12,
-                          borderRadius: 4,
-                          fontSize: 12,
-                          overflow: 'auto',
-                          maxHeight: 300,
-                          margin: 0,
-                        }}
-                      >
-                        {typeof endResult === 'string' ? endResult : JSON.stringify(endResult, null, 2)}
-                      </pre>
-                    </div>
-                  );
-                }
-                return <Text type="secondary">结束节点未配置输出变量或无输出数据</Text>;
-              })()}
-            </div>
+            </Col>
           )}
-        </Space>
+        </Row>
       </Modal>
       {/* 节点结果查看弹窗 */}
       <Modal

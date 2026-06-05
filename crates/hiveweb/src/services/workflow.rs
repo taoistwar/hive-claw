@@ -664,6 +664,31 @@ pub async fn put_graph(
                 .push(m);
         }
     }
+
+    // 4a. 校验每个节点的 input_mapping（结构化 InputSpec）形态合法
+    //     function_node 与 generate_answer_node 都用 input_mapping
+    use crate::runtime::input_source::{parse_input_spec, validate_input_spec};
+    for n in &db_nodes {
+        let spec_key = match n.node_type {
+            NodeType::FunctionNode | NodeType::GenerateAnswerNode => "input_mapping",
+            _ => continue,
+        };
+        if let Some(spec_value) = n.node_config.as_ref().and_then(|c| c.get(spec_key)) {
+            let spec = parse_input_spec(spec_value).map_err(|e| {
+                AppError::WorkflowMappingInvalid(format!(
+                    "节点「{}」的 {} 格式错误：{}",
+                    n.node_key, spec_key, e
+                ))
+            })?;
+            validate_input_spec(&spec).map_err(|e| {
+                AppError::WorkflowMappingInvalid(format!(
+                    "节点「{}」的 {} 校验失败：{}",
+                    n.node_key, spec_key, e
+                ))
+            })?;
+        }
+    }
+
     for n in &db_nodes {
         let Some(fid) = n.function_id else {
             continue;

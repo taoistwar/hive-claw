@@ -2,10 +2,34 @@ import { Drawer, Form, Input, Select, Space, Tag, Typography, Empty, InputNumber
 import { useState, useEffect, useMemo } from 'react';
 import { listFunctions, type FunctionItem } from '../../services/function';
 import { listModelPresets, type ModelPreset } from '../../services/agent';
-import type { AnswerNodeConfig, AnswerNodeVariable } from '../../services/workflow';
+import {
+  type AnswerNodeConfig,
+  type InputSource,
+  type InputSpec,
+  RESERVED_INPUT_KEYS,
+  USER_INPUT_FIELDS,
+  type AgentContextCategory,
+} from '../../services/workflow';
 import type { Node, Edge } from 'reactflow';
 
 const { Text, Title } = Typography;
+
+const AGENT_CONTEXT_CATEGORIES: { value: AgentContextCategory; label: string }[] = [
+  { value: 'user_input', label: '用户输入' },
+  { value: 'entities', label: '实体' },
+  { value: 'tool_results', label: '工具结果' },
+  { value: 'state_changes', label: '状态变更' },
+  { value: 'extensions', label: '扩展' },
+];
+
+/** 客户端校验：变量名不能空、不能与保留字冲突 */
+function validateInputFieldName(name: string): string | null {
+  if (!name.trim()) return '变量名不能为空';
+  if (RESERVED_INPUT_KEYS.includes(name as typeof RESERVED_INPUT_KEYS[number])) {
+    return `变量名 "${name}" 是系统保留字，不能使用`;
+  }
+  return null;
+}
 
 interface InputVar {
   key: string;
@@ -26,8 +50,8 @@ interface NodeDetailDrawerProps {
   onUpdateStartNode?: (vars: Record<string, unknown>) => void;
   onUpdateEndNode?: (vars: Record<string, unknown>) => void;
   onUpdateAnswerNode?: (config: AnswerNodeConfig) => void;
-  onUpdateFunctionNode?: (nodeKey: string, inputMapping: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>) => void;
-  functionInputMapping?: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | null;
+  onUpdateFunctionNode?: (nodeKey: string, inputMapping: InputSpec) => void;
+  functionInputMapping?: InputSpec | null;
   allNodes?: Node[];
   allEdges?: Edge[];
   allFunctions?: FunctionItem[];
@@ -461,25 +485,23 @@ function AnswerNodePanel(props: {
 }) {
   const [systemPrompt, setSystemPrompt] = useState(props.config?.system_prompt || '');
   const [modelPreset, setModelPreset] = useState<string | undefined>(props.config?.model_preset);
-  const [historyWindow, setHistoryWindow] = useState(props.config?.history_window ?? 5);
-  const [variables, setVariables] = useState<AnswerNodeVariable[]>(props.config?.variables || []);
+  const [historyWindow, setHistoryWindow] = useState(props.config?.history_window ?? 0);
+  // 结构化 input_mapping（与 function_node 共享同一字段）
+  const [inputMapping, setInputMapping] = useState<InputSpec>(props.config?.input_mapping ?? {});
   const [presets, setPresets] = useState<ModelPreset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
-  const [addVarOpen, setAddVarOpen] = useState(false);
-  const [editingVarIndex, setEditingVarIndex] = useState<number | null>(null);
-  const [newVarName, setNewVarName] = useState('');
-  const [newVarSource, setNewVarSource] = useState<'upstream' | 'custom'>('upstream');
-  const [newVarSourceNode, setNewVarSourceNode] = useState('');
-  const [newVarSourceField, setNewVarSourceField] = useState('');
-  const [newVarCustomValue, setNewVarCustomValue] = useState('');
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [draftKey, setDraftKey] = useState('');
+  const [draftSource, setDraftSource] = useState<InputSource>({ kind: 'upstream', node_key: '', field: '' });
+  const [addOpen, setAddOpen] = useState(false);
 
   const upstreamOptions = (props.upstreamNodes || []).map((n) => ({
     value: n.node_key,
     label: `${n.node_key}${n.node_type === 'start_node' ? ' (开始)' : n.node_type === 'function_node' ? ' (函数)' : n.node_type === 'generate_answer_node' ? ' (回答)' : ''}`,
   }));
 
-  const fieldOptions = props.nodeOutputFields
-    ? props.nodeOutputFields(newVarSourceNode)
+  const fieldOptions = (props.nodeOutputFields && draftSource.kind === 'upstream')
+    ? props.nodeOutputFields(draftSource.node_key)
     : [];
 
   useEffect(() => {
@@ -493,72 +515,76 @@ function AnswerNodePanel(props: {
     })();
   }, []);
 
-  const handleAddVar = () => {
-    if (!newVarName.trim()) {
-      void message.error('请输入变量名');
+  const resetDraft = () => {
+    setDraftKey('');
+    setDraftSource({ kind: 'upstream', node_key: '', field: '' });
+  };
+
+  const startAdd = () => {
+    resetDraft();
+    setEditingKey(null);
+    setAddOpen(true);
+  };
+
+  const startEdit = (key: string) => {
+    setEditingKey(key);
+    setDraftKey(key);
+    setDraftSource(inputMapping[key]);
+    setAddOpen(true);
+  };
+
+  const cancelDraft = () => {
+    setAddOpen(false);
+    setEditingKey(null);
+    resetDraft();
+  };
+
+  const applyDraft = () => {
+    const newKey = draftKey.trim();
+    const err = validateInputFieldName(newKey);
+    if (err) {
+      void message.error(err);
       return;
     }
-    const newVar: AnswerNodeVariable = {
-      name: newVarName.trim(),
-      value_source: newVarSource,
-      ...(newVarSource === 'upstream' ? {
-        source_node_key: newVarSourceNode || undefined,
-        source_field: newVarSourceField || undefined,
-      } : {
-        custom_value: newVarCustomValue || undefined,
-      }),
-    };
-    setVariables([...variables, newVar]);
-    setNewVarName('');
-    setNewVarSource('upstream');
-    setNewVarSourceNode('');
-    setNewVarSourceField('');
-    setNewVarCustomValue('');
-    setAddVarOpen(false);
-  };
-
-  const handleRemoveVar = (index: number) => {
-    setVariables(variables.filter((_, i) => i !== index));
-    if (editingVarIndex === index) {
-      setEditingVarIndex(null);
+    // 编辑模式：若 key 改了，删除旧 key
+    const next: InputSpec = { ...inputMapping };
+    if (editingKey && editingKey !== newKey) {
+      delete next[editingKey];
     }
+    if (next[newKey] && newKey !== editingKey) {
+      void message.error(`变量名 "${newKey}" 已存在`);
+      return;
+    }
+    // 清理空字段
+    const src: InputSource = draftSource;
+    if (src.kind === 'upstream') {
+      if (!src.node_key.trim()) {
+        void message.error('请选择上游节点');
+        return;
+      }
+      next[newKey] = { kind: 'upstream', node_key: src.node_key, field: src.field || undefined };
+    } else if (src.kind === 'custom') {
+      next[newKey] = { kind: 'custom', value: src.value };
+    } else if (src.kind === 'agent_context') {
+      if (!src.key.trim()) {
+        void message.error('请输入 AgentContext key');
+        return;
+      }
+      next[newKey] = {
+        kind: 'agent_context',
+        category: src.category,
+        key: src.key,
+        sub_key: src.sub_key || undefined,
+      };
+    }
+    setInputMapping(next);
+    cancelDraft();
   };
 
-  const handleStartEditVar = (index: number) => {
-    const v = variables[index];
-    setEditingVarIndex(index);
-    setNewVarName(v.name);
-    setNewVarSource(v.value_source);
-    setNewVarSourceNode(v.source_node_key || '');
-    setNewVarSourceField(v.source_field || '');
-    setNewVarCustomValue(v.custom_value || '');
-  };
-
-  const handleCancelEditVar = () => {
-    setEditingVarIndex(null);
-    setNewVarName('');
-    setNewVarSource('upstream');
-    setNewVarSourceNode('');
-    setNewVarSourceField('');
-    setNewVarCustomValue('');
-  };
-
-  const handleSaveEditVar = () => {
-    if (!newVarName.trim() || editingVarIndex === null) return;
-    const updatedVar: AnswerNodeVariable = {
-      name: newVarName.trim(),
-      value_source: newVarSource,
-      ...(newVarSource === 'upstream' ? {
-        source_node_key: newVarSourceNode || undefined,
-        source_field: newVarSourceField || undefined,
-      } : {
-        custom_value: newVarCustomValue || undefined,
-      }),
-    };
-    const updated = [...variables];
-    updated[editingVarIndex] = updatedVar;
-    setVariables(updated);
-    handleCancelEditVar();
+  const removeVar = (key: string) => {
+    const next = { ...inputMapping };
+    delete next[key];
+    setInputMapping(next);
   };
 
   const handleSave = () => {
@@ -566,9 +592,26 @@ function AnswerNodePanel(props: {
       system_prompt: systemPrompt,
       model_preset: modelPreset || undefined,
       history_window: historyWindow,
-      variables,
+      input_mapping: inputMapping,
     };
     props.onUpdate?.(config);
+  };
+
+  const renderDraftSourceForm = (key: string) => {
+    return (
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <Input
+          placeholder="变量名 (英文，如 query)"
+          value={draftKey}
+          onChange={(e) => setDraftKey(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+        />
+        {renderInputSourceForm(draftSource, setDraftSource, upstreamOptions, fieldOptions)}
+        <Space>
+          <a onClick={applyDraft}>{editingKey === draftKey || !editingKey ? '确认添加' : '保存修改'}</a>
+          <a onClick={cancelDraft}>取消</a>
+        </Space>
+      </Space>
+    );
   };
 
   return (
@@ -600,7 +643,7 @@ function AnswerNodePanel(props: {
           min={0}
           max={50}
           value={historyWindow}
-          onChange={(v) => setHistoryWindow(v ?? 5)}
+          onChange={(v) => setHistoryWindow(v ?? 0)}
           style={{ width: '100%' }}
         />
         <Text type="secondary" style={{ fontSize: 11 }}>
@@ -626,179 +669,69 @@ function AnswerNodePanel(props: {
 
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <Text strong>输入变量配置 ({variables.length})</Text>
-          <a onClick={() => setAddVarOpen(true)}>+ 添加变量</a>
+          <Text strong>输入变量配置 ({Object.keys(inputMapping).length})</Text>
+          <a onClick={startAdd}>+ 添加变量</a>
         </div>
         <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 12 }}>
-          变量值在运行时会自动从前置节点的输出中获取。变量名与系统提示词中的 {'{变量名}'} 对应。
+          变量值在运行时会自动从前置节点 / AgentContext / 字面量获取。变量名与系统提示词中的 {'{变量名}'} 对应。
         </Text>
 
-        {addVarOpen && (
+        {addOpen && (
           <div style={{ background: '#fafafa', padding: 12, borderRadius: 8, marginBottom: 12 }}>
-            <Space direction="vertical" style={{ width: '100%' }} size="middle">
-              <Input
-                placeholder="变量名 (英文，如 query)"
-                value={newVarName}
-                onChange={(e) => setNewVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-              />
-              <Space>
-                <Text>值来源:</Text>
-                <Select
-                  value={newVarSource}
-                  onChange={setNewVarSource}
-                  style={{ width: 120 }}
-                  options={[
-                    { label: '上游节点', value: 'upstream' },
-                    { label: '自定义值', value: 'custom' },
-                  ]}
-                />
-              </Space>
-              {newVarSource === 'upstream' && (
-                <>
-                  <div>
-                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>
-                      上游节点
-                    </Text>
-                    <Select
-                      value={newVarSourceNode || undefined}
-                      onChange={(val) => {
-                        setNewVarSourceNode(val || '');
-                        setNewVarSourceField('');
-                      }}
-                      placeholder="选择上游节点"
-                      allowClear
-                      style={{ width: '100%' }}
-                      options={upstreamOptions}
-                    />
-                  </div>
-                  <div>
-                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>
-                      输出字段
-                    </Text>
-                    <Select
-                      value={newVarSourceField || undefined}
-                      onChange={(val) => setNewVarSourceField(val || '')}
-                      placeholder={newVarSourceNode ? '选择字段（留空=整个输出）' : '请先选择上游节点'}
-                      allowClear
-                      disabled={!newVarSourceNode}
-                      style={{ width: '100%' }}
-                      options={fieldOptions}
-                    />
-                  </div>
-                </>
-              )}
-              {newVarSource === 'custom' && (
-                <Input
-                  placeholder="自定义默认值"
-                  value={newVarCustomValue}
-                  onChange={(e) => setNewVarCustomValue(e.target.value)}
-                />
-              )}
-              <Space>
-                <a onClick={handleAddVar}>确认添加</a>
-                <a onClick={() => setAddVarOpen(false)}>取消</a>
-              </Space>
-            </Space>
+            {renderDraftSourceForm(draftKey)}
           </div>
         )}
 
-        {variables.length === 0 ? (
+        {Object.keys(inputMapping).length === 0 && !addOpen ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无变量" style={{ margin: '20px 0' }} />
         ) : (
           <Space direction="vertical" style={{ width: '100%' }} size="small">
-            {variables.map((v, idx) => (
-              <div
-                key={idx}
-                style={{
-                  border: editingVarIndex === idx ? '1px solid #1890ff' : '1px solid #f0f0f0',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  background: editingVarIndex === idx ? '#e6f7ff' : '#fff',
-                }}
-              >
-                {editingVarIndex === idx ? (
-                  <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                    <Input
-                      placeholder="变量名 (英文，如 query)"
-                      value={newVarName}
-                      onChange={(e) => setNewVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    />
-                    <Space>
-                      <Text>值来源:</Text>
-                      <Select
-                        value={newVarSource}
-                        onChange={setNewVarSource}
-                        style={{ width: 120 }}
-                        options={[
-                          { label: '上游节点', value: 'upstream' },
-                          { label: '自定义值', value: 'custom' },
-                        ]}
-                      />
-                    </Space>
-                    {newVarSource === 'upstream' && (
-                      <>
-                        <Select
-                          value={newVarSourceNode || undefined}
-                          onChange={(val) => {
-                            setNewVarSourceNode(val || '');
-                            setNewVarSourceField('');
-                          }}
-                          placeholder="选择上游节点"
-                          allowClear
-                          style={{ width: '100%' }}
-                          options={upstreamOptions}
-                        />
-                        <Select
-                          value={newVarSourceField || undefined}
-                          onChange={(val) => setNewVarSourceField(val || '')}
-                          placeholder="选择字段（留空=整个输出）"
-                          allowClear
-                          disabled={!newVarSourceNode}
-                          style={{ width: '100%' }}
-                          options={fieldOptions}
-                        />
-                      </>
-                    )}
-                    {newVarSource === 'custom' && (
-                      <Input
-                        placeholder="自定义默认值"
-                        value={newVarCustomValue}
-                        onChange={(e) => setNewVarCustomValue(e.target.value)}
-                      />
-                    )}
-                    <Space>
-                      <a onClick={handleSaveEditVar}>保存修改</a>
-                      <a onClick={handleCancelEditVar}>取消</a>
-                    </Space>
-                  </Space>
-                ) : (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Space direction="vertical" size={0}>
-                      <Space>
-                        <Text strong>{v.name}</Text>
-                        <Tag color="cyan">{v.value_source === 'upstream' ? '上游节点' : '自定义'}</Tag>
+            {Object.entries(inputMapping).map(([key, src]) => {
+              const isEditing = addOpen && editingKey === key;
+              return (
+                <div
+                  key={key}
+                  style={{
+                    border: isEditing ? '1px solid #1890ff' : '1px solid #f0f0f0',
+                    borderRadius: 8,
+                    padding: '8px 12px',
+                    background: isEditing ? '#e6f7ff' : '#fff',
+                  }}
+                >
+                  {!isEditing && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Space direction="vertical" size={0}>
+                        <Space>
+                          <Text strong>{key}</Text>
+                          <Tag color="cyan">
+                            {src.kind === 'upstream' ? '上游' : src.kind === 'custom' ? '字面量' : 'AgentContext'}
+                          </Tag>
+                        </Space>
+                        {src.kind === 'upstream' && (
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            源: {src.node_key}{src.field ? `.${src.field}` : ''}
+                          </Text>
+                        )}
+                        {src.kind === 'custom' && (
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            值: {typeof src.value === 'string' ? src.value : JSON.stringify(src.value)}
+                          </Text>
+                        )}
+                        {src.kind === 'agent_context' && (
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            源: {src.category}.{src.key}{src.sub_key ? `.${src.sub_key}` : ''}
+                          </Text>
+                        )}
                       </Space>
-                      {v.value_source === 'upstream' && v.source_node_key && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          源: {v.source_node_key}{v.source_field ? `.${v.source_field}` : ''}
-                        </Text>
-                      )}
-                      {v.value_source === 'custom' && v.custom_value && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          值: {v.custom_value}
-                        </Text>
-                      )}
-                    </Space>
-                    <Space>
-                      <a onClick={() => handleStartEditVar(idx)}>编辑</a>
-                      <a onClick={() => handleRemoveVar(idx)} style={{ color: '#ff4d4f' }}>
-                        删除
-                      </a>
-                    </Space>
-                  </div>
-                )}
-              </div>
-            ))}
+                      <Space>
+                        <a onClick={() => startEdit(key)}>编辑</a>
+                        <a onClick={() => removeVar(key)} style={{ color: '#ff4d4f' }}>删除</a>
+                      </Space>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </Space>
         )}
       </div>
@@ -900,24 +833,132 @@ function SchemaFieldList({ title, fields }: { title: string; fields: ReturnType<
   );
 }
 
-type InputMapping = Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>;
+/** Render the structured source form (used by both function_node and answer_node). */
+function renderInputSourceForm(
+  draftSource: InputSource,
+  setDraftSource: (src: InputSource) => void,
+  upstreamOptions: { value: string; label: string }[],
+  fieldOptions: { value: string; label: string }[],
+) {
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Space>
+        <Text>值来源:</Text>
+        <Select
+          value={draftSource.kind}
+          onChange={(v) => {
+            if (v === 'upstream') setDraftSource({ kind: 'upstream', node_key: '', field: '' });
+            else if (v === 'custom') setDraftSource({ kind: 'custom', value: '' });
+            else if (v === 'agent_context')
+              setDraftSource({ kind: 'agent_context', category: 'user_input', key: '' });
+          }}
+          style={{ width: 160 }}
+          options={[
+            { label: '上游节点', value: 'upstream' },
+            { label: '自定义值', value: 'custom' },
+            { label: 'AgentContext', value: 'agent_context' },
+          ]}
+        />
+      </Space>
+      {draftSource.kind === 'upstream' && (
+        <>
+          <Select
+            value={draftSource.node_key || undefined}
+            onChange={(v) => setDraftSource({ kind: 'upstream', node_key: v ?? '', field: '' })}
+            placeholder="选择上游节点"
+            allowClear
+            style={{ width: '100%' }}
+            options={upstreamOptions}
+          />
+          <Select
+            value={draftSource.field || undefined}
+            onChange={(v) => setDraftSource({ ...draftSource, field: v ?? '' })}
+            placeholder={draftSource.node_key ? '选择字段（留空=整个输出）' : '请先选择上游节点'}
+            allowClear
+            disabled={!draftSource.node_key}
+            style={{ width: '100%' }}
+            options={fieldOptions}
+          />
+        </>
+      )}
+      {draftSource.kind === 'custom' && (
+        <Input
+          placeholder="自定义默认值 (JSON 或字符串)"
+          value={typeof draftSource.value === 'string' ? draftSource.value : JSON.stringify(draftSource.value)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            try {
+              setDraftSource({ kind: 'custom', value: JSON.parse(raw) });
+            } catch {
+              setDraftSource({ kind: 'custom', value: raw });
+            }
+          }}
+        />
+      )}
+      {draftSource.kind === 'agent_context' && (
+        <>
+          <Select
+            value={draftSource.category}
+            onChange={(v) => setDraftSource({ kind: 'agent_context', category: v as AgentContextCategory, key: '', sub_key: undefined })}
+            placeholder="选择分类"
+            style={{ width: '100%' }}
+            options={AGENT_CONTEXT_CATEGORIES}
+          />
+          {draftSource.category === 'user_input' ? (
+            <Select
+              value={draftSource.key || undefined}
+              onChange={(v) => setDraftSource({ kind: 'agent_context', category: 'user_input', key: v ?? '', sub_key: undefined })}
+              placeholder="选择字段"
+              style={{ width: '100%' }}
+              options={USER_INPUT_FIELDS.map((f) => ({ value: f, label: f }))}
+            />
+          ) : draftSource.category === 'extensions' ? (
+            <>
+              <Input
+                placeholder="扩展 id"
+                value={draftSource.key}
+                onChange={(e) => setDraftSource({ ...draftSource, key: e.target.value })}
+              />
+              <Input
+                placeholder="字段名 (data / content_type / reply / render_hints)"
+                value={draftSource.sub_key || ''}
+                onChange={(e) => setDraftSource({ ...draftSource, sub_key: e.target.value })}
+              />
+            </>
+          ) : (
+            <Input
+              placeholder="key"
+              value={draftSource.key}
+              onChange={(e) => setDraftSource({ ...draftSource, key: e.target.value })}
+            />
+          )}
+          {draftSource.category === 'user_input' && draftSource.key === 'metadata' && (
+            <Input
+              placeholder="metadata 子 key (如 channel / actor_id)"
+              value={draftSource.sub_key || ''}
+              onChange={(e) => setDraftSource({ ...draftSource, sub_key: e.target.value })}
+            />
+          )}
+        </>
+      )}
+    </Space>
+  );
+}
 
 function FunctionNodePanel(props: {
   functionId?: number | null;
   functions: FunctionItem[];
   nodeKey: string;
-  onUpdate?: (nodeKey: string, inputMapping: InputMapping) => void;
+  onUpdate?: (nodeKey: string, inputMapping: InputSpec) => void;
   upstreamNodes?: Array<{ node_key: string; node_type: string; function_id?: number | null }>;
   nodeOutputFields?: (node_key: string) => { value: string; label: string }[];
-  initialMapping?: InputMapping | null;
+  initialMapping?: InputSpec | null;
 }) {
   const fn = props.functions.find((f) => f.id === props.functionId);
-  const [inputMapping, setInputMapping] = useState<InputMapping>(props.initialMapping ?? {});
+  // 结构化 InputSpec：与 generate_answer_node 共享同一字段
+  const [inputMapping, setInputMapping] = useState<InputSpec>(props.initialMapping ?? {});
   const [editingField, setEditingField] = useState<string | null>(null);
-  const [editSource, setEditSource] = useState<'upstream' | 'custom'>('upstream');
-  const [editSourceNode, setEditSourceNode] = useState('');
-  const [editSourceField, setEditSourceField] = useState('');
-  const [editCustomValue, setEditCustomValue] = useState('');
+  const [draftSource, setDraftSource] = useState<InputSource>({ kind: 'upstream', node_key: '', field: '' });
 
   if (!fn) {
     return <Empty description="未找到关联的函数" />;
@@ -931,31 +972,42 @@ function FunctionNodePanel(props: {
     label: `${n.node_key}${n.node_type === 'start_node' ? ' (开始)' : n.node_type === 'function_node' ? ' (函数)' : n.node_type === 'generate_answer_node' ? ' (回答)' : ''}`,
   }));
 
-  const fieldOptions = props.nodeOutputFields
-    ? props.nodeOutputFields(editSourceNode)
+  const fieldOptions = (props.nodeOutputFields && draftSource.kind === 'upstream')
+    ? props.nodeOutputFields(draftSource.node_key)
     : [];
 
   const handleStartEdit = (fieldName: string) => {
-    const current = inputMapping[fieldName];
     setEditingField(fieldName);
-    setEditSource(current?.source || 'upstream');
-    setEditSourceNode(current?.source_node_key || '');
-    setEditSourceField(current?.source_field || '');
-    setEditCustomValue(current?.custom_value || '');
+    setDraftSource(inputMapping[fieldName] ?? { kind: 'upstream', node_key: '', field: '' });
   };
 
   const handleSaveEdit = () => {
     if (!editingField) return;
-    const updated: InputMapping = { ...inputMapping };
-    updated[editingField] = {
-      source: editSource,
-      ...(editSource === 'upstream' ? {
-        source_node_key: editSourceNode || undefined,
-        source_field: editSourceField || undefined,
-      } : {
-        custom_value: editCustomValue || undefined,
-      }),
-    };
+    const updated: InputSpec = { ...inputMapping };
+    if (draftSource.kind === 'upstream') {
+      if (!draftSource.node_key.trim()) {
+        void message.error('请选择上游节点');
+        return;
+      }
+      updated[editingField] = {
+        kind: 'upstream',
+        node_key: draftSource.node_key,
+        field: draftSource.field || undefined,
+      };
+    } else if (draftSource.kind === 'custom') {
+      updated[editingField] = { kind: 'custom', value: draftSource.value };
+    } else if (draftSource.kind === 'agent_context') {
+      if (!draftSource.key.trim()) {
+        void message.error('请输入 AgentContext key');
+        return;
+      }
+      updated[editingField] = {
+        kind: 'agent_context',
+        category: draftSource.category,
+        key: draftSource.key,
+        sub_key: draftSource.sub_key || undefined,
+      };
+    }
     setInputMapping(updated);
     setEditingField(null);
     props.onUpdate?.(props.nodeKey, updated);
@@ -973,18 +1025,18 @@ function FunctionNodePanel(props: {
       </div>
       {fn.description && <Text>{fn.description}</Text>}
 
-      {/* 输入变量值来源配置 */}
+      {/* 输入变量值来源配置（结构化 InputSpec） */}
       <div>
         <Text strong style={{ marginBottom: 8, display: 'block' }}>输入变量配置 ({inputFields.length})</Text>
         <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 8 }}>
-          为每个输入变量指定值来源，运行时自动从前置节点获取
+          为每个输入变量指定值来源，运行时自动从前置节点 / AgentContext / 字面量获取
         </Text>
         {inputFields.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无输入变量" style={{ margin: '12px 0' }} />
         ) : (
           <Space direction="vertical" style={{ width: '100%' }} size="small">
             {inputFields.map((f) => {
-              const mapping = inputMapping[f.name];
+              const src = inputMapping[f.name];
               const isEditing = editingField === f.name;
               return (
                 <div
@@ -1003,49 +1055,7 @@ function FunctionNodePanel(props: {
                         <Tag color="blue">{f.type}</Tag>
                         {f.required && <Tag color="red">必填</Tag>}
                       </Space>
-                      <Space>
-                        <Text>值来源:</Text>
-                        <Select
-                          value={editSource}
-                          onChange={setEditSource}
-                          style={{ width: 120 }}
-                          options={[
-                            { label: '上游节点', value: 'upstream' },
-                            { label: '自定义值', value: 'custom' },
-                          ]}
-                        />
-                      </Space>
-                      {editSource === 'upstream' && (
-                        <>
-                          <Select
-                            value={editSourceNode || undefined}
-                            onChange={(val) => {
-                              setEditSourceNode(val || '');
-                              setEditSourceField('');
-                            }}
-                            placeholder="选择上游节点"
-                            allowClear
-                            style={{ width: '100%' }}
-                            options={upstreamOptions}
-                          />
-                          <Select
-                            value={editSourceField || undefined}
-                            onChange={(val) => setEditSourceField(val || '')}
-                            placeholder="选择字段（留空=整个输出）"
-                            allowClear
-                            disabled={!editSourceNode}
-                            style={{ width: '100%' }}
-                            options={fieldOptions}
-                          />
-                        </>
-                      )}
-                      {editSource === 'custom' && (
-                        <Input
-                          placeholder="自定义默认值"
-                          value={editCustomValue}
-                          onChange={(e) => setEditCustomValue(e.target.value)}
-                        />
-                      )}
+                      {renderInputSourceForm(draftSource, setDraftSource, upstreamOptions, fieldOptions)}
                       <Space>
                         <a onClick={handleSaveEdit}>保存修改</a>
                         <a onClick={handleCancelEdit}>取消</a>
@@ -1059,16 +1069,24 @@ function FunctionNodePanel(props: {
                           <Tag color="blue" style={{ fontSize: 11 }}>{f.type}</Tag>
                           {f.required && <Tag color="red" style={{ fontSize: 11 }}>必填</Tag>}
                         </Space>
-                        {mapping ? (
+                        {src ? (
                           <div style={{ marginTop: 2 }}>
-                            {mapping.source === 'upstream' && mapping.source_node_key && (
+                            <Tag color="cyan" style={{ fontSize: 11 }}>
+                              {src.kind === 'upstream' ? '上游' : src.kind === 'custom' ? '字面量' : 'AgentContext'}
+                            </Tag>
+                            {src.kind === 'upstream' && (
                               <Text type="secondary" style={{ fontSize: 11 }}>
-                                源: {mapping.source_node_key}{mapping.source_field ? `.${mapping.source_field}` : ''}
+                                源: {src.node_key}{src.field ? `.${src.field}` : ''}
                               </Text>
                             )}
-                            {mapping.source === 'custom' && mapping.custom_value !== undefined && (
+                            {src.kind === 'custom' && (
                               <Text type="secondary" style={{ fontSize: 11 }}>
-                                值: {mapping.custom_value}
+                                值: {typeof src.value === 'string' ? src.value : JSON.stringify(src.value)}
+                              </Text>
+                            )}
+                            {src.kind === 'agent_context' && (
+                              <Text type="secondary" style={{ fontSize: 11 }}>
+                                源: {src.category}.{src.key}{src.sub_key ? `.${src.sub_key}` : ''}
                               </Text>
                             )}
                           </div>

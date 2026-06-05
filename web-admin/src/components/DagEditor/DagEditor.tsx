@@ -53,6 +53,7 @@ import {
   type AnswerNodeConfig,
   type GraphEdge,
   type GraphNode,
+  type InputSpec,
   type NodeType,
   type WorkflowExecuteResult,
   type WorkflowUserInput,
@@ -78,6 +79,7 @@ import { ArrowEdge } from './ArrowEdge';
 import { ContextMenu } from './ContextMenu';
 import { FunctionDetail } from '../FunctionDetail';
 import { NodeDetailDrawer } from './NodeDetailDrawer';
+import { CollapsibleJsonView } from '../CollapsibleJsonView';
 
 /**
  * 从 JSON Schema 中解析 properties，生成表单字段配置
@@ -208,7 +210,8 @@ interface NodeData {
   input_schema?: Record<string, unknown> | null;
   output_schema?: Record<string, unknown> | null;
   node_config?: AnswerNodeConfig | null;
-  input_mapping?: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | null;
+  /** Structured input mapping (function_node & generate_answer_node). */
+  input_mapping?: InputSpec;
   execution_result?: unknown;
 }
 
@@ -322,7 +325,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     inputSchema?: Record<string, unknown> | null;
     outputSchema?: Record<string, unknown> | null;
     answerConfig?: AnswerNodeConfig | null;
-    inputMapping?: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | null;
+    inputMapping?: InputSpec | null;
   } | null>(null);
   // 运行相关状态
   const [runModalOpen, setRunModalOpen] = useState(false);
@@ -371,11 +374,11 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           const isStart = n.node_type === 'start_node' || n.node_key === 'start';
           const isEnd = n.node_type === 'end_node' || n.node_key === 'end';
           const isAnswer = n.node_type === 'generate_answer_node';
-          // 从 node_config 中恢复函数节点的 input_mapping
           const isFunctionNode = !isStart && !isEnd && !isAnswer;
           const cfg = n.node_config as Record<string, unknown> | null | undefined;
-          const inputMapping = (isFunctionNode && cfg?.input_mapping)
-            ? cfg.input_mapping as Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>
+          // 恢复结构化 InputSpec：function_node 和 generate_answer_node 都用 input_mapping
+          const inputMapping = (isFunctionNode || isAnswer) && cfg?.input_mapping
+            ? (cfg.input_mapping as InputSpec)
             : undefined;
 
           return {
@@ -390,7 +393,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
               input_schema: isStart ? (graph.workflow.input_schema ?? null) : undefined,
               output_schema: isEnd ? (graph.workflow.output_schema ?? null) : undefined,
               node_config: isAnswer ? ((n.node_config ?? null) as AnswerNodeConfig | null) : undefined,
-              input_mapping: inputMapping ?? undefined,
+              input_mapping: inputMapping,
             },
           };
         }),
@@ -494,7 +497,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       inputSchema: isStart ? node.data.input_schema : undefined,
       outputSchema: isEnd ? node.data.output_schema : undefined,
       answerConfig: isAnswer ? (node.data.node_config ?? null) : undefined,
-      inputMapping: isFunction ? (node.data.input_mapping ?? null) : undefined,
+      inputMapping: (isFunction || isAnswer) ? (node.data.input_mapping ?? null) : undefined,
     });
     setDetailDrawerOpen(true);
   }, []);
@@ -522,22 +525,26 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
   }, []);
 
   const onUpdateAnswerNode = useCallback((nodeKey: string, config: AnswerNodeConfig) => {
+    // Answer node uses `input_mapping` (structured) under node_config
+    const inputMapping = config.input_mapping;
     setNodes((nds) =>
       nds.map((n) =>
         n.id === nodeKey
-          ? { ...n, data: { ...n.data, node_config: config } }
+          ? { ...n, data: { ...n.data, node_config: config, input_mapping: inputMapping } }
           : n,
       ),
     );
     // Update selectedNode as well so it reflects immediately
     setSelectedNode((prev) =>
-      prev?.nodeKey === nodeKey ? { ...prev, answerConfig: config } : prev
+      prev?.nodeKey === nodeKey
+        ? { ...prev, answerConfig: config, inputMapping: inputMapping ?? null }
+        : prev
     );
     void message.success('回答节点配置已更新');
   }, []);
 
   const onUpdateFunctionNode = useCallback(
-    (nodeKey: string, inputMapping: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>) => {
+    (nodeKey: string, inputMapping: InputSpec) => {
       setNodes((nds) =>
         nds.map((n) =>
           n.id === nodeKey || n.data.node_key === nodeKey
@@ -768,8 +775,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           node_type: 'generate_answer_node' as NodeType,
           node_config: {
             system_prompt: '你是一个智能助手，请根据以下内容回答用户问题：\n{query}',
-            history_window: 5,
-            variables: [],
+            history_window: 0,
+            input_mapping: {},
           },
         },
       },
@@ -795,6 +802,17 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         const isStart = n.data.node_type === 'start_node' || n.id === 'start';
         const isEnd = n.data.node_type === 'end_node' || n.id === 'end';
         const isAnswer = n.data.node_type === 'generate_answer_node';
+        const isFunction = !isStart && !isEnd && !isAnswer;
+        // node_config 基础：函数节点写 input_mapping；回答节点合并 input_mapping
+        let nodeConfig: Record<string, unknown> | undefined;
+        if (isFunction) {
+          nodeConfig = n.data.input_mapping ? { input_mapping: n.data.input_mapping } : undefined;
+        } else if (isAnswer) {
+          const base = (n.data.node_config && typeof n.data.node_config === 'object')
+            ? (n.data.node_config as unknown as Record<string, unknown>)
+            : {};
+          nodeConfig = { ...base, input_mapping: n.data.input_mapping ?? {} };
+        }
         return {
           node_key: n.data.node_key,
           node_type: isStart ? ('start_node' as const) : isEnd ? ('end_node' as const) : isAnswer ? ('generate_answer_node' as const) : ('function_node' as const),
@@ -805,35 +823,18 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
             ...(isStart && { input_schema: n.data.input_schema ?? { type: 'object', properties: {} } }),
             ...(isEnd && n.data.output_schema && { output_schema: n.data.output_schema }),
           },
-          ...(isAnswer && n.data.node_config && {
-            node_config: n.data.node_config,
-          }),
-          // 函数节点：将 input_mapping 写入 node_config，供后端执行引擎读取
-          ...(!isStart && !isEnd && !isAnswer && n.data.input_mapping && {
-            node_config: { input_mapping: n.data.input_mapping },
-          }),
+          ...(nodeConfig && { node_config: nodeConfig }),
         };
       }),
       edges: edges.map((e) => {
-        // 查找目标函数节点的 input_mapping，合并到边 mapping
-        const dstNode = nodes.find((n) => n.id === e.target);
-        const inputMapping = dstNode?.data.input_mapping as Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }> | undefined;
-        const edgeMapping: Record<string, string> = {};
-        if (inputMapping) {
-          for (const [field, m] of Object.entries(inputMapping)) {
-            if (m.source === 'upstream' && m.source_node_key) {
-              edgeMapping[`dst.input.${field}`] = m.source_field
-                ? `${m.source_node_key}.output.${m.source_field}`
-                : `${m.source_node_key}.output`;
-            } else if (m.source === 'custom' && m.custom_value !== undefined) {
-              edgeMapping[`dst.input.${field}`] = m.custom_value;
-            }
-          }
-        }
+        // Edge mapping column is deprecated; the structured spec is stored on
+        // the dst node's node_config.input_mapping (function_node and
+        // generate_answer_node share the same field). Edge row only carries topology.
+        const prior = (e.data as { mapping?: Record<string, string> } | undefined)?.mapping;
         return {
           src_node_key: e.source!,
           dst_node_key: e.target!,
-          mapping: Object.keys(edgeMapping).length > 0 ? edgeMapping : ((e.data as { mapping?: Record<string, string> })?.mapping) ?? {},
+          mapping: prior ?? {},
         };
       }),
     };
@@ -1057,6 +1058,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           {/* 右侧：执行结果 */}
           {executionResult && (() => {
             const { agent_context: agentContext, ...resultFields } = executionResult as unknown as Record<string, unknown> & { agent_context?: unknown };
+            const hasAgentCtx = agentContext !== undefined && agentContext !== null;
             return (
               <Col span={13}>
                 <div
@@ -1070,53 +1072,26 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
                     执行结果（耗时 {executionResult.elapsed_ms}ms）：
                   </Text>
                   {/* 结果区块（去除 agent_context） */}
-                  <Text
-                    strong
-                    type="secondary"
-                    style={{ marginBottom: 4, display: 'block', fontSize: 13 }}
-                  >
-                    结果：
-                  </Text>
-                  <pre
-                    style={{
-                      background: '#fafafa',
-                      border: '1px solid #d9d9d9',
-                      borderRadius: 6,
-                      padding: 12,
-                      fontSize: 12,
-                      overflow: 'auto',
-                      maxHeight: 'calc(100vh - 460px)',
-                      minHeight: 120,
-                      margin: 0,
-                    }}
-                  >
-                    {JSON.stringify(resultFields, null, 2)}
-                  </pre>
+                  <div style={{ marginBottom: 4 }}>
+                    <Text strong type="secondary" style={{ fontSize: 13 }}>结果</Text>
+                  </div>
+                  <CollapsibleJsonView
+                    data={resultFields}
+                    initialDepth={2}
+                    maxHeight="calc(100vh - 460px)"
+                    title="结果 JSON"
+                  />
                   {/* AgentContext 区块 */}
-                  <Text
-                    strong
-                    type="secondary"
-                    style={{ margin: '12px 0 4px 0', display: 'block', fontSize: 13 }}
-                  >
-                    AgentContext：
-                  </Text>
-                  <pre
-                    style={{
-                      background: '#fafafa',
-                      border: '1px solid #d9d9d9',
-                      borderRadius: 6,
-                      padding: 12,
-                      fontSize: 12,
-                      overflow: 'auto',
-                      maxHeight: 'calc(100vh - 460px)',
-                      minHeight: 80,
-                      margin: 0,
-                    }}
-                  >
-                    {agentContext === undefined || agentContext === null
-                      ? 'null'
-                      : JSON.stringify(agentContext, null, 2)}
-                  </pre>
+                  <div style={{ margin: '12px 0 4px 0' }}>
+                    <Text strong type="secondary" style={{ fontSize: 13 }}>AgentContext</Text>
+                  </div>
+                  <CollapsibleJsonView
+                    data={agentContext}
+                    initialDepth={2}
+                    maxHeight="calc(100vh - 460px)"
+                    title="AgentContext 快照"
+                    emptyText={hasAgentCtx ? 'null' : '本次执行无 AgentContext 数据'}
+                  />
                 </div>
               </Col>
             );
@@ -1141,20 +1116,12 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         width={700}
       >
         {selectedNodeResult && (
-          <div>
-            <pre
-              style={{
-                background: '#f5f5f5',
-                padding: 16,
-                borderRadius: 6,
-                fontSize: 13,
-                overflow: 'auto',
-                maxHeight: 500,
-              }}
-            >
-              {JSON.stringify(selectedNodeResult.result, null, 2)}
-            </pre>
-          </div>
+          <CollapsibleJsonView
+            data={selectedNodeResult.result}
+            initialDepth={3}
+            maxHeight={500}
+            title="节点结果 JSON"
+          />
         )}
       </Modal>
       {cycle ? (
@@ -1265,7 +1232,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           onUpdateStartNode={onUpdateStartNode}
           onUpdateEndNode={onUpdateEndNode}
           onUpdateAnswerNode={selectedNode.nodeType === 'generate_answer' ? (config: AnswerNodeConfig) => onUpdateAnswerNode(selectedNode.nodeKey, config) : undefined}
-          onUpdateFunctionNode={selectedNode.nodeType === 'function' ? (nodeKey: string, mapping: Record<string, { source: 'upstream' | 'custom'; source_node_key?: string; source_field?: string; custom_value?: string }>) => onUpdateFunctionNode(nodeKey, mapping) : undefined}
+          onUpdateFunctionNode={selectedNode.nodeType === 'function' ? (nodeKey: string, mapping: InputSpec) => onUpdateFunctionNode(nodeKey, mapping) : undefined}
           functionInputMapping={selectedNode.inputMapping ?? null}
           allNodes={nodes}
           allEdges={edges}

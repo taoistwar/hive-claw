@@ -3,6 +3,30 @@ import apiClient from './api';
 
 export type NodeType = 'function_node' | 'start_node' | 'end_node' | 'generate_answer_node';
 
+// ── Structured input spec (mirrors crates/hiveweb/src/runtime/input_source.rs) ──
+
+export type AgentContextCategory =
+  | 'user_input'
+  | 'entities'
+  | 'tool_results'
+  | 'state_changes'
+  | 'extensions';
+
+/** Static whitelist of UserInput fields (validated server-side). */
+export const USER_INPUT_FIELDS = ['raw_text', 'session_id', 'message_id', 'timestamp', 'metadata'] as const;
+
+/** Reserved input keys rejected by the server. */
+export const RESERVED_INPUT_KEYS = ['_agent_context', '_agent_context_updates'] as const;
+
+/** Structured source for a single input field. */
+export type InputSource =
+  | { kind: 'upstream'; node_key: string; field?: string }
+  | { kind: 'custom'; value: unknown }
+  | { kind: 'agent_context'; category: AgentContextCategory; key: string; sub_key?: string };
+
+/** Map of `field_name → InputSource`. */
+export type InputSpec = Record<string, InputSource>;
+
 export interface WorkflowMeta {
   id: number;
   identifier: string;
@@ -33,29 +57,31 @@ export interface GraphNode {
   input_schema?: Record<string, unknown> | null;
   start_description?: string | null;
   output_schema?: Record<string, unknown> | null;
-  node_config?: AnswerNodeConfig | Record<string, unknown> | null;
+  node_config?: AnswerNodeConfig | FunctionNodeConfig | Record<string, unknown> | null;
 }
 
+/** Config for `function_node`. */
+export interface FunctionNodeConfig {
+  /** Structured input mapping (field name → source). */
+  input_mapping?: InputSpec;
+}
+
+/** Config for `generate_answer_node`. */
 export interface AnswerNodeConfig {
   system_prompt: string;
   model_preset?: string;
   history_window: number;
-  variables: AnswerNodeVariable[];
-}
-
-export interface AnswerNodeVariable {
-  name: string;
-  value_source: 'upstream' | 'custom';
-  source_node_key?: string;
-  source_field?: string;
-  custom_value?: string;
+  /** Structured input mapping (field name → source). Same shape as `function_node.input_mapping`. */
+  input_mapping?: InputSpec;
 }
 
 export interface GraphEdge {
   id?: number;
   src_node_key: string;
   dst_node_key: string;
-  mapping: Record<string, string>;
+  /** Deprecated — use the dst node's `node_config.input_mapping` (function_node
+   *  and generate_answer_node both use the same structured spec). */
+  mapping?: Record<string, string>;
 }
 
 export interface WorkflowGraph {

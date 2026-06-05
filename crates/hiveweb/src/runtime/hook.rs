@@ -288,7 +288,7 @@ async fn execute_call_workflow(
         ext_pool: deps.ext_pool.clone(),
     };
     let executor = super::workflow::WorkflowExecutor::new();
-    let output = executor
+    let outcome = executor
         .execute(
             &executor_deps,
             workflow_id,
@@ -300,7 +300,7 @@ async fn execute_call_workflow(
         .map_err(|e| ActionError(format!("workflow execute: {e}")))?;
 
     // ★ Apply AgentContext updates from workflow output
-    apply_agent_context_updates(&deps.agent_ctx, &output);
+    apply_agent_context_updates(&deps.agent_ctx, &outcome.end_value);
 
     Ok(())
 }
@@ -490,33 +490,59 @@ async fn audit_hook_exec(
 
 // ── AgentContext helpers for function/workflow integration ──
 
-/// Inject a read-only snapshot of AgentContext into the function/workflow input
-/// as `_agent_context` field, so the function can inspect current runtime state.
-pub(crate) fn inject_agent_context_snapshot(input: &mut Value, agent_ctx: &AgentContext) {
-    let snapshot = json!({
-        "context_id": agent_ctx.to_json().ok().and_then(|s| {
-            serde_json::from_str::<Value>(&s).ok()
-        }).unwrap_or(Value::Null),
-        "tool_results": agent_ctx.get_category(Category::ToolResults)
+/// Build a serializable snapshot of the relevant `AgentContext` state.
+///
+/// Shape (matches `inject_agent_context_snapshot` plus the new `user_input`
+/// field for explicit `agent_context.user_input.*` references):
+///
+/// ```json
+/// {
+///   "user_input": {
+///     "raw_text": "...", "session_id": "...", "message_id": "...",
+///     "timestamp": 1234, "metadata": { ... }
+///   },
+///   "tool_results":   [{ "key", "value", "source" }, ...],
+///   "entities":       [{ "key", "value", "source" }, ...],
+///   "state_changes":  [{ "key", "value", "source" }, ...],
+///   "extensions":     [ ExtensionContent, ... ]
+/// }
+/// ```
+pub(crate) fn agent_context_snapshot_value(agent_ctx: &AgentContext) -> Value {
+    let ui = agent_ctx.user_input();
+    let ui_value = json!({
+        "raw_text":   ui.raw_text,
+        "session_id": ui.session_id,
+        "message_id": ui.message_id,
+        "timestamp":  ui.timestamp.timestamp_millis(),
+        "metadata":   ui.metadata,
+    });
+
+    let cat_to_vec = |cat: Category| -> Vec<Value> {
+        agent_ctx
+            .get_category(cat)
             .unwrap_or_default()
             .iter()
             .map(|r| json!({"key": r.key, "value": r.value, "source": r.source}))
-            .collect::<Vec<_>>(),
-        "entities": agent_ctx.get_category(Category::Entities)
-            .unwrap_or_default()
-            .iter()
-            .map(|r| json!({"key": r.key, "value": r.value, "source": r.source}))
-            .collect::<Vec<_>>(),
-        "state_changes": agent_ctx.get_category(Category::StateChanges)
-            .unwrap_or_default()
-            .iter()
-            .map(|r| json!({"key": r.key, "value": r.value, "source": r.source}))
-            .collect::<Vec<_>>(),
-        "extensions": agent_ctx.get_extensions()
+            .collect()
+    };
+
+    json!({
+        "user_input":    ui_value,
+        "tool_results":  cat_to_vec(Category::ToolResults),
+        "entities":      cat_to_vec(Category::Entities),
+        "state_changes": cat_to_vec(Category::StateChanges),
+        "extensions":    agent_ctx
+            .get_extensions()
             .iter()
             .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
             .collect::<Vec<_>>(),
-    });
+    })
+}
+
+/// Inject a read-only snapshot of AgentContext into the function/workflow input
+/// as `_agent_context` field, so the function can inspect current runtime state.
+pub(crate) fn inject_agent_context_snapshot(input: &mut Value, agent_ctx: &AgentContext) {
+    let snapshot = agent_context_snapshot_value(agent_ctx);
 
     if let Value::Object(map) = input {
         map.insert("_agent_context".to_string(), snapshot);

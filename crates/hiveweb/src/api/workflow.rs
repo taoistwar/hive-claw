@@ -268,7 +268,7 @@ async fn execute_workflow(
         invoker: std::sync::Arc::clone(&state.runtime_state.invoker),
         ext_pool: state.ext_pool.clone(),
     };
-    let outputs = state
+    let outcome = state
         .runtime_state
         .workflows
         .execute(&deps, id, body.input, 1 /* main agent */, agent_ctx.clone())
@@ -276,12 +276,12 @@ async fn execute_workflow(
         .map_err(|e| AppError::Internal(format!("workflow execute: {e}")).into_response())?;
 
     // ★ Apply AgentContext updates from the end node output
-    apply_agent_context_updates(&agent_ctx, &outputs);
+    apply_agent_context_updates(&agent_ctx, &outcome.end_value);
     // Store end node result as WorkflowResults
     if let Err(e) = agent_ctx.set_record(
         Category::WorkflowResults,
         "end".to_string(),
-        outputs.clone(),
+        outcome.end_value.clone(),
         "workflow_node".to_string(),
         0,
     ) {
@@ -302,7 +302,7 @@ async fn execute_workflow(
     let elapsed_ms = t0.elapsed().as_millis() as i32;
     Ok(ApiResponse::success(serde_json::json!({
         "workflow_id": id,
-        "node_results": outputs,
+        "node_results": outcome.node_results,
         "elapsed_ms": elapsed_ms,
         "agent_context": agent_context_snapshot,
     })))

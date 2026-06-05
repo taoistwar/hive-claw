@@ -1278,10 +1278,10 @@ async fn handle_meta_tool(
                 )
                 .await
             {
-                Ok(out) => {
+                Ok(outcome) => {
                     // ★ Apply AgentContext updates from workflow output
-                    apply_agent_context_updates(&agent_ctx, &out);
-                    ToolOutcome::ok(out)
+                    apply_agent_context_updates(&agent_ctx, &outcome.end_value);
+                    ToolOutcome::ok(outcome.end_value)
                 }
                 Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
             }
@@ -1419,8 +1419,8 @@ pub(crate) async fn handle_workspace_tool(
                 )
                 .await
             {
-                Ok(out) => {
-                    ToolOutcome::ok(out)
+                Ok(outcome) => {
+                    ToolOutcome::ok(outcome.end_value)
                 }
                 Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
             }

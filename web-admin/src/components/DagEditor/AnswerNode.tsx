@@ -1,13 +1,11 @@
 import { Handle, Position, type NodeProps } from 'reactflow';
+import type { AnswerNodeConfig, InputSpec } from '../../services/workflow';
 
 interface AnswerNodeData {
   node_key: string;
-  node_config?: {
-    system_prompt?: string;
-    model_preset?: string;
-    history_window?: number;
-    variables?: Array<{ name: string }>;
-  } | null;
+  node_config?: AnswerNodeConfig | null;
+  /** Structured input mapping (the new field — same as function_node). */
+  input_mapping?: InputSpec;
   execution_result?: unknown;
 }
 
@@ -17,7 +15,8 @@ function emitViewResult(nodeKey: string, e: React.MouseEvent) {
 }
 
 export function AnswerNode({ data, selected }: NodeProps<AnswerNodeData>) {
-  const varCount = data.node_config?.variables?.length ?? 0;
+  // 变量数量从结构化 input_mapping（map）读取
+  const varCount = data.input_mapping ? Object.keys(data.input_mapping).length : 0;
   const modelLabel = data.node_config?.model_preset || '默认模型';
   const promptPreview = data.node_config?.system_prompt
     ?.substring(0, 40) || '未配置提示词';

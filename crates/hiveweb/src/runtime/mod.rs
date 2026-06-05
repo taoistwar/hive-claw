@@ -13,6 +13,7 @@ pub mod builtins;
 pub mod capabilities;
 pub mod capability;
 pub mod hook;
+pub mod input_source;
 pub mod invoker;
 pub mod llm;
 pub mod orchestrator;
@@ -28,6 +29,7 @@ pub use invoker::Invoker;
 pub use llm::LlmRegistry;
 pub use pool::{InstancePool, PoolConfig};
 pub use wasm_imports::{registered_imports, scan_wasm_imports};
+pub use input_source::{InputSource, InputSpec};
 pub use workflow::WorkflowExecutor;
 
 use std::sync::Arc;

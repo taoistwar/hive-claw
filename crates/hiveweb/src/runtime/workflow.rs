@@ -55,13 +55,26 @@ pub struct ExecutorDeps {
 #[derive(Debug, Default)]
 pub struct WorkflowExecutor;
 
+/// Result of executing a workflow.
+///
+/// - `end_value`: synthesised end-node output (used as the workflow's "return value"
+///   to upstream callers, with internal `_agent_context_updates` stripped).
+/// - `node_results`: raw per-node outputs keyed by `node_key` (function_node,
+///   generate_answer_node, start, end, etc.). Consumed by the API to power
+///   the editor's per-node "已运行" indicators and result inspection.
+#[derive(Debug)]
+pub struct ExecuteOutcome {
+    pub end_value: Value,
+    pub node_results: HashMap<String, Value>,
+}
+
 impl WorkflowExecutor {
     pub fn new() -> Self {
         Self
     }
 
-    /// Execute a Workflow by id with external input. Returns the end node's
-    /// output value (strips internal `_agent_context_updates`).
+    /// Execute a Workflow by id with external input. Returns both the synthesised
+    /// end-node value and the per-node output map.
     pub async fn execute(
         &self,
         deps: &ExecutorDeps,
@@ -69,7 +82,7 @@ impl WorkflowExecutor {
         external_input: Value,
         invoking_agent_id: i64,
         agent_ctx: Arc<AgentContext>,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<ExecuteOutcome, WorkflowError> {
         // 1. Load workflow + nodes + edges
         let wf_row: Option<(i32, Option<Value>)> =
             sqlx::query_as("SELECT timeout_ms, output_schema FROM workflows WHERE id = ?")
@@ -118,12 +131,10 @@ impl WorkflowExecutor {
         // adjacency for topology: indegree per node_key
         let mut indegree: HashMap<String, usize> =
             nodes.iter().map(|(_, k, _, _, _)| (k.clone(), 0)).collect();
-        // dst_node_key → Vec<(src_node_key, mapping object)>
-        let mut inbound: HashMap<String, Vec<(String, Map<String, Value>)>> = HashMap::new();
         // src_node_key → Vec<dst_node_key>
         let mut succ: HashMap<String, Vec<String>> = HashMap::new();
 
-        for (sid, did, mapping) in &edges {
+        for (sid, did, _mapping) in &edges {
             let src_key = match id_to_key.get(sid) {
                 Some(k) => k.clone(),
                 None => continue,
@@ -136,8 +147,6 @@ impl WorkflowExecutor {
             succ.entry(src_key.clone())
                 .or_default()
                 .push(dst_key.clone());
-            let m = mapping.as_object().cloned().unwrap_or_default();
-            inbound.entry(dst_key).or_default().push((src_key, m));
         }
 
         // 3. Workflow 执行时授予全部 capability 权限（与 Tool 测试行为一致）
@@ -155,7 +164,6 @@ impl WorkflowExecutor {
                 &key_to_function,
                 &key_to_node_type,
                 &key_to_node_config,
-                &inbound,
                 &succ,
                 &mut indegree,
                 external_input,
@@ -219,7 +227,10 @@ impl WorkflowExecutor {
             }
         }
 
-        Ok(end_value)
+        Ok(ExecuteOutcome {
+            end_value,
+            node_results: outputs,
+        })
     }
 }
 
@@ -230,7 +241,6 @@ async fn run_layers(
     key_to_function: &HashMap<String, Option<i64>>,
     key_to_node_type: &HashMap<String, String>,
     key_to_node_config: &HashMap<String, Option<Value>>,
-    inbound: &HashMap<String, Vec<(String, Map<String, Value>)>>,
     _succ: &HashMap<String, Vec<String>>,
     indegree: &mut HashMap<String, usize>,
     external_input: Value,
@@ -262,23 +272,24 @@ async fn run_layers(
         // 并行执行同层节点
         let mut futures = Vec::with_capacity(layer.len());
         for node_key in &layer {
+            let node_type = key_to_node_type
+                .get(node_key.as_str())
+                .map(|s| s.as_str())
+                .unwrap_or("function_node");
             let node_config = key_to_node_config.get(node_key.as_str()).cloned().flatten();
             let node_input = build_node_input(
+                node_type,
                 node_key,
-                inbound,
                 &outputs,
                 &external_input,
                 node_config.as_ref(),
+                &agent_ctx,
             )
             .map_err(|e| WorkflowError::MappingResolve {
                 node_key: node_key.clone(),
                 field: e.0,
                 message: e.1,
             })?;
-            let node_type = key_to_node_type
-                .get(node_key.as_str())
-                .map(|s| s.as_str())
-                .unwrap_or("function_node");
             let function_id_opt = *key_to_function
                 .get(node_key)
                 .ok_or_else(|| WorkflowError::MissingFunction(node_key.clone()))?;
@@ -329,129 +340,109 @@ async fn run_layers(
     Ok(outputs)
 }
 
-/// Build node input by resolving inbound edge mappings against upstream outputs.
-/// External input is used when a required field is not in any mapping (entry-node behavior).
+/// Resolve a node's input by reading the structured `InputSpec` from its
+/// `node_config.input_mapping` and merging values from all three source
+/// kinds (upstream node output, literal, AgentContext).
+///
+/// Used for both `function_node` and `generate_answer_node` — they share
+/// the same structured spec under `node_config.input_mapping`. Other node
+/// types (start / end) pass through `external_input` as-is.
 fn build_node_input(
+    node_type: &str,
     node_key: &str,
-    inbound: &HashMap<String, Vec<(String, Map<String, Value>)>>,
     outputs: &HashMap<String, Value>,
     external_input: &Value,
     node_config: Option<&Value>,
+    agent_ctx: &AgentContext,
 ) -> Result<Value, (String, String)> {
-    let edges = inbound.get(node_key);
-    if edges.is_none() || edges.unwrap().is_empty() {
-        // 入口节点：检查 node_config 中是否有 input_mapping 用于映射 start → field
-        if let Some(cfg) = node_config {
-            if let Some(mapping) = cfg.get("input_mapping") {
-                if let Value::Object(map) = mapping {
-                    let mut input = Map::new();
-                    for (field, m) in map {
-                        if let Value::Object(src_cfg) = m {
-                            let source =
-                                src_cfg.get("source").and_then(|v| v.as_str()).unwrap_or("");
-                            if source == "upstream" {
-                                if let Some(snk) =
-                                    src_cfg.get("source_node_key").and_then(|v| v.as_str())
-                                {
-                                    if snk == "start" {
-                                        // 从 external_input 中取对应字段
-                                        let src_field =
-                                            src_cfg.get("source_field").and_then(|v| v.as_str());
-                                        if let Value::Object(ext) = external_input {
-                                            if let Some(src_field) = src_field {
-                                                if let Some(val) = ext.get(src_field) {
-                                                    input.insert(field.clone(), val.clone());
-                                                }
-                                            } else {
-                                                // 无 source_field：用字段名在 external_input 中查找
-                                                if let Some(val) = ext.get(field.as_str()) {
-                                                    input.insert(field.clone(), val.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if source == "custom" {
-                                if let Some(cv) = src_cfg.get("custom_value") {
-                                    input.insert(field.clone(), cv.clone());
-                                }
-                            }
-                        }
-                    }
-                    if !input.is_empty() {
-                        return Ok(Value::Object(input));
+    let spec_key = match node_type {
+        "function_node" | "generate_answer_node" => Some("input_mapping"),
+        _ => None,
+    };
+
+    // start / end / unknown: pass through external_input
+    let Some(spec_key) = spec_key else {
+        return Ok(external_input.clone());
+    };
+
+    let spec_value = node_config
+        .and_then(|c| c.get(spec_key))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let spec = crate::runtime::input_source::parse_input_spec(&spec_value)
+        .map_err(|e| (node_key.to_string(), format!("parse node_config.{spec_key}: {e}")))?;
+
+    let ctx = InputBuildCtx {
+        external_input,
+        outputs,
+        agent_ctx,
+    };
+    build_input_from_spec(&spec, &ctx)
+}
+
+/// Context passed to `build_input_from_spec` so it can resolve any source kind.
+struct InputBuildCtx<'a> {
+    external_input: &'a Value,
+    outputs: &'a HashMap<String, Value>,
+    agent_ctx: &'a AgentContext,
+}
+
+/// Resolve every entry in `spec` to a concrete value, returning a JSON object.
+fn build_input_from_spec(
+    spec: &crate::runtime::input_source::InputSpec,
+    ctx: &InputBuildCtx<'_>,
+) -> Result<Value, (String, String)> {
+    use crate::runtime::input_source::{AgentContextCategory, InputSource};
+
+    let snapshot = crate::runtime::hook::agent_context_snapshot_value(ctx.agent_ctx);
+    let mut input = Map::new();
+    for (field, src) in spec {
+        let value = match src {
+            InputSource::Upstream { node_key, field: sub } => {
+                if node_key == "start" {
+                    // start is a virtual node whose "output" is external_input.
+                    let key = sub.as_deref().unwrap_or(field.as_str());
+                    resolve_from_external(key, field, ctx.external_input)?
+                } else {
+                    let upstream = ctx.outputs.get(node_key).ok_or_else(|| {
+                        (
+                            field.clone(),
+                            format!("upstream node '{node_key}' produced no output"),
+                        )
+                    })?;
+                    match sub {
+                        Some(path) => resolve_dot_path(upstream, path, field)?,
+                        None => upstream.clone(),
                     }
                 }
             }
-        }
-        // 默认：入口节点直接喂外部输入
-        return Ok(external_input.clone());
-    }
-    let mut input = Map::new();
-    // entry external input also merges in (as base) so entry nodes can mix external + mapped
-    if let Value::Object(ext) = external_input {
-        for (k, v) in ext {
-            input.insert(k.clone(), v.clone());
-        }
-    }
-    for (src_key, mapping) in edges.unwrap() {
-        for (dst_key, src_path) in mapping {
-            // dst_key like "dst.input.field" → strip prefix
-            let field = dst_key
-                .strip_prefix("dst.input.")
-                .unwrap_or(dst_key.as_str());
-            let path = match src_path.as_str() {
-                Some(s) => s,
-                None => return Err((field.to_string(), "mapping value is not a string".into())),
-            };
-            // path: "<src_node_key>.output.<...>" or shorthand "output.<...>"
-            // start 是虚拟节点，其"输出"就是 external_input
-            let resolved = if src_key == "start" {
-                resolve_from_external(path, external_input)?
-            } else {
-                resolve_src_path(path, src_key, outputs)?
-            };
-            input.insert(field.to_string(), resolved);
-        }
+            InputSource::Custom { value } => value.clone(),
+            InputSource::AgentContext {
+                category,
+                key,
+                sub_key,
+            } => resolve_from_agent_context(category, key, sub_key.as_deref(), &snapshot, field)?,
+        };
+        input.insert(field.clone(), value);
     }
     Ok(Value::Object(input))
 }
 
-fn resolve_src_path(
-    path: &str,
-    expected_src: &str,
-    outputs: &HashMap<String, Value>,
-) -> Result<Value, (String, String)> {
-    // 接受两种形式：
-    //   "<src_key>.output.foo.bar"  (entries in mapping)
-    //   "output.foo.bar"             (shorthand, uses expected_src)
-    let rest = if let Some(r) = path.strip_prefix(&format!("{expected_src}.output.")) {
-        r
-    } else if let Some(r) = path.strip_prefix("output.") {
-        r
-    } else {
-        return Err((
-            path.to_string(),
-            format!("expected '{expected_src}.output.<path>' or 'output.<path>'"),
-        ));
-    };
-    let upstream = outputs.get(expected_src).ok_or_else(|| {
-        (
-            path.to_string(),
-            format!("upstream {expected_src} produced no output"),
-        )
-    })?;
-    let mut current = upstream;
-    for seg in rest.split('.') {
+fn resolve_dot_path(root: &Value, path: &str, field: &str) -> Result<Value, (String, String)> {
+    let mut current = root;
+    for seg in path.split('.') {
         match current {
             Value::Object(m) => {
-                current = m
-                    .get(seg)
-                    .ok_or_else(|| (path.to_string(), format!("path segment '{seg}' not found")))?;
+                current = m.get(seg).ok_or_else(|| {
+                    (
+                        field.to_string(),
+                        format!("path segment '{seg}' not found in upstream output"),
+                    )
+                })?;
             }
             _ => {
                 return Err((
-                    path.to_string(),
+                    field.to_string(),
                     format!("cannot index into non-object at segment '{seg}'"),
                 ));
             }
@@ -460,29 +451,99 @@ fn resolve_src_path(
     Ok(current.clone())
 }
 
-/// 解析 start 节点的虚拟输出：从 external_input 中取值
-/// path 格式: "start.output.<field>"  — 从中提取 <field> 并在 external_input 中查找
-fn resolve_from_external(path: &str, external_input: &Value) -> Result<Value, (String, String)> {
-    // path: "start.output.query" → 提取 "query"
-    let field = if let Some(r) = path.strip_prefix("start.output.") {
-        r
-    } else if let Some(r) = path.strip_prefix("output.") {
-        r
-    } else {
-        return Err((
-            path.to_string(),
-            "expected 'start.output.<field>' or 'output.<field>' for start mapping".into(),
-        ));
-    };
-    if let Value::Object(ext) = external_input {
-        ext.get(field).cloned().ok_or_else(|| {
-            (
-                path.to_string(),
-                format!("external input missing field '{field}'"),
-            )
-        })
-    } else {
-        Err((path.to_string(), "external input is not an object".into()))
+fn resolve_from_external(
+    key: &str,
+    field: &str,
+    external_input: &Value,
+) -> Result<Value, (String, String)> {
+    let ext = external_input.as_object().ok_or_else(|| {
+        (
+            field.to_string(),
+            "external_input is not a JSON object".to_string(),
+        )
+    })?;
+    ext.get(key).cloned().ok_or_else(|| {
+        (
+            field.to_string(),
+            format!("start (external_input) has no field '{key}'"),
+        )
+    })
+}
+
+fn resolve_from_agent_context(
+    category: &crate::runtime::input_source::AgentContextCategory,
+    key: &str,
+    sub_key: Option<&str>,
+    snapshot: &Value,
+    field: &str,
+) -> Result<Value, (String, String)> {
+    use crate::runtime::input_source::AgentContextCategory;
+    match category {
+        AgentContextCategory::UserInput => {
+            let ui = snapshot
+                .get("user_input")
+                .and_then(|v| v.as_object())
+                .ok_or_else(|| {
+                    (field.to_string(), "snapshot.user_input missing".to_string())
+                })?;
+            match sub_key {
+                Some(sk) => {
+                    let md = ui
+                        .get("metadata")
+                        .and_then(|v| v.as_object())
+                        .ok_or_else(|| {
+                            (field.to_string(), "snapshot.user_input.metadata missing".to_string())
+                        })?;
+                    md.get(sk).cloned().ok_or_else(|| {
+                        (field.to_string(), format!("user_input.metadata.{sk} not found"))
+                    })
+                }
+                None => ui.get(key).cloned().ok_or_else(|| {
+                    (field.to_string(), format!("user_input.{key} not found"))
+                }),
+            }
+        }
+        AgentContextCategory::Entities
+        | AgentContextCategory::ToolResults
+        | AgentContextCategory::StateChanges => {
+            let cat_name = match category {
+                AgentContextCategory::Entities => "entities",
+                AgentContextCategory::ToolResults => "tool_results",
+                AgentContextCategory::StateChanges => "state_changes",
+                _ => unreachable!(),
+            };
+            let arr = snapshot.get(cat_name).and_then(|v| v.as_array()).ok_or_else(|| {
+                (field.to_string(), format!("snapshot.{cat_name} missing"))
+            })?;
+            arr.iter()
+                .find(|r| r.get("key").and_then(|k| k.as_str()) == Some(key))
+                .and_then(|r| r.get("value").cloned())
+                .ok_or_else(|| {
+                    (field.to_string(), format!("{cat_name}.{key} not found"))
+                })
+        }
+        AgentContextCategory::Extensions => {
+            let arr = snapshot.get("extensions").and_then(|v| v.as_array()).ok_or_else(|| {
+                (field.to_string(), "snapshot.extensions missing".to_string())
+            })?;
+            // key = extension id
+            let ext = arr
+                .iter()
+                .find(|e| e.get("id").and_then(|i| i.as_str()) == Some(key))
+                .ok_or_else(|| {
+                    (field.to_string(), format!("extension id '{key}' not found"))
+                })?;
+            // sub_key = top-level field name on the ExtensionContent (id, content_type, reply, data, render_hints)
+            let sk = sub_key.ok_or_else(|| {
+                (
+                    field.to_string(),
+                    "extensions requires sub_key (field name)".to_string(),
+                )
+            })?;
+            ext.get(sk).cloned().ok_or_else(|| {
+                (field.to_string(), format!("extension '{key}' has no field '{sk}'"))
+            })
+        }
     }
 }
 
@@ -613,8 +674,13 @@ async fn execute_answer_node(
     let history_window = config
         .get("history_window")
         .and_then(|v| v.as_i64())
-        .unwrap_or(3);
-    println!("{:?}", input);
+        .unwrap_or(0);
+
+    println!("input={:?}", input);
+    println!("system_prompt={:?}", system_prompt);
+    println!("model_preset={:?}", model_preset);
+    println!("history_window={:?}", history_window);
+
     // Strip _agent_context from input — it's runtime machinery, not user data
     if let Value::Object(ref mut map) = input {
         map.remove("_agent_context");
@@ -622,9 +688,11 @@ async fn execute_answer_node(
 
     // Resolve template variables in system_prompt (e.g., "{query}" → actual value)
     let resolved_prompt = resolve_template_vars(system_prompt, &input);
+    println!("resolved_prompt={:?}", resolved_prompt);
 
     // Build a clean user message from input fields (not raw JSON)
     let user_message = build_user_message(&input);
+    println!("user_message={:?}", user_message);
 
     tracing::info!(
         node_key,
@@ -707,6 +775,7 @@ fn resolve_template_vars(template: &str, input: &Value) -> String {
     if let Value::Object(map) = input {
         for (key, val) in map {
             let placeholder = format!("{{{key}}}");
+            println!("placeholder={:?}", placeholder);
             let replacement = match val {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -714,9 +783,12 @@ fn resolve_template_vars(template: &str, input: &Value) -> String {
             result = result.replace(&placeholder, &replacement);
         }
     }
+    println!("result replace={:?}", result);
     // Replace remaining unresolved placeholders with empty string.
     // Supports optional whitespace: { var } or {var}
     let re = regex::Regex::new(r"\{\s*[a-zA-Z0-9_]+\s*\}")
         .unwrap_or_else(|_| regex::Regex::new(r"\{[^}]+\}").unwrap());
-    re.replace_all(&result, "").to_string()
+    let result = re.replace_all(&result, "").to_string();
+    println!("result regex={:?}", result);
+    result
 }

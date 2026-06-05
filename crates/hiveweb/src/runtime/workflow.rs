@@ -676,11 +676,6 @@ async fn execute_answer_node(
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
 
-    println!("input={:?}", input);
-    println!("system_prompt={:?}", system_prompt);
-    println!("model_preset={:?}", model_preset);
-    println!("history_window={:?}", history_window);
-
     // Strip _agent_context from input — it's runtime machinery, not user data
     if let Value::Object(ref mut map) = input {
         map.remove("_agent_context");
@@ -688,16 +683,18 @@ async fn execute_answer_node(
 
     // Resolve template variables in system_prompt (e.g., "{query}" → actual value)
     let resolved_prompt = resolve_template_vars(system_prompt, &input);
-    println!("resolved_prompt={:?}", resolved_prompt);
 
-    // Build a clean user message from input fields (not raw JSON)
-    let user_message = build_user_message(&input);
-    println!("user_message={:?}", user_message);
+    // Build the user message from the input. We prefer the "user's question"
+    // field (e.g. `query`) so the LLM sees the actual question, not a
+    // `"key: value"` dump. Fields injected into the system_prompt via `{var}`
+    // are excluded from the fallback dump to avoid duplicating context data.
+    let user_message = build_user_message(&input, system_prompt);
 
     tracing::info!(
         node_key,
         system_prompt_len = system_prompt.len(),
         resolved_prompt_len = resolved_prompt.len(),
+        user_message_len = user_message.len(),
         input_keys = ?input.as_object().map(|m| m.keys().collect::<Vec<_>>()),
         "execute_answer_node: invoking LLM"
     );
@@ -748,12 +745,64 @@ async fn execute_answer_node(
 }
 
 /// Build a human-readable user message from the resolved node input.
-/// Formats top-level fields as "key: value" lines, skipping internal fields.
-fn build_user_message(input: &Value) -> String {
+///
+/// The LLM chat pattern expects:
+///   - `system`: instructions + context (with `{var}` placeholders resolved)
+///   - `user`: the user's actual question / request
+///
+/// The user's question is conventionally a single string field (often named
+/// `query`, `text`, `input`, etc.). We prefer that field as the user message
+/// so the LLM sees the actual question rather than a `"key: value"` dump.
+///
+/// If no "user question" field is found we fall back to the first string
+/// field; if there are no string fields we dump remaining fields as
+/// `"key: value"` (skipping internal `_`-prefixed keys). Keys that were
+/// injected into the system_prompt via `{var}` are skipped in the fallback
+/// path to avoid duplicating context data.
+fn build_user_message(input: &Value, system_prompt: &str) -> String {
+    // Common names for the field that holds the user's actual question.
+    const USER_QUESTION_KEYS: &[&str] = &[
+        "query", "question", "text", "input", "message", "prompt",
+        "user_input", "raw_text", "user_message", "ask",
+    ];
+
+    if let Value::Object(map) = input {
+        // Priority 1: a well-known "user question" field
+        for key in USER_QUESTION_KEYS {
+            if !key.starts_with('_') {
+                if let Some(Value::String(s)) = map.get(*key) {
+                    return s.clone();
+                }
+            }
+        }
+        // Priority 2: the first string field (alphabetical order from BTreeMap)
+        for (k, v) in map {
+            if !k.starts_with('_') {
+                if let Value::String(s) = v {
+                    return s.clone();
+                }
+            }
+        }
+        // Priority 3: dump unreferenced non-internal fields as "key: value"
+        let referenced = referenced_template_keys(system_prompt);
+        let lines: Vec<String> = map
+            .iter()
+            .filter(|(k, _)| !referenced.contains(*k) && !k.starts_with('_'))
+            .map(|(k, v)| {
+                let val = serde_json::to_string(v).unwrap_or_default();
+                format!("{k}: {val}")
+            })
+            .collect();
+        if !lines.is_empty() {
+            return lines.join("\n");
+        }
+    }
+    // Last resort: original "all fields" behavior
     match input {
         Value::Object(map) if !map.is_empty() => {
             let lines: Vec<String> = map
                 .iter()
+                .filter(|(k, _)| !k.starts_with('_'))
                 .map(|(k, v)| {
                     let val = match v {
                         Value::String(s) => s.clone(),
@@ -769,13 +818,22 @@ fn build_user_message(input: &Value) -> String {
     }
 }
 
+/// Extract the set of keys referenced by `{var}` placeholders in a template.
+/// Supports optional whitespace: `{ var }` and `{var}` both match.
+fn referenced_template_keys(template: &str) -> std::collections::HashSet<String> {
+    let re = regex::Regex::new(r"\{\s*([a-zA-Z0-9_]+)\s*\}")
+        .unwrap_or_else(|_| regex::Regex::new(r"\{[^}]+\}").unwrap());
+    re.captures_iter(template)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .collect()
+}
+
 /// Replace `{var_name}` template variables in a string with values from input JSON.
 fn resolve_template_vars(template: &str, input: &Value) -> String {
     let mut result = template.to_string();
     if let Value::Object(map) = input {
         for (key, val) in map {
             let placeholder = format!("{{{key}}}");
-            println!("placeholder={:?}", placeholder);
             let replacement = match val {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -783,12 +841,9 @@ fn resolve_template_vars(template: &str, input: &Value) -> String {
             result = result.replace(&placeholder, &replacement);
         }
     }
-    println!("result replace={:?}", result);
     // Replace remaining unresolved placeholders with empty string.
     // Supports optional whitespace: { var } or {var}
     let re = regex::Regex::new(r"\{\s*[a-zA-Z0-9_]+\s*\}")
         .unwrap_or_else(|_| regex::Regex::new(r"\{[^}]+\}").unwrap());
-    let result = re.replace_all(&result, "").to_string();
-    println!("result regex={:?}", result);
-    result
+    re.replace_all(&result, "").to_string()
 }

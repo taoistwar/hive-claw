@@ -163,15 +163,22 @@ where
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息
     let mut messages: Vec<Value> = Vec::new();
+    let mut last_user_content: Option<String> = None;
     for m in history {
         if let Some(c) = m.content_ref() {
             if c.is_empty() {
                 continue;
             }
             messages.push(json!({"role": m.role_ref(), "content": c}));
+            if m.role_ref() == "user" {
+                last_user_content = Some(c.to_string());
+            }
         }
     }
-    messages.push(json!({"role": "user", "content": user_content}));
+    // Only append user_content if it's not already the last user message in history
+    if last_user_content.as_deref() != Some(user_content) {
+        messages.push(json!({"role": "user", "content": user_content}));
+    }
 
     for hop in 0..max_hops {
         // 1. 装配当前 agent 资源

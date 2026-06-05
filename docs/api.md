@@ -134,9 +134,13 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 ```json
 {
-  "reply": "您好！以下是为您推荐的游戏...",
+  "id": 100,
+  "session_id": 5,
+  "user_id": 12345,
+  "role": "assistant",
+  "content": "您好！以下是为您推荐的游戏...",
   "elapsed_ms": 1523,
-  "extension": {
+  "extensions": [{
     "content_type": "card",
     "payload": {
       "type": "goPay",
@@ -148,7 +152,8 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
         "expire_coins_7d": 5000.0
       }
     }
-  }
+  }],
+  "created_at": "2026-06-02T14:30:00Z"
 }
 ```
 
@@ -158,18 +163,22 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `reply` | `String` | AI 助手的完整回复文本 |
+| `id` | `i64` | 唯一标识符 |
+| `session_id` | `i64` | 会话 ID |
+| `user_id` | `i64` | 用户 ID |
+| `role` | `String` | 角色：`assistant` |
+| `content` | `String` | AI 助手的完整回复文本 |
 | `elapsed_ms` | `Option<u64>` | LLM 处理耗时（毫秒） |
-| `extension` | `Option<Value>` | 单个扩展对象，仅当扩展数量为 1 时出现 |
 | `extensions` | `Option<Vec<Value>>` | 扩展对象数组，仅当扩展数量 ≥ 2 时出现 |
+| `created_at` | `String` | 创建时间 |
 
-**扩展对象 structure：**
+**`extensions`对象 structure：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `content_type` | `String` | 内容类型：`card` / `image` / `suggestion` / `link` / `button` / `table` / `chart` / `object_ref` |
 | `payload.type` | `String` | 卡片类型（当 `content_type` 为 `card` 时） |
-| `payload.info` | `Object` | 负载数据（当 `type` 为 `goPay`/`subscribe`/`upgrade`/`sufficient`/`repay` 时） |
+| `payload.info` | `Object` | 负载数据（当 `type` 为 `goPay`/`subscribe`/`upgrade`/`sufficient`/`repay`/`game` 时） |
 
 
 **卡片类型说明：**
@@ -181,8 +190,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `upgrade` | 建议升级 | 会员升级卡片 |
 | `repay` | 会员即将到期（≤ 7 天） | 会员订购/续费卡片 |
 | `sufficient` | 用户已有充足权益 | 可轻提示当前权益充足，不强推 |
-| `game` | 用户已有充足权益 | 可轻提示当前权益充足，不强推 |
-
+| `game` | 游戏推荐 | 游戏推荐卡片 |
 
 
 **`info` 对象字段：**

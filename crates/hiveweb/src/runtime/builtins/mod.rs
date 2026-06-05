@@ -335,8 +335,7 @@ pub const GAME_LIST_OUTPUT_SCHEMA: &str = r#"{
 
 pub const QUERY_BALANCE_INPUT_SCHEMA: &str = r#"{
   "type": "object",
-  "properties": {},
-  "description": "查询当前对话用户的余额与会员等级。user_id 从 AgentContext 隐式获取。"
+  "properties": {}
 }"#;
 
 pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{

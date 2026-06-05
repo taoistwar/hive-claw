@@ -105,6 +105,7 @@ pub async fn run_skill_test(
                     description: desc,
                     kind,
                     function_id: fid,
+                    function_identifier: None,
                     workflow_id: wid,
                     input_schema,
                     plugin_id: pid,

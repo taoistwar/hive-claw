@@ -771,6 +771,8 @@ pub(crate) struct ToolRef {
     pub(crate) description: String,
     pub(crate) kind: i8, // 1 function-wrap, 2 workflow-wrap
     pub(crate) function_id: Option<i64>,
+    /// function 的 identifier（builtin 查找用，与 tool identifier 可能不同）
+    pub(crate) function_identifier: Option<String>,
     pub(crate) workflow_id: Option<i64>,
     pub(crate) input_schema: Value,
     /// custom function 对应的 plugin_id + plugin_export（kind=1 时填充）
@@ -828,11 +830,12 @@ async fn build_agent_content(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
         Value,
         Option<i64>,
         Option<String>,
+        Option<String>,
         Option<Value>,
     )> = sqlx::query_as(
         r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
-                      f.plugin_id, f.plugin_export,
+                      f.plugin_id, f.plugin_export, f.identifier,
                       COALESCE(t.required_capabilities, f.required_capabilities)
                FROM tools t
                JOIN agent_tools at ON at.tool_id = t.id
@@ -841,7 +844,7 @@ async fn build_agent_content(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
                UNION
                SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
-                      f.plugin_id, f.plugin_export,
+                      f.plugin_id, f.plugin_export, f.identifier,
                       COALESCE(t.required_capabilities, f.required_capabilities)
                FROM tools t
                LEFT JOIN functions f ON f.id = t.function_id
@@ -868,6 +871,7 @@ async fn build_agent_content(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
         input_schema,
         plugin_id,
         plugin_export,
+        function_identifier,
         caps_json,
     ) in tool_rows
     {
@@ -889,6 +893,7 @@ async fn build_agent_content(pool: &MySqlPool, agent_id: i64) -> Result<AgentCon
             description: desc,
             kind,
             function_id,
+            function_identifier,
             workflow_id,
             input_schema,
             plugin_id,
@@ -1323,10 +1328,11 @@ pub(crate) async fn handle_workspace_tool(
                 if tool_ref.function_id.is_none() {
                     return ToolOutcome::error("builtin function 缺 function_id".into());
                 };
-                let Some(builtin) = super::builtins::lookup(&tool_ref.identifier) else {
+                // 使用 function 的 identifier 查找 builtin handler（可能与 tool identifier 不同）
+                let lookup_id = tool_ref.function_identifier.as_deref().unwrap_or(&tool_ref.identifier);
+                let Some(builtin) = super::builtins::lookup(lookup_id) else {
                     return ToolOutcome::error(format!(
-                        "builtin function「{}」未找到 handler",
-                        tool_ref.identifier
+                        "builtin function「{lookup_id}」未找到 handler"
                     ));
                 };
                 let mut args_value: Value = Value::Object(tc.arguments.clone());

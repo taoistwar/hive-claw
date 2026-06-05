@@ -291,10 +291,19 @@ async fn execute_workflow(
         );
     }
 
+    let agent_context_snapshot = match agent_ctx.snapshot() {
+        Ok(snapshot) => serde_json::to_value(&snapshot).ok(),
+        Err(e) => {
+            tracing::warn!(error = %e, "execute_workflow: AgentContext snapshot 失败");
+            None
+        }
+    };
+
     let elapsed_ms = t0.elapsed().as_millis() as i32;
     Ok(ApiResponse::success(serde_json::json!({
         "workflow_id": id,
         "node_results": outputs,
         "elapsed_ms": elapsed_ms,
+        "agent_context": agent_context_snapshot,
     })))
 }

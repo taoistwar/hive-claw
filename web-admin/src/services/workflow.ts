@@ -165,6 +165,7 @@ export interface WorkflowExecuteResult {
   workflow_id: number;
   node_results: Record<string, unknown>;
   elapsed_ms: number;
+  agent_context?: unknown;
 }
 
 export async function executeWorkflow(

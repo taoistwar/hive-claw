@@ -1055,36 +1055,72 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           </Col>
 
           {/* 右侧：执行结果 */}
-          {executionResult && (
-            <Col span={13}>
-              <div
-                style={{
-                  borderLeft: '1px solid #f0f0f0',
-                  paddingLeft: 16,
-                  height: '100%',
-                }}
-              >
-                <Text strong style={{ marginBottom: 8, display: 'block' }}>
-                  执行结果（耗时 {executionResult.elapsed_ms}ms）：
-                </Text>
-                <pre
+          {executionResult && (() => {
+            const { agent_context: agentContext, ...resultFields } = executionResult as unknown as Record<string, unknown> & { agent_context?: unknown };
+            return (
+              <Col span={13}>
+                <div
                   style={{
-                    background: '#fafafa',
-                    border: '1px solid #d9d9d9',
-                    borderRadius: 6,
-                    padding: 12,
-                    fontSize: 12,
-                    overflow: 'auto',
-                    maxHeight: 'calc(100vh - 360px)',
-                    minHeight: 200,
-                    margin: 0,
+                    borderLeft: '1px solid #f0f0f0',
+                    paddingLeft: 16,
+                    height: '100%',
                   }}
                 >
-                  {JSON.stringify(executionResult, null, 2)}
-                </pre>
-              </div>
-            </Col>
-          )}
+                  <Text strong style={{ marginBottom: 8, display: 'block' }}>
+                    执行结果（耗时 {executionResult.elapsed_ms}ms）：
+                  </Text>
+                  {/* 结果区块（去除 agent_context） */}
+                  <Text
+                    strong
+                    type="secondary"
+                    style={{ marginBottom: 4, display: 'block', fontSize: 13 }}
+                  >
+                    结果：
+                  </Text>
+                  <pre
+                    style={{
+                      background: '#fafafa',
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 6,
+                      padding: 12,
+                      fontSize: 12,
+                      overflow: 'auto',
+                      maxHeight: 'calc(100vh - 460px)',
+                      minHeight: 120,
+                      margin: 0,
+                    }}
+                  >
+                    {JSON.stringify(resultFields, null, 2)}
+                  </pre>
+                  {/* AgentContext 区块 */}
+                  <Text
+                    strong
+                    type="secondary"
+                    style={{ margin: '12px 0 4px 0', display: 'block', fontSize: 13 }}
+                  >
+                    AgentContext：
+                  </Text>
+                  <pre
+                    style={{
+                      background: '#fafafa',
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 6,
+                      padding: 12,
+                      fontSize: 12,
+                      overflow: 'auto',
+                      maxHeight: 'calc(100vh - 460px)',
+                      minHeight: 80,
+                      margin: 0,
+                    }}
+                  >
+                    {agentContext === undefined || agentContext === null
+                      ? 'null'
+                      : JSON.stringify(agentContext, null, 2)}
+                  </pre>
+                </div>
+              </Col>
+            );
+          })()}
         </Row>
       </Modal>
       {/* 节点结果查看弹窗 */}

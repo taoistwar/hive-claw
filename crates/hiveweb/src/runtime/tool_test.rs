@@ -311,7 +311,7 @@ pub async fn run_tool_test(
     let llm_started = Instant::now();
     logger.log("STEP7: calling chat_stream_with_retry...");
     let resp = provider
-        .chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None, None)
+        .chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None)
         .await;
     let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
     logger.log(&format!(

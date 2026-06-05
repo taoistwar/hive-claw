@@ -161,18 +161,6 @@ where
     let mut final_content: Option<String> = None;
     let mut final_agent_id = starting_agent_id;
 
-    // Create one Langfuse trace for the entire agent loop
-    let lf_trace = providers::get_langfuse_client().map(|c| {
-        let trace_input = json!({
-            "session_id": session_id,
-            "starting_agent_id": starting_agent_id,
-            "max_hops": max_hops,
-            "history_len": history.len(),
-            "user_content": user_content,
-        });
-        c.trace("agent_loop", Some(trace_input))
-    });
-
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息
     let mut messages: Vec<Value> = Vec::new();
     for m in history {
@@ -295,7 +283,6 @@ where
                 None,
                 RetryMode::Standard,
                 None,
-                lf_trace.as_ref(),
             )
             .await;
 

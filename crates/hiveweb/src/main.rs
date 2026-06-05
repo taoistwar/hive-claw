@@ -19,105 +19,6 @@ struct Cli {
     port: Option<u16>,
 }
 
-/// Try to initialise Langfuse from environment variables.
-///
-/// Reads:
-/// - `LANGFUSE_ENABLED` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`
-/// - `LANGFUSE_HOST` (defaults to `https://cloud.langfuse.com`)
-///
-/// If Langfuse is disabled or credentials are missing, tracing is silently skipped.
-fn try_init_langfuse() {
-    langfuse::lf_debug!("hiveweb::try_init_langfuse called, checking env vars");
-    let enabled = std::env::var("LANGFUSE_ENABLED")
-        .unwrap_or_default()
-        .to_lowercase();
-
-    // Auto-detect: if LANGFUSE_PUBLIC_KEY + SECRET_KEY are set but
-    // LANGFUSE_ENABLED is missing, enable tracing automatically and warn.
-    let has_public_key = std::env::var("LANGFUSE_PUBLIC_KEY")
-        .map(|k| !k.is_empty())
-        .unwrap_or(false);
-    let has_secret_key = std::env::var("LANGFUSE_SECRET_KEY")
-        .map(|k| !k.is_empty())
-        .unwrap_or(false);
-
-    langfuse::lf_debug!(
-        "hiveweb::try_init_langfuse: enabled='{}' has_pk={} has_sk={}",
-        enabled,
-        has_public_key,
-        has_secret_key
-    );
-
-    if enabled != "true" && enabled != "1" && enabled != "yes" {
-        if has_public_key && has_secret_key {
-            langfuse::lf_debug!(
-                "hiveweb::try_init_langfuse: auto-detect enabled, keys present but LANGFUSE_ENABLED not set"
-            );
-            tracing::warn!(
-                "LANGFUSE_ENABLED not set, but LANGFUSE_PUBLIC_KEY and SECRET_KEY are present. \
-                 Enabling Langfuse tracing automatically. \
-                 Set LANGFUSE_ENABLED=true explicitly to suppress this warning."
-            );
-        } else {
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: disabled (LANGFUSE_ENABLED not set)");
-            tracing::info!("Langfuse tracing disabled (LANGFUSE_ENABLED not set)");
-            return;
-        }
-    }
-
-    let public_key = match std::env::var("LANGFUSE_PUBLIC_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: LANGFUSE_PUBLIC_KEY missing");
-            tracing::warn!("LANGFUSE_ENABLED=true but LANGFUSE_PUBLIC_KEY missing");
-            return;
-        }
-    };
-    let secret_key = match std::env::var("LANGFUSE_SECRET_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: LANGFUSE_SECRET_KEY missing");
-            tracing::warn!("LANGFUSE_ENABLED=true but LANGFUSE_SECRET_KEY missing");
-            return;
-        }
-    };
-    let host =
-        std::env::var("LANGFUSE_HOST").unwrap_or_else(|_| "https://cloud.langfuse.com".to_string());
-
-    langfuse::lf_debug!(
-        "hiveweb::try_init_langfuse: creating config host={} pk_len={} sk_len={}",
-        host,
-        public_key.len(),
-        secret_key.len()
-    );
-    let cfg = langfuse::LangfuseConfig {
-        public_key,
-        secret_key,
-        host,
-        environment: None,
-        release: None,
-        sample_rate: 1.0,
-    };
-
-    langfuse::lf_debug!("hiveweb::try_init_langfuse: calling LangfuseClient::new");
-    match langfuse::LangfuseClient::new(cfg) {
-        Some(client) => {
-            langfuse::lf_debug!(
-                "hiveweb::try_init_langfuse: client created, calling set_langfuse_client"
-            );
-            providers::set_langfuse_client(Some(std::sync::Arc::new(client)));
-            langfuse::lf_debug!(
-                "hiveweb::try_init_langfuse: Langfuse LLM tracing initialized successfully"
-            );
-            tracing::info!("Langfuse LLM tracing initialized");
-        }
-        None => {
-            langfuse::lf_debug!("hiveweb::try_init_langfuse: LangfuseClient::new returned None!");
-            tracing::warn!("LangfuseClient::new returned None, tracing disabled");
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -151,9 +52,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     tracing::info!("=== HiveClaw Admin Center Starting ===");
-
-    // Initialise Langfuse LLM observability (non-blocking, async ingestion)
-    try_init_langfuse();
 
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = cli.port.unwrap_or_else(|| {

@@ -13,7 +13,6 @@ use agent::{AgentLoop, BuiltinToolSet, LoopConfig, ToolFactoryConfig, ToolFactor
 use bus::MessageBus;
 use config::schema::{Config, ProviderConfig};
 use config::{get_config_path, paths::is_default_workspace, set_config_path};
-use std::sync::OnceLock;
 use providers::anthropic_provider::{AnthropicConfig, AnthropicProvider};
 use providers::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
 use providers::bedrock_provider::{BedrockConfig, BedrockProvider};
@@ -126,9 +125,6 @@ impl LoopBundle {
         cfg: &Config,
         cron: Option<Arc<::cron::CronService>>,
     ) -> Result<Self, String> {
-        // Initialise Langfuse tracing if configured (once per process).
-        init_langfuse_from_config(cfg);
-
         let provider = providers::make_provider(cfg)?;
         let bus = Arc::new(MessageBus::new());
         let tf = ToolFactoryConfig::from_config(cfg);
@@ -166,73 +162,4 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
-}
-
-// ---------------------------------------------------------------------------
-// Langfuse initialisation
-// ---------------------------------------------------------------------------
-
-static LANGFUSE_INIT: OnceLock<()> = OnceLock::new();
-
-/// Initialise the global Langfuse client from [`Config::langfuse`].
-///
-/// Idempotent — only sets the client once per process lifetime.
-fn init_langfuse_from_config(cfg: &Config) {
-    langfuse::lf_debug!("cli::init_langfuse_from_config called, enabled={}", cfg.langfuse.enabled);
-    LANGFUSE_INIT.get_or_init(|| {
-        let lf = &cfg.langfuse;
-        langfuse::lf_debug!("cli::init_langfuse_from_config: inside OnceLock get_or_init, enabled={}", lf.enabled);
-        if !lf.enabled {
-            langfuse::lf_debug!("cli::init_langfuse_from_config: langfuse.enabled=false, skipping init");
-            return;
-        }
-        let public_key = match lf.public_key.as_deref() {
-            Some(k) if !k.is_empty() => k.to_string(),
-            _ => {
-                langfuse::lf_debug!("cli::init_langfuse_from_config: public_key empty, tracing disabled");
-                log::warn!("langfuse.enabled=true but public_key is empty — tracing disabled");
-                return;
-            }
-        };
-        let secret_key = match lf.secret_key.as_deref() {
-            Some(k) if !k.is_empty() => k.to_string(),
-            _ => {
-                langfuse::lf_debug!("cli::init_langfuse_from_config: secret_key empty, tracing disabled");
-                log::warn!("langfuse.enabled=true but secret_key is empty — tracing disabled");
-                return;
-            }
-        };
-        let host = lf
-            .host
-            .clone()
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| "https://cloud.langfuse.com".to_string());
-
-        langfuse::lf_debug!("cli::init_langfuse_from_config: creating LangfuseConfig host={} pk_len={} sk_len={}",
-            host, public_key.len(), secret_key.len());
-        let client_cfg = langfuse::LangfuseConfig {
-            public_key,
-            secret_key,
-            host,
-            environment: None,
-            release: None,
-            sample_rate: 1.0,
-        };
-
-        langfuse::lf_debug!("cli::init_langfuse_from_config: calling LangfuseClient::new");
-        match langfuse::LangfuseClient::new(client_cfg) {
-            Some(client) => {
-                langfuse::lf_debug!("cli::init_langfuse_from_config: client created, calling providers::set_langfuse_client");
-                providers::set_langfuse_client(Some(std::sync::Arc::new(client)));
-                langfuse::lf_debug!("cli::init_langfuse_from_config: Langfuse LLM tracing initialised successfully");
-                log::info!("Langfuse LLM tracing initialised from config.json");
-            }
-            None => {
-                langfuse::lf_debug!("cli::init_langfuse_from_config: LangfuseClient::new returned None!");
-                log::warn!("LangfuseClient::new returned None, tracing disabled");
-            }
-        }
-    });
-    langfuse::lf_debug!("cli::init_langfuse_from_config: init complete (LANGFUSE_INIT was already set = {})",
-        LANGFUSE_INIT.get().is_some());
 }

@@ -154,7 +154,7 @@ impl HeartbeatDecider for LLMHeartbeatDecider {
             tool_choice: None,
         };
 
-        let response = self.provider.chat_with_retry(req, RetryMode::Standard, None, None).await;
+        let response = self.provider.chat_with_retry(req, RetryMode::Standard, None).await;
 
         if !response.should_execute_tools() {
             if response.has_tool_calls() {

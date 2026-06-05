@@ -80,7 +80,7 @@ pub async fn llm_invoke(
     };
 
     let resp = provider
-        .chat_with_retry(req, RetryMode::Standard, None, None)
+        .chat_with_retry(req, RetryMode::Standard, None)
         .await;
     if resp.is_error() {
         let msg = resp

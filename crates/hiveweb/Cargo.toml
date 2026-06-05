@@ -71,7 +71,6 @@ wasmparser = "0.221"
 agent = { path = "../agent" }
 providers = { path = "../providers" }
 skills = { path = "../skills" }
-langfuse = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

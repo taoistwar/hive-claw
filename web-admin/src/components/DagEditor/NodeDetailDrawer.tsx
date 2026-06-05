@@ -612,13 +612,13 @@ function AnswerNodePanel(props: {
         <Input.TextArea
           value={systemPrompt}
           onChange={(e) => setSystemPrompt(e.target.value)}
-          placeholder={`你是一个智能助手，请根据以下内容回答用户问题：\n{{query}}\n\n请用简洁的语言回复。`}
+          placeholder={`你是一个智能助手，请根据以下内容回答用户问题：\n{query}\n\n请用简洁的语言回复。`}
           rows={6}
           maxLength={32000}
           showCount
         />
         <Text type="secondary" style={{ fontSize: 11 }}>
-          使用 {'{{变量名}}'} 引用上游节点的输出值
+          使用 {'{变量名}'} 引用上游节点的输出值
         </Text>
       </Form.Item>
 
@@ -630,7 +630,7 @@ function AnswerNodePanel(props: {
           <a onClick={() => setAddVarOpen(true)}>+ 添加变量</a>
         </div>
         <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 12 }}>
-          变量值在运行时会自动从前置节点的输出中获取。变量名与系统提示词中的 {'{{变量名}}'} 对应。
+          变量值在运行时会自动从前置节点的输出中获取。变量名与系统提示词中的 {'{变量名}'} 对应。
         </Text>
 
         {addVarOpen && (

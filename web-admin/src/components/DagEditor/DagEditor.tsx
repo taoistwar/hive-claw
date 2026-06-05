@@ -767,7 +767,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           node_key: generatedKey,
           node_type: 'generate_answer_node' as NodeType,
           node_config: {
-            system_prompt: '你是一个智能助手，请根据以下内容回答用户问题：\n{{query}}',
+            system_prompt: '你是一个智能助手，请根据以下内容回答用户问题：\n{query}',
             history_window: 5,
             variables: [],
           },

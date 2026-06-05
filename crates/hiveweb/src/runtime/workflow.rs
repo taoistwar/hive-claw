@@ -597,7 +597,7 @@ async fn execute_node(
 async fn execute_answer_node(
     deps: &ExecutorDeps,
     node_key: &str,
-    input: Value,
+    mut input: Value,
     node_config: Option<Value>,
     invoking_agent_id: i64,
 ) -> Result<(String, Value), WorkflowError> {
@@ -614,12 +614,25 @@ async fn execute_answer_node(
         .get("history_window")
         .and_then(|v| v.as_i64())
         .unwrap_or(3);
+    println!("{:?}", input);
+    // Strip _agent_context from input — it's runtime machinery, not user data
+    if let Value::Object(ref mut map) = input {
+        map.remove("_agent_context");
+    }
 
-    // Resolve template variables in system_prompt (e.g., "{{query}}" → actual value)
+    // Resolve template variables in system_prompt (e.g., "{query}" → actual value)
     let resolved_prompt = resolve_template_vars(system_prompt, &input);
 
-    // Build the user message from the resolved input
-    let user_message = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
+    // Build a clean user message from input fields (not raw JSON)
+    let user_message = build_user_message(&input);
+
+    tracing::info!(
+        node_key,
+        system_prompt_len = system_prompt.len(),
+        resolved_prompt_len = resolved_prompt.len(),
+        input_keys = ?input.as_object().map(|m| m.keys().collect::<Vec<_>>()),
+        "execute_answer_node: invoking LLM"
+    );
 
     // Try LLM invocation; fall back to direct response if no LLM available
     let answer = match deps.llm.build_primary(model_preset) {
@@ -666,12 +679,34 @@ async fn execute_answer_node(
     ))
 }
 
-/// Replace `{{var_name}}` template variables in a string with values from input JSON.
+/// Build a human-readable user message from the resolved node input.
+/// Formats top-level fields as "key: value" lines, skipping internal fields.
+fn build_user_message(input: &Value) -> String {
+    match input {
+        Value::Object(map) if !map.is_empty() => {
+            let lines: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        Value::String(s) => s.clone(),
+                        other => serde_json::to_string(other).unwrap_or_default(),
+                    };
+                    format!("{k}: {val}")
+                })
+                .collect();
+            lines.join("\n")
+        }
+        Value::String(s) => s.clone(),
+        _ => serde_json::to_string(input).unwrap_or_default(),
+    }
+}
+
+/// Replace `{var_name}` template variables in a string with values from input JSON.
 fn resolve_template_vars(template: &str, input: &Value) -> String {
     let mut result = template.to_string();
     if let Value::Object(map) = input {
         for (key, val) in map {
-            let placeholder = format!("{{{{{key}}}}}");
+            let placeholder = format!("{{{key}}}");
             let replacement = match val {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -679,8 +714,9 @@ fn resolve_template_vars(template: &str, input: &Value) -> String {
             result = result.replace(&placeholder, &replacement);
         }
     }
-    // Replace remaining unresolved placeholders with empty string
-    let re = regex::Regex::new(r"\{\{[a-zA-Z0-9_]+\}\}")
-        .unwrap_or_else(|_| regex::Regex::new(r"\{\{[^}]+\}\}").unwrap());
+    // Replace remaining unresolved placeholders with empty string.
+    // Supports optional whitespace: { var } or {var}
+    let re = regex::Regex::new(r"\{\s*[a-zA-Z0-9_]+\s*\}")
+        .unwrap_or_else(|_| regex::Regex::new(r"\{[^}]+\}").unwrap());
     re.replace_all(&result, "").to_string()
 }

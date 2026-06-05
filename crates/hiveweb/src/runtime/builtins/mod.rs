@@ -1,19 +1,43 @@
 //! Builtin function implementations (T079 / FR-010 v5)
 //!
-//! 5 个不依赖 WASM 的"胶水"函数，启动期 upsert 到 `functions` 表（kind=1）。
-//! 调用入口：当 orchestrator 选中 kind=1 Tool 时直接走宿主代码，绕过 Plugin invoker。
+//! Glue functions that don't depend on WASM, upserted into the `functions` table
+//! at startup (kind=1). When the orchestrator selects a kind=1 Tool it goes directly
+//! through host code, bypassing the Plugin invoker.
 //!
-//! 内置不可删除；可被禁用（disabled 字段暂未引入 — 后续 schema 扩展时加）。
+//! Builtins are non-removable; can be disabled (disabled column TBD — future schema extension).
+
+mod chat_respond;
+mod format_template;
+mod game_list;
+mod json_parse;
+mod json_stringify;
 mod query_balance;
-use regex::Regex;
-use rust_decimal::prelude::*;
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+mod text_regex_match;
+mod tools;
+
 use serde_json::Value;
 use sqlx::MySqlPool;
 use std::sync::Arc;
-use query_balance::query_balance;
+
 use agent::context::AgentContext;
+
+// Re-export handlers for the registry
+use chat_respond::chat_respond;
+use format_template::format_template;
+use game_list::game_list;
+use json_parse::json_parse;
+use json_stringify::json_stringify;
+use query_balance::query_balance;
+use text_regex_match::text_regex_match;
+
+// Re-export schemas for ensure_registered
+use chat_respond::{CHAT_RESPOND_INPUT_SCHEMA, CHAT_RESPOND_OUTPUT_SCHEMA};
+use format_template::{FORMAT_TEMPLATE_INPUT_SCHEMA, FORMAT_TEMPLATE_OUTPUT_SCHEMA};
+use game_list::{GAME_LIST_INPUT_SCHEMA, GAME_LIST_OUTPUT_SCHEMA};
+use json_parse::{JSON_PARSE_INPUT_SCHEMA, JSON_PARSE_OUTPUT_SCHEMA};
+use json_stringify::{JSON_STRINGIFY_INPUT_SCHEMA, JSON_STRINGIFY_OUTPUT_SCHEMA};
+use query_balance::{QUERY_BALANCE_INPUT_SCHEMA, QUERY_BALANCE_OUTPUT_SCHEMA};
+use text_regex_match::{TEXT_REGEX_MATCH_INPUT_SCHEMA, TEXT_REGEX_MATCH_OUTPUT_SCHEMA};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuiltinError {
@@ -25,7 +49,7 @@ pub enum BuiltinError {
 
 pub type BuiltinResult = Result<Value, BuiltinError>;
 
-/// 内置函数执行时需要的上下文（DB 连接池 + AgentContext）
+/// Context needed when executing a builtin function (DB connection pool + AgentContext)
 pub struct BuiltinContext<'a> {
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
@@ -33,320 +57,6 @@ pub struct BuiltinContext<'a> {
     /// `None` when called from contexts without AgentContext (e.g., workflow executor).
     pub agent_ctx: Option<Arc<AgentContext>>,
 }
-
-// ---------- format.template ----------
-
-#[derive(Debug, Deserialize)]
-struct FormatTemplateArgs {
-    template: String,
-    #[serde(default)]
-    vars: serde_json::Map<String, Value>,
-}
-
-/// 简单 `{var}` 占位符替换；嵌套对象暂不支持。
-pub fn format_template(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
-    let parsed: FormatTemplateArgs =
-        serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
-    let mut out = parsed.template;
-    for (k, v) in parsed.vars.iter() {
-        let placeholder = format!("{{{k}}}");
-        let replacement = match v {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        out = out.replace(&placeholder, &replacement);
-    }
-    Ok(Value::String(out))
-}
-
-pub const FORMAT_TEMPLATE_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "template": { "type": "string", "description": "Template with {var} placeholders" },
-    "vars": { "type": "object", "description": "Map of placeholder name → value" }
-  },
-  "required": ["template"]
-}"#;
-
-pub const FORMAT_TEMPLATE_OUTPUT_SCHEMA: &str =
-    r#"{ "type": "string", "description": "Rendered template" }"#;
-
-// ---------- json.parse ----------
-
-#[derive(Debug, Deserialize)]
-struct JsonParseArgs {
-    text: String,
-}
-
-pub fn json_parse(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
-    let parsed: JsonParseArgs =
-        serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
-    serde_json::from_str::<Value>(&parsed.text).map_err(|e| BuiltinError::Exec(format!("{e}")))
-}
-
-pub const JSON_PARSE_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": { "text": { "type": "string" } },
-  "required": ["text"]
-}"#;
-pub const JSON_PARSE_OUTPUT_SCHEMA: &str =
-    r#"{ "type": ["object", "array", "string", "number", "boolean", "null"] }"#;
-
-// ---------- json.stringify ----------
-
-#[derive(Debug, Deserialize)]
-struct JsonStringifyArgs {
-    value: Value,
-    #[serde(default)]
-    pretty: bool,
-}
-
-pub fn json_stringify(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
-    let parsed: JsonStringifyArgs =
-        serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
-    let s = if parsed.pretty {
-        serde_json::to_string_pretty(&parsed.value)
-    } else {
-        serde_json::to_string(&parsed.value)
-    }
-    .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
-    Ok(Value::String(s))
-}
-
-pub const JSON_STRINGIFY_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "value": {},
-    "pretty": { "type": "boolean", "default": false }
-  },
-  "required": ["value"]
-}"#;
-pub const JSON_STRINGIFY_OUTPUT_SCHEMA: &str = r#"{ "type": "string" }"#;
-
-// ---------- text.regex_match ----------
-
-#[derive(Debug, Deserialize)]
-struct RegexMatchArgs {
-    text: String,
-    pattern: String,
-    #[serde(default)]
-    all: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct RegexMatchReply {
-    matches: Vec<RegexMatchEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct RegexMatchEntry {
-    full: String,
-    groups: Vec<Option<String>>,
-}
-
-pub fn text_regex_match(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
-    let parsed: RegexMatchArgs =
-        serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
-    let re = Regex::new(&parsed.pattern)
-        .map_err(|e| BuiltinError::BadArgs(format!("pattern compile: {e}")))?;
-    let collect_one = |caps: regex::Captures| RegexMatchEntry {
-        full: caps
-            .get(0)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default(),
-        groups: caps
-            .iter()
-            .skip(1)
-            .map(|opt| opt.map(|m| m.as_str().to_string()))
-            .collect(),
-    };
-    let matches: Vec<RegexMatchEntry> = if parsed.all {
-        re.captures_iter(&parsed.text).map(collect_one).collect()
-    } else {
-        re.captures(&parsed.text)
-            .map(collect_one)
-            .into_iter()
-            .collect()
-    };
-    Ok(serde_json::to_value(RegexMatchReply { matches })
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?)
-}
-
-pub const TEXT_REGEX_MATCH_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "text": { "type": "string" },
-    "pattern": { "type": "string", "description": "Rust regex syntax" },
-    "all": { "type": "boolean", "default": false }
-  },
-  "required": ["text", "pattern"]
-}"#;
-pub const TEXT_REGEX_MATCH_OUTPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "matches": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "full": { "type": "string" },
-          "groups": { "type": "array", "items": { "type": ["string", "null"] } }
-        }
-      }
-    }
-  }
-}"#;
-
-// ---------- chat.respond ----------
-
-#[derive(Debug, Deserialize)]
-struct ChatRespondArgs {
-    content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatRespondReply {
-    /// orchestrator 用此字段把内容当作"最终用户可见回复"标识
-    final_content: String,
-}
-
-/// chat.respond 是 orchestrator 的"提交最终回复"信号；执行结果由 orchestrator
-/// 拿到 final_content 字段后作为 done event 的最终内容。
-/// 本函数本身只做参数透传 + 包装。
-pub fn chat_respond(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
-    let parsed: ChatRespondArgs =
-        serde_json::from_value(args).map_err(|e| BuiltinError::BadArgs(format!("{e}")))?;
-    Ok(serde_json::to_value(ChatRespondReply {
-        final_content: parsed.content,
-    })
-    .unwrap_or(Value::Null))
-}
-
-pub const CHAT_RESPOND_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "content": { "type": "string", "description": "Final user-visible message" }
-  },
-  "required": ["content"]
-}"#;
-pub const CHAT_RESPOND_OUTPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": { "final_content": { "type": "string" } }
-}"#;
-
-// ---------- game_list ----------
-
-/// sync wrapper：通过 `block_in_place` 在 tokio runtime 内桥接 async DB 查询。
-/// 不能用 `Handle::block_on` —— 当 caller 已经在 tokio worker 线程上（如 axum handler）
-/// 会 panic "Cannot start a runtime from within a runtime"。
-pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
-    let pool = ctx.pool.clone();
-    let ext_pool = ctx.ext_pool.cloned();
-    tokio::task::block_in_place(move || {
-        tokio::runtime::Handle::current().block_on(async move {
-            game_list_async_impl(&pool, ext_pool.as_ref()).await
-        })
-    })
-}
-
-/// 合并内部 games 表 + 外部 cc_logic_game 表的游戏列表，格式化为文本
-async fn game_list_async_impl(
-    pool: &sqlx::MySqlPool,
-    ext_pool: Option<&sqlx::MySqlPool>,
-) -> BuiltinResult {
-    // 1. 内部 games 表（含别名）
-    let internal =
-        sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT g.name, gae.alias FROM games g
-             LEFT JOIN game_alias_entries gae ON gae.game_id = g.id
-             ORDER BY g.name",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("game_list internal query: {e}")))?;
-
-    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
-    for (name, alias) in internal {
-        if let Some(entry) = entries.iter_mut().find(|e| e.0 == name) {
-            if let Some(alias) = alias {
-                if !alias.trim().is_empty() {
-                    entry.1.push(alias.trim().to_string());
-                }
-            }
-        } else {
-            let aliases = alias
-                .filter(|a| !a.trim().is_empty())
-                .map(|a| vec![a.trim().to_string()])
-                .unwrap_or_default();
-            entries.push((name, aliases));
-        }
-    }
-
-    // 2. 外部 cc_logic_game 表
-    if let Some(ext_pool) = ext_pool {
-        let external =
-            sqlx::query_as::<_, (String,)>("SELECT name FROM cc_logic_game ORDER BY name")
-                .fetch_all(ext_pool)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("game_list external query: {e}")))?;
-
-        for (name,) in external {
-            if !entries.iter().any(|e| e.0 == name) {
-                entries.push((name, vec![]));
-            }
-        }
-    }
-
-    // 3. 格式化输出
-    let lines: Vec<String> = entries
-        .into_iter()
-        .map(|(name, aliases)| {
-            if aliases.is_empty() {
-                format!("- {}", name)
-            } else {
-                format!("- {}: {}", name, aliases.join("、"))
-            }
-        })
-        .collect();
-
-    Ok(Value::Object(
-        serde_json::Map::from_iter([(
-            "data".to_string(),
-            Value::String(lines.join("\n")),
-        )]),
-    ))
-}
-
-pub const GAME_LIST_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {},
-  "additionalProperties": false
-}"#;
-
-pub const GAME_LIST_OUTPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "data": {
-      "type": "string",
-      "description": "Formatted game list with aliases"
-    }
-  }
-}"#;
-
-pub const QUERY_BALANCE_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {}
-}"#;
-
-pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "message": {
-      "type": "string",
-      "description": "查询结果的文本描述，适合直接展示给用户。"
-    }
-  }
-}"#;
 
 // ---------- Registry ----------
 
@@ -431,8 +141,8 @@ pub fn lookup(identifier: &str) -> Option<&'static BuiltinDef> {
     BUILTINS.iter().find(|b| b.identifier == identifier)
 }
 
-/// 启动期 idempotent upsert — INSERT IGNORE 兜底 (identifier UNIQUE)
-/// 同时为每个 builtin function 创建对应的 builtin tool（source='builtin', kind=1）
+/// Startup idempotent upsert — INSERT IGNORE fallback (identifier UNIQUE)
+/// Also creates a corresponding builtin tool (source='builtin', kind=1) for each builtin function.
 pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
     for b in BUILTINS {
         let caps_json =
@@ -459,8 +169,8 @@ pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error
         .execute(pool)
         .await?;
 
-        // 为每个 builtin function 创建对应的 builtin tool
-        // tool.identifier = function.identifier（保持一致）
+        // Create corresponding builtin tool for each builtin function
+        // tool.identifier = function.identifier (consistent)
         sqlx::query(
             r#"INSERT INTO tools
                (identifier, name, description, kind, source, is_always,
@@ -490,8 +200,8 @@ pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error
         "builtin functions and tools upserted"
     );
 
-    // Seed invoke_function meta-tool (is_always=1 → 所有 Agent 自动加载)
-    // function_id=NULL 表示不包装具体 function，运行时动态查找
+    // Seed invoke_function meta-tool (is_always=1 → all Agents auto-loaded)
+    // function_id=NULL means it doesn't wrap a specific function, resolved dynamically at runtime
     sqlx::query(
         r#"INSERT INTO tools
            (identifier, name, description, kind, source, is_always,
@@ -518,7 +228,7 @@ pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error
     .execute(pool)
     .await?;
 
-    // Seed invoke_workflow meta-tool (is_always=1 → 所有 Agent 自动加载)
+    // Seed invoke_workflow meta-tool (is_always=1 → all Agents auto-loaded)
     sqlx::query(
         r#"INSERT INTO tools
            (identifier, name, description, kind, source, is_always,
@@ -548,7 +258,7 @@ pub async fn ensure_registered(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error
     tracing::info!("meta-tools (invoke_function, invoke_workflow) upserted");
 
     // Register agent-level builtin tools (read_file, write_file, exec, etc.)
-    super::builtin_tools::ensure_registered(pool).await?;
+    tools::ensure_registered(pool).await?;
 
     Ok(())
 }
@@ -558,7 +268,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// 测试用空 context — connect_lazy 不会真正连接 DB，仅满足签名要求
+    /// Test helper — connect_lazy won't actually connect to DB, just satisfies the signature
     async fn test_ctx() -> BuiltinContext<'static> {
         let test_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "mysql://root:root@localhost:3306/hive_claw_test".to_string());

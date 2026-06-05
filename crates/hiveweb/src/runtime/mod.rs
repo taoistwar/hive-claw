@@ -9,7 +9,6 @@
 //! - `llm` — LLM preset 注册表（复用 crates/providers + FallbackProvider）
 
 pub mod agent;
-pub mod builtin_tools;
 pub mod builtins;
 pub mod capabilities;
 pub mod capability;

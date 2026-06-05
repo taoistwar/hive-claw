@@ -1,9 +1,4 @@
-//! Builtin function implementations (T079 / FR-010 v5)
-//!
-//! 5 个不依赖 WASM 的"胶水"函数，启动期 upsert 到 `functions` 表（kind=1）。
-//! 调用入口：当 orchestrator 选中 kind=1 Tool 时直接走宿主代码，绕过 Plugin invoker。
-//!
-//! 内置不可删除；可被禁用（disabled 字段暂未引入 — 后续 schema 扩展时加）。
+//! Balance query builtin — queries user balance and membership from external database.
 
 use regex::Regex;
 use rust_decimal::Decimal;
@@ -214,3 +209,18 @@ LEFT JOIN (
 
     Ok(result)
 }
+
+pub const QUERY_BALANCE_INPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {}
+}"#;
+
+pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "查询结果的文本描述，适合直接展示给用户。"
+    }
+  }
+}"#;

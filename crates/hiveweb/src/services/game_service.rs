@@ -326,3 +326,43 @@ fn row_to_game(row: &sqlx::mysql::MySqlRow) -> Game {
         updated_at: updated_at.and_utc(),
     }
 }
+
+/// Load supplementary aliases from internal games table.
+/// Returns a map from game name → list of aliases.
+pub async fn load_internal_aliases(
+    pool: &MySqlPool,
+) -> Result<std::collections::HashMap<String, Vec<String>>, AppError> {
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT g.name, gae.alias FROM games g
+         LEFT JOIN game_alias_entries gae ON gae.game_id = g.id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("game_list internal query: {e}")))?;
+
+    let mut map: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (name, alias) in rows {
+        let entry = map.entry(name).or_default();
+        if let Some(a) = alias {
+            let a = a.trim().to_string();
+            if !a.is_empty() {
+                entry.push(a);
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Query cc_logic_game from external database.
+/// Returns vec of (id, name, alias).
+pub async fn list_external_games(
+    ext_pool: &MySqlPool,
+) -> Result<Vec<(i64, String, String)>, AppError> {
+    sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT id, name, COALESCE(alias, '') AS alias FROM cc_logic_game ORDER BY id",
+    )
+    .fetch_all(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("game_list external query: {e}")))
+}

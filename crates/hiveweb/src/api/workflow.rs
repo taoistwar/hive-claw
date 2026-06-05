@@ -275,32 +275,20 @@ async fn execute_workflow(
         .await
         .map_err(|e| AppError::Internal(format!("workflow execute: {e}")).into_response())?;
 
-    // 将每个函数节点的结果写回 AgentContext（Category::WorkflowResults）
-    // 同时应用节点 output 中自带的 _agent_context_updates（与 hook / orchestrator 行为一致）
-    {
-        let ctx = &agent_ctx;
-        for (node_key, node_output) in &outputs {
-            // 跳过 start / end 等特殊节点
-            if node_key == "start" || node_key == "end" {
-                continue;
-            }
-            // 1) 应用节点 output 中自带的 _agent_context_updates
-            apply_agent_context_updates(ctx, node_output);
-            // 2) 将整个节点结果作为 WorkflowResults 记录
-            if let Err(e) = ctx.set_record(
-                Category::WorkflowResults,
-                node_key.clone(),
-                node_output.clone(),
-                "workflow_node".to_string(),
-                0,
-            ) {
-                tracing::warn!(
-                    node_key = %node_key,
-                    error = %e,
-                    "execute_workflow: 写回 WorkflowResults 失败"
-                );
-            }
-        }
+    // ★ Apply AgentContext updates from the end node output
+    apply_agent_context_updates(&agent_ctx, &outputs);
+    // Store end node result as WorkflowResults
+    if let Err(e) = agent_ctx.set_record(
+        Category::WorkflowResults,
+        "end".to_string(),
+        outputs.clone(),
+        "workflow_node".to_string(),
+        0,
+    ) {
+        tracing::warn!(
+            error = %e,
+            "execute_workflow: 写回 WorkflowResults 失败"
+        );
     }
 
     let elapsed_ms = t0.elapsed().as_millis() as i32;

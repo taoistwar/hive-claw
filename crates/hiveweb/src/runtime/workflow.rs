@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use agent::context::AgentContext;
 use crate::runtime::builtins;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
-use crate::runtime::hook::inject_agent_context_snapshot;
+use crate::runtime::hook::{apply_agent_context_updates, inject_agent_context_snapshot};
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 
@@ -60,8 +60,8 @@ impl WorkflowExecutor {
         Self
     }
 
-    /// Execute a Workflow by id with external input. Returns map of
-    /// `node_key → output Value` (containing terminal nodes' outputs).
+    /// Execute a Workflow by id with external input. Returns the end node's
+    /// output value (strips internal `_agent_context_updates`).
     pub async fn execute(
         &self,
         deps: &ExecutorDeps,
@@ -69,7 +69,7 @@ impl WorkflowExecutor {
         external_input: Value,
         invoking_agent_id: i64,
         agent_ctx: Arc<AgentContext>,
-    ) -> Result<HashMap<String, Value>, WorkflowError> {
+    ) -> Result<Value, WorkflowError> {
         // 1. Load workflow + nodes + edges
         let wf_row: Option<(i32, Option<Value>)> =
             sqlx::query_as("SELECT timeout_ms, output_schema FROM workflows WHERE id = ?")
@@ -166,7 +166,7 @@ impl WorkflowExecutor {
             ),
         )
         .await;
-        let mut outputs: HashMap<String, Value> = match result {
+        let outputs: HashMap<String, Value> = match result {
             Ok(inner) => match inner {
                 Ok(r) => r,
                 Err(e) => return Err(e),
@@ -175,6 +175,8 @@ impl WorkflowExecutor {
         };
 
         // 5. Build "end" node output: 从上游节点输出中按 output_schema 提取字段
+        //    同时清理内部的 _agent_context_updates（已在上层同步到 AgentContext）
+        let mut end_value: Value = Value::Object(serde_json::Map::new());
         if let Some(ref schema) = output_schema {
             let schema_fields: Vec<String> = schema
                 .get("properties")
@@ -183,7 +185,7 @@ impl WorkflowExecutor {
                 .unwrap_or_default();
 
             if !schema_fields.is_empty() {
-                // 找到没有下游 DB 边的节点（它们连接到 end）
+                // 找到没有下游边的节点（它们连接到 end）
                 let final_node_keys: Vec<&str> = nodes
                     .iter()
                     .filter(|(_, k, _, _, _)| !succ.contains_key(k.as_str()))
@@ -203,12 +205,21 @@ impl WorkflowExecutor {
                     }
                 }
                 if !end_output.is_empty() {
-                    outputs.insert("end".to_string(), Value::Object(end_output));
+                    end_value = Value::Object(end_output);
                 }
+            }
+        } else {
+            // 无 output_schema 时，取 end 节点（如果存在已构建的）
+            if let Some(end_out) = outputs.get("end") {
+                let mut cleaned = end_out.clone();
+                if let Value::Object(ref mut map) = cleaned {
+                    map.remove("_agent_context_updates");
+                }
+                end_value = cleaned;
             }
         }
 
-        Ok(outputs)
+        Ok(end_value)
     }
 }
 
@@ -290,6 +301,9 @@ async fn run_layers(
         for r in results {
             match r {
                 Ok((nk, out)) => {
+                    // 立即同步 _agent_context_updates 到 AgentContext
+                    // 后续节点可通过 inject_agent_context_snapshot 获取最新状态
+                    apply_agent_context_updates(&agent_ctx, &out);
                     outputs.insert(nk.clone(), out);
                     remaining.remove(&nk);
                     // 下游 indegree--

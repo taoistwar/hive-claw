@@ -300,12 +300,7 @@ async fn execute_call_workflow(
         .map_err(|e| ActionError(format!("workflow execute: {e}")))?;
 
     // ★ Apply AgentContext updates from workflow output
-    {
-        let output_val = serde_json::Value::Object(
-            serde_json::Map::from_iter(output.into_iter()),
-        );
-        apply_agent_context_updates(&deps.agent_ctx, &output_val);
-    }
+    apply_agent_context_updates(&deps.agent_ctx, &output);
 
     Ok(())
 }

@@ -1279,11 +1279,9 @@ async fn handle_meta_tool(
                 .await
             {
                 Ok(out) => {
-                    let obj = serde_json::Map::from_iter(out.into_iter());
-                    let result = Value::Object(obj);
                     // ★ Apply AgentContext updates from workflow output
-                    apply_agent_context_updates(&agent_ctx, &result);
-                    ToolOutcome::ok(result)
+                    apply_agent_context_updates(&agent_ctx, &out);
+                    ToolOutcome::ok(out)
                 }
                 Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
             }
@@ -1422,9 +1420,7 @@ pub(crate) async fn handle_workspace_tool(
                 .await
             {
                 Ok(out) => {
-                    // 把 HashMap<node_key, Value> 当成对象返回
-                    let obj = serde_json::Map::from_iter(out.into_iter());
-                    ToolOutcome::ok(Value::Object(obj))
+                    ToolOutcome::ok(out)
                 }
                 Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
             }

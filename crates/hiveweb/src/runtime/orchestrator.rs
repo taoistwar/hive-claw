@@ -173,10 +173,13 @@ where
         c.trace("agent_loop", Some(trace_input))
     });
 
-    // 把 history 转成 LLM-side messages（OpenAI-style）
+    // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息
     let mut messages: Vec<Value> = Vec::new();
     for m in history {
         if let Some(c) = m.content_ref() {
+            if c.is_empty() {
+                continue;
+            }
             messages.push(json!({"role": m.role_ref(), "content": c}));
         }
     }
@@ -366,13 +369,11 @@ where
                 .iter()
                 .map(|tc| tc.to_openai_tool_call())
                 .collect();
-            if assistant_content.len()> 0 {
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": assistant_content.clone(),
-                    "tool_calls": tc_json,
-                }));
-            }
+            messages.push(json!({
+                "role": "assistant",
+                "content": if assistant_content.is_empty() { Value::Null } else { Value::String(assistant_content.clone()) },
+                "tool_calls": tc_json,
+            }));
         } else {
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }

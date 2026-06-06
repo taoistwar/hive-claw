@@ -62,9 +62,9 @@ async fn game_list_async_impl(
         .iter()
         .map(|(id, name, aliases)| {
             if aliases.is_empty() {
-                format!("- {}: {}", id, name)
+                format!("- ID: {}, 名称: {}", id, name)
             } else {
-                format!("- {}: {}、{}", id, name, aliases.join("、"))
+                format!("- ID: {}, 名称: {}, 别名: {}", id, name, aliases.join("、"))
             }
         })
         .collect();

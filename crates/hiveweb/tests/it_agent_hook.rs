@@ -728,12 +728,24 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
     // Build minimal HookDeps (never accessed when hooks list is empty)
     let s3_client = hiveweb::storage::s3::create_client().await?;
     let instance_pool = InstancePool::new(PoolConfig::from_env());
+    let agent_ctx = Arc::new(agent::context::AgentContext::new(
+        "bench-ctx".to_string(),
+        agent::context::UserInput {
+            raw_text: String::new(),
+            session_id: None,
+            message_id: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        },
+        agent::context::ContextConfig::default(),
+    ));
     let deps = HookDeps {
         s3: s3_client,
         llm: Arc::new(LlmRegistry::new()),
         registry: Arc::new(CapabilityRegistry::new()),
         invoker: Arc::new(Invoker::new(instance_pool)),
         ext_pool: None,
+        agent_ctx,
     };
 
     let ctx = HookContext {

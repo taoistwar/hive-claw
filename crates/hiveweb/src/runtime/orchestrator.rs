@@ -160,6 +160,9 @@ where
     let max_hops = max_hops();
     let mut final_content: Option<String> = None;
     let mut final_agent_id = starting_agent_id;
+    // 保存最后一次 hop 的 hooks/identifier，用于循环结束后触发 after_agent_end hook
+    let mut last_hooks: Option<std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>> = None;
+    let mut last_identifier: Option<String> = None;
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息
     let mut messages: Vec<Value> = Vec::new();
@@ -186,9 +189,13 @@ where
             Ok(c) => c,
             Err(e) => {
                 emit_error(&tx, 5000, format!("agent context: {e}"));
-                break; // hooks not loaded — skip on_agent_error here (intentional, see spec edge case)
+                break;
             }
         };
+
+        // 缓存 hooks/identifier，让循环结束后 finalize_with_variant 可触发 after_agent_end
+        last_hooks = Some(agent_content.hooks.clone());
+        last_identifier = Some(agent_content.identifier.clone());
 
         // ★ before_agent_start hook (blocking-capable)
         {
@@ -644,16 +651,6 @@ where
             let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
         }
 
-        // ★ Emit AgentContext extensions as an SSE event for API consumers
-        let exts = agent_ctx.get_extensions();
-        if !exts.is_empty() {
-            let exts_payload = json!({
-                "extensions": exts.iter().map(|e| flatten_extension(e)).collect::<Vec<_>>(),
-            });
-            let _ = tx.send(Ok(Event::default()
-                .event("extensions")
-                .data(exts_payload.to_string())));
-        }
     }
 
     finalize_with_variant(
@@ -664,8 +661,8 @@ where
         elapsed_start,
         final_content,
         final_agent_id,
-        None,
-        None,  // ctx not available outside the loop
+        last_hooks.as_ref(),
+        last_identifier.as_deref(),
         deps.message.clone(),
         deps.channel.clone(),
         deps.platform.clone(),
@@ -692,32 +689,8 @@ async fn finalize_with_variant(
 ) -> Option<ChatMessageUser> {
     let elapsed = started.elapsed().as_millis() as i32;
 
-    // Collect extensions from AgentContext for persistence (flattened)
-    let exts = hook_deps.agent_ctx.get_extensions();
-    let extensions_json: Option<Value> = if exts.is_empty() {
-        None
-    } else {
-        let arr: Vec<Value> = exts.iter().map(|e| flatten_extension(e)).collect();
-        Some(Value::Array(arr))
-    };
-
-    let saved = if content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
-        None
-    } else {
-        let text = content.as_deref().unwrap_or("");
-        append_assistant_message_user(
-            pool,
-            session_id,
-            actor_id,
-            text,
-            Some(elapsed),
-            extensions_json,
-        )
-        .await
-        .ok()
-    };
-
-    // ★ after_agent_end hook (audit-only, before done event)
+    // ★ after_agent_end hook — 必须在收集 extensions 之前执行，
+    //    因为 hook 中的 workflow/function 可能写入 extensions
     if let (Some(hooks_map), Some(ident)) = (hooks, agent_identifier) {
         let hctx = HookContext {
             agent_id: final_agent_id,
@@ -741,11 +714,46 @@ async fn finalize_with_variant(
         .await;
     }
 
+    // Collect extensions from AgentContext for persistence (flattened)
+    // 在 after_agent_end hook 之后收集，确保 hook 写入的 extensions 被包含
+    let exts = hook_deps.agent_ctx.get_extensions();
+    let extensions_for_sse: Option<Value> = if exts.is_empty() {
+        None
+    } else {
+        let arr: Vec<Value> = exts.iter().map(|e| flatten_extension(e)).collect();
+        Some(Value::Array(arr))
+    };
+    let extensions_json = extensions_for_sse.clone();
+
+    let saved = if content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
+        None
+    } else {
+        let text = content.as_deref().unwrap_or("");
+        append_assistant_message_user(
+            pool,
+            session_id,
+            actor_id,
+            text,
+            Some(elapsed),
+            extensions_json,
+        )
+        .await
+        .ok()
+    };
+
     let done = json!({
         "elapsed_ms": elapsed,
         "final_agent_id": if final_agent_id != 1 { Some(final_agent_id) } else { None },
     });
     let _ = tx.send(Ok(Event::default().event("done").data(done.to_string())));
+
+    // ★ Emit extensions SSE event after done（确保 hook 写入的被包含）
+    if let Some(ref ext_arr) = extensions_for_sse {
+        let exts_payload = json!({ "extensions": ext_arr });
+        let _ = tx.send(Ok(Event::default()
+            .event("extensions")
+            .data(exts_payload.to_string())));
+    }
 
     saved
 }
@@ -1405,7 +1413,9 @@ pub(crate) async fn handle_workspace_tool(
             let Some(workflow_id) = tool_ref.workflow_id else {
                 return ToolOutcome::error("workflow-wrap tool 缺 workflow_id".into());
             };
-            let args_value: Value = Value::Object(tc.arguments.clone());
+            let mut args_value: Value = Value::Object(tc.arguments.clone());
+            // ★ Inject AgentContext snapshot — 与 invoke_workflow / hook 路径保持一致
+            inject_agent_context_snapshot(&mut args_value, &agent_ctx);
             let executor_deps = crate::runtime::workflow::ExecutorDeps {
                 pool: deps.pool.clone(),
                 s3: deps.s3.clone(),
@@ -1427,6 +1437,8 @@ pub(crate) async fn handle_workspace_tool(
                 .await
             {
                 Ok(outcome) => {
+                    // ★ Apply AgentContext updates — 与 invoke_workflow / hook 路径保持一致
+                    apply_agent_context_updates(&agent_ctx, &outcome.end_value);
                     ToolOutcome::ok(outcome.end_value)
                 }
                 Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),

@@ -190,11 +190,8 @@ async fn execute_call_function(
         )));
     };
 
-    // Build input from hook context + AgentContext snapshot
-    let mut function_input = serde_json::to_value(ctx)
-        .map_err(|e| ActionError(format!("context serialize: {e}")))?;
-
-    // ★ Inject AgentContext snapshot for function read access
+    // 只传 AgentContext snapshot，不再序列化 HookContext（避免与 _agent_context 重复）
+    let mut function_input = serde_json::json!({});
     inject_agent_context_snapshot(&mut function_input, &deps.agent_ctx);
 
     match func_kind {

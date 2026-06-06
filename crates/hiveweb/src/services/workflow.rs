@@ -655,15 +655,7 @@ pub async fn put_graph(
 
     // 4. mapping 校验：仅检查 function_node 的 required input
     //    answer 节点不引用 function schema，跳过
-    let mut inbound_by_node: HashMap<&str, Vec<&serde_json::Map<String, Value>>> = HashMap::new();
-    for e in &db_edges {
-        if let Some(m) = e.mapping.as_object() {
-            inbound_by_node
-                .entry(e.dst_node_key.as_str())
-                .or_default()
-                .push(m);
-        }
-    }
+    //    required 字段是否提供，统一在 4b 走新的结构化 input_mapping
 
     // 4a. 校验每个节点的 input_mapping（结构化 InputSpec）形态合法
     //     function_node 与 generate_answer_node 都用 input_mapping
@@ -689,6 +681,8 @@ pub async fn put_graph(
         }
     }
 
+    // 4b. 校验每个 function_node 的 required input 是否在 input_mapping 中提供
+    //     (structured InputSpec 已经在 4a 校验过格式)
     for n in &db_nodes {
         let Some(fid) = n.function_id else {
             continue;
@@ -701,16 +695,22 @@ pub async fn put_graph(
             .and_then(|r| r.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
-        let inbound = inbound_by_node.get(n.node_key.as_str());
+
+        if required.is_empty() {
+            continue;
+        }
+
+        let spec_map = n
+            .node_config
+            .as_ref()
+            .and_then(|c| c.get("input_mapping"))
+            .and_then(|m| m.as_object());
+
         for req_field in &required {
-            let key = format!("dst.input.{req_field}");
-            let satisfied = inbound
-                .map(|maps| {
-                    maps.iter()
-                        .any(|m| m.contains_key(&key) || m.contains_key(*req_field))
-                })
+            let satisfied = spec_map
+                .map(|m| m.contains_key(*req_field))
                 .unwrap_or(false);
-            if !satisfied && inbound.is_some() {
+            if !satisfied {
                 return Err(AppError::WorkflowMappingInvalid(format!(
                     "节点「{}」的输入映射「{}」无效",
                     n.node_key, req_field

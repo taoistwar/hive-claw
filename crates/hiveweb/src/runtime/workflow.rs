@@ -696,6 +696,7 @@ async fn execute_answer_node(
         resolved_prompt_len = resolved_prompt.len(),
         user_message_len = user_message.len(),
         input_keys = ?input.as_object().map(|m| m.keys().collect::<Vec<_>>()),
+        query_value = ?input.get("query").and_then(|v| v.as_str()),
         "execute_answer_node: invoking LLM"
     );
 

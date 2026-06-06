@@ -8,6 +8,7 @@
 
 mod chat_respond;
 mod format_template;
+mod game_info;
 mod game_list;
 mod json_parse;
 mod json_stringify;
@@ -24,6 +25,7 @@ use agent::context::AgentContext;
 // Re-export handlers for the registry
 use chat_respond::chat_respond;
 use format_template::format_template;
+use game_info::game_info;
 use game_list::game_list;
 use json_parse::json_parse;
 use json_stringify::json_stringify;
@@ -33,6 +35,7 @@ use text_regex_match::text_regex_match;
 // Re-export schemas for ensure_registered
 use chat_respond::{CHAT_RESPOND_INPUT_SCHEMA, CHAT_RESPOND_OUTPUT_SCHEMA};
 use format_template::{FORMAT_TEMPLATE_INPUT_SCHEMA, FORMAT_TEMPLATE_OUTPUT_SCHEMA};
+use game_info::{GAME_INFO_INPUT_SCHEMA, GAME_INFO_OUTPUT_SCHEMA};
 use game_list::{GAME_LIST_INPUT_SCHEMA, GAME_LIST_OUTPUT_SCHEMA};
 use json_parse::{JSON_PARSE_INPUT_SCHEMA, JSON_PARSE_OUTPUT_SCHEMA};
 use json_stringify::{JSON_STRINGIFY_INPUT_SCHEMA, JSON_STRINGIFY_OUTPUT_SCHEMA};
@@ -125,6 +128,15 @@ pub const BUILTINS: &[BuiltinDef] = &[
         output_schema: GAME_LIST_OUTPUT_SCHEMA,
         required_capabilities: &[],
         handler: game_list,
+    },
+    BuiltinDef {
+        identifier: "game.info",
+        name: "Game Info",
+        description: "根据游戏 ID 从外部数据库 cc_logic_game 查询游戏详细信息，并补充内部别名。",
+        input_schema: GAME_INFO_INPUT_SCHEMA,
+        output_schema: GAME_INFO_OUTPUT_SCHEMA,
+        required_capabilities: &[],
+        handler: game_info,
     },
     BuiltinDef {
         identifier: "query_balance",

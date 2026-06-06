@@ -354,6 +354,21 @@ pub async fn load_internal_aliases(
     Ok(map)
 }
 
+/// Query a single game from cc_logic_game by ID.
+/// Returns (id, name, alias).
+pub async fn get_external_game_by_id(
+    ext_pool: &MySqlPool,
+    game_id: i64,
+) -> Result<Option<(i64, String, String)>, AppError> {
+    sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT id, name, COALESCE(alias, '') AS alias FROM cc_logic_game WHERE id = ?",
+    )
+    .bind(game_id)
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))
+}
+
 /// Query cc_logic_game from external database.
 /// Returns vec of (id, name, alias).
 pub async fn list_external_games(

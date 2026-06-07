@@ -116,6 +116,15 @@ const MIGRATIONS: &[Migration] = &[
         version: "V024__add_extensions_to_chat_messages_user",
         sql: include_str!("../../migrations/V024__add_extensions_to_chat_messages_user.sql"),
     },
+    // ---------- 010 Sensitive Word Filter ----------
+    Migration {
+        version: "V025__create_sensitive_words",
+        sql: include_str!("../../migrations/V025__create_sensitive_words.sql"),
+    },
+    Migration {
+        version: "V026__seed_sensitive_words",
+        sql: include_str!("../../migrations/V026__seed_sensitive_words.sql"),
+    },
 ];
 
 #[tokio::main]

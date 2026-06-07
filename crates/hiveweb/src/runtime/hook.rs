@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 use crate::models::agent_hook::AgentHook;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
+use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 
 /// Context passed to each hook invocation.
 #[derive(Debug, Clone, Serialize)]
@@ -74,16 +74,7 @@ pub async fn run_hooks(
     for hook in list {
         if !hook.enabled {
             // Record skipped
-            audit_hook_exec(
-                &pool,
-                hook.id,
-                ctx,
-                point,
-                "skipped",
-                None,
-                None,
-            )
-            .await;
+            audit_hook_exec(&pool, hook.id, ctx, point, "skipped", None, None).await;
             continue;
         }
 
@@ -175,14 +166,13 @@ async fn execute_call_function(
         .ok_or_else(|| ActionError("call_function: function_id is required".into()))?;
 
     // Query function info from DB
-    let func_row: Option<(String, i8, Option<i64>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT identifier, kind, plugin_id, plugin_export FROM functions WHERE id = ?",
-        )
-        .bind(function_id)
-        .fetch_optional(pool.as_ref())
-        .await
-        .map_err(|e| ActionError(format!("function lookup: {e}")))?;
+    let func_row: Option<(String, i8, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT identifier, kind, plugin_id, plugin_export FROM functions WHERE id = ?",
+    )
+    .bind(function_id)
+    .fetch_optional(pool.as_ref())
+    .await
+    .map_err(|e| ActionError(format!("function lookup: {e}")))?;
 
     let Some((func_ident, func_kind, plugin_id, plugin_export)) = func_row else {
         return Err(ActionError(format!(
@@ -218,7 +208,9 @@ async fn execute_call_function(
                 return Err(ActionError("call_function: function 缺 plugin_id".into()));
             };
             let Some(ref export) = plugin_export else {
-                return Err(ActionError("call_function: function 缺 plugin_export".into()));
+                return Err(ActionError(
+                    "call_function: function 缺 plugin_export".into(),
+                ));
             };
             let input_json = serde_json::to_string(&function_input)
                 .map_err(|e| ActionError(format!("args serialize: {e}")))?;
@@ -230,7 +222,8 @@ async fn execute_call_function(
                 function_id: Some(function_id),
                 permissions: Vec::new(),
             };
-            let output_str = deps.invoker
+            let output_str = deps
+                .invoker
                 .invoke(
                     &pool,
                     &deps.s3,
@@ -270,8 +263,8 @@ async fn execute_call_workflow(
         .ok_or_else(|| ActionError("call_workflow: workflow_id is required".into()))?;
 
     // Build input from hook context + AgentContext snapshot
-    let mut workflow_input = serde_json::to_value(ctx)
-        .map_err(|e| ActionError(format!("context serialize: {e}")))?;
+    let mut workflow_input =
+        serde_json::to_value(ctx).map_err(|e| ActionError(format!("context serialize: {e}")))?;
 
     // ★ Inject AgentContext snapshot for workflow read access
     inject_agent_context_snapshot(&mut workflow_input, &deps.agent_ctx);
@@ -330,19 +323,32 @@ async fn execute_http_webhook(
     });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(hook.timeout_ms.max(1000) as u64))
+        .timeout(std::time::Duration::from_millis(
+            hook.timeout_ms.max(1000) as u64
+        ))
         .build()
         .map_err(|e| ActionError(format!("webhook client: {e}")))?;
 
     let mut req = client.post(url).json(&payload);
 
-    if let Some(headers) = hook.action_params.get("headers").and_then(|v| v.as_object()) {
+    if let Some(headers) = hook
+        .action_params
+        .get("headers")
+        .and_then(|v| v.as_object())
+    {
         for (key, val) in headers {
             if let Some(v_str) = val.as_str() {
-                if key.contains('\r') || key.contains('\n') || v_str.contains('\r') || v_str.contains('\n') {
+                if key.contains('\r')
+                    || key.contains('\n')
+                    || v_str.contains('\r')
+                    || v_str.contains('\n')
+                {
                     return Err(ActionError("Header contains illegal characters".into()));
                 }
-                if key.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+                if key
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                {
                     req = req.header(key.as_str(), v_str);
                 }
             }
@@ -353,23 +359,27 @@ async fn execute_http_webhook(
         Ok(resp) if resp.status().is_success() => Ok(()),
         Ok(resp) => {
             spawn_webhook_retry(pool, hook, ctx, &payload);
-            Err(ActionError(format!("Webhook returned HTTP {}", resp.status())))
+            Err(ActionError(format!(
+                "Webhook returned HTTP {}",
+                resp.status()
+            )))
         }
         Err(_e) => {
             spawn_webhook_retry(pool, hook, ctx, &payload);
-            Err(ActionError("Webhook connection failed — pending async retry".into()))
+            Err(ActionError(
+                "Webhook connection failed — pending async retry".into(),
+            ))
         }
     }
 }
 
-fn spawn_webhook_retry(
-    pool: Arc<MySqlPool>,
-    hook: &AgentHook,
-    ctx: &HookContext,
-    payload: &Value,
-) {
-    let url = hook.action_params.get("webhook_url")
-        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+fn spawn_webhook_retry(pool: Arc<MySqlPool>, hook: &AgentHook, ctx: &HookContext, payload: &Value) {
+    let url = hook
+        .action_params
+        .get("webhook_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let payload = payload.clone();
     let hook_id = hook.id;
     let agent_id = ctx.agent_id;
@@ -377,12 +387,19 @@ fn spawn_webhook_retry(
     let session_id = ctx.session_id;
     let trigger_point = ctx.trigger_point.clone();
     let max_retries = std::env::var("HOOK_WEBHOOK_RETRY_MAX")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(3u32);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3u32);
 
     tokio::spawn(async move {
         for attempt in 0..max_retries {
             tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
-            let client = match reqwest::Client::new().post(&url).json(&payload).send().await {
+            let client = match reqwest::Client::new()
+                .post(&url)
+                .json(&payload)
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => {
                     // Success on retry — write audit
                     let _ = sqlx::query(
@@ -391,11 +408,18 @@ fn spawn_webhook_retry(
                             action_type, outcome, error_summary, elapsed_ms, request_id)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
                     )
-                    .bind(agent_id).bind(&identifier).bind(hook_id).bind(session_id)
-                    .bind(&trigger_point).bind("http_webhook").bind("success")
-                    .bind::<Option<String>>(None).bind::<Option<i32>>(None)
+                    .bind(agent_id)
+                    .bind(&identifier)
+                    .bind(hook_id)
+                    .bind(session_id)
+                    .bind(&trigger_point)
+                    .bind("http_webhook")
+                    .bind("success")
                     .bind::<Option<String>>(None)
-                    .execute(pool.as_ref()).await;
+                    .bind::<Option<i32>>(None)
+                    .bind::<Option<String>>(None)
+                    .execute(pool.as_ref())
+                    .await;
                     return;
                 }
                 _ => {} // continue retry
@@ -409,11 +433,18 @@ fn spawn_webhook_retry(
                 action_type, outcome, error_summary, elapsed_ms, request_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
-        .bind(agent_id).bind(&identifier).bind(hook_id).bind(session_id)
-        .bind(&trigger_point).bind("http_webhook").bind("error")
+        .bind(agent_id)
+        .bind(&identifier)
+        .bind(hook_id)
+        .bind(session_id)
+        .bind(&trigger_point)
+        .bind("http_webhook")
+        .bind("error")
         .bind(Some(format!("Webhook failed after {max_retries} retries")))
-        .bind::<Option<i32>>(None).bind::<Option<String>>(None)
-        .execute(pool.as_ref()).await;
+        .bind::<Option<i32>>(None)
+        .bind::<Option<String>>(None)
+        .execute(pool.as_ref())
+        .await;
     });
 }
 
@@ -561,7 +592,10 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
     // Apply record updates
     if let Some(records) = updates.get("records").and_then(|v| v.as_array()) {
         for record in records {
-            let category_str = record.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            let category_str = record
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let key = record.get("key").and_then(|v| v.as_str()).unwrap_or("");
             let value = record.get("value").cloned().unwrap_or(Value::Null);
             let source = record

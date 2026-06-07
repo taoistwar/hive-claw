@@ -10,6 +10,7 @@ pub mod login_record;
 // 004 Agent Runtime
 pub mod category;
 pub mod chat;
+pub mod chat_user;
 pub mod function;
 pub mod game_service;
 #[cfg(test)]
@@ -19,9 +20,9 @@ pub mod optimistic_lock;
 pub mod plugin;
 pub mod recommended_game;
 pub mod runtime_audit;
+pub mod sensitive_filter;
 pub mod skill;
 pub mod tag;
 pub mod tool;
 pub mod user_auth;
 pub mod workflow;
-pub mod chat_user;

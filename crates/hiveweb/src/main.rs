@@ -107,8 +107,14 @@ async fn main() -> anyhow::Result<()> {
         panic!("builtin functions upsert failed: {e}");
     }
 
+    // Startup: initialize sensitive word filter
+    let sensitive_filter = crate::services::sensitive_filter::SensitiveFilter::new();
+    if let Err(e) = sensitive_filter.load_from_db(&pool).await {
+        tracing::warn!(error = %e, "Failed to load sensitive words from DB, filter disabled");
+    }
+
     // Create router
-    let app = api::create_router(pool, redis, s3_client, ext_pool);
+    let app = api::create_router(pool, redis, s3_client, ext_pool, sensitive_filter);
     tracing::info!("HTTP router initialized with CORS and rate limiting");
 
     // Start server

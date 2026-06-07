@@ -6,9 +6,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::api::AppState;
-use crate::models::agent_hook::{
-    CreateHookRequest, HookExecutionQuery, UpdateHookRequest,
-};
+use crate::models::agent_hook::{CreateHookRequest, HookExecutionQuery, UpdateHookRequest};
 use crate::services::agent_hook as svc;
 use crate::utils::error::ApiResponse;
 use crate::utils::jwt::Claims;
@@ -20,10 +18,7 @@ pub fn router() -> Router<AppState> {
             "/agents/:id/hooks/:hook_id",
             put(update_hook).delete(delete_hook),
         )
-        .route(
-            "/agents/:id/hooks/executions",
-            get(list_executions),
-        )
+        .route("/agents/:id/hooks/executions", get(list_executions))
 }
 
 // ── Handlers ──

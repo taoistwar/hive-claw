@@ -238,9 +238,7 @@ async fn get_external_games(
 }
 
 /// 从 Redis 读取缓存的外部游戏列表
-async fn try_cache_read(
-    redis: &redis::Client,
-) -> Result<Option<Vec<ExternalGameOption>>, String> {
+async fn try_cache_read(redis: &redis::Client) -> Result<Option<Vec<ExternalGameOption>>, String> {
     let mut conn = redis
         .get_multiplexed_async_connection()
         .await

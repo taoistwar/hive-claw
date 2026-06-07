@@ -25,7 +25,6 @@ struct SeededAgent {
 
 impl SeededAgent {
     async fn new(pool: &sqlx::MySqlPool, prefix: &str) -> anyhow::Result<Self> {
-
         use std::time::{SystemTime, UNIX_EPOCH};
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -106,17 +105,25 @@ fn make_hook_payload(trigger: &str, action_type: &str, params: Value) -> Value {
 }
 
 fn make_webhook_payload(url: &str) -> Value {
-    make_hook_payload("after_agent_end", "http_webhook", json!({
-        "webhook_url": url,
-        "headers": {},
-    }))
+    make_hook_payload(
+        "after_agent_end",
+        "http_webhook",
+        json!({
+            "webhook_url": url,
+            "headers": {},
+        }),
+    )
 }
 
 fn make_function_payload(function_id: i64) -> Value {
-    make_hook_payload("before_agent_start", "call_function", json!({
-        "function_id": function_id,
-        "args": {},
-    }))
+    make_hook_payload(
+        "before_agent_start",
+        "call_function",
+        json!({
+            "function_id": function_id,
+            "args": {},
+        }),
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -135,22 +142,36 @@ async fn t008_create_hook_returns_200_and_hook_object() -> anyhow::Result<()> {
         &app,
         &format!("/api/agents/{}/hooks", agent.id),
         &admin.token()?,
-        make_hook_payload("before_agent_start", "http_webhook", json!({
-            "webhook_url": "https://example.com/hook",
-            "headers": {},
-        })),
+        make_hook_payload(
+            "before_agent_start",
+            "http_webhook",
+            json!({
+                "webhook_url": "https://example.com/hook",
+                "headers": {},
+            }),
+        ),
     )
     .await?;
 
-    assert_eq!(status, StatusCode::OK, "create hook must return 200, got {status}: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create hook must return 200, got {status}: {body}"
+    );
     assert_eq!(body["code"], 0, "must have code=0");
     let data = &body["data"];
     assert!(data["id"].as_i64().is_some(), "must include id");
     assert_eq!(data["name"], "test-before_agent_start");
     assert_eq!(data["trigger_point"], "before_agent_start");
     assert_eq!(data["action_type"], "http_webhook");
-    assert!(data["created_at"].as_str().is_some(), "must include created_at");
-    assert!(data["enabled"].as_bool().unwrap_or(false), "default enabled=true");
+    assert!(
+        data["created_at"].as_str().is_some(),
+        "must include created_at"
+    );
+    assert!(
+        data["enabled"].as_bool().unwrap_or(false),
+        "default enabled=true"
+    );
     Ok(())
 }
 
@@ -167,20 +188,29 @@ async fn t009_list_hooks_returns_sorted_array() -> anyhow::Result<()> {
     let token = admin.token()?;
 
     // after_agent_end with sort_order=0
-    let mut payload = make_hook_payload("after_agent_end", "http_webhook",
-        json!({"webhook_url": "https://example.com/a", "headers": {}}));
+    let mut payload = make_hook_payload(
+        "after_agent_end",
+        "http_webhook",
+        json!({"webhook_url": "https://example.com/a", "headers": {}}),
+    );
     payload["sort_order"] = json!(0);
     common::post_json_auth(&app, &base_path, &token, payload).await?;
 
     // before_tool_call with sort_order=0
-    let mut payload = make_hook_payload("before_tool_call", "http_webhook",
-        json!({"webhook_url": "https://example.com/b", "headers": {}}));
+    let mut payload = make_hook_payload(
+        "before_tool_call",
+        "http_webhook",
+        json!({"webhook_url": "https://example.com/b", "headers": {}}),
+    );
     payload["sort_order"] = json!(0);
     common::post_json_auth(&app, &base_path, &token, payload).await?;
 
     // after_agent_end with sort_order=1
-    let mut payload = make_hook_payload("after_agent_end", "http_webhook",
-        json!({"webhook_url": "https://example.com/c", "headers": {}}));
+    let mut payload = make_hook_payload(
+        "after_agent_end",
+        "http_webhook",
+        json!({"webhook_url": "https://example.com/c", "headers": {}}),
+    );
     payload["sort_order"] = json!(1);
     common::post_json_auth(&app, &base_path, &token, payload).await?;
 
@@ -216,7 +246,8 @@ async fn t010_update_hook_optimistic_lock_conflict() -> anyhow::Result<()> {
         &base_path,
         &token,
         make_webhook_payload("https://example.com/hook"),
-    ).await?;
+    )
+    .await?;
     let hook_id = create_body["data"]["id"].as_i64().unwrap();
     let _updated_at = create_body["data"]["updated_at"].as_str().unwrap();
 
@@ -229,13 +260,17 @@ async fn t010_update_hook_optimistic_lock_conflict() -> anyhow::Result<()> {
             "name": "updated-name",
             "updated_at": "2020-01-01T00:00:00Z",
         }),
-    ).await?;
+    )
+    .await?;
 
     assert!(
         status.is_client_error(),
         "stale updated_at must produce error, got {status}: {body}"
     );
-    assert_eq!(body["code"], 4094, "must return 4094 optimistic lock, got {body}");
+    assert_eq!(
+        body["code"], 4094,
+        "must return 4094 optimistic lock, got {body}"
+    );
     Ok(())
 }
 
@@ -251,9 +286,12 @@ async fn t011_delete_hook_and_verify_removed() -> anyhow::Result<()> {
 
     // Create
     let (_, create_body) = common::post_json_auth(
-        &app, &base_path, &token,
+        &app,
+        &base_path,
+        &token,
         make_webhook_payload("https://example.com/hook"),
-    ).await?;
+    )
+    .await?;
     let hook_id = create_body["data"]["id"].as_i64().unwrap();
 
     // Delete
@@ -261,7 +299,8 @@ async fn t011_delete_hook_and_verify_removed() -> anyhow::Result<()> {
         &app,
         &format!("/api/agents/{}/hooks/{}", agent.id, hook_id),
         &token,
-    ).await?;
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK);
 
     // Verify removed from list
@@ -294,12 +333,18 @@ async fn t013_trigger_limit_exceeded_returns_6001() -> anyhow::Result<()> {
                 "sort_order": i,
             }),
         ).await?;
-        assert_eq!(status, StatusCode::OK, "hook {i} must create OK, got {status}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "hook {i} must create OK, got {status}"
+        );
     }
 
     // 6th must fail with 6001
     let (status, body) = common::post_json_auth(
-        &app, &base_path, &token,
+        &app,
+        &base_path,
+        &token,
         json!({
             "name": "hook-6",
             "trigger_point": "on_agent_error",
@@ -307,13 +352,14 @@ async fn t013_trigger_limit_exceeded_returns_6001() -> anyhow::Result<()> {
             "action_params": {"webhook_url": "https://example.com/hook6", "headers": {}},
             "sort_order": 5,
         }),
-    ).await?;
+    )
+    .await?;
 
-    assert!(
-        status.is_client_error(),
-        "6th hook must fail, got {status}"
+    assert!(status.is_client_error(), "6th hook must fail, got {status}");
+    assert_eq!(
+        body["code"], 6001,
+        "must return 6001 trigger limit exceeded, got {body}"
     );
-    assert_eq!(body["code"], 6001, "must return 6001 trigger limit exceeded, got {body}");
     Ok(())
 }
 
@@ -334,13 +380,17 @@ async fn t014_non_https_webhook_url_returns_6003() -> anyhow::Result<()> {
         &format!("/api/agents/{}/hooks", agent.id),
         &admin.token()?,
         make_webhook_payload("http://example.com/hook"),
-    ).await?;
+    )
+    .await?;
 
     assert!(
         status.is_client_error(),
         "non-HTTPS URL must fail, got {status}"
     );
-    assert_eq!(body["code"], 6003, "must return 6003 invalid webhook URL, got {body}");
+    assert_eq!(
+        body["code"], 6003,
+        "must return 6003 invalid webhook URL, got {body}"
+    );
     Ok(())
 }
 
@@ -368,13 +418,17 @@ async fn t052_header_injection_rejected_with_6003() -> anyhow::Result<()> {
                 },
             },
         }),
-    ).await?;
+    )
+    .await?;
 
     assert!(
         status.is_client_error(),
         "header injection must fail, got {status}"
     );
-    assert_eq!(body["code"], 6003, "must return 6003 for header injection, got {body}");
+    assert_eq!(
+        body["code"], 6003,
+        "must return 6003 for header injection, got {body}"
+    );
 
     // Header value with newline
     let (status2, body2) = common::post_json_auth(
@@ -392,13 +446,17 @@ async fn t052_header_injection_rejected_with_6003() -> anyhow::Result<()> {
                 },
             },
         }),
-    ).await?;
+    )
+    .await?;
 
     assert!(
         status2.is_client_error(),
         "header value injection must fail, got {status2}"
     );
-    assert_eq!(body2["code"], 6003, "must return 6003 for header value injection");
+    assert_eq!(
+        body2["code"], 6003,
+        "must return 6003 for header value injection"
+    );
     Ok(())
 }
 
@@ -410,10 +468,14 @@ async fn t015_unreachable_webhook_produces_error_audit() -> anyhow::Result<()> {
     let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
     let token = admin.token()?;
     let sort_ord = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() as i32;
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos() as i32;
 
     let (status, create_body) = common::post_json_auth(
-        &app, "/api/agents/1/hooks", &token,
+        &app,
+        "/api/agents/1/hooks",
+        &token,
         json!({
             "name": "t015-unreachable",
             "trigger_point": "before_agent_start",
@@ -425,20 +487,35 @@ async fn t015_unreachable_webhook_produces_error_audit() -> anyhow::Result<()> {
                 "timeout_ms": 1000
             },
         }),
-    ).await?;
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK, "T015: create failed: {create_body}");
     let hook_id = create_body["data"]["id"].as_i64().unwrap();
-    
 
-    let (_, sb) = common::post_json_auth(&app, "/api/admin-chat/sessions", &token, json!({"title": "t015"})).await?;
+    let (_, sb) = common::post_json_auth(
+        &app,
+        "/api/admin-chat/sessions",
+        &token,
+        json!({"title": "t015"}),
+    )
+    .await?;
     let sid = sb["data"]["id"].as_i64().unwrap();
-    common::post_json_auth(&app, &format!("/api/admin-chat/sessions/{sid}/messages"), &token, json!({"content": "."})).await?;
+    common::post_json_auth(
+        &app,
+        &format!("/api/admin-chat/sessions/{sid}/messages"),
+        &token,
+        json!({"content": "."}),
+    )
+    .await?;
 
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT outcome FROM hook_executions WHERE hook_id = ? ORDER BY created_at DESC LIMIT 1"
-    ).bind(hook_id).fetch_all(&pool).await?;
+        "SELECT outcome FROM hook_executions WHERE hook_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(hook_id)
+    .fetch_all(&pool)
+    .await?;
     assert!(!rows.is_empty(), "T015: no exec record for hook {hook_id}");
     eprintln!("T015: outcome={}", rows[0].0);
     Ok(())
@@ -461,13 +538,17 @@ async fn t016_nonexistent_function_id_returns_6002() -> anyhow::Result<()> {
         &format!("/api/agents/{}/hooks", agent.id),
         &admin.token()?,
         make_function_payload(99999999), // non-existent ID
-    ).await?;
+    )
+    .await?;
 
     assert!(
         status.is_client_error(),
         "nonexistent function_id must fail, got {status}"
     );
-    assert_eq!(body["code"], 6002, "must return 6002 invalid reference, got {body}");
+    assert_eq!(
+        body["code"], 6002,
+        "must return 6002 invalid reference, got {body}"
+    );
     Ok(())
 }
 
@@ -518,9 +599,13 @@ async fn t018_list_executions_returns_paginated_sorted_desc() -> anyhow::Result<
     // Query with default pagination
     let (status, body) = common::get(
         &app,
-        &format!("/api/agents/{}/hooks/executions?page=1&page_size=20", agent.id),
+        &format!(
+            "/api/agents/{}/hooks/executions?page=1&page_size=20",
+            agent.id
+        ),
         Some(&token),
-    ).await?;
+    )
+    .await?;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["code"], 0);
@@ -578,17 +663,27 @@ async fn t019_deleted_agent_executions_remain_queryable() -> anyhow::Result<()> 
     // Now query executions — should still return records
     let (status, body) = common::get(
         &app,
-        &format!("/api/agents/{}/hooks/executions?page=1&page_size=20", agent_id),
+        &format!(
+            "/api/agents/{}/hooks/executions?page=1&page_size=20",
+            agent_id
+        ),
         Some(&admin.token()?),
-    ).await?;
+    )
+    .await?;
 
     assert_eq!(status, StatusCode::OK);
     let items = body["data"]["items"].as_array().unwrap();
-    assert!(!items.is_empty(), "executions must persist after agent deletion");
+    assert!(
+        !items.is_empty(),
+        "executions must persist after agent deletion"
+    );
 
     // agent_identifier snapshot should still contain the original identifier
     let ident = items[0]["agent_identifier"].as_str().unwrap();
-    assert_eq!(ident, agent_ident, "agent_identifier snapshot must be preserved");
+    assert_eq!(
+        ident, agent_ident,
+        "agent_identifier snapshot must be preserved"
+    );
     Ok(())
 }
 
@@ -608,12 +703,19 @@ async fn t012_hook_execution_produces_audit_record() -> anyhow::Result<()> {
     // Use a non-main agent to avoid collision with other tests on agent 1
     // Admin chat hardcodes agent_id=1, so hooks must be on agent 1
     // Clean up stale hooks from previous runs to avoid trigger limit (max 5)
-    let _ = sqlx::query("DELETE FROM agent_hooks WHERE agent_id = 1 AND trigger_point = 'before_agent_start'")
-        .execute(&pool).await;
+    let _ = sqlx::query(
+        "DELETE FROM agent_hooks WHERE agent_id = 1 AND trigger_point = 'before_agent_start'",
+    )
+    .execute(&pool)
+    .await;
     let sort_ord = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() as i32;
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos() as i32;
     let (status, create_body) = common::post_json_auth(
-        &app, "/api/agents/1/hooks", &token,
+        &app,
+        "/api/agents/1/hooks",
+        &token,
         json!({
             "name": "t012-before-agent-start",
             "trigger_point": "before_agent_start",
@@ -625,31 +727,50 @@ async fn t012_hook_execution_produces_audit_record() -> anyhow::Result<()> {
                 "timeout_ms": 2000
             },
         }),
-    ).await?;
-    assert_eq!(status, StatusCode::OK, "T012: hook create failed: {create_body}");
-    let hook_id = create_body["data"]["id"].as_i64().expect("hook id required");
+    )
+    .await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "T012: hook create failed: {create_body}"
+    );
+    let hook_id = create_body["data"]["id"]
+        .as_i64()
+        .expect("hook id required");
     eprintln!("T012: created hook id={hook_id}");
 
     // Cleanup hook after test
-    
 
     // Create admin chat session
     let (_, session_body) = common::post_json_auth(
-        &app, "/api/admin-chat/sessions", &token, json!({"title": "t012"}),
-    ).await?;
+        &app,
+        "/api/admin-chat/sessions",
+        &token,
+        json!({"title": "t012"}),
+    )
+    .await?;
     let sid = session_body["data"]["id"].as_i64().unwrap();
     let (ms, _) = common::post_json_auth(
-        &app, &format!("/api/admin-chat/sessions/{sid}/messages"),
-        &token, json!({"content": "."}),
-    ).await?;
+        &app,
+        &format!("/api/admin-chat/sessions/{sid}/messages"),
+        &token,
+        json!({"content": "."}),
+    )
+    .await?;
     eprintln!("T012: msg status={ms}");
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM hook_executions WHERE hook_id = ? ORDER BY created_at DESC LIMIT 1"
-    ).bind(hook_id).fetch_all(&pool).await?;
-    assert!(!rows.is_empty(), "T012: no hook_executions for hook {hook_id}");
+        "SELECT id FROM hook_executions WHERE hook_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(hook_id)
+    .fetch_all(&pool)
+    .await?;
+    assert!(
+        !rows.is_empty(),
+        "T012: no hook_executions for hook {hook_id}"
+    );
     Ok(())
 }
 
@@ -661,10 +782,14 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
     let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
     let token = admin.token()?;
     let sort_ord = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() as i32;
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos() as i32;
 
     let (status, create_body) = common::post_json_auth(
-        &app, "/api/agents/1/hooks", &token,
+        &app,
+        "/api/agents/1/hooks",
+        &token,
         json!({
             "name": "t053-blocking-fail",
             "trigger_point": "before_agent_start",
@@ -677,12 +802,18 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
                 "timeout_ms": 2000
             },
         }),
-    ).await?;
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK, "T053: create failed: {create_body}");
     let hook_id = create_body["data"]["id"].as_i64().unwrap();
-    
 
-    let (_, sb) = common::post_json_auth(&app, "/api/admin-chat/sessions", &token, json!({"title": "t053"})).await?;
+    let (_, sb) = common::post_json_auth(
+        &app,
+        "/api/admin-chat/sessions",
+        &token,
+        json!({"title": "t053"}),
+    )
+    .await?;
     let sid = sb["data"]["id"].as_i64().unwrap();
 
     let req = Request::builder()
@@ -697,10 +828,16 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
     let s = resp.status();
     let bytes = resp.into_body().collect().await?.to_bytes();
     let body_text = String::from_utf8_lossy(&bytes);
-    eprintln!("T053: status={s}, body={}", body_text.chars().take(300).collect::<String>());
+    eprintln!(
+        "T053: status={s}, body={}",
+        body_text.chars().take(300).collect::<String>()
+    );
 
     let has_error = body_text.to_lowercase().contains("error") || !s.is_success();
-    assert!(has_error, "SC-007 FAIL: blocking hook must produce SSE error. status={s}");
+    assert!(
+        has_error,
+        "SC-007 FAIL: blocking hook must produce SSE error. status={s}"
+    );
     Ok(())
 }
 
@@ -713,10 +850,10 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
 /// Runs `run_hooks()` 1000 times against an empty hook map and reports p50/p95/p99.
 #[tokio::test]
 async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
-    use hiveweb::runtime::hook::{run_hooks, HookContext, HookDeps};
     use hiveweb::runtime::capability::CapabilityRegistry;
-    use hiveweb::runtime::llm::LlmRegistry;
+    use hiveweb::runtime::hook::{HookContext, HookDeps, run_hooks};
     use hiveweb::runtime::invoker::Invoker;
+    use hiveweb::runtime::llm::LlmRegistry;
     use hiveweb::runtime::pool::{InstancePool, PoolConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -767,7 +904,14 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
 
     for _ in 0..ITERATIONS {
         let start = Instant::now();
-        let _ = run_hooks(pool.clone(), &empty_hooks, "before_agent_start", &ctx, &deps).await;
+        let _ = run_hooks(
+            pool.clone(),
+            &empty_hooks,
+            "before_agent_start",
+            &ctx,
+            &deps,
+        )
+        .await;
         durations.push(start.elapsed().as_micros() as f64 / 1000.0); // ms
     }
 
@@ -785,7 +929,8 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
 
     assert!(
         p95 <= 50.0,
-        "SC-003 FAIL: Hook scheduling p95 {:.3}ms exceeds 50ms budget", p95
+        "SC-003 FAIL: Hook scheduling p95 {:.3}ms exceeds 50ms budget",
+        p95
     );
     Ok(())
 }
@@ -841,7 +986,8 @@ async fn t055_execution_history_query_benchmark() -> anyhow::Result<()> {
                 agent.id
             ),
             Some(&admin.token()?),
-        ).await?;
+        )
+        .await?;
         assert_eq!(status, StatusCode::OK);
         durations.push(start.elapsed().as_micros() as f64 / 1000.0); // ms
     }
@@ -859,7 +1005,8 @@ async fn t055_execution_history_query_benchmark() -> anyhow::Result<()> {
 
     assert!(
         p95 <= 2000.0,
-        "SC-006 FAIL: Exec history query p95 {:.3}ms exceeds 2000ms budget", p95
+        "SC-006 FAIL: Exec history query p95 {:.3}ms exceeds 2000ms budget",
+        p95
     );
     Ok(())
 }

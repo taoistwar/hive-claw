@@ -32,11 +32,12 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         let t0 = std::time::Instant::now();
-        let result =
-            sqlx::query("DELETE FROM chat_sessions_user WHERE updated_at < (NOW() - INTERVAL ? DAY)")
-                .bind(retention_days)
-                .execute(&pool)
-                .await;
+        let result = sqlx::query(
+            "DELETE FROM chat_sessions_user WHERE updated_at < (NOW() - INTERVAL ? DAY)",
+        )
+        .bind(retention_days)
+        .execute(&pool)
+        .await;
         match result {
             Ok(r) => tracing::info!(
                 rows_deleted = r.rows_affected(),

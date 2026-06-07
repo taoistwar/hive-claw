@@ -25,11 +25,11 @@ pub mod wasm_imports;
 pub mod workflow;
 
 pub use capability::CapabilityRegistry;
+pub use input_source::{InputSource, InputSpec};
 pub use invoker::Invoker;
 pub use llm::LlmRegistry;
 pub use pool::{InstancePool, PoolConfig};
 pub use wasm_imports::{registered_imports, scan_wasm_imports};
-pub use input_source::{InputSource, InputSpec};
 pub use workflow::WorkflowExecutor;
 
 use std::sync::Arc;

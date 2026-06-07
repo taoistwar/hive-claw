@@ -57,8 +57,12 @@ pub struct CreateHookRequest {
     pub timeout_ms: i32,
 }
 
-fn default_enabled() -> bool { true }
-fn default_timeout_ms() -> i32 { 10000 }
+fn default_enabled() -> bool {
+    true
+}
+fn default_timeout_ms() -> i32 {
+    10000
+}
 
 /// Request DTO for updating an existing Hook.
 #[derive(Debug, Clone, Deserialize)]
@@ -91,5 +95,9 @@ pub struct HookExecutionQuery {
     pub page_size: u32,
 }
 
-fn default_page() -> u32 { 1 }
-fn default_page_size() -> u32 { 20 }
+fn default_page() -> u32 {
+    1
+}
+fn default_page_size() -> u32 {
+    20
+}

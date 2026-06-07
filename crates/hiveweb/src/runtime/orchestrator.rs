@@ -26,17 +26,19 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::models::ChatMessageUser;
+use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
+use crate::runtime::hook::{
+    self, HookContext, HookDeps, apply_agent_context_updates, inject_agent_context_snapshot,
+};
+use crate::runtime::invoker::Invoker;
+use crate::runtime::llm::LlmRegistry;
+use crate::services::chat_user::append_assistant_message_user;
+use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{
     AgentContext, Category, ContextConfig, ExtensionContent, LifecycleState, ResponsePayload,
     ToolCallStatus, UserInput,
 };
-use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
-use crate::runtime::invoker::Invoker;
-use crate::runtime::llm::LlmRegistry;
-use crate::runtime::hook::{self, apply_agent_context_updates, inject_agent_context_snapshot, HookContext, HookDeps};
-use crate::services::chat_user::append_assistant_message_user;
-use crate::services::runtime_audit::{self, AuditRecord};
-use crate::models::ChatMessageUser;
 
 pub const ROUTE_TOOL_NAME: &str = "route_to_subagent";
 
@@ -75,6 +77,8 @@ pub struct OrchestratorDeps {
     pub channel: String,
     pub platform: String,
     pub app_version: String,
+    /// 010 Sensitive Word Filter — for output content filtering
+    pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 }
 
 pub async fn run_session_user(
@@ -161,7 +165,9 @@ where
     let mut final_content: Option<String> = None;
     let mut final_agent_id = starting_agent_id;
     // 保存最后一次 hop 的 hooks/identifier，用于循环结束后触发 after_agent_end hook
-    let mut last_hooks: Option<std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>> = None;
+    let mut last_hooks: Option<
+        std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>,
+    > = None;
     let mut last_identifier: Option<String> = None;
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息
@@ -226,7 +232,10 @@ where
         }
 
         // 2. 构造 provider
-        let (provider, model) = match deps.llm.build_primary(agent_content.model_preset.as_deref()) {
+        let (provider, model) = match deps
+            .llm
+            .build_primary(agent_content.model_preset.as_deref())
+        {
             Ok(p) => p,
             Err(e) => {
                 emit_error(&tx, 5007, format!("preset error: {e}"));
@@ -291,13 +300,7 @@ where
         }
 
         let resp = provider
-            .chat_stream_with_retry(
-                req,
-                Some(on_delta),
-                None,
-                RetryMode::Standard,
-                None,
-            )
+            .chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None)
             .await;
 
         if resp.is_error() {
@@ -390,7 +393,15 @@ where
 
         // 5. 无 tool_call → 这是最终回复
         if !resp.should_execute_tools() {
-            final_content = Some(assistant_content);
+            // Output filter check (010-sensitive-word-filter)
+            let filtered_content = filter_output(
+                &assistant_content,
+                &deps.sensitive_filter,
+                &deps.pool,
+                session_id,
+            )
+            .await;
+            final_content = Some(filtered_content);
             final_agent_id = current_agent_id;
             break;
         }
@@ -424,9 +435,9 @@ where
                 {
                     emit_error(&tx, 6005, e.to_string());
                     // ★ AgentContext: hook abort → terminate
-                    let _ = agent_ctx.set_response_payload(
-                        ResponsePayload::new("Hook blocked tool execution".to_string()),
-                    );
+                    let _ = agent_ctx.set_response_payload(ResponsePayload::new(
+                        "Hook blocked tool execution".to_string(),
+                    ));
                     let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
                     // On hook abort, finalize without processing this tool
                     return finalize_with_variant(
@@ -461,8 +472,18 @@ where
 
             let result = if tc.name == ROUTE_TOOL_NAME {
                 handle_route_tool(&deps.pool, &agent_content, &visited, tc).await
-            } else if let Some(tool_ref) = agent_content.tools.iter().find(|t| t.identifier == tc.name) {
-                handle_workspace_tool(&deps, &agent_content, tool_ref, tc, session_id, Arc::clone(&agent_ctx)).await
+            } else if let Some(tool_ref) =
+                agent_content.tools.iter().find(|t| t.identifier == tc.name)
+            {
+                handle_workspace_tool(
+                    &deps,
+                    &agent_content,
+                    tool_ref,
+                    tc,
+                    session_id,
+                    Arc::clone(&agent_ctx),
+                )
+                .await
             } else {
                 ToolOutcome::error(format!("未知工具：{}", tc.name))
             };
@@ -542,9 +563,8 @@ where
                     final_content = Some(assistant_content.clone());
                     final_agent_id = current_agent_id;
                     // ★ AgentContext: route loop detected → terminate
-                    let _ = agent_ctx.set_response_payload(
-                        ResponsePayload::new(assistant_content.clone()),
-                    );
+                    let _ = agent_ctx
+                        .set_response_payload(ResponsePayload::new(assistant_content.clone()));
                     let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
                     return finalize_with_variant(
                         &deps.pool,
@@ -650,7 +670,6 @@ where
         } else {
             let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
         }
-
     }
 
     finalize_with_variant(
@@ -1342,7 +1361,10 @@ pub(crate) async fn handle_workspace_tool(
                     return ToolOutcome::error("builtin function 缺 function_id".into());
                 };
                 // 使用 function 的 identifier 查找 builtin handler（可能与 tool identifier 不同）
-                let lookup_id = tool_ref.function_identifier.as_deref().unwrap_or(&tool_ref.identifier);
+                let lookup_id = tool_ref
+                    .function_identifier
+                    .as_deref()
+                    .unwrap_or(&tool_ref.identifier);
                 let Some(builtin) = super::builtins::lookup(lookup_id) else {
                     return ToolOutcome::error(format!(
                         "builtin function「{lookup_id}」未找到 handler"
@@ -1446,6 +1468,35 @@ pub(crate) async fn handle_workspace_tool(
         }
         _ => ToolOutcome::error(format!("未知 tool kind: {}", tool_ref.kind)),
     }
+}
+
+// ── Sensitive filter output check ──
+
+/// Check Agent output against the sensitive word filter.
+/// If a match is found, replace with a friendly prompt.
+async fn filter_output(
+    content: &str,
+    filter: &crate::services::sensitive_filter::SensitiveFilter,
+    pool: &MySqlPool,
+    session_id: i64,
+) -> String {
+    if let Some(hit) = filter.check(content) {
+        tracing::info!(
+            session_id,
+            triggered_word = %hit.word(),
+            "Agent output replaced by sensitive filter"
+        );
+        let _ = crate::services::sensitive_filter::log_filter_event(
+            pool,
+            "output_replace",
+            None,
+            Some(session_id),
+            hit.word(),
+        )
+        .await;
+        return "抱歉，系统无法处理您的请求，请稍后重试。".to_string();
+    }
+    content.to_string()
 }
 
 // ============================ Audit ============================

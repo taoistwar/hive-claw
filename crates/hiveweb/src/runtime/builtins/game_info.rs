@@ -22,10 +22,7 @@ async fn game_info_async_impl(
     ext_pool: Option<&sqlx::MySqlPool>,
 ) -> BuiltinResult {
     // 1. Parse game_id from input — text → integer
-    let game_id_str = args
-        .get("game_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
     let put_to_ac = args
         .get("put_to_ac")
         .and_then(|v| v.as_bool())

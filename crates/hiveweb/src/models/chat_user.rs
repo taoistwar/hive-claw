@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-
 // --- User tables ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

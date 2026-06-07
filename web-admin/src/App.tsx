@@ -21,6 +21,7 @@ import ChangePasswordPage from './pages/ChangePasswordPage'
 import UserManagementPage from './pages/UserManagementPage'
 import GlobalConfigPage from './pages/GlobalConfigPage'
 import GameAliasPage from './pages/GameAliasPage'
+import SensitiveWordPage from './pages/SensitiveWordPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
@@ -152,6 +153,7 @@ function AppRoutes() {
           <Route path="recommended-games" element={<RecommendedGamePage />} />
           <Route path="users" element={<UserManagementPage />} />
           <Route path="admin-audit-logs" element={<AdminAuditLogPage />} />
+          <Route path="sensitive-words" element={<SensitiveWordPage />} />
           <Route path="runtime-audit-logs" element={<RuntimeAuditLogPage />} />
           <Route path="login-records" element={<LoginRecordPage />} />
           <Route path="settings/change-password" element={<ChangePasswordPage />} />

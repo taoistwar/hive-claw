@@ -13,15 +13,11 @@ pub async fn create_client() -> anyhow::Result<Client> {
     let config = aws_config::defaults(BehaviorVersion::v2025_08_07())
         .endpoint_url(endpoint_url)
         .credentials_provider(aws_sdk_s3::config::Credentials::new(
-            access_key,
-            secret_key,
-            None,
-            None,
-            "env",
+            access_key, secret_key, None, None, "env",
         ))
         .load()
         .await;
-    
+
     let client = Client::from_conf(
         aws_sdk_s3::config::Builder::from(&config)
             .region(Region::new(region))

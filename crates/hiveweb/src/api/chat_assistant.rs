@@ -20,13 +20,13 @@
 //!   9. 获取或创建 session → append_user_message_user → 更新 title →
 //!      构建 OrchestratorDeps → run_session_user → 收集完整回复 → 返回 JSON
 
+use axum::response::sse::Event;
 use axum::{
     Router,
     extract::{Query, State},
     response::{IntoResponse, Response},
     routing::post,
 };
-use axum::response::sse::Event;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use sqlx::MySqlPool;
@@ -97,9 +97,11 @@ async fn assistant_chat(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if content_type != "application/json; charset=UTF-8" {
-        return AppError::BadRequest("Invalid Content-Type, must be: application/json; charset=UTF-8".into())
-            .into_response::<()>()
-            .into_response();
+        return AppError::BadRequest(
+            "Invalid Content-Type, must be: application/json; charset=UTF-8".into(),
+        )
+        .into_response::<()>()
+        .into_response();
     }
 
     // 1. MD5 签名校验
@@ -137,6 +139,28 @@ async fn assistant_chat(
             .into_response();
     }
 
+    // 4b. Sensitive word filter — input check (010-sensitive-word-filter)
+    if let Some(hit) = state.sensitive_filter.check(&req.message) {
+        tracing::info!(
+            user_id = req.user_id,
+            triggered_word = %hit.word(),
+            "Assistant input blocked by sensitive filter"
+        );
+        let _ = crate::services::sensitive_filter::log_filter_event(
+            &state.pool,
+            "input_block",
+            Some(req.user_id),
+            None,
+            hit.word(),
+        )
+        .await;
+        return crate::utils::error::ApiResponse::success(serde_json::json!({
+            "reply": "内容安全警告：输出的文本数据可能包含不适当的内容！",
+            "filtered": true,
+        }))
+        .into_response();
+    }
+
     let ext_pool = match &state.ext_pool {
         Some(p) => p,
         None => {
@@ -145,8 +169,6 @@ async fn assistant_chat(
                 .into_response();
         }
     };
-
-
 
     // 5. 校验 user_id 是否存在于外部 cloud_user 表
     match user_exists_in_cloud(ext_pool, req.user_id).await {
@@ -181,16 +203,16 @@ async fn assistant_chat(
     };
 
     if let Err(msg) = check_and_incr_daily_limit(&state.redis, &limit_key, max_times).await {
-        return AppError::BadRequest(msg).into_response::<()>().into_response();
+        return AppError::BadRequest(msg)
+            .into_response::<()>()
+            .into_response();
     }
     // 8. SSE concurrency guard
     if !try_acquire_slot(req.user_id, SseSlotConfig::USER).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
-        return AppError::SseConcurrencyExceeded(
-            "并发会话过多，请关闭其它对话窗口后重试".into(),
-        )
-        .into_response::<()>()
-        .into_response();
+        return AppError::SseConcurrencyExceeded("并发会话过多，请关闭其它对话窗口后重试".into())
+            .into_response::<()>()
+            .into_response();
     }
     let _guard = SseConcurrencyGuard {
         actor_id: req.user_id,
@@ -226,7 +248,9 @@ async fn assistant_chat(
     let session_id = session.id;
 
     // 12. Append user message
-    if let Err(e) = svc::append_user_message_user(&state.pool, session_id, req.user_id, &req.message).await {
+    if let Err(e) =
+        svc::append_user_message_user(&state.pool, session_id, req.user_id, &req.message).await
+    {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
         return e.into_response::<()>().into_response();
     }
@@ -263,6 +287,7 @@ async fn assistant_chat(
         channel: req.channel.clone(),
         platform: req.platform.clone(),
         app_version: req.app_version.clone(),
+        sensitive_filter: state.sensitive_filter.clone(),
     };
     let handle = tokio::spawn(async move {
         crate::runtime::orchestrator::run_session_user(
@@ -401,8 +426,6 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
 }
 
 // ── 签名校验 ──
-
-
 
 // ── 外部 DB 查询 ──
 
@@ -622,14 +645,24 @@ mod tests {
         let body = r#"{"user_id":123,"message":"hello"}"#;
         let sign_string = format!("{}/api/assistant?body={}", secret, body);
         let expected = format!("{:x}", md5::compute(sign_string.as_bytes()));
-        assert!(chat_common::verify_sign(secret, "/api/assistant", body, &expected));
+        assert!(chat_common::verify_sign(
+            secret,
+            "/api/assistant",
+            body,
+            &expected
+        ));
     }
 
     #[test]
     fn verify_sign_rejects_wrong_signature() {
         let secret = "abc123";
         let body = r#"{"user_id":123,"message":"hello"}"#;
-        assert!(!chat_common::verify_sign(secret, "/api/assistant", body, "wrong_sign"));
+        assert!(!chat_common::verify_sign(
+            secret,
+            "/api/assistant",
+            body,
+            "wrong_sign"
+        ));
     }
 
     #[test]
@@ -640,12 +673,22 @@ mod tests {
         let original_body = r#"{"user_id":123,"message":"hello"}"#;
         let sign_string = format!("{}/api/assistant?body={}", secret, original_body);
         let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
-        assert!(!chat_common::verify_sign(secret, "/api/assistant", body_tampered, &sign));
+        assert!(!chat_common::verify_sign(
+            secret,
+            "/api/assistant",
+            body_tampered,
+            &sign
+        ));
     }
 
     #[test]
     fn verify_sign_empty_sign_fails() {
-        assert!(!chat_common::verify_sign("secret", "/api/assistant", "body", ""));
+        assert!(!chat_common::verify_sign(
+            "secret",
+            "/api/assistant",
+            "body",
+            ""
+        ));
     }
 
     #[test]
@@ -655,7 +698,12 @@ mod tests {
         let sign_string = format!("{}/api/assistant?body={}", secret, body);
         let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
         // uppercase should not match
-        assert!(!chat_common::verify_sign(secret, "/api/assistant", body, &sign.to_uppercase()));
+        assert!(!chat_common::verify_sign(
+            secret,
+            "/api/assistant",
+            body,
+            &sign.to_uppercase()
+        ));
     }
 
     // ── T033: 日限流 TTL 计算 ──

@@ -271,7 +271,13 @@ async fn execute_workflow(
     let outcome = state
         .runtime_state
         .workflows
-        .execute(&deps, id, body.input, 1 /* main agent */, agent_ctx.clone())
+        .execute(
+            &deps,
+            id,
+            body.input,
+            1, /* main agent */
+            agent_ctx.clone(),
+        )
         .await
         .map_err(|e| AppError::Internal(format!("workflow execute: {e}")).into_response())?;
 

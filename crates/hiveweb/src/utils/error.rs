@@ -155,7 +155,9 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         codes::PLUGIN_INVOCATION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
         codes::POOL_BUSY => StatusCode::SERVICE_UNAVAILABLE,
         // 008 — Agent Hook HTTP 映射
-        codes::HOOK_TRIGGER_LIMIT_EXCEEDED | codes::HOOK_REFERENCE_INVALID => StatusCode::UNPROCESSABLE_ENTITY,
+        codes::HOOK_TRIGGER_LIMIT_EXCEEDED | codes::HOOK_REFERENCE_INVALID => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         codes::HOOK_WEBHOOK_URL_INVALID => StatusCode::BAD_REQUEST,
         codes::HOOK_EXECUTION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
         codes::HOOK_BLOCKING_FAILED => StatusCode::INTERNAL_SERVER_ERROR,

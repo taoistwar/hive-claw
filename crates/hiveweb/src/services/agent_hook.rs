@@ -1,12 +1,12 @@
-use sqlx::MySqlPool;
 use serde::Serialize;
+use sqlx::MySqlPool;
 
 use crate::models::agent_hook::{
     AgentHook, CreateHookRequest, HookExecution, HookExecutionQuery, UpdateHookRequest,
 };
 use crate::services::agent::MAIN_AGENT_IDENTIFIER;
-use crate::utils::error::{AppError, codes};
 use crate::services::optimistic_lock;
+use crate::utils::error::{AppError, codes};
 
 /// Enriched Hook response with resolved reference names for call_function/call_workflow.
 #[derive(Debug, Clone, Serialize)]
@@ -28,14 +28,13 @@ pub async fn create_hook(
     check_hook_permission(pool, agent_id, actor_role).await?;
 
     // ── Per-trigger-point limit check (FR-001: max 5) ──
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM agent_hooks WHERE agent_id = ? AND trigger_point = ?",
-    )
-    .bind(agent_id)
-    .bind(&meta.trigger_point)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("hook count: {e}")))?;
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM agent_hooks WHERE agent_id = ? AND trigger_point = ?")
+            .bind(agent_id)
+            .bind(&meta.trigger_point)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("hook count: {e}")))?;
 
     if count.0 >= 5 {
         return Err(AppError::HookTriggerLimitExceeded(
@@ -51,13 +50,12 @@ pub async fn create_hook(
                 .get("function_id")
                 .and_then(|v| v.as_i64());
             if let Some(fid) = function_id {
-                let exists: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM functions WHERE id = ?",
-                )
-                .bind(fid)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| AppError::Internal(format!("function lookup: {e}")))?;
+                let exists: Option<(i64,)> =
+                    sqlx::query_as("SELECT id FROM functions WHERE id = ?")
+                        .bind(fid)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| AppError::Internal(format!("function lookup: {e}")))?;
                 if exists.is_none() {
                     return Err(AppError::HookReferenceInvalid(
                         "Hook 引用的 Function 不存在或已删除".into(),
@@ -127,13 +125,11 @@ pub async fn create_hook(
     .await
     .map_err(|e| AppError::Internal(format!("hook insert: {e}")))?;
 
-    let hook = sqlx::query_as::<_, AgentHook>(
-        "SELECT * FROM agent_hooks WHERE id = ?",
-    )
-    .bind(result.last_insert_id() as i64)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("hook fetch after insert: {e}")))?;
+    let hook = sqlx::query_as::<_, AgentHook>("SELECT * FROM agent_hooks WHERE id = ?")
+        .bind(result.last_insert_id() as i64)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("hook fetch after insert: {e}")))?;
 
     Ok(hook)
 }
@@ -169,8 +165,7 @@ pub async fn update_hook(
         .await
         .map_err(|e| AppError::Internal(format!("hook fetch: {e}")))?;
 
-    let existing =
-        existing.ok_or_else(|| AppError::HookNotFound("Hook 配置不存在".into()))?;
+    let existing = existing.ok_or_else(|| AppError::HookNotFound("Hook 配置不存在".into()))?;
 
     if existing.agent_id != agent_id {
         return Err(AppError::HookNotFound("Hook 配置不存在".into()));
@@ -186,8 +181,8 @@ pub async fn update_hook(
     // ── Apply updates (COALESCE-style: use meta value if Some, else use existing) ──
     let trigger_point_changed = meta.trigger_point.is_some()
         && meta.trigger_point.as_ref() != Some(&existing.trigger_point);
-    let action_type_changed = meta.action_type.is_some()
-        && meta.action_type.as_ref() != Some(&existing.action_type);
+    let action_type_changed =
+        meta.action_type.is_some() && meta.action_type.as_ref() != Some(&existing.action_type);
 
     // Re-validate references / URL if action_type changed (before moving out of meta)
     if action_type_changed {
@@ -218,9 +213,7 @@ pub async fn update_hook(
         }
     }
 
-    let action_params = meta
-        .action_params
-        .unwrap_or(existing.action_params);
+    let action_params = meta.action_params.unwrap_or(existing.action_params);
     let params_str = serde_json::to_string(&action_params)
         .map_err(|e| AppError::BadRequest(format!("action_params: {e}")))?;
     let enabled = meta.enabled.unwrap_or(existing.enabled);
@@ -253,13 +246,11 @@ pub async fn update_hook(
         return Err(AppError::HookNotFound("Hook 配置不存在".into()));
     }
 
-    let updated = sqlx::query_as::<_, AgentHook>(
-        "SELECT * FROM agent_hooks WHERE id = ?",
-    )
-    .bind(hook_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("hook fetch after update: {e}")))?;
+    let updated = sqlx::query_as::<_, AgentHook>("SELECT * FROM agent_hooks WHERE id = ?")
+        .bind(hook_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("hook fetch after update: {e}")))?;
 
     Ok(updated)
 }
@@ -385,13 +376,12 @@ async fn check_hook_permission(
     agent_id: i64,
     actor_role: i8,
 ) -> Result<(), AppError> {
-    let ident: (String,) =
-        sqlx::query_as("SELECT identifier FROM agents WHERE id = ?")
-            .bind(agent_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("agent lookup: {e}")))?
-            .ok_or_else(|| AppError::NotFound("Agent 不存在".into()))?;
+    let ident: (String,) = sqlx::query_as("SELECT identifier FROM agents WHERE id = ?")
+        .bind(agent_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("agent lookup: {e}")))?
+        .ok_or_else(|| AppError::NotFound("Agent 不存在".into()))?;
 
     // FR-017: main agent → Super only
     if ident.0 == MAIN_AGENT_IDENTIFIER && actor_role != 3 {
@@ -422,7 +412,11 @@ pub async fn list_hooks_enriched(
         let mut wf_name: Option<String> = None;
 
         if hook.action_type == "call_function" {
-            if let Some(fid) = hook.action_params.get("function_id").and_then(|v| v.as_i64()) {
+            if let Some(fid) = hook
+                .action_params
+                .get("function_id")
+                .and_then(|v| v.as_i64())
+            {
                 fn_name = sqlx::query_scalar("SELECT name FROM functions WHERE id = ?")
                     .bind(fid)
                     .fetch_optional(pool)
@@ -430,7 +424,11 @@ pub async fn list_hooks_enriched(
                     .unwrap_or(None);
             }
         } else if hook.action_type == "call_workflow" {
-            if let Some(wid) = hook.action_params.get("workflow_id").and_then(|v| v.as_i64()) {
+            if let Some(wid) = hook
+                .action_params
+                .get("workflow_id")
+                .and_then(|v| v.as_i64())
+            {
                 wf_name = sqlx::query_scalar("SELECT name FROM workflows WHERE id = ?")
                     .bind(wid)
                     .fetch_optional(pool)
@@ -464,7 +462,11 @@ pub async fn cleanup_old_executions(pool: &MySqlPool) {
 
     match result {
         Ok(r) if r.rows_affected() > 0 => {
-            tracing::info!(rows = r.rows_affected(), retention_days, "Cleaned old hook execution records");
+            tracing::info!(
+                rows = r.rows_affected(),
+                retention_days,
+                "Cleaned old hook execution records"
+            );
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to clean old hook executions");
@@ -475,7 +477,9 @@ pub async fn cleanup_old_executions(pool: &MySqlPool) {
 
 fn validate_webhook_url(url: &str) -> Result<(), AppError> {
     if url.is_empty() {
-        return Err(AppError::HookWebhookUrlInvalid("Webhook URL 不能为空".into()));
+        return Err(AppError::HookWebhookUrlInvalid(
+            "Webhook URL 不能为空".into(),
+        ));
     }
     if !url.starts_with("https://") {
         return Err(AppError::HookWebhookUrlInvalid(
@@ -487,11 +491,30 @@ fn validate_webhook_url(url: &str) -> Result<(), AppError> {
     let lower = url.to_lowercase();
     // Crude but effective: reject URLs pointing to private patterns
     let blocked = [
-        "127.0.0.1", "localhost", "10.", "192.168.", "172.16.", "172.17.",
-        "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.",
-        "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-        "172.30.", "172.31.", "169.254.", "0.0.0.0",
-        "metadata.google.internal", "169.254.169.254",
+        "127.0.0.1",
+        "localhost",
+        "10.",
+        "192.168.",
+        "172.16.",
+        "172.17.",
+        "172.18.",
+        "172.19.",
+        "172.20.",
+        "172.21.",
+        "172.22.",
+        "172.23.",
+        "172.24.",
+        "172.25.",
+        "172.26.",
+        "172.27.",
+        "172.28.",
+        "172.29.",
+        "172.30.",
+        "172.31.",
+        "169.254.",
+        "0.0.0.0",
+        "metadata.google.internal",
+        "169.254.169.254",
     ];
     for pat in &blocked {
         if lower.contains(pat) {
@@ -514,8 +537,8 @@ fn validate_webhook_headers(action_params: &serde_json::Value) -> Result<(), App
     let name_re = Regex::new(r"^[a-zA-Z0-9_-]+$")
         .map_err(|_| AppError::Internal("header regex compile".into()))?;
     // reject \r or \n in header name or value
-    let injection_re = Regex::new(r"[\r\n]")
-        .map_err(|_| AppError::Internal("injection regex compile".into()))?;
+    let injection_re =
+        Regex::new(r"[\r\n]").map_err(|_| AppError::Internal("injection regex compile".into()))?;
 
     if let Some(headers) = action_params.get("headers").and_then(|v| v.as_object()) {
         for (name, value) in headers {
@@ -546,13 +569,12 @@ async fn validate_hook_action(
         match action_type {
             "call_function" => {
                 if let Some(fid) = params.get("function_id").and_then(|v| v.as_i64()) {
-                    let exists: Option<(i64,)> = sqlx::query_as(
-                        "SELECT id FROM functions WHERE id = ?",
-                    )
-                    .bind(fid)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| AppError::Internal(format!("function lookup: {e}")))?;
+                    let exists: Option<(i64,)> =
+                        sqlx::query_as("SELECT id FROM functions WHERE id = ?")
+                            .bind(fid)
+                            .fetch_optional(pool)
+                            .await
+                            .map_err(|e| AppError::Internal(format!("function lookup: {e}")))?;
                     if exists.is_none() {
                         return Err(AppError::HookReferenceInvalid(
                             "Hook 引用的 Function 不存在或已删除".into(),
@@ -562,13 +584,12 @@ async fn validate_hook_action(
             }
             "call_workflow" => {
                 if let Some(wid) = params.get("workflow_id").and_then(|v| v.as_i64()) {
-                    let exists: Option<(i64,)> = sqlx::query_as(
-                        "SELECT id FROM workflows WHERE id = ?",
-                    )
-                    .bind(wid)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| AppError::Internal(format!("workflow lookup: {e}")))?;
+                    let exists: Option<(i64,)> =
+                        sqlx::query_as("SELECT id FROM workflows WHERE id = ?")
+                            .bind(wid)
+                            .fetch_optional(pool)
+                            .await
+                            .map_err(|e| AppError::Internal(format!("workflow lookup: {e}")))?;
                     if exists.is_none() {
                         return Err(AppError::HookReferenceInvalid(
                             "Hook 引用的 Workflow 不存在或已删除".into(),

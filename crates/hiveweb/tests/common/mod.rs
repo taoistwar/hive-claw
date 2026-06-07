@@ -43,7 +43,13 @@ pub async fn test_app() -> Result<Router> {
     let redis = hiveweb::cache::redis::create_pool(&redis_url).await?;
     let s3 = hiveweb::storage::s3::create_client().await?;
 
-    Ok(hiveweb::api::create_router(pool, redis, s3, None))
+    Ok(hiveweb::api::create_router(
+        pool,
+        redis,
+        s3,
+        None,
+        hiveweb::services::sensitive_filter::SensitiveFilter::new(),
+    ))
 }
 
 /// Open a direct MySQL pool from `DATABASE_URL` for seed / cleanup operations.

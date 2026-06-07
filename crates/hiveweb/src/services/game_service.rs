@@ -340,8 +340,7 @@ pub async fn load_internal_aliases(
     .await
     .map_err(|e| AppError::Internal(format!("game_list internal query: {e}")))?;
 
-    let mut map: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for (name, alias) in rows {
         let entry = map.entry(name).or_default();
         if let Some(a) = alias {

@@ -194,6 +194,7 @@ async fn test_tool(
         channel: String::new(),
         platform: String::new(),
         app_version: String::new(),
+        sensitive_filter: state.sensitive_filter.clone(),
     };
     let req_with_trace = test_svc::TestToolRequest {
         message: req.message,

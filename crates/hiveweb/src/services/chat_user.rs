@@ -191,10 +191,7 @@ pub async fn append_assistant_message_user(
     fetch_message_user(pool, res.last_insert_id() as i64).await
 }
 
-pub async fn fetch_message_user(
-    pool: &MySqlPool,
-    id: i64,
-) -> Result<ChatMessageUser, AppError> {
+pub async fn fetch_message_user(pool: &MySqlPool, id: i64) -> Result<ChatMessageUser, AppError> {
     sqlx::query_as::<_, ChatMessageUser>("SELECT * FROM chat_messages_user WHERE id = ?")
         .bind(id)
         .fetch_optional(pool)

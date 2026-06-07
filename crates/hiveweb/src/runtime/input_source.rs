@@ -125,7 +125,9 @@ pub fn validate_input_spec(spec: &InputSpec) -> Result<(), String> {
         match src {
             InputSource::Upstream { node_key, .. } => {
                 if node_key.is_empty() {
-                    return Err(format!("field '{field}': upstream.node_key cannot be empty"));
+                    return Err(format!(
+                        "field '{field}': upstream.node_key cannot be empty"
+                    ));
                 }
             }
             InputSource::Custom { .. } => { /* any value is fine */ }
@@ -188,9 +190,7 @@ mod tests {
         let mut spec = BTreeMap::new();
         spec.insert(
             "_agent_context".to_string(),
-            InputSource::Custom {
-                value: json!("x"),
-            },
+            InputSource::Custom { value: json!("x") },
         );
         assert!(validate_input_spec(&spec).is_err());
     }

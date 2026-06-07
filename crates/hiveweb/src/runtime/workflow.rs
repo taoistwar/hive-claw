@@ -14,12 +14,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
-use agent::context::AgentContext;
 use crate::runtime::builtins;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::hook::{apply_agent_context_updates, inject_agent_context_snapshot};
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
+use agent::context::AgentContext;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {
@@ -369,8 +369,12 @@ fn build_node_input(
         .and_then(|c| c.get(spec_key))
         .cloned()
         .unwrap_or(Value::Null);
-    let spec = crate::runtime::input_source::parse_input_spec(&spec_value)
-        .map_err(|e| (node_key.to_string(), format!("parse node_config.{spec_key}: {e}")))?;
+    let spec = crate::runtime::input_source::parse_input_spec(&spec_value).map_err(|e| {
+        (
+            node_key.to_string(),
+            format!("parse node_config.{spec_key}: {e}"),
+        )
+    })?;
 
     let ctx = InputBuildCtx {
         external_input,
@@ -398,7 +402,10 @@ fn build_input_from_spec(
     let mut input = Map::new();
     for (field, src) in spec {
         let value = match src {
-            InputSource::Upstream { node_key, field: sub } => {
+            InputSource::Upstream {
+                node_key,
+                field: sub,
+            } => {
                 if node_key == "start" {
                     // start is a virtual node whose "output" is external_input.
                     let key = sub.as_deref().unwrap_or(field.as_str());
@@ -483,24 +490,29 @@ fn resolve_from_agent_context(
             let ui = snapshot
                 .get("user_input")
                 .and_then(|v| v.as_object())
-                .ok_or_else(|| {
-                    (field.to_string(), "snapshot.user_input missing".to_string())
-                })?;
+                .ok_or_else(|| (field.to_string(), "snapshot.user_input missing".to_string()))?;
             match sub_key {
                 Some(sk) => {
                     let md = ui
                         .get("metadata")
                         .and_then(|v| v.as_object())
                         .ok_or_else(|| {
-                            (field.to_string(), "snapshot.user_input.metadata missing".to_string())
+                            (
+                                field.to_string(),
+                                "snapshot.user_input.metadata missing".to_string(),
+                            )
                         })?;
                     md.get(sk).cloned().ok_or_else(|| {
-                        (field.to_string(), format!("user_input.metadata.{sk} not found"))
+                        (
+                            field.to_string(),
+                            format!("user_input.metadata.{sk} not found"),
+                        )
                     })
                 }
-                None => ui.get(key).cloned().ok_or_else(|| {
-                    (field.to_string(), format!("user_input.{key} not found"))
-                }),
+                None => ui
+                    .get(key)
+                    .cloned()
+                    .ok_or_else(|| (field.to_string(), format!("user_input.{key} not found"))),
             }
         }
         AgentContextCategory::Entities
@@ -512,27 +524,25 @@ fn resolve_from_agent_context(
                 AgentContextCategory::StateChanges => "state_changes",
                 _ => unreachable!(),
             };
-            let arr = snapshot.get(cat_name).and_then(|v| v.as_array()).ok_or_else(|| {
-                (field.to_string(), format!("snapshot.{cat_name} missing"))
-            })?;
+            let arr = snapshot
+                .get(cat_name)
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| (field.to_string(), format!("snapshot.{cat_name} missing")))?;
             arr.iter()
                 .find(|r| r.get("key").and_then(|k| k.as_str()) == Some(key))
                 .and_then(|r| r.get("value").cloned())
-                .ok_or_else(|| {
-                    (field.to_string(), format!("{cat_name}.{key} not found"))
-                })
+                .ok_or_else(|| (field.to_string(), format!("{cat_name}.{key} not found")))
         }
         AgentContextCategory::Extensions => {
-            let arr = snapshot.get("extensions").and_then(|v| v.as_array()).ok_or_else(|| {
-                (field.to_string(), "snapshot.extensions missing".to_string())
-            })?;
+            let arr = snapshot
+                .get("extensions")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| (field.to_string(), "snapshot.extensions missing".to_string()))?;
             // key = extension id
             let ext = arr
                 .iter()
                 .find(|e| e.get("id").and_then(|i| i.as_str()) == Some(key))
-                .ok_or_else(|| {
-                    (field.to_string(), format!("extension id '{key}' not found"))
-                })?;
+                .ok_or_else(|| (field.to_string(), format!("extension id '{key}' not found")))?;
             // sub_key = top-level field name on the ExtensionContent (id, content_type, reply, data, render_hints)
             let sk = sub_key.ok_or_else(|| {
                 (
@@ -541,7 +551,10 @@ fn resolve_from_agent_context(
                 )
             })?;
             ext.get(sk).cloned().ok_or_else(|| {
-                (field.to_string(), format!("extension '{key}' has no field '{sk}'"))
+                (
+                    field.to_string(),
+                    format!("extension '{key}' has no field '{sk}'"),
+                )
             })
         }
     }
@@ -620,10 +633,11 @@ async fn execute_node(
     })?;
     let mut node_input = input;
     inject_agent_context_snapshot(&mut node_input, &agent_ctx);
-    let input_json = serde_json::to_string(&node_input).map_err(|e| WorkflowError::NodeFailure {
-        node_key: node_key.clone(),
-        message: format!("input serialize: {e}"),
-    })?;
+    let input_json =
+        serde_json::to_string(&node_input).map_err(|e| WorkflowError::NodeFailure {
+            node_key: node_key.clone(),
+            message: format!("input serialize: {e}"),
+        })?;
     let dispatch_ctx = DispatchCtx {
         request_id: None,
         session_id: None,
@@ -763,8 +777,16 @@ async fn execute_answer_node(
 fn build_user_message(input: &Value, system_prompt: &str) -> String {
     // Common names for the field that holds the user's actual question.
     const USER_QUESTION_KEYS: &[&str] = &[
-        "query", "question", "text", "input", "message", "prompt",
-        "user_input", "raw_text", "user_message", "ask",
+        "query",
+        "question",
+        "text",
+        "input",
+        "message",
+        "prompt",
+        "user_input",
+        "raw_text",
+        "user_message",
+        "ask",
     ];
 
     if let Value::Object(map) = input {

@@ -8,17 +8,18 @@ pub mod runtime_audit_log;
 // 004 Agent Runtime
 pub mod agent;
 pub mod agent_hook;
-pub mod chat_assistant;
-pub mod chat_messages;
 pub mod capability;
 pub mod category;
+pub mod chat_assistant;
 pub mod chat_common;
+pub mod chat_messages;
 pub mod function;
 pub mod game;
 pub mod global_config;
 pub mod plugin;
 pub mod recommended_game;
 pub mod runtime;
+pub mod sensitive_word;
 pub mod skill;
 pub mod tag;
 pub mod tool;
@@ -56,6 +57,8 @@ pub struct AppState {
     pub runtime_state: RuntimeState,
     /// 外部只读数据库连接（assistant API 用户校验等）
     pub ext_pool: Option<MySqlPool>,
+    /// 010 Sensitive Word Filter — in-memory filter engine
+    pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 }
 
 /// 启动期严格 12 步顺序（plan §Startup Initialization Order）：
@@ -79,6 +82,7 @@ pub fn create_router(
     redis: RedisClient,
     s3: Client,
     ext_pool: Option<MySqlPool>,
+    sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 ) -> Router {
     let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
 
@@ -123,6 +127,7 @@ pub fn create_router(
         s3,
         runtime_state,
         ext_pool,
+        sensitive_filter,
     };
 
     // Rate-limit window is per-IP. Defaults: 180 req / 60 s.
@@ -170,6 +175,7 @@ pub fn create_router(
         .merge(recommended_game::router())
         .merge(global_config::router())
         .merge(game::router())
+        .merge(sensitive_word::router())
         .layer(middleware::from_fn(admin_auth_middleware))
         .layer(middleware::from_fn_with_state(
             rate_limit_state,

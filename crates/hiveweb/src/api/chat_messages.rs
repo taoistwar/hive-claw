@@ -16,17 +16,16 @@
 //!   4. 查询 chat_messages_user 表，返回最近 10 条
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{Query, State},
     response::{IntoResponse, Response},
     routing::post,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-use crate::api::chat_common;
 use crate::api::AppState;
+use crate::api::chat_common;
 use crate::models::ChatMessageUser;
 use crate::utils::error::AppError;
 
@@ -108,11 +107,9 @@ async fn list_messages(
     let cutoff = match chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
         Ok(dt) => dt,
         Err(_) => {
-            return AppError::BadRequest(
-                "date must be in YYYY-MM-DD HH:MM:SS format".into(),
-            )
-            .into_response::<()>()
-            .into_response();
+            return AppError::BadRequest("date must be in YYYY-MM-DD HH:MM:SS format".into())
+                .into_response::<()>()
+                .into_response();
         }
     };
 
@@ -153,13 +150,23 @@ mod tests {
         let body = r#"{"user_id":42,"date":"2026-06-03 15:27:31"}"#;
         let sign_str = format!("{}/api/messages?body={}", secret, body);
         let expected = format!("{:x}", md5::compute(sign_str.as_bytes()));
-        assert!(chat_common::verify_sign(secret, "/api/messages", body, &expected));
+        assert!(chat_common::verify_sign(
+            secret,
+            "/api/messages",
+            body,
+            &expected
+        ));
     }
 
     #[test]
     fn verify_sign_rejects_wrong_signature() {
         let body = r#"{"user_id":42,"date":"2026-06-03 15:27:31"}"#;
-        assert!(!chat_common::verify_sign("abc123", "/api/messages", body, "wrong"));
+        assert!(!chat_common::verify_sign(
+            "abc123",
+            "/api/messages",
+            body,
+            "wrong"
+        ));
     }
 
     #[test]
@@ -168,12 +175,22 @@ mod tests {
         let body = r#"{"user_id":42,"date":"2026-06-03 15:27:31"}"#;
         let sign_str = format!("{}/api/messages?body={}", secret, body);
         let sign = format!("{:x}", md5::compute(sign_str.as_bytes()));
-        assert!(!chat_common::verify_sign(secret, "/api/messages", r#"{"user_id":99,"date":"2026-06-03 15:27:31"}"#, &sign));
+        assert!(!chat_common::verify_sign(
+            secret,
+            "/api/messages",
+            r#"{"user_id":99,"date":"2026-06-03 15:27:31"}"#,
+            &sign
+        ));
     }
 
     #[test]
     fn verify_sign_empty_sign_fails() {
-        assert!(!chat_common::verify_sign("secret", "/api/messages", "{}", ""));
+        assert!(!chat_common::verify_sign(
+            "secret",
+            "/api/messages",
+            "{}",
+            ""
+        ));
     }
 
     #[test]

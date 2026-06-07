@@ -21,6 +21,7 @@ import {
   MoonOutlined,
   LockOutlined,
   SettingOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../hooks/useTheme';
@@ -92,6 +93,11 @@ const AppLayout: React.FC = () => {
                   label: 'Workflows',
                 },
                 {
+                {
+                  key: '/sensitive-words',
+                  icon: <SafetyCertificateOutlined />,
+                  label: '敏感词管理',
+                },
                   key: '/functions',
                   icon: <FunctionOutlined />,
                   label: 'Functions',

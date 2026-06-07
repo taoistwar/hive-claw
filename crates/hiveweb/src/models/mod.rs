@@ -14,6 +14,7 @@ pub mod global_config;
 pub mod plugin;
 pub mod recommended_game;
 pub mod runtime_audit_log;
+pub mod sensitive_word;
 pub mod skill;
 pub mod tag;
 pub mod tool;

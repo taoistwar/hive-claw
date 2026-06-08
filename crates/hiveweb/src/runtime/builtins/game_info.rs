@@ -51,8 +51,8 @@ async fn game_info_async_impl(
         .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 
     let (id, name, ext_alias) = match external {
-        Some(row) => row,
-        None => {
+        Some(row) if row.0 != 0 => row,
+        _ => {
             return Ok(serde_json::json!({
                 "found": false,
                 "data": format!("未找到游戏 ID {} 的信息", game_id),

@@ -90,31 +90,15 @@ async fn game_info_async_impl(
         }
     }
 
-    // 5. Format output: "- id: name、alias1、alias2"
-    let line = if aliases.is_empty() {
-        format!("- {}: {}", id, name)
-    } else {
-        format!("- {}: {}、{}", id, name, aliases.join("、"))
-    };
-
     let game_payload = serde_json::json!({
         "id": id,
         "name": name,
-        "aliases": aliases,
-        "data": line,
     });
 
     let mut output = serde_json::json!({
         "found": true,
-        "data": line,
         "id": id,
         "name": name,
-        "aliases": aliases,
-        "games": [{
-            "id": id,
-            "name": name,
-            "aliases": aliases,
-        }],
     });
 
     // 6. put_to_ac: true → 写入 AgentContext extensions；false → 纯输出
@@ -157,10 +141,6 @@ pub const GAME_INFO_OUTPUT_SCHEMA: &str = r#"{
       "type": "boolean",
       "description": "是否找到该游戏"
     },
-    "data": {
-      "type": "string",
-      "description": "格式化后的游戏信息"
-    },
     "id": {
       "type": "integer",
       "description": "游戏 ID"
@@ -168,22 +148,6 @@ pub const GAME_INFO_OUTPUT_SCHEMA: &str = r#"{
     "name": {
       "type": "string",
       "description": "游戏名称"
-    },
-    "aliases": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "游戏别名列表"
-    },
-    "games": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "integer" },
-          "name": { "type": "string" },
-          "aliases": { "type": "array", "items": { "type": "string" } }
-        }
-      }
     }
   }
 }"#;

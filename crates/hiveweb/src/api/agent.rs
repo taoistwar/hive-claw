@@ -48,6 +48,7 @@ async fn create_agent(
 ) -> Result<ApiResponse<svc::AgentDetail>, ApiResponse<()>> {
     match svc::create(
         &state.pool,
+        &state.redis,
         &state.runtime_state.capabilities,
         &state.runtime_state.llm,
         claims.role,
@@ -82,6 +83,7 @@ async fn update_agent(
 ) -> Result<ApiResponse<svc::AgentDetail>, ApiResponse<()>> {
     match svc::update(
         &state.pool,
+        &state.redis,
         &state.runtime_state.capabilities,
         &state.runtime_state.llm,
         claims.role,
@@ -122,7 +124,7 @@ async fn delete_agent(
         .cloned()
         .unwrap_or_default();
 
-    match svc::delete(&state.pool, id).await {
+    match svc::delete(&state.pool, &state.redis, id).await {
         Ok(()) => {
             if let Err(e) = audit_event(
                 &state.pool,

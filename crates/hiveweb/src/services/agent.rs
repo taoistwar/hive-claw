@@ -117,6 +117,7 @@ fn check_dangerous_permissions(
 
 pub async fn create(
     pool: &MySqlPool,
+    redis: &redis::Client,
     registry: &CapabilityRegistry,
     llm: &LlmRegistry,
     actor_role: i8,
@@ -203,6 +204,11 @@ pub async fn create(
         .await
         .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
 
+    // 新建子 agent → 父 agent 的 children 列表已变
+    if let Some(pid) = meta.parent_agent_id {
+        invalidate_content_cache(redis, pid).await;
+    }
+
     fetch_detail(pool, id).await
 }
 
@@ -280,6 +286,7 @@ pub async fn list_tree(pool: &MySqlPool) -> Result<Vec<AgentTreeNode>, AppError>
 
 pub async fn update(
     pool: &MySqlPool,
+    redis: &redis::Client,
     registry: &CapabilityRegistry,
     llm: &LlmRegistry,
     actor_role: i8,
@@ -412,16 +419,28 @@ pub async fn update(
         .await
         .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
 
+    // 自己必失效；parent_agent_id 真改动了的话旧父/新父的 children 列表也要刷
+    invalidate_content_cache(redis, id).await;
+    if meta.parent_agent_id.is_some() && meta.parent_agent_id != existing.parent_agent_id {
+        if let Some(old_pid) = existing.parent_agent_id {
+            invalidate_content_cache(redis, old_pid).await;
+        }
+        if let Some(new_pid) = meta.parent_agent_id {
+            invalidate_content_cache(redis, new_pid).await;
+        }
+    }
+
     fetch_detail(pool, id).await
 }
 
-pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT identifier FROM agents WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
-    let Some((ident,)) = row else {
+pub async fn delete(pool: &MySqlPool, redis: &redis::Client, id: i64) -> Result<(), AppError> {
+    let row: Option<(String, Option<i64>)> =
+        sqlx::query_as("SELECT identifier, parent_agent_id FROM agents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
+    let Some((ident, parent_id)) = row else {
         return Err(AppError::NotFound(format!("agent id={id} not found")));
     };
     if ident == MAIN_AGENT_IDENTIFIER {
@@ -447,6 +466,12 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         .execute(pool)
         .await
         .map_err(|e| AppError::Internal(format!("agent delete: {e}")))?;
+
+    // 自己 + 父（children 列表变了）
+    invalidate_content_cache(redis, id).await;
+    if let Some(pid) = parent_id {
+        invalidate_content_cache(redis, pid).await;
+    }
     Ok(())
 }
 
@@ -465,3 +490,295 @@ pub async fn permissions_of(pool: &MySqlPool, agent_id: i64) -> Result<HashSet<S
 /// 启动 init 与 service 之间的便利：把 Arc<LlmRegistry> 转给 service
 #[allow(dead_code)]
 pub fn _llm_smoke(_: Arc<LlmRegistry>) {}
+
+// =====================================================================
+// Runtime content — orchestrator 用的 agent 视图（system_prompt + tools +
+// permissions + children + hooks）。原 build_agent_content 已迁到这里。
+// 类型需要跨模块（orchestrator / runtime::skill_test / runtime::tool_test）共享，
+// 因此放在 services 层并 pub 出去。
+// =====================================================================
+
+use std::collections::HashMap;
+
+use serde_json::Value;
+
+use crate::models::agent_hook::AgentHook;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentContent {
+    pub agent_id: i64,
+    pub identifier: String,
+    pub system_prompt: String,
+    pub model_preset: Option<String>,
+    pub tools: Vec<ToolRef>,
+    pub permissions: Vec<String>,
+    pub children: Vec<ChildAgent>,
+    pub hooks: HashMap<String, Vec<AgentHook>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRef {
+    pub id: i64,
+    pub identifier: String,
+    pub name: String,
+    pub description: String,
+    pub kind: i8, // 1 function-wrap, 2 workflow-wrap
+    pub function_id: Option<i64>,
+    /// function 的 identifier（builtin 查找用，与 tool identifier 可能不同）
+    pub function_identifier: Option<String>,
+    pub workflow_id: Option<i64>,
+    pub input_schema: Value,
+    pub plugin_id: Option<i64>,
+    pub plugin_export: Option<String>,
+    pub is_builtin_function: bool,
+    /// 元工具（meta-tool）：kind=1 且 function_id=NULL（如 invoke_function / invoke_workflow）
+    pub is_meta_tool: bool,
+    pub required_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildAgent {
+    pub id: i64,
+    pub identifier: String,
+    pub description: Option<String>,
+}
+
+// ---------- AgentContent 缓存（Redis） ----------
+//
+// 减少 orchestrator 每次 hop 重新跑 5+ 条 SQL 的压力。key 形如
+// `agent:content:{id}`，TTL 默认 5 分钟（可用 AGENT_CACHE_TTL_SECS 覆盖）。
+// 任何修改 agent / agent_tools / agent_skills / agent_permissions 的写路径
+// 都要调 `invalidate_content_cache` 同步失效。
+
+fn agent_content_key(agent_id: i64) -> String { format!("agent:content:{agent_id}") }
+
+fn agent_content_ttl_secs() -> u64 {
+    std::env::var("AGENT_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300)
+}
+
+pub async fn invalidate_content_cache(redis: &redis::Client, agent_id: i64) {
+    let key = agent_content_key(agent_id);
+    match redis.get_multiplexed_async_connection().await {
+        Ok(mut conn) => {
+            let res: redis::RedisResult<i64> = redis::AsyncCommands::del(&mut conn, &key).await;
+            if let Err(e) = res {
+                tracing::warn!(error=%e, agent_id, "agent content cache invalidate failed");
+            }
+        }
+        Err(e) => tracing::warn!(error=%e, agent_id, "agent content cache invalidate (connect) failed"),
+    }
+}
+
+/// 加载 agent 运行时所需的全部内容：system_prompt（含 skill markdown）+ tools
+/// (agent-specific + always tools，按 id 去重) + permissions + children + hooks。
+///
+/// 主记录查询失败会返回 `AppError`，子查询（skills/tools/perms/children/hooks）
+/// 失败时按 orchestrator 历史行为降级为空集合，保证单步失败不阻塞会话。
+///
+/// 走 Redis 缓存：每次先查 `agent:content:{id}`，命中即返回；未命中查 DB 后
+/// 回写缓存（默认 TTL = `AGENT_CACHE_TTL_SECS`，默认 300s）。Redis 不可用时
+/// 仅 `warn!` 并降级走 DB，不影响业务正确性。
+pub async fn fetch_content(
+    pool: &MySqlPool,
+    redis: &redis::Client,
+    agent_id: i64,
+) -> Result<AgentContent, AppError> {
+    let cache_key = agent_content_key(agent_id);
+
+    // 1) 尝试命中缓存
+    if let Some(cached) = read_content_cache(redis, &cache_key).await {
+        return Ok(cached);
+    }
+
+    // 2) 缓存未命中或 Redis 不可用：走 DB（沿用原逻辑）
+    let row: Option<(String, String, Option<String>)> =
+        sqlx::query_as("SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
+    let (identifier, mut system_prompt, model_preset) = row
+        .ok_or_else(|| AppError::NotFound(format!("agent id={agent_id} not found")))?;
+
+    // Skill markdown 拼到 system prompt
+    let skills: Vec<(String,)> = sqlx::query_as(
+        r#"SELECT s.content FROM skills s
+           JOIN agent_skills ax ON ax.skill_id = s.id
+           WHERE ax.agent_id = ?"#,
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (md,) in &skills {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(md);
+    }
+
+    // Tools: agent-specific + always tools (deduplicated by tool id)
+    let tool_rows: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        i8,
+        Option<i64>,
+        Option<i64>,
+        Value,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<Value>,
+    )> = sqlx::query_as(
+        r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
+                      t.function_id, t.workflow_id, t.input_schema,
+                      f.plugin_id, f.plugin_export, f.identifier,
+                      COALESCE(t.required_capabilities, f.required_capabilities)
+               FROM tools t
+               JOIN agent_tools at ON at.tool_id = t.id
+               LEFT JOIN functions f ON f.id = t.function_id
+               WHERE at.agent_id = ?
+               UNION
+               SELECT t.id, t.identifier, t.name, t.description, t.kind,
+                      t.function_id, t.workflow_id, t.input_schema,
+                      f.plugin_id, f.plugin_export, f.identifier,
+                      COALESCE(t.required_capabilities, f.required_capabilities)
+               FROM tools t
+               LEFT JOIN functions f ON f.id = t.function_id
+               WHERE t.is_always = 1
+                 AND t.id NOT IN (
+                     SELECT at2.tool_id FROM agent_tools at2 WHERE at2.agent_id = ?
+                 )"#,
+    )
+    .bind(agent_id)
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut tools: Vec<ToolRef> = Vec::new();
+    for (
+        id,
+        identifier,
+        name,
+        desc,
+        kind,
+        function_id,
+        workflow_id,
+        input_schema,
+        plugin_id,
+        plugin_export,
+        function_identifier,
+        caps_json,
+    ) in tool_rows
+    {
+        let is_builtin_function = kind == 1 && plugin_id.is_none();
+        let is_meta_tool = kind == 1 && function_id.is_none();
+        let required_capabilities: Vec<String> = caps_json
+            .and_then(|v| v.as_array().cloned())
+            .map(|arr| {
+                arr.into_iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        tools.push(ToolRef {
+            id,
+            identifier,
+            name,
+            description: desc,
+            kind,
+            function_id,
+            function_identifier,
+            workflow_id,
+            input_schema,
+            plugin_id,
+            plugin_export,
+            is_builtin_function,
+            is_meta_tool,
+            required_capabilities,
+        });
+    }
+
+    // Permissions
+    let perms: Vec<(String,)> =
+        sqlx::query_as("SELECT capability FROM agent_permissions WHERE agent_id = ?")
+            .bind(agent_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+    // Children
+    let children_rows: Vec<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, identifier, description FROM agents WHERE parent_agent_id = ?")
+            .bind(agent_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    let children: Vec<ChildAgent> = children_rows
+        .into_iter()
+        .map(|(id, ident, desc)| ChildAgent {
+            id,
+            identifier: ident,
+            description: desc,
+        })
+        .collect();
+
+    let hooks = crate::services::agent_hook::load_hooks_for_agent(pool, agent_id)
+        .await
+        .unwrap_or_default();
+
+    let content = AgentContent {
+        agent_id,
+        identifier,
+        system_prompt,
+        model_preset,
+        tools,
+        permissions: perms.into_iter().map(|(c,)| c).collect(),
+        children,
+        hooks,
+    };
+
+    // 3) 写回缓存（失败仅 warn，不影响本次返回）
+    write_content_cache(redis, &cache_key, &content, agent_id).await;
+
+    Ok(content)
+}
+
+async fn read_content_cache(redis: &redis::Client, key: &str) -> Option<AgentContent> {
+    let mut conn = match redis.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error=%e, key, "agent content cache connect failed");
+            return None;
+        }
+    };
+    let cached: Option<String> = match redis::AsyncCommands::get(&mut conn, key).await {
+        Ok(v) => v,
+        Err(e) => { tracing::warn!(error=%e, key, "agent content cache get failed"); return None; }
+    };
+    let Some(json) = cached else { return None; };
+    match serde_json::from_str::<AgentContent>(&json) {
+        Ok(c) => Some(c),
+        Err(e) => { tracing::warn!(error=%e, key, "agent content cache deserialize failed"); None }
+    }
+}
+
+async fn write_content_cache(redis: &redis::Client, key: &str, content: &AgentContent, agent_id: i64) {
+    let json = match serde_json::to_string(content) {
+        Ok(j) => j,
+        Err(e) => { tracing::warn!(error=%e, agent_id, "agent content cache serialize failed"); return; }
+    };
+    let mut conn = match redis.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => { tracing::warn!(error=%e, agent_id, "agent content cache connect (write) failed"); return; }
+    };
+    let ttl = agent_content_ttl_secs();
+    let res: redis::RedisResult<()> = redis::AsyncCommands::set_ex(&mut conn, key, json, ttl).await;
+    if let Err(e) = res {
+        tracing::warn!(error=%e, agent_id, "agent content cache setex failed");
+    }
+}

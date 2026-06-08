@@ -9,9 +9,8 @@ use sqlx::MySqlPool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::orchestrator::{
-    AgentContent, OrchestratorDeps, ToolRef, build_tools_schema_simple, handle_workspace_tool,
-};
+use super::orchestrator::{OrchestratorDeps, build_tools_schema_simple, handle_workspace_tool};
+use crate::services::agent::{AgentContent, ToolRef};
 use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{AgentContext, ContextConfig, UserInput};
 

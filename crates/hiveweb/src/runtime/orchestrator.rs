@@ -19,6 +19,7 @@ use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
 use chrono::Utc;
 use providers::{ChatRequest, RetryMode, ToolCallRequest};
+use redis::Client as RedisClient;
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::convert::Infallible;
@@ -68,6 +69,7 @@ fn flatten_extension(e: &ExtensionContent) -> Value {
 /// 单次会话调用入口（spawned task）
 pub struct OrchestratorDeps {
     pub pool: MySqlPool,
+    pub redis: RedisClient,
     pub s3: S3Client,
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
@@ -191,7 +193,7 @@ where
 
     for hop in 0..max_hops {
         // 1. 装配当前 agent 资源
-        let agent_content = match build_agent_content(&deps.pool, current_agent_id).await {
+        let agent_content = match crate::services::agent::fetch_content(&deps.pool, &deps.redis, current_agent_id).await {
             Ok(c) => c,
             Err(e) => {
                 emit_error(&tx, 5000, format!("agent context: {e}"));
@@ -784,199 +786,10 @@ fn emit_error(tx: &UnboundedSender<Result<Event, Infallible>>, code: u16, messag
 }
 
 // ============================ Agent context ============================
-
-#[derive(Debug, Clone)]
-pub(crate) struct AgentContent {
-    pub(crate) agent_id: i64,
-    pub(crate) identifier: String,
-    pub(crate) system_prompt: String,
-    pub(crate) model_preset: Option<String>,
-    pub(crate) tools: Vec<ToolRef>,
-    pub(crate) permissions: Vec<String>,
-    pub(crate) children: Vec<ChildAgent>,
-    pub(crate) hooks: std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ToolRef {
-    pub(crate) id: i64,
-    pub(crate) identifier: String,
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) kind: i8, // 1 function-wrap, 2 workflow-wrap
-    pub(crate) function_id: Option<i64>,
-    /// function 的 identifier（builtin 查找用，与 tool identifier 可能不同）
-    pub(crate) function_identifier: Option<String>,
-    pub(crate) workflow_id: Option<i64>,
-    pub(crate) input_schema: Value,
-    /// custom function 对应的 plugin_id + plugin_export（kind=1 时填充）
-    pub(crate) plugin_id: Option<i64>,
-    pub(crate) plugin_export: Option<String>,
-    /// builtin function（plugin_id IS NULL）标记
-    pub(crate) is_builtin_function: bool,
-    /// 元工具：kind=1 且 function_id=NULL（如 invoke_function / invoke_workflow）
-    pub(crate) is_meta_tool: bool,
-    /// 该 tool/function 声明所需的 capabilities
-    pub(crate) required_capabilities: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ChildAgent {
-    pub(crate) id: i64,
-    pub(crate) identifier: String,
-    pub(crate) description: Option<String>,
-}
-
-async fn build_agent_content(pool: &MySqlPool, agent_id: i64) -> Result<AgentContent, String> {
-    let row: Option<(String, String, Option<String>)> =
-        sqlx::query_as("SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?")
-            .bind(agent_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| format!("agent fetch: {e}"))?;
-    let (identifier, mut system_prompt, model_preset) =
-        row.ok_or_else(|| format!("agent id={agent_id} not found"))?;
-
-    // Skill markdown 拼到 system prompt
-    let skills: Vec<(String,)> = sqlx::query_as(
-        r#"SELECT s.content FROM skills s
-           JOIN agent_skills ax ON ax.skill_id = s.id
-           WHERE ax.agent_id = ?"#,
-    )
-    .bind(agent_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-    for (md,) in &skills {
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(md);
-    }
-
-    // Tools: agent-specific + always tools (deduplicated by tool id)
-    let tool_rows: Vec<(
-        i64,
-        String,
-        String,
-        String,
-        i8,
-        Option<i64>,
-        Option<i64>,
-        Value,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        Option<Value>,
-    )> = sqlx::query_as(
-        r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
-                      t.function_id, t.workflow_id, t.input_schema,
-                      f.plugin_id, f.plugin_export, f.identifier,
-                      COALESCE(t.required_capabilities, f.required_capabilities)
-               FROM tools t
-               JOIN agent_tools at ON at.tool_id = t.id
-               LEFT JOIN functions f ON f.id = t.function_id
-               WHERE at.agent_id = ?
-               UNION
-               SELECT t.id, t.identifier, t.name, t.description, t.kind,
-                      t.function_id, t.workflow_id, t.input_schema,
-                      f.plugin_id, f.plugin_export, f.identifier,
-                      COALESCE(t.required_capabilities, f.required_capabilities)
-               FROM tools t
-               LEFT JOIN functions f ON f.id = t.function_id
-               WHERE t.is_always = 1
-                 AND t.id NOT IN (
-                     SELECT at2.tool_id FROM agent_tools at2 WHERE at2.agent_id = ?
-                 )"#,
-    )
-    .bind(agent_id)
-    .bind(agent_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    let mut tools: Vec<ToolRef> = Vec::new();
-    for (
-        id,
-        identifier,
-        name,
-        desc,
-        kind,
-        function_id,
-        workflow_id,
-        input_schema,
-        plugin_id,
-        plugin_export,
-        function_identifier,
-        caps_json,
-    ) in tool_rows
-    {
-        let is_builtin_function = kind == 1 && plugin_id.is_none();
-        // 元工具（meta-tool）：kind=1 且 function_id=NULL（如 invoke_function / invoke_workflow）
-        let is_meta_tool = kind == 1 && function_id.is_none();
-        let required_capabilities: Vec<String> = caps_json
-            .and_then(|v| v.as_array().cloned())
-            .map(|arr| {
-                arr.into_iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        tools.push(ToolRef {
-            id,
-            identifier,
-            name,
-            description: desc,
-            kind,
-            function_id,
-            function_identifier,
-            workflow_id,
-            input_schema,
-            plugin_id,
-            plugin_export,
-            is_builtin_function,
-            is_meta_tool,
-            required_capabilities,
-        });
-    }
-
-    // Permissions
-    let perms: Vec<(String,)> =
-        sqlx::query_as("SELECT capability FROM agent_permissions WHERE agent_id = ?")
-            .bind(agent_id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-
-    // Children
-    let children_rows: Vec<(i64, String, Option<String>)> =
-        sqlx::query_as("SELECT id, identifier, description FROM agents WHERE parent_agent_id = ?")
-            .bind(agent_id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-    let children: Vec<ChildAgent> = children_rows
-        .into_iter()
-        .map(|(id, ident, desc)| ChildAgent {
-            id,
-            identifier: ident,
-            description: desc,
-        })
-        .collect();
-
-    let hooks = crate::services::agent_hook::load_hooks_for_agent(pool, agent_id)
-        .await
-        .unwrap_or_default();
-
-    Ok(AgentContent {
-        agent_id,
-        identifier,
-        system_prompt,
-        model_preset,
-        tools,
-        permissions: perms.into_iter().map(|(c,)| c).collect(),
-        children,
-        hooks,
-    })
-}
+// 类型定义和 DB 读取已迁出到 `services::agent`（fetch_content / AgentContent /
+// ToolRef），这里仅 re-export 保留 `pub(crate)` 可见性，让 runtime 内其它模块
+// 继续通过 `super::orchestrator::AgentContent` 等路径访问。
+pub(crate) use crate::services::agent::{AgentContent, ToolRef};
 
 /// 组装 LLM-side tools schema（OpenAI function-calling format）
 pub(crate) fn build_tools_schema(ctx: &AgentContent) -> Vec<Value> {
@@ -1477,7 +1290,7 @@ pub(crate) async fn handle_workspace_tool(
 async fn filter_output(
     content: &str,
     filter: &crate::services::sensitive_filter::SensitiveFilter,
-    pool: &MySqlPool,
+    _pool: &MySqlPool,
     session_id: i64,
 ) -> String {
     if let Some(hit) = filter.check(content) {
@@ -1486,15 +1299,7 @@ async fn filter_output(
             triggered_word = %hit.word(),
             "Agent output replaced by sensitive filter"
         );
-        let _ = crate::services::sensitive_filter::log_filter_event(
-            pool,
-            "output_replace",
-            None,
-            Some(session_id),
-            hit.word(),
-        )
-        .await;
-        return "抱歉，系统无法处理您的请求，请稍后重试。".to_string();
+        return "内容安全警告：输出的文本数据可能包含不适当的内容！".to_string();
     }
     content.to_string()
 }

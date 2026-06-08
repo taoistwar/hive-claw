@@ -38,6 +38,8 @@ use crate::api::AppState;
 use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
 use crate::services::chat_user as svc;
+use crate::services::membership;
+use crate::services::user_auth;
 use crate::utils::error::AppError;
 
 /// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
@@ -71,17 +73,6 @@ pub struct AssistantRequest {
 }
 
 // 响应：直接返回 chat_messages_user 中保存的 ChatMessageUser 记录（与 /api/messages 单条形态一致）
-
-// ── 外部数据库模型 ──
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct CcUserMembership {
-    #[allow(dead_code)]
-    id: i64,
-    #[allow(dead_code)]
-    membership_level: Option<String>,
-    effective_end_time: Option<chrono::NaiveDateTime>,
-}
 
 // ── Handler ──
 
@@ -146,16 +137,8 @@ async fn assistant_chat(
             triggered_word = %hit.word(),
             "Assistant input blocked by sensitive filter"
         );
-        let _ = crate::services::sensitive_filter::log_filter_event(
-            &state.pool,
-            "input_block",
-            Some(req.user_id),
-            None,
-            hit.word(),
-        )
-        .await;
         return crate::utils::error::ApiResponse::success(serde_json::json!({
-            "reply": "内容安全警告：输出的文本数据可能包含不适当的内容！",
+            "reply": "内容安全警告：输入的文本数据可能包含不适当的内容！",
             "filtered": true,
         }))
         .into_response();
@@ -171,7 +154,7 @@ async fn assistant_chat(
     };
 
     // 5. 校验 user_id 是否存在于外部 cloud_user 表
-    match user_exists_in_cloud(ext_pool, req.user_id).await {
+    match membership::user_exists_in_cloud(ext_pool, req.user_id).await {
         Ok(true) => {}
         Ok(false) => {
             return AppError::BadRequest("User not found".into())
@@ -179,7 +162,7 @@ async fn assistant_chat(
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "user_exists_in_cloud 查询失败");
+            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud 查询失败");
             return AppError::Internal("用户数据查询失败，请稍后重试".into())
                 .into_response::<()>()
                 .into_response();
@@ -187,10 +170,10 @@ async fn assistant_chat(
     }
 
     // 6. 获取会员等级 & 判断是否 VIP
-    let is_vip = check_vip_membership(ext_pool, req.user_id)
+    let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::error!(user_id = req.user_id, error = %e, "check_vip_membership 查询失败，降级为非VIP");
+            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
             false
         });
 
@@ -219,8 +202,19 @@ async fn assistant_chat(
         is_admin: false,
     };
 
-    // 9. 内部 users 表同步（不存在则创建）
-    if let Err(e) = ensure_internal_user(&state.pool, req.user_id).await {
+    // 8. 内部 users 表同步（不存在则创建，同时同步 uid/nickname）
+    let cloud_info = membership::get_cloud_user_info(ext_pool, req.user_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info failed");
+            None
+        });
+    let (uid, nickname) = cloud_info
+        .as_ref()
+        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
+        .unwrap_or((None, None));
+
+    if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
         return AppError::Internal(format!("user sync: {e}"))
             .into_response::<()>()
@@ -237,7 +231,7 @@ async fn assistant_chat(
             }
         }
     } else {
-        match get_or_create_session(&state.pool, req.user_id).await {
+        match svc::get_or_create_session_user(&state.pool, req.user_id).await {
             Ok(s) => s,
             Err(e) => {
                 let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -258,26 +252,26 @@ async fn assistant_chat(
     // 12. Auto-generate title from first message (first 30 chars)
     if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
         let title = req.message.chars().take(30).collect::<String>();
-        let _ = sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
-            .bind(&title)
-            .bind(session_id)
-            .execute(&state.pool)
-            .await;
+        let _ = svc::update_session_title(&state.pool, session_id, &title).await;
     }
 
     // 13. Build OrchestratorDeps + run session (collect full response, return JSON)
     let pool = state.pool.clone();
     let user_content = req.message.clone();
 
-    let history: Vec<crate::models::ChatMessageUser> =
+    let history: Vec<crate::models::ChatMessageUser> = if req.new_session {
+        Vec::new()
+    } else {
         svc::list_messages_user(&state.pool, session_id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+    };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: pool.clone(),
+        redis: state.redis.clone(),
         s3: state.s3.clone(),
         llm: Arc::clone(&state.runtime_state.llm),
         registry: Arc::clone(&state.runtime_state.capabilities),
@@ -425,32 +419,6 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
     (event_type, data)
 }
 
-// ── 签名校验 ──
-
-// ── 外部 DB 查询 ──
-
-async fn user_exists_in_cloud(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM cloud_user WHERE ID = ?")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .map(|count| count > 0)
-}
-
-async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
-    sqlx::query_as::<_, CcUserMembership>(
-        "SELECT id, membership_level, effective_end_time FROM cc_user_membership WHERE id = ? LIMIT 1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .map(|row| {
-        row.map_or(false, |m| {
-            m.effective_end_time.map_or(true, |end| end >= chrono::Utc::now().naive_utc())
-        })
-    })
-}
-
 // ── 日访问次数限流（Redis） ──
 
 async fn check_and_incr_daily_limit(
@@ -579,56 +547,6 @@ pub async fn sync_config_to_redis(redis: &redis::Client, pool: &MySqlPool, key: 
     };
     let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
     tracing::info!(key, value, "config cache synced to Redis");
-}
-
-// ── 内部用户同步 ──
-
-async fn ensure_internal_user(pool: &MySqlPool, user_id: i64) -> Result<(), anyhow::Error> {
-    let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?;
-
-    if exists.is_some() {
-        return Ok(());
-    }
-
-    let phone = format!("assistant_{}", user_id);
-    let password_hash = bcrypt::hash("test", bcrypt::DEFAULT_COST)?;
-
-    sqlx::query("INSERT INTO users (id, phone, password_hash, status) VALUES (?, ?, ?, 1)")
-        .bind(user_id)
-        .bind(&phone)
-        .bind(&password_hash)
-        .execute(pool)
-        .await?;
-
-    tracing::info!(user_id, "auto-created internal user for assistant");
-    Ok(())
-}
-
-// ── Session 获取/创建（与 post_message_sse 相同的 chat_sessions_user 逻辑） ──
-
-/// 获取用户最新的 session，如果不存在则创建一个
-async fn get_or_create_session(
-    pool: &MySqlPool,
-    user_id: i64,
-) -> Result<crate::models::ChatSessionUser, AppError> {
-    // 查找最新 session（按 updated_at DESC）
-    let existing: Option<crate::models::ChatSessionUser> = sqlx::query_as(
-        "SELECT * FROM chat_sessions_user WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("session lookup: {e}")))?;
-
-    if let Some(session) = existing {
-        return Ok(session);
-    }
-
-    // 创建新 session
-    svc::create_user_session(pool, user_id, None).await
 }
 
 // ── 测试 ──

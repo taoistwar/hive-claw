@@ -185,6 +185,7 @@ async fn test_tool(
     });
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: state.pool.clone(),
+        redis: state.redis.clone(),
         s3: state.s3.clone(),
         llm: state.runtime_state.llm.clone(),
         registry: state.runtime_state.capabilities.clone(),

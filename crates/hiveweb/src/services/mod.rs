@@ -6,6 +6,7 @@ pub mod auth;
 pub mod capability;
 pub mod dashboard;
 pub mod login_record;
+pub mod membership;
 
 // 004 Agent Runtime
 pub mod category;

@@ -13,6 +13,7 @@ mod game_list;
 mod json_parse;
 mod json_stringify;
 mod query_balance;
+mod support_card;
 mod text_regex_match;
 mod tools;
 
@@ -30,6 +31,7 @@ use game_list::game_list;
 use json_parse::json_parse;
 use json_stringify::json_stringify;
 use query_balance::query_balance;
+use support_card::support_card;
 use text_regex_match::text_regex_match;
 
 // Re-export schemas for ensure_registered
@@ -40,6 +42,7 @@ use game_list::{GAME_LIST_INPUT_SCHEMA, GAME_LIST_OUTPUT_SCHEMA};
 use json_parse::{JSON_PARSE_INPUT_SCHEMA, JSON_PARSE_OUTPUT_SCHEMA};
 use json_stringify::{JSON_STRINGIFY_INPUT_SCHEMA, JSON_STRINGIFY_OUTPUT_SCHEMA};
 use query_balance::{QUERY_BALANCE_INPUT_SCHEMA, QUERY_BALANCE_OUTPUT_SCHEMA};
+use support_card::{SUPPORT_CARD_INPUT_SCHEMA, SUPPORT_CARD_OUTPUT_SCHEMA};
 use text_regex_match::{TEXT_REGEX_MATCH_INPUT_SCHEMA, TEXT_REGEX_MATCH_OUTPUT_SCHEMA};
 
 #[derive(Debug, thiserror::Error)]
@@ -132,7 +135,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
     BuiltinDef {
         identifier: "game.info",
         name: "Game Info",
-        description: "根据游戏 ID 从外部数据库 cc_logic_game 查询游戏详细信息，并补充内部别名。",
+        description: "根据游戏 ID查询游戏信息，生成游戏卡片。",
         input_schema: GAME_INFO_INPUT_SCHEMA,
         output_schema: GAME_INFO_OUTPUT_SCHEMA,
         required_capabilities: &[],
@@ -141,11 +144,20 @@ pub const BUILTINS: &[BuiltinDef] = &[
     BuiltinDef {
         identifier: "query_balance",
         name: "Query Balance",
-        description: "查询用户余额与会员等级：从外部数据库查询 cc_user_asset_coin 资产总和及 cc_user_membership 会员信息。无有效会员时自动推送 firstPay 卡片。",
+        description: "查询用户余额与会员等级等信息，生成会员卡片。",
         input_schema: QUERY_BALANCE_INPUT_SCHEMA,
         output_schema: QUERY_BALANCE_OUTPUT_SCHEMA,
         required_capabilities: &[],
         handler: query_balance,
+    },
+    BuiltinDef {
+        identifier: "support.card",
+        name: "Support Card",
+        description: "为客服内容生成支持卡片。",
+        input_schema: SUPPORT_CARD_INPUT_SCHEMA,
+        output_schema: SUPPORT_CARD_OUTPUT_SCHEMA,
+        required_capabilities: &[],
+        handler: support_card,
     },
 ];
 

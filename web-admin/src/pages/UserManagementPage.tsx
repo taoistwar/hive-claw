@@ -1,10 +1,29 @@
 import { useState, useEffect } from 'react';
-import { Card, Table, Button, Input, Modal, Form, message, Typography, Tag, Space, Popconfirm } from 'antd';
-import { PlusOutlined, SearchOutlined, DeleteOutlined, StopOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Card, Table, Input, InputNumber, Button, DatePicker, Space, Typography } from 'antd';
+import { SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { getUsers, createUser, deleteUser, toggleUserStatus, type UserItem, type CreateUserRequest } from '../services/user';
+import type { Dayjs } from 'dayjs';
+import { getUsers, type UserItem, type ListUsersParams } from '../services/user';
 
 const { Title } = Typography;
+const { RangePicker } = DatePicker;
+
+type DateRange = [Dayjs | null, Dayjs | null] | null;
+
+const formatDateTime = (date: string): string => {
+  const d = new Date(date);
+  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString('zh-CN');
+};
+
+// 选取的 dayjs 范围 -> ISO 字符串；空值返回 undefined，axios 不会拼到 URL 上
+const toRangeIso = (range: DateRange): { from?: string; to?: string } => {
+  if (!range) return {};
+  const [start, end] = range;
+  return {
+    from: start ? start.toISOString() : undefined,
+    to: end ? end.toISOString() : undefined,
+  };
+};
 
 const UserManagementPage: React.FC = () => {
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -12,18 +31,31 @@ const UserManagementPage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [idInput, setIdInput] = useState<number | null>(null);
   const [search, setSearch] = useState('');
-  const [addModalVisible, setAddModalVisible] = useState(false);
-  const [form] = Form.useForm();
+  const [createdAtRange, setCreatedAtRange] = useState<DateRange>(null);
+  const [updatedAtRange, setUpdatedAtRange] = useState<DateRange>(null);
 
   const fetchUsers = async () => {
+    const created = toRangeIso(createdAtRange);
+    const updated = toRangeIso(updatedAtRange);
+    const params: ListUsersParams = {
+      page,
+      page_size: pageSize,
+      id: idInput ?? undefined,
+      search: search.trim() || undefined,
+      created_at_from: created.from,
+      created_at_to: created.to,
+      updated_at_from: updated.from,
+      updated_at_to: updated.to,
+    };
     setLoading(true);
     try {
-      const response = await getUsers({ page, page_size: pageSize, search });
+      const response = await getUsers(params);
       setUsers(response.users);
       setTotal(response.total);
     } catch (error) {
-      message.error('获取用户列表失败');
+      console.error('获取用户列表失败', error);
     } finally {
       setLoading(false);
     }
@@ -31,55 +63,12 @@ const UserManagementPage: React.FC = () => {
 
   useEffect(() => {
     fetchUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize]);
 
   const handleSearch = () => {
     setPage(1);
     fetchUsers();
-  };
-
-  const handleAdd = async (values: CreateUserRequest) => {
-    try {
-      await createUser(values);
-      message.success('用户添加成功');
-      setAddModalVisible(false);
-      form.resetFields();
-      fetchUsers();
-    } catch (error: any) {
-      if (error.response?.data?.message) {
-        message.error(error.response.data.message);
-      } else {
-        message.error('添加用户失败');
-      }
-    }
-  };
-
-  const handleDelete = async (id: number) => {
-    try {
-      await deleteUser(id);
-      message.success('用户删除成功');
-      fetchUsers();
-    } catch (error: any) {
-      if (error.response?.data?.message) {
-        message.error(error.response.data.message);
-      } else {
-        message.error('删除用户失败');
-      }
-    }
-  };
-
-  const handleToggleStatus = async (id: number, currentStatus: number) => {
-    try {
-      await toggleUserStatus(id, { status: currentStatus === 1 ? 0 : 1 });
-      message.success('状态更新成功');
-      fetchUsers();
-    } catch (error: any) {
-      if (error.response?.data?.message) {
-        message.error(error.response.data.message);
-      } else {
-        message.error('更新状态失败');
-      }
-    }
   };
 
   const columns: ColumnsType<UserItem> = [
@@ -90,68 +79,36 @@ const UserManagementPage: React.FC = () => {
       width: 80,
     },
     {
-      title: '手机号',
-      dataIndex: 'phone',
-      key: 'phone',
+      title: 'UID',
+      dataIndex: 'uid',
+      key: 'uid',
+      width: 200,
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      render: (status: number) => (
-        <Tag color={status === 1 ? 'green' : 'red'}>
-          {status === 1 ? '正常' : '禁用'}
-        </Tag>
-      ),
+      title: '昵称',
+      dataIndex: 'nickname',
+      key: 'nickname',
     },
     {
-      title: '注册时间',
+      title: '首次使用',
       dataIndex: 'created_at',
       key: 'created_at',
       width: 200,
-      render: (date: string) => new Date(date).toLocaleString('zh-CN'),
+      render: formatDateTime,
     },
     {
-      title: '操作',
-      key: 'action',
+      title: '最近使用',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
       width: 200,
-      render: (_, record) => (
-        <Space>
-          <Button
-            type="link"
-            size="small"
-            icon={record.status === 1 ? <StopOutlined /> : <CheckCircleOutlined />}
-            onClick={() => handleToggleStatus(record.id, record.status)}
-          >
-            {record.status === 1 ? '禁用' : '启用'}
-          </Button>
-          <Popconfirm
-            title="确定要删除该用户吗？"
-            onConfirm={() => handleDelete(record.id)}
-            okText="确定"
-            cancelText="取消"
-          >
-            <Button type="link" danger size="small" icon={<DeleteOutlined />}>
-              删除
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
+      render: formatDateTime,
     },
   ];
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ marginBottom: 16 }}>
         <Title level={4} style={{ margin: 0 }}>用户管理</Title>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => setAddModalVisible(true)}
-        >
-          添加用户
-        </Button>
       </div>
 
       <Card
@@ -163,24 +120,45 @@ const UserManagementPage: React.FC = () => {
         }}
         styles={{ body: { padding: '16px' } }}
       >
-        <div style={{ marginBottom: 16 }}>
+        <Space size={[8, 12]} wrap style={{ marginBottom: 16 }}>
+          <InputNumber
+            placeholder="ID (精确)"
+            value={idInput}
+            onChange={(v) => setIdInput(typeof v === 'number' ? v : null)}
+            onPressEnter={handleSearch}
+            style={{ width: 160 }}
+            min={1}
+            allowClear
+          />
           <Input
-            placeholder="搜索手机号"
+            placeholder="搜索 UID / 昵称"
             prefix={<SearchOutlined />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onPressEnter={handleSearch}
             style={{ width: 240 }}
+            allowClear
+          />
+          <RangePicker
+            showTime
+            placeholder={['首次使用 开始', '首次使用 结束']}
+            value={createdAtRange}
+            onChange={setCreatedAtRange}
+          />
+          <RangePicker
+            showTime
+            placeholder={['最近使用 开始', '最近使用 结束']}
+            value={updatedAtRange}
+            onChange={setUpdatedAtRange}
           />
           <Button
             type="primary"
             icon={<SearchOutlined />}
             onClick={handleSearch}
-            style={{ marginLeft: 8 }}
           >
             搜索
           </Button>
-        </div>
+        </Space>
 
         <Table
           columns={columns}
@@ -200,59 +178,6 @@ const UserManagementPage: React.FC = () => {
           }}
         />
       </Card>
-
-      <Modal
-        title="添加用户"
-        open={addModalVisible}
-        onCancel={() => {
-          setAddModalVisible(false);
-          form.resetFields();
-        }}
-        footer={null}
-      >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={handleAdd}
-        >
-          <Form.Item
-            name="phone"
-            label="手机号"
-            rules={[
-              { required: true, message: '请输入手机号' },
-              { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的11位手机号' },
-            ]}
-          >
-            <Input placeholder="请输入手机号" />
-          </Form.Item>
-
-          <Form.Item
-            name="password"
-            label="密码"
-            rules={[
-              { required: true, message: '请输入密码' },
-              { min: 6, message: '密码至少 6 个字符' },
-              { max: 20, message: '密码最多 20 个字符' },
-            ]}
-          >
-            <Input.Password placeholder="请输入密码" />
-          </Form.Item>
-
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space>
-              <Button onClick={() => {
-                setAddModalVisible(false);
-                form.resetFields();
-              }}>
-                取消
-              </Button>
-              <Button type="primary" htmlType="submit">
-                添加
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 };

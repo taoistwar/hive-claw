@@ -125,6 +125,14 @@ const MIGRATIONS: &[Migration] = &[
         version: "V026__seed_sensitive_words",
         sql: include_str!("../../migrations/V026__seed_sensitive_words.sql"),
     },
+    Migration {
+        version: "V027__add_uid_nickname_to_users",
+        sql: include_str!("../../migrations/V027__add_uid_nickname_to_users.sql"),
+    },
+    Migration {
+        version: "V028__drop_phone_password_status_from_users",
+        sql: include_str!("../../migrations/V028__drop_phone_password_status_from_users.sql"),
+    },
 ];
 
 #[tokio::main]

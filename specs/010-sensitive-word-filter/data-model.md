@@ -38,21 +38,6 @@
 
 **Lifecycle**: 启动时从 DB 加载所有 `enabled=1` 的记录并编译。缓存刷新时整体替换。不需要部分更新。
 
-### FilterLog（过滤日志）
-
-过滤事件的审计记录。
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | BIGINT | PK, AUTO_INCREMENT |
-| `event_type` | VARCHAR(16) | `input_block`（输入拦截）或 `output_replace`（输出替换） |
-| `user_id` | BIGINT | 触发用户 ID（输入拦截时有值） |
-| `session_id` | BIGINT | 关联会话 ID（输出替换时有值） |
-| `triggered_word` | VARCHAR(512) | 命中的敏感词原始文本 |
-| `created_at` | DATETIME | 事件时间 |
-
-**Retention**: 暂不设置自动清理策略，后续按需加入。日志写入为 fire-and-forget（不影响主流程）。
-
 ## Relationships
 
 ```
@@ -66,9 +51,7 @@ SensitiveWord (DB) ───加载───> SensitivePattern (Memory Cache)
                     input check              output check
                           │                       │
                           ▼                       ▼
-                     FilterLog               FilterLog
-                   (event_type=            (event_type=
-                    input_block)           output_replace)
+                     tracing::info!          tracing::info!
 ```
 
 ## DB Migration

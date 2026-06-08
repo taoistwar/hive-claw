@@ -15,8 +15,7 @@ INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES
 ('偷渡', 'exact'), ('走私', 'exact'), ('假币', 'exact'), ('假钞', 'exact'),
 ('迷药', 'exact'), ('迷魂药', 'exact'), ('春药', 'exact'),
 ('porn', 'exact'), ('bomb', 'exact'), ('gun', 'exact'),
-('heroin', 'exact'), ('cocaine', 'exact'), ('cannabis', 'exact'),
-('gambling', 'exact'), ('casino', 'exact'), ('prostitute', 'exact'),
+('heroin', 'exact'), ('cocaine', 'exact'), ('cannabis', 'exact')
 ;
 
 -- 正则匹配：手机号、身份证号、邮箱、URL、微信号、脏话变体

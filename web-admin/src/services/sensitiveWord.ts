@@ -1,7 +1,7 @@
 //! Admin API client for sensitive word CRUD.
 //! See `specs/010-sensitive-word-filter/contracts/api.md`.
 
-import apiClient from './client';
+import apiClient from './api';
 
 export interface SensitiveWord {
     id: number;

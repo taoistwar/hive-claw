@@ -1,7 +1,7 @@
 -- 1. main Agent（不可删除，service 层强制）
 INSERT IGNORE INTO agents (id, identifier, name, description, system_prompt, parent_agent_id, depth)
 VALUES (1, 'main', '入口 Agent', '系统的入口 Agent；不可删除',
-        'You are the main entry agent. Decide whether to answer directly or route to a sub-agent.',
+        'You are the main entry agent. Decide whether to answer directly or route to a sub-agent.禁止输出任何违法、低俗、淫秽、政治敏感或其他有悖社会价值观的内容**。如果用户输入涉及此类内容，返回"**内容安全警告：输出的文本数据可能包含不适当的内容！**。',
         NULL, 0);
 
 -- 2. capabilities 元数据

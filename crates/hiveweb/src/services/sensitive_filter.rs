@@ -196,40 +196,6 @@ impl Default for SensitiveFilter {
     }
 }
 
-// ── Logging helper ──
-
-/// Write a filter event to the `sensitive_filter_logs` table.
-/// Fire-and-forget: errors are logged but do not propagate.
-pub async fn log_filter_event(
-    pool: &MySqlPool,
-    event_type: &str,
-    user_id: Option<i64>,
-    session_id: Option<i64>,
-    triggered_word: &str,
-) {
-    let result = sqlx::query(
-        "INSERT INTO sensitive_filter_logs (event_type, user_id, session_id, triggered_word) \
-         VALUES (?, ?, ?, ?)",
-    )
-    .bind(event_type)
-    .bind(user_id)
-    .bind(session_id)
-    .bind(triggered_word)
-    .execute(pool)
-    .await;
-
-    if let Err(e) = result {
-        tracing::warn!(
-            event_type,
-            user_id,
-            session_id,
-            triggered_word,
-            error = %e,
-            "Failed to write filter log"
-        );
-    }
-}
-
 // ── Admin CRUD (Phase 5 / US3) ──
 
 use crate::models::sensitive_word::{

@@ -93,11 +93,6 @@ const AppLayout: React.FC = () => {
                   label: 'Workflows',
                 },
                 {
-                {
-                  key: '/sensitive-words',
-                  icon: <SafetyCertificateOutlined />,
-                  label: '敏感词管理',
-                },
                   key: '/functions',
                   icon: <FunctionOutlined />,
                   label: 'Functions',
@@ -153,6 +148,11 @@ const AppLayout: React.FC = () => {
                   key: '/global-configs',
                   icon: <SettingOutlined />,
                   label: '全局配置',
+                },
+                {
+                  key: '/sensitive-words',
+                  icon: <SafetyCertificateOutlined />,
+                  label: '敏感词管理',
                 },
               ],
             },

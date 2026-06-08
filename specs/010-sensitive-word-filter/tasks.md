@@ -53,7 +53,7 @@
 - [x] T010 Implement `SensitiveFilter::load_from_db()` — load all enabled words from `sensitive_words` table and compile patterns in `crates/hiveweb/src/services/sensitive_filter.rs`
 - [x] T011 Implement `SensitiveFilter::check(text: &str) -> Option<&SensitivePattern>` — Aho-Corasick for exact + cached regex iteration in `crates/hiveweb/src/services/sensitive_filter.rs`
 - [x] T012 Implement `SensitiveFilter::refresh_cache()` — reload from DB and replace in-memory cache in `crates/hiveweb/src/services/sensitive_filter.rs`
-- [x] T013 Implement `log_filter_event()` — write to `sensitive_filter_logs` table (fire-and-forget) in `crates/hiveweb/src/services/sensitive_filter.rs`
+- [x] T013 Add `tracing::info!` for filter events in `sensitive_filter.rs` in `crates/hiveweb/src/services/sensitive_filter.rs`
 - [x] T014 Initialize `SensitiveFilter` and inject into `AppState` at server startup in `crates/hiveweb/src/api/mod.rs`
 
 **Checkpoint**: Filter engine ready — can load words from DB, check text, and refresh cache.

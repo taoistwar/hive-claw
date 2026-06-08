@@ -18,12 +18,12 @@ pub async fn create_user_session(
     user_id: i64,
     title: Option<String>,
 ) -> Result<ChatSessionUser, AppError> {
-    let user: Option<(String,)> = sqlx::query_as("SELECT phone FROM users WHERE id = ?")
+    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
         .bind(user_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
-    let phone = user.map(|u| u.0).unwrap_or_default();
+    let uid = user.map(|u| u.0).unwrap_or_default();
 
     let res = sqlx::query(
         r#"INSERT INTO chat_sessions_user
@@ -31,7 +31,7 @@ pub async fn create_user_session(
            VALUES (?, ?, '', ?)"#,
     )
     .bind(user_id)
-    .bind(&phone)
+    .bind(&uid)
     .bind(&title)
     .execute(pool)
     .await
@@ -209,4 +209,39 @@ pub async fn delete_session_user(pool: &MySqlPool, session_id: i64) -> Result<()
         .await
         .map_err(|e| AppError::Internal(format!("user session delete: {e}")))?;
     Ok(())
+}
+
+/// Update session title.
+pub async fn update_session_title(
+    pool: &MySqlPool,
+    session_id: i64,
+    title: &str,
+) -> Result<(), AppError> {
+    sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
+        .bind(title)
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("user session title update: {e}")))?;
+    Ok(())
+}
+
+/// Get the latest session for a user, or create a new one if none exists.
+pub async fn get_or_create_session_user(
+    pool: &MySqlPool,
+    user_id: i64,
+) -> Result<ChatSessionUser, AppError> {
+    let existing: Option<ChatSessionUser> = sqlx::query_as(
+        "SELECT * FROM chat_sessions_user WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("session lookup: {e}")))?;
+
+    if let Some(session) = existing {
+        return Ok(session);
+    }
+
+    create_user_session(pool, user_id, None).await
 }

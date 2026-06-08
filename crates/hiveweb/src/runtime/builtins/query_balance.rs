@@ -162,15 +162,6 @@ LEFT JOIN (
                     "info":reply,
                 },
             }));
-        } else if coins_low {
-            // 金币不足（余额 < 500）→ nowPay 卡
-            extension_list.push(json!({
-                "content_type": "card",
-                "payload": {
-                    "type": "goPay",
-                    "info":reply,
-                },
-            }));
         } else if expiring_soon {
             // 会员即将到期（≤ 7 天）→ repay 卡
             let days_left = days_until_expiry.unwrap_or(0);

@@ -136,8 +136,6 @@ LEFT JOIN (
         .and_then(|m| m.total_coins)
         .unwrap_or(Decimal::ZERO);
 
-    let coins_low = total_coins < Decimal::from(500);
-
     // 2. 构造返回结果
     let mut result = json!({});
     let m = membership.unwrap();

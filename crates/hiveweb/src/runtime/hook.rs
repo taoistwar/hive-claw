@@ -32,9 +32,9 @@ pub struct HookContext {
     /// 渠道（如 "app", "web", "api" 等）
     pub channel: String,
     /// 端：android、iphone、ipad、web 等
-    pub platform: String,
+    pub client_type: String,
     /// 客户端版本号
-    pub app_version: String,
+    pub client_version: String,
 }
 
 /// Dependencies needed by hook actions (call_function, call_workflow).
@@ -318,8 +318,8 @@ async fn execute_http_webhook(
         "hook_name": hook.name,
         "message": ctx.message,
         "channel": ctx.channel,
-        "platform": ctx.platform,
-        "app_version": ctx.app_version,
+        "client_type": ctx.client_type,
+        "client_version": ctx.client_version,
     });
 
     let client = reqwest::Client::builder()
@@ -483,8 +483,8 @@ async fn audit_hook_exec(
         "trigger_point": trigger_point,
         "message": ctx.message,
         "channel": ctx.channel,
-        "platform": ctx.platform,
-        "app_version": ctx.app_version,
+        "client_type": ctx.client_type,
+        "client_version": ctx.client_version,
     });
     let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
     let snapshot_final: Option<Value> = if snapshot_str.len() > 4096 {

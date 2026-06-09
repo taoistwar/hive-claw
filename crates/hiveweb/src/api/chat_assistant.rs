@@ -6,7 +6,7 @@
 //!   Content-Type: application/json; charset=UTF-8
 //!
 //! 请求体：
-//!   { "user_id": 123, "message": "你好", "channel": "app", "platform": "android", "app_version": "1.0.0" }
+//!   { "user_id": 123, "message": "你好", "channel": "app", "client_type": "android", "client_version": "1.0.0" }
 //!
 //! 处理流程：
 //!   1. Content-Type 校验
@@ -64,9 +64,9 @@ pub struct AssistantRequest {
     /// 渠道（如 "app", "web", "api" 等）
     pub channel: String,
     /// 端：android、iphone、ipad、web 等
-    pub platform: String,
+    pub client_type: String,
     /// 客户端版本号
-    pub app_version: String,
+    pub client_version: String,
     /// 是否创建新会话（`true` 时强制创建新 session，`false`/省略时复用最新 session）
     #[serde(default)]
     pub new_session: bool,
@@ -279,8 +279,8 @@ async fn assistant_chat(
         ext_pool: state.ext_pool.clone(),
         message: req.message.clone(),
         channel: req.channel.clone(),
-        platform: req.platform.clone(),
-        app_version: req.app_version.clone(),
+        client_type: req.client_type.clone(),
+        client_version: req.client_version.clone(),
         sensitive_filter: state.sensitive_filter.clone(),
     };
     let handle = tokio::spawn(async move {
@@ -683,13 +683,13 @@ mod tests {
 
     #[test]
     fn assistant_request_deserializes_correctly() {
-        let body = r#"{"user_id":42,"message":"hi","channel":"app","platform":"android","app_version":"1.0.0"}"#;
+        let body = r#"{"user_id":42,"message":"hi","channel":"app","client_type":"android","client_version":"1.0.0"}"#;
         let req: AssistantRequest = serde_json::from_str(body).unwrap();
         assert_eq!(req.user_id, 42);
         assert_eq!(req.message, "hi");
         assert_eq!(req.channel, "app");
-        assert_eq!(req.platform, "android");
-        assert_eq!(req.app_version, "1.0.0");
+        assert_eq!(req.client_type, "android");
+        assert_eq!(req.client_version, "1.0.0");
     }
 
     #[test]

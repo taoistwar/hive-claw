@@ -184,8 +184,8 @@ async fn test_skill(
         ext_pool: state.ext_pool.clone(),
         message: String::new(),
         channel: String::new(),
-        platform: String::new(),
-        app_version: String::new(),
+        client_type: String::new(),
+        client_version: String::new(),
         sensitive_filter: state.sensitive_filter.clone(),
     };
     match test_svc::run_skill_test(&state.pool, &deps, id, req).await {

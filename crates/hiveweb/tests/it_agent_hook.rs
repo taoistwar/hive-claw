@@ -894,8 +894,8 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
         trigger_point: "before_agent_start".into(),
         message: String::new(),
         channel: String::new(),
-        platform: String::new(),
-        app_version: String::new(),
+        client_type: String::new(),
+        client_version: String::new(),
     };
     let empty_hooks: HashMap<String, Vec<hiveweb::models::agent_hook::AgentHook>> = HashMap::new();
 

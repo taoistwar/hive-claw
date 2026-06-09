@@ -188,10 +188,10 @@ pub struct ExecuteUserInput {
     pub actor_id: Option<String>,
     /// 来源渠道（对应 UserInput.metadata["channel"]）
     pub channel: Option<String>,
-    /// 平台（对应 UserInput.metadata["platform"]）
-    pub platform: Option<String>,
-    /// 应用版本（对应 UserInput.metadata["app_version"]）
-    pub app_version: Option<String>,
+    /// 平台（对应 UserInput.metadata["client_type"]）
+    pub client_type: Option<String>,
+    /// 应用版本（对应 UserInput.metadata["client_version"]）
+    pub client_version: Option<String>,
 }
 
 /// 将 ExecuteUserInput 转换为 AgentContext 所需的 UserInput + metadata
@@ -204,11 +204,11 @@ fn build_user_input_metadata(ui: &ExecuteUserInput) -> agent::context::UserInput
     if let Some(ref v) = ui.channel {
         metadata.insert("channel".into(), v.clone());
     }
-    if let Some(ref v) = ui.platform {
-        metadata.insert("platform".into(), v.clone());
+    if let Some(ref v) = ui.client_type {
+        metadata.insert("client_type".into(), v.clone());
     }
-    if let Some(ref v) = ui.app_version {
-        metadata.insert("app_version".into(), v.clone());
+    if let Some(ref v) = ui.client_version {
+        metadata.insert("client_version".into(), v.clone());
     }
     UserInput {
         raw_text: ui.raw_text.clone().unwrap_or_default(),

@@ -193,8 +193,8 @@ async fn test_tool(
         ext_pool: state.ext_pool.clone(),
         message: String::new(),
         channel: String::new(),
-        platform: String::new(),
-        app_version: String::new(),
+        client_type: String::new(),
+        client_version: String::new(),
         sensitive_filter: state.sensitive_filter.clone(),
     };
     let req_with_trace = test_svc::TestToolRequest {

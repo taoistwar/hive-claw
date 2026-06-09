@@ -77,8 +77,8 @@ pub struct OrchestratorDeps {
     pub ext_pool: Option<MySqlPool>,
     pub message: String,
     pub channel: String,
-    pub platform: String,
-    pub app_version: String,
+    pub client_type: String,
+    pub client_version: String,
     /// 010 Sensitive Word Filter — for output content filtering
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 }
@@ -144,8 +144,8 @@ where
             metadata: {
                 let mut m = std::collections::HashMap::new();
                 m.insert("channel".into(), deps.channel.clone());
-                m.insert("platform".into(), deps.platform.clone());
-                m.insert("app_version".into(), deps.app_version.clone());
+                m.insert("client_type".into(), deps.client_type.clone());
+                m.insert("client_version".into(), deps.client_version.clone());
                 m.insert("actor_id".into(), actor_id.to_string());
                 m
             },
@@ -216,8 +216,8 @@ where
                 trigger_point: "before_agent_start".into(),
                 message: deps.message.clone(),
                 channel: deps.channel.clone(),
-                platform: deps.platform.clone(),
-                app_version: deps.app_version.clone(),
+                client_type: deps.client_type.clone(),
+                client_version: deps.client_version.clone(),
             };
             if let Err(e) = hook::run_hooks(
                 Arc::new(deps.pool.clone()),
@@ -284,8 +284,8 @@ where
                 trigger_point: "before_llm_call".into(),
                 message: deps.message.clone(),
                 channel: deps.channel.clone(),
-                platform: deps.platform.clone(),
-                app_version: deps.app_version.clone(),
+                client_type: deps.client_type.clone(),
+                client_version: deps.client_version.clone(),
             };
             if let Err(e) = hook::run_hooks(
                 Arc::new(deps.pool.clone()),
@@ -324,8 +324,8 @@ where
                     trigger_point: "on_agent_error".into(),
                     message: deps.message.clone(),
                     channel: deps.channel.clone(),
-                    platform: deps.platform.clone(),
-                    app_version: deps.app_version.clone(),
+                    client_type: deps.client_type.clone(),
+                    client_version: deps.client_version.clone(),
                 };
                 let _ = hook::run_hooks(
                     Arc::new(deps.pool.clone()),
@@ -352,8 +352,8 @@ where
                 trigger_point: "after_llm_call".into(),
                 message: deps.message.clone(),
                 channel: deps.channel.clone(),
-                platform: deps.platform.clone(),
-                app_version: deps.app_version.clone(),
+                client_type: deps.client_type.clone(),
+                client_version: deps.client_version.clone(),
             };
             let _ = hook::run_hooks(
                 Arc::new(deps.pool.clone()),
@@ -423,8 +423,8 @@ where
                     trigger_point: "before_tool_call".into(),
                     message: deps.message.clone(),
                     channel: deps.channel.clone(),
-                    platform: deps.platform.clone(),
-                    app_version: deps.app_version.clone(),
+                    client_type: deps.client_type.clone(),
+                    client_version: deps.client_version.clone(),
                 };
                 if let Err(e) = hook::run_hooks(
                     Arc::new(deps.pool.clone()),
@@ -454,8 +454,8 @@ where
                         Some(&agent_content.identifier),
                         deps.message.clone(),
                         deps.channel.clone(),
-                        deps.platform.clone(),
-                        deps.app_version.clone(),
+                        deps.client_type.clone(),
+                        deps.client_version.clone(),
                         &hook_deps,
                     )
                     .await;
@@ -510,8 +510,8 @@ where
                     trigger_point: "after_tool_call".into(),
                     message: deps.message.clone(),
                     channel: deps.channel.clone(),
-                    platform: deps.platform.clone(),
-                    app_version: deps.app_version.clone(),
+                    client_type: deps.client_type.clone(),
+                    client_version: deps.client_version.clone(),
                 };
                 let _ = hook::run_hooks(
                     Arc::new(deps.pool.clone()),
@@ -580,8 +580,8 @@ where
                         Some(&agent_content.identifier),
                         deps.message.clone(),
                         deps.channel.clone(),
-                        deps.platform.clone(),
-                        deps.app_version.clone(),
+                        deps.client_type.clone(),
+                        deps.client_version.clone(),
                         &hook_deps,
                     )
                     .await;
@@ -686,8 +686,8 @@ where
         last_identifier.as_deref(),
         deps.message.clone(),
         deps.channel.clone(),
-        deps.platform.clone(),
-        deps.app_version.clone(),
+        deps.client_type.clone(),
+        deps.client_version.clone(),
         &hook_deps,
     )
     .await
@@ -704,8 +704,8 @@ async fn finalize_with_variant(
     agent_identifier: Option<&str>,
     message: String,
     channel: String,
-    platform: String,
-    app_version: String,
+    client_type: String,
+    client_version: String,
     hook_deps: &HookDeps,
 ) -> Option<ChatMessageUser> {
     let elapsed = started.elapsed().as_millis() as i32;
@@ -722,8 +722,8 @@ async fn finalize_with_variant(
             trigger_point: "after_agent_end".into(),
             message: message.clone(),
             channel: channel.clone(),
-            platform: platform.clone(),
-            app_version: app_version.clone(),
+            client_type: client_type.clone(),
+            client_version: client_version.clone(),
         };
         let _ = hook::run_hooks(
             Arc::new(pool.clone()),

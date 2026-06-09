@@ -1,10 +1,14 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::get,
+    routing::{get, post},
 };
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
 
+use crate::api::chat_common;
 use crate::api::AppState;
 use crate::models::Role;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
@@ -27,7 +31,7 @@ pub fn router() -> Router<AppState> {
 }
 
 pub fn router_public() -> Router<AppState> {
-    Router::new().route("/recommended-games/top", get(top_recommended_games))
+    Router::new().route("/recommended-games/top", post(top_recommended_games))
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,16 +204,6 @@ async fn delete_recommended_game(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct TopQuery {
-    #[serde(default)]
-    pub n: Option<i64>,
-    pub user_id: String,
-    pub channel: String,
-    pub client_type: String,
-    pub client_version: String,
-}
-
 /// 对外公开的推荐游戏精简响应（去除内部字段）
 #[derive(Debug, Serialize)]
 pub struct TopRecommendedGame {
@@ -238,20 +232,49 @@ impl From<GameItem> for TopRecommendedGame {
     }
 }
 
+/// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
+static SECRET: OnceLock<String> = OnceLock::new();
+
+fn get_secret() -> &'static str {
+    SECRET
+        .get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
+        .as_str()
+}
+
+#[derive(Debug, Deserialize)]
+struct TopRequest {
+    user_id: String,
+    channel: String,
+    client_type: String,
+    client_version: String,
+}
+
 async fn top_recommended_games(
     State(state): State<AppState>,
-    Query(q): Query<TopQuery>,
+    Query(params): Query<HashMap<String, String>>,
+    body: String,
 ) -> Result<ApiResponse<Vec<TopRecommendedGame>>, ApiResponse<()>> {
-    let _n = q.n.unwrap_or(10).clamp(1, 50);
+    // 1. MD5 签名校验
+    let secret = get_secret();
+    if !secret.is_empty() {
+        let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
+        if !chat_common::verify_sign(secret, "/api/recommended-games/top", &body, sign) {
+            return Err(AppError::BadRequest("Invalid signature".into()).into_response());
+        }
+    }
 
-    if q.user_id.is_empty() || q.channel.is_empty() || q.client_type.is_empty() || q.client_version.is_empty() {
+    // 2. 解析 JSON body
+    let req: TopRequest = serde_json::from_str(&body)
+        .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
+
+    if req.user_id.is_empty() || req.channel.is_empty() || req.client_type.is_empty() || req.client_version.is_empty() {
         return Err(AppError::BadRequest("user_id, channel, client_type, client_version 不能为空".into()).into_response());
     }
 
     let games = svc::fetch_top_filtered(
         &state.pool,
-        &q.channel,
-        &q.client_type,
+        &req.channel,
+        &req.client_type,
     )
     .await
     .map_err(|e| e.into_response())?;

@@ -34,6 +34,21 @@ export interface ExternalGameOption {
   name: string
 }
 
+export interface ExternalGameDetail {
+  id: number
+  name: string
+  description?: string | null
+  cover_image?: string | null
+  game_tags?: GameTypeItem[] | null
+  client_types?: string[] | null
+  channels: string[]
+}
+
+export interface GameTypeItem {
+  name: string
+  type: string
+}
+
 const EXTERNAL_GAMES_CACHE_KEY = 'external_games_cache'
 const EXTERNAL_GAMES_CACHE_TTL = 30 * 60 * 1000 // 30 分钟
 
@@ -65,6 +80,11 @@ export const getExternalGames = async (): Promise<ExternalGameOption[]> => {
     )
   } catch { /* 存储空间不足，忽略 */ }
 
+  return data
+}
+
+export const getExternalGameDetail = async (id: number): Promise<ExternalGameDetail> => {
+  const { data } = await apiClient.get<ExternalGameDetail>(`/external-games/${id}`)
   return data
 }
 

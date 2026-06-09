@@ -9,7 +9,7 @@ pub struct RecommendedGame {
     pub reply: String,
     pub reason: Option<String>,
     pub tag: Option<String>,
-    pub game_category: Option<String>,
+    pub game_category: Option<serde_json::Value>,
     pub game_image: Option<String>,
     pub sort_value: i32,
     pub game_id: String,

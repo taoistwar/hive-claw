@@ -380,3 +380,41 @@ pub async fn list_external_games(
     .await
     .map_err(|e| AppError::Internal(format!("game_list external query: {e}")))
 }
+
+/// Query available channels for a game from cc_promotion_channel (external DB).
+pub async fn get_game_channels(
+    ext_pool: &MySqlPool,
+    logic_game_id: i64,
+) -> Result<Vec<String>, AppError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT t1.prom_channel FROM (
+            SELECT pc.prom_channel, pc.prom_platform, pc.game_tag, pc.department, pc.director
+            FROM cc_logic_game_wide w
+            INNER JOIN cc_promotion_channel pc
+                ON pc.game_tag = w.channel_game_tag
+                AND pc.status = 1
+            WHERE w.logic_game_id = ?
+        ) t1
+        GROUP BY t1.prom_channel",
+    )
+    .bind(logic_game_id)
+    .fetch_all(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("game_channels query: {e}")))?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+/// Query client_type from cc_logic_game_wide (external DB).
+pub async fn get_game_client_types(
+    ext_pool: &MySqlPool,
+    logic_game_id: i64,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT client_type FROM cc_logic_game_wide WHERE logic_game_id = ?",
+    )
+    .bind(logic_game_id)
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("game_client_types query: {e}")))?;
+    Ok(row.and_then(|r| r.0))
+}

@@ -24,16 +24,12 @@ pub fn support_card(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
         .as_ref()
         .ok_or_else(|| BuiltinError::Exec("AgentContext 未配置".into()))?;
 
-    let raw_text = agent_ctx.user_input().raw_text.clone();
-
     Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
-                "id": "support_card",
                 "content_type": "card",
-                "data": {
-                    "type": "support",
-                    "user_input": raw_text,
+                "payload": {
+                    "type": "support"
                 },
             }],
             "metadata": {

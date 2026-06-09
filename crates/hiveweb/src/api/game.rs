@@ -26,6 +26,22 @@ pub struct ExternalGameOption {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalGameDetail {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub cover_image: Option<String>,
+    #[serde(default)]
+    pub game_tags: Option<serde_json::Value>,
+    #[serde(default)]
+    pub client_types: Option<serde_json::Value>,
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default = "default_page")]
@@ -220,13 +236,18 @@ async fn get_external_games(
             return Err(AppError::Internal("External DB unavailable".to_string()).into_response());
         }
     };
-    let rows = sqlx::query_as::<_, (i64, String)>("SELECT id, name FROM cc_logic_game ORDER BY id")
-        .fetch_all(ext_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("external game list: {}", e)).into_response())?;
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT id, name FROM cc_logic_game ORDER BY id",
+    )
+    .fetch_all(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("external game list: {}", e)).into_response())?;
     let options: Vec<ExternalGameOption> = rows
         .into_iter()
-        .map(|(id, name)| ExternalGameOption { id, name })
+        .map(|(id, name)| ExternalGameOption {
+            id,
+            name,
+        })
         .collect();
 
     // 3. 写入缓存（best-effort，失败不阻塞响应）
@@ -235,6 +256,52 @@ async fn get_external_games(
     }
 
     Ok(ApiResponse::success(options))
+}
+
+/// 按 id 查询 cc_logic_game + cc_logic_game_wide 的详细数据
+async fn get_external_game_detail(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<ApiResponse<ExternalGameDetail>, ApiResponse<()>> {
+    let ext_pool = match &state.ext_pool {
+        Some(p) => p,
+        None => {
+            return Err(AppError::Internal("External DB unavailable".to_string()).into_response());
+        }
+    };
+
+    let row = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>(
+        "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
+         FROM cc_logic_game g
+         LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
+         WHERE g.id = ?",
+    )
+    .bind(id)
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("external game detail: {}", e)).into_response())?;
+
+    match row {
+        Some((gid, name, description, cover_image, game_tags)) => {
+            // 并行查询 channels 和 client_types
+            let (channels, client_types) = tokio::join!(
+                crate::services::game_service::get_game_channels(ext_pool, gid),
+                crate::services::game_service::get_game_client_types(ext_pool, gid),
+            );
+            let channels = channels.unwrap_or_default();
+            let client_types = client_types.unwrap_or_default();
+            Ok(ApiResponse::success(ExternalGameDetail {
+                id: gid,
+                name,
+                description,
+                cover_image,
+                game_tags,
+                client_types,
+                channels,
+            }))
+        }
+        None => Err(AppError::GameAliasNotFound("外部游戏不存在".to_string()).into_response()),
+    }
 }
 
 /// 从 Redis 读取缓存的外部游戏列表
@@ -282,4 +349,5 @@ pub fn router() -> Router<AppState> {
             get(get_game).put(update_game).delete(delete_game),
         )
         .route("/external-games", get(get_external_games))
+        .route("/external-games/:id", get(get_external_game_detail))
 }

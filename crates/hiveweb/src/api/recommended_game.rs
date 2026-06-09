@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::models::Role;
+use crate::models::recommended_game_strategy::RecommendedGameStrategy;
 use crate::services::recommended_game::{self as svc, CreateMeta, UpdateMeta};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
@@ -48,8 +49,25 @@ fn default_page_size() -> i64 {
 
 #[derive(Debug, Serialize)]
 pub struct ListResponse {
-    pub items: Vec<crate::models::RecommendedGame>,
+    pub items: Vec<GameItem>,
     pub total: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GameItem {
+    #[serde(flatten)]
+    pub game: crate::models::RecommendedGame,
+    pub strategies: Vec<RecommendedGameStrategy>,
+}
+
+impl GameItem {
+    async fn from_game(
+        pool: &sqlx::MySqlPool,
+        game: crate::models::RecommendedGame,
+    ) -> Result<Self, AppError> {
+        let strategies = svc::fetch_strategies(pool, game.id).await?;
+        Ok(Self { game, strategies })
+    }
 }
 
 async fn list_recommended_games(
@@ -64,24 +82,38 @@ async fn list_recommended_games(
     )
     .await
     .map_err(|e| e.into_response())?;
-    Ok(ApiResponse::success(ListResponse { items, total }))
+    let mut items_with_strategies = Vec::with_capacity(items.len());
+    for game in items {
+        items_with_strategies.push(
+            GameItem::from_game(&state.pool, game)
+                .await
+                .map_err(|e| e.into_response())?,
+        );
+    }
+    Ok(ApiResponse::success(ListResponse {
+        items: items_with_strategies,
+        total,
+    }))
 }
 
 async fn get_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<ApiResponse<crate::models::RecommendedGame>, ApiResponse<()>> {
-    svc::fetch_by_id(&state.pool, id)
+) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
+    let game = svc::fetch_by_id(&state.pool, id)
         .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+        .map_err(|e| e.into_response())?;
+    let item = GameItem::from_game(&state.pool, game)
+        .await
+        .map_err(|e| e.into_response())?;
+    Ok(ApiResponse::success(item))
 }
 
 async fn create_recommended_game(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
     Json(meta): Json<CreateMeta>,
-) -> Result<ApiResponse<crate::models::RecommendedGame>, ApiResponse<()>> {
+) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
         Err(_) => {
@@ -99,10 +131,13 @@ async fn create_recommended_game(
         );
     }
 
-    svc::create(&state.pool, meta)
+    let game = svc::create(&state.pool, meta)
         .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+        .map_err(|e| e.into_response())?;
+    let item = GameItem::from_game(&state.pool, game)
+        .await
+        .map_err(|e| e.into_response())?;
+    Ok(ApiResponse::success(item))
 }
 
 async fn update_recommended_game(
@@ -110,7 +145,7 @@ async fn update_recommended_game(
     Path(id): Path<i64>,
     axum::Extension(claims): axum::Extension<Claims>,
     Json(meta): Json<UpdateMeta>,
-) -> Result<ApiResponse<crate::models::RecommendedGame>, ApiResponse<()>> {
+) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
         Err(_) => {
@@ -128,10 +163,13 @@ async fn update_recommended_game(
         );
     }
 
-    svc::update(&state.pool, id, meta)
+    let game = svc::update(&state.pool, id, meta)
         .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+        .map_err(|e| e.into_response())?;
+    let item = GameItem::from_game(&state.pool, game)
+        .await
+        .map_err(|e| e.into_response())?;
+    Ok(ApiResponse::success(item))
 }
 
 async fn delete_recommended_game(
@@ -164,7 +202,12 @@ async fn delete_recommended_game(
 
 #[derive(Debug, Deserialize)]
 pub struct TopQuery {
-    pub n: i64,
+    #[serde(default)]
+    pub n: Option<i64>,
+    pub user_id: String,
+    pub channel: String,
+    pub client_type: String,
+    pub client_version: String,
 }
 
 /// 对外公开的推荐游戏精简响应（去除内部字段）
@@ -174,23 +217,23 @@ pub struct TopRecommendedGame {
     pub reply: String,
     pub reason: Option<String>,
     pub tag: Option<String>,
-    pub game_category: Option<String>,
+    pub game_category: Option<serde_json::Value>,
     pub game_image: Option<String>,
     pub game_id: String,
     pub game_name: String,
 }
 
-impl From<crate::models::RecommendedGame> for TopRecommendedGame {
-    fn from(g: crate::models::RecommendedGame) -> Self {
+impl From<GameItem> for TopRecommendedGame {
+    fn from(item: GameItem) -> Self {
         Self {
-            name: g.name,
-            reply: g.reply,
-            reason: g.reason,
-            tag: g.tag,
-            game_category: g.game_category,
-            game_image: g.game_image,
-            game_id: g.game_id,
-            game_name: g.game_name,
+            name: item.game.name,
+            reply: item.game.reply,
+            reason: item.game.reason,
+            tag: item.game.tag,
+            game_category: item.game.game_category,
+            game_image: item.game.game_image,
+            game_id: item.game.game_id,
+            game_name: item.game.game_name,
         }
     }
 }
@@ -199,11 +242,31 @@ async fn top_recommended_games(
     State(state): State<AppState>,
     Query(q): Query<TopQuery>,
 ) -> Result<ApiResponse<Vec<TopRecommendedGame>>, ApiResponse<()>> {
-    let n = q.n.clamp(1, 10);
-    let games = svc::fetch_top_n(&state.pool, n)
-        .await
-        .map_err(|e| e.into_response())?;
-    Ok(ApiResponse::success(
-        games.into_iter().map(TopRecommendedGame::from).collect(),
-    ))
+    let _n = q.n.unwrap_or(10).clamp(1, 50);
+
+    if q.user_id.is_empty() || q.channel.is_empty() || q.client_type.is_empty() || q.client_version.is_empty() {
+        return Err(AppError::BadRequest("user_id, channel, client_type, client_version 不能为空".into()).into_response());
+    }
+
+    let games = svc::fetch_top_filtered(
+        &state.pool,
+        &q.channel,
+        &q.client_type,
+    )
+    .await
+    .map_err(|e| e.into_response())?;
+    let result: Vec<TopRecommendedGame> = games
+        .into_iter()
+        .map(|game| TopRecommendedGame {
+            name: game.name,
+            reply: game.reply,
+            reason: game.reason,
+            tag: game.tag,
+            game_category: game.game_category,
+            game_image: game.game_image,
+            game_id: game.game_id,
+            game_name: game.game_name,
+        })
+        .collect();
+    Ok(ApiResponse::success(result))
 }

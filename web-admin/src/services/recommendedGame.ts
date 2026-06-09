@@ -1,4 +1,11 @@
 import apiClient from './api'
+import type { GameTypeItem } from './gameAlias'
+
+export interface StrategyMeta {
+  channel: string[]
+  client_type: string[]
+  strategy: string
+}
 
 export interface RecommendedGame {
   id: number
@@ -6,13 +13,14 @@ export interface RecommendedGame {
   reply: string
   reason: string | null
   tag: string | null
-  game_category: string | null
+  game_category: GameTypeItem[] | null
   game_image: string | null
   sort_value: number
   game_id: string
   game_name: string
   created_at: string
   updated_at: string
+  strategies: StrategyMeta[]
 }
 
 export interface RecommendedGameListResponse {
@@ -43,7 +51,8 @@ export const createRecommendedGame = async (meta: {
   reply: string
   reason?: string
   tag?: string
-  game_category?: string
+  game_category?: GameTypeItem[]
+  strategies?: StrategyMeta[]
   game_image?: string
   game_id: string
   game_name: string
@@ -59,7 +68,8 @@ export const updateRecommendedGame = async (
     reply?: string
     reason?: string
     tag?: string
-    game_category?: string
+    game_category?: GameTypeItem[]
+    strategies?: StrategyMeta[]
     game_image?: string
     game_id?: string
     game_name?: string

@@ -11,11 +11,12 @@ pub struct CreateMeta {
     pub reply: String,
     pub reason: Option<String>,
     pub tag: Option<String>,
-    pub game_category: Option<String>,
+    pub game_category: Option<serde_json::Value>,
     pub game_image: Option<String>,
     pub sort_value: Option<i32>,
     pub game_id: String,
     pub game_name: String,
+    pub strategies: Option<Vec<StrategyMeta>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,12 +25,20 @@ pub struct UpdateMeta {
     pub reply: Option<String>,
     pub reason: Option<String>,
     pub tag: Option<String>,
-    pub game_category: Option<String>,
+    pub game_category: Option<serde_json::Value>,
     pub game_image: Option<String>,
     pub sort_value: Option<i32>,
     pub game_id: Option<String>,
     pub game_name: Option<String>,
+    pub strategies: Option<Vec<StrategyMeta>>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StrategyMeta {
+    pub channel: serde_json::Value,
+    pub client_type: serde_json::Value,
+    pub strategy: String,
 }
 
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<RecommendedGame, AppError> {
@@ -55,7 +64,12 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<RecommendedGam
             AppError::Internal(format!("recommended_game insert: {e}"))
         }
     })?;
-    fetch_by_id(pool, res.last_insert_id() as i64).await
+    let game_id = res.last_insert_id() as i64;
+    // Insert strategies
+    if let Some(ref strategies) = meta.strategies {
+        insert_strategies(pool, game_id, strategies).await?;
+    }
+    fetch_by_id(pool, game_id).await
 }
 
 pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<RecommendedGame, AppError> {
@@ -152,6 +166,11 @@ pub async fn update(
             AppError::Internal(format!("recommended_game update: {e}"))
         }
     })?;
+    // Replace strategies if provided
+    if let Some(ref strategies) = meta.strategies {
+        delete_strategies(pool, id).await?;
+        insert_strategies(pool, id, strategies).await?;
+    }
     fetch_by_id(pool, id).await
 }
 
@@ -177,4 +196,102 @@ pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame
     .fetch_all(pool)
     .await
     .map_err(|e| AppError::Internal(format!("recommended_game top: {e}")))
+}
+
+/// Filtered top games with strategy-based channel/client_type filtering and per-tag limits.
+/// Uses one SQL query per tag category, filtering via SQL JOINs + JSON_CONTAINS.
+/// - 新游上线: 3, 运营推荐: 4, 本周热玩: 3
+pub async fn fetch_top_filtered(
+    pool: &MySqlPool,
+    channel: &str,
+    client_type: &str,
+) -> Result<Vec<RecommendedGame>, AppError> {
+    let tags = [
+        ("运营推荐", 4i64),
+        ("新游上线", 3i64),
+        ("本周热玩", 3i64),
+    ];
+
+    let mut result: Vec<RecommendedGame> = Vec::new();
+    let ch = format!("\"{}\"", channel);
+    let ct = format!("\"{}\"", client_type);
+
+    for (tag, limit) in &tags {
+        let rows = sqlx::query_as::<_, RecommendedGame>(FILTERED_SQL)
+            .bind(tag)
+            .bind(&ch).bind(&ct)
+            .bind(&ch).bind(&ct)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("fetch_top_filtered {tag}: {e}")))?;
+        result.extend(rows);
+    }
+
+    Ok(result)
+}
+
+const FILTERED_SQL: &str = r#"
+SELECT rg.* FROM recommended_games rg
+WHERE rg.tag = ?
+  AND EXISTS (
+    SELECT 1 FROM recommended_games_strategy si
+    WHERE si.recommended_game_id = rg.id
+      AND si.strategy = 'INCLUDE'
+      AND (JSON_CONTAINS(si.channel, '"*"') OR JSON_CONTAINS(si.channel, ?))
+      AND (JSON_CONTAINS(si.client_type, '"*"') OR JSON_CONTAINS(si.client_type, ?))
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM recommended_games_strategy se
+    WHERE se.recommended_game_id = rg.id
+      AND se.strategy = 'EXCLUDE'
+      AND (JSON_CONTAINS(se.channel, '"*"') OR JSON_CONTAINS(se.channel, ?))
+      AND (JSON_CONTAINS(se.client_type, '"*"') OR JSON_CONTAINS(se.client_type, ?))
+  )
+ORDER BY rg.sort_value DESC, rg.created_at DESC
+LIMIT ?
+"#;
+
+// --- strategy helpers ---
+
+async fn insert_strategies(
+    pool: &MySqlPool,
+    game_id: i64,
+    strategies: &[StrategyMeta],
+) -> Result<(), AppError> {
+    for s in strategies {
+        sqlx::query(
+            "INSERT INTO recommended_games_strategy (recommended_game_id, channel, client_type, strategy) VALUES (?, ?, ?, ?)",
+        )
+        .bind(game_id)
+        .bind(&s.channel)
+        .bind(&s.client_type)
+        .bind(&s.strategy)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("strategy insert: {e}")))?;
+    }
+    Ok(())
+}
+
+async fn delete_strategies(pool: &MySqlPool, game_id: i64) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM recommended_games_strategy WHERE recommended_game_id = ?")
+        .bind(game_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("strategy delete: {e}")))?;
+    Ok(())
+}
+
+pub async fn fetch_strategies(
+    pool: &MySqlPool,
+    game_id: i64,
+) -> Result<Vec<crate::models::recommended_game_strategy::RecommendedGameStrategy>, AppError> {
+    sqlx::query_as::<_, crate::models::recommended_game_strategy::RecommendedGameStrategy>(
+        "SELECT * FROM recommended_games_strategy WHERE recommended_game_id = ? ORDER BY id",
+    )
+    .bind(game_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("strategy fetch: {e}")))
 }

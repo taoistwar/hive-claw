@@ -133,6 +133,18 @@ const MIGRATIONS: &[Migration] = &[
         version: "V028__drop_phone_password_status_from_users",
         sql: include_str!("../../migrations/V028__drop_phone_password_status_from_users.sql"),
     },
+    Migration {
+        version: "V029__game_category_json",
+        sql: include_str!("../../migrations/V029__game_category_json.sql"),
+    },
+    Migration {
+        version: "V030__recommended_games_channel",
+        sql: include_str!("../../migrations/V030__recommended_games_channel.sql"),
+    },
+    Migration {
+        version: "V031__game_image_text",
+        sql: include_str!("../../migrations/V031__game_image_text.sql"),
+    },
 ];
 
 #[tokio::main]

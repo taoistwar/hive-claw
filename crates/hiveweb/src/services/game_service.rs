@@ -368,17 +368,43 @@ pub async fn get_external_game_by_id(
     .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))
 }
 
-/// Query cc_logic_game from external database.
+/// Query cc_logic_game from external database, filtered by channel and client_type.
+///
+/// The channel is mapped to a `channel_game_tag` via `cc_promotion_channel`,
+/// then matched against `cc_logic_game_wide.channel_game_tag`.
+/// Games listed in `cc_logic_game_exclude` for the given channel and client_type are omitted.
+///
 /// Returns vec of (id, name, alias).
 pub async fn list_external_games(
     ext_pool: &MySqlPool,
+    channel: &str,
+    client_type: &str,
 ) -> Result<Vec<(i64, String, String)>, AppError> {
-    sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, name, COALESCE(alias, '') AS alias FROM cc_logic_game ORDER BY id",
-    )
-    .fetch_all(ext_pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("game_list external query: {e}")))
+    let sql = r#"
+        SELECT ga.id, g.name, COALESCE(g.alias, '') AS alias
+        FROM cc_logic_game g
+        INNER JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
+        INNER JOIN cc_game ga ON ga.logic_game_id = g.id
+        WHERE w.client_type = ?
+            AND w.channel_game_tag = COALESCE(
+                (SELECT pc.game_tag FROM cc_promotion_channel pc WHERE pc.prom_channel = ? LIMIT 1),
+                'UNKNOWN'
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM cc_logic_game_exclude e
+                WHERE e.logic_game_id = w.logic_game_id
+                    AND e.client_type = w.client_type
+                    AND e.channel = ?
+            )
+        ORDER BY ga.id
+    "#;
+    sqlx::query_as::<_, (i64, String, String)>(sql)
+        .bind(client_type)
+        .bind(channel)
+        .bind(channel)
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("game_list external query: {e}")))
 }
 
 /// Query available channels for a game from cc_promotion_channel (external DB).

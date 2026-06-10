@@ -3,7 +3,6 @@ pub mod admin_audit_log;
 pub mod auth;
 pub mod dashboard;
 pub mod login_record;
-pub mod runtime_audit_log;
 
 // 004 Agent Runtime
 pub mod agent;
@@ -166,7 +165,6 @@ pub fn create_router(
         .merge(capability::router())
         .merge(runtime::router())
         .merge(admin_audit_log::router())
-        .merge(runtime_audit_log::router())
         .merge(login_record::router())
         .merge(agent::router())
         .merge(agent_hook::router())

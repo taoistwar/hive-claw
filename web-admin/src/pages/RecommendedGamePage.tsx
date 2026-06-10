@@ -95,6 +95,8 @@ export default function RecommendedGamePage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<RecommendedGame | null>(null)
   const [search, setSearch] = useState('')
+  const [channelSearch, setChannelSearch] = useState('')
+  const [clientTypeSearch, setClientTypeSearch] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(5)
   const [createForm] = Form.useForm()
@@ -112,7 +114,7 @@ export default function RecommendedGamePage() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await listRecommendedGames(search || undefined, page, pageSize)
+      const res = await listRecommendedGames(search || undefined, channelSearch || undefined, clientTypeSearch || undefined, page, pageSize)
       setItems(res.items)
       setTotal(res.total)
     } catch (e) {
@@ -120,7 +122,7 @@ export default function RecommendedGamePage() {
     } finally {
       setLoading(false)
     }
-  }, [search, page, pageSize])
+  }, [search, channelSearch, clientTypeSearch, page, pageSize])
 
   useEffect(() => {
     void refresh()
@@ -470,8 +472,22 @@ export default function RecommendedGamePage() {
           placeholder="搜索名称/游戏ID/游戏名称"
           allowClear
           onSearch={setSearch}
-          style={{ width: 280 }}
+          style={{ width: 220 }}
           aria-label="搜索推荐游戏"
+        />
+        <Input
+          placeholder="渠道"
+          allowClear
+          value={channelSearch}
+          onChange={(e) => { setChannelSearch(e.target.value); setPage(1) }}
+          style={{ width: 120 }}
+        />
+        <Input
+          placeholder="客户端类型"
+          allowClear
+          value={clientTypeSearch}
+          onChange={(e) => { setClientTypeSearch(e.target.value); setPage(1) }}
+          style={{ width: 140 }}
         />
       </Space>
       <Table<RecommendedGame>

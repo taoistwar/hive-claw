@@ -200,7 +200,6 @@ impl Invoker {
         };
 
         runtime_audit::record(
-            db_pool,
             AuditRecord {
                 request_id: None,
                 session_id: None,
@@ -214,8 +213,7 @@ impl Invoker {
                 error_message: err_msg.as_deref(),
                 payload_summary: None,
             },
-        )
-        .await;
+        );
 
         match (output, outcome) {
             (Some(s), _) => Ok(s),

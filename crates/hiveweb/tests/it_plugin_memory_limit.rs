@@ -83,7 +83,6 @@ async fn t166_plugin_with_excessive_memory_allocation_fails() -> anyhow::Result<
     // Verify that audit logging works (for memory limit violations)
     // Verify that audit logging works (for memory limit violations)
     hiveweb::services::runtime_audit::record(
-        &pool,
         hiveweb::services::runtime_audit::AuditRecord {
             request_id: Some("test-t166"),
             session_id: None,
@@ -100,8 +99,7 @@ async fn t166_plugin_with_excessive_memory_allocation_fails() -> anyhow::Result<
                 "memory_limit_mb": 128
             })),
         },
-    )
-    .await;
+    );
 
     tracing::info!("t166: memory limit enforcement verified via config + audit path");
 

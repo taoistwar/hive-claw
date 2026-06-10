@@ -67,10 +67,6 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/V012__agents.sql"),
     },
     Migration {
-        version: "V013__runtime_audit_logs",
-        sql: include_str!("../../migrations/V013__runtime_audit_logs.sql"),
-    },
-    Migration {
         version: "V014__seed",
         sql: include_str!("../../migrations/V014__seed.sql"),
     },

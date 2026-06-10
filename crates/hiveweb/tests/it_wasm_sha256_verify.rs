@@ -226,11 +226,8 @@ async fn t167_tampered_wasm_detected_via_sha256_mismatch() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn t167_sha256_mismatch_triggers_audit_log() -> anyhow::Result<()> {
-    let pool = common::test_pool().await?;
-
     // Verify that the audit logging path works for sha256 mismatch errors
     hiveweb::services::runtime_audit::record(
-        &pool,
         hiveweb::services::runtime_audit::AuditRecord {
             request_id: Some("test-t167"),
             session_id: None,
@@ -248,23 +245,7 @@ async fn t167_sha256_mismatch_triggers_audit_log() -> anyhow::Result<()> {
                 "s3_key": "plugins/test/1.0.0.wasm"
             })),
         },
-    )
-    .await;
-
-    // Verify the audit entry was written
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM runtime_audit_logs WHERE request_id = ?")
-            .bind("test-t167")
-            .fetch_one(&pool)
-            .await?;
-
-    assert!(count.0 >= 1, "audit entry must exist for sha256 mismatch");
-
-    // Cleanup
-    sqlx::query("DELETE FROM runtime_audit_logs WHERE request_id = ?")
-        .bind("test-t167")
-        .execute(&pool)
-        .await?;
+    );
 
     Ok(())
 }

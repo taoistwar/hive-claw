@@ -14,7 +14,6 @@ import AgentPage from './pages/AgentPage'
 import WorkflowPage from './pages/WorkflowPage'
 import RecommendedGamePage from './pages/RecommendedGamePage'
 import CapabilityPage from './pages/CapabilityPage'
-import RuntimeAuditLogPage from './pages/RuntimeAuditLogPage'
 import AdminAuditLogPage from './pages/AdminAuditLogPage'
 import LoginRecordPage from './pages/LoginRecordPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
@@ -154,7 +153,6 @@ function AppRoutes() {
           <Route path="users" element={<UserManagementPage />} />
           <Route path="admin-audit-logs" element={<AdminAuditLogPage />} />
           <Route path="sensitive-words" element={<SensitiveWordPage />} />
-          <Route path="runtime-audit-logs" element={<RuntimeAuditLogPage />} />
           <Route path="login-records" element={<LoginRecordPage />} />
           <Route path="settings/change-password" element={<ChangePasswordPage />} />
           <Route path="global-configs" element={<GlobalConfigPage />} />

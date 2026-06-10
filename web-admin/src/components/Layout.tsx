@@ -140,11 +140,6 @@ const AppLayout: React.FC = () => {
                   label: '管理审计日志',
                 },
                 {
-                  key: '/runtime-audit-logs',
-                  icon: <FileTextOutlined />,
-                  label: 'Agent 审计日志',
-                },
-                {
                   key: '/global-configs',
                   icon: <SettingOutlined />,
                   label: '全局配置',

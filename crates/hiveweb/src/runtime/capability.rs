@@ -249,7 +249,6 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         Err(e) => {
             let reply = ReplyEnvelope::err(4000, format!("invalid host_call envelope: {e}"));
             runtime_audit::record(
-                pool,
                 AuditRecord {
                     request_id,
                     session_id: ctx.session_id,
@@ -263,8 +262,7 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
                     error_message: Some("invalid envelope"),
                     payload_summary: None,
                 },
-            )
-            .await;
+            );
             return serde_json::to_string(&reply).unwrap_or_default();
         }
     };
@@ -274,7 +272,6 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     if registry.lookup(&cap_name).is_none() {
         let reply = ReplyEnvelope::err(4045, format!("unknown capability: {cap_name}"));
         runtime_audit::record(
-            pool,
             AuditRecord {
                 request_id,
                 session_id: ctx.session_id,
@@ -288,8 +285,7 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
                 error_message: Some("unknown capability"),
                 payload_summary: Some(runtime_audit::redact_args(&envelope.args)),
             },
-        )
-        .await;
+        );
         return serde_json::to_string(&reply).unwrap_or_default();
     }
 
@@ -309,7 +305,6 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     if !granted.contains(&cap_name) {
         let reply = ReplyEnvelope::err(4030, format!("当前 Agent 未授权调用能力「{cap_name}」"));
         runtime_audit::record(
-            pool,
             AuditRecord {
                 request_id,
                 session_id: ctx.session_id,
@@ -323,8 +318,7 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
                 error_message: Some("capability not granted"),
                 payload_summary: Some(runtime_audit::redact_args(&envelope.args)),
             },
-        )
-        .await;
+        );
         return serde_json::to_string(&reply).unwrap_or_default();
     }
 
@@ -413,7 +407,6 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     };
 
     runtime_audit::record(
-        pool,
         AuditRecord {
             request_id,
             session_id: ctx.session_id,
@@ -430,8 +423,7 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
                 "ok": reply.ok,
             })),
         },
-    )
-    .await;
+    );
 
     serde_json::to_string(&reply).unwrap_or_default()
 }

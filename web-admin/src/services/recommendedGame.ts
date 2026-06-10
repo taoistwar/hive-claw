@@ -30,11 +30,15 @@ export interface RecommendedGameListResponse {
 
 export const listRecommendedGames = async (
   q?: string,
+  channel?: string,
+  client_type?: string,
   page = 1,
   page_size = 20
 ): Promise<RecommendedGameListResponse> => {
   const params = new URLSearchParams()
   if (q) params.set('q', q)
+  if (channel) params.set('channel', channel)
+  if (client_type) params.set('client_type', client_type)
   params.set('page', String(page))
   params.set('page_size', String(page_size))
   const { data } = await apiClient.get(`/recommended-games?${params.toString()}`)

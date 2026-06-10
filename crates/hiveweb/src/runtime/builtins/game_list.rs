@@ -3,12 +3,24 @@ use serde_json::Value;
 use super::{BuiltinContext, BuiltinError, BuiltinResult};
 
 /// sync wrapper: bridges async DB queries inside the tokio runtime via `block_in_place`.
+/// channel and client_type are extracted from AgentContext metadata.
 pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
+    let agent_ctx = ctx.agent_ctx.clone();
+    let channel = agent_ctx
+        .as_ref()
+        .and_then(|ac| ac.get_user_metadata("channel"))
+        .unwrap_or_default();
+    let client_type = agent_ctx
+        .as_ref()
+        .and_then(|ac| ac.get_user_metadata("client_type"))
+        .unwrap_or_default();
+
     let pool = ctx.pool.clone();
     let ext_pool = ctx.ext_pool.cloned();
     tokio::task::block_in_place(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async move { game_list_async_impl(&pool, ext_pool.as_ref()).await })
+        tokio::runtime::Handle::current().block_on(async move {
+            game_list_async_impl(&pool, ext_pool.as_ref(), &channel, &client_type).await
+        })
     })
 }
 
@@ -18,6 +30,8 @@ pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 async fn game_list_async_impl(
     pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
+    channel: &str,
+    client_type: &str,
 ) -> BuiltinResult {
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
@@ -26,8 +40,8 @@ async fn game_list_async_impl(
         .await
         .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 
-    // 2. Primary: cc_logic_game from external DB
-    let external = crate::services::game_service::list_external_games(ext_pool)
+    // 2. Primary: cc_logic_game from external DB, filtered by channel & client_type
+    let external = crate::services::game_service::list_external_games(ext_pool, channel, client_type)
         .await
         .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 

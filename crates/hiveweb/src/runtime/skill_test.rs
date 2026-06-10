@@ -190,7 +190,6 @@ pub async fn run_skill_test(
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
         runtime_audit::record(
-            pool,
             AuditRecord {
                 request_id: None,
                 session_id: None,
@@ -204,13 +203,11 @@ pub async fn run_skill_test(
                 error_message: Some(&err_msg),
                 payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
             },
-        )
-        .await;
+        );
         return Err(format!("LLM error: {}", err_msg));
     }
 
     runtime_audit::record(
-        pool,
         AuditRecord {
             request_id: None,
             session_id: None,
@@ -224,8 +221,7 @@ pub async fn run_skill_test(
             error_message: None,
             payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
         },
-    )
-    .await;
+    );
 
     let assistant_content = resp.content.unwrap_or_default();
     let tool_calls = resp.tool_calls;

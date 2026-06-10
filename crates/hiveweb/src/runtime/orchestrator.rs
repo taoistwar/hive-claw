@@ -312,7 +312,7 @@ where
                 .or(resp.error_kind.clone())
                 .unwrap_or_else(|| "LLM error".into());
             emit_error(&tx, resp.error_status_code.unwrap_or(5000) as u16, msg);
-            audit_llm(&deps.pool, current_agent_id, "error", elapsed_start, &model).await;
+            audit_llm(current_agent_id, "error", elapsed_start, &model).await;
             // ★ on_agent_error hook (audit-only)
             {
                 let hctx = HookContext {
@@ -385,7 +385,6 @@ where
         }
 
         audit_llm(
-            &deps.pool,
             current_agent_id,
             "success",
             elapsed_start,
@@ -596,7 +595,7 @@ where
                 let _ = tx.send(Ok(Event::default()
                     .event("routed")
                     .data(routed_payload.to_string())));
-                audit_route(&deps.pool, current_agent_id, next_agent).await;
+                audit_route(current_agent_id, next_agent).await;
 
                 // ★ AgentContext: record delegation
                 {
@@ -1306,10 +1305,9 @@ async fn filter_output(
 
 // ============================ Audit ============================
 
-async fn audit_llm(pool: &MySqlPool, agent_id: i64, outcome: &str, started: Instant, model: &str) {
+async fn audit_llm(agent_id: i64, outcome: &str, started: Instant, model: &str) {
     let _ = model;
     runtime_audit::record(
-        pool,
         AuditRecord {
             request_id: None,
             session_id: None,
@@ -1323,13 +1321,11 @@ async fn audit_llm(pool: &MySqlPool, agent_id: i64, outcome: &str, started: Inst
             error_message: None,
             payload_summary: None,
         },
-    )
-    .await;
+    );
 }
 
-async fn audit_route(pool: &MySqlPool, from: i64, to: i64) {
+async fn audit_route(from: i64, to: i64) {
     runtime_audit::record(
-        pool,
         AuditRecord {
             request_id: None,
             session_id: None,
@@ -1343,6 +1339,5 @@ async fn audit_route(pool: &MySqlPool, from: i64, to: i64) {
             error_message: None,
             payload_summary: Some(json!({"to_agent_id": to})),
         },
-    )
-    .await;
+    );
 }

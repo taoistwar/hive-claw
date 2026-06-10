@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::api::chat_common;
 use crate::api::AppState;
 use crate::models::Role;
+use crate::models::chat_user::ChatMessageUser;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
+use crate::services::chat_user as chat_svc;
 use crate::services::recommended_game::{self as svc, CreateMeta, UpdateMeta};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
@@ -31,13 +33,19 @@ pub fn router() -> Router<AppState> {
 }
 
 pub fn router_public() -> Router<AppState> {
-    Router::new().route("/recommended-games/top", post(top_recommended_games))
+    Router::new()
+        .route("/recommended-games/top", post(top_recommended_games))
+        .route("/recommended-games/execute", post(execute_recommendation))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default)]
     pub q: Option<String>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub client_type: Option<String>,
     #[serde(default = "default_page")]
     pub page: i64,
     #[serde(default = "default_page_size")]
@@ -81,6 +89,8 @@ async fn list_recommended_games(
     let (items, total) = svc::list(
         &state.pool,
         q.q.as_deref().filter(|s| !s.is_empty()),
+        q.channel.as_deref().filter(|s| !s.is_empty()),
+        q.client_type.as_deref().filter(|s| !s.is_empty()),
         q.page,
         q.page_size,
     )
@@ -292,4 +302,94 @@ async fn top_recommended_games(
         })
         .collect();
     Ok(ApiResponse::success(result))
+}
+
+// ── 执行推荐：记录两条聊天消息 ──
+
+#[derive(Debug, Deserialize)]
+struct ExecuteRequest {
+    user_id: String,
+    game_id: String,
+    channel: String,
+    client_type: String,
+    client_version: String,
+}
+
+async fn execute_recommendation(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    body: String,
+) -> Result<ApiResponse<ChatMessageUser>, ApiResponse<()>> {
+    // 1. MD5 签名校验
+    let secret = get_secret();
+    if !secret.is_empty() {
+        let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
+        if !chat_common::verify_sign(secret, "/api/recommended-games/execute", &body, sign) {
+            return Err(AppError::BadRequest("Invalid signature".into()).into_response());
+        }
+    }
+
+    // 2. 解析请求
+    let req: ExecuteRequest = serde_json::from_str(&body)
+        .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
+
+    if req.user_id.trim().is_empty()
+        || req.game_id.trim().is_empty()
+    {
+        return Err(
+            AppError::BadRequest("user_id, game_id 不能为空".into()).into_response(),
+        );
+    }
+
+    let user_id: i64 = req.user_id.trim().parse().map_err(|_| {
+        AppError::BadRequest("user_id must be a number".into()).into_response::<()>()
+    })?;
+
+    // 3. 查询推荐游戏
+    let game = svc::fetch_by_game_id(&state.pool, &req.game_id)
+        .await
+        .map_err(|e| e.into_response())?;
+
+    // 4. 获取或创建 session
+    let session = chat_svc::get_or_create_session_user(&state.pool, user_id)
+        .await
+        .map_err(|e| e.into_response::<()>())?;
+
+    // 5. 记录用户消息（content = game.reply）
+    chat_svc::append_user_message_user(&state.pool, session.id, user_id, &game.reply)
+        .await
+        .map_err(|e| e.into_response::<()>())?;
+
+    // 6. 构建 card extensions
+    let card = serde_json::json!({
+        "content_type": "card",
+        "payload": {
+            "type": "game",
+            "info": {
+                "game_id": game.game_id,
+                "game_name": game.game_name,
+                "name": game.name,
+                "reply": game.reply,
+                "reason": game.reason,
+                "tag": game.tag,
+                "game_category": game.game_category,
+                "game_image": game.game_image,
+            }
+        }
+    });
+    let extensions = serde_json::json!([card]);
+
+    // 7. 记录 assistant 消息（extensions = card）
+    let saved = chat_svc::append_assistant_message_user(
+        &state.pool,
+        session.id,
+        user_id,
+        "",
+        None,
+        Some(extensions),
+    )
+    .await
+    .map_err(|e| e.into_response::<()>())?;
+
+    Ok(ApiResponse::success(saved))
 }

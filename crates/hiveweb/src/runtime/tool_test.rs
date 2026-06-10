@@ -326,7 +326,6 @@ pub async fn run_tool_test(
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
         logger.log(&format!("FAIL: LLM error: {}", err_msg));
         runtime_audit::record(
-            pool,
             AuditRecord {
                 request_id: None,
                 session_id: None,
@@ -340,13 +339,11 @@ pub async fn run_tool_test(
                 error_message: Some(&err_msg),
                 payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
             },
-        )
-        .await;
+        );
         return Err(format!("LLM error: {}", err_msg));
     }
 
     runtime_audit::record(
-        pool,
         AuditRecord {
             request_id: None,
             session_id: None,
@@ -360,8 +357,7 @@ pub async fn run_tool_test(
             error_message: None,
             payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
         },
-    )
-    .await;
+    );
     logger.log(&format!(
         "STEP7 OK: LLM success, tool_calls_count={}",
         resp.tool_calls.len()

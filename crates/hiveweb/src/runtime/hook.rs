@@ -214,13 +214,22 @@ async fn execute_call_function(
             };
             let input_json = serde_json::to_string(&function_input)
                 .map_err(|e| ActionError(format!("args serialize: {e}")))?;
+            // 查询当前 agent 的 capability 权限
+            let perms: Vec<String> = sqlx::query_as(
+                "SELECT capability FROM agent_permissions WHERE agent_id = ?",
+            )
+            .bind(ctx.agent_id)
+            .fetch_all(pool.as_ref())
+            .await
+            .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
+            .unwrap_or_default();
             let dispatch_ctx = DispatchCtx {
                 request_id: None,
                 session_id: Some(ctx.session_id),
                 agent_id: ctx.agent_id,
                 plugin_id: pid,
                 function_id: Some(function_id),
-                permissions: Vec::new(),
+                permissions: perms,
             };
             let output_str = deps
                 .invoker

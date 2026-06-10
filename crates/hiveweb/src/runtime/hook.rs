@@ -269,6 +269,16 @@ async fn execute_call_workflow(
     // ★ Inject AgentContext snapshot for workflow read access
     inject_agent_context_snapshot(&mut workflow_input, &deps.agent_ctx);
 
+    // 查询当前 agent 的 capability 权限
+    let perms: Vec<String> = sqlx::query_as(
+        "SELECT capability FROM agent_permissions WHERE agent_id = ?",
+    )
+    .bind(ctx.agent_id)
+    .fetch_all(&*pool)
+    .await
+    .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
+    .unwrap_or_default();
+
     let executor_deps = super::workflow::ExecutorDeps {
         pool: (*pool).clone(),
         s3: deps.s3.clone(),
@@ -276,6 +286,7 @@ async fn execute_call_workflow(
         llm: Arc::clone(&deps.llm),
         invoker: Arc::clone(&deps.invoker),
         ext_pool: deps.ext_pool.clone(),
+        permissions: perms,
     };
     let executor = super::workflow::WorkflowExecutor::new();
     let outcome = executor

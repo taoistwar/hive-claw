@@ -115,11 +115,11 @@ pub(crate) fn build(
 
 #[async_trait]
 impl Channel for TelegramChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "telegram"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "Telegram"
     }
 

@@ -144,11 +144,11 @@ pub(crate) fn build(
 
 #[async_trait]
 impl Channel for SlackChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "slack"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "Slack"
     }
 

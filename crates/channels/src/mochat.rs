@@ -69,8 +69,8 @@ impl MochatChannel {
 
 #[async_trait]
 impl Channel for MochatChannel {
-    fn name(&self) -> &'static str { "mochat" }
-    fn display_name(&self) -> &'static str { "Mochat" }
+    fn name() -> &'static str { "mochat" }
+    fn display_name() -> &'static str { "Mochat" }
     fn bus(&self) -> &MessageBus { &self.bus }
     fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
 

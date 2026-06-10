@@ -86,11 +86,11 @@ impl DingTalkChannel {
 
 #[async_trait]
 impl Channel for DingTalkChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "dingtalk"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "DingTalk"
     }
 

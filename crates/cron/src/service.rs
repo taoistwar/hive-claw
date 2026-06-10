@@ -907,7 +907,7 @@ mod tests {
             ..Default::default()
         };
         let job = svc
-            .add_job("job", sch, "ping", false, None, None, false)
+            .add_job("job", sch, "ping", false, None, None, false, None, None)
             .await
             .unwrap();
         let listed = svc.list_jobs(false).await;

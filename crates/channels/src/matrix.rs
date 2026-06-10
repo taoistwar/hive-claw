@@ -84,8 +84,8 @@ impl MatrixChannel {
 
 #[async_trait]
 impl Channel for MatrixChannel {
-    fn name(&self) -> &'static str { "matrix" }
-    fn display_name(&self) -> &'static str { "Matrix" }
+    fn name() -> &'static str { "matrix" }
+    fn display_name() -> &'static str { "Matrix" }
     fn bus(&self) -> &MessageBus { &self.bus }
     fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
 

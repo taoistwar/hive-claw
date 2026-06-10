@@ -381,7 +381,7 @@ pub async fn list_external_games(
     client_type: &str,
 ) -> Result<Vec<(i64, String, String)>, AppError> {
     let sql = r#"
-        SELECT ga.id, g.name, COALESCE(g.alias, '') AS alias
+        SELECT CAST(ga.id AS SIGNED) AS id, g.name, COALESCE(g.alias, '') AS alias
         FROM cc_logic_game g
         INNER JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
         INNER JOIN cc_game ga ON ga.logic_game_id = g.id

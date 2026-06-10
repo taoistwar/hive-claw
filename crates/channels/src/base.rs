@@ -82,10 +82,14 @@ impl ChannelError {
 #[async_trait]
 pub trait Channel: Send + Sync {
     /// Static channel name (e.g. `"weixin"`).
-    fn name(&self) -> &'static str;
+    fn name() -> &'static str
+    where
+        Self: Sized;
 
     /// Human-readable name (e.g. `"WeChat"`).
-    fn display_name(&self) -> &'static str;
+    fn display_name() -> &'static str
+    where
+        Self: Sized;
 
     /// Reference to the message bus.
     fn bus(&self) -> &MessageBus;

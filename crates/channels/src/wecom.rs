@@ -88,11 +88,11 @@ pub(crate) fn build(
 
 #[async_trait]
 impl Channel for WecomChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "wecom"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "WeCom"
     }
 

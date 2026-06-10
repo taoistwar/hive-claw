@@ -123,7 +123,6 @@ pub struct ListSessionsQuery {
 /// Verify MD5 signature: `MD5(SECRET + "{path}?body={body}")`
 pub fn verify_sign(secret: &str, path: &str, body: &str, expected_sign: &str) -> bool {
     let sign_string = format!("{}{}?body={}", secret, path, body);
-    println!("Verifying sign with string: '{}'", sign_string);
     let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
     digest == expected_sign
 }

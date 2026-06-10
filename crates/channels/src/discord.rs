@@ -83,8 +83,8 @@ impl DiscordChannel {
 
 #[async_trait]
 impl Channel for DiscordChannel {
-    fn name(&self) -> &'static str { "discord" }
-    fn display_name(&self) -> &'static str { "Discord" }
+    fn name() -> &'static str { "discord" }
+    fn display_name() -> &'static str { "Discord" }
     fn bus(&self) -> &MessageBus { &self.bus }
     fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
 

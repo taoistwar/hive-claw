@@ -125,13 +125,15 @@ pub async fn list_messages_user(
     pool: &MySqlPool,
     session_id: i64,
 ) -> Result<Vec<ChatMessageUser>, AppError> {
-    sqlx::query_as::<_, ChatMessageUser>(
-        "SELECT * FROM chat_messages_user WHERE session_id = ? ORDER BY id ASC limit 6",
+    let mut res = sqlx::query_as::<_, ChatMessageUser>(
+        "SELECT * FROM chat_messages_user WHERE session_id = ? ORDER BY created_at DESC, id DESC limit 6",
     )
     .bind(session_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| AppError::Internal(format!("user messages list: {e}")))
+    .map_err(|e| AppError::Internal(format!("user messages list: {e}")))?;
+    res.reverse();
+    Ok(res)
 }
 
 pub async fn append_user_message_user(

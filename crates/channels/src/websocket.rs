@@ -129,11 +129,11 @@ pub(crate) fn build(
 
 #[async_trait]
 impl Channel for WebSocketChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "websocket"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "WebSocket"
     }
 

@@ -108,8 +108,8 @@ impl MSTeamsChannel {
 
 #[async_trait]
 impl Channel for MSTeamsChannel {
-    fn name(&self) -> &'static str { "msteams" }
-    fn display_name(&self) -> &'static str { "Microsoft Teams" }
+    fn name() -> &'static str { "msteams" }
+    fn display_name() -> &'static str { "Microsoft Teams" }
     fn bus(&self) -> &MessageBus { &self.bus }
     fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
 

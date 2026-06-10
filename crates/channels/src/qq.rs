@@ -760,7 +760,7 @@ impl QQChannel {
 
         handle_inbound(
             &self.bus,
-            self.name(),
+            QQChannel::name(),
             &self.config.allow_from,
             self.supports_streaming(),
             user_id,
@@ -996,10 +996,10 @@ impl QQChannel {
 
 #[async_trait]
 impl Channel for QQChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "qq"
     }
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "QQ"
     }
     fn bus(&self) -> &MessageBus {

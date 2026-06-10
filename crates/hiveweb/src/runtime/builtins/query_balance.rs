@@ -193,7 +193,7 @@ LEFT JOIN (
         map.insert("_agent_context_updates".into(), updates);
     }
 
-    println!("HOP tool call result: {:?}", result);
+    tracing::debug!("HOP tool call result: {:?}", result);
 
     Ok(result)
 }

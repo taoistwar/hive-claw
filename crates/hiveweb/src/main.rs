@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             .parse::<u16>()
             .expect("HIVEWEB_PORT must be a valid number")
     });
-    println!("Host: {}, Port: {}", host, port);
+    tracing::info!("Server will run at http://{}:{}", host, port);
 
     // Initialize database connection pool
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");

@@ -267,6 +267,13 @@ async fn execute_workflow(
         llm: std::sync::Arc::clone(&state.runtime_state.llm),
         invoker: std::sync::Arc::clone(&state.runtime_state.invoker),
         ext_pool: state.ext_pool.clone(),
+        permissions: state
+            .runtime_state
+            .capabilities
+            .all()
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect(),
     };
     let outcome = state
         .runtime_state

@@ -50,6 +50,8 @@ pub struct ExecutorDeps {
     pub invoker: Arc<Invoker>,
     /// 外部数据库连接池（用于依赖外部 DB 的内置函数，如 query_balance）
     pub ext_pool: Option<MySqlPool>,
+    /// Agent 的 capability 权限（生产路径传入 agent 实际权限，测试端点传入全部权限）
+    pub permissions: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -149,11 +151,8 @@ impl WorkflowExecutor {
                 .push(dst_key.clone());
         }
 
-        // 3. Workflow 执行时授予全部 capability 权限（与 Tool 测试行为一致）
-        let agent_perms: Vec<String> = crate::runtime::capability::CAPABILITIES
-            .iter()
-            .map(|c| c.name.to_string())
-            .collect();
+        // 3. 使用调用方传入的 agent 权限（生产路径=Agent 实际权限，测试端点=全部权限）
+        let agent_perms: Vec<String> = deps.permissions.clone();
 
         // 4. Topological layer execution with overall timeout
         let result = timeout(

@@ -36,9 +36,15 @@ export default function ChatPage() {
   const [inputUserId, setInputUserId] = useState<string>(() => {
     return localStorage.getItem('chat_user_id') || '';
   });
-  const [channel, setChannel] = useState('web');
-  const [clientType, setClientType] = useState('web');
-  const [clientVersion, setClientVersion] = useState('1.0.0');
+  const [channel, setChannel] = useState(() => {
+    return localStorage.getItem('chat_channel') || 'web';
+  });
+  const [clientType, setClientType] = useState(() => {
+    return localStorage.getItem('chat_client_type') || 'web';
+  });
+  const [clientVersion, setClientVersion] = useState(() => {
+    return localStorage.getItem('chat_client_version') || '1.0.0';
+  });
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState(false);
@@ -46,6 +52,7 @@ export default function ChatPage() {
   const [games, setGames] = useState<TopRecommendedGame[]>([]);
   const [loadingGames, setLoadingGames] = useState(false);
   const historyEndRef = useRef<HTMLDivElement>(null);
+  const sendingRef = useRef(false);
 
   const scrollToBottom = () => {
     historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -84,6 +91,11 @@ export default function ChatPage() {
     }
   }, [userId]);
 
+  // channel / client_type / client_version 持久化
+  useEffect(() => { localStorage.setItem('chat_channel', channel); }, [channel]);
+  useEffect(() => { localStorage.setItem('chat_client_type', clientType); }, [clientType]);
+  useEffect(() => { localStorage.setItem('chat_client_version', clientVersion); }, [clientVersion]);
+
   // 加载热门推荐游戏
   const loadGames = useCallback(async () => {
     if (userId <= 0) return;
@@ -116,7 +128,8 @@ export default function ChatPage() {
 
   // 发送消息
   const onSend = async () => {
-    if (userId <= 0 || !draft.trim() || pending) return;
+    if (userId <= 0 || !draft.trim() || sendingRef.current) return;
+    sendingRef.current = true;
     const text = draft.trim();
     setDraft('');
     setPending(true);
@@ -149,6 +162,7 @@ export default function ChatPage() {
       void appMessage.error(`发送失败：${(e as Error).message}`);
       setHistory((h) => h.filter((m) => m.id !== userMsg.id));
     } finally {
+      sendingRef.current = false;
       setPending(false);
     }
   };

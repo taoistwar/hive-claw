@@ -696,7 +696,7 @@ impl FeishuChannel {
 
     /// Check if a sender is allowed.
     fn is_allowed(&self, sender_id: &str) -> bool {
-        crate::base::is_allowed(self.name(), &self.inner.config.allow_from, sender_id)
+        crate::base::is_allowed(FeishuChannel::name(), &self.inner.config.allow_from, sender_id)
     }
 
     /// Fetch the bot's own open_id via GET /open-apis/bot/v3/info.
@@ -1388,11 +1388,11 @@ impl FeishuChannel {
 
 #[async_trait]
 impl Channel for FeishuChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "feishu"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "Feishu"
     }
 
@@ -2074,7 +2074,7 @@ impl FeishuChannel {
                 let chat_id = sender_id.clone();
                 handle_inbound(
                     &self.inner.bus,
-                    self.name(),
+                    FeishuChannel::name(),
                     &self.inner.config.allow_from,
                     self.inner.config.streaming,
                     sender_id,
@@ -2167,7 +2167,7 @@ impl FeishuChannel {
                     let file_path = media_paths.last().unwrap().clone();
                     let transcription = {
                         let ts = self.inner.transcription_settings.lock().await;
-                        crate::base::transcribe_audio(self.name(), &*ts, &file_path).await
+                        crate::base::transcribe_audio(FeishuChannel::name(), &*ts, &file_path).await
                     };
                     if !transcription.is_empty() {
                         content_text = format!("[transcription: {}]", transcription);
@@ -2255,7 +2255,7 @@ impl FeishuChannel {
 
         handle_inbound(
             &self.inner.bus,
-            self.name(),
+            FeishuChannel::name(),
             &self.inner.config.allow_from,
             self.inner.config.streaming,
             sender_id,
@@ -2314,8 +2314,8 @@ pub fn build(
     });
 
     Ok(crate::registry::ChannelEntry {
-        name: channel.name().to_string(),
-        display_name: channel.display_name().to_string(),
+        name: FeishuChannel::name().to_string(),
+        display_name: FeishuChannel::display_name().to_string(),
         channel: Arc::new(channel),
     })
 }

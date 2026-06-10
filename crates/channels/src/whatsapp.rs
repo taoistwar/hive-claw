@@ -91,11 +91,11 @@ pub(crate) fn build(
 
 #[async_trait]
 impl Channel for WhatsAppChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "whatsapp"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "WhatsApp"
     }
 

@@ -104,8 +104,8 @@ impl EmailChannel {
 
 #[async_trait]
 impl Channel for EmailChannel {
-    fn name(&self) -> &'static str { "email" }
-    fn display_name(&self) -> &'static str { "Email" }
+    fn name() -> &'static str { "email" }
+    fn display_name() -> &'static str { "Email" }
     fn bus(&self) -> &MessageBus { &self.bus }
     fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
 

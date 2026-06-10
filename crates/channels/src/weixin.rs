@@ -965,7 +965,7 @@ impl WeixinChannel {
         let allow_list = self.config.read().await.allow_from.clone();
         handle_inbound(
             &self.bus,
-            self.name(),
+            WeixinChannel::name(),
             &allow_list,
             self.supports_streaming(),
             from_user_id.clone(),
@@ -982,7 +982,7 @@ impl WeixinChannel {
 
     async fn transcribe_audio_helper(&self, file_path: &str) -> String {
         let settings = self.transcription.read().await.clone();
-        transcribe_audio(self.name(), &settings, Path::new(file_path)).await
+        transcribe_audio(WeixinChannel::name(), &settings, Path::new(file_path)).await
     }
 
     // ------------------------------------------------------------------
@@ -1474,10 +1474,10 @@ impl WeixinChannel {
 
 #[async_trait]
 impl Channel for WeixinChannel {
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "weixin"
     }
-    fn display_name(&self) -> &'static str {
+    fn display_name() -> &'static str {
         "WeChat"
     }
     fn bus(&self) -> &MessageBus {

@@ -109,6 +109,7 @@ pub async fn run_session_user(
 trait HasRoleContent {
     fn role_ref(&self) -> &str;
     fn content_ref(&self) -> Option<&str>;
+    fn extensions_ref(&self) -> Option<&serde_json::Value>;
 }
 impl HasRoleContent for crate::models::ChatMessageUser {
     fn role_ref(&self) -> &str {
@@ -116,6 +117,9 @@ impl HasRoleContent for crate::models::ChatMessageUser {
     }
     fn content_ref(&self) -> Option<&str> {
         self.content.as_deref()
+    }
+    fn extensions_ref(&self) -> Option<&serde_json::Value> {
+        self.extensions.as_ref()
     }
 }
 
@@ -172,17 +176,36 @@ where
     > = None;
     let mut last_identifier: Option<String> = None;
 
-    // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息
+    // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息；
+    // 有 extensions 时合并 content + extensions 为一个 JSON 对象，空字段不显示。
     let mut messages: Vec<Value> = Vec::new();
     let mut last_user_content: Option<String> = None;
     for m in history {
-        if let Some(c) = m.content_ref() {
-            if c.is_empty() {
-                continue;
+        let c = m.content_ref();
+        let ext = m.extensions_ref();
+        let has_content = c.is_some_and(|s| !s.is_empty());
+        let has_extensions = ext.is_some_and(|v| !v.is_null());
+
+        if !has_content && !has_extensions {
+            continue;
+        }
+
+        let msg = if has_extensions {
+            let mut obj = serde_json::Map::new();
+            obj.insert("role".into(), json!(m.role_ref()));
+            if has_content {
+                obj.insert("content".into(), json!(c.unwrap()));
             }
-            messages.push(json!({"role": m.role_ref(), "content": c}));
-            if m.role_ref() == "user" {
-                last_user_content = Some(c.to_string());
+            obj.insert("extensions".into(), ext.unwrap().clone());
+            Value::Object(obj)
+        } else {
+            json!({"role": m.role_ref(), "content": c.unwrap()})
+        };
+        messages.push(msg);
+
+        if m.role_ref() == "user" {
+            if let Some(text) = c {
+                last_user_content = Some(text.to_string());
             }
         }
     }
@@ -275,7 +298,7 @@ where
 
         // ★ before_llm_call hook (blocking-capable)
         {
-            let hctx = HookContext {
+            let hook_context = HookContext {
                 agent_id: agent_content.agent_id,
                 identifier: agent_content.identifier.clone(),
                 session_id,
@@ -291,7 +314,7 @@ where
                 Arc::new(deps.pool.clone()),
                 &agent_content.hooks,
                 "before_llm_call",
-                &hctx,
+                &hook_context,
                 &hook_deps,
             )
             .await
@@ -315,7 +338,7 @@ where
             audit_llm(current_agent_id, "error", elapsed_start, &model).await;
             // ★ on_agent_error hook (audit-only)
             {
-                let hctx = HookContext {
+                let hook_context = HookContext {
                     agent_id: agent_content.agent_id,
                     identifier: agent_content.identifier.clone(),
                     session_id,
@@ -331,7 +354,7 @@ where
                     Arc::new(deps.pool.clone()),
                     &agent_content.hooks,
                     "on_agent_error",
-                    &hctx,
+                    &hook_context,
                     &hook_deps,
                 )
                 .await;
@@ -343,7 +366,7 @@ where
 
         // ★ after_llm_call hook (audit-only)
         {
-            let hctx = HookContext {
+            let hook_context = HookContext {
                 agent_id: agent_content.agent_id,
                 identifier: agent_content.identifier.clone(),
                 session_id,
@@ -359,7 +382,7 @@ where
                 Arc::new(deps.pool.clone()),
                 &agent_content.hooks,
                 "after_llm_call",
-                &hctx,
+                &hook_context,
                 &hook_deps,
             )
             .await;
@@ -413,7 +436,7 @@ where
         for tc in &tool_calls {
             // ★ before_tool_call hook (blocking-capable)
             {
-                let hctx = HookContext {
+                let hook_context = HookContext {
                     agent_id: agent_content.agent_id,
                     identifier: agent_content.identifier.clone(),
                     session_id,
@@ -429,7 +452,7 @@ where
                     Arc::new(deps.pool.clone()),
                     &agent_content.hooks,
                     "before_tool_call",
-                    &hctx,
+                    &hook_context,
                     &hook_deps,
                 )
                 .await
@@ -500,7 +523,7 @@ where
 
             // ★ after_tool_call hook (audit-only)
             {
-                let hctx = HookContext {
+                let hook_context = HookContext {
                     agent_id: agent_content.agent_id,
                     identifier: agent_content.identifier.clone(),
                     session_id,
@@ -516,7 +539,7 @@ where
                     Arc::new(deps.pool.clone()),
                     &agent_content.hooks,
                     "after_tool_call",
-                    &hctx,
+                    &hook_context,
                     &hook_deps,
                 )
                 .await;
@@ -712,7 +735,7 @@ async fn finalize_with_variant(
     // ★ after_agent_end hook — 必须在收集 extensions 之前执行，
     //    因为 hook 中的 workflow/function 可能写入 extensions
     if let (Some(hooks_map), Some(ident)) = (hooks, agent_identifier) {
-        let hctx = HookContext {
+        let hook_context = HookContext {
             agent_id: final_agent_id,
             identifier: ident.to_string(),
             session_id,
@@ -728,7 +751,7 @@ async fn finalize_with_variant(
             Arc::new(pool.clone()),
             hooks_map,
             "after_agent_end",
-            &hctx,
+            &hook_context,
             hook_deps,
         )
         .await;
@@ -1112,6 +1135,7 @@ async fn handle_meta_tool(
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
                 ext_pool: deps.ext_pool.clone(),
+                permissions: ctx.permissions.clone(),
             };
             let executor = crate::runtime::workflow::WorkflowExecutor::new();
             match executor
@@ -1257,6 +1281,7 @@ pub(crate) async fn handle_workspace_tool(
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
                 ext_pool: deps.ext_pool.clone(),
+                permissions: ctx.permissions.clone(),
             };
             // 临时构造 executor — 直接用 sentinel；workflows 持有也行
             let executor = crate::runtime::workflow::WorkflowExecutor::new();

@@ -189,6 +189,8 @@ pub struct AgentContext {
     pub(crate) created_at: chrono::DateTime<chrono::Utc>,
     /// Custom metadata
     pub(crate) metadata: RwLock<HashMap<String, String>>,
+    /// Conversation history messages (OpenAI-style format)
+    pub(crate) messages: RwLock<Vec<serde_json::Value>>,
     /// Configuration
     pub(crate) config: ContextConfig,
     /// Sub-agent blacklist (present only for forked contexts)
@@ -237,6 +239,7 @@ impl AgentContext {
             lifecycle_state: RwLock::new(LifecycleState::Active),
             created_at: Utc::now(),
             metadata: RwLock::new(HashMap::new()),
+            messages: RwLock::new(Vec::new()),
             config,
             blacklisted_categories: None,
             subagent_id: None,
@@ -491,6 +494,26 @@ impl AgentContext {
             .read()
             .ok()
             .and_then(|m| m.get(key).cloned())
+    }
+
+    // --- Messages Operations ---
+
+    /// Set the conversation history messages (OpenAI-style format).
+    pub fn set_messages(&self, msgs: Vec<serde_json::Value>) -> Result<(), ContextError> {
+        let mut guard = self
+            .messages
+            .write()
+            .map_err(|_| ContextError::MergeFailed("messages write lock poisoned".into()))?;
+        *guard = msgs;
+        Ok(())
+    }
+
+    /// Get a clone of the conversation history messages.
+    pub fn get_messages(&self) -> Result<Vec<serde_json::Value>, ContextError> {
+        self.messages
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| ContextError::MergeFailed("messages read lock poisoned".into()))
     }
 
     // --- Audit Operations ---

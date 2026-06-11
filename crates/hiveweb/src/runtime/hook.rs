@@ -584,6 +584,7 @@ pub(crate) fn agent_context_snapshot_value(agent_ctx: &AgentContext) -> Value {
             .iter()
             .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
             .collect::<Vec<_>>(),
+        "messages":      agent_ctx.get_messages().unwrap_or_default(),
     })
 }
 

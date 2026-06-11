@@ -527,3 +527,36 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
     Ok(())
 }
+
+// ============================== Runtime metadata ==============================
+
+/// Lightweight function metadata needed by the workflow runtime to dispatch a
+/// function node (kind, plugin_id, plugin_export, identifier).
+#[derive(Debug)]
+pub struct FunctionRuntimeMeta {
+    pub kind: i8,
+    pub plugin_id: Option<i64>,
+    pub plugin_export: Option<String>,
+    pub identifier: String,
+}
+
+/// Fetch the minimal runtime metadata for a function by id.
+pub async fn fetch_runtime_meta(
+    pool: &MySqlPool,
+    function_id: i64,
+) -> Result<Option<FunctionRuntimeMeta>, sqlx::Error> {
+    sqlx::query_as::<_, (i8, Option<i64>, Option<String>, String)>(
+        "SELECT kind, plugin_id, plugin_export, identifier FROM functions WHERE id = ?",
+    )
+    .bind(function_id)
+    .fetch_optional(pool)
+    .await
+    .map(|row| {
+        row.map(|(kind, plugin_id, plugin_export, identifier)| FunctionRuntimeMeta {
+            kind,
+            plugin_id,
+            plugin_export,
+            identifier,
+        })
+    })
+}

@@ -195,9 +195,12 @@ where
             obj.insert("role".into(), json!(m.role_ref()));
             if has_content {
                 obj.insert("content".into(), json!(c.unwrap()));
+            } else {
+                obj.insert("content".into(), json!(""));
             }
             obj.insert("extensions".into(), ext.unwrap().clone());
-            Value::Object(obj)
+            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
+            json!({"role": m.role_ref(), "content": content})
         } else {
             json!({"role": m.role_ref(), "content": c.unwrap()})
         };
@@ -214,15 +217,21 @@ where
         messages.push(json!({"role": "user", "content": user_content}));
     }
 
+    // ★ Store conversation history in AgentContext for function/workflow access
+    let _ = agent_ctx.set_messages(messages.clone());
+
     for hop in 0..max_hops {
         // 1. 装配当前 agent 资源
-        let agent_content = match crate::services::agent::fetch_content(&deps.pool, &deps.redis, current_agent_id).await {
-            Ok(c) => c,
-            Err(e) => {
-                emit_error(&tx, 5000, format!("agent context: {e}"));
-                break;
-            }
-        };
+        let agent_content =
+            match crate::services::agent::fetch_content(&deps.pool, &deps.redis, current_agent_id)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    emit_error(&tx, 5000, format!("agent context: {e}"));
+                    break;
+                }
+            };
 
         // 缓存 hooks/identifier，让循环结束后 finalize_with_variant 可触发 after_agent_end
         last_hooks = Some(agent_content.hooks.clone());
@@ -407,13 +416,7 @@ where
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }
 
-        audit_llm(
-            current_agent_id,
-            "success",
-            elapsed_start,
-            &model,
-        )
-        .await;
+        audit_llm(current_agent_id, "success", elapsed_start, &model).await;
 
         // 5. 无 tool_call → 这是最终回复
         if !resp.should_execute_tools() {
@@ -1332,37 +1335,33 @@ async fn filter_output(
 
 async fn audit_llm(agent_id: i64, outcome: &str, started: Instant, model: &str) {
     let _ = model;
-    runtime_audit::record(
-        AuditRecord {
-            request_id: None,
-            session_id: None,
-            agent_id: Some(agent_id),
-            plugin_id: None,
-            function_id: None,
-            capability: None,
-            event_type: "llm_invoke",
-            outcome,
-            elapsed_ms: Some(started.elapsed().as_millis() as i32),
-            error_message: None,
-            payload_summary: None,
-        },
-    );
+    runtime_audit::record(AuditRecord {
+        request_id: None,
+        session_id: None,
+        agent_id: Some(agent_id),
+        plugin_id: None,
+        function_id: None,
+        capability: None,
+        event_type: "llm_invoke",
+        outcome,
+        elapsed_ms: Some(started.elapsed().as_millis() as i32),
+        error_message: None,
+        payload_summary: None,
+    });
 }
 
 async fn audit_route(from: i64, to: i64) {
-    runtime_audit::record(
-        AuditRecord {
-            request_id: None,
-            session_id: None,
-            agent_id: Some(from),
-            plugin_id: None,
-            function_id: None,
-            capability: None,
-            event_type: "agent_route",
-            outcome: "success",
-            elapsed_ms: None,
-            error_message: None,
-            payload_summary: Some(json!({"to_agent_id": to})),
-        },
-    );
+    runtime_audit::record(AuditRecord {
+        request_id: None,
+        session_id: None,
+        agent_id: Some(from),
+        plugin_id: None,
+        function_id: None,
+        capability: None,
+        event_type: "agent_route",
+        outcome: "success",
+        elapsed_ms: None,
+        error_message: None,
+        payload_summary: Some(json!({"to_agent_id": to})),
+    });
 }

@@ -3,11 +3,16 @@
 # 必须恰好有 1 个 default = true（否则启动 panic）
 #
 # 复制为 llm_presets.toml 并按需修改，再设置 LLM_PRESETS_PATH 环境变量指向该文件。
+#
+# max_tokens — 单次 LLM 调用最大输出 token 数（默认 2048）
+# temperature — 生成温度 0.0-2.0（默认 0.7）
 
 [[preset]]
 name = "cheap-fast"
 description = "GPT-4o-mini primary, Claude Haiku fallback"
 default = true
+max_tokens = 2048
+temperature = 0.7
 
   [[preset.providers]]
   kind = "openai_compat"
@@ -24,6 +29,8 @@ default = true
 name = "code-expert"
 description = "Claude Opus primary, GPT-4o fallback"
 default = false
+max_tokens = 4096
+temperature = 0.3
 
   [[preset.providers]]
   kind = "anthropic"

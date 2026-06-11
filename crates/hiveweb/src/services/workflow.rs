@@ -144,7 +144,7 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Workflow, AppE
     .bind(&meta.identifier)
     .bind(&meta.name)
     .bind(&meta.description)
-    .bind(meta.timeout_ms.unwrap_or(33000))
+    .bind(meta.timeout_ms.unwrap_or(300000))
     .bind(meta.category_id)
     .bind(&default_schema)
     .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))

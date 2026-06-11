@@ -1,4 +1,5 @@
-import { Drawer, Form, Input, Select, Space, Tag, Typography, Empty, InputNumber, Divider, message } from 'antd';
+import { Drawer, Form, Input, Select, Space, Tag, Typography, Empty, InputNumber, Divider, message, Button } from 'antd';
+import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useState, useEffect, useMemo } from 'react';
 import { listFunctions, type FunctionItem } from '../../services/function';
 import { listModelPresets, type ModelPreset } from '../../services/agent';
@@ -233,10 +234,10 @@ function StartNodePanel(props: {
         )}
       </div>
 
-      <div style={{ textAlign: 'right' }}>
-        <a onClick={handleSave} style={{ fontSize: 14 }}>
+      <div style={{ textAlign: 'center', paddingTop: 8 }}>
+        <Button type="primary" onClick={handleSave}>
           保存配置
-        </a>
+        </Button>
       </div>
     </Space>
   );
@@ -467,10 +468,10 @@ function EndNodePanel(props: {
         )}
       </div>
 
-      <div style={{ textAlign: 'right' }}>
-        <a onClick={handleSave} style={{ fontSize: 14 }}>
+      <div style={{ textAlign: 'center', paddingTop: 8 }}>
+        <Button type="primary" onClick={handleSave}>
           保存配置
-        </a>
+        </Button>
       </div>
     </Space>
   );
@@ -623,50 +624,8 @@ function AnswerNodePanel(props: {
         </Text>
       </div>
 
-      <Form.Item label="模型选择">
-        <Select
-          value={modelPreset || undefined}
-          onChange={setModelPreset}
-          placeholder="选择模型 preset（留空使用默认）"
-          allowClear
-          loading={!presetsLoaded}
-          style={{ width: '100%' }}
-          options={presets.map((p) => ({
-            value: p.name,
-            label: `${p.name}${p.is_default ? ' (默认)' : ''}`,
-          }))}
-        />
-      </Form.Item>
-
-      <Form.Item label="历史消息窗口">
-        <InputNumber
-          min={0}
-          max={50}
-          value={historyWindow}
-          onChange={(v) => setHistoryWindow(v ?? 0)}
-          style={{ width: '100%' }}
-        />
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          传递给 LLM 的历史消息数量
-        </Text>
-      </Form.Item>
-
-      <Form.Item label="系统提示词">
-        <Input.TextArea
-          value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          placeholder={`你是一个智能助手，请根据以下内容回答用户问题：\n{query}\n\n请用简洁的语言回复。`}
-          rows={6}
-          maxLength={32000}
-          showCount
-        />
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          使用 {'{变量名}'} 引用上游节点的输出值
-        </Text>
-      </Form.Item>
-
+      {/* 输入变量配置（放在顶部，便于优先配置） */}
       <Divider />
-
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <Text strong>输入变量配置 ({Object.keys(inputMapping).length})</Text>
@@ -700,32 +659,30 @@ function AnswerNodePanel(props: {
                 >
                   {!isEditing && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Space direction="vertical" size={0}>
-                        <Space>
-                          <Text strong>{key}</Text>
-                          <Tag color="cyan">
-                            {src.kind === 'upstream' ? '上游' : src.kind === 'custom' ? '字面量' : 'AgentContext'}
-                          </Tag>
-                        </Space>
+                      <Space size={4} style={{ flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                        <Text strong style={{ fontSize: 13 }}>{key}</Text>
+                        <Tag color="cyan" style={{ fontSize: 11 }}>
+                          {src.kind === 'upstream' ? '上游' : src.kind === 'custom' ? '字面量' : 'AgentContext'}
+                        </Tag>
                         {src.kind === 'upstream' && (
                           <Text type="secondary" style={{ fontSize: 11 }}>
-                            源: {src.node_key}{src.field ? `.${src.field}` : ''}
+                            {src.node_key}{src.field ? `.${src.field}` : ''}
                           </Text>
                         )}
                         {src.kind === 'custom' && (
-                          <Text type="secondary" style={{ fontSize: 11 }}>
-                            值: {typeof src.value === 'string' ? src.value : JSON.stringify(src.value)}
+                          <Text type="secondary" style={{ fontSize: 11, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {typeof src.value === 'string' ? src.value : JSON.stringify(src.value)}
                           </Text>
                         )}
                         {src.kind === 'agent_context' && (
                           <Text type="secondary" style={{ fontSize: 11 }}>
-                            源: {src.category}.{src.key}{src.sub_key ? `.${src.sub_key}` : ''}
+                            {src.category}.{src.key}{src.sub_key ? `.${src.sub_key}` : ''}
                           </Text>
                         )}
                       </Space>
-                      <Space>
-                        <a onClick={() => startEdit(key)}>编辑</a>
-                        <a onClick={() => removeVar(key)} style={{ color: '#ff4d4f' }}>删除</a>
+                      <Space size={2}>
+                        <Button type="text" size="small" icon={<EditOutlined />} onClick={() => startEdit(key)} />
+                        <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => removeVar(key)} />
                       </Space>
                     </div>
                   )}
@@ -736,11 +693,49 @@ function AnswerNodePanel(props: {
         )}
       </div>
 
-      <div style={{ textAlign: 'right', marginBottom: 8 }}>
-        <a onClick={handleSave} style={{ fontSize: 14 }}>
-          保存配置
-        </a>
-      </div>
+      <Divider />
+
+      <Form.Item label="模型选择">
+        <Select
+          value={modelPreset || undefined}
+          onChange={setModelPreset}
+          placeholder="选择模型 preset（留空使用默认）"
+          allowClear
+          loading={!presetsLoaded}
+          style={{ width: '100%' }}
+          options={presets.map((p) => ({
+            value: p.name,
+            label: `${p.name}${p.is_default ? ' (默认)' : ''}`,
+          }))}
+        />
+      </Form.Item>
+
+      <Form.Item label="历史消息窗口">
+        <InputNumber
+          min={0}
+          max={50}
+          value={historyWindow}
+          onChange={(v) => setHistoryWindow(v ?? 0)}
+          style={{ width: '100%' }}
+        />
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          传递给 LLM 的历史消息数量。在系统提示词中使用 {'{context}'} 引用历史消息内容。
+        </Text>
+      </Form.Item>
+
+      <Form.Item label="系统提示词">
+        <Input.TextArea
+          value={systemPrompt}
+          onChange={(e) => setSystemPrompt(e.target.value)}
+          placeholder={`你是一个智能助手，请根据以下内容回答用户问题：\n{query}\n\n{context}\n\n请用简洁的语言回复。`}
+          rows={6}
+          maxLength={32000}
+          showCount
+        />
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          使用 {'{变量名}'} 引用上游节点的输出值，使用 {'{context}'} 引用历史消息
+        </Text>
+      </Form.Item>
 
       <div
         style={{
@@ -769,6 +764,13 @@ function AnswerNodePanel(props: {
             </Text>
           </div>
         </Space>
+      </div>
+
+      {/* 保存按钮置于底部 */}
+      <div style={{ textAlign: 'center', paddingTop: 8 }}>
+        <Button type="primary" onClick={handleSave}>
+          保存配置
+        </Button>
       </div>
     </Space>
   );

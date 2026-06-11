@@ -23,3 +23,5 @@ Thumbs.db
 /nanobot/
 
 llm_presets.toml
+
+BUG_REPORT.md

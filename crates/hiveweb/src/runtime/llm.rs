@@ -33,6 +33,8 @@ pub struct PresetEntry {
     /// 隐藏字段：providers chain 配置原文（实际 provider 构造在后续 commit）
     #[serde(skip)]
     pub providers_raw: Vec<ProviderConfig>,
+    pub max_tokens: u32,
+    pub temperature: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,7 +56,14 @@ struct PresetRaw {
     default: bool,
     #[serde(default)]
     providers: Vec<ProviderConfig>,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: u32,
+    #[serde(default = "default_temperature")]
+    temperature: f32,
 }
+
+fn default_max_tokens() -> u32 { 2048 }
+fn default_temperature() -> f32 { 0.7 }
 
 #[derive(Debug, Deserialize)]
 struct PresetsFile {
@@ -101,6 +110,8 @@ impl LlmRegistry {
                     description: raw.description,
                     is_default: raw.default,
                     providers_raw: raw.providers,
+                    max_tokens: raw.max_tokens,
+                    temperature: raw.temperature,
                 },
             );
         }
@@ -136,6 +147,14 @@ impl LlmRegistry {
         let mut v: Vec<PresetEntry> = self.presets.values().cloned().collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
+    }
+
+    /// 解析 preset 并返回 (max_tokens, temperature)。
+    pub fn resolve_config(&self, preset_name: Option<&str>) -> (u32, f32) {
+        match self.resolve(preset_name) {
+            Ok(entry) => (entry.max_tokens, entry.temperature),
+            Err(_) => (2048, 0.7),
+        }
     }
 
     /// 把 preset 的 **primary** provider 实例化（不带 fallback chain — 单 shot 调用用）。

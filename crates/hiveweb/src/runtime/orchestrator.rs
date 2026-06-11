@@ -183,7 +183,7 @@ where
     for m in history {
         let c = m.content_ref();
         let ext = m.extensions_ref();
-        let has_content = c.is_some_and(|s| !s.is_empty());
+        let has_content = c.is_some_and(|s| !s.trim().is_empty());
         let has_extensions = ext.is_some_and(|v| !v.is_null());
 
         if !has_content && !has_extensions {
@@ -192,7 +192,6 @@ where
 
         let msg = if has_extensions {
             let mut obj = serde_json::Map::new();
-            obj.insert("role".into(), json!(m.role_ref()));
             if has_content {
                 obj.insert("content".into(), json!(c.unwrap()));
             } else {

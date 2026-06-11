@@ -3,7 +3,7 @@ CREATE TABLE workflows (
     identifier VARCHAR(64) NOT NULL UNIQUE,
     name VARCHAR(128) NOT NULL,
     description VARCHAR(512) NULL,
-    timeout_ms INT NOT NULL DEFAULT 33000,
+    timeout_ms INT NOT NULL DEFAULT 180000,
     required_capabilities JSON NULL COMMENT '计算出的执行所需 capabilities（由 DAG 中所有节点的 function 聚合）',
     category_id BIGINT NULL COMMENT '所属分类',
     input_schema JSON NULL COMMENT '工作流起始节点的输入变量定义 (JSON Schema format)',

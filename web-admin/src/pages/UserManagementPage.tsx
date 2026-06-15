@@ -5,7 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { Dayjs } from 'dayjs';
 import { getUsers, type UserItem, type ListUsersParams } from '../services/user';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
 
 type DateRange = [Dayjs | null, Dayjs | null] | null;
@@ -109,6 +109,9 @@ const UserManagementPage: React.FC = () => {
     <div>
       <div style={{ marginBottom: 16 }}>
         <Title level={4} style={{ margin: 0 }}>用户管理</Title>
+        <Text type="secondary" style={{ marginLeft: 12, fontSize: 14 }}>
+          浏览使用了助手服务的用户
+        </Text>
       </div>
 
       <Card

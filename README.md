@@ -1,6 +1,6 @@
 # HiveClaw
 
-管理中心 & 用户中心系统 - 前后端分离架构
+Hive-Claw 是数据库驱动配置的架构，所有 agent/skill/tool/hook/workflow 配置都存在数据库表中，通过 Web 管理中心管理。
 
 ## 快速开始
 

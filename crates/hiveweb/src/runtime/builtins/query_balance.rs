@@ -1,12 +1,8 @@
 //! Balance query builtin — queries user balance and membership from external database.
 
-use regex::Regex;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::MySqlPool;
-use std::sync::Arc;
 
 use agent::context::AgentContext;
 
@@ -52,60 +48,8 @@ pub async fn query_balance_async_impl(
     ext_pool: &sqlx::MySqlPool,
     _agent_ctx: Option<&AgentContext>,
 ) -> BuiltinResult {
-    // 1. 先查询会员等级
-    #[derive(Debug, sqlx::FromRow)]
-    #[allow(dead_code)]
-    struct MembershipRow {
-        total_coins: Option<Decimal>,
-        expire_coins_7d: Option<Decimal>,
-        effective_end_time: Option<chrono::NaiveDateTime>,
-        membership_category: Option<String>,
-        membership_level: Option<String>,
-    }
-
-    let membership: Option<MembershipRow> = sqlx::query_as(
-            r#"select
-	m7.total_coins, m2.expire_coins_7d, m3.effective_end_time, m3.membership_category, m3.membership_level
-from
-(
-	select ? as user_id
-) m1
-left join
-(
-	select user_id, IFNULL(sum(value), 0) as expire_coins_7d from cc_user_asset_coin
-	where user_id = ?
-	    and expire_time > UNIX_TIMESTAMP() *1000
-	    and expire_time < (7*24*60*60*1000+UNIX_TIMESTAMP()*1000)
-	    and value>0
-	group by user_id
-) m2 on m1.user_id = m2.user_id
-LEFT JOIN (
-	select user_id, effective_end_time,membership_category, membership_level from (
-	    select
-	        t1.user_id as user_id, t1.effective_end_time as  effective_end_time, t1.membership_category as membership_category,
-	        t1.membership_level, t2.level_order as level_order
-	    from (
-	        select user_id, membership_level, effective_start_time,effective_end_time,membership_category from cc_user_membership
-	        where user_id = ? and effective_start_time < now() and effective_end_time > now()
-	    ) t1 left join cc_membership_level t2
-	    on t1.membership_level =t2.level_code
-	) t3
-	order by t3.level_order desc
-	limit 1
-) m3 on m1.user_id = m3.user_id
-LEFT JOIN (
-	select user_id, IFNULL(sum(value), 0) as total_coins
-	from cc_user_asset_coin
-  where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0
-	group by user_id
-) m7 on m1.user_id = m7.user_id
-"#,
-        )
-        .bind(user_id)
-        .bind(user_id)
-        .bind(user_id)
-        .bind(user_id)
-        .fetch_optional(ext_pool)
+    // 1. 查询用户余额
+    let membership = crate::services::membership::query_membership_balance(ext_pool, user_id)
         .await
         .map_err(|e| BuiltinError::Exec(format!("会员查询失败: {e}")))?;
 
@@ -115,34 +59,88 @@ LEFT JOIN (
         }));
     }
 
-    let has_membership = membership
-        .as_ref()
-        .and_then(|m| m.effective_end_time)
-        .is_some();
-    let days_until_expiry = membership
-        .as_ref()
+    // 1.5 查询会员与订阅状态
+    let membership_subscriptions =
+        crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?;
+
+    // Serialize membership+subscription rows to JSON
+    let membership_json: Vec<Value> = membership_subscriptions
+        .iter()
+        .map(|row| {
+            json!({
+                "membership_level": row.membership_level,
+                "level_name": row.level_name,
+                "membership_category": row.membership_category,
+                "membership_category_name": row.membership_category_name,
+                "effective_start_time": row.effective_start_time.map(|t| t.to_string()),
+                "effective_end_time": row.effective_end_time.map(|t| t.to_string()),
+                "product_title": row.product_title,
+                "subscription_id": row.subscription_id,
+                "subscription_status": row.subscription_status,
+                "subscription_status_name": row.subscription_status_name,
+                "next_billing_time": row.next_billing_time.map(|t| t.to_string()),
+                "auto_renew": row.auto_renew.map(|v| v != 0),
+                "payment_method": row.payment_method,
+                "subscription_start_time": row.subscription_start_time.map(|t| t.to_string()),
+                "subscription_end_time": row.subscription_end_time.map(|t| t.to_string()),
+            })
+        })
+        .collect();
+
+    // 1.8 查询时长卡
+    let duration_cards =
+        crate::services::membership::query_duration_cards(ext_pool, user_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?;
+
+    let duration_card_json: Vec<Value> = duration_cards
+        .iter()
+        .map(|row| {
+            json!({
+                "card_asset_id": row.card_asset_id,
+                "remain_duration": row.remain_duration,
+                "computer_biz_type": row.computer_biz_type,
+                "expire_time": row.expire_time,
+                "card_type": row.card_type,
+                "card_type_name": row.card_type_name,
+                "order_id": row.order_id,
+                "consume_label": row.consume_label,
+                "extra": row.extra,
+                "create_time": row.create_time.map(|t| t.to_string()),
+            })
+        })
+        .collect();
+
+    // Derive card type from membership_subscriptions (highest-priority active row)
+    let active_membership = membership_subscriptions
+        .iter()
+        .find(|row| {
+            row.effective_end_time
+                .map(|end| end >= chrono::Utc::now().naive_utc())
+                .unwrap_or(false)
+        });
+
+    let has_membership = active_membership.is_some();
+    let days_until_expiry = active_membership
         .and_then(|m| m.effective_end_time)
         .map(|end| (end - chrono::Utc::now().naive_utc()).num_days());
     let expiring_soon = days_until_expiry.map(|d| d <= 7).unwrap_or(false);
 
     let upgrade_suggested = has_membership
-        && membership
-            .as_ref()
+        && active_membership
             .and_then(|m| m.membership_category.as_deref())
             != Some("LEGEND");
-
-    let total_coins = membership
-        .as_ref()
-        .and_then(|m| m.total_coins)
-        .unwrap_or(Decimal::ZERO);
 
     // 2. 构造返回结果
     let mut result = json!({});
     let m = membership.unwrap();
     let reply = json!({
-        "effective_end_time": m.effective_end_time.map(|t| t.to_string()).unwrap_or_default(),
-        "membership_category": m.membership_category.as_deref().unwrap_or(""),
-        "membership_level": m.membership_level.as_deref().unwrap_or(""),
+        "disk_end_time": m.disk_end_time.unwrap_or(0),
+        "disk_total_size": m.disk_total_size
+            .and_then(|s| s.to_f64())
+            .unwrap_or(0.0),
         "total_coins": m.total_coins.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
         "expire_coins_7d": m.expire_coins_7d.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
     });
@@ -157,27 +155,42 @@ LEFT JOIN (
                 "content_type": "card",
                 "payload": {
                     "type": "subscribe",
-                    "info":reply,
+                    "info": reply,
+                    "membership": membership_json,
+                    "duration_card": duration_card_json,
                 },
             }));
         } else if expiring_soon {
             // 会员即将到期（≤ 7 天）→ repay 卡
-            let days_left = days_until_expiry.unwrap_or(0);
-            let text = format!("会员将于 {} 天后到期", days_left.max(0));
             extension_list.push(json!({
                 "content_type": "card",
-                "payload": {"type": "repay", "info":reply,},
+                "payload": {
+                    "type": "repay",
+                    "info": reply,
+                    "membership": membership_json,
+                    "duration_card": duration_card_json,
+                },
             }));
         } else if upgrade_suggested {
             // 升级建议卡
             extension_list.push(json!({
                 "content_type": "card",
-                "payload": {"type": "upgrade", "info":reply,},
+                "payload": {
+                    "type": "upgrade",
+                    "info": reply,
+                    "membership": membership_json,
+                    "duration_card": duration_card_json,
+                },
             }));
         } else {
             extension_list.push(json!({
                 "content_type": "card",
-                "payload": {"type": "sufficient", "info":reply,},
+                "payload": {
+                    "type": "sufficient",
+                    "info": reply,
+                    "membership": membership_json,
+                    "duration_card": duration_card_json,
+                },
             }));
         }
 

@@ -333,8 +333,7 @@ pub async fn load_internal_aliases(
     pool: &MySqlPool,
 ) -> Result<std::collections::HashMap<String, Vec<String>>, AppError> {
     let rows = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT g.name, gae.alias FROM games g
-         LEFT JOIN game_alias_entries gae ON gae.game_id = g.id",
+        r#"SELECT g.name, gae.alias FROM games g LEFT JOIN game_alias_entries gae ON gae.game_id = g.id"#,
     )
     .fetch_all(pool)
     .await
@@ -353,14 +352,16 @@ pub async fn load_internal_aliases(
     Ok(map)
 }
 
-/// Query a single game from cc_logic_game by ID.
+/// Query a single game from cc_logic_game by cc_game ID.
 /// Returns (id, name, alias).
 pub async fn get_external_game_by_id(
     ext_pool: &MySqlPool,
     game_id: i64,
 ) -> Result<Option<(i64, String, String)>, AppError> {
     sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, name, COALESCE(alias, '') AS alias FROM cc_logic_game WHERE id = ?",
+        r#"SELECT t1.id, t1.name, COALESCE(t1.alias, '') AS alias FROM cc_logic_game t1
+LEFT JOIN cc_game t2 ON t1.id = t2.logic_game_id
+WHERE t2.id=?"#,
     )
     .bind(game_id)
     .fetch_optional(ext_pool)
@@ -381,26 +382,29 @@ pub async fn list_external_games(
     client_type: &str,
 ) -> Result<Vec<(i64, String, String)>, AppError> {
     let sql = r#"
-        SELECT DISTINCT g.id, g.name, COALESCE(g.alias, '') AS alias
-        FROM cc_logic_game g
-        INNER JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
-        INNER JOIN cc_game ga ON ga.logic_game_id = g.id
-        WHERE w.client_type = ?
-            AND w.channel_game_tag = COALESCE(
-                (SELECT pc.game_tag FROM cc_promotion_channel pc WHERE pc.prom_channel = ? LIMIT 1),
-                'UNKNOWN'
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM cc_logic_game_exclude e
-                WHERE e.logic_game_id = w.logic_game_id
-                    AND e.client_type = w.client_type
-                    AND e.channel = ?
-            )
-        ORDER BY g.id
+       SELECT
+    DISTINCT g.id, g.name, COALESCE(g.alias, '') AS alias
+FROM cc_logic_game g
+INNER JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
+INNER JOIN cc_game ga ON ga.logic_game_id = g.id
+INNER JOIN cc_logic_game_version v ON w.version = v.version
+LEFT JOIN cc_logic_game_exclude e
+    ON w.logic_game_id = e.logic_game_id
+    AND e.client_type = w.client_type
+    AND e.channel = ?
+LEFT JOIN cc_logic_game_blacklist bl ON w.logic_game_id = bl.logic_game_id
+WHERE w.client_type = ?
+    AND w.channel_game_tag = COALESCE(
+        (SELECT pc.game_tag FROM cc_promotion_channel pc WHERE pc.prom_channel = ? LIMIT 1),
+        'UNKNOWN'
+    )
+    AND e.id IS NULL
+    AND bl.id IS NULL
+ORDER BY g.id
     "#;
     sqlx::query_as::<_, (i64, String, String)>(sql)
-        .bind(client_type)
         .bind(channel)
+        .bind(client_type)
         .bind(channel)
         .fetch_all(ext_pool)
         .await

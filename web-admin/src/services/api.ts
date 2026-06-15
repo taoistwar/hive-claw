@@ -3,7 +3,7 @@ import axios from 'axios';
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_API_URL || // backwards-compat with older .env files
-  'http://localhost:3300/api';
+  '/api';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,

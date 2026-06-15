@@ -20,4 +20,4 @@ INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES
 
 -- 正则匹配：手机号、身份证号、邮箱、URL、微信号、脏话变体
 INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES
-('草.*泥.*马', 'regex'),
+('草.*泥.*马', 'regex');

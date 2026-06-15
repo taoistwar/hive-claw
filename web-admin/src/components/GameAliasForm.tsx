@@ -65,7 +65,8 @@ const GameAliasForm: React.FC<GameAliasFormProps> = ({
       const values = await form.validateFields()
       setSubmitting(true)
 
-      const deduplicatedAliases = [...new Set(values.aliases.filter((a: string) => a.trim()))]
+      const aliases: string[] = values.aliases as string[]
+      const deduplicatedAliases = [...new Set(aliases.filter((a) => a.trim()))]
 
       if (isEdit && editingGame) {
         const req: UpdateGameRequest = {

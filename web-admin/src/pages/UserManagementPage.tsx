@@ -131,7 +131,6 @@ const UserManagementPage: React.FC = () => {
             onPressEnter={handleSearch}
             style={{ width: 160 }}
             min={1}
-            allowClear
           />
           <Input
             placeholder="搜索 UID / 昵称"

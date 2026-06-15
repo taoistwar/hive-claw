@@ -103,7 +103,7 @@ assert_cmd = "2"
 mysql_async = "0.34"
 sqlx = { version = "0.8", default-features = false, features = [
     "derive",
-    "runtime-tokio-native-tls",
+    "runtime-tokio-rustls",
     "sqlite",
     "mysql",
     "chrono",

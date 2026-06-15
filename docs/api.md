@@ -289,8 +289,8 @@ MD5(ASSISTANT_SECRET + "/api/assistant" + "?body=" + 请求体 JSON 字符串)
   "user_id": 12345,
   "message": "你好，请推荐一款游戏",
   "channel": "app",
-  "platform": "android",
-  "app_version": "1.0.0",
+  "client_type": "android",
+  "client_version": "1.0.0",
   "new_session": false
 }
 ```
@@ -300,8 +300,8 @@ MD5(ASSISTANT_SECRET + "/api/assistant" + "?body=" + 请求体 JSON 字符串)
 | `user_id` | `i64` | 是 | 用户 ID，必须大于 0 |
 | `message` | `String` | 是 | 用户消息内容，不能为空或全空白 |
 | `channel` | `String` | 是 | 渠道标识（如 `app`、`web`、`api`） |
-| `platform` | `String` | 是 | 客户端平台（`android`、`iphone`、`ipad`、`web`） |
-| `app_version` | `String` | 是 | 客户端版本号 |
+| `client_type` | `String` | 是 | 客户端平台（`android`、`iphone`、`ipad`、`web`） |
+| `client_version` | `String` | 是 | 客户端版本号 |
 | `new_session` | `bool` | 否 | 是否创建新会话，默认 `false`。`true` 时强制创建新 session；`false`/省略时复用最新 session |
 
 **限流策略：**
@@ -314,7 +314,7 @@ MD5(ASSISTANT_SECRET + "/api/assistant" + "?body=" + 请求体 JSON 字符串)
 **示例请求：**
 
 ```bash
-BODY='{"user_id":12345,"message":"你好","channel":"app","platform":"android","app_version":"1.0.0"}'
+BODY='{"user_id":12345,"message":"你好","channel":"app","client_type":"android","client_version":"1.0.0"}'
 SIGN=$(echo -n "${ASSISTANT_SECRET}/api/assistant?body=${BODY}" | md5sum | awk '{print $1}')
 
 curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \

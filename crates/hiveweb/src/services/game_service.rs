@@ -380,10 +380,10 @@ pub async fn list_external_games(
     ext_pool: &MySqlPool,
     channel: &str,
     client_type: &str,
-) -> Result<Vec<(i64, String, String)>, AppError> {
+) -> Result<Vec<(u32, String, String)>, AppError> {
     let sql = r#"
        SELECT
-    DISTINCT g.id, g.name, COALESCE(g.alias, '') AS alias
+    DISTINCT ga.id, g.name, COALESCE(g.alias, '') AS alias
 FROM cc_logic_game g
 INNER JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
 INNER JOIN cc_game ga ON ga.logic_game_id = g.id
@@ -400,9 +400,9 @@ WHERE w.client_type = ?
     )
     AND e.id IS NULL
     AND bl.id IS NULL
-ORDER BY g.id
+ORDER BY ga.id
     "#;
-    sqlx::query_as::<_, (i64, String, String)>(sql)
+    sqlx::query_as::<_, (u32, String, String)>(sql)
         .bind(channel)
         .bind(client_type)
         .bind(channel)

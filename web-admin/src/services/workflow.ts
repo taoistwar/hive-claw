@@ -178,8 +178,8 @@ export interface WorkflowUserInput {
   raw_text?: string;
   actor_id?: string;
   channel?: string;
-  platform?: string;
-  app_version?: string;
+  client_type?: string;
+  client_version?: string;
 }
 
 export interface WorkflowExecuteRequest {

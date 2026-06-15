@@ -38,13 +38,9 @@ pub fn resolve_template_vars(template: &str, input: &Value) -> String {
 /// conversation history stored in AgentContext, formatted as role:content pairs.
 pub fn build_history_context(agent_ctx: &AgentContext, limit: usize) -> String {
     let messages: Vec<serde_json::Value> = match agent_ctx.get_messages() {
-        Ok(msgs) => msgs,
-        Err(_) => return String::new(),
+        Ok(msgs) if !msgs.is_empty() => msgs,
+        Ok(_) | Err(_) => return format!("用户A:{}", agent_ctx.user_input().raw_text),
     };
-
-    if messages.is_empty() {
-        return String::new();
-    }
 
     // Take the most recent `limit` messages when limit > 0
     let recent: Vec<&serde_json::Value> = if limit > 0 && messages.len() > limit {

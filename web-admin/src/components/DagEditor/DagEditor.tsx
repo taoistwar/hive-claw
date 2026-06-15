@@ -1023,10 +1023,10 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
                         <Input placeholder="例如：weixin / qq" />
                       </Form.Item>
                       <Form.Item
-                        name="_ctx_platform"
+                        name="_ctx_client_type"
                         label={
                           <span>
-                            platform
+                            client_type
                             <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
                               平台
                             </Text>
@@ -1036,10 +1036,10 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
                         <Input placeholder="例如：ios / android" />
                       </Form.Item>
                       <Form.Item
-                        name="_ctx_app_version"
+                        name="_ctx_client_version"
                         label={
                           <span>
-                            app_version
+                            client_version
                             <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
                               应用版本
                             </Text>

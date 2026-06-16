@@ -362,7 +362,7 @@ pub async fn get_external_game_by_id(
     game_id: i64,
 ) -> Result<Option<(i64, String, String)>, AppError> {
     sqlx::query_as::<_, (i64, String, String)>(
-        r#"SELECT t1.id, t1.name, COALESCE(t1.alias, '') AS alias FROM cc_logic_game t1
+        r#"SELECT cast(t2.id as SIGNED), t1.name, COALESCE(t1.alias, '') AS alias FROM cc_logic_game t1
 LEFT JOIN cc_game t2 ON t1.id = t2.logic_game_id
 WHERE t2.id=?"#,
     )

@@ -187,6 +187,8 @@ pub struct DurationCardRow {
     pub consume_label: Option<serde_json::Value>,
     pub extra: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
+    /// product_mirror JSON — 提取 fps / gpu 等字段
+    pub product_mirror: Option<serde_json::Value>,
 }
 
 /// Query duration cards (时长卡) for a user — gold card (type=8) and black gold card (type=9).
@@ -209,7 +211,8 @@ pub async fn query_duration_cards(
     uac.order_id                AS order_id,
     uac.consume_label           AS consume_label,
     uac.extra                   AS extra,
-    uac.create_time             AS create_time
+    uac.create_time             AS create_time,
+    uac.product_mirror          AS product_mirror
 FROM cc_user_asset_coin uac
 WHERE uac.user_id = ?
   AND uac.type IN (8, 9)

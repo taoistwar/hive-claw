@@ -3,6 +3,7 @@ import { Button, Input, Typography, App, Spin } from 'antd';
 import {
   SendOutlined,
   ReloadOutlined,
+  PlusOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import {
@@ -10,6 +11,7 @@ import {
   getMessages,
   fetchTopRecommendedGames,
   executeRecommendation,
+  createNewSession,
   type ChatMessage,
   type TopRecommendedGame,
 } from '../services/chat';
@@ -49,6 +51,7 @@ export default function ChatPage() {
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
   const [games, setGames] = useState<TopRecommendedGame[]>([]);
   const [loadingGames, setLoadingGames] = useState(false);
   const historyEndRef = useRef<HTMLDivElement>(null);
@@ -81,6 +84,25 @@ export default function ChatPage() {
     setHistory([]);
     void loadHistory();
   }, [userId, loadHistory]);
+
+  // 创建新会话
+  const onNewSession = async () => {
+    if (userId <= 0 || creatingSession || pending) return;
+    setCreatingSession(true);
+    try {
+      const result = await createNewSession({ user_id: userId });
+      if (result.success) {
+        setHistory([]);
+        void appMessage.success('已创建新会话');
+      } else {
+        void appMessage.error('创建新会话失败');
+      }
+    } catch (e) {
+      void appMessage.error(`创建新会话失败：${(e as Error).message}`);
+    } finally {
+      setCreatingSession(false);
+    }
+  };
 
   // userId 持久化到 localStorage
   useEffect(() => {
@@ -533,19 +555,32 @@ export default function ChatPage() {
             }}
           />
         </div>
-        <Button
-          size="small"
-          icon={<ReloadOutlined />}
-          onClick={() => void loadHistory()}
-          loading={loadingHistory}
-          disabled={userId <= 0}
-          style={{
-            borderRadius: 'var(--radius-sm)',
-            flexShrink: 0,
-          }}
-        >
-          刷新
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <Button
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={() => void onNewSession()}
+            loading={creatingSession}
+            disabled={userId <= 0 || pending}
+            style={{
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            新会话
+          </Button>
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            onClick={() => void loadHistory()}
+            loading={loadingHistory}
+            disabled={userId <= 0}
+            style={{
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            刷新
+          </Button>
+        </div>
       </div>
 
       {/* 消息区域 */}

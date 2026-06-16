@@ -116,6 +116,19 @@ pub async fn query_balance_async_impl(
     let duration_card_json: Vec<Value> = duration_cards
         .iter()
         .map(|row| {
+            // 从 product_mirror JSON 中提取 fps / gpu
+            let fps = row
+                .product_mirror
+                .as_ref()
+                .and_then(|v| v.get("fps"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let gpu = row
+                .product_mirror
+                .as_ref()
+                .and_then(|v| v.get("gpu"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             json!({
                 "card_asset_id": row.card_asset_id,
                 "remain_duration": row.remain_duration,
@@ -127,6 +140,8 @@ pub async fn query_balance_async_impl(
                 "consume_label": row.consume_label,
                 "extra": row.extra,
                 "create_time": row.create_time.map(|t| t.to_string()),
+                "fps": fps,
+                "gpu": gpu,
             })
         })
         .collect();

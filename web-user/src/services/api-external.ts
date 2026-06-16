@@ -179,3 +179,29 @@ export async function executeRecommendation(params: {
   const result: { code: number; data: ChatMessage } = await resp.json();
   return result.data;
 }
+
+/** 创建新会话 (POST /api/newsession?sign={md5}) */
+export async function createNewSession(params: { user_id: number }): Promise<{ success: boolean }> {
+  const body = JSON.stringify(params);
+  const secret = getSecret();
+
+  let url = `${API_BASE_URL}/newsession`;
+  if (secret) {
+    const signStr = `/api/newsession?body=${body}`;
+    const sign = computeSign(secret, signStr);
+    url += `?sign=${encodeURIComponent(sign)}`;
+  }
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+    body,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+
+  return resp.json();
+}

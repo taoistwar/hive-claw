@@ -370,13 +370,13 @@ pub struct ExternalGameInfo {
     pub channel: Option<String>,
 }
 
-/// Query a single game from cc_logic_game by logic_game_id.
+/// Query games from cc_logic_game by logic_game_id (foreign key, may return multiple rows).
 pub async fn get_external_game_by_id(
     ext_pool: &MySqlPool,
     logic_game_id: i64,
     client_type: &str,
     channel: &str,
-) -> Result<Option<ExternalGameInfo>, AppError> {
+) -> Result<Vec<ExternalGameInfo>, AppError> {
     sqlx::query_as::<_, ExternalGameInfo>(
         r#"SELECT
   t1.logic_game_id, t1.name, t1.description, t1.cover_image, t1.game_tags,
@@ -408,7 +408,7 @@ AND t7.id is null
     .bind(channel)
     .bind(client_type)
     .bind(channel)
-    .fetch_optional(ext_pool)
+    .fetch_all(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))
 }
@@ -509,7 +509,7 @@ pub async fn get_external_game_by_id_cached(
     game_id: i64,
     client_type: &str,
     channel: &str,
-) -> Result<Option<ExternalGameInfo>, String> {
+) -> Result<Vec<ExternalGameInfo>, String> {
     let key = format!("{}:{}:{}:{}", cache_helper::KEY_GAME_INFO, game_id, client_type, channel);
     cached_or_fetch(redis, &key, cache_helper::TTL_GAME_INFO, || async {
         get_external_game_by_id(ext_pool, game_id, client_type, channel)

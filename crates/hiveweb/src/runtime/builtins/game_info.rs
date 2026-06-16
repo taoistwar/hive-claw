@@ -66,7 +66,7 @@ async fn game_info_async_impl(
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     };
 
-    let game_info = match external {
+    let game_info = match external.first() {
         Some(info) if info.logic_game_id != 0 => info,
         _ => {
             return Ok(serde_json::json!({
@@ -81,9 +81,23 @@ async fn game_info_async_impl(
     };
 
     let id = game_info.logic_game_id;
-    let name = game_info.name;
-    // External alias: none in the new schema (description is not an alias)
+    let name = &game_info.name;
     let ext_alias = "";
+
+    // Build games array from all rows
+    let games: Vec<Value> = external
+        .iter()
+        .map(|info| {
+            serde_json::json!({
+                "id": info.logic_game_id,
+                "name": info.name,
+                "computer_id": info.computer_id,
+                "platform_name": info.platform_name,
+                "client_type": info.client_type,
+                "channel": info.channel,
+            })
+        })
+        .collect();
 
     // 3. Load supplementary aliases from internal games table
     let internal_aliases = crate::services::game_service::load_internal_aliases(pool)
@@ -103,7 +117,7 @@ async fn game_info_async_impl(
         }
     }
 
-    if let Some(supp) = internal_aliases.get(&name) {
+    if let Some(supp) = internal_aliases.get(name.as_str()) {
         for alias in supp {
             if !aliases.contains(alias) {
                 aliases.push(alias.clone());
@@ -134,6 +148,8 @@ async fn game_info_async_impl(
         "platform_name": game_info.platform_name,
         "client_type": game_info.client_type,
         "channel": game_info.channel,
+        "aliases": aliases,
+        "games": games,
     });
 
     // 6. put_to_ac: true → 写入 AgentContext extensions；false → 纯输出

@@ -116,7 +116,9 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
           "order_id": "order_001",
           "consume_label": "游戏时长",
           "extra": null,
-          "create_time": "2025-06-01 12:00:00"
+          "create_time": "2025-06-01 12:00:00",
+          "fps": "60",
+          "gpu": "4070"
         }
       ]
     }
@@ -215,6 +217,8 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `consume_label` | `Option<String>` | 消费标签 |
 | `extra` | `Option<Value>` | 额外信息（JSON） |
 | `create_time` | `Option<String>` | 创建时间 |
+| `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取，仅非空 JSON 时有值） |
+| `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取，仅非空 JSON 时有值） |
 
 `game` 卡片时，`payload` 结构参见 [获取热门推荐游戏](recommended-games-top.md)。
 

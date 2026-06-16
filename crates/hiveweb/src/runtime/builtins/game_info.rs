@@ -65,8 +65,52 @@ async fn game_info_async_impl(
             .await
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     };
+    if external.is_empty() {
+        return Ok(serde_json::json!({
+            "found": false,
+            "data": format!("未找到游戏 ID {} 的信息", game_id),
+            "id": game_id,
+            "name": null,
+            "aliases": [],
+            "games": [],
+        }));
+    }
 
-    let game_info = match external.first() {
+    // 2. Load trial purchase platform config for priority sorting
+    let platform_priority: Vec<String> = crate::services::game_service::get_trial_purchase_platform_config(ext_pool)
+        .await
+        .unwrap_or(None)
+        .and_then(|config| {
+            config
+                .get("platformPriority")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+
+    // 3. Sort external by platformPriority — highest priority first
+    let mut sorted = external;
+    if !platform_priority.is_empty() {
+        sorted.sort_by(|a, b| {
+            let pa = a
+                .platform_name
+                .as_deref()
+                .and_then(|name| platform_priority.iter().position(|p| p == name))
+                .unwrap_or(usize::MAX);
+            let pb = b
+                .platform_name
+                .as_deref()
+                .and_then(|name| platform_priority.iter().position(|p| p == name))
+                .unwrap_or(usize::MAX);
+            pa.cmp(&pb)
+        });
+    }
+
+    let game_info = match sorted.first() {
         Some(info) if info.logic_game_id != 0 => info,
         _ => {
             return Ok(serde_json::json!({
@@ -85,7 +129,7 @@ async fn game_info_async_impl(
     let ext_alias = "";
 
     // Build games array from all rows
-    let games: Vec<Value> = external
+    let games: Vec<Value> = sorted
         .iter()
         .map(|info| {
             serde_json::json!({

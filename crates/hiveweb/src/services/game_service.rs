@@ -500,6 +500,20 @@ group by t1.client_type"#,
     Ok(row.and_then(|r| r.0))
 }
 
+/// Query trial purchase platform config from external cc_config table.
+/// Returns the parsed JSON content for label = 'trialPurchasePlatformConfig'.
+pub async fn get_trial_purchase_platform_config(
+    ext_pool: &MySqlPool,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT content FROM cc_config WHERE label = 'trialPurchasePlatformConfig' LIMIT 1",
+    )
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("cc_config query: {e}")))?;
+    Ok(row.and_then(|r| r.0))
+}
+
 // ── Redis-cached wrappers ──
 
 /// Cached version of `get_external_game_by_id`.

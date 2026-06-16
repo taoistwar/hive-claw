@@ -59,6 +59,8 @@ pub type BuiltinResult = Result<Value, BuiltinError>;
 pub struct BuiltinContext<'a> {
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
+    /// Redis client for cache-aside operations. `None` when Redis is unavailable.
+    pub redis: Option<&'a redis::Client>,
     /// AgentContext for reading/writing runtime state during hook/tool execution.
     /// `None` when called from contexts without AgentContext (e.g., workflow executor).
     pub agent_ctx: Option<Arc<AgentContext>>,
@@ -302,6 +304,7 @@ mod tests {
         BuiltinContext {
             pool,
             ext_pool: None,
+            redis: None,
             agent_ctx: None,
         }
     }

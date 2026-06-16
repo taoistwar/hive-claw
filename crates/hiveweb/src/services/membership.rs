@@ -4,9 +4,13 @@
 //! status, balance/coins, and subscription information.
 
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+use super::cache_helper;
+use super::cache_helper::{cached_or_fetch};
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 struct CcUserMembership {
     id: i64,
     membership_level: Option<String>,
@@ -54,7 +58,7 @@ pub async fn get_cloud_user_info(
 // ---------- query_balance support ----------
 
 /// Row returned by the balance/coins query.
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[allow(dead_code)]
 pub struct MembershipBalanceRow {
     pub total_coins: Option<Decimal>,
@@ -106,7 +110,7 @@ LEFT JOIN (
 }
 
 /// Row returned by the membership + subscription status query.
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[allow(dead_code)]
 pub struct MembershipSubscriptionRow {
     pub membership_level: Option<String>,
@@ -170,7 +174,7 @@ ORDER BY ml.level_order DESC, um.effective_end_time DESC"#,
 }
 
 /// Row returned by the duration card (时长卡) query.
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[allow(dead_code)]
 pub struct DurationCardRow {
     pub card_asset_id: Option<i64>,
@@ -215,6 +219,120 @@ ORDER BY uac.value ASC"#,
     )
     .bind(user_id)
     .fetch_all(ext_pool)
+    .await
+}
+
+// ── Redis-cached wrappers ──
+
+/// Cached version of `user_exists_in_cloud`.
+///
+/// Split-TTL strategy: if the user exists, cache for a long duration (24h)
+/// because accounts never disappear. If the user does not exist, cache only
+/// briefly (5min) because they may be a newly registered user.
+pub async fn user_exists_in_cloud_cached(
+    redis: &redis::Client,
+    pool: &MySqlPool,
+    user_id: i64,
+) -> Result<bool, String> {
+    let key = format!("{}:{}", cache_helper::KEY_CLOUD_USER_EXISTS, user_id);
+
+    // 1. Try Redis
+    match cache_helper::cached_get::<bool>(redis, &key).await {
+        Ok(Some(value)) => return Ok(value),
+        Ok(None) => {} // cache miss
+        Err(e) => tracing::debug!(%key, error = %e, "cache read failed, falling back to DB"),
+    }
+
+    // 2. Fetch from DB
+    let exists = user_exists_in_cloud(pool, user_id)
+        .await
+        .map_err(|e| format!("user_exists_in_cloud: {e}"))?;
+
+    // 3. Write to cache with split TTL
+    let ttl = if exists {
+        cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE // 24h — 用户存在，长缓存
+    } else {
+        cache_helper::TTL_CLOUD_USER_EXISTS_NEGATIVE // 5min — 用户不存在，短缓存
+    };
+    if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
+        tracing::debug!(%key, error = %e, "cache write failed");
+    }
+
+    Ok(exists)
+}
+
+/// Cached version of `check_vip_membership`.
+pub async fn check_vip_membership_cached(
+    redis: &redis::Client,
+    pool: &MySqlPool,
+    user_id: i64,
+) -> Result<bool, String> {
+    let key = format!("{}:{}", cache_helper::KEY_VIP_STATUS, user_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_VIP_STATUS, || async {
+        check_vip_membership(pool, user_id)
+            .await
+            .map_err(|e| format!("check_vip_membership: {e}"))
+    })
+    .await
+}
+
+/// Cached version of `get_cloud_user_info`.
+pub async fn get_cloud_user_info_cached(
+    redis: &redis::Client,
+    pool: &MySqlPool,
+    user_id: i64,
+) -> Result<Option<(String, String)>, String> {
+    let key = format!("{}:{}", cache_helper::KEY_CLOUD_USER_INFO, user_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_CLOUD_USER_INFO, || async {
+        get_cloud_user_info(pool, user_id)
+            .await
+            .map_err(|e| format!("get_cloud_user_info: {e}"))
+    })
+    .await
+}
+
+/// Cached version of `query_membership_balance`.
+pub async fn query_membership_balance_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+    user_id: i64,
+) -> Result<Option<MembershipBalanceRow>, String> {
+    let key = format!("{}:{}", cache_helper::KEY_BALANCE, user_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_BALANCE, || async {
+        query_membership_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| format!("query_membership_balance: {e}"))
+    })
+    .await
+}
+
+/// Cached version of `query_membership_subscriptions`.
+pub async fn query_membership_subscriptions_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+    user_id: i64,
+) -> Result<Vec<MembershipSubscriptionRow>, String> {
+    let key = format!("{}:{}", cache_helper::KEY_SUBSCRIPTIONS, user_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_SUBSCRIPTIONS, || async {
+        query_membership_subscriptions(ext_pool, user_id)
+            .await
+            .map_err(|e| format!("query_membership_subscriptions: {e}"))
+    })
+    .await
+}
+
+/// Cached version of `query_duration_cards`.
+pub async fn query_duration_cards_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+    user_id: i64,
+) -> Result<Vec<DurationCardRow>, String> {
+    let key = format!("{}:{}", cache_helper::KEY_DURATION_CARDS, user_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_DURATION_CARDS, || async {
+        query_duration_cards(ext_pool, user_id)
+            .await
+            .map_err(|e| format!("query_duration_cards: {e}"))
+    })
     .await
 }
 

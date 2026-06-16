@@ -51,6 +51,8 @@ pub struct ExecutorDeps {
     pub invoker: Arc<Invoker>,
     /// 外部数据库连接池（用于依赖外部 DB 的内置函数，如 query_balance）
     pub ext_pool: Option<MySqlPool>,
+    /// Redis client for cache-aside operations.
+    pub redis: Option<redis::Client>,
     /// Agent 的 capability 权限（生产路径传入 agent 实际权限，测试端点传入全部权限）
     pub permissions: Vec<String>,
 }

@@ -882,6 +882,7 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
         registry: Arc::new(CapabilityRegistry::new()),
         invoker: Arc::new(Invoker::new(instance_pool)),
         ext_pool: None,
+        redis: None,
         agent_ctx,
     };
 

@@ -3,6 +3,7 @@ pub mod agent;
 pub mod agent_hook;
 pub mod audit;
 pub mod auth;
+pub mod cache_helper;
 pub mod capability;
 pub mod dashboard;
 pub mod login_record;

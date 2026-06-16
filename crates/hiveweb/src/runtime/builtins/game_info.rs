@@ -6,9 +6,10 @@ use super::{BuiltinContext, BuiltinError, BuiltinResult};
 pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let pool = ctx.pool.clone();
     let ext_pool = ctx.ext_pool.cloned();
+    let redis = ctx.redis.cloned();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current()
-            .block_on(async move { game_info_async_impl(args, &pool, ext_pool.as_ref()).await })
+            .block_on(async move { game_info_async_impl(args, &pool, ext_pool.as_ref(), redis.as_ref()).await })
     })
 }
 
@@ -20,6 +21,7 @@ async fn game_info_async_impl(
     args: Value,
     pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
+    redis: Option<&redis::Client>,
 ) -> BuiltinResult {
     // 1. Parse game_id from input — text → integer
     let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -45,10 +47,16 @@ async fn game_info_async_impl(
 
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
-    // 2. Query external DB (primary)
-    let external = crate::services::game_service::get_external_game_by_id(ext_pool, game_id)
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
+    // 2. Query external DB (primary) — Redis 缓存优先
+    let external = if let Some(r) = redis {
+        crate::services::game_service::get_external_game_by_id_cached(r, ext_pool, game_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("{e}")))?
+    } else {
+        crate::services::game_service::get_external_game_by_id(ext_pool, game_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("{e}")))?
+    };
 
     let (id, name, ext_alias) = match external {
         Some(row) if row.0 != 0 => row,

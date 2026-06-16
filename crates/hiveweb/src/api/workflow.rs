@@ -267,6 +267,7 @@ async fn execute_workflow(
         llm: std::sync::Arc::clone(&state.runtime_state.llm),
         invoker: std::sync::Arc::clone(&state.runtime_state.invoker),
         ext_pool: state.ext_pool.clone(),
+        redis: Some(state.redis.clone()),
         permissions: state
             .runtime_state
             .capabilities

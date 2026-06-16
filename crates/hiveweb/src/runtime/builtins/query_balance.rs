@@ -34,11 +34,12 @@ pub fn query_balance(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
         .ext_pool
         .ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?
         .clone();
+    let redis = ctx.redis.cloned();
     let agent_ctx_clone = ctx.agent_ctx.clone();
 
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            query_balance_async_impl(user_id, &ext_pool, agent_ctx_clone.as_deref()).await
+            query_balance_async_impl(user_id, &ext_pool, redis.as_ref(), agent_ctx_clone.as_deref()).await
         })
     })
 }
@@ -46,12 +47,19 @@ pub fn query_balance(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 pub async fn query_balance_async_impl(
     user_id: i64,
     ext_pool: &sqlx::MySqlPool,
+    redis: Option<&redis::Client>,
     _agent_ctx: Option<&AgentContext>,
 ) -> BuiltinResult {
-    // 1. 查询用户余额
-    let membership = crate::services::membership::query_membership_balance(ext_pool, user_id)
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("会员查询失败: {e}")))?;
+    // 1. 查询用户余额（Redis 缓存优先）
+    let membership = if let Some(r) = redis {
+        crate::services::membership::query_membership_balance_cached(r, ext_pool, user_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("会员查询失败: {e}")))?
+    } else {
+        crate::services::membership::query_membership_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("会员查询失败: {e}")))?
+    };
 
     if membership.is_none() {
         return Ok(json!({
@@ -59,11 +67,16 @@ pub async fn query_balance_async_impl(
         }));
     }
 
-    // 1.5 查询会员与订阅状态
-    let membership_subscriptions =
+    // 1.5 查询会员与订阅状态（Redis 缓存优先）
+    let membership_subscriptions = if let Some(r) = redis {
+        crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
+    } else {
         crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
             .await
-            .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?;
+            .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
+    };
 
     // Serialize membership+subscription rows to JSON
     let membership_json: Vec<Value> = membership_subscriptions
@@ -89,11 +102,16 @@ pub async fn query_balance_async_impl(
         })
         .collect();
 
-    // 1.8 查询时长卡
-    let duration_cards =
+    // 1.8 查询时长卡（Redis 缓存优先）
+    let duration_cards = if let Some(r) = redis {
+        crate::services::membership::query_duration_cards_cached(r, ext_pool, user_id)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
+    } else {
         crate::services::membership::query_duration_cards(ext_pool, user_id)
             .await
-            .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?;
+            .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
+    };
 
     let duration_card_json: Vec<Value> = duration_cards
         .iter()

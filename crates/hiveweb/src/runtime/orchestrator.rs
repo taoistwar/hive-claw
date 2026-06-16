@@ -163,6 +163,7 @@ where
         registry: Arc::clone(&deps.registry),
         invoker: Arc::clone(&deps.invoker),
         ext_pool: deps.ext_pool.clone(),
+        redis: Some(deps.redis.clone()),
         agent_ctx: Arc::clone(&agent_ctx),
     };
     let mut current_agent_id = starting_agent_id;
@@ -1038,6 +1039,7 @@ async fn handle_meta_tool(
                     let bctx = super::builtins::BuiltinContext {
                         pool: &deps.pool,
                         ext_pool: deps.ext_pool.as_ref(),
+                        redis: Some(&deps.redis),
                         agent_ctx: Some(Arc::clone(&agent_ctx)),
                     };
                     match (builtin.handler)(function_input, &bctx) {
@@ -1137,6 +1139,7 @@ async fn handle_meta_tool(
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
                 ext_pool: deps.ext_pool.clone(),
+                redis: Some(deps.redis.clone()),
                 permissions: ctx.permissions.clone(),
             };
             let executor = crate::runtime::workflow::WorkflowExecutor::new();
@@ -1214,6 +1217,7 @@ pub(crate) async fn handle_workspace_tool(
                 let bctx = super::builtins::BuiltinContext {
                     pool: &deps.pool,
                     ext_pool: deps.ext_pool.as_ref(),
+                    redis: Some(&deps.redis),
                     agent_ctx: Some(Arc::clone(&agent_ctx)),
                 };
                 match (builtin.handler)(args_value, &bctx) {
@@ -1283,6 +1287,7 @@ pub(crate) async fn handle_workspace_tool(
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
                 ext_pool: deps.ext_pool.clone(),
+                redis: Some(deps.redis.clone()),
                 permissions: ctx.permissions.clone(),
             };
             // 临时构造 executor — 直接用 sentinel；workflows 持有也行

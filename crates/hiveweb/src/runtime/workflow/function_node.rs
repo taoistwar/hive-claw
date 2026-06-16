@@ -74,6 +74,7 @@ async fn execute_builtin_function(
     let ctx = crate::runtime::builtins::BuiltinContext {
         pool: &deps.pool,
         ext_pool: deps.ext_pool.as_ref(),
+        redis: deps.redis.as_ref(),
         agent_ctx: Some(Arc::clone(agent_ctx)),
     };
     let out = (result.handler)(node_input, &ctx).map_err(|e| WorkflowError::NodeFailure {

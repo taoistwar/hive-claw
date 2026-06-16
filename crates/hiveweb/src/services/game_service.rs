@@ -7,6 +7,9 @@ use crate::models::game::{
 };
 use crate::utils::error::AppError;
 
+use super::cache_helper;
+use super::cache_helper::cached_or_fetch;
+
 pub async fn list_games(
     pool: &MySqlPool,
     page: i64,
@@ -447,4 +450,42 @@ pub async fn get_game_client_types(
     .await
     .map_err(|e| AppError::Internal(format!("game_client_types query: {e}")))?;
     Ok(row.and_then(|r| r.0))
+}
+
+// ── Redis-cached wrappers ──
+
+/// Cached version of `get_external_game_by_id`.
+pub async fn get_external_game_by_id_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+    game_id: i64,
+) -> Result<Option<(i64, String, String)>, String> {
+    let key = format!("{}:{}", cache_helper::KEY_GAME_INFO, game_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_GAME_INFO, || async {
+        get_external_game_by_id(ext_pool, game_id)
+            .await
+            .map_err(|e| format!("get_external_game_by_id: {e}"))
+    })
+    .await
+}
+
+/// Cached version of `list_external_games`.
+pub async fn list_external_games_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+    channel: &str,
+    client_type: &str,
+) -> Result<Vec<(u32, String, String)>, String> {
+    let key = format!(
+        "{}:{}:{}",
+        cache_helper::KEY_GAME_LIST,
+        channel,
+        client_type
+    );
+    cached_or_fetch(redis, &key, cache_helper::TTL_GAME_LIST, || async {
+        list_external_games(ext_pool, channel, client_type)
+            .await
+            .map_err(|e| format!("list_external_games: {e}"))
+    })
+    .await
 }

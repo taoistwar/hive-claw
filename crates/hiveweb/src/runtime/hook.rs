@@ -45,6 +45,8 @@ pub struct HookDeps {
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
     pub ext_pool: Option<MySqlPool>,
+    /// Redis client for cache-aside operations.
+    pub redis: Option<redis::Client>,
     /// AgentContext for functions/workflows to read/write runtime state
     pub agent_ctx: Arc<AgentContext>,
 }
@@ -195,6 +197,7 @@ async fn execute_call_function(
             let bctx = super::builtins::BuiltinContext {
                 pool: &pool,
                 ext_pool: deps.ext_pool.as_ref(),
+                redis: deps.redis.as_ref(),
                 agent_ctx: Some(Arc::clone(&deps.agent_ctx)),
             };
             let output = (builtin.handler)(function_input, &bctx)
@@ -295,6 +298,7 @@ async fn execute_call_workflow(
         llm: Arc::clone(&deps.llm),
         invoker: Arc::clone(&deps.invoker),
         ext_pool: deps.ext_pool.clone(),
+        redis: deps.redis.clone(),
         permissions: perms,
     };
     let executor = super::workflow::WorkflowExecutor::new();

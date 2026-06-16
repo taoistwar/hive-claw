@@ -366,6 +366,8 @@ pub struct ExternalGameInfo {
     pub game_tags: Option<serde_json::Value>,
     pub computer_id: Option<i64>,
     pub platform_name: Option<String>,
+    pub client_type: Option<String>,
+    pub channel: Option<String>,
 }
 
 /// Query a single game from cc_logic_game by logic_game_id.
@@ -377,15 +379,26 @@ pub async fn get_external_game_by_id(
         r#"SELECT
   t1.logic_game_id, t1.name, t1.description, t1.cover_image, t1.game_tags,
   t2.computer_id,
-  t3.name as platform_name
+  t3.name as platform_name,
+  t1.client_type,
+  t5.prom_channel as channel
 FROM (
   select * from cc_logic_game_wide where logic_game_id=?
 ) t1
-LEFT JOIN (
+INNER JOIN (
   select * from cc_game where logic_game_id=?
 ) t2 ON t1.logic_game_id = t2.logic_game_id
-LEFT JOIN cc_game_platform t3 on t2.platform = t3.code
+INNER JOIN cc_game_platform t3 on t2.platform = t3.code
 INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
+INNER JOIN (
+  SELECT pc.id, pc.game_tag, pc.prom_channel FROM cc_promotion_channel pc where pc.prom_channel ='haimayun'
+) t5 ON t1.channel_game_tag = t5.game_tag
+LEFT JOIN (
+  select * from cc_logic_game_exclude where client_type='ANDROID' and channel='haimayun'
+) t6 on t1.logic_game_id = t6.logic_game_id
+LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
+where t6.id is null
+AND t7.id is null
 "#,
     )
     .bind(logic_game_id)
@@ -439,15 +452,15 @@ pub async fn get_game_channels(
     logic_game_id: i64,
 ) -> Result<Vec<String>, AppError> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT t1.prom_channel FROM (
-            SELECT pc.prom_channel, pc.prom_platform, pc.game_tag, pc.department, pc.director
-            FROM cc_logic_game_wide w
-            INNER JOIN cc_promotion_channel pc
-                ON pc.game_tag = w.channel_game_tag
-                AND pc.status = 1
-            WHERE w.logic_game_id = ?
-        ) t1
-        GROUP BY t1.prom_channel",
+        "SELECT distinct t2.prom_channel
+FROM (
+    select * from cc_logic_game_wide where logic_game_id=?
+) t1
+INNER JOIN cc_promotion_channel t2 ON t2.game_tag = t1.channel_game_tag AND t2.status = 1
+LEFT JOIN (
+    select * from cc_logic_game_exclude
+) t3 on t1.logic_game_id = t3.logic_game_id
+where t3.id is null",
     )
     .bind(logic_game_id)
     .fetch_all(ext_pool)

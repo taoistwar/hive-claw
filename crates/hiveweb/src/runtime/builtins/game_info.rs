@@ -111,6 +111,8 @@ async fn game_info_async_impl(
         "game_tags": game_info.game_tags,
         "computer_id": game_info.computer_id,
         "platform_name": game_info.platform_name,
+        "client_type": game_info.client_type,
+        "channel": game_info.channel,
     });
 
     let mut output = serde_json::json!({
@@ -122,6 +124,8 @@ async fn game_info_async_impl(
         "game_tags": game_info.game_tags,
         "computer_id": game_info.computer_id,
         "platform_name": game_info.platform_name,
+        "client_type": game_info.client_type,
+        "channel": game_info.channel,
     });
 
     // 6. put_to_ac: true → 写入 AgentContext extensions；false → 纯输出
@@ -191,6 +195,14 @@ pub const GAME_INFO_OUTPUT_SCHEMA: &str = r#"{
     "platform_name": {
       "type": "string",
       "description": "平台名称"
+    },
+    "client_type": {
+      "type": "string",
+      "description": "客户端类型"
+    },
+    "channel": {
+      "type": "string",
+      "description": "渠道（从推广渠道映射）"
     }
   }
 }"#;

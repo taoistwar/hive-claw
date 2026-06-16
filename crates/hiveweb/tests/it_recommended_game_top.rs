@@ -2,20 +2,13 @@
 
 mod common;
 
-use std::sync::OnceLock;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-fn get_secret() -> &'static str {
-    static SECRET: OnceLock<String> = OnceLock::new();
-    SECRET.get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
-}
-
 fn compute_sign(body: &str) -> String {
-    let secret = get_secret();
+    let secret = hiveweb::api::chat_common::get_assistant_secret();
     if secret.is_empty() {
         return String::new();
     }

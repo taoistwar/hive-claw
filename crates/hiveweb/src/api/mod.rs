@@ -13,6 +13,7 @@ pub mod chat_assistant;
 pub mod chat_common;
 pub mod chat_messages;
 pub mod function;
+pub mod newsession;
 pub mod game;
 pub mod global_config;
 pub mod plugin;
@@ -150,7 +151,8 @@ pub fn create_router(
         .merge(auth::router_public())
         .merge(recommended_game::router_public())
         .merge(chat_assistant::router())
-        .merge(chat_messages::router());
+        .merge(chat_messages::router())
+        .merge(newsession::router());
 
     let admin_protected_routes = Router::new()
         .merge(auth::router_protected())

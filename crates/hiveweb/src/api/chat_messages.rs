@@ -22,21 +22,11 @@ use axum::{
     routing::post,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 use crate::api::AppState;
 use crate::api::chat_common;
 use crate::models::ChatMessageUser;
 use crate::utils::error::AppError;
-
-/// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
-static SECRET: OnceLock<String> = OnceLock::new();
-
-fn get_secret() -> &'static str {
-    SECRET
-        .get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
-        .as_str()
-}
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/messages", post(list_messages))
@@ -70,7 +60,7 @@ async fn list_messages(
     body: String,
 ) -> Response {
     // 3. MD5 签名校验（对原始 JSON body 字符串计算，与客户端 JSON.stringify 一致）
-    let secret = get_secret();
+    let secret = chat_common::get_assistant_secret();
     if !secret.is_empty() {
         let sign = sign_query.sign.as_deref().unwrap_or("");
         if !chat_common::verify_sign(secret, "/api/messages", body.trim(), sign) {

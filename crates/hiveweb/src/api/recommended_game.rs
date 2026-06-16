@@ -4,7 +4,6 @@ use axum::{
     routing::{get, post},
 };
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -242,15 +241,6 @@ impl From<GameItem> for TopRecommendedGame {
     }
 }
 
-/// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
-static SECRET: OnceLock<String> = OnceLock::new();
-
-fn get_secret() -> &'static str {
-    SECRET
-        .get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
-        .as_str()
-}
-
 #[derive(Debug, Deserialize)]
 struct TopRequest {
     user_id: String,
@@ -265,7 +255,7 @@ async fn top_recommended_games(
     body: String,
 ) -> Result<ApiResponse<Vec<TopRecommendedGame>>, ApiResponse<()>> {
     // 1. MD5 签名校验
-    let secret = get_secret();
+    let secret = chat_common::get_assistant_secret();
     if !secret.is_empty() {
         let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
         if !chat_common::verify_sign(secret, "/api/recommended-games/top", &body, sign) {
@@ -321,7 +311,7 @@ async fn execute_recommendation(
     body: String,
 ) -> Result<ApiResponse<ChatMessageUser>, ApiResponse<()>> {
     // 1. MD5 签名校验
-    let secret = get_secret();
+    let secret = chat_common::get_assistant_secret();
     if !secret.is_empty() {
         let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
         if !chat_common::verify_sign(secret, "/api/recommended-games/execute", &body, sign) {

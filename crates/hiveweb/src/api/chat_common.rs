@@ -13,9 +13,30 @@ use futures::stream::Stream;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+// --- MD5 Sign Verification ---
+
+/// Verify MD5 signature: `MD5(SECRET + "{path}?body={body}")`
+pub fn verify_sign(secret: &str, path: &str, body: &str, expected_sign: &str) -> bool {
+    let sign_string = format!("{}{}?body={}", secret, path, body);
+    let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
+    digest == expected_sign
+}
+
+// --- Shared ASSISTANT_SECRET loader ---
+
+/// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
+static ASSISTANT_SECRET: OnceLock<String> = OnceLock::new();
+
+/// 懒加载 ASSISTANT_SECRET；返回 `&'static str`，未设置时为空串。
+pub fn get_assistant_secret() -> &'static str {
+    ASSISTANT_SECRET
+        .get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
+        .as_str()
+}
 
 // --- SSE Concurrency Control ---
 
@@ -116,15 +137,6 @@ pub struct ListSessionsQuery {
     pub offset: Option<i64>,
     pub limit: Option<i64>,
     pub search: Option<String>,
-}
-
-// --- MD5 Sign Verification ---
-
-/// Verify MD5 signature: `MD5(SECRET + "{path}?body={body}")`
-pub fn verify_sign(secret: &str, path: &str, body: &str, expected_sign: &str) -> bool {
-    let sign_string = format!("{}{}?body={}", secret, path, body);
-    let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
-    digest == expected_sign
 }
 
 // --- SSE Response Builder ---

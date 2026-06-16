@@ -29,6 +29,14 @@ async fn game_info_async_impl(
         .get("put_to_ac")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let client_type = args
+        .get("client_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ANDROID");
+    let channel = args
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .unwrap_or("haimayun");
 
     let game_id: i64 = match game_id_str.trim().parse() {
         Ok(id) => id,
@@ -49,11 +57,11 @@ async fn game_info_async_impl(
 
     // 2. Query external DB (primary) — Redis 缓存优先
     let external = if let Some(r) = redis {
-        crate::services::game_service::get_external_game_by_id_cached(r, ext_pool, game_id)
+        crate::services::game_service::get_external_game_by_id_cached(r, ext_pool, game_id, client_type, channel)
             .await
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     } else {
-        crate::services::game_service::get_external_game_by_id(ext_pool, game_id)
+        crate::services::game_service::get_external_game_by_id(ext_pool, game_id, client_type, channel)
             .await
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     };
@@ -156,6 +164,16 @@ pub const GAME_INFO_INPUT_SCHEMA: &str = r#"{
       "type": "boolean",
       "description": "是否将游戏信息放入 AgentContext（true=写入 AC 扩展卡片，false=仅作为输出变量）",
       "default": false
+    },
+    "client_type": {
+      "type": "string",
+      "description": "客户端类型（如 ANDROID、iphone等），默认 ANDROID",
+      "default": "ANDROID"
+    },
+    "channel": {
+      "type": "string",
+      "description": "渠道（如 haimayun），默认 haimayun",
+      "default": "haimayun"
     }
   },
   "required": ["game_id"]

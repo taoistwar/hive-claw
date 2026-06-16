@@ -374,6 +374,8 @@ pub struct ExternalGameInfo {
 pub async fn get_external_game_by_id(
     ext_pool: &MySqlPool,
     logic_game_id: i64,
+    client_type: &str,
+    channel: &str,
 ) -> Result<Option<ExternalGameInfo>, AppError> {
     sqlx::query_as::<_, ExternalGameInfo>(
         r#"SELECT
@@ -391,10 +393,10 @@ INNER JOIN (
 INNER JOIN cc_game_platform t3 on t2.platform = t3.code
 INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
 INNER JOIN (
-  SELECT pc.id, pc.game_tag, pc.prom_channel FROM cc_promotion_channel pc where pc.prom_channel ='haimayun'
+  SELECT pc.id, pc.game_tag, pc.prom_channel FROM cc_promotion_channel pc where pc.prom_channel = ?
 ) t5 ON t1.channel_game_tag = t5.game_tag
 LEFT JOIN (
-  select * from cc_logic_game_exclude where client_type='ANDROID' and channel='haimayun'
+  select * from cc_logic_game_exclude where client_type=? and channel=?
 ) t6 on t1.logic_game_id = t6.logic_game_id
 LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
 where t6.id is null
@@ -403,6 +405,9 @@ AND t7.id is null
     )
     .bind(logic_game_id)
     .bind(logic_game_id)
+    .bind(channel)
+    .bind(client_type)
+    .bind(channel)
     .fetch_optional(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))
@@ -502,10 +507,12 @@ pub async fn get_external_game_by_id_cached(
     redis: &redis::Client,
     ext_pool: &MySqlPool,
     game_id: i64,
+    client_type: &str,
+    channel: &str,
 ) -> Result<Option<ExternalGameInfo>, String> {
-    let key = format!("{}:{}", cache_helper::KEY_GAME_INFO, game_id);
+    let key = format!("{}:{}:{}:{}", cache_helper::KEY_GAME_INFO, game_id, client_type, channel);
     cached_or_fetch(redis, &key, cache_helper::TTL_GAME_INFO, || async {
-        get_external_game_by_id(ext_pool, game_id)
+        get_external_game_by_id(ext_pool, game_id, client_type, channel)
             .await
             .map_err(|e| format!("get_external_game_by_id: {e}"))
     })

@@ -214,7 +214,11 @@ FROM cc_user_asset_coin uac
 WHERE uac.user_id = ?
   AND uac.type IN (8, 9)
   AND uac.value > 0
-  AND (uac.type = 9 OR uac.expire_time > UNIX_TIMESTAMP(NOW()) * 1000)
+  AND (
+      (type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000)
+      OR
+      (type = 9 AND (expire_time IS NULL OR expire_time > UNIX_TIMESTAMP() * 1000))
+  )
 ORDER BY uac.value ASC"#,
     )
     .bind(user_id)

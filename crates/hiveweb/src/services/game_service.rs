@@ -1,5 +1,6 @@
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
+use serde::{Serialize, Deserialize};
 
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
@@ -355,18 +356,40 @@ pub async fn load_internal_aliases(
     Ok(map)
 }
 
-/// Query a single game from cc_logic_game by cc_game ID.
-/// Returns (id, name, alias).
+/// Row returned by `get_external_game_by_id`.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ExternalGameInfo {
+    pub logic_game_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub cover_image: Option<String>,
+    pub game_tags: Option<serde_json::Value>,
+    pub computer_id: Option<i64>,
+    pub platform_name: Option<String>,
+}
+
+/// Query a single game from cc_logic_game by logic_game_id.
 pub async fn get_external_game_by_id(
     ext_pool: &MySqlPool,
-    game_id: i64,
-) -> Result<Option<(i64, String, String)>, AppError> {
-    sqlx::query_as::<_, (i64, String, String)>(
-        r#"SELECT cast(t2.id as SIGNED), t1.name, COALESCE(t1.alias, '') AS alias FROM cc_logic_game t1
-LEFT JOIN cc_game t2 ON t1.id = t2.logic_game_id
-WHERE t2.id=?"#,
+    logic_game_id: i64,
+) -> Result<Option<ExternalGameInfo>, AppError> {
+    sqlx::query_as::<_, ExternalGameInfo>(
+        r#"SELECT
+  t1.logic_game_id, t1.name, t1.description, t1.cover_image, t1.game_tags,
+  t2.computer_id,
+  t3.name as platform_name
+FROM (
+  select * from cc_logic_game_wide where logic_game_id=?
+) t1
+LEFT JOIN (
+  select * from cc_game where logic_game_id=?
+) t2 ON t1.logic_game_id = t2.logic_game_id
+LEFT JOIN cc_game_platform t3 on t2.platform = t3.code
+INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
+"#,
     )
-    .bind(game_id)
+    .bind(logic_game_id)
+    .bind(logic_game_id)
     .fetch_optional(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))
@@ -384,29 +407,25 @@ pub async fn list_external_games(
     channel: &str,
     client_type: &str,
 ) -> Result<Vec<(u32, String, String)>, AppError> {
-    let sql = r#"
-       SELECT
-    DISTINCT ga.id, g.name, COALESCE(g.alias, '') AS alias
-FROM cc_logic_game g
-INNER JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
-INNER JOIN cc_game ga ON ga.logic_game_id = g.id
-INNER JOIN cc_logic_game_version v ON w.version = v.version
-LEFT JOIN cc_logic_game_exclude e
-    ON w.logic_game_id = e.logic_game_id
-    AND e.client_type = w.client_type
-    AND e.channel = ?
-LEFT JOIN cc_logic_game_blacklist bl ON w.logic_game_id = bl.logic_game_id
-WHERE w.client_type = ?
-    AND w.channel_game_tag = COALESCE(
-        (SELECT pc.game_tag FROM cc_promotion_channel pc WHERE pc.prom_channel = ? LIMIT 1),
-        'UNKNOWN'
-    )
-    AND e.id IS NULL
-    AND bl.id IS NULL
-ORDER BY ga.id
+    let sql = r#"SELECT
+  z2.id, z2.name, COALESCE(z2.alias, '') AS alias
+FROM (
+  SELECT t1.logic_game_id, t1.name
+  FROM (
+    select * from cc_logic_game_wide where client_type=?
+  ) t1
+  LEFT JOIN (
+    select * from cc_logic_game_exclude where client_type=? and channel=?
+  ) t2 on t1.logic_game_id = t2.logic_game_id
+  INNER JOIN cc_logic_game_version t3 ON t1.version = t3.version
+  LEFT JOIN cc_logic_game_blacklist t4 ON t1.logic_game_id = t4.logic_game_id
+  where t2.id is null AND t4.id is null
+  group by t1.logic_game_id,t1.name
+) z1
+INNER JOIN cc_logic_game z2 on z1.logic_game_id = z2.id
     "#;
     sqlx::query_as::<_, (u32, String, String)>(sql)
-        .bind(channel)
+        .bind(client_type)
         .bind(client_type)
         .bind(channel)
         .fetch_all(ext_pool)
@@ -443,8 +462,19 @@ pub async fn get_game_client_types(
     logic_game_id: i64,
 ) -> Result<Option<serde_json::Value>, AppError> {
     let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
-        "SELECT client_type FROM cc_logic_game_wide WHERE logic_game_id = ?",
+        r#"SELECT  t1.client_type
+FROM (
+  select * from cc_logic_game_wide where logic_game_id = ?
+) t1
+LEFT JOIN (
+  select * from cc_logic_game_exclude where logic_game_id = ?
+) t2 on t1.logic_game_id = t2.logic_game_id
+INNER JOIN cc_logic_game_version t3 ON t1.version = t3.version
+LEFT JOIN cc_logic_game_blacklist t4 ON t1.logic_game_id = t4.logic_game_id
+where t2.id is null AND t4.id is null
+group by t1.client_type"#,
     )
+    .bind(logic_game_id)
     .bind(logic_game_id)
     .fetch_optional(ext_pool)
     .await
@@ -459,7 +489,7 @@ pub async fn get_external_game_by_id_cached(
     redis: &redis::Client,
     ext_pool: &MySqlPool,
     game_id: i64,
-) -> Result<Option<(i64, String, String)>, String> {
+) -> Result<Option<ExternalGameInfo>, String> {
     let key = format!("{}:{}", cache_helper::KEY_GAME_INFO, game_id);
     cached_or_fetch(redis, &key, cache_helper::TTL_GAME_INFO, || async {
         get_external_game_by_id(ext_pool, game_id)

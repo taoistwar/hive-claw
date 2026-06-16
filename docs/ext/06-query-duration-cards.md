@@ -28,7 +28,8 @@ SELECT
     uac.order_id            AS order_id,
     uac.consume_label       AS consume_label,
     uac.extra               AS extra,
-    uac.create_time         AS create_time
+    uac.create_time         AS create_time,
+    uac.product_mirror      AS product_mirror
 FROM cc_user_asset_coin uac
 WHERE uac.user_id = ?
   AND uac.type IN (8, 9)
@@ -76,6 +77,11 @@ ORDER BY uac.value ASC
 | `consume_label` | `consume_label` | `serde_json::Value`（JSON） |
 | `extra` | `extra` | `serde_json::Value`（JSON） |
 | `create_time` | `create_time` | `chrono::DateTime<Utc>` |
+| `product_mirror` | `product_mirror` | `serde_json::Value`（JSON，提取 fps / gpu 等字段） |
+
+## ⚠️ 最近变更
+
+`product_mirror` 字段是**后追加**的——`DurationCardRow` 结构体末尾新增一行，SELECT 列表末尾追加 `uac.product_mirror AS product_mirror`。该字段对应外部库 `cc_user_asset_coin.product_mirror` JSON 列，下游可从中解析 fps / gpu 等产品规格信息。
 
 ## 排序约定
 

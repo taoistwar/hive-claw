@@ -14,11 +14,20 @@
 ## SQL 原文
 
 ```sql
-SELECT t1.id, t1.name, COALESCE(t1.alias, '') AS alias
+SELECT cast(t2.id as SIGNED), t1.name, COALESCE(t1.alias, '') AS alias
 FROM cc_logic_game t1
 LEFT JOIN cc_game t2 ON t1.id = t2.logic_game_id
 WHERE t2.id = ?
 ```
+
+## ⚠️ 最近变更
+
+返回列由 `t1.id`（`cc_logic_game.id`）**改为** `cast(t2.id as SIGNED)`（`cc_game.id` 转有符号整型）。
+
+原 SQL 用 `t1.id` 会返回**逻辑游戏**的 ID，但调用方期望的是用户实际请求的 `cc_game.id`（在 WHERE 条件里就是用 `t2.id` 过滤的）。改成 `cast(t2.id as SIGNED)` 后：
+
+- 语义上自洽：返回的就是**过滤键对应的 ID**（即 `cc_game.id`），不再跨表误用 `cc_logic_game.id`。
+- `cast(... as SIGNED)` 是 MySQL 显式类型转换——外部库 `cc_game.id` 可能是 `UNSIGNED`/`BIGINT`，转为 `SIGNED` 后才能安全映射到 Rust 的 `i64`。
 
 ## 作用
 

@@ -58,8 +58,8 @@ async fn game_info_async_impl(
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     };
 
-    let (id, name, ext_alias) = match external {
-        Some(row) if row.0 != 0 => row,
+    let game_info = match external {
+        Some(info) if info.logic_game_id != 0 => info,
         _ => {
             return Ok(serde_json::json!({
                 "found": false,
@@ -71,6 +71,11 @@ async fn game_info_async_impl(
             }));
         }
     };
+
+    let id = game_info.logic_game_id;
+    let name = game_info.name;
+    // External alias: none in the new schema (description is not an alias)
+    let ext_alias = "";
 
     // 3. Load supplementary aliases from internal games table
     let internal_aliases = crate::services::game_service::load_internal_aliases(pool)
@@ -101,12 +106,22 @@ async fn game_info_async_impl(
     let game_payload = serde_json::json!({
         "id": id,
         "name": name,
+        "description": game_info.description,
+        "cover_image": game_info.cover_image,
+        "game_tags": game_info.game_tags,
+        "computer_id": game_info.computer_id,
+        "platform_name": game_info.platform_name,
     });
 
     let mut output = serde_json::json!({
         "found": true,
         "id": id,
         "name": name,
+        "description": game_info.description,
+        "cover_image": game_info.cover_image,
+        "game_tags": game_info.game_tags,
+        "computer_id": game_info.computer_id,
+        "platform_name": game_info.platform_name,
     });
 
     // 6. put_to_ac: true → 写入 AgentContext extensions；false → 纯输出
@@ -151,11 +166,31 @@ pub const GAME_INFO_OUTPUT_SCHEMA: &str = r#"{
     },
     "id": {
       "type": "integer",
-      "description": "游戏 ID"
+      "description": "游戏 ID（logic_game_id）"
     },
     "name": {
       "type": "string",
       "description": "游戏名称"
+    },
+    "description": {
+      "type": "string",
+      "description": "游戏描述"
+    },
+    "cover_image": {
+      "type": "string",
+      "description": "封面图 URL"
+    },
+    "game_tags": {
+      "type": "object",
+      "description": "游戏标签（JSON）"
+    },
+    "computer_id": {
+      "type": "integer",
+      "description": "计算机 ID"
+    },
+    "platform_name": {
+      "type": "string",
+      "description": "平台名称"
     }
   }
 }"#;

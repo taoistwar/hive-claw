@@ -20,7 +20,8 @@ struct CcUserMembership {
 /// Check if a user has an active VIP membership in the external database.
 pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
     sqlx::query_as::<_, CcUserMembership>(
-        "SELECT id, membership_level, effective_end_time FROM cc_user_membership WHERE id = ? LIMIT 1",
+        r#"SELECT id, membership_level, effective_end_time FROM cc_user_membership
+        WHERE user_id = ? and effective_end_time > now() AND effective_start_time < now() LIMIT 1"#,
     )
     .bind(user_id)
     .fetch_optional(pool)
@@ -162,12 +163,16 @@ pub async fn query_membership_subscriptions(
     us.payment_method           AS payment_method,
     us.start_time               AS subscription_start_time,
     us.end_time                 AS subscription_end_time
-FROM cc_user_membership um
+FROM
+(select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
-LEFT JOIN cc_user_subscription us ON um.user_subscription_id = us.id
-WHERE um.user_id = ?
+LEFT JOIN (
+	select * from cc_user_subscription where user_id=?
+) us ON um.user_subscription_id = us.id
+
 ORDER BY ml.level_order DESC, um.effective_end_time DESC"#,
     )
+    .bind(user_id)
     .bind(user_id)
     .fetch_all(ext_pool)
     .await
@@ -198,35 +203,39 @@ pub async fn query_duration_cards(
 ) -> Result<Vec<DurationCardRow>, sqlx::Error> {
     sqlx::query_as(
         r#"SELECT
-    uac.id                      AS card_asset_id,
-    uac.value                   AS remain_duration,
-    uac.computer_biz_type       AS computer_biz_type,
-    uac.expire_time             AS expire_time,
-    uac.type                    AS card_type,
-    CASE uac.type
+    t1.id                  AS card_asset_id,
+    t1.value               AS remain_duration,
+    t1.computer_biz_type   AS computer_biz_type,
+    t1.expire_time         AS expire_time,
+    t1.type                AS card_type,
+    CASE t1.type
         WHEN 8 THEN '金卡'
         WHEN 9 THEN '黑金卡'
         ELSE '其他'
-    END                         AS card_type_name,
-    uac.order_id                AS order_id,
-    uac.consume_label           AS consume_label,
-    uac.extra                   AS extra,
-    uac.create_time             AS create_time,
-    uac.product_mirror          AS product_mirror
-FROM cc_user_asset_coin uac
-WHERE uac.user_id = ?
-  AND uac.type IN (8, 9)
-  AND uac.value > 0
-  AND (
+    END                     AS card_type_name,
+    t1.order_id            AS order_id,
+    t1.consume_label       AS consume_label,
+    t1.extra               AS extra,
+    t1.create_time         AS create_time,
+    t2.product_mirror      AS product_mirror
+FROM (
+	select * from cc_user_asset_coin  WHERE user_id = ? AND type IN (8, 9) AND value > 0 AND (
       (type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000)
       OR
       (type = 9 AND (expire_time IS NULL OR expire_time > UNIX_TIMESTAMP() * 1000))
-  )
-ORDER BY uac.value ASC"#,
+	)
+) t1
+left join (
+	SELECT * from cc_order where user_id = ?
+) t2 on t1.order_id = t2.id"#,
     )
+    .bind(user_id)
     .bind(user_id)
     .fetch_all(ext_pool)
     .await
+    // cc_user_asset_coin t1 join cc_order t2 on t1.order_id = t2.id
+    // 排除 t1.customer_label "gameLabelList" 包含 "BOX_CARD",
+    // 可以多个
 }
 
 // ── Redis-cached wrappers ──

@@ -37,6 +37,7 @@ use std::sync::{Arc, OnceLock};
 use crate::api::AppState;
 use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
+use crate::services::cache_helper;
 use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
@@ -153,8 +154,8 @@ async fn assistant_chat(
         }
     };
 
-    // 5. 校验 user_id 是否存在于外部 cloud_user 表
-    match membership::user_exists_in_cloud(ext_pool, req.user_id).await {
+    // 5. 校验 user_id 是否存在于外部 cloud_user 表（Redis 缓存优先）
+    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, req.user_id).await {
         Ok(true) => {}
         Ok(false) => {
             return AppError::BadRequest("User not found".into())
@@ -162,18 +163,18 @@ async fn assistant_chat(
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud 查询失败");
+            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud_cached 查询失败");
             return AppError::Internal("用户数据查询失败，请稍后重试".into())
                 .into_response::<()>()
                 .into_response();
         }
     }
 
-    // 6. 获取会员等级 & 判断是否 VIP
-    let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
+    // 6. 获取会员等级 & 判断是否 VIP（Redis 缓存优先）
+    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
+            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership_cached 查询失败，降级为非VIP");
             false
         });
 
@@ -202,11 +203,11 @@ async fn assistant_chat(
         is_admin: false,
     };
 
-    // 8. 内部 users 表同步（不存在则创建，同时同步 uid/nickname）
-    let cloud_info = membership::get_cloud_user_info(ext_pool, req.user_id)
+    // 8. 内部 users 表同步（不存在则创建，同时同步 uid/nickname，Redis 缓存优先）
+    let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info failed");
+            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached failed");
             None
         });
     let (uid, nickname) = cloud_info
@@ -484,31 +485,12 @@ async fn get_config_number_cached(
     key: &str,
     default: i64,
 ) -> i64 {
-    let cache_key = format!("config:{}", key);
-
-    // 1. 尝试从 Redis 读取
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("Redis connection failed, falling back to DB for config '{key}': {e}");
-            return get_config_number(pool, key, default).await;
-        }
-    };
-
-    let cached: Option<String> = conn.get(&cache_key).await.unwrap_or(None);
-    if let Some(val) = cached {
-        if let Ok(n) = val.parse::<i64>() {
-            return n;
-        }
-    }
-
-    // 2. Redis 没有，从 DB 读取
-    let value = get_config_number(pool, key, default).await;
-
-    // 3. 写入 Redis，TTL 1 小时
-    let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
-
-    value
+    let cache_key = format!("{}{}", cache_helper::KEY_CONFIG_PREFIX, key);
+    cache_helper::cached_or_fetch(redis, &cache_key, cache_helper::TTL_CONFIG, || async {
+        Ok(get_config_number(pool, key, default).await)
+    })
+    .await
+    .unwrap_or(default)
 }
 
 /// 直接从 DB 读取配置值（fallback）
@@ -524,28 +506,19 @@ pub const CACHED_CONFIG_KEYS: &[&str] = &["vip_ask_times", "normal_ask_times"];
 
 /// 将指定 key 的配置值同步到 Redis（用于 admin 修改配置后主动刷新缓存）。
 pub async fn sync_config_to_redis(redis: &redis::Client, pool: &MySqlPool, key: &str) {
-    let cache_key = format!("config:{}", key);
+    let cache_key = format!("{}{}", cache_helper::KEY_CONFIG_PREFIX, key);
     let value = get_config_number(pool, key, -1).await;
     if value < 0 {
         // 配置不存在，删除 Redis 缓存
-        let mut conn = match redis.get_multiplexed_async_connection().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Redis connection failed during config cache delete '{key}': {e}");
-                return;
-            }
-        };
-        let _: Result<(), _> = conn.del(&cache_key).await;
+        if let Err(e) = cache_helper::cached_del(redis, &cache_key).await {
+            tracing::warn!(key, error = %e, "config cache delete failed");
+        }
         return;
     }
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("Redis connection failed during config cache sync '{key}': {e}");
-            return;
-        }
-    };
-    let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
+    if let Err(e) = cache_helper::cached_set(redis, &cache_key, &value, cache_helper::TTL_CONFIG).await {
+        tracing::warn!(key, error = %e, "config cache sync failed");
+        return;
+    }
     tracing::info!(key, value, "config cache synced to Redis");
 }
 

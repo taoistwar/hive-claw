@@ -86,18 +86,18 @@ left join
 	where user_id = ?
 	    and expire_time > UNIX_TIMESTAMP() *1000
 	    and expire_time < (7*24*60*60*1000+UNIX_TIMESTAMP()*1000)
-	    and value>0
+	    and value>0 AND type=4
 	group by user_id
 ) m2 on m1.user_id = m2.user_id
 LEFT JOIN (
 	SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time
 	from cc_user_disk
-	where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000
+	where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
 	group by user_id
 ) m4 on m1.user_id = m4.user_id
 LEFT JOIN (
 	select user_id, IFNULL(sum(value), 0) as total_coins from cc_user_asset_coin
-  where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0
+  where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0 AND type=4
 	group by user_id
 ) m7 on m1.user_id = m7.user_id
 "#,

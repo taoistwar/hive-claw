@@ -55,7 +55,6 @@ fn get_secret() -> &'static str {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/assistant", post(assistant_chat))
-        .route("/newsession", post(new_session))
 }
 
 // ── 请求 / 响应 ──
@@ -75,14 +74,7 @@ pub struct AssistantRequest {
     pub new_session: bool,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct NewSessionRequest {
-    pub user_id: i64,
-}
-
-// 响应：直接返回 chat_messages_user 中保存的 ChatMessageUser 记录（与 /api/messages 单条形态一致）
-
-// ── Handler ──
+// ── 日访问次数限流（Redis） ──
 
 async fn assistant_chat(
     State(state): State<AppState>,
@@ -425,113 +417,6 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
         }
     }
     (event_type, data)
-}
-
-// ── New Session API ──
-
-/// 创建新会话。
-///
-/// 处理流程：
-///   1. MD5 签名校验
-///   2. user_id > 0 校验
-///   3. 外部 DB cloud_user 校验
-///   4. 内部 DB 同步用户
-///   5. 创建新 session
-async fn new_session(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Query(params): Query<HashMap<String, String>>,
-    body: String,
-) -> Response {
-    // 0. Content-Type 校验
-    let content_type = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if content_type != "application/json; charset=UTF-8" {
-        return AppError::BadRequest(
-            "Invalid Content-Type, must be: application/json; charset=UTF-8".into(),
-        )
-        .into_response::<()>()
-        .into_response();
-    }
-
-    // 1. MD5 签名校验
-    let secret = get_secret();
-    if !secret.is_empty() {
-        let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
-        if !chat_common::verify_sign(secret, "/api/newsession", &body, sign) {
-            return AppError::BadRequest("Invalid signature".into())
-                .into_response::<()>()
-                .into_response();
-        }
-    }
-
-    // 2. JSON 解析
-    let req: NewSessionRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            return AppError::BadRequest("Invalid request body".into())
-                .into_response::<()>()
-                .into_response();
-        }
-    };
-
-    // 3. user_id > 0 校验
-    if req.user_id <= 0 {
-        return AppError::BadRequest("user_id must be positive".into())
-            .into_response::<()>()
-            .into_response();
-    }
-
-    // 4. 外部 DB cloud_user 校验
-    let ext_pool = match &state.ext_pool {
-        Some(p) => p,
-        None => {
-            return AppError::Internal("Assistant service unavailable".into())
-                .into_response::<()>()
-                .into_response();
-        }
-    };
-
-    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, req.user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return AppError::BadRequest("User not found".into())
-                .into_response::<()>()
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud_cached 查询失败");
-            return AppError::Internal("用户数据查询失败，请稍后重试".into())
-                .into_response::<()>()
-                .into_response();
-        }
-    }
-
-    // 5. 内部 DB 同步用户（uid/nickname）
-    let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached failed");
-            None
-        });
-    let (uid, nickname) = cloud_info
-        .as_ref()
-        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
-        .unwrap_or((None, None));
-
-    if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
-        return AppError::Internal(format!("user sync: {e}"))
-            .into_response::<()>()
-            .into_response();
-    }
-
-    // 6. 创建新 session
-    match svc::create_user_session(&state.pool, req.user_id, None).await {
-        Ok(_) => crate::utils::error::ApiResponse::success(true).into_response(),
-        Err(e) => e.into_response::<()>().into_response(),
-    }
 }
 
 // ── 日访问次数限流（Redis） ──

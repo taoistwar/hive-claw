@@ -54,7 +54,7 @@ async fn game_list_async_impl(
     };
 
     // 3. Merge: for each external game, collect all aliases (its own + internal supplements)
-    let mut entries: Vec<(u32, String, Vec<String>)> = Vec::new();
+    let mut entries: Vec<(i64, String, Vec<String>)> = Vec::new();
     for (id, name, ext_alias) in external {
         let mut aliases: Vec<String> = Vec::new();
 

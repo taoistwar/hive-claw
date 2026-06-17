@@ -38,18 +38,23 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| v == "development" || v == "dev")
         .unwrap_or(true);
 
-    let env_filter = if is_dev {
-        EnvFilter::try_from_default_env()
+    if is_dev {
+        // dev: human-readable debug output to stdout
+        let env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("debug"))
-            .add_directive("hiveweb=debug".parse().unwrap())
+            .add_directive("hiveweb=debug".parse().unwrap());
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
     } else {
-        EnvFilter::from_default_env().add_directive("hiveweb=info".parse()?)
-    };
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .json()
-        .init();
+        // prod: only warn+ to stdout, suppressing info/debug noise
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("warn"))
+            .add_directive("hiveweb=warn".parse()?);
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     tracing::info!("=== HiveClaw Admin Center Starting ===");
 

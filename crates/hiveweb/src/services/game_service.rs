@@ -424,7 +424,7 @@ pub async fn list_external_games(
     ext_pool: &MySqlPool,
     channel: &str,
     client_type: &str,
-) -> Result<Vec<(u32, String, String)>, AppError> {
+) -> Result<Vec<(i64, String, String)>, AppError> {
     let sql = r#"SELECT
   z2.id, z2.name, COALESCE(z2.alias, '') AS alias
 FROM (
@@ -442,7 +442,7 @@ FROM (
 ) z1
 INNER JOIN cc_logic_game z2 on z1.logic_game_id = z2.id
     "#;
-    sqlx::query_as::<_, (u32, String, String)>(sql)
+    sqlx::query_as::<_, (i64, String, String)>(sql)
         .bind(client_type)
         .bind(client_type)
         .bind(channel)
@@ -539,7 +539,7 @@ pub async fn list_external_games_cached(
     ext_pool: &MySqlPool,
     channel: &str,
     client_type: &str,
-) -> Result<Vec<(u32, String, String)>, String> {
+) -> Result<Vec<(i64, String, String)>, String> {
     let key = format!(
         "{}:{}:{}",
         cache_helper::KEY_GAME_LIST,

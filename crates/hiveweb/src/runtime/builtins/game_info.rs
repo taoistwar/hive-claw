@@ -55,8 +55,8 @@ async fn game_info_async_impl(
 
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
-    // 2. Query external DB (primary) — Redis 缓存优先
-    let external = if let Some(r) = redis {
+    // 2. Query external DB (Redis 缓存优先) — 然后按平台优先级排序
+    let mut external = if let Some(r) = redis {
         crate::services::game_service::get_external_game_by_id_cached(r, ext_pool, game_id, client_type, channel)
             .await
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
@@ -65,6 +65,8 @@ async fn game_info_async_impl(
             .await
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     };
+    // Sort by platform priority (in-memory, no need to cache)
+    crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut external).await;
     if external.is_empty() {
         return Ok(serde_json::json!({
             "found": false,
@@ -76,41 +78,7 @@ async fn game_info_async_impl(
         }));
     }
 
-    // 2. Load trial purchase platform config for priority sorting
-    let platform_priority: Vec<String> = crate::services::game_service::get_trial_purchase_platform_config(ext_pool)
-        .await
-        .unwrap_or(None)
-        .and_then(|config| {
-            config
-                .get("platformPriority")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-        })
-        .unwrap_or_default();
-
-    // 3. Sort external by platformPriority — highest priority first
-    let mut sorted = external;
-    if !platform_priority.is_empty() {
-        sorted.sort_by(|a, b| {
-            let pa = a
-                .platform_name
-                .as_deref()
-                .and_then(|name| platform_priority.iter().position(|p| p == name))
-                .unwrap_or(usize::MAX);
-            let pb = b
-                .platform_name
-                .as_deref()
-                .and_then(|name| platform_priority.iter().position(|p| p == name))
-                .unwrap_or(usize::MAX);
-            pa.cmp(&pb)
-        });
-    }
-
-    let game_info = match sorted.first() {
+    let game_info = match external.first() {
         Some(info) if info.logic_game_id != 0 => info,
         _ => {
             return Ok(serde_json::json!({
@@ -129,7 +97,7 @@ async fn game_info_async_impl(
     let ext_alias = "";
 
     // Build games array from all rows
-    let games: Vec<Value> = sorted
+    let games: Vec<Value> = external
         .iter()
         .map(|info| {
             serde_json::json!({

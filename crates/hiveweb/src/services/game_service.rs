@@ -514,6 +514,57 @@ pub async fn get_trial_purchase_platform_config(
     Ok(row.and_then(|r| r.0))
 }
 
+/// Query external games by logic_game_id, then sort by trial purchase
+/// platform priority. Returns the sorted vec — callers pick `.first()`
+/// for the highest-priority result.
+pub async fn get_external_games_sorted_by_priority(
+    ext_pool: &MySqlPool,
+    logic_game_id: i64,
+    client_type: &str,
+    channel: &str,
+) -> Result<Vec<ExternalGameInfo>, AppError> {
+    let mut games = get_external_game_by_id(ext_pool, logic_game_id, client_type, channel).await?;
+    sort_external_games_by_priority(ext_pool, &mut games).await;
+    Ok(games)
+}
+
+/// Sort a vec of ExternalGameInfo by trial purchase platform priority in-place.
+pub async fn sort_external_games_by_priority(
+    ext_pool: &MySqlPool,
+    games: &mut Vec<ExternalGameInfo>,
+) {
+    let platform_priority: Vec<String> = get_trial_purchase_platform_config(ext_pool)
+        .await
+        .unwrap_or(None)
+        .and_then(|config| {
+            config
+                .get("platformPriority")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+
+    if !platform_priority.is_empty() {
+        games.sort_by(|a, b| {
+            let pa = a
+                .platform_name
+                .as_deref()
+                .and_then(|name| platform_priority.iter().position(|p| p == name))
+                .unwrap_or(usize::MAX);
+            let pb = b
+                .platform_name
+                .as_deref()
+                .and_then(|name| platform_priority.iter().position(|p| p == name))
+                .unwrap_or(usize::MAX);
+            pa.cmp(&pb)
+        });
+    }
+}
+
 // ── Redis-cached wrappers ──
 
 /// Cached version of `get_external_game_by_id`.

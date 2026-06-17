@@ -340,7 +340,7 @@ async fn execute_recommendation(
         .await
         .map_err(|e| e.into_response())?;
 
-    // 3b. 查询外部 DB 获取 computer_id / platform_name
+    // 3b. 查询外部 DB 获取 computer_id / platform_name（按平台优先级排序）
     let (computer_id, platform_name) = if let (Some(ext_pool), Ok(logic_game_id)) = (
         state.ext_pool.as_ref(),
         req.game_id.trim().parse::<i64>(),
@@ -353,7 +353,42 @@ async fn execute_recommendation(
         )
         .await
         .unwrap_or_default();
-        ext_info
+
+        // 加载试玩平台配置，按 platformPriority 权重排序
+        let platform_priority: Vec<String> =
+            crate::services::game_service::get_trial_purchase_platform_config(ext_pool)
+                .await
+                .unwrap_or(None)
+                .and_then(|config| {
+                    config
+                        .get("platformPriority")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                })
+                .unwrap_or_default();
+
+        let mut sorted = ext_info;
+        if !platform_priority.is_empty() {
+            sorted.sort_by(|a, b| {
+                let pa = a
+                    .platform_name
+                    .as_deref()
+                    .and_then(|name| platform_priority.iter().position(|p| p == name))
+                    .unwrap_or(usize::MAX);
+                let pb = b
+                    .platform_name
+                    .as_deref()
+                    .and_then(|name| platform_priority.iter().position(|p| p == name))
+                    .unwrap_or(usize::MAX);
+                pa.cmp(&pb)
+            });
+        }
+
+        sorted
             .first()
             .map(|info| (info.computer_id, info.platform_name.clone()))
             .unwrap_or((None, None))

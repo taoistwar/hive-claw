@@ -239,33 +239,43 @@ pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame
 }
 
 /// Filtered top games with strategy-based channel/client_type filtering and per-tag limits.
-/// Uses one SQL query per tag category, filtering via SQL JOINs + JSON_CONTAINS.
+/// Fetches 10 candidates per tag, then randomly selects the required number.
 /// - 新游上线: 3, 运营推荐: 4, 本周热玩: 3
 pub async fn fetch_top_filtered(
     pool: &MySqlPool,
     channel: &str,
     client_type: &str,
 ) -> Result<Vec<RecommendedGame>, AppError> {
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
+
     let tags = [
-        ("运营推荐", 4i64),
-        ("新游上线", 3i64),
-        ("本周热玩", 3i64),
+        ("运营推荐", 4usize),
+        ("新游上线", 3usize),
+        ("本周热玩", 3usize),
     ];
 
     let mut result: Vec<RecommendedGame> = Vec::new();
     let ch = format!("\"{}\"", channel);
     let ct = format!("\"{}\"", client_type);
+    let mut rng = thread_rng();
 
     for (tag, limit) in &tags {
+        let limit = *limit;
         let rows = sqlx::query_as::<_, RecommendedGame>(FILTERED_SQL)
-            .bind(tag)
+            .bind(*tag)
             .bind(&ch).bind(&ct)
             .bind(&ch).bind(&ct)
-            .bind(limit)
+            .bind(10i64)
             .fetch_all(pool)
             .await
             .map_err(|e| AppError::Internal(format!("fetch_top_filtered {tag}: {e}")))?;
-        result.extend(rows);
+
+        let selected: Vec<RecommendedGame> = rows
+            .choose_multiple(&mut rng, limit.min(rows.len()))
+            .cloned()
+            .collect();
+        result.extend(selected);
     }
 
     Ok(result)

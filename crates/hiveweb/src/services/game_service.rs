@@ -368,6 +368,7 @@ pub struct ExternalGameInfo {
     pub platform_name: Option<String>,
     pub client_type: Option<String>,
     pub channel: Option<String>,
+    pub game_icon: Option<String>,
 }
 
 /// Query games from cc_logic_game by logic_game_id (foreign key, may return multiple rows).
@@ -383,7 +384,8 @@ pub async fn get_external_game_by_id(
   t2.computer_id,
   t3.name as platform_name,
   t1.client_type,
-  t5.prom_channel as channel
+  t5.prom_channel as channel,
+  t8.game_icon
 FROM (
   select * from cc_logic_game_wide where logic_game_id=?
 ) t1
@@ -399,6 +401,9 @@ LEFT JOIN (
   select * from cc_logic_game_exclude where client_type=? and channel=?
 ) t6 on t1.logic_game_id = t6.logic_game_id
 LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
+LEFT JOIN (
+  select * from cc_logic_game where id=?
+) t8 on t1.logic_game_id=t8.id
 where t6.id is null
 AND t7.id is null
 "#,
@@ -408,6 +413,7 @@ AND t7.id is null
     .bind(channel)
     .bind(client_type)
     .bind(channel)
+    .bind(logic_game_id)
     .fetch_all(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))
@@ -517,16 +523,6 @@ pub async fn get_trial_purchase_platform_config(
 /// Query external games by logic_game_id, then sort by trial purchase
 /// platform priority. Returns the sorted vec — callers pick `.first()`
 /// for the highest-priority result.
-pub async fn get_external_games_sorted_by_priority(
-    ext_pool: &MySqlPool,
-    logic_game_id: i64,
-    client_type: &str,
-    channel: &str,
-) -> Result<Vec<ExternalGameInfo>, AppError> {
-    let mut games = get_external_game_by_id(ext_pool, logic_game_id, client_type, channel).await?;
-    sort_external_games_by_priority(ext_pool, &mut games).await;
-    Ok(games)
-}
 
 /// Sort a vec of ExternalGameInfo by trial purchase platform priority in-place.
 pub async fn sort_external_games_by_priority(
@@ -567,21 +563,50 @@ pub async fn sort_external_games_by_priority(
 
 // ── Redis-cached wrappers ──
 
-/// Cached version of `get_external_game_by_id`.
-pub async fn get_external_game_by_id_cached(
+/// Cached single-game lookup: queries external DB by (game_id, client_type, channel),
+/// sorts by platform priority, and returns only the top-priority result.
+///
+/// Cache TTL: 1 day when found, 5 minutes when not found.
+pub async fn get_single_external_game_info_cached(
     redis: &redis::Client,
     ext_pool: &MySqlPool,
     game_id: i64,
     client_type: &str,
     channel: &str,
-) -> Result<Vec<ExternalGameInfo>, String> {
-    let key = format!("{}:{}:{}:{}", cache_helper::KEY_GAME_INFO, game_id, client_type, channel);
-    cached_or_fetch(redis, &key, cache_helper::TTL_GAME_INFO, || async {
-        get_external_game_by_id(ext_pool, game_id, client_type, channel)
-            .await
-            .map_err(|e| format!("get_external_game_by_id: {e}"))
-    })
-    .await
+) -> Result<Option<ExternalGameInfo>, String> {
+    let key = format!(
+        "{}:single:{}:{}:{}",
+        cache_helper::KEY_GAME_INFO,
+        game_id,
+        client_type,
+        channel
+    );
+
+    // 1. Try Redis
+    match cache_helper::cached_get::<Option<ExternalGameInfo>>(redis, &key).await {
+        Ok(Some(cached)) => return Ok(cached),
+        Ok(None) => {} // cache miss
+        Err(e) => tracing::debug!(%key, error = %e, "cache read failed, falling back to DB"),
+    }
+
+    // 2. Fetch from DB, sort by platform priority, take first
+    let mut games = get_external_game_by_id(ext_pool, game_id, client_type, channel)
+        .await
+        .map_err(|e| format!("get_external_game_by_id: {e}"))?;
+    sort_external_games_by_priority(ext_pool, &mut games).await;
+    let result: Option<ExternalGameInfo> = games.into_iter().next();
+
+    // 3. Cache with split TTL: found → 1 day, not found → 5 min
+    let ttl = if result.is_some() {
+        cache_helper::TTL_GAME_INFO_FOUND
+    } else {
+        cache_helper::TTL_GAME_INFO_NOT_FOUND
+    };
+    if let Err(e) = cache_helper::cached_set(redis, &key, &result, ttl).await {
+        tracing::debug!(%key, error = %e, "cache write failed");
+    }
+
+    Ok(result)
 }
 
 /// Cached version of `list_external_games`.

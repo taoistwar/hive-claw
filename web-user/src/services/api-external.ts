@@ -23,8 +23,78 @@ export interface ChatMessage {
   content: string | null;
   elapsed_ms: number | null;
   /** 扩展数据数组：cards、images、suggestions 等（flattened） */
-  extensions?: unknown[] | null;
+  extensions?: Extension[] | null;
   created_at: string;
+}
+
+// ── Extension / Card 类型 ──
+
+export interface Extension {
+  payload: GameCardPayload | SubscribeCardPayload | SupportCardPayload;
+  content_type: string;
+}
+
+export interface GameCardPayload {
+  info: GameInfo;
+  type: 'game';
+}
+
+export interface GameInfo {
+  id: string;
+  name: string;
+  reason: string;
+  channel: string;
+  game_tags: GameTag[];
+  client_type: string;
+  computer_id: number;
+  cover_image: string;
+  description: string;
+  platform_name: string;
+}
+
+export interface GameTag {
+  name: string;
+  type: number;
+}
+
+export interface SubscribeCardPayload {
+  info: SubscribeInfo;
+  type: 'subscribe';
+  membership: unknown[];
+  duration_card: DurationCard[];
+}
+
+export interface SubscribeInfo {
+  total_coins: number;
+  disk_end_time: number;
+  disk_total_size: number;
+  expire_coins_7d: number;
+}
+
+export interface DurationCard {
+  fps: unknown;
+  gpu: unknown;
+  extra: Record<string, unknown> | null;
+  order_id: number;
+  card_type: number;
+  create_time: string;
+  expire_time: number;
+  card_asset_id: number;
+  consume_label: ConsumeLabel;
+  card_type_name: string;
+  remain_duration: number;
+  computer_biz_type: unknown;
+}
+
+export interface ConsumeLabel {
+  weight: number;
+  channelList: string[];
+  gameLabelList: string[];
+  clientTypeList: string[];
+}
+
+export interface SupportCardPayload {
+  type: 'support';
 }
 
 export interface MessagesResponse {

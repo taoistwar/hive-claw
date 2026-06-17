@@ -340,24 +340,21 @@ async fn execute_recommendation(
         .await
         .map_err(|e| e.into_response())?;
 
-    // 3b. 查询外部 DB 获取 computer_id / platform_name（按平台优先级排序）
-    let (computer_id, platform_name) = if let (Some(ext_pool), Ok(logic_game_id)) = (
-        state.ext_pool.as_ref(),
-        req.game_id.trim().parse::<i64>(),
-    ) {
-        crate::services::game_service::get_external_games_sorted_by_priority(
+    // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon（带缓存，按平台优先级排序）
+    let (computer_id, platform_name, game_icon) = if let Some(ext_pool) = state.ext_pool.as_ref() {
+        crate::services::game_service::get_single_external_game_info_cached(
+            &state.redis,
             ext_pool,
-            logic_game_id,
+            game.game_id.parse::<i64>().unwrap_or(0),
             &req.client_type,
             &req.channel,
         )
         .await
-        .unwrap_or_default()
-        .first()
-        .map(|info| (info.computer_id, info.platform_name.clone()))
-        .unwrap_or((None, None))
+        .unwrap_or(None)
+        .map(|info| (info.computer_id, info.platform_name, info.game_icon))
+        .unwrap_or((None, None, None))
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // 4. 获取或创建 session
@@ -386,6 +383,7 @@ async fn execute_recommendation(
                 "cover_image": game.game_image,
                 "computer_id": computer_id,
                 "platform_name": platform_name,
+                "game_icon": game_icon,
             }
         }
     });

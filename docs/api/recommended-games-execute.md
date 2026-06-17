@@ -49,7 +49,7 @@ MD5(ASSISTANT_SECRET + "/api/recommended-games/execute" + "?body=" + 请求体 J
 1. 通过 `game_id` 查询推荐游戏记录
 2. 获取或创建用户会话（`chat_sessions_user`）
 3. 记录一条 `role=user` 消息，内容为游戏的 `reply` 字段
-4. 记录一条 `role=assistant` 消息，内容为空，`extensions` 包含一个 `game` 类型的 card
+4. 记录一条 `role=assistant` 消息，内容为游戏的 `reply` 字段，`extensions` 包含一个 `game` 类型的 card
 
 ## 示例请求
 
@@ -72,7 +72,7 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
     "session_id": 5,
     "user_id": 12345,
     "role": "assistant",
-    "content": "",
+    "content": "推荐回复内容",
     "elapsed_ms": null,
     "extensions": [
       {
@@ -80,14 +80,17 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
         "payload": {
           "type": "game",
           "info": {
-            "game_id": "game_001",
-            "game_name": "游戏名称",
-            "name": "推荐标题",
-            "reply": "推荐回复内容",
+            "id": "game_001",
+            "name": "游戏名称",
+            "channel": "app",
+            "client_type": "android",
             "reason": "推荐理由",
-            "tag": "运营推荐",
-            "game_category": [{"name": "角色扮演", "type": "RPG"}],
-            "game_image": "https://example.com/image.png"
+            "game_tags": [{"name": "角色扮演", "type": 1}],
+            "description": "推荐理由",
+            "cover_image": "https://example.com/image.png",
+            "computer_id": 10269,
+            "platform_name": "Steam",
+            "game_icon": "https://example.com/icon.png"
           }
         }
       }
@@ -102,14 +105,17 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `game_id` | `String` | 游戏 ID |
-| `game_name` | `String` | 游戏名称 |
-| `name` | `String` | 推荐标题 |
-| `reply` | `String` | 推荐回复内容 |
+| `id` | `String` | 游戏 ID（对应推荐游戏表的 `game_id`） |
+| `name` | `String` | 游戏名称（对应推荐游戏表的 `game_name`） |
+| `channel` | `String` | 请求时的渠道标识 |
+| `client_type` | `String` | 请求时的客户端类型 |
 | `reason` | `Option<String>` | 推荐理由 |
-| `tag` | `Option<String>` | 标签：运营推荐 / 新游上线 / 本周热玩 |
-| `game_category` | `Option<Value>` | 游戏分类（JSON） |
-| `game_image` | `Option<String>` | 游戏封面图片 URL |
+| `game_tags` | `Option<Value>` | 游戏标签数组，元素为 `{"name": "标签名", "type": 1}` |
+| `description` | `Option<String>` | 游戏描述（同推荐理由） |
+| `cover_image` | `Option<String>` | 游戏封面图片 URL |
+| `computer_id` | `Option<i64>` | 外部游戏表关联的 computer_id |
+| `platform_name` | `Option<String>` | 平台名称（如 Steam、PlayStation） |
+| `game_icon` | `Option<String>` | 游戏图标 URL |
 
 ## 错误响应
 

@@ -46,96 +46,43 @@ async fn game_info_async_impl(
                 "found": false,
                 "data": "",
                 "id": null,
-                "name": null,
-                "aliases": [],
-                "games": [],
+                "name": null
             }));
         }
     };
 
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
-    // 2. Query external DB (Redis 缓存优先) — 然后按平台优先级排序
-    let mut external = if let Some(r) = redis {
-        crate::services::game_service::get_external_game_by_id_cached(r, ext_pool, game_id, client_type, channel)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("{e}")))?
+    // 2. Query external DB with caching — single top-priority game info
+    let game_info = if let Some(r) = redis {
+        crate::services::game_service::get_single_external_game_info_cached(
+            r, ext_pool, game_id, client_type, channel,
+        )
+        .await
+        .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     } else {
-        crate::services::game_service::get_external_game_by_id(ext_pool, game_id, client_type, channel)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("{e}")))?
+        let mut games =
+            crate::services::game_service::get_external_game_by_id(ext_pool, game_id, client_type, channel)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
+        crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut games).await;
+        games.into_iter().next()
     };
-    // Sort by platform priority (in-memory, no need to cache)
-    crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut external).await;
-    if external.is_empty() {
-        return Ok(serde_json::json!({
-            "found": false,
-            "data": format!("未找到游戏 ID {} 的信息", game_id),
-            "id": game_id,
-            "name": null,
-            "aliases": [],
-            "games": [],
-        }));
-    }
 
-    let game_info = match external.first() {
+    let game_info = match game_info {
         Some(info) if info.logic_game_id != 0 => info,
         _ => {
             return Ok(serde_json::json!({
                 "found": false,
                 "data": format!("未找到游戏 ID {} 的信息", game_id),
                 "id": game_id,
-                "name": null,
-                "aliases": [],
-                "games": [],
+                "name": null
             }));
         }
     };
 
     let id = game_info.logic_game_id;
     let name = &game_info.name;
-    let ext_alias = "";
-
-    // Build games array from all rows
-    let games: Vec<Value> = external
-        .iter()
-        .map(|info| {
-            serde_json::json!({
-                "id": info.logic_game_id,
-                "name": info.name,
-                "computer_id": info.computer_id,
-                "platform_name": info.platform_name,
-                "client_type": info.client_type,
-                "channel": info.channel,
-            })
-        })
-        .collect();
-
-    // 3. Load supplementary aliases from internal games table
-    let internal_aliases = crate::services::game_service::load_internal_aliases(pool)
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
-
-    // 4. Merge aliases (external alias + internal supplements)
-    let mut aliases: Vec<String> = Vec::new();
-
-    for alias in ext_alias.split(',') {
-        let alias = alias.trim();
-        if alias.is_empty() {
-            continue;
-        }
-        if !aliases.contains(&alias.to_string()) {
-            aliases.push(alias.to_string());
-        }
-    }
-
-    if let Some(supp) = internal_aliases.get(name.as_str()) {
-        for alias in supp {
-            if !aliases.contains(alias) {
-                aliases.push(alias.clone());
-            }
-        }
-    }
 
     let game_payload = serde_json::json!({
         "id": id,
@@ -147,6 +94,7 @@ async fn game_info_async_impl(
         "platform_name": game_info.platform_name,
         "client_type": game_info.client_type,
         "channel": game_info.channel,
+        "game_icon": game_info.game_icon,
     });
 
     let mut output = serde_json::json!({
@@ -160,8 +108,7 @@ async fn game_info_async_impl(
         "platform_name": game_info.platform_name,
         "client_type": game_info.client_type,
         "channel": game_info.channel,
-        "aliases": aliases,
-        "games": games,
+        "game_icon": game_info.game_icon,
     });
 
     // 6. put_to_ac: true → 写入 AgentContext extensions；false → 纯输出

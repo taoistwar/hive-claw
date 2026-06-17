@@ -107,14 +107,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       ],
       "duration_card": [
         {
-          "card_asset_id": "card_001",
+          "card_asset_id": 30086212,
           "remain_duration": 86400,
           "computer_biz_type": "game",
           "expire_time": 1735689600,
-          "card_type": "time",
+          "card_type": 8,
           "card_type_name": "时长卡",
-          "order_id": "order_001",
-          "consume_label": "游戏时长",
+          "order_id": 31920032,
+          "consume_label": {"weight": 99, "channelList": ["ALL"], "gameLabelList": ["FREE_CARD"], "clientTypeList": ["ALL"]},
           "extra": null,
           "create_time": "2025-06-01 12:00:00",
           "fps": "60",
@@ -157,8 +157,8 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | `String` | 卡片类型：`subscribe` / `repay` / `upgrade` / `sufficient` / `game` |
-| `info` | `Object` | 余额与磁盘信息 |
+| `type` | `String` | 卡片类型：`subscribe` / `repay` / `upgrade` / `sufficient` / `game` / `support` |
+| `info` | `Object` | 卡片信息（余额/游戏详情等，随 `type` 不同而变化） |
 | `membership` | `Array<Object>` | 会员订阅列表（仅在会员相关卡片中出现） |
 | `duration_card` | `Array<Object>` | 时长卡列表（仅在会员相关卡片中出现） |
 
@@ -171,8 +171,9 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `upgrade` | 已有会员但非最高等级 | 引导升级到更高等级 |
 | `sufficient` | 已有充足权益 | 权益充足，不强推付费 |
 | `game` | 游戏推荐 | 游戏推荐卡片 |
+| `support` | 用户请求人工客服 | 转接客服卡片，携带用户原始输入 |
 
-### `info` 对象字段
+### `info` 对象字段（subscribe / repay / upgrade / sufficient 卡片）
 
 以下为 `subscribe`/`repay`/`upgrade`/`sufficient` 卡片的 `info` 字段（来自用户余额查询结果）：
 
@@ -182,6 +183,63 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `disk_total_size` | `f64` | 网盘总大小（字节） |
 | `total_coins` | `f64` | 总金币数 |
 | `expire_coins_7d` | `f64` | 7 天内即将过期的金币数 |
+
+### `info` 对象字段（game 卡片）
+
+以下为 `game` 卡片的 `info` 字段（来自推荐游戏 + 外部游戏 DB）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `String` | 游戏 ID（对应推荐游戏表的 `game_id`） |
+| `name` | `String` | 游戏名称（对应推荐游戏表的 `game_name`） |
+| `channel` | `String` | 请求时的渠道标识 |
+| `client_type` | `String` | 请求时的客户端类型 |
+| `reason` | `Option<String>` | 推荐理由 |
+| `game_tags` | `Option<Value>` | 游戏标签数组，元素为 `{"name": "标签名", "type": 1}` |
+| `description` | `Option<String>` | 游戏描述 |
+| `cover_image` | `Option<String>` | 游戏封面图片 URL |
+| `computer_id` | `Option<i64>` | 外部游戏表关联的 computer_id |
+| `platform_name` | `Option<String>` | 平台名称（如 Steam） |
+| `game_icon` | `Option<String>` | 游戏图标 URL |
+
+**game 卡片示例：**
+
+```json
+{
+  "content_type": "card",
+  "payload": {
+    "type": "game",
+    "info": {
+      "id": "208",
+      "name": "最终幻想7：重制版",
+      "channel": "haimayun",
+      "client_type": "ANDROID",
+      "reason": "因跌宕起伏的剧情与充满魅力的角色...",
+      "game_tags": [{"name": "角色扮演", "type": 1}],
+      "description": "因跌宕起伏的剧情与充满魅力的角色...",
+      "cover_image": "https://example.com/cover.jpg",
+      "computer_id": 10269,
+      "platform_name": "Steam",
+      "game_icon": "https://example.com/icon.png"
+    }
+  }
+}
+```
+
+### `info` 对象字段（support 卡片）
+
+`support` 卡片无 `info`/`membership`/`duration_card` 字段，仅包含 `type`：
+
+```json
+{
+  "content_type": "card",
+  "payload": {
+    "type": "support"
+  }
+}
+```
+
+触发条件：用户明确表达需要人工客服时，由 Agent 调用 `support_card` builtin 生成此卡片并立即结束 agent loop。
 
 ### `membership` 数组元素字段
 
@@ -207,20 +265,18 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `card_asset_id` | `Option<String>` | 卡资产 ID |
+| `card_asset_id` | `Option<i64>` | 卡资产 ID |
 | `remain_duration` | `Option<i64>` | 剩余时长（秒） |
 | `computer_biz_type` | `Option<String>` | 计算业务类型 |
 | `expire_time` | `Option<i64>` | 过期时间（Unix 时间戳） |
-| `card_type` | `Option<String>` | 卡类型编码 |
-| `card_type_name` | `Option<String>` | 卡类型显示名称 |
-| `order_id` | `Option<String>` | 订单 ID |
-| `consume_label` | `Option<String>` | 消费标签 |
+| `card_type` | `Option<i8>` | 卡类型编码（如 8 = 金卡） |
+| `card_type_name` | `Option<String>` | 卡类型显示名称（如"金卡"） |
+| `order_id` | `Option<i64>` | 订单 ID |
+| `consume_label` | `Option<Value>` | 消费标签（JSON 对象，含 `weight`、`channelList`、`gameLabelList`、`clientTypeList`） |
 | `extra` | `Option<Value>` | 额外信息（JSON） |
 | `create_time` | `Option<String>` | 创建时间 |
-| `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取，仅非空 JSON 时有值） |
-| `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取，仅非空 JSON 时有值） |
-
-`game` 卡片时，`payload` 结构参见 [获取热门推荐游戏](recommended-games-top.md)。
+| `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取） |
+| `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取） |
 
 ## 错误响应
 

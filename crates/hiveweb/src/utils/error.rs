@@ -63,6 +63,9 @@ pub mod codes {
     pub const POOL_BUSY: u16 = 5009;
     pub const BUILTIN_TOOL_PROTECTED: u16 = 5010;
 
+    /// 011 Plugin System Toggle — 插件系统已被环境变量 `PLUGIN_SYSTEM_ENABLED=false` 关闭
+    pub const PLUGIN_SYSTEM_DISABLED: u16 = 5031;
+
     // ----- 008 Agent Hook 配置管理（6001-6010） -----
     pub const HOOK_TRIGGER_LIMIT_EXCEEDED: u16 = 6001;
     pub const HOOK_REFERENCE_INVALID: u16 = 6002;
@@ -153,7 +156,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         | codes::AGENT_DEPTH_EXCEEDED
         | codes::MODEL_PRESET_UNKNOWN => StatusCode::UNPROCESSABLE_ENTITY,
         codes::PLUGIN_INVOCATION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
-        codes::POOL_BUSY => StatusCode::SERVICE_UNAVAILABLE,
+        codes::POOL_BUSY | codes::PLUGIN_SYSTEM_DISABLED => StatusCode::SERVICE_UNAVAILABLE,
         // 008 — Agent Hook HTTP 映射
         codes::HOOK_TRIGGER_LIMIT_EXCEEDED | codes::HOOK_REFERENCE_INVALID => {
             StatusCode::UNPROCESSABLE_ENTITY
@@ -219,6 +222,7 @@ pub enum AppError {
     BuiltinSkillProtected(String),
     PoolBusy(String),
     BuiltinToolProtected(String),
+    PluginSystemDisabled(String),
 
     // ----- 008 Agent Hook（6001-6006） -----
     HookTriggerLimitExceeded(String),
@@ -274,6 +278,7 @@ impl AppError {
             AppError::BuiltinSkillProtected(_) => codes::BUILTIN_SKILL_PROTECTED,
             AppError::PoolBusy(_) => codes::POOL_BUSY,
             AppError::BuiltinToolProtected(_) => codes::BUILTIN_TOOL_PROTECTED,
+            AppError::PluginSystemDisabled(_) => codes::PLUGIN_SYSTEM_DISABLED,
             // 008 Agent Hook
             AppError::HookTriggerLimitExceeded(_) => codes::HOOK_TRIGGER_LIMIT_EXCEEDED,
             AppError::HookReferenceInvalid(_) => codes::HOOK_REFERENCE_INVALID,
@@ -317,6 +322,7 @@ impl AppError {
             | AppError::BuiltinSkillProtected(m)
             | AppError::PoolBusy(m)
             | AppError::BuiltinToolProtected(m)
+            | AppError::PluginSystemDisabled(m)
             | AppError::HookTriggerLimitExceeded(m)
             | AppError::HookReferenceInvalid(m)
             | AppError::HookWebhookUrlInvalid(m)

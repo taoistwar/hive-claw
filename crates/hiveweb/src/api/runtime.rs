@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
-use crate::api::AppState;
+use crate::api::{AppState, require_s3};
 use crate::runtime::capability::DispatchCtx;
 use crate::runtime::pool::{PerPluginMetrics, PoolMetrics};
 use crate::utils::error::{ApiResponse, AppError};
@@ -176,6 +176,9 @@ async fn invoke_function(
         .into_response());
     }
 
+    // 插件系统已关闭时，custom function 无法执行
+    let _ = crate::api::require_s3(&state)?;
+
     let plugin_id = fn_row.plugin_id.ok_or_else(|| {
         AppError::Internal(format!(
             "custom function「{}」(id={}) 缺少 plugin_id",
@@ -232,7 +235,7 @@ async fn invoke_function(
         .invoker
         .invoke(
             &state.pool,
-            &state.s3,
+            state.s3.as_ref(),
             Arc::clone(&state.runtime_state.capabilities),
             Arc::clone(&state.runtime_state.llm),
             plugin_id,

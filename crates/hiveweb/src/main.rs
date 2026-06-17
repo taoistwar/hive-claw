@@ -81,9 +81,18 @@ async fn main() -> anyhow::Result<()> {
     let redis = cache::redis::create_pool(&redis_url).await?;
     tracing::info!("Redis initialized: {}", mask_url_password(&redis_url));
 
-    // Initialize S3 client
-    let s3_client = storage::s3::create_client().await?;
-    tracing::info!("S3 storage client initialized");
+    // Initialize S3 client (only when plugin system is enabled)
+    let s3_client = if plugin_system_enabled() {
+        let c = storage::s3::create_client().await?;
+        tracing::info!("S3 storage client initialized (plugin system enabled)");
+        Some(c)
+    } else {
+        tracing::warn!(
+            "PLUGIN_SYSTEM_ENABLED=false; S3 client skipped. \
+             Plugin upload/download/invoke and s3.* capabilities are disabled."
+        );
+        None
+    };
 
     // Initialize external read-only database for assistant API
     let ext_pool = match std::env::var("EXTERNAL_DB_URL") {
@@ -145,4 +154,16 @@ fn mask_url_password(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+/// 读取 `PLUGIN_SYSTEM_ENABLED`（默认 `true`）。
+/// 关闭后跳过 S3 客户端初始化，Plugin 上传/下载/调用及 s3.* capability 全部不可用。
+pub fn plugin_system_enabled() -> bool {
+    match std::env::var("PLUGIN_SYSTEM_ENABLED") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "false" | "0" | "no" | "off" | ""
+        ),
+        Err(_) => true,
+    }
 }

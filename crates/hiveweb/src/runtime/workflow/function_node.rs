@@ -138,7 +138,7 @@ async fn execute_plugin_function(
         .invoker
         .invoke(
             &deps.pool,
-            &deps.s3,
+            deps.s3.as_ref(),
             Arc::clone(&deps.registry),
             Arc::clone(&deps.llm),
             plugin_id,

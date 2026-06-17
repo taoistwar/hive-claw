@@ -8,7 +8,6 @@
 //!   Plugin host_call(envelope) -> 解析 -> 鉴权 (Agent.permissions) ->
 //!   未知 capability 返 4045 -> handler -> audit -> 返回 envelope。
 
-use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
@@ -18,6 +17,7 @@ use std::time::Instant;
 
 use crate::runtime::capabilities;
 use crate::services::runtime_audit::{self, AuditRecord};
+use crate::utils::error::codes;
 
 /// Capability 名常量（与 data-model §V018 / §6 + 扩展对齐）
 pub const NETWORK_HTTP: &str = "network.http";
@@ -225,7 +225,8 @@ async fn load_agent_permissions(
 #[derive(Clone)]
 pub struct DispatcherDeps {
     pub pool: MySqlPool,
-    pub s3: S3Client,
+    /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`；`s3.*` capability 必须检查。
+    pub s3: Option<aws_sdk_s3::Client>,
     pub registry: Arc<CapabilityRegistry>,
     pub llm: Arc<crate::runtime::llm::LlmRegistry>,
 }
@@ -373,13 +374,27 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
             Ok(args) => to_reply(capabilities::network_http::http_request(args).await),
             Err(e) => args_err("network.http", e),
         },
-        S3_READ => match serde_json::from_value(envelope.args.clone()) {
-            Ok(args) => to_reply(capabilities::s3::s3_read(&deps.s3, args).await),
-            Err(e) => args_err("s3.read", e),
+        S3_READ => match deps.s3.as_ref() {
+            None => (
+                ReplyEnvelope::err(codes::PLUGIN_SYSTEM_DISABLED, "插件系统已关闭，s3.read 不可用"),
+                "error",
+                Some("plugin system disabled".into()),
+            ),
+            Some(client) => match serde_json::from_value(envelope.args.clone()) {
+                Ok(args) => to_reply(capabilities::s3::s3_read(client, args).await),
+                Err(e) => args_err("s3.read", e),
+            },
         },
-        S3_WRITE => match serde_json::from_value(envelope.args.clone()) {
-            Ok(args) => to_reply(capabilities::s3::s3_write(&deps.s3, args).await),
-            Err(e) => args_err("s3.write", e),
+        S3_WRITE => match deps.s3.as_ref() {
+            None => (
+                ReplyEnvelope::err(codes::PLUGIN_SYSTEM_DISABLED, "插件系统已关闭，s3.write 不可用"),
+                "error",
+                Some("plugin system disabled".into()),
+            ),
+            Some(client) => match serde_json::from_value(envelope.args.clone()) {
+                Ok(args) => to_reply(capabilities::s3::s3_write(client, args).await),
+                Err(e) => args_err("s3.write", e),
+            },
         },
         SECRET_GET => match serde_json::from_value(envelope.args.clone()) {
             Ok(args) => to_reply(capabilities::secret::secret_get(args)),

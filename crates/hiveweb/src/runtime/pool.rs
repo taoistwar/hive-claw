@@ -161,9 +161,10 @@ impl InstancePool {
     }
 
     /// acquire = idle 命中 or 冷启动构建
+    /// `s3` 为 `None` 时仅可命中 idle 池；冷启动会因 S3 不可用而失败。
     pub async fn acquire(
         &self,
-        s3: &S3Client,
+        s3: Option<&S3Client>,
         row: &PluginRow,
         build_plugin: impl FnOnce(Vec<u8>) -> Result<ExtismPlugin, anyhow::Error> + Send + 'static,
     ) -> Result<PooledPlugin, PoolError> {
@@ -172,6 +173,9 @@ impl InstancePool {
             return Ok(inst);
         }
         // 2. cold start with sha256 verify
+        let s3 = s3.ok_or_else(|| {
+            PoolError::S3("plugin system disabled: S3 client unavailable for cold start".into())
+        })?;
         let bytes = s3::get_wasm(s3, &row.s3_key)
             .await
             .map_err(|e| PoolError::S3(format!("{e}")))?;

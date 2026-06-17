@@ -45,14 +45,28 @@ use crate::runtime::{
     CapabilityRegistry, InstancePool, Invoker, LlmRegistry, PoolConfig, RuntimeState,
     WorkflowExecutor,
 };
+use crate::utils::error::{ApiResponse, AppError};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// 插件系统已关闭时返回 `PluginSystemDisabled` 响应。
+/// 供 Plugin 上传/下载/调用等入口统一使用，避免散落 503 文案。
+pub fn require_s3(state: &AppState) -> Result<&aws_sdk_s3::Client, ApiResponse<()>> {
+    state.s3.as_ref().ok_or_else(|| {
+        AppError::PluginSystemDisabled(
+            "插件系统已关闭 (PLUGIN_SYSTEM_ENABLED=false)，此功能不可用".into(),
+        )
+        .into_response()
+    })
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
     pub redis: RedisClient,
-    pub s3: Client,
+    /// S3 客户端。仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
+    /// 所有 Plugin 上传/下载/调用入口及 `s3.*` capability 都应检查 `s3.is_some()`。
+    pub s3: Option<Client>,
     /// 004 Agent Runtime — capability registry / instance pool / invoker / workflow / llm
     pub runtime_state: RuntimeState,
     /// 外部只读数据库连接（assistant API 用户校验等）
@@ -80,7 +94,7 @@ pub struct AppState {
 pub fn create_router(
     pool: MySqlPool,
     redis: RedisClient,
-    s3: Client,
+    s3: Option<Client>,
     ext_pool: Option<MySqlPool>,
     sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 ) -> Router {
@@ -124,7 +138,7 @@ pub fn create_router(
     let state = AppState {
         pool,
         redis,
-        s3,
+        s3: s3.clone(),
         runtime_state,
         ext_pool,
         sensitive_filter,

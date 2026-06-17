@@ -70,7 +70,8 @@ fn flatten_extension(e: &ExtensionContent) -> Value {
 pub struct OrchestratorDeps {
     pub pool: MySqlPool,
     pub redis: RedisClient,
-    pub s3: S3Client,
+    /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
+    pub s3: Option<S3Client>,
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
@@ -1075,7 +1076,7 @@ async fn handle_meta_tool(
                         .invoker
                         .invoke(
                             &deps.pool,
-                            &deps.s3,
+                            deps.s3.as_ref(),
                             Arc::clone(&deps.registry),
                             Arc::clone(&deps.llm),
                             pid,
@@ -1260,7 +1261,7 @@ pub(crate) async fn handle_workspace_tool(
                     .invoker
                     .invoke(
                         &deps.pool,
-                        &deps.s3,
+                        deps.s3.as_ref(),
                         Arc::clone(&deps.registry),
                         Arc::clone(&deps.llm),
                         plugin_id,

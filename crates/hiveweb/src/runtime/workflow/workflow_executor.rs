@@ -45,7 +45,8 @@ pub enum WorkflowError {
 /// Dependencies needed at execution time
 pub struct ExecutorDeps {
     pub pool: MySqlPool,
-    pub s3: S3Client,
+    /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
+    pub s3: Option<S3Client>,
     pub registry: Arc<CapabilityRegistry>,
     pub llm: Arc<LlmRegistry>,
     pub invoker: Arc<Invoker>,

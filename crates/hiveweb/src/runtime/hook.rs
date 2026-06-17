@@ -40,7 +40,8 @@ pub struct HookContext {
 /// Dependencies needed by hook actions (call_function, call_workflow).
 #[derive(Clone)]
 pub struct HookDeps {
-    pub s3: S3Client,
+    /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
+    pub s3: Option<S3Client>,
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
@@ -238,7 +239,7 @@ async fn execute_call_function(
                 .invoker
                 .invoke(
                     &pool,
-                    &deps.s3,
+                    deps.s3.as_ref(),
                     Arc::clone(&deps.registry),
                     Arc::clone(&deps.llm),
                     pid,

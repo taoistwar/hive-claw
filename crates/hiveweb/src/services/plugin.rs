@@ -109,10 +109,15 @@ pub struct ListFilter {
 
 pub async fn upload(
     pool: &MySqlPool,
-    s3_client: &S3Client,
+    s3_client: Option<&S3Client>,
     meta: UploadMeta,
     bytes: Vec<u8>,
 ) -> Result<Plugin, AppError> {
+    let Some(s3_client) = s3_client else {
+        return Err(AppError::PluginSystemDisabled(
+            "插件系统已关闭，无法上传 Plugin".into(),
+        ));
+    };
     let max_bytes = plugin_max_bytes();
     if bytes.len() > max_bytes {
         return Err(AppError::BadRequest(format!(

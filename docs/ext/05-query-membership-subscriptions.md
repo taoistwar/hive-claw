@@ -8,7 +8,7 @@
 | 缓存包装 | `query_membership_subscriptions_cached`（`cached_or_fetch`） |
 | 缓存键 | `subscriptions:{user_id}` |
 | 缓存 TTL | 300 s（5 min） |
-| 源文件 | [services/membership.rs L134-174](../../crates/hiveweb/src/services/membership.rs#L134-L174) |
+| 源文件 | [services/membership.rs L135-179](../../crates/hiveweb/src/services/membership.rs#L135-L179) |
 | 调用方 | builtin [`query_balance`](../../crates/hiveweb/src/runtime/builtins/query_balance.rs)（在「订阅信息」分支调用） |
 
 ## SQL 原文
@@ -40,16 +40,34 @@ SELECT
     us.payment_method           AS payment_method,
     us.start_time               AS subscription_start_time,
     us.end_time                 AS subscription_end_time
-FROM cc_user_membership um
-LEFT JOIN cc_membership_level    ml ON um.membership_level       = ml.level_code
-LEFT JOIN cc_user_subscription  us ON um.user_subscription_id  = us.id
-WHERE um.user_id = ?
+FROM (
+    SELECT * FROM cc_user_membership
+    WHERE user_id = ? AND effective_end_time > now()
+) um
+LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
+LEFT JOIN (
+    SELECT * FROM cc_user_subscription WHERE user_id = ?
+) us ON um.user_subscription_id = us.id
 ORDER BY ml.level_order DESC, um.effective_end_time DESC
 ```
 
+## ⚠️ 最近变更
+
+| 维度 | 旧 | 新 |
+| ---- | -- | -- |
+| `cc_user_membership` 来源 | 主表直查 | 改为子查询 `FROM (SELECT * FROM cc_user_membership WHERE user_id = ? AND effective_end_time > now()) um` |
+| `cc_user_subscription` 来源 | 主表 LEFT JOIN | 改为子查询 `LEFT JOIN (SELECT * FROM cc_user_subscription WHERE user_id = ?) us` |
+| `user_id = ?` 过滤 | 仅在外部 `WHERE um.user_id = ?` | 推到 `cc_user_membership` / `cc_user_subscription` 子查询内部 |
+| 外部 WHERE 子句 | `WHERE um.user_id = ?` | 移除（用户过滤已下沉） |
+| bind 数 | 1 | **2**（两个子查询各一） |
+
+`effective_end_time > now()` 现在下推到 `cc_user_membership` 子查询，**与 `check_vip_membership` 的双时间过滤策略一致**（仅 `end > now()` 即可，子查询里的 `start_time` 暂未做 `< now()` 过滤——因为历史订阅可能仍有查询需求）。
+
+`cc_user_subscription` 子查询加 `user_id = ?` 是性能优化——避免对全表的 LEFT JOIN。
+
 ## 作用
 
-返回某用户**所有会员记录**，并附带：
+返回某用户**当前有效**的所有会员记录，并附带：
 
 - 等级的中文名（`cc_membership_level.level_name`）
 - 订阅合同的状态码 + 中文名
@@ -59,9 +77,12 @@ ORDER BY ml.level_order DESC, um.effective_end_time DESC
 
 ## 参数
 
-| 占位符 | 类型 | 含义 |
-| ------ | ---- | ---- |
-| `?`    | `i64` | `cc_user_membership.user_id` |
+| 占位符 | 类型 | 出现 | 含义 |
+| ------ | ---- | ---- | ---- |
+| `?`    | `i64` | 1 | `cc_user_membership.user_id` 子查询内 |
+| `?`    | `i64` | 2 | `cc_user_subscription.user_id` 子查询内 |
+
+代码里顺序为 `.bind(user_id).bind(user_id)`。
 
 ## 返回
 
@@ -71,11 +92,11 @@ ORDER BY ml.level_order DESC, um.effective_end_time DESC
 
 ## 涉及的表 / 列
 
-| 表 | 关键列 |
-| -- | ------ |
-| `cc_user_membership` | `user_id`（过滤）/ `membership_level` / `membership_category` / `effective_start_time` / `effective_end_time` / `product_title` / `user_subscription_id` |
-| `cc_membership_level` | `level_code`（JOIN 键）/ `level_name` / `level_order`（排序） |
-| `cc_user_subscription` | `id`（JOIN 键）/ `status` / `next_billing_time` / `auto_renew` / `payment_method` / `start_time` / `end_time` |
+| 表 | 角色 | 关键列 |
+| -- | ---- | ------ |
+| `cc_user_membership` | 主表子查询 | `user_id`（过滤）/ `effective_end_time > now()`（过滤）/ `membership_level` / `membership_category` / `effective_start_time` / `effective_end_time` / `product_title` / `user_subscription_id` |
+| `cc_membership_level` | 等级字典 | `level_code`（JOIN 键）/ `level_name` / `level_order`（排序） |
+| `cc_user_subscription` | 订阅合同子查询 | `user_id`（过滤）/ `id`（JOIN 键）/ `status` / `next_billing_time` / `auto_renew` / `payment_method` / `start_time` / `end_time` |
 
 ## 排序约定
 
@@ -84,5 +105,6 @@ ORDER BY ml.level_order DESC, um.effective_end_time DESC
 
 ## 失败 / 边界
 
-- 用户无任何会员记录 → 返回空 `Vec`。
+- 用户无任何**有效**会员记录（`effective_end_time <= now()`）→ 返回空 `Vec`。
 - `ml` 或 `us` 缺失（孤立会员）→ 相关列返回 NULL，业务侧按"未知"展示。
+- 失效会员（`end <= now()`）被 DB 预过滤，不再返回。

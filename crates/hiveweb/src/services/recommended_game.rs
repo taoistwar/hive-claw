@@ -247,7 +247,6 @@ pub async fn fetch_top_filtered(
     client_type: &str,
 ) -> Result<Vec<RecommendedGame>, AppError> {
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
 
     let tags = [
         ("运营推荐", 4usize),
@@ -258,7 +257,6 @@ pub async fn fetch_top_filtered(
     let mut result: Vec<RecommendedGame> = Vec::new();
     let ch = format!("\"{}\"", channel);
     let ct = format!("\"{}\"", client_type);
-    let mut rng = thread_rng();
 
     for (tag, limit) in &tags {
         let limit = *limit;
@@ -271,6 +269,8 @@ pub async fn fetch_top_filtered(
             .await
             .map_err(|e| AppError::Internal(format!("fetch_top_filtered {tag}: {e}")))?;
 
+        // Create RNG per iteration — must not cross .await boundary (thread_rng is !Send)
+        let mut rng = rand::thread_rng();
         let selected: Vec<RecommendedGame> = rows
             .choose_multiple(&mut rng, limit.min(rows.len()))
             .cloned()

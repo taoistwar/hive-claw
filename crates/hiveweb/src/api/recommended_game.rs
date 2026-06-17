@@ -340,6 +340,27 @@ async fn execute_recommendation(
         .await
         .map_err(|e| e.into_response())?;
 
+    // 3b. 查询外部 DB 获取 computer_id / platform_name
+    let (computer_id, platform_name) = if let (Some(ext_pool), Ok(logic_game_id)) = (
+        state.ext_pool.as_ref(),
+        req.game_id.trim().parse::<i64>(),
+    ) {
+        let ext_info = crate::services::game_service::get_external_game_by_id(
+            ext_pool,
+            logic_game_id,
+            &req.client_type,
+            &req.channel,
+        )
+        .await
+        .unwrap_or_default();
+        ext_info
+            .first()
+            .map(|info| (info.computer_id, info.platform_name.clone()))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+
     // 4. 获取或创建 session
     let session = chat_svc::get_or_create_session_user(&state.pool, user_id)
         .await
@@ -356,14 +377,16 @@ async fn execute_recommendation(
         "payload": {
             "type": "game",
             "info": {
-                "game_id": game.game_id,
-                "game_name": game.game_name,
-                "name": game.name,
-                "reply": game.reply,
+                "id": game.game_id,
+                "name": game.game_name,
+                "channel": req.channel,
+                "client_type": req.client_type,
                 "reason": game.reason,
-                "tag": game.tag,
-                "game_category": game.game_category,
-                "game_image": game.game_image,
+                "game_tags": game.game_category,
+                "description": game.reason,
+                "cover_image": game.game_image,
+                "computer_id": computer_id,
+                "platform_name": platform_name,
             }
         }
     });
@@ -374,7 +397,7 @@ async fn execute_recommendation(
         &state.pool,
         session.id,
         user_id,
-        "",
+        &game.reply,
         None,
         Some(extensions),
     )

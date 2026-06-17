@@ -74,7 +74,7 @@ impl Role {
 
     pub fn accessible_menus(&self) -> Vec<&str> {
         match self {
-            Role::Normal => vec!["dashboard"],
+            Role::Normal => vec!["dashboard", "admins", "settings"],
             Role::System => vec!["dashboard", "admins"],
             Role::Super => vec!["dashboard", "admins", "settings"],
         }

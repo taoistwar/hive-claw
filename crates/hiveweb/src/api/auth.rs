@@ -87,19 +87,9 @@ pub async fn login(
         return AppError::AccountDisabled("Account has been disabled".to_string()).into_response();
     }
 
-    let role = match Role::try_from(admin.role) {
-        Ok(role) => role,
-        Err(e) => {
-            tracing::error!("Invalid role: {}", e);
-            return AppError::Internal("Invalid role configuration".to_string()).into_response();
-        }
-    };
-
-    if !matches!(role, Role::System | Role::Super) {
-        return AppError::NotAdministrator(
-            "Only System and Super administrators can log in to the admin center".to_string(),
-        )
-        .into_response();
+    if let Err(e) = Role::try_from(admin.role) {
+        tracing::error!("Invalid role: {}", e);
+        return AppError::Internal("Invalid role configuration".to_string()).into_response();
     }
 
     let password_valid = match verify_password(&req.password, &admin.password_hash) {

@@ -41,9 +41,7 @@ const AppLayout: React.FC = () => {
       icon: <DashboardOutlined />,
       label: 'Dashboard',
     },
-    ...(admin?.role === 1
-      ? []
-      : admin?.role === 2 || admin?.role === 3
+    ...(admin?.role === 1 || admin?.role === 2 || admin?.role === 3
         ? [
             {
               key: 'business',

@@ -26,3 +26,5 @@ llm_presets.toml
 
 BUG_REPORT.md
 .vite
+build.sh
+*.tar.gz

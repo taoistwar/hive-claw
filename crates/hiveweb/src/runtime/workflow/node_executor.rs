@@ -41,7 +41,7 @@ pub async fn execute_node(
             message: "function node has no function_id".into(),
         })?;
 
-        return execute_function_node(
+        execute_function_node(
             deps,
             &node_key,
             function_id,
@@ -50,10 +50,20 @@ pub async fn execute_node(
             agent_perms,
             &agent_ctx,
         )
-        .await;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                node_key = %node_key,
+                function_id,
+                error = %e,
+                "function node execution failed"
+            );
+            e
+        })
+    } else {
+        Err(WorkflowError::NodeFailure {
+            node_key: node_key.clone(),
+            message: format!("unsupported node type: {node_type}"),
+        })
     }
-    return Err(WorkflowError::NodeFailure {
-        node_key: node_key.clone(),
-        message: format!("unsupported node type: {node_type}"),
-    });
 }

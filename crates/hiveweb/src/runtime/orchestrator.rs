@@ -1158,7 +1158,15 @@ async fn handle_meta_tool(
                     apply_agent_context_updates(&agent_ctx, &outcome.end_value);
                     ToolOutcome::ok(outcome.end_value)
                 }
-                Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
+                Err(e) => {
+                    tracing::error!(
+                        workflow_id,
+                        wf_ident = %wf_ident,
+                        error = %e,
+                        "invoke_workflow execution failed"
+                    );
+                    ToolOutcome::error(format!("workflow execute: {e}"))
+                }
             }
         }
         _ => ToolOutcome::error(format!("未知元工具: {}", tool_ref.identifier)),
@@ -1307,7 +1315,15 @@ pub(crate) async fn handle_workspace_tool(
                     apply_agent_context_updates(&agent_ctx, &outcome.end_value);
                     ToolOutcome::ok(outcome.end_value)
                 }
-                Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
+                Err(e) => {
+                    tracing::error!(
+                        workflow_id,
+                        tool = %tool_ref.identifier,
+                        error = %e,
+                        "handle_workspace_tool workflow execution failed"
+                    );
+                    ToolOutcome::error(format!("workflow execute: {e}"))
+                }
             }
         }
         _ => ToolOutcome::error(format!("未知 tool kind: {}", tool_ref.kind)),

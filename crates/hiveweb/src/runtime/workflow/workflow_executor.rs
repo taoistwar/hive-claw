@@ -340,7 +340,14 @@ pub(super) async fn run_layers(
                         }
                     }
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    tracing::error!(
+                        workflow_id,
+                        error = %e,
+                        "workflow node execution failed"
+                    );
+                    return Err(e);
+                }
             }
         }
     }

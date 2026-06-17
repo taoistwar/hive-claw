@@ -77,9 +77,18 @@ async fn execute_builtin_function(
         redis: deps.redis.as_ref(),
         agent_ctx: Some(Arc::clone(agent_ctx)),
     };
-    let out = (result.handler)(node_input, &ctx).map_err(|e| WorkflowError::NodeFailure {
-        node_key: node_key.to_string(),
-        message: format!("{e}"),
+    let out = (result.handler)(node_input, &ctx).map_err(|e| {
+        let msg = format!("{e}");
+        tracing::error!(
+            node_key = %node_key,
+            identifier = %identifier,
+            error = %msg,
+            "builtin function execution failed"
+        );
+        WorkflowError::NodeFailure {
+            node_key: node_key.to_string(),
+            message: msg,
+        }
     })?;
     Ok((node_key.to_string(), out))
 }
@@ -138,9 +147,19 @@ async fn execute_plugin_function(
             dispatch_ctx,
         )
         .await
-        .map_err(|e| WorkflowError::NodeFailure {
-            node_key: node_key.to_string(),
-            message: format!("plugin invoke: {e}"),
+        .map_err(|e| {
+            let msg = format!("plugin invoke: {e}");
+            tracing::error!(
+                node_key = %node_key,
+                plugin_id = %plugin_id,
+                export = %export,
+                error = %msg,
+                "plugin function execution failed"
+            );
+            WorkflowError::NodeFailure {
+                node_key: node_key.to_string(),
+                message: msg,
+            }
         })?;
     let out: Value = serde_json::from_str(&out_str).unwrap_or_else(|_| Value::String(out_str));
     Ok((node_key.to_string(), out))

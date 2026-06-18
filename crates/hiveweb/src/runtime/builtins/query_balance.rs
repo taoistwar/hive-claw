@@ -138,7 +138,6 @@ pub async fn query_balance_async_impl(
                 "card_type_name": row.card_type_name,
                 "order_id": row.order_id,
                 "consume_label": row.consume_label,
-                "extra": row.extra,
                 "create_time": row.create_time.map(|t| t.to_string()),
                 "fps": fps,
                 "gpu": gpu,

@@ -3,13 +3,24 @@ use serde_json::Value;
 use super::{BuiltinContext, BuiltinError, BuiltinResult};
 
 /// sync wrapper: bridges async DB queries inside the tokio runtime via `block_in_place`.
+/// client_type and channel are extracted from AgentContext metadata.
 pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
+    let agent_ctx = ctx.agent_ctx.clone();
+    let channel = agent_ctx
+        .as_ref()
+        .and_then(|ac| ac.get_user_metadata("channel"))
+        .unwrap_or_default();
+    let client_type = agent_ctx
+        .as_ref()
+        .and_then(|ac| ac.get_user_metadata("client_type"))
+        .unwrap_or_default();
+
     let pool = ctx.pool.clone();
     let ext_pool = ctx.ext_pool.cloned();
     let redis = ctx.redis.cloned();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current()
-            .block_on(async move { game_info_async_impl(args, &pool, ext_pool.as_ref(), redis.as_ref()).await })
+            .block_on(async move { game_info_async_impl(args, &pool, ext_pool.as_ref(), redis.as_ref(), &channel, &client_type).await })
     })
 }
 
@@ -22,6 +33,8 @@ async fn game_info_async_impl(
     pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
     redis: Option<&redis::Client>,
+    channel: &str,
+    client_type: &str,
 ) -> BuiltinResult {
     // 1. Parse game_id from input — text → integer
     let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -29,14 +42,6 @@ async fn game_info_async_impl(
         .get("put_to_ac")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let client_type = args
-        .get("client_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("ANDROID");
-    let channel = args
-        .get("channel")
-        .and_then(|v| v.as_str())
-        .unwrap_or("haimayun");
 
     let game_id: i64 = match game_id_str.trim().parse() {
         Ok(id) => id,
@@ -139,16 +144,6 @@ pub const GAME_INFO_INPUT_SCHEMA: &str = r#"{
       "type": "boolean",
       "description": "是否将游戏信息放入 AgentContext（true=写入 AC 扩展卡片，false=仅作为输出变量）",
       "default": false
-    },
-    "client_type": {
-      "type": "string",
-      "description": "客户端类型（如 ANDROID、iphone等），默认 ANDROID",
-      "default": "ANDROID"
-    },
-    "channel": {
-      "type": "string",
-      "description": "渠道（如 haimayun），默认 haimayun",
-      "default": "haimayun"
     }
   },
   "required": ["game_id"]

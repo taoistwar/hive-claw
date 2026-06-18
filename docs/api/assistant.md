@@ -88,37 +88,48 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       },
       "membership": [
         {
-          "membership_level": "vip",
-          "level_name": "VIP",
+          "auto_renew": false,
+          "level_name": "史诗会员",
+          "product_title": "连续包月",
+          "payment_method": "WECHAT_PAY_CONTRACT_ENTRUST_WEB",
+          "subscription_id": 357238,
+          "membership_level": "EPIC",
+          "next_billing_time": "2026-07-04 22:17:14",
+          "effective_end_time": "2026-07-04 23:59:59",
           "membership_category": "SUBSCRIPTION",
+          "subscription_status": "REVOKE",
+          "effective_start_time": "2026-06-05 00:00:00",
+          "subscription_end_time": "2026-06-04 07:41:55",
+          "subscription_start_time": "2026-06-04 22:17:14",
           "membership_category_name": "订阅型",
-          "effective_start_time": "2025-01-01 00:00:00",
-          "effective_end_time": "2026-12-31 23:59:59",
-          "product_title": "VIP月度订阅",
-          "subscription_id": "sub_abc123",
-          "subscription_status": "active",
-          "subscription_status_name": "生效中",
-          "next_billing_time": "2026-07-01 00:00:00",
-          "auto_renew": true,
-          "payment_method": "alipay",
-          "subscription_start_time": "2025-01-01 00:00:00",
-          "subscription_end_time": "2026-12-31 23:59:59"
+          "subscription_status_name": "已解约"
         }
       ],
       "duration_card": [
         {
-          "card_asset_id": 30086212,
-          "remain_duration": 86400,
-          "computer_biz_type": "game",
-          "expire_time": 1735689600,
-          "card_type": 8,
-          "card_type_name": "时长卡",
-          "order_id": 31920032,
-          "consume_label": {"weight": 99, "channelList": ["ALL"], "gameLabelList": ["FREE_CARD"], "clientTypeList": ["ALL"]},
-          "extra": null,
-          "create_time": "2025-06-01 12:00:00",
-          "fps": "60",
-          "gpu": "4070"
+            "fps": "60",
+            "gpu": "4070",
+            "order_id": -1,
+            "card_type": 8,
+            "create_time": "2026-06-16 16:00:15 UTC",
+            "expire_time": 1781884815303,
+            "card_asset_id": 30123507,
+            "consume_label": {
+                "weight": 99,
+                "channelList": [
+                    "ALL"
+                ],
+                "gameLabelList": [
+                    "FREE_CARD",
+                    "TASK_FREE_CARD"
+                ],
+                "clientTypeList": [
+                    "ALL"
+                ]
+            },
+            "card_type_name": "金卡",
+            "remain_duration": 300000,
+            "computer_biz_type": null
         }
       ]
     }
@@ -273,7 +284,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `card_type_name` | `Option<String>` | 卡类型显示名称（如"金卡"） |
 | `order_id` | `Option<i64>` | 订单 ID |
 | `consume_label` | `Option<Value>` | 消费标签（JSON 对象，含 `weight`、`channelList`、`gameLabelList`、`clientTypeList`） |
-| `extra` | `Option<Value>` | 额外信息（JSON） |
 | `create_time` | `Option<String>` | 创建时间 |
 | `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取） |
 | `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取） |

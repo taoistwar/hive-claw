@@ -190,7 +190,6 @@ pub struct DurationCardRow {
     pub card_type_name: Option<String>,
     pub order_id: Option<i64>,
     pub consume_label: Option<serde_json::Value>,
-    pub extra: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
     /// product_mirror JSON — 提取 fps / gpu 等字段
     pub product_mirror: Option<serde_json::Value>,
@@ -215,7 +214,6 @@ pub async fn query_duration_cards(
     END                     AS card_type_name,
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
-    t1.extra               AS extra,
     t1.create_time         AS create_time,
     t2.product_mirror      AS product_mirror
 FROM (

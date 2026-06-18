@@ -13,7 +13,9 @@ use crate::models::Role;
 use crate::models::chat_user::ChatMessageUser;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
 use crate::services::chat_user as chat_svc;
+use crate::services::membership;
 use crate::services::recommended_game::{self as svc, CreateMeta, UpdateMeta};
+use crate::services::user_auth;
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
 
@@ -356,6 +358,26 @@ async fn execute_recommendation(
     } else {
         (None, None, None)
     };
+
+    // 3c. 同步用户：确保 users 表存在该用户，避免 chat_sessions_user 外键约束失败
+    let cloud_info = if let Some(ext_pool) = state.ext_pool.as_ref() {
+        membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(user_id = user_id, error = %e, "get_cloud_user_info_cached failed");
+                None
+            })
+    } else {
+        None
+    };
+    let (uid, nickname) = cloud_info
+        .as_ref()
+        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
+        .unwrap_or((None, None));
+
+    user_auth::ensure_user_exists(&state.pool, user_id, uid, nickname)
+        .await
+        .map_err(|e| AppError::Internal(format!("user sync: {e}")).into_response::<()>())?;
 
     // 4. 获取或创建 session
     let session = chat_svc::get_or_create_session_user(&state.pool, user_id)

@@ -15,21 +15,18 @@ pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
         .and_then(|ac| ac.get_user_metadata("client_type"))
         .unwrap_or_default();
 
-    let pool = ctx.pool.clone();
     let ext_pool = ctx.ext_pool.cloned();
     let redis = ctx.redis.cloned();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            game_list_async_impl(&pool, ext_pool.as_ref(), redis.as_ref(), &channel, &client_type).await
+            game_list_async_impl(ext_pool.as_ref(), redis.as_ref(), &channel, &client_type).await
         })
     })
 }
 
 /// Primary: cc_logic_game from external DB (id, name, alias).
-/// Secondary: internal games + game_alias_entries supplements extra aliases.
 /// Output: "- id: name、alias1、alias2"
 async fn game_list_async_impl(
-    pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
     redis: Option<&redis::Client>,
     channel: &str,
@@ -37,12 +34,7 @@ async fn game_list_async_impl(
 ) -> BuiltinResult {
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
-    // 1. Load supplementary aliases from internal games table
-    let internal_aliases = crate::services::game_service::load_internal_aliases(pool)
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
-
-    // 2. Primary: cc_logic_game from external DB, filtered by channel & client_type（Redis 缓存优先）
+    // 1. Query cc_logic_game from external DB, filtered by channel & client_type（Redis 缓存优先）
     let external = if let Some(r) = redis {
         crate::services::game_service::list_external_games_cached(r, ext_pool, channel, client_type)
             .await
@@ -53,7 +45,7 @@ async fn game_list_async_impl(
             .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     };
 
-    // 3. Merge: for each external game, collect all aliases (its own + internal supplements)
+    // 2. Collect aliases from external game data
     let mut entries: Vec<(i64, String, Vec<String>)> = Vec::new();
     for (id, name, ext_alias) in external {
         let mut aliases: Vec<String> = Vec::new();
@@ -68,18 +60,10 @@ async fn game_list_async_impl(
             }
         }
 
-        if let Some(supp) = internal_aliases.get(&name) {
-            for alias in supp {
-                if !aliases.contains(alias) {
-                    aliases.push(alias.clone());
-                }
-            }
-        }
-
         entries.push((id, name, aliases));
     }
 
-    // 4. Format output: "- id: name、alias1、alias2"
+    // 3. Format output: "- id: name、alias1、alias2"
     let lines: Vec<String> = entries
         .iter()
         .map(|(id, name, aliases)| {

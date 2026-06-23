@@ -58,54 +58,69 @@ pub async fn get_cloud_user_info(
 
 // ---------- query_balance support ----------
 
-/// Row returned by the balance/coins query.
+/// Row returned by the coins balance query.
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[allow(dead_code)]
-pub struct MembershipBalanceRow {
+pub struct CoinsBalanceRow {
     pub total_coins: Option<Decimal>,
     pub expire_coins_7d: Option<Decimal>,
+}
+
+/// Row returned by the disk balance query.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[allow(dead_code)]
+pub struct DiskBalanceRow {
     pub disk_total_size: Option<Decimal>,
     pub disk_end_time: Option<i64>,
     pub dist_status: Option<String>,
 }
 
-/// Query user balance: total coins and coins expiring within 7 days.
-pub async fn query_membership_balance(
+/// Query user coins balance: total_coins and expire_coins_7d.
+pub async fn query_coins_balance(
     ext_pool: &MySqlPool,
     user_id: i64,
-) -> Result<Option<MembershipBalanceRow>, sqlx::Error> {
+) -> Result<Option<CoinsBalanceRow>, sqlx::Error> {
     sqlx::query_as(
         r#"select
-	m7.total_coins, m2.expire_coins_7d, m4.disk_total_size, m4.disk_end_time, m4.status as dist_status
+    m7.total_coins, m2.expire_coins_7d
 from
 (
-	select ? as user_id
+    select ? as user_id
 ) m1
 left join
 (
-	select user_id, IFNULL(sum(value), 0) as expire_coins_7d from cc_user_asset_coin
-	where user_id = ?
-	    and expire_time > UNIX_TIMESTAMP() *1000
-	    and expire_time < (7*24*60*60*1000+UNIX_TIMESTAMP()*1000)
-	    and value>0 AND type=4
-	group by user_id
+    select user_id, IFNULL(sum(value), 0) as expire_coins_7d from cc_user_asset_coin
+    where user_id = ?
+        and expire_time > UNIX_TIMESTAMP() *1000
+        and expire_time < (7*24*60*60*1000+UNIX_TIMESTAMP()*1000)
+        and value>0 AND type=4
+    group by user_id
 ) m2 on m1.user_id = m2.user_id
 LEFT JOIN (
-	SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status
-	from cc_user_disk
-	where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
-	group by user_id
-) m4 on m1.user_id = m4.user_id
-LEFT JOIN (
-	select user_id, IFNULL(sum(value), 0) as total_coins from cc_user_asset_coin
+    select user_id, IFNULL(sum(value), 0) as total_coins from cc_user_asset_coin
   where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0 AND type=4
-	group by user_id
+    group by user_id
 ) m7 on m1.user_id = m7.user_id
 "#,
     )
     .bind(user_id)
     .bind(user_id)
     .bind(user_id)
+    .fetch_optional(ext_pool)
+    .await
+}
+
+/// Query user disk balance: disk_total_size, disk_end_time, dist_status.
+pub async fn query_disk_balance(
+    ext_pool: &MySqlPool,
+    user_id: i64,
+) -> Result<Option<DiskBalanceRow>, sqlx::Error> {
+    sqlx::query_as(
+        r#"SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status as dist_status
+from cc_user_disk
+where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
+group by user_id"#,
+    )
     .bind(user_id)
     .fetch_optional(ext_pool)
     .await
@@ -306,17 +321,32 @@ pub async fn get_cloud_user_info_cached(
     .await
 }
 
-/// Cached version of `query_membership_balance`.
-pub async fn query_membership_balance_cached(
+/// Cached version of `query_coins_balance`.
+pub async fn query_coins_balance_cached(
     redis: &redis::Client,
     ext_pool: &MySqlPool,
     user_id: i64,
-) -> Result<Option<MembershipBalanceRow>, String> {
-    let key = format!("{}:{}", cache_helper::KEY_BALANCE, user_id);
+) -> Result<Option<CoinsBalanceRow>, String> {
+    let key = format!("{}:coins:{}", cache_helper::KEY_BALANCE, user_id);
     cached_or_fetch(redis, &key, cache_helper::TTL_BALANCE, || async {
-        query_membership_balance(ext_pool, user_id)
+        query_coins_balance(ext_pool, user_id)
             .await
-            .map_err(|e| format!("query_membership_balance: {e}"))
+            .map_err(|e| format!("query_coins_balance: {e}"))
+    })
+    .await
+}
+
+/// Cached version of `query_disk_balance`.
+pub async fn query_disk_balance_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+    user_id: i64,
+) -> Result<Option<DiskBalanceRow>, String> {
+    let key = format!("{}:disk:{}", cache_helper::KEY_BALANCE, user_id);
+    cached_or_fetch(redis, &key, cache_helper::TTL_BALANCE, || async {
+        query_disk_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| format!("query_disk_balance: {e}"))
     })
     .await
 }

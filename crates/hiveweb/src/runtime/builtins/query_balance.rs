@@ -16,7 +16,11 @@ use crate::runtime::builtins::BuiltinResult;
 
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
 /// user_id is extracted from AgentContext, not from LLM args.
-pub fn query_balance(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
+/// category is optionally provided in args to filter the payload:
+///   会员信息 | 金币 | 时长卡 | 云硬盘 | 权益 (default: all fields)
+///
+/// category values: membership | coins | duration_card | disk | benefits
+pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     // Try to get user_id from context; if not available (e.g. test without user_input), return a structured response
     let user_id: Option<i64> = ctx
         .agent_ctx
@@ -37,9 +41,15 @@ pub fn query_balance(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let redis = ctx.redis.cloned();
     let agent_ctx_clone = ctx.agent_ctx.clone();
 
+    let category = args
+        .get("category")
+        .and_then(|v| v.as_str())
+        .unwrap_or("benefits")
+        .to_string();
+
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            query_balance_async_impl(user_id, &ext_pool, redis.as_ref(), agent_ctx_clone.as_deref()).await
+            query_balance_async_impl(user_id, &ext_pool, redis.as_ref(), agent_ctx_clone.as_deref(), &category).await
         })
     })
 }
@@ -49,33 +59,60 @@ pub async fn query_balance_async_impl(
     ext_pool: &sqlx::MySqlPool,
     redis: Option<&redis::Client>,
     _agent_ctx: Option<&AgentContext>,
+    category: &str,
 ) -> BuiltinResult {
-    // 1. 查询用户余额（Redis 缓存优先）
-    let membership = if let Some(r) = redis {
-        crate::services::membership::query_membership_balance_cached(r, ext_pool, user_id)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("会员查询失败: {e}")))?
+    let need_coins = matches!(category, "coins" | "benefits");
+    let need_disk = matches!(category, "disk" | "benefits");
+    let need_duration = matches!(category, "duration_card" | "benefits");
+
+    // 1. 查询金币余额（仅 coins / benefits 需要）
+    let coins_row = if need_coins {
+        let row = if let Some(r) = redis {
+            crate::services::membership::query_coins_balance_cached(r, ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("金币查询失败: {e}")))?
+        } else {
+            crate::services::membership::query_coins_balance(ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("金币查询失败: {e}")))?
+        };
+        if row.is_none() {
+            return Ok(json!({
+                "message": "暂无该用户的资产数据，请稍后再试"
+            }));
+        }
+        row
     } else {
-        crate::services::membership::query_membership_balance(ext_pool, user_id)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("会员查询失败: {e}")))?
+        None
     };
 
-    if membership.is_none() {
-        return Ok(json!({
-            "message": "暂无该用户的资产数据，请稍后再试"
-        }));
-    }
-
-    // 1.5 查询会员与订阅状态（Redis 缓存优先）
-    let membership_subscriptions = if let Some(r) = redis {
-        crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
+    // 1.2 查询云硬盘信息（仅 disk / benefits 需要）
+    let disk_row = if need_disk {
+        let row = if let Some(r) = redis {
+            crate::services::membership::query_disk_balance_cached(r, ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("云硬盘查询失败: {e}")))?
+        } else {
+            crate::services::membership::query_disk_balance(ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("云硬盘查询失败: {e}")))?
+        };
+        row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
-        crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
+        None
+    };
+
+    // 1.5 查询会员与订阅状态（用于推导 card type）
+    let membership_subscriptions = {
+        if let Some(r) = redis {
+            crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
+        } else {
+            crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
+        }
     };
 
     // Serialize membership+subscription rows to JSON
@@ -102,21 +139,24 @@ pub async fn query_balance_async_impl(
         })
         .collect();
 
-    // 1.8 查询时长卡（Redis 缓存优先）
-    let duration_cards = if let Some(r) = redis {
-        crate::services::membership::query_duration_cards_cached(r, ext_pool, user_id)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
+    // 1.8 查询时长卡（仅 duration_card / benefits 需要）
+    let duration_cards = if need_duration {
+        if let Some(r) = redis {
+            crate::services::membership::query_duration_cards_cached(r, ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
+        } else {
+            crate::services::membership::query_duration_cards(ext_pool, user_id)
+                .await
+                .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
+        }
     } else {
-        crate::services::membership::query_duration_cards(ext_pool, user_id)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
+        Vec::new()
     };
 
     let duration_card_json: Vec<Value> = duration_cards
         .iter()
         .map(|row| {
-            // 从 product_mirror JSON 中提取 fps / gpu
             let fps = row
                 .product_mirror
                 .as_ref()
@@ -167,64 +207,86 @@ pub async fn query_balance_async_impl(
 
     // 2. 构造返回结果
     let mut result = json!({});
-    let m = membership.unwrap();
-    let reply = json!({
-        "disk_end_time": m.disk_end_time.unwrap_or(0),
-        "disk_total_size": m.disk_total_size
+    let reply = {
+        let total_coins = coins_row
+            .as_ref()
+            .and_then(|r| r.total_coins)
+            .unwrap_or(Decimal::ZERO)
+            .to_f64()
+            .unwrap_or(0.0);
+        let expire_coins_7d = coins_row
+            .as_ref()
+            .and_then(|r| r.expire_coins_7d)
+            .unwrap_or(Decimal::ZERO)
+            .to_f64()
+            .unwrap_or(0.0);
+        let disk_end_time = disk_row.as_ref().and_then(|r| r.disk_end_time).unwrap_or(0);
+        let disk_total_size = disk_row
+            .as_ref()
+            .and_then(|r| r.disk_total_size)
             .and_then(|s| s.to_f64())
-            .unwrap_or(0.0),
-        "total_coins": m.total_coins.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
-        "expire_coins_7d": m.expire_coins_7d.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0),
-    });
+            .unwrap_or(0.0);
+        json!({
+            "total_coins": total_coins,
+            "expire_coins_7d": expire_coins_7d,
+            "disk_end_time": disk_end_time,
+            "disk_total_size": disk_total_size,
+        })
+    };
 
     if let Value::Object(ref mut map) = result {
         // 构造扩展卡片
         let mut extension_list: Vec<Value> = Vec::new();
 
-        if !has_membership {
-            // 无有效会员 → firstPay 卡
-            extension_list.push(json!({
-                "content_type": "card",
-                "payload": {
-                    "type": "subscribe",
-                    "info": reply,
-                    "membership": membership_json,
-                    "duration_card": duration_card_json,
-                },
-            }));
-        } else if expiring_soon {
-            // 会员即将到期（≤ 7 天）→ repay 卡
-            extension_list.push(json!({
-                "content_type": "card",
-                "payload": {
-                    "type": "repay",
-                    "info": reply,
-                    "membership": membership_json,
-                    "duration_card": duration_card_json,
-                },
-            }));
-        } else if upgrade_suggested {
-            // 升级建议卡
-            extension_list.push(json!({
-                "content_type": "card",
-                "payload": {
-                    "type": "upgrade",
-                    "info": reply,
-                    "membership": membership_json,
-                    "duration_card": duration_card_json,
-                },
-            }));
-        } else {
-            extension_list.push(json!({
-                "content_type": "card",
-                "payload": {
-                    "type": "sufficient",
-                    "info": reply,
-                    "membership": membership_json,
-                    "duration_card": duration_card_json,
-                },
-            }));
-        }
+        // 根据 category 构建 payload：只包含该类别需要的字段
+        let build_payload = || -> Value {
+            let card_type = if !has_membership {
+                "subscribe"
+            } else if expiring_soon {
+                "repay"
+            } else if upgrade_suggested {
+                "upgrade"
+            } else {
+                "sufficient"
+            };
+
+            let mut payload = json!({"type": card_type});
+            if let Value::Object(ref mut p) = payload {
+                match category {
+                    "membership" => {
+                        p.insert("membership".into(), json!(membership_json));
+                    }
+                    "coins" => {
+                        p.insert("info".into(), json!({
+                            "total_coins": reply.get("total_coins"),
+                            "expire_coins_7d": reply.get("expire_coins_7d"),
+                        }));
+                    }
+                    "duration_card" => {
+                        p.insert("duration_card".into(), json!(duration_card_json));
+                    }
+                    "disk" => {
+                        p.insert("info".into(), json!({
+                            "disk_end_time": reply.get("disk_end_time"),
+                            "disk_total_size": reply.get("disk_total_size"),
+                        }));
+                    }
+                    _ => {
+                        // "benefits" 或未指定 → 保持全部信息
+                        p.insert("info".into(), reply);
+                        p.insert("membership".into(), json!(membership_json));
+                        p.insert("duration_card".into(), json!(duration_card_json));
+                    }
+                }
+            }
+            payload
+        };
+
+        let payload = build_payload();
+        extension_list.push(json!({
+            "content_type": "card",
+            "payload": payload,
+        }));
 
         // Build _agent_context_updates with extensions (if any) and loop-break signal
         let mut updates = json!({

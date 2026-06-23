@@ -1042,6 +1042,8 @@ async fn handle_meta_tool(
                         ext_pool: deps.ext_pool.as_ref(),
                         redis: Some(&deps.redis),
                         agent_ctx: Some(Arc::clone(&agent_ctx)),
+                        llm: Some(&deps.llm),
+                        agent_id: Some(ctx.agent_id),
                     };
                     match (builtin.handler)(function_input, &bctx) {
                         Ok(result) => {
@@ -1228,6 +1230,8 @@ pub(crate) async fn handle_workspace_tool(
                     ext_pool: deps.ext_pool.as_ref(),
                     redis: Some(&deps.redis),
                     agent_ctx: Some(Arc::clone(&agent_ctx)),
+                    llm: Some(&deps.llm),
+                    agent_id: Some(ctx.agent_id),
                 };
                 match (builtin.handler)(args_value, &bctx) {
                     Ok(result) => {

@@ -22,6 +22,7 @@ use sqlx::MySqlPool;
 use std::sync::Arc;
 
 use agent::context::AgentContext;
+use crate::runtime::llm::LlmRegistry;
 
 // Re-export handlers for the registry
 use chat_respond::chat_respond;
@@ -64,6 +65,12 @@ pub struct BuiltinContext<'a> {
     /// AgentContext for reading/writing runtime state during hook/tool execution.
     /// `None` when called from contexts without AgentContext (e.g., workflow executor).
     pub agent_ctx: Option<Arc<AgentContext>>,
+    /// LLM registry for builtins that need classification/summarization.
+    /// `None` when called from contexts without LLM access (e.g., workflow executor, test).
+    pub llm: Option<&'a Arc<LlmRegistry>>,
+    /// Current agent ID for resolving model preset when calling LLM from builtins.
+    /// `None` when agent_id is unavailable.
+    pub agent_id: Option<i64>,
 }
 
 // ---------- Registry ----------
@@ -306,6 +313,8 @@ mod tests {
             ext_pool: None,
             redis: None,
             agent_ctx: None,
+            llm: None,
+            agent_id: None,
         }
     }
 

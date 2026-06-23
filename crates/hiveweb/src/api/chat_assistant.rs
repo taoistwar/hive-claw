@@ -51,8 +51,7 @@ fn get_secret() -> &'static str {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/assistant", post(assistant_chat))
+    Router::new().route("/assistant", post(assistant_chat))
 }
 
 // ── 请求 / 响应 ──
@@ -176,14 +175,13 @@ async fn assistant_chat(
         });
 
     // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
-    let limit_config = membership::get_ai_assistant_chat_limit_config_cached(
-        &state.redis, ext_pool,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
-        membership::AssistantChatLimitConfig::default()
-    });
+    let limit_config =
+        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
+                membership::AssistantChatLimitConfig::default()
+            });
 
     let max_times = if is_vip {
         limit_config.vip_ask_times
@@ -363,7 +361,10 @@ async fn assistant_chat(
 
     // 如果已用次数刚好到达 "剩余提醒阈值"，追加 usage extension
     let remaining = max_times - current_count;
-    if limit_config.remain_ask_time > 0 && remaining == limit_config.remain_ask_time {
+    if limit_config.remain_ask_time > 0
+        && remaining > 0
+        && remaining <= limit_config.remain_ask_time
+    {
         let usage_ext = serde_json::json!({
             "content_type": "usage",
             "payload": {

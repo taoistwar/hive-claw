@@ -76,6 +76,8 @@ async fn execute_builtin_function(
         ext_pool: deps.ext_pool.as_ref(),
         redis: deps.redis.as_ref(),
         agent_ctx: Some(Arc::clone(agent_ctx)),
+        llm: None,
+        agent_id: None,
     };
     let out = (result.handler)(node_input, &ctx).map_err(|e| {
         let msg = format!("{e}");

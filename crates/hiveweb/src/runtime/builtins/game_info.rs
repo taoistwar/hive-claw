@@ -170,17 +170,17 @@ async fn game_info_async_impl(
 /// Mock game categories and their associated game lists.
 ///
 /// TODO: 替换为外部数据库查询（cc_logic_game 按 category 过滤）。
-fn mock_games_by_category(category: &str) -> Vec<MockGameItem> {
+fn mock_games_by_category(_category_id: i64, category_name: &str) -> Vec<MockGameItem> {
     let all = mock_game_data();
-    let category_lower = category.to_lowercase().trim().to_string();
+    let name_lower = category_name.to_lowercase().trim().to_string();
 
-    // 按分类匹配（模糊匹配：分类名包含在 category 中或 vice versa）
+    // 按分类匹配（模糊匹配：分类名包含在 game categories 中或 vice versa）
     let matched: Vec<&MockGameItem> = all
         .iter()
         .filter(|g| {
             let cats: Vec<String> = g.categories.iter().map(|c| c.to_lowercase()).collect();
             cats.iter()
-                .any(|c| c.contains(&category_lower) || category_lower.contains(c.as_str()))
+                .any(|c| c.contains(&name_lower) || name_lower.contains(c.as_str()))
         })
         .collect();
 
@@ -194,13 +194,13 @@ fn mock_games_by_category(category: &str) -> Vec<MockGameItem> {
 
 /// Fetch game categories (tags) from the external cc_game_tag table.
 ///
-/// Queries `SELECT name FROM cc_game_tag WHERE type = 1`.
+/// Queries `SELECT id, name FROM cc_game_tag WHERE type = 1`.
 /// Results are cached in Redis for 10 minutes.
 /// Returns `Ok(Vec::new())` if no rows are returned.
 async fn fetch_categories(
     ext_pool: &sqlx::MySqlPool,
     redis: Option<&redis::Client>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<(i64, String)>, String> {
     if let Some(r) = redis {
         let cache_key = "game_tags:cc_game_tag_type1";
         crate::services::cache_helper::cached_or_fetch(
@@ -208,21 +208,21 @@ async fn fetch_categories(
             cache_key,
             600, // 10 min TTL
             || async {
-                let rows: Vec<(String,)> =
-                    sqlx::query_as("SELECT name FROM cc_game_tag WHERE `type` = 1")
+                let rows: Vec<(i64, String)> =
+                    sqlx::query_as("SELECT id, name FROM cc_game_tag WHERE `type` = 1")
                         .fetch_all(ext_pool)
                         .await
                         .map_err(|e| format!("cc_game_tag query: {e}"))?;
-                Ok::<Vec<String>, String>(rows.into_iter().map(|(n,)| n).collect())
+                Ok::<Vec<(i64, String)>, String>(rows)
             },
         )
         .await
     } else {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM cc_game_tag WHERE `type` = 1")
+        let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM cc_game_tag WHERE `type` = 1")
             .fetch_all(ext_pool)
             .await
             .map_err(|e| format!("cc_game_tag query: {e}"))?;
-        Ok(rows.into_iter().map(|(n,)| n).collect())
+        Ok(rows)
     }
 }
 
@@ -319,11 +319,10 @@ fn mock_game_data() -> Vec<MockGameItem> {
 }
 
 /// Build an LLM classification prompt to identify the game category from user input.
-fn build_classification_prompt(user_input: &str, categories: &[String]) -> String {
+fn build_classification_prompt(user_input: &str, categories: &[(i64, String)]) -> String {
     let cat_list = categories
         .iter()
-        .enumerate()
-        .map(|(i, c)| format!("{}. {}", i + 1, c))
+        .map(|(id, name)| format!("- id:{}, name:{}", id, name))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -335,7 +334,7 @@ fn build_classification_prompt(user_input: &str, categories: &[String]) -> Strin
 
 对话内容："{user_input}"
 
-请只返回一个最匹配的分类名称，不要输出其他任何内容。如果无法判断，请返回"动作冒险"。"#
+请只返回一个最匹配的分类 ID（数字），不要输出其他任何内容。如果无法判断，请返回第一个分类的 ID。"#
     )
 }
 
@@ -400,24 +399,33 @@ async fn handle_classify_and_list(
             }));
         }
     };
-    let category = classify_user_input(&user_input, &categories, llm, agent_id).await;
+    let category_id = match classify_user_input(&user_input, &categories, llm, agent_id).await {
+        Some(id) => id,
+        None => {
+            tracing::warn!(user_input = %user_input, "game_info classify returned None");
+            return Ok(serde_json::json!({
+                "found": false,
+                "data": "无法识别游戏分类"
+            }));
+        }
+    };
 
-    if category.is_empty() {
-        tracing::warn!(user_input = %user_input, "game_info classify returned empty category");
-        return Ok(serde_json::json!({
-            "found": false,
-            "data": "无法识别游戏分类"
-        }));
-    }
+    // 查找分类名称（用于展示和 mock 匹配）
+    let category_name = categories
+        .iter()
+        .find(|(id, _)| *id == category_id)
+        .map(|(_, name)| name.clone())
+        .unwrap_or_default();
 
     tracing::info!(
         user_input = %user_input,
-        category = %category,
+        category_id = %category_id,
+        category_name = %category_name,
         "game_info: LLM classified user input"
     );
 
     // 3. 根据分类获取游戏列表（取前 3 个）
-    let games = mock_games_by_category(&category);
+    let games = mock_games_by_category(category_id, &category_name);
 
     // 4. 构造返回结果
     let game_items: Vec<Value> = games
@@ -436,7 +444,7 @@ async fn handle_classify_and_list(
 
     let summary = format!(
         "根据你的描述，分类为「{}」，为你推荐以下 {} 款游戏：\n{}",
-        category,
+        category_name,
         game_items.len(),
         game_items
             .iter()
@@ -457,7 +465,8 @@ async fn handle_classify_and_list(
         "id": 0,
         "name": null,
         "data": summary,
-        "category": category,
+        "category_id": category_id,
+        "category": category_name,
         "games": game_items,
         "classified": true,
     });
@@ -468,7 +477,8 @@ async fn handle_classify_and_list(
             "content_type": "card",
             "payload": {
                 "type": "game_list",
-                "category": category,
+                "category_id": category_id,
+                "category": category_name,
                 "games": game_items,
             },
         });
@@ -481,12 +491,13 @@ async fn handle_classify_and_list(
 }
 
 /// Call LLM to classify user input into one of the given categories.
+/// Returns the category ID on success, or `None` if classification failed.
 async fn classify_user_input(
     user_input: &str,
-    categories: &[String],
+    categories: &[(i64, String)],
     llm: Option<&Arc<LlmRegistry>>,
     agent_id: Option<i64>,
-) -> String {
+) -> Option<i64> {
     // 尝试 LLM 分类
     if let (Some(llm), Some(_agent_id)) = (llm, agent_id) {
         let prompt = build_classification_prompt(user_input, categories);
@@ -500,7 +511,7 @@ async fn classify_user_input(
                 let req = ChatRequest {
                     model: Some(model),
                     messages,
-                    max_tokens: 64,
+                    max_tokens: 16,
                     temperature: 0.1,
                     tools: None,
                     tool_choice: None,
@@ -509,22 +520,28 @@ async fn classify_user_input(
                 let resp = provider
                     .chat_with_retry(req, RetryMode::Standard, None)
                     .await;
-                // Clone content before the if-let move, so we can log it on failure
                 let raw_content = resp.content.clone();
                 if let Some(content) = raw_content {
                     let trimmed = content.trim().to_string();
-                    // 验证 LLM 返回的分类是否在列表中
-                    let valid = categories
+                    // 尝试解析为数字 ID
+                    if let Ok(id) = trimmed.parse::<i64>() {
+                        // 验证 ID 是否在可选分类中
+                        if categories.iter().any(|(cid, _)| *cid == id) {
+                            return Some(id);
+                        }
+                    }
+                    // 尝试按名称匹配（LLM 可能返回名称而非 ID）
+                    let matched = categories
                         .iter()
-                        .any(|c| trimmed.contains(c) || c.contains(&trimmed));
-                    if valid && !trimmed.is_empty() {
-                        return trimmed;
+                        .find(|(_, name)| trimmed.contains(name.as_str()) || name.contains(&trimmed));
+                    if let Some((id, _)) = matched {
+                        return Some(*id);
                     }
                 }
                 tracing::warn!(
                     user_input = %user_input,
                     llm_response = ?resp.content,
-                    "LLM 分类失败或返回无效分类，使用关键词匹配兜底"
+                    "LLM 分类失败或返回无效 ID，使用关键词匹配兜底"
                 );
             }
             Err(e) => {
@@ -536,12 +553,17 @@ async fn classify_user_input(
         }
     }
 
-    // 兜底：关键词匹配
-    fallback_classify(user_input, categories)
+    // 兜底：关键词匹配 → 返回对应 ID
+    let fallback_name = fallback_classify(user_input);
+    categories
+        .iter()
+        .find(|(_, name)| name == &fallback_name)
+        .map(|(id, _)| *id)
 }
 
 /// Fallback keyword-based classification when LLM is unavailable.
-fn fallback_classify(user_input: &str, _categories: &[String]) -> String {
+/// Returns the matched category name (to be resolved to an ID via the DB category list).
+fn fallback_classify(user_input: &str) -> String {
     let input_lower = user_input.to_lowercase();
 
     // 分类关键词映射

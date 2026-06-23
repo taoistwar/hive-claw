@@ -125,6 +125,8 @@ pub const KEY_GAME_INFO: &str = "game_info";
 pub const KEY_EXTERNAL_GAMES: &str = "external_games:list";
 /// Global config cache prefix → i64 (config value)
 pub const KEY_CONFIG_PREFIX: &str = "config:";
+/// AI assistant chat limit config → AssistantChatLimitConfig (from cc_config)
+pub const KEY_AI_ASSISTANT_CHAT_LIMIT_CONFIG: &str = "ai_assistant_limit_cfg";
 /// Agent content cache prefix → AgentContent
 pub const KEY_AGENT_CONTENT_PREFIX: &str = "agent:content";
 
@@ -142,6 +144,7 @@ pub const TTL_GAME_INFO_FOUND: u64 = 86400; // 1 day — 查到游戏信息则�
 pub const TTL_GAME_INFO_NOT_FOUND: u64 = 300; // 5 min — 未查到则短缓存（可能新上架）
 pub const TTL_EXTERNAL_GAMES: u64 = 1800; // 30 min
 pub const TTL_CONFIG: u64 = 3600; // 1 hour
+pub const TTL_AI_ASSISTANT_CHAT_LIMIT_CONFIG: u64 = 60; // 5 min
 pub const TTL_AGENT_CONTENT_DEFAULT: u64 = 300; // 5 min (overridable via AGENT_CACHE_TTL_SECS env)
 
 /// Agent content cache TTL — reads AGENT_CACHE_TTL_SECS env var, falls back to 300s.

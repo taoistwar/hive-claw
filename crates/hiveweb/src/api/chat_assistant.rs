@@ -29,7 +29,6 @@ use axum::{
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
-use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
@@ -37,7 +36,6 @@ use std::sync::{Arc, OnceLock};
 use crate::api::AppState;
 use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
-use crate::services::cache_helper;
 use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
@@ -177,19 +175,38 @@ async fn assistant_chat(
             false
         });
 
-    // 7. 日访问次数限流
-    let limit_key = format!("assistant:daily:{}", req.user_id);
+    // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
+    let limit_config = membership::get_ai_assistant_chat_limit_config_cached(
+        &state.redis, ext_pool,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
+        membership::AssistantChatLimitConfig::default()
+    });
+
     let max_times = if is_vip {
-        get_config_number_cached(&state.redis, &state.pool, "vip_ask_times", 50).await
+        limit_config.vip_ask_times
     } else {
-        get_config_number_cached(&state.redis, &state.pool, "normal_ask_times", 5).await
+        limit_config.normal_ask_times
     };
 
-    if let Err(msg) = check_and_incr_daily_limit(&state.redis, &limit_key, max_times).await {
-        return AppError::BadRequest(msg)
-            .into_response::<()>()
-            .into_response();
-    }
+    let limit_key = format!("assistant:daily:{}", req.user_id);
+    let current_count = match check_and_incr_daily_limit(
+        &state.redis,
+        &limit_key,
+        max_times,
+        limit_config.limit_reset_hour,
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(msg) => {
+            return AppError::BadRequest(msg)
+                .into_response::<()>()
+                .into_response();
+        }
+    };
     // 8. SSE concurrency guard
     if !try_acquire_slot(req.user_id, SseSlotConfig::USER).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -334,7 +351,7 @@ async fn assistant_chat(
         }
     };
 
-    let saved = match saved {
+    let mut saved = match saved {
         Some(m) => m,
         None => {
             let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -343,6 +360,26 @@ async fn assistant_chat(
                 .into_response();
         }
     };
+
+    // 如果已用次数刚好到达 "剩余提醒阈值"，追加 usage extension
+    let remaining = max_times - current_count;
+    if limit_config.remain_ask_time > 0 && remaining == limit_config.remain_ask_time {
+        let usage_ext = serde_json::json!({
+            "content_type": "usage",
+            "payload": {
+                "used_times": current_count,
+                "total_times": max_times,
+            }
+        });
+        let mut exts: Vec<serde_json::Value> = saved
+            .extensions
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(|a| a.clone())
+            .unwrap_or_default();
+        exts.push(usage_ext);
+        saved.extensions = Some(serde_json::Value::Array(exts));
+    }
 
     axum::Json(saved).into_response()
 }
@@ -421,11 +458,16 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
 
 // ── 日访问次数限流（Redis） ──
 
+/// Check and increment the daily access counter.
+///
+/// Returns the current count (after INCR) on success, or an error
+/// message if the limit is exceeded or Redis is unavailable.
 async fn check_and_incr_daily_limit(
     redis: &redis::Client,
     key: &str,
     max_times: i64,
-) -> Result<(), String> {
+    reset_hour: u32,
+) -> Result<i64, String> {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
@@ -443,7 +485,7 @@ async fn check_and_incr_daily_limit(
     };
 
     if current == 1 {
-        let secs = seconds_until_midnight();
+        let secs = seconds_until_reset_hour(reset_hour);
         let _: Result<(), _> = conn.expire(key, secs as i64).await;
     }
 
@@ -451,7 +493,7 @@ async fn check_and_incr_daily_limit(
         return Err(format!("Daily limit reached ({}/{})", max_times, max_times));
     }
 
-    Ok(())
+    Ok(current)
 }
 
 /// 配额回滚：LLM 调用失败或内部错误时 DECR 计数器
@@ -467,58 +509,28 @@ async fn decr_daily_limit(redis: &redis::Client, key: &str) -> Result<(), ()> {
     Ok(())
 }
 
-/// 计算到当天 23:59:59 剩余的秒数
-fn seconds_until_midnight() -> u64 {
+/// 计算到指定重置时间点剩余的秒数（UTC）。
+///
+/// `reset_hour` 取值 0-23，表示每天在该小时（UTC）重置计数器。
+/// 如果当前时间已经过了今天的重置点，则计算到明天的重置点。
+fn seconds_until_reset_hour(reset_hour: u32) -> u64 {
     let now = chrono::Utc::now();
-    let today_midnight = now.date_naive().and_hms_opt(23, 59, 59).unwrap();
-    let dur = today_midnight - now.naive_utc();
-    (dur.num_seconds() + 1).max(60) as u64
-}
-
-// ── 全局配置读取（Redis 优先，回退 DB） ──
-
-/// 从 Redis 读取配置值，如果不存在则从 DB 加载并写入 Redis。
-async fn get_config_number_cached(
-    redis: &redis::Client,
-    pool: &MySqlPool,
-    key: &str,
-    default: i64,
-) -> i64 {
-    let cache_key = format!("{}{}", cache_helper::KEY_CONFIG_PREFIX, key);
-    cache_helper::cached_or_fetch(redis, &cache_key, cache_helper::TTL_CONFIG, || async {
-        Ok(get_config_number(pool, key, default).await)
-    })
-    .await
-    .unwrap_or(default)
-}
-
-/// 直接从 DB 读取配置值（fallback）
-async fn get_config_number(pool: &MySqlPool, key: &str, default: i64) -> i64 {
-    match crate::services::global_config::fetch_by_key(pool, key).await {
-        Ok(cfg) => cfg.data["value"].as_i64().unwrap_or(default),
-        Err(_) => default,
-    }
-}
-
-/// 需要缓存的配置 key 列表（用于 admin 修改后刷新 Redis 缓存）
-pub const CACHED_CONFIG_KEYS: &[&str] = &["vip_ask_times", "normal_ask_times"];
-
-/// 将指定 key 的配置值同步到 Redis（用于 admin 修改配置后主动刷新缓存）。
-pub async fn sync_config_to_redis(redis: &redis::Client, pool: &MySqlPool, key: &str) {
-    let cache_key = format!("{}{}", cache_helper::KEY_CONFIG_PREFIX, key);
-    let value = get_config_number(pool, key, -1).await;
-    if value < 0 {
-        // 配置不存在，删除 Redis 缓存
-        if let Err(e) = cache_helper::cached_del(redis, &cache_key).await {
-            tracing::warn!(key, error = %e, "config cache delete failed");
-        }
-        return;
-    }
-    if let Err(e) = cache_helper::cached_set(redis, &cache_key, &value, cache_helper::TTL_CONFIG).await {
-        tracing::warn!(key, error = %e, "config cache sync failed");
-        return;
-    }
-    tracing::info!(key, value, "config cache synced to Redis");
+    let naive_now = now.naive_utc();
+    let today_reset = naive_now
+        .date()
+        .and_hms_opt(reset_hour, 0, 0)
+        .unwrap_or_else(|| {
+            // Fallback: midnight if hour is out of range
+            naive_now.date().and_hms_opt(0, 0, 0).unwrap()
+        });
+    let target = if naive_now >= today_reset {
+        // Already past today's reset → next reset is tomorrow
+        today_reset + chrono::Duration::days(1)
+    } else {
+        today_reset
+    };
+    let dur = target - naive_now;
+    dur.num_seconds().max(60) as u64
 }
 
 // ── 测试 ──
@@ -599,14 +611,14 @@ mod tests {
     // ── T033: 日限流 TTL 计算 ──
 
     #[test]
-    fn seconds_until_midnight_is_positive() {
-        let secs = seconds_until_midnight();
+    fn seconds_until_reset_hour_is_positive() {
+        let secs = seconds_until_reset_hour(0);
         assert!(secs > 0, "TTL must be positive, got {}", secs);
     }
 
     #[test]
-    fn seconds_until_midnight_does_not_exceed_24h() {
-        let secs = seconds_until_midnight();
+    fn seconds_until_reset_hour_does_not_exceed_24h() {
+        let secs = seconds_until_reset_hour(23);
         assert!(
             secs <= 86400,
             "TTL must not exceed 24h (86400s), got {}",

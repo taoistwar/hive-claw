@@ -66,6 +66,7 @@ pub struct MembershipBalanceRow {
     pub expire_coins_7d: Option<Decimal>,
     pub disk_total_size: Option<Decimal>,
     pub disk_end_time: Option<i64>,
+    pub dist_status: Option<String>,
 }
 
 /// Query user balance: total coins and coins expiring within 7 days.
@@ -75,7 +76,7 @@ pub async fn query_membership_balance(
 ) -> Result<Option<MembershipBalanceRow>, sqlx::Error> {
     sqlx::query_as(
         r#"select
-	m7.total_coins, m2.expire_coins_7d, m4.disk_total_size, m4.disk_end_time
+	m7.total_coins, m2.expire_coins_7d, m4.disk_total_size, m4.disk_end_time, m4.status as dist_status
 from
 (
 	select ? as user_id
@@ -90,7 +91,7 @@ left join
 	group by user_id
 ) m2 on m1.user_id = m2.user_id
 LEFT JOIN (
-	SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time
+	SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status
 	from cc_user_disk
 	where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
 	group by user_id
@@ -347,6 +348,81 @@ pub async fn query_duration_cards_cached(
             .await
             .map_err(|e| format!("query_duration_cards: {e}"))
     })
+    .await
+}
+
+// ── AI Assistant Chat Limit Config (from external cc_config) ──
+
+/// Daily rate-limit configuration loaded from external cc_config table
+/// (label = 'AIassistantChatLimitConfig').
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AssistantChatLimitConfig {
+    #[serde(default = "default_vip_ask_times")]
+    pub vip_ask_times: i64,
+    #[serde(default = "default_normal_ask_times")]
+    pub normal_ask_times: i64,
+    /// 当剩余次数等于该值时，追加 usage extension 提醒
+    #[serde(default)]
+    pub remain_ask_time: i64,
+    /// 每日重置小时 (0-23 UTC)
+    #[serde(default)]
+    pub limit_reset_hour: u32,
+}
+
+fn default_vip_ask_times() -> i64 {
+    50
+}
+fn default_normal_ask_times() -> i64 {
+    10
+}
+
+impl Default for AssistantChatLimitConfig {
+    fn default() -> Self {
+        Self {
+            vip_ask_times: 50,
+            normal_ask_times: 10,
+            remain_ask_time: 2,
+            limit_reset_hour: 0,
+        }
+    }
+}
+
+/// Query AI assistant daily limit config from external cc_config table.
+pub async fn get_ai_assistant_chat_limit_config(
+    ext_pool: &MySqlPool,
+) -> Result<Option<AssistantChatLimitConfig>, String> {
+    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT content FROM cc_config WHERE label = 'AIassistantChatLimitConfig' AND status = 'ACTIVE'  LIMIT 1",
+    )
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| format!("cc_config query: {e}"))?;
+    match row.and_then(|r| r.0) {
+        Some(json_value) => {
+            let config: AssistantChatLimitConfig = serde_json::from_value(json_value)
+                .map_err(|e| format!("deserialize AIassistantChatLimitConfig: {e}"))?;
+            Ok(Some(config))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Cached version of `get_ai_assistant_chat_limit_config`.
+pub async fn get_ai_assistant_chat_limit_config_cached(
+    redis: &redis::Client,
+    ext_pool: &MySqlPool,
+) -> Result<AssistantChatLimitConfig, String> {
+    let key = cache_helper::KEY_AI_ASSISTANT_CHAT_LIMIT_CONFIG;
+    cached_or_fetch(
+        redis,
+        key,
+        cache_helper::TTL_AI_ASSISTANT_CHAT_LIMIT_CONFIG,
+        || async {
+            get_ai_assistant_chat_limit_config(ext_pool)
+                .await
+                .map(|opt| opt.unwrap_or_default())
+        },
+    )
     .await
 }
 

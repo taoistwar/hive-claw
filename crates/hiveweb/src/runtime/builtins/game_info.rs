@@ -25,20 +25,19 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let llm = ctx.llm.cloned();
     let agent_id = ctx.agent_id;
     tokio::task::block_in_place(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async move {
-                game_info_async_impl(
-                    args,
-                    &pool,
-                    ext_pool.as_ref(),
-                    redis.as_ref(),
-                    &channel,
-                    &client_type,
-                    llm.as_ref(),
-                    agent_id,
-                )
-                .await
-            })
+        tokio::runtime::Handle::current().block_on(async move {
+            game_info_async_impl(
+                args,
+                &pool,
+                ext_pool.as_ref(),
+                redis.as_ref(),
+                &channel,
+                &client_type,
+                llm.as_ref(),
+                agent_id,
+            )
+            .await
+        })
     })
 }
 
@@ -65,37 +64,44 @@ async fn game_info_async_impl(
         .unwrap_or(false);
 
     let game_id: i64 = match game_id_str.trim().parse() {
-        Ok(id) => id,
-        Err(_) => {
-            // 转换失败，输出空字符串
-            return Ok(serde_json::json!({
-                "found": false,
-                "data": "",
-                "id": null,
-                "name": null
-            }));
+        Ok(id) if id > 0 => id,
+        _ => {
+            return handle_classify_and_list(
+                args,
+                pool,
+                ext_pool,
+                redis,
+                channel,
+                client_type,
+                llm,
+                agent_id,
+            )
+            .await;
         }
     };
-
-    // ★ game_id == 0: LLM 分类 + 模拟按分类返回游戏列表
-    if game_id == 0 {
-        return handle_classify_and_list(args, pool, ext_pool, redis, channel, client_type, llm, agent_id).await;
-    }
 
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
     // 2. Query external DB with caching — single top-priority game info
     let game_info = if let Some(r) = redis {
         crate::services::game_service::get_single_external_game_info_cached(
-            r, ext_pool, game_id, client_type, channel,
+            r,
+            ext_pool,
+            game_id,
+            client_type,
+            channel,
         )
         .await
         .map_err(|e| BuiltinError::Exec(format!("{e}")))?
     } else {
-        let mut games =
-            crate::services::game_service::get_external_game_by_id(ext_pool, game_id, client_type, channel)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
+        let mut games = crate::services::game_service::get_external_game_by_id(
+            ext_pool,
+            game_id,
+            client_type,
+            channel,
+        )
+        .await
+        .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
         crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut games).await;
         games.into_iter().next()
     };
@@ -172,12 +178,9 @@ fn mock_games_by_category(category: &str) -> Vec<MockGameItem> {
     let matched: Vec<&MockGameItem> = all
         .iter()
         .filter(|g| {
-            let cats: Vec<String> = g
-                .categories
-                .iter()
-                .map(|c| c.to_lowercase())
-                .collect();
-            cats.iter().any(|c| c.contains(&category_lower) || category_lower.contains(c.as_str()))
+            let cats: Vec<String> = g.categories.iter().map(|c| c.to_lowercase()).collect();
+            cats.iter()
+                .any(|c| c.contains(&category_lower) || category_lower.contains(c.as_str()))
         })
         .collect();
 
@@ -215,11 +218,10 @@ async fn fetch_categories(
         )
         .await
     } else {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT name FROM cc_game_tag WHERE `type` = 1")
-                .fetch_all(ext_pool)
-                .await
-                .map_err(|e| format!("cc_game_tag query: {e}"))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM cc_game_tag WHERE `type` = 1")
+            .fetch_all(ext_pool)
+            .await
+            .map_err(|e| format!("cc_game_tag query: {e}"))?;
         Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 }
@@ -504,7 +506,9 @@ async fn classify_user_input(
                     tool_choice: None,
                     reasoning_effort: None,
                 };
-                let resp = provider.chat_with_retry(req, RetryMode::Standard, None).await;
+                let resp = provider
+                    .chat_with_retry(req, RetryMode::Standard, None)
+                    .await;
                 // Clone content before the if-let move, so we can log it on failure
                 let raw_content = resp.content.clone();
                 if let Some(content) = raw_content {
@@ -542,13 +546,22 @@ fn fallback_classify(user_input: &str, _categories: &[String]) -> String {
 
     // 分类关键词映射
     let keyword_map: &[(&str, &[&str])] = &[
-        ("角色扮演", &["角色扮演", "rpg", "角色", "冒险", "奇幻", "仙侠"]),
+        (
+            "角色扮演",
+            &["角色扮演", "rpg", "角色", "冒险", "奇幻", "仙侠"],
+        ),
         ("动作冒险", &["动作", "冒险", "格斗", "战斗", "闯关", "act"]),
         ("射击游戏", &["射击", "枪", "fps", "tps", "吃鸡", "战场"]),
         ("策略游戏", &["策略", "战棋", "slg", "帝国", "战争", "指挥"]),
-        ("体育竞技", &["体育", "足球", "篮球", "赛车", "竞技", "运动"]),
+        (
+            "体育竞技",
+            &["体育", "足球", "篮球", "赛车", "竞技", "运动"],
+        ),
         ("模拟经营", &["模拟", "经营", "建造", "养成", "管理"]),
-        ("休闲益智", &["休闲", "益智", "消除", "解谜", "三消", "棋牌"]),
+        (
+            "休闲益智",
+            &["休闲", "益智", "消除", "解谜", "三消", "棋牌"],
+        ),
         ("音乐节奏", &["音乐", "节奏", "音游", "跳舞", "钢琴"]),
     ];
 

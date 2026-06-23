@@ -161,7 +161,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `content_type` | `String` | 内容类型：`card` / `image` / `suggestion` / `link` / `button` / `table` / `chart` / `object_ref` |
+| `content_type` | `String` | 内容类型：`card` / `image` / `usage` / `suggestion` / `link` / `button` / `table` / `chart` / `object_ref` |
 | `payload` | `Object` | 负载数据，结构随 `content_type` 不同而变化 |
 
 当 `content_type` 为 `card` 时，`payload` 结构如下：
@@ -251,6 +251,37 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 ```
 
 触发条件：用户明确表达需要人工客服时，由 Agent 调用 `support_card` builtin 生成此卡片并立即结束 agent loop。
+
+### `content_type` 为 `usage` 时的结构
+
+当用户当日剩余可用次数达到提醒阈值时，响应中的 `extensions` 会追加一个 `usage` 类型的扩展，用于提示用户剩余配额。
+
+触发条件：
+- `remain_ask_time > 0`（已配置提醒阈值，默认 **2**）
+- 剩余次数 `remaining > 0`（尚未超过限额）
+- `remaining <= remain_ask_time`（剩余次数不超过阈值）
+
+**`usage` 扩展示例：**
+
+```json
+{
+  "content_type": "usage",
+  "payload": {
+    "used_times": 48,
+    "total_times": 50
+  }
+}
+```
+
+**`usage` payload 字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `used_times` | `i64` | 当日已使用次数 |
+| `total_times` | `i64` | 当日总可用次数（VIP / 普通用户上限，由 `cc_config` 表动态配置） |
+
+> 该扩展由 `chat_assistant_handler` 在响应返回前根据限流计数结果动态注入，与 Agent 执行过程无关。
+> 可通过后台 `cc_config` 表 `AIassistantChatLimitConfig` 配置项中的 `remain_ask_time` 调整提醒阈值（设为 `0` 关闭提醒）。
 
 ### `membership` 数组元素字段
 

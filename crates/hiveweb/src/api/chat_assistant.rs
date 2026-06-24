@@ -365,6 +365,7 @@ async fn assistant_chat(
                 "used_times": current_count,
                 "total_times": max_times,
                 "membership_max_times": limit_config.vip_ask_times,
+                "remain_ask_time": limit_config.remain_ask_time,
             }
         });
         let mut exts: Vec<serde_json::Value> = saved
@@ -623,6 +624,7 @@ async fn assistant_quota(
         "used_times": used_times,
         "total_times": total_times,
         "membership_max_times": limit_config.vip_ask_times,
+        "remain_ask_time": limit_config.remain_ask_time,
     }))
     .into_response()
 }

@@ -84,7 +84,8 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
         "disk_end_time": 1735689600,
         "disk_total_size": 1099511627776,
         "total_coins": 900000.0,
-        "expire_coins_7d": 5000.0
+        "expire_coins_7d": 5000.0,
+        "dist_status": "NORMAL"
       },
       "membership": [
         {
@@ -194,6 +195,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `disk_total_size` | `f64` | 网盘总大小（字节） |
 | `total_coins` | `f64` | 总金币数 |
 | `expire_coins_7d` | `f64` | 7 天内即将过期的金币数 |
+| `dist_status` | `String` | 网盘状态（来自外部数据库 disk 表），如 `NORMAL` |
 
 ### `info` 对象字段（game 卡片）
 

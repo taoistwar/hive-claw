@@ -226,11 +226,16 @@ pub async fn query_balance_async_impl(
             .and_then(|r| r.disk_total_size)
             .and_then(|s| s.to_f64())
             .unwrap_or(0.0);
+        let dist_status = disk_row
+            .as_ref()
+            .and_then(|r| r.dist_status.clone())
+            .unwrap_or_default();
         json!({
             "total_coins": total_coins,
             "expire_coins_7d": expire_coins_7d,
             "disk_end_time": disk_end_time,
             "disk_total_size": disk_total_size,
+            "dist_status": dist_status,
         })
     };
 
@@ -269,6 +274,7 @@ pub async fn query_balance_async_impl(
                         p.insert("info".into(), json!({
                             "disk_end_time": reply.get("disk_end_time"),
                             "disk_total_size": reply.get("disk_total_size"),
+                            "dist_status": reply.get("dist_status"),
                         }));
                     }
                     _ => {

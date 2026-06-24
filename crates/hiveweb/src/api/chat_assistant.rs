@@ -121,9 +121,14 @@ async fn assistant_chat(
             .into_response();
     }
 
-    // 4. message 非空校验
+    // 4. message 非空 + 长度校验
     if req.message.trim().is_empty() {
         return AppError::BadRequest("message must not be empty".into())
+            .into_response::<()>()
+            .into_response();
+    }
+    if req.message.chars().count() > 500 {
+        return AppError::BadRequest("message must not exceed 500 characters".into())
             .into_response::<()>()
             .into_response();
     }

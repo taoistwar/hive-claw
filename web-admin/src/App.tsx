@@ -132,12 +132,22 @@ function ThemeConfigProvider({ children }: { children: React.ReactNode }) {
   return <ConfigProvider theme={config}>{children}</ConfigProvider>
 }
 
+import { getToken } from './utils/auth'
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const token = getToken()
+  if (!token) {
+    return <Navigate to="/login" replace />
+  }
+  return <>{children}</>
+}
+
 function AppRoutes() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/" element={<Layout />}>
+        <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
           <Route index element={<DashboardPage />} />
           <Route path="admins" element={<AdminPage />} />
           <Route path="plugins" element={<PluginPage />} />

@@ -486,7 +486,6 @@ async fn handle_classify_and_list(
             "extensions": [extension],
         });
     }
-
     Ok(output)
 }
 
@@ -541,60 +540,19 @@ async fn classify_user_input(
                 tracing::warn!(
                     user_input = %user_input,
                     llm_response = ?resp.content,
-                    "LLM 分类失败或返回无效 ID，使用关键词匹配兜底"
+                    "LLM 分类失败或返回无效 ID"
                 );
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "build_primary 失败，使用关键词匹配兜底"
+                    "build_primary 失败"
                 );
             }
         }
     }
 
-    // 兜底：关键词匹配 → 返回对应 ID
-    let fallback_name = fallback_classify(user_input);
-    categories
-        .iter()
-        .find(|(_, name)| name == &fallback_name)
-        .map(|(id, _)| *id)
-}
-
-/// Fallback keyword-based classification when LLM is unavailable.
-/// Returns the matched category name (to be resolved to an ID via the DB category list).
-fn fallback_classify(user_input: &str) -> String {
-    let input_lower = user_input.to_lowercase();
-
-    // 分类关键词映射
-    let keyword_map: &[(&str, &[&str])] = &[
-        (
-            "角色扮演",
-            &["角色扮演", "rpg", "角色", "冒险", "奇幻", "仙侠"],
-        ),
-        ("动作冒险", &["动作", "冒险", "格斗", "战斗", "闯关", "act"]),
-        ("射击游戏", &["射击", "枪", "fps", "tps", "吃鸡", "战场"]),
-        ("策略游戏", &["策略", "战棋", "slg", "帝国", "战争", "指挥"]),
-        (
-            "体育竞技",
-            &["体育", "足球", "篮球", "赛车", "竞技", "运动"],
-        ),
-        ("模拟经营", &["模拟", "经营", "建造", "养成", "管理"]),
-        (
-            "休闲益智",
-            &["休闲", "益智", "消除", "解谜", "三消", "棋牌"],
-        ),
-        ("音乐节奏", &["音乐", "节奏", "音游", "跳舞", "钢琴"]),
-    ];
-
-    for (category, keywords) in keyword_map {
-        if keywords.iter().any(|kw| input_lower.contains(kw)) {
-            return category.to_string();
-        }
-    }
-
-    // 默认兜底
-    "动作冒险".to_string()
+    None
 }
 
 pub const GAME_INFO_INPUT_SCHEMA: &str = r#"{

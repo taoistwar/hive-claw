@@ -362,7 +362,7 @@ pub async fn get_external_game_by_id(
   t5.prom_channel as channel,
   t8.game_icon
 FROM (
-  select * from cc_logic_game_wide where logic_game_id=?
+  select * from cc_logic_game_wide where logic_game_id=? and lower(client_type)=lower(?)
 ) t1
 INNER JOIN (
   select * from cc_game where logic_game_id=?
@@ -384,6 +384,7 @@ AND t7.id is null
 "#,
     )
     .bind(logic_game_id)
+    .bind(client_type)
     .bind(logic_game_id)
     .bind(channel)
     .bind(client_type)

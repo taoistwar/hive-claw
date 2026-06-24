@@ -120,7 +120,8 @@ async fn create_new_session(
             .into_response();
     }
 
-    let session = match svc::create_user_session(&state.pool, req.user_id, None).await {
+    // 事务性清除历史 + 创建新会话
+    let session = match svc::clear_and_create_session(&state.pool, req.user_id, None).await {
         Ok(s) => s,
         Err(e) => {
             return e.into_response::<()>().into_response();

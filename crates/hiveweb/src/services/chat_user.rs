@@ -40,6 +40,69 @@ pub async fn create_user_session(
     fetch_session_user(pool, res.last_insert_id() as i64).await
 }
 
+/// 事务性清除历史会话/聊天记录 + 创建新会话。
+/// 要么全部成功，要么全部回滚。
+///
+/// 任一 `?` 提前返回时，`tx` 被 drop 自动触发 ROLLBACK；
+/// 只有到达 `tx.commit()` 才真正提交。
+pub async fn clear_and_create_session(
+    pool: &MySqlPool,
+    user_id: i64,
+    title: Option<String>,
+) -> Result<ChatSessionUser, AppError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
+
+    // 1. 删除该用户的所有聊天记录
+    sqlx::query(
+        "DELETE FROM chat_messages_user WHERE session_id IN (SELECT id FROM chat_sessions_user WHERE user_id = ?)",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(format!("user messages cleanup: {e}")))?;
+
+    // 2. 删除该用户的所有会话
+    sqlx::query("DELETE FROM chat_sessions_user WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(format!("user sessions cleanup: {e}")))?;
+
+    // 3. 查询用户 uid
+    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let uid = user.map(|u| u.0).unwrap_or_default();
+
+    // 4. 创建新会话
+    let res = sqlx::query(
+        r#"INSERT INTO chat_sessions_user
+           (user_id, user_phone_snapshot, user_nickname_snapshot, title)
+           VALUES (?, ?, '', ?)"#,
+    )
+    .bind(user_id)
+    .bind(&uid)
+    .bind(&title)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(format!("user session insert: {e}")))?;
+
+    let new_id = res.last_insert_id() as i64;
+
+    // 5. 提交事务
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
+
+    // 6. 查询并返回新会话
+    fetch_session_user(pool, new_id).await
+}
+
 pub async fn fetch_session_user(pool: &MySqlPool, id: i64) -> Result<ChatSessionUser, AppError> {
     sqlx::query_as::<_, ChatSessionUser>("SELECT * FROM chat_sessions_user WHERE id = ?")
         .bind(id)
@@ -213,20 +276,6 @@ pub async fn delete_session_user(pool: &MySqlPool, session_id: i64) -> Result<()
     Ok(())
 }
 
-/// Update session title.
-pub async fn update_session_title(
-    pool: &MySqlPool,
-    session_id: i64,
-    title: &str,
-) -> Result<(), AppError> {
-    sqlx::query("UPDATE chat_sessions_user SET title = ? WHERE id = ?")
-        .bind(title)
-        .bind(session_id)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("user session title update: {e}")))?;
-    Ok(())
-}
 
 /// Get the latest session for a user, or create a new one if none exists.
 pub async fn get_or_create_session_user(

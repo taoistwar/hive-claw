@@ -66,8 +66,9 @@ pub struct AssistantRequest {
     pub client_type: String,
     /// 客户端版本号
     pub client_version: String,
-    /// 是否创建新会话（`true` 时强制创建新 session，`false`/省略时复用最新 session）
+    /// 是否创建新会话（保留字段，由 /api/newsession 接口处理新会话创建逻辑）
     #[serde(default)]
+    #[allow(dead_code)]
     pub new_session: bool,
 }
 
@@ -217,7 +218,7 @@ async fn assistant_chat(
         is_admin: false,
     };
 
-    // 8. 内部 users 表同步（不存在则创建，同时同步 uid/nickname，Redis 缓存优先）
+    // 8. 内部 users 表同步（不存在则创建）
     let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
@@ -236,22 +237,12 @@ async fn assistant_chat(
             .into_response();
     }
 
-    // 10. 获取 session：new_session=true 时强制创建新 session，否则复用最新
-    let session = if req.new_session {
-        match svc::create_user_session(&state.pool, req.user_id, None).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = decr_daily_limit(&state.redis, &limit_key).await;
-                return e.into_response::<()>().into_response();
-            }
-        }
-    } else {
-        match svc::get_or_create_session_user(&state.pool, req.user_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = decr_daily_limit(&state.redis, &limit_key).await;
-                return e.into_response::<()>().into_response();
-            }
+    // 10. 获取或创建 session
+    let session = match svc::get_or_create_session_user(&state.pool, req.user_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            return e.into_response::<()>().into_response();
         }
     };
     let session_id = session.id;
@@ -264,23 +255,14 @@ async fn assistant_chat(
         return e.into_response::<()>().into_response();
     }
 
-    // 12. Auto-generate title from first message (first 30 chars)
-    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
-        let title = req.message.chars().take(30).collect::<String>();
-        let _ = svc::update_session_title(&state.pool, session_id, &title).await;
-    }
-
     // 13. Build OrchestratorDeps + run session (collect full response, return JSON)
     let pool = state.pool.clone();
     let user_content = req.message.clone();
 
-    let history: Vec<crate::models::ChatMessageUser> = if req.new_session {
-        Vec::new()
-    } else {
+    let history: Vec<crate::models::ChatMessageUser> =
         svc::list_messages_user(&state.pool, session_id)
             .await
-            .unwrap_or_default()
-    };
+            .unwrap_or_default();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 

@@ -72,7 +72,7 @@ pub struct CoinsBalanceRow {
 pub struct DiskBalanceRow {
     pub disk_total_size: Option<Decimal>,
     pub disk_end_time: Option<i64>,
-    pub dist_status: Option<String>,
+    pub disk_status: Option<String>,
 }
 
 /// Query user coins balance: total_coins and expire_coins_7d.
@@ -110,13 +110,13 @@ LEFT JOIN (
     .await
 }
 
-/// Query user disk balance: disk_total_size, disk_end_time, dist_status.
+/// Query user disk balance: disk_total_size, disk_end_time, disk_status.
 pub async fn query_disk_balance(
     ext_pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<DiskBalanceRow>, sqlx::Error> {
     sqlx::query_as(
-        r#"SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status as dist_status
+        r#"SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status as disk_status
 from cc_user_disk
 where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
 group by user_id"#,

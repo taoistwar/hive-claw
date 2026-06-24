@@ -313,7 +313,12 @@ pub async fn query_balance_async_impl(
 
 pub const QUERY_BALANCE_INPUT_SCHEMA: &str = r#"{
   "type": "object",
-  "properties": {}
+  "properties": {
+    "category": {
+        "type": "string",
+        "description": "查询余额的类别, 可选值: membership, coins, duration_card, disk, benefits, discount"
+    }
+  }
 }"#;
 
 pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{

@@ -3,6 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
 };
+use redis::AsyncCommands;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -412,7 +413,7 @@ async fn execute_recommendation(
     let extensions = serde_json::json!([card]);
 
     // 7. 记录 assistant 消息（extensions = card）
-    let saved = chat_svc::append_assistant_message_user(
+    let mut saved = chat_svc::append_assistant_message_user(
         &state.pool,
         session.id,
         user_id,
@@ -422,6 +423,56 @@ async fn execute_recommendation(
     )
     .await
     .map_err(|e| e.into_response::<()>())?;
+
+    // 8. 追加 usage extension（参考 assistant_chat 逻辑）
+    if let Some(ext_pool) = state.ext_pool.as_ref() {
+        let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+            .await
+            .unwrap_or(false);
+
+        let limit_config =
+            membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
+                .await
+                .unwrap_or_else(|_| membership::AssistantChatLimitConfig::default());
+
+        let total_times = if is_vip {
+            limit_config.vip_ask_times
+        } else {
+            limit_config.normal_ask_times
+        };
+
+        let limit_key = format!("assistant:daily:{}", user_id);
+        let current_count: i64 = {
+            match state.redis.get_multiplexed_async_connection().await {
+                Ok(mut conn) => conn.get(&limit_key).await.unwrap_or(0),
+                Err(_) => 0,
+            }
+        };
+
+        let remaining = total_times - current_count;
+        if limit_config.remain_ask_time > 0
+            && remaining > 0
+            && remaining <= limit_config.remain_ask_time
+        {
+            let usage_ext = serde_json::json!({
+                "content_type": "usage",
+                "payload": {
+                    "used_times": current_count,
+                    "total_times": total_times,
+                    "membership_max_times": limit_config.vip_ask_times,
+                    "remain_ask_time": limit_config.remain_ask_time,
+                }
+            });
+            let mut exts: Vec<serde_json::Value> = saved
+                .extensions
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .map(|a| a.clone())
+                .unwrap_or_default();
+            exts.push(usage_ext);
+            saved.extensions = Some(serde_json::Value::Array(exts));
+        }
+    }
 
     Ok(ApiResponse::success(saved))
 }

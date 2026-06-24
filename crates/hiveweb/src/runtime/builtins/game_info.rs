@@ -42,10 +42,9 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 }
 
 /// Query a single game's details by game_id (text input, parsed to integer).
-/// Input: { "game_id": "<text>", "put_to_ac": <bool> }
-/// - game_id: 文本形式的游戏 ID，内部转为数字。转换失败返回空字符串。
-/// - game_id == 0: 使用 LLM 识别用户输入的游戏分类，返回该分类下的前 3 个游戏。
-/// - put_to_ac: true → 游戏信息写入 AgentContext extensions (card/game)；false → 作为输出变量返回。
+/// Input: { "game_id": "<text>" }
+/// - game_id: 文本形式的游戏 ID，内部转为数字。id <= 0 或转换失败 → LLM 分类推荐。
+/// - 游戏信息始终写入 AgentContext extensions (card/game)。
 async fn game_info_async_impl(
     args: Value,
     pool: &sqlx::MySqlPool,
@@ -58,10 +57,6 @@ async fn game_info_async_impl(
 ) -> BuiltinResult {
     // 1. Parse game_id from input — text → integer
     let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
-    let put_to_ac = args
-        .get("put_to_ac")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
 
     let game_id: i64 = match game_id_str.trim().parse() {
         Ok(id) if id > 0 => id,
@@ -148,19 +143,17 @@ async fn game_info_async_impl(
         "game_icon": game_info.game_icon,
     });
 
-    // 6. put_to_ac: true → 写入 AgentContext extensions；false → 纯输出
-    if put_to_ac {
-        let extension = serde_json::json!({
-            "content_type": "card",
-            "payload": {
-                "type": "game",
-                "info": game_payload,
-            },
-        });
-        output["_agent_context_updates"] = serde_json::json!({
-            "extensions": [extension],
-        });
-    }
+    // 6. 写入 AgentContext extensions
+    let extension = serde_json::json!({
+        "content_type": "card",
+        "payload": {
+            "type": "game",
+            "info": game_payload,
+        },
+    });
+    output["_agent_context_updates"] = serde_json::json!({
+        "extensions": [extension],
+    });
 
     Ok(output)
 }
@@ -349,11 +342,6 @@ async fn handle_classify_and_list(
     llm: Option<&Arc<LlmRegistry>>,
     agent_id: Option<i64>,
 ) -> BuiltinResult {
-    let put_to_ac = args
-        .get("put_to_ac")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
     // 1. 获取用户输入文本（从 args._agent_context.user_input.raw_text 读取）
     let user_input = args
         .get("_agent_context")
@@ -471,21 +459,19 @@ async fn handle_classify_and_list(
         "classified": true,
     });
 
-    // 5. put_to_ac: true → 写入 AgentContext extensions
-    if put_to_ac {
-        let extension = serde_json::json!({
-            "content_type": "card",
-            "payload": {
-                "type": "game_list",
-                "category_id": category_id,
-                "category": category_name,
-                "games": game_items,
-            },
-        });
-        output["_agent_context_updates"] = serde_json::json!({
-            "extensions": [extension],
-        });
-    }
+    // 5. 写入 AgentContext extensions
+    let extension = serde_json::json!({
+        "content_type": "card",
+        "payload": {
+            "type": "game_list",
+            "category_id": category_id,
+            "category": category_name,
+            "games": game_items,
+        },
+    });
+    output["_agent_context_updates"] = serde_json::json!({
+        "extensions": [extension],
+    });
     Ok(output)
 }
 
@@ -560,12 +546,7 @@ pub const GAME_INFO_INPUT_SCHEMA: &str = r#"{
   "properties": {
     "game_id": {
       "type": "string",
-      "description": "游戏 ID（文本形式，内部转为数字）。设为 \"0\" 时根据用户输入自动分类并推荐游戏。"
-    },
-    "put_to_ac": {
-      "type": "boolean",
-      "description": "是否将游戏信息放入 AgentContext（true=写入 AC 扩展卡片，false=仅作为输出变量）",
-      "default": false
+      "description": "游戏 ID（文本形式，内部转为数字）。id <= 0 或转换失败时根据用户输入自动分类并推荐游戏。"
     }
   },
   "required": ["game_id"]

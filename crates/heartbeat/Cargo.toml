@@ -1,0 +1,16 @@
+[package]
+name = "heartbeat"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+providers = { path = "../providers" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+utils = { path = "../utils" }
+
+[dev-dependencies]
+tokio = { workspace = true }

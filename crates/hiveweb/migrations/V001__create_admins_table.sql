@@ -1,0 +1,13 @@
+-- 管理员表（data-model.md §Admin）
+CREATE TABLE IF NOT EXISTS admins (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    phone VARCHAR(100) NOT NULL UNIQUE,
+    nickname VARCHAR(20) NOT NULL,
+    password_hash VARCHAR(60) NOT NULL,
+    role TINYINT NOT NULL DEFAULT 1 COMMENT '1=Normal, 2=System, 3=Super',
+    status TINYINT NOT NULL DEFAULT 1 COMMENT '1=Active, 0=Disabled',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    last_login_at DATETIME DEFAULT NULL,
+    INDEX idx_created_at (created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='管理员表';

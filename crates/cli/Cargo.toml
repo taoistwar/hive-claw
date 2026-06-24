@@ -1,0 +1,34 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nanobot"
+path = "src/main.rs"
+
+[dependencies]
+agent = { path = "../agent" }
+api = { path = "../api" }
+bus = { path = "../bus" }
+channels = { path = "../channels" }
+config = { path = "../config" }
+cron = { path = "../cron" }
+heartbeat = { path = "../heartbeat" }
+providers = { path = "../providers" }
+session = { path = "../session" }
+
+async-trait = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+env_logger = "0.11"
+futures = { workspace = true }
+log = { workspace = true }
+rustyline = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["signal", "net"] }
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+console = "0.15"

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npx typescript *)",
+      "Bash(/home/developer/agent/hive-claw/web-admin/node_modules/.bin/tsc --noEmit)",
+      "Bash(/home/developer/agent/hive-claw/web-admin/node_modules/.bin/tsc --project /home/developer/agent/hive-claw/web-admin/tsconfig.json --noEmit)",
+      "Bash(npm run *)"
+    ]
+  }
+}

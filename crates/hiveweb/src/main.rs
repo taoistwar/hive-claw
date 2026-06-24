@@ -1,0 +1,169 @@
+use clap::Parser;
+use tracing_subscriber::{self, EnvFilter};
+
+mod api;
+mod cache;
+mod db;
+mod middleware;
+mod models;
+mod runtime;
+mod services;
+mod storage;
+mod utils;
+
+#[derive(Parser)]
+#[command(name = "hiveweb", about = "HiveClaw Admin Center")]
+struct Cli {
+    /// Port to listen on (overrides HIVEWEB_PORT env var)
+    #[arg(long)]
+    port: Option<u16>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Load .env file if it exists, but don't fail if it doesn't
+    match dotenvy::dotenv_override() {
+        Ok(path) => {
+            println!("[ENV] Loaded .env from: {}", path.display());
+        }
+        Err(_) => {
+            println!("[ENV] No .env file found, using environment variables");
+        }
+    }
+
+    // Initialize logging
+    let is_dev = std::env::var("APP_ENV")
+        .map(|v| v == "development" || v == "dev")
+        .unwrap_or(true);
+
+    if is_dev {
+        // dev: human-readable debug output to stdout
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("debug"))
+            .add_directive("hiveweb=debug".parse().unwrap());
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        // prod: only warn+ to stdout, suppressing info/debug noise
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("warn"))
+            .add_directive("hiveweb=warn".parse()?);
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
+
+    tracing::info!("=== HiveClaw Admin Center Starting ===");
+
+    let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = cli.port.unwrap_or_else(|| {
+        std::env::var("HIVEWEB_PORT")
+            .unwrap_or_else(|_| "3300".to_string())
+            .parse::<u16>()
+            .expect("HIVEWEB_PORT must be a valid number")
+    });
+    tracing::info!("Server will run at http://{}:{}", host, port);
+
+    // Initialize database connection pool
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pool = db::connection::create_pool(&database_url).await?;
+
+    // Mask password from database URL for logging
+    let db_url_display = mask_url_password(&database_url);
+    tracing::info!("Database initialized: {}", db_url_display);
+
+    // Initialize Redis connection
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis = cache::redis::create_pool(&redis_url).await?;
+    tracing::info!("Redis initialized: {}", mask_url_password(&redis_url));
+
+    // Initialize S3 client (only when plugin system is enabled)
+    let s3_client = if plugin_system_enabled() {
+        let c = storage::s3::create_client().await?;
+        tracing::info!("S3 storage client initialized (plugin system enabled)");
+        Some(c)
+    } else {
+        tracing::warn!(
+            "PLUGIN_SYSTEM_ENABLED=false; S3 client skipped. \
+             Plugin upload/download/invoke and s3.* capabilities are disabled."
+        );
+        None
+    };
+
+    // Initialize external read-only database for assistant API
+    let ext_pool = match std::env::var("EXTERNAL_DB_URL") {
+        Ok(url) if !url.is_empty() => match db::connection::create_pool(&url).await {
+            Ok(p) => {
+                tracing::info!("External DB initialized: {}", mask_url_password(&url));
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "External DB connection failed ({}), assistant API will be unavailable",
+                    e
+                );
+                None
+            }
+        },
+        _ => {
+            tracing::info!("EXTERNAL_DB_URL not set, assistant API will be unavailable");
+            None
+        }
+    };
+
+    // Startup step 4 (plan §Startup Initialization Order): builtin function upsert
+    if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
+        // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
+        panic!("builtin functions upsert failed: {e}");
+    }
+
+    // Startup: initialize sensitive word filter
+    let sensitive_filter = crate::services::sensitive_filter::SensitiveFilter::new();
+    if let Err(e) = sensitive_filter.load_from_db(&pool).await {
+        tracing::warn!(error = %e, "Failed to load sensitive words from DB, filter disabled");
+    }
+
+    // Create router
+    let app = api::create_router(pool, redis, s3_client, ext_pool, sensitive_filter);
+    tracing::info!("HTTP router initialized with CORS and rate limiting");
+
+    // Start server
+    let addr = format!("{}:{}", host, port);
+    tracing::info!("Server listening on http://{}", addr);
+    tracing::info!("=== HiveClaw Admin Center Ready ===");
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn mask_url_password(url: &str) -> String {
+    if let Some(at_pos) = url.find('@') {
+        let after_protocol = url.find("://").map(|p| p + 3).unwrap_or(0);
+        let host_part = &url[after_protocol..at_pos];
+        if let Some(colon_pos) = host_part.find(':') {
+            let username = &host_part[..colon_pos];
+            let rest = &url[at_pos..];
+            let prefix = &url[..after_protocol];
+            return format!("{}{}:***{}", prefix, username, rest);
+        }
+    }
+    url.to_string()
+}
+
+/// 读取 `PLUGIN_SYSTEM_ENABLED`（默认 `true`）。
+/// 关闭后跳过 S3 客户端初始化，Plugin 上传/下载/调用及 s3.* capability 全部不可用。
+pub fn plugin_system_enabled() -> bool {
+    match std::env::var("PLUGIN_SYSTEM_ENABLED") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "false" | "0" | "no" | "off" | ""
+        ),
+        Err(_) => true,
+    }
+}

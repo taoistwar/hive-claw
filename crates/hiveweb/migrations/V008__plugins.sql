@@ -1,0 +1,23 @@
+CREATE TABLE plugins (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    identifier VARCHAR(64) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    description VARCHAR(512) NULL,
+    manifest JSON NULL COMMENT 'extism manifest 片段',
+    runtime VARCHAR(32) NOT NULL DEFAULT 'extism' COMMENT '当前固定 extism',
+    version VARCHAR(32) NOT NULL,
+    author VARCHAR(64) NULL,
+    repository_url VARCHAR(255) NULL,
+    s3_key VARCHAR(255) NOT NULL COMMENT '对象存储中 WASM 文件 key',
+    sha256 CHAR(64) NOT NULL COMMENT 'WASM 文件 SHA-256',
+    size_bytes BIGINT NOT NULL,
+    category_id BIGINT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at DATETIME NULL COMMENT '软删除',
+    UNIQUE KEY uk_plugins_identifier_version (identifier, version),
+    INDEX idx_plugins_category (category_id),
+    INDEX idx_plugins_deleted_at (deleted_at),
+    FULLTEXT INDEX ftx_plugins (name, description, identifier),
+    CONSTRAINT fk_plugins_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

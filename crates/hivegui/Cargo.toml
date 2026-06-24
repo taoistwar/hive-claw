@@ -1,0 +1,66 @@
+[package]
+name = "hivegui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HiveGUI: desktop client for HiveClaw with Day+1 / Hour+1 helper tool sections"
+
+[profile.dev]
+debug = true
+opt-level = 0
+
+[profile.test]
+debug = true
+
+[[bin]]
+name = "hivegui"
+path = "src/main.rs"
+
+
+
+[lib]
+name = "hivegui"
+path = "src/lib.rs"
+
+[dependencies]
+base64 = { workspace = true }
+gpui = { workspace = true }
+# gpui_platform's `default` feature set is empty; enabling "wayland" + "x11"
+# turns on the corresponding backends in `gpui_linux` so `current_platform()`
+# has match arms for the compositor `guess_compositor()` actually returns.
+# Without these, WSL2 / Linux runs panic at `_ => unreachable!()` in
+# `gpui_linux/src/linux.rs` (the `"Wayland"` arm gets cfg'd out).
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+mime_guess = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+directories = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+unicode-segmentation = { workspace = true }
+mysql_async = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "chrono"] }
+chacha20poly1305 = { workspace = true }
+zeroize = { workspace = true }
+dirs = { workspace = true }
+syntect = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+base64 = { workspace = true }
+tower = { workspace = true }
+assert_cmd = { workspace = true }
+tokio = { workspace = true }

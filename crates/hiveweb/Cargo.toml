@@ -1,0 +1,129 @@
+[package]
+name = "hiveweb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HiveClaw Admin Center - Backend API service"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros", "multipart"] }
+tokio = { version = "1", features = ["full"] }
+
+# CLI
+clap = { workspace = true }
+
+# Database — 004 加 json feature 以便序列化 JSON 列
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "mysql", "chrono", "json", "rust_decimal"] }
+rust_decimal = { workspace = true }
+
+# Redis
+redis = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Authentication
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
+md5 = "0.7"
+rand = "0.8"
+
+# Object storage (S3 compatible)
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+dotenvy = { workspace = true }
+
+# CORS
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# HTTP body utilities
+http-body-util = "0.1"
+
+# Agent Runtime (004) — WASM plugin runtime + JSON schema validation
+extism = "1"
+jsonschema = "0.17"
+regex = { workspace = true }
+aho-corasick = { workspace = true }
+once_cell = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+toml = "0.8"
+reqwest = { workspace = true }
+wasmparser = "0.221"
+
+# Internal workspace crates reused by Agent Runtime
+agent = { path = "../agent" }
+providers = { path = "../providers" }
+skills = { path = "../skills" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+mime = "0.3"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "host_call"
+harness = false
+
+[[bench]]
+name = "plugin_invoke"
+harness = false
+
+[[bench]]
+name = "plugin_upload"
+harness = false
+
+[[bench]]
+name = "plugin_list"
+harness = false
+
+[[bench]]
+name = "workflow_save"
+harness = false
+
+[[bench]]
+name = "agent_route"
+harness = false
+
+[[bench]]
+name = "chat_e2e"
+harness = false
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "create-super-admin"
+path = "src/bin/create_super_admin.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[[bin]]
+name = "seed-bench"
+path = "src/bin/seed_bench.rs"
+
+[[bin]]
+name = "chat-retention"
+path = "src/bin/chat_retention.rs"

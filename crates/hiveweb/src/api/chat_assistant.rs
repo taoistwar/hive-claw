@@ -535,7 +535,7 @@ fn seconds_until_reset_hour(reset_hour: u32) -> u64 {
 
 /// 查询用户当日配额使用情况（只读，不消耗配额）。
 ///
-/// GET /api/assistant/quota?sign={md5}&user_id={uid}
+/// GET /api/quota?sign={md5}&user_id={uid}
 ///
 /// 返回 `used_times`、`total_times`、`membership_max_times`。
 async fn assistant_quota(
@@ -547,7 +547,7 @@ async fn assistant_quota(
     if !secret.is_empty() {
         let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
         let raw_body = format!("user_id={}", params.get("user_id").unwrap_or(&"".into()));
-        if !chat_common::verify_sign(secret, "/api/assistant/quota", &raw_body, sign) {
+        if !chat_common::verify_sign(secret, "/api/quota", &raw_body, sign) {
             return AppError::BadRequest("Invalid signature".into())
                 .into_response::<()>()
                 .into_response();

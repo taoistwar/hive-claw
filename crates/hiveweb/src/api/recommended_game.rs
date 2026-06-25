@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::chat_common;
 use crate::api::AppState;
+use crate::api::chat_common;
 use crate::models::Role;
 use crate::models::chat_user::ChatMessageUser;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
@@ -270,17 +270,20 @@ async fn top_recommended_games(
     let req: TopRequest = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
 
-    if req.user_id.is_empty() || req.channel.is_empty() || req.client_type.is_empty() || req.client_version.is_empty() {
-        return Err(AppError::BadRequest("user_id, channel, client_type, client_version 不能为空".into()).into_response());
+    if req.user_id.is_empty()
+        || req.channel.is_empty()
+        || req.client_type.is_empty()
+        || req.client_version.is_empty()
+    {
+        return Err(AppError::BadRequest(
+            "user_id, channel, client_type, client_version 不能为空".into(),
+        )
+        .into_response());
     }
 
-    let games = svc::fetch_top_filtered(
-        &state.pool,
-        &req.channel,
-        &req.client_type,
-    )
-    .await
-    .map_err(|e| e.into_response())?;
+    let games = svc::fetch_top_filtered(&state.pool, &req.channel, &req.client_type)
+        .await
+        .map_err(|e| e.into_response())?;
     let result: Vec<TopRecommendedGame> = games
         .into_iter()
         .map(|game| TopRecommendedGame {
@@ -326,12 +329,8 @@ async fn execute_recommendation(
     let req: ExecuteRequest = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
 
-    if req.user_id.trim().is_empty()
-        || req.game_id.trim().is_empty()
-    {
-        return Err(
-            AppError::BadRequest("user_id, game_id 不能为空".into()).into_response(),
-        );
+    if req.user_id.trim().is_empty() || req.game_id.trim().is_empty() {
+        return Err(AppError::BadRequest("user_id, game_id 不能为空".into()).into_response());
     }
 
     let user_id: i64 = req.user_id.trim().parse().map_err(|_| {
@@ -343,22 +342,30 @@ async fn execute_recommendation(
         .await
         .map_err(|e| e.into_response())?;
 
-    // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon（带缓存，按平台优先级排序）
-    let (computer_id, platform_name, game_icon) = if let Some(ext_pool) = state.ext_pool.as_ref() {
-        crate::services::game_service::get_single_external_game_info_cached(
-            &state.redis,
-            ext_pool,
-            game.game_id.parse::<i64>().unwrap_or(0),
-            &req.client_type,
-            &req.channel,
-        )
-        .await
-        .unwrap_or(None)
-        .map(|info| (info.computer_id, info.platform_name, info.game_icon))
-        .unwrap_or((None, None, None))
-    } else {
-        (None, None, None)
-    };
+    // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon/description（带缓存，按平台优先级排序）
+    let (computer_id, platform_name, game_icon, _description) =
+        if let Some(ext_pool) = state.ext_pool.as_ref() {
+            crate::services::game_service::get_single_external_game_info_cached(
+                &state.redis,
+                ext_pool,
+                game.game_id.parse::<i64>().unwrap_or(0),
+                &req.client_type,
+                &req.channel,
+            )
+            .await
+            .unwrap_or(None)
+            .map(|info| {
+                (
+                    info.computer_id,
+                    info.platform_name,
+                    info.game_icon,
+                    info.description,
+                )
+            })
+            .unwrap_or((None, None, None, None))
+        } else {
+            (None, None, None, None)
+        };
 
     // 3c. 同步用户：确保 users 表存在该用户，避免 chat_sessions_user 外键约束失败
     let cloud_info = if let Some(ext_pool) = state.ext_pool.as_ref() {
@@ -402,7 +409,6 @@ async fn execute_recommendation(
                 "client_type": req.client_type,
                 "reason": game.reason,
                 "game_tags": game.game_category,
-                "description": game.reason,
                 "cover_image": game.game_image,
                 "computer_id": computer_id,
                 "platform_name": platform_name,
@@ -450,9 +456,7 @@ async fn execute_recommendation(
         };
 
         let remaining = total_times - current_count;
-        if limit_config.remain_ask_time > 0
-            && remaining <= limit_config.remain_ask_time
-        {
+        if limit_config.remain_ask_time > 0 && remaining <= limit_config.remain_ask_time {
             let usage_ext = serde_json::json!({
                 "content_type": "usage",
                 "payload": {

@@ -111,7 +111,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
             "fps": "60",
             "gpu": "4070",
             "order_id": -1,
-            "card_type": 8,
             "create_time": "2026-06-16 16:00:15 UTC",
             "expire_time": 1781884815303,
             "card_asset_id": 30123507,
@@ -128,9 +127,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
                     "ALL"
                 ]
             },
-            "card_type_name": "金卡",
             "remain_duration": 300000,
-            "computer_biz_type": null
+            "computer_biz_type": null,
+            "product_mirror": {
+                "fps": "60",
+                "gpu": "4070"
+            },
+            "product_title": "金卡",
+            "product_duration": "3600000"
         }
       ]
     }
@@ -209,7 +213,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `client_type` | `String` | 请求时的客户端类型 |
 | `reason` | `Option<String>` | 推荐理由 |
 | `game_tags` | `Option<Value>` | 游戏标签数组，元素为 `{"name": "标签名", "type": 1}` |
-| `description` | `Option<String>` | 游戏描述 |
 | `cover_image` | `Option<String>` | 游戏封面图片 URL |
 | `computer_id` | `Option<i64>` | 外部游戏表关联的 computer_id |
 | `platform_name` | `Option<String>` | 平台名称（如 Steam） |
@@ -229,7 +232,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       "client_type": "ANDROID",
       "reason": "因跌宕起伏的剧情与充满魅力的角色...",
       "game_tags": [{"name": "角色扮演", "type": 1}],
-      "description": "因跌宕起伏的剧情与充满魅力的角色...",
       "cover_image": "https://example.com/cover.jpg",
       "computer_id": 10269,
       "platform_name": "Steam",
@@ -317,11 +319,12 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `remain_duration` | `Option<i64>` | 剩余时长（秒） |
 | `computer_biz_type` | `Option<String>` | 计算业务类型 |
 | `expire_time` | `Option<i64>` | 过期时间（Unix 时间戳） |
-| `card_type` | `Option<i8>` | 卡类型编码（如 8 = 金卡） |
-| `card_type_name` | `Option<String>` | 卡类型显示名称（如"金卡"） |
 | `order_id` | `Option<i64>` | 订单 ID |
 | `consume_label` | `Option<Value>` | 消费标签（JSON 对象，含 `weight`、`channelList`、`gameLabelList`、`clientTypeList`） |
 | `create_time` | `Option<String>` | 创建时间 |
+| `product_mirror` | `Option<Value>` | 购买时产品快照（JSON，含 `fps`、`gpu` 等字段） |
+| `product_title` | `Option<String>` | 商品名称（如"金卡"、"黑金卡"） |
+| `product_duration` | `Option<String>` | 商品时长（毫秒字符串） |
 | `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取） |
 | `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取） |
 

@@ -87,7 +87,6 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
             "client_type": "android",
             "reason": "推荐理由",
             "game_tags": [{"name": "角色扮演", "type": 1}],
-            "description": "推荐理由",
             "cover_image": "https://example.com/image.png",
             "computer_id": 10269,
             "platform_name": "Steam",
@@ -123,7 +122,6 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
 | `client_type` | `String` | 请求时的客户端类型 |
 | `reason` | `Option<String>` | 推荐理由 |
 | `game_tags` | `Option<Value>` | 游戏标签数组，元素为 `{"name": "标签名", "type": 1}` |
-| `description` | `Option<String>` | 游戏描述（同推荐理由） |
 | `cover_image` | `Option<String>` | 游戏封面图片 URL |
 | `computer_id` | `Option<i64>` | 外部游戏表关联的 computer_id |
 | `platform_name` | `Option<String>` | 平台名称（如 Steam、PlayStation） |

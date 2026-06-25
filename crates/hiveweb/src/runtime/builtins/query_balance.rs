@@ -38,7 +38,6 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
         .ext_pool
         .ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?
         .clone();
-    let redis = ctx.redis.cloned();
     let agent_ctx_clone = ctx.agent_ctx.clone();
 
     let category = args
@@ -49,7 +48,7 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            query_balance_async_impl(user_id, &ext_pool, redis.as_ref(), agent_ctx_clone.as_deref(), &category).await
+            query_balance_async_impl(user_id, &ext_pool, agent_ctx_clone.as_deref(), &category).await
         })
     })
 }
@@ -57,7 +56,6 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 pub async fn query_balance_async_impl(
     user_id: i64,
     ext_pool: &sqlx::MySqlPool,
-    redis: Option<&redis::Client>,
     _agent_ctx: Option<&AgentContext>,
     category: &str,
 ) -> BuiltinResult {
@@ -67,15 +65,12 @@ pub async fn query_balance_async_impl(
 
     // 1. 查询金币余额（仅 coins / benefits 需要）
     let coins_row = if need_coins {
-        let row = if let Some(r) = redis {
-            crate::services::membership::query_coins_balance_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("金币查询失败: {e}")))?
-        } else {
-            crate::services::membership::query_coins_balance(ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("金币查询失败: {e}")))?
-        };
+        let row = crate::services::membership::query_coins_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
+                BuiltinError::Exec(format!("金币查询失败: {e}"))
+            })?;
         if row.is_none() {
             return Ok(json!({
                 "message": "暂无该用户的资产数据，请稍后再试"
@@ -88,32 +83,24 @@ pub async fn query_balance_async_impl(
 
     // 1.2 查询云硬盘信息（仅 disk / benefits 需要）
     let disk_row = if need_disk {
-        let row = if let Some(r) = redis {
-            crate::services::membership::query_disk_balance_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("云硬盘查询失败: {e}")))?
-        } else {
-            crate::services::membership::query_disk_balance(ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("云硬盘查询失败: {e}")))?
-        };
+        let row = crate::services::membership::query_disk_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
+                BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
+            })?;
         row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
         None
     };
 
     // 1.5 查询会员与订阅状态（用于推导 card type）
-    let membership_subscriptions = {
-        if let Some(r) = redis {
-            crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
-        } else {
-            crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("会员订阅查询失败: {e}")))?
-        }
-    };
+    let membership_subscriptions = crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
+            BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
+        })?;
 
     // Serialize membership+subscription rows to JSON
     let membership_json: Vec<Value> = membership_subscriptions
@@ -141,15 +128,12 @@ pub async fn query_balance_async_impl(
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）
     let duration_cards = if need_duration {
-        if let Some(r) = redis {
-            crate::services::membership::query_duration_cards_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
-        } else {
-            crate::services::membership::query_duration_cards(ext_pool, user_id)
-                .await
-                .map_err(|e| BuiltinError::Exec(format!("时长卡查询失败: {e}")))?
-        }
+        crate::services::membership::query_duration_cards(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
+                BuiltinError::Exec(format!("时长卡查询失败: {e}"))
+            })?
     } else {
         Vec::new()
     };
@@ -174,8 +158,8 @@ pub async fn query_balance_async_impl(
                 "remain_duration": row.remain_duration,
                 "computer_biz_type": row.computer_biz_type,
                 "expire_time": row.expire_time,
-                "card_type": row.card_type,
-                "card_type_name": row.card_type_name,
+                "card_type": None::<i64>,
+                "card_type_name": row.product_title,
                 "order_id": row.order_id,
                 "consume_label": row.consume_label,
                 "create_time": row.create_time.map(|t| t.to_string()),

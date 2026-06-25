@@ -202,13 +202,15 @@ pub struct DurationCardRow {
     pub remain_duration: Option<i64>,
     pub computer_biz_type: Option<String>,
     pub expire_time: Option<i64>,
-    pub card_type: Option<i8>,
-    pub card_type_name: Option<String>,
     pub order_id: Option<i64>,
     pub consume_label: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
     /// product_mirror JSON — 提取 fps / gpu 等字段
     pub product_mirror: Option<serde_json::Value>,
+    /// cc_product.title — 商品名称（如 "金卡"、"黑金卡"）
+    pub product_title: Option<String>,
+    /// cc_product.value — 商品时长
+    pub product_duration: Option<String>,
 }
 
 /// Query duration cards (时长卡) for a user — gold card (type=8) and black gold card (type=9).
@@ -222,26 +224,24 @@ pub async fn query_duration_cards(
     t1.value               AS remain_duration,
     t1.computer_biz_type   AS computer_biz_type,
     t1.expire_time         AS expire_time,
-    t1.type                AS card_type,
-    CASE t1.type
-        WHEN 8 THEN '金卡'
-        WHEN 9 THEN '黑金卡'
-        ELSE '其他'
-    END                     AS card_type_name,
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
     t1.create_time         AS create_time,
-    t2.product_mirror      AS product_mirror
+    t2.product_mirror      AS product_mirror,
+    t3.title               AS product_title,
+    t3.value               AS product_duration
 FROM (
-	select * from cc_user_asset_coin  WHERE user_id = ? AND type IN (8, 9) AND value > 0 AND (
-      (type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000)
-      OR
-      (type = 9 AND (expire_time IS NULL OR expire_time > UNIX_TIMESTAMP() * 1000))
-	)
+	SELECT * FROM cc_user_asset_coin
+	WHERE user_id = ?
+	  AND value > 0
+	  AND type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000
+	  AND (consume_label IS NULL
+	       OR NOT JSON_CONTAINS(consume_label, '"FREE_CARD"', '$.gameLabelList'))
 ) t1
-left join (
-	SELECT * from cc_order where user_id = ?
-) t2 on t1.order_id = t2.id"#,
+LEFT JOIN (
+	SELECT * FROM cc_order WHERE user_id = ?
+) t2 ON t1.order_id = t2.id
+LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id"#,
     )
     .bind(user_id)
     .bind(user_id)

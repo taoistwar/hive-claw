@@ -358,7 +358,8 @@ MD5(ASSISTANT_SECRET + "/api/quota" + "?body=" + "user_id=12345")
   "data": {
     "used_times": 8,
     "total_times": 10,
-    "membership_max_times": 50
+    "membership_max_times": 50,
+    "remain_ask_time": 2
   }
 }
 ```
@@ -368,6 +369,7 @@ MD5(ASSISTANT_SECRET + "/api/quota" + "?body=" + "user_id=12345")
 | `used_times` | `i64` | 当日已使用次数 |
 | `total_times` | `i64` | 当日总可用次数（VIP 取 `vip_ask_times`，普通取 `normal_ask_times`） |
 | `membership_max_times` | `i64` | 会员（VIP）每日最大可用次数，用于前端展示升级引导 |
+| `remain_ask_time` | `i64` | 剩余提醒阈值，`0` 表示关闭提醒 |
 
 ### 示例请求
 

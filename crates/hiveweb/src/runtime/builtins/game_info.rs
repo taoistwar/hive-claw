@@ -117,13 +117,13 @@ async fn game_info_async_impl(
     let game_payload = serde_json::json!({
         "id": id,
         "name": name,
-        "description": game_info.description,
-        "cover_image": game_info.cover_image,
+        "channel": game_info.channel,
+        "client_type": game_info.client_type,
+        "reason": game_info.description,
         "game_tags": game_info.game_tags,
+        "cover_image": game_info.cover_image,
         "computer_id": game_info.computer_id,
         "platform_name": game_info.platform_name,
-        "client_type": game_info.client_type,
-        "channel": game_info.channel,
         "game_icon": game_info.game_icon,
     });
 

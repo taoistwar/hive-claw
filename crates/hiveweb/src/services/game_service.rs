@@ -355,7 +355,7 @@ pub async fn get_external_game_by_id(
 ) -> Result<Vec<ExternalGameInfo>, AppError> {
     sqlx::query_as::<_, ExternalGameInfo>(
         r#"SELECT
-  t1.logic_game_id, t1.name, t1.description, t1.cover_image, t1.game_tags,
+  t1.logic_game_id, t1.name, t9.recommend_reason as description, t1.cover_image, t1.game_tags,
   t2.computer_id,
   t3.name as platform_name,
   t1.client_type,
@@ -378,7 +378,11 @@ LEFT JOIN (
 LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
 LEFT JOIN (
   select * from cc_logic_game where id=?
-) t8 on t1.logic_game_id=t8.id
+) t8 on t1.logic_game_id = t8.id
+LEFT JOIN (
+  select * from cc_ranking_recommended_game
+  where logic_game_id = ? order by update_time desc limit 1
+) t9 ont t1.logic_game_id = t9.logic_game_id
 where t6.id is null
 AND t7.id is null
 "#,

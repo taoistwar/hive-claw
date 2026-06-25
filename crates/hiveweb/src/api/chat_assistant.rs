@@ -355,10 +355,7 @@ async fn assistant_chat(
 
     // 如果已用次数刚好到达 "剩余提醒阈值"，追加 usage extension
     let remaining = max_times - current_count;
-    if limit_config.remain_ask_time > 0
-        && remaining > 0
-        && remaining <= limit_config.remain_ask_time
-    {
+    if limit_config.remain_ask_time > 0 && remaining <= limit_config.remain_ask_time {
         let usage_ext = serde_json::json!({
             "content_type": "usage",
             "payload": {

@@ -451,7 +451,6 @@ async fn execute_recommendation(
 
         let remaining = total_times - current_count;
         if limit_config.remain_ask_time > 0
-            && remaining > 0
             && remaining <= limit_config.remain_ask_time
         {
             let usage_ext = serde_json::json!({

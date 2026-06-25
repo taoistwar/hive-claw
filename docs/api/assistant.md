@@ -271,7 +271,8 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
   "payload": {
     "used_times": 8,
     "total_times": 10,
-    "membership_max_times": 50
+    "membership_max_times": 50,
+    "remain_ask_time": 2
   }
 }
 ```
@@ -283,6 +284,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `used_times` | `i64` | 当日已使用次数 |
 | `total_times` | `i64` | 当日总可用次数（VIP / 普通用户上限，由 `cc_config` 表动态配置） |
 | `membership_max_times` | `i64` | 会员（VIP）每日最大可用次数，用于前端展示升级引导 |
+| `remain_ask_time` | `i64` | 剩余提醒阈值，当 `remaining <=` 该值时触发 usage 扩展；`0` 表示关闭提醒 |
 
 > 该扩展由 `chat_assistant_handler` 在响应返回前根据限流计数结果动态注入，与 Agent 执行过程无关。
 > 可通过后台 `cc_config` 表 `AIassistantChatLimitConfig` 配置项中的 `remain_ask_time` 调整提醒阈值（设为 `0` 关闭提醒）。
@@ -336,7 +338,7 @@ GET /api/quota?sign={md5}&user_id={user_id}
 与 [`POST /api/assistant`](#鉴权) 一致，MD5 签名校验。签名计算方式：
 
 ```
-MD5(ASSISTANT_SECRET + "/api/assistant/quota" + "?body=" + "user_id=12345")
+MD5(ASSISTANT_SECRET + "/api/quota" + "?body=" + "user_id=12345")
 ```
 
 > 注意：`body` 参数为 `user_id=<value>` 字符串。
@@ -371,9 +373,9 @@ MD5(ASSISTANT_SECRET + "/api/assistant/quota" + "?body=" + "user_id=12345")
 
 ```bash
 USER_ID=12345
-SIGN=$(echo -n "${ASSISTANT_SECRET}/api/assistant/quota?body=user_id=${USER_ID}" | md5sum | awk '{print $1}')
+SIGN=$(echo -n "${ASSISTANT_SECRET}/api/quota?body=user_id=${USER_ID}" | md5sum | awk '{print $1}')
 
-curl "http://localhost:3300/api/assistant/quota?sign=${SIGN}&user_id=${USER_ID}"
+curl "http://localhost:3300/api/quota?sign=${SIGN}&user_id=${USER_ID}"
 ```
 
 ## 错误响应

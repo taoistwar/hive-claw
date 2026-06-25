@@ -50,6 +50,7 @@ MD5(ASSISTANT_SECRET + "/api/recommended-games/execute" + "?body=" + 请求体 J
 2. 获取或创建用户会话（`chat_sessions_user`）
 3. 记录一条 `role=user` 消息，内容为游戏的 `reply` 字段
 4. 记录一条 `role=assistant` 消息，内容为游戏的 `reply` 字段，`extensions` 包含一个 `game` 类型的 card
+5. 检查用户当日配额，当剩余次数 ≤ `remain_ask_time` 阈值时，额外追加 `usage` 扩展
 
 ## 示例请求
 
@@ -93,6 +94,15 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
             "game_icon": "https://example.com/icon.png"
           }
         }
+      },
+      {
+        "content_type": "usage",
+        "payload": {
+          "used_times": 8,
+          "total_times": 10,
+          "membership_max_times": 50,
+          "remain_ask_time": 2
+        }
       }
     ],
     "created_at": "2026-06-10T14:30:00Z"
@@ -100,6 +110,8 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
   "message": "ok"
 }
 ```
+
+> **注意：** `usage` 扩展仅在用户当日剩余可用次数 ≤ `remain_ask_time`（默认 2）时追加，用于提示用户剩余配额。若剩余次数充足则不出现。
 
 ### `extensions[].payload.info` 字段说明
 
@@ -116,6 +128,23 @@ curl -X POST "http://localhost:3300/api/recommended-games/execute?sign=${SIGN}" 
 | `computer_id` | `Option<i64>` | 外部游戏表关联的 computer_id |
 | `platform_name` | `Option<String>` | 平台名称（如 Steam、PlayStation） |
 | `game_icon` | `Option<String>` | 游戏图标 URL |
+
+### `content_type` 为 `usage` 时的结构
+
+当用户当日剩余可用次数达到提醒阈值时，`extensions` 会额外追加一个 `usage` 扩展。
+
+触发条件：
+- `remain_ask_time > 0`（已配置提醒阈值，默认 **2**）
+- `remaining <= remain_ask_time`（剩余次数不超过阈值）
+
+**`usage` payload 字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `used_times` | `i64` | 当日已使用次数（从 Redis 只读读取，推荐执行不消耗配额） |
+| `total_times` | `i64` | 当日总可用次数（VIP / 普通用户上限） |
+| `membership_max_times` | `i64` | 会员（VIP）每日最大可用次数，用于前端展示升级引导 |
+| `remain_ask_time` | `i64` | 剩余提醒阈值，`0` 表示关闭提醒 |
 
 ## 错误响应
 

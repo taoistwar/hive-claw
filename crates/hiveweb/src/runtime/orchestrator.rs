@@ -1059,7 +1059,14 @@ async fn handle_meta_tool(
                             apply_agent_context_updates(&agent_ctx, &result);
                             ToolOutcome::ok(result)
                         }
-                        Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                        Err(e) => {
+                        tracing::error!(
+                            func_ident = %func_ident,
+                            error = %e,
+                            "builtin function 执行失败"
+                        );
+                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                    }
                     }
                 }
                 1 | 2 => {
@@ -1103,7 +1110,14 @@ async fn handle_meta_tool(
                             apply_agent_context_updates(&agent_ctx, &parsed);
                             ToolOutcome::ok(parsed)
                         }
-                        Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                        Err(e) => {
+                            tracing::error!(
+                                func_ident = %func_ident,
+                                error = %e,
+                                "plugin invoke failed"
+                            );
+                            ToolOutcome::error(format!("plugin invoke failed: {e}"))
+                        }
                     }
                 }
                 _ => ToolOutcome::error(format!(
@@ -1246,7 +1260,14 @@ pub(crate) async fn handle_workspace_tool(
                         apply_agent_context_updates(&agent_ctx, &result);
                         ToolOutcome::ok(result)
                     }
-                    Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                    Err(e) => {
+                        tracing::error!(
+                            lookup_id = %lookup_id,
+                            error = %e,
+                            "builtin function 执行失败"
+                        );
+                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                    },
                 }
             } else {
                 // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
@@ -1289,7 +1310,14 @@ pub(crate) async fn handle_workspace_tool(
                             .unwrap_or_else(|_| Value::String(out_str));
                         ToolOutcome::ok(parsed)
                     }
-                    Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                    Err(e) => {
+                        tracing::error!(
+                            tool = %tool_ref.identifier,
+                            error = %e,
+                            "plugin invoke failed"
+                        );
+                        ToolOutcome::error(format!("plugin invoke failed: {e}"))
+                    },
                 }
             }
         }

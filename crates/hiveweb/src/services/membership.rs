@@ -453,6 +453,20 @@ pub async fn get_ai_assistant_chat_limit_config_cached(
     .await
 }
 
+/// Query AIDiscountedProducts config from cc_config table.
+/// Returns the raw JSON content (None if not found).
+pub async fn get_discounted_products_config(
+    ext_pool: &MySqlPool,
+) -> Result<Option<serde_json::Value>, String> {
+    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT content FROM cc_config WHERE label = 'AIDiscountedProducts' AND status = 'ACTIVE' LIMIT 1",
+    )
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| format!("cc_config query: {e}"))?;
+    Ok(row.and_then(|r| r.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

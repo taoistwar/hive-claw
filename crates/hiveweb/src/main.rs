@@ -58,12 +58,15 @@ async fn main() -> anyhow::Result<()> {
         let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
         std::fs::create_dir_all(&log_dir).ok();
         let file_appender = tracing_appender::rolling::daily(&log_dir, "hiveweb.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        // 将 _guard 泄漏，使其在进程生命周期内保持有效
+        std::mem::forget(_guard);
         let env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("info"))
             .add_directive("hiveweb=info".parse()?);
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
-            .with_writer(file_appender)
+            .with_writer(non_blocking)
             .with_ansi(false)
             .init();
     }

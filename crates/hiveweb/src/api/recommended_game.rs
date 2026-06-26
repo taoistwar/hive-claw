@@ -15,16 +15,53 @@ use crate::models::chat_user::ChatMessageUser;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
 use crate::services::chat_user as chat_svc;
 use crate::services::membership;
-use crate::services::recommended_game::{self as svc, CreateMeta, UpdateMeta};
+use crate::services::recommended_game::{self as svc, CreateMeta, StrategyMeta, UpdateMeta};
 use crate::services::user_auth;
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
+
+/// Expand `"*"` in strategy channel/client_type arrays to all available values
+/// for the given game, queried from the external DB.
+async fn expand_strategy_wildcards(
+    ext_pool: Option<&sqlx::MySqlPool>,
+    game_id: &str,
+    strategies: &mut [StrategyMeta],
+) {
+    let gid: i64 = match game_id.parse() {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    let ext_pool = match ext_pool {
+        Some(p) => p,
+        None => return,
+    };
+
+    let (channels, client_types) = tokio::join!(
+        crate::services::game_service::get_game_channels(ext_pool, gid),
+        crate::services::game_service::get_game_client_types(ext_pool, gid),
+    );
+    let channels = channels.unwrap_or_default();
+    let client_types = client_types.unwrap_or_default();
+
+    for s in strategies {
+        if s.channel.as_array().map_or(false, |a| a.iter().any(|v| v == "*")) {
+            s.channel = serde_json::to_value(&channels).unwrap_or_default();
+        }
+        if s.client_type.as_array().map_or(false, |a| a.iter().any(|v| v == "*")) {
+            s.client_type = serde_json::to_value(&client_types).unwrap_or_default();
+        }
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/recommended-games",
             get(list_recommended_games).post(create_recommended_game),
+        )
+        .route(
+            "/recommended-games/game-ids",
+            get(get_existing_game_ids),
         )
         .route(
             "/recommended-games/:id",
@@ -125,10 +162,19 @@ async fn get_recommended_game(
     Ok(ApiResponse::success(item))
 }
 
+async fn get_existing_game_ids(
+    State(state): State<AppState>,
+) -> Result<ApiResponse<Vec<String>>, ApiResponse<()>> {
+    let ids = svc::fetch_all_game_ids(&state.pool)
+        .await
+        .map_err(|e| e.into_response())?;
+    Ok(ApiResponse::success(ids))
+}
+
 async fn create_recommended_game(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
-    Json(meta): Json<CreateMeta>,
+    Json(mut meta): Json<CreateMeta>,
 ) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
@@ -147,6 +193,16 @@ async fn create_recommended_game(
         );
     }
 
+    // Expand '*' wildcards in strategies to actual values from external DB
+    if let Some(ref mut strategies) = meta.strategies {
+        expand_strategy_wildcards(
+            state.ext_pool.as_ref(),
+            &meta.game_id,
+            strategies,
+        )
+        .await;
+    }
+
     let game = svc::create(&state.pool, meta)
         .await
         .map_err(|e| e.into_response())?;
@@ -160,7 +216,7 @@ async fn update_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     axum::Extension(claims): axum::Extension<Claims>,
-    Json(meta): Json<UpdateMeta>,
+    Json(mut meta): Json<UpdateMeta>,
 ) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
@@ -177,6 +233,20 @@ async fn update_recommended_game(
             AppError::InsufficientPermission("Insufficient permissions".to_string())
                 .into_response(),
         );
+    }
+
+    // Expand '*' wildcards in strategies to actual values from external DB
+    if let Some(ref mut strategies) = meta.strategies {
+        // Use provided game_id, or fall back to existing game's game_id
+        let gid: String = if let Some(ref gid) = meta.game_id {
+            gid.clone()
+        } else {
+            let existing = svc::fetch_by_id(&state.pool, id)
+                .await
+                .map_err(|e| e.into_response())?;
+            existing.game_id
+        };
+        expand_strategy_wildcards(state.ext_pool.as_ref(), &gid, strategies).await;
     }
 
     let game = svc::update(&state.pool, id, meta)

@@ -33,7 +33,7 @@ pub struct ExternalGameDetail {
     #[serde(default)]
     pub game_tags: Option<serde_json::Value>,
     #[serde(default)]
-    pub client_types: Option<serde_json::Value>,
+    pub client_types: Vec<String>,
     #[serde(default)]
     pub channels: Vec<String>,
 }

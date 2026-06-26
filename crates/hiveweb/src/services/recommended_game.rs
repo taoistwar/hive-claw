@@ -228,6 +228,16 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Fetch all existing game_id values from recommended_games.
+pub async fn fetch_all_game_ids(pool: &MySqlPool) -> Result<Vec<String>, AppError> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT game_id FROM recommended_games")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("recommended_game fetch_all_game_ids: {e}")))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame>, AppError> {
     sqlx::query_as::<_, RecommendedGame>(
         "SELECT * FROM recommended_games ORDER BY sort_value DESC, created_at DESC LIMIT ?",

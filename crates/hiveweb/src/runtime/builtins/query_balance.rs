@@ -59,7 +59,7 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 /// Handle discount category:
 /// 1. Read client_type & channel from AgentContext
 /// 2. Query AIDiscountedProducts config from cc_config
-/// 3. Navigate JSON: client_type/__DEFAULT__ → channel/__DEFAULT__ → product_id → settings
+/// 3. Navigate JSON: client_type → channel → product_id → settings
 /// 4. Query cc_product for product info
 /// 5. Return single discount extension
 async fn handle_discount(
@@ -73,11 +73,11 @@ async fn handle_discount(
     let client_type = agent_ctx
         .and_then(|ac| ac.get_user_metadata("client_type"))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "__DEFAULT__".to_string());
+        .ok_or_else(|| BuiltinError::Exec("client_type 未配置".into()))?;
     let channel = agent_ctx
         .and_then(|ac| ac.get_user_metadata("channel"))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "__DEFAULT__".to_string());
+        .ok_or_else(|| BuiltinError::Exec("channel 未配置".into()))?;
 
     // 2. 读取 AIDiscountedProducts 配置
     let config = crate::services::membership::get_discounted_products_config(ext_pool)
@@ -171,23 +171,31 @@ async fn handle_discount(
 }
 
 /// Resolve discount products from the nested config:
-/// config[client_type or __DEFAULT__][channel or __DEFAULT__] → product map
+/// config[client_type][channel] → product map
 fn resolve_discount_products(
     config: &serde_json::Value,
     client_type: &str,
     channel: &str,
 ) -> Result<serde_json::Value, BuiltinError> {
-    // Level 1: client_type
-    let ct_obj = config.get(client_type).ok_or_else(|| {
-        BuiltinError::Exec(format!(
-            "AIDiscountedProducts: 未找到 client_type={client_type}"
-        ))
-    })?;
+    // Level 1: client_type, 找不到则回退到 __DEFAULT__
+    let ct_obj = config
+        .get(client_type)
+        .or_else(|| config.get("__DEFAULT__"))
+        .ok_or_else(|| {
+            BuiltinError::Exec(format!(
+                "AIDiscountedProducts: 未找到 client_type={client_type} 或 __DEFAULT__"
+            ))
+        })?;
 
-    // Level 2: channel
-    let ch_obj = ct_obj.get(channel).ok_or_else(|| {
-        BuiltinError::Exec(format!("AIDiscountedProducts: 未找到 channel={channel}"))
-    })?;
+    // Level 2: channel, 找不到则回退到 __DEFAULT__
+    let ch_obj = ct_obj
+        .get(channel)
+        .or_else(|| ct_obj.get("__DEFAULT__"))
+        .ok_or_else(|| {
+            BuiltinError::Exec(format!(
+                "AIDiscountedProducts: 未找到 channel={channel} 或 __DEFAULT__ in client_type={client_type}"
+            ))
+        })?;
 
     Ok(ch_obj.clone())
 }

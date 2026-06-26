@@ -120,10 +120,10 @@ pub async fn list(
     if has_ch || has_ct {
         let mut strat_parts: Vec<String> = Vec::new();
         if has_ch {
-            strat_parts.push("(JSON_CONTAINS(s.channel, '\"*\"') OR JSON_CONTAINS(s.channel, ?))".into());
+            strat_parts.push("JSON_CONTAINS(s.channel, ?)".into());
         }
         if has_ct {
-            strat_parts.push("(JSON_CONTAINS(s.client_type, '\"*\"') OR JSON_CONTAINS(s.client_type, ?))".into());
+            strat_parts.push("JSON_CONTAINS(s.client_type, ?)".into());
         }
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM recommended_games_strategy s WHERE s.recommended_game_id = rg.id AND s.strategy = 'INCLUDE' AND {})",
@@ -298,15 +298,15 @@ WHERE rg.tag = ?
     SELECT 1 FROM recommended_games_strategy si
     WHERE si.recommended_game_id = rg.id
       AND si.strategy = 'INCLUDE'
-      AND (JSON_CONTAINS(si.channel, '"*"') OR JSON_CONTAINS(si.channel, ?))
-      AND (JSON_CONTAINS(si.client_type, '"*"') OR JSON_CONTAINS(si.client_type, ?))
+      AND JSON_CONTAINS(si.channel, ?)
+      AND JSON_CONTAINS(si.client_type, ?)
   )
   AND NOT EXISTS (
     SELECT 1 FROM recommended_games_strategy se
     WHERE se.recommended_game_id = rg.id
       AND se.strategy = 'EXCLUDE'
-      AND (JSON_CONTAINS(se.channel, '"*"') OR JSON_CONTAINS(se.channel, ?))
-      AND (JSON_CONTAINS(se.client_type, '"*"') OR JSON_CONTAINS(se.client_type, ?))
+      AND JSON_CONTAINS(se.channel, ?)
+      AND JSON_CONTAINS(se.client_type, ?)
   )
 ORDER BY rg.sort_value DESC, rg.created_at DESC
 LIMIT ?

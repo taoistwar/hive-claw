@@ -1,0 +1,16 @@
+2026-06-26T08:39:34.688942Z  INFO hiveweb: === HiveClaw Admin Center Starting ===
+2026-06-26T08:39:34.689014Z  INFO hiveweb: Server will run at http://0.0.0.0:3300
+2026-06-26T08:39:35.844062Z  INFO hiveweb::db::connection: Database connection pool created successfully
+2026-06-26T08:39:35.844146Z  INFO hiveweb: Database initialized: mysql://hiveweb:***@172.16.208.111:13306/hiveweb
+2026-06-26T08:39:35.849268Z  INFO hiveweb::cache::redis: Redis connection established successfully
+2026-06-26T08:39:35.849336Z  INFO hiveweb: Redis initialized: redis://172.16.208.111:16379
+2026-06-26T08:39:35.849379Z  WARN hiveweb: PLUGIN_SYSTEM_ENABLED=false; S3 client skipped. Plugin upload/download/invoke and s3.* capabilities are disabled.
+2026-06-26T08:39:36.991109Z  INFO hiveweb::db::connection: Database connection pool created successfully
+2026-06-26T08:39:36.991184Z  INFO hiveweb: External DB initialized: mysql://ywreader:***@2016@43.140.221.181:3306/cloud_computer
+2026-06-26T08:39:37.883700Z  INFO hiveweb::runtime::builtins: builtin functions and tools upserted count=9
+2026-06-26T08:39:37.958811Z  INFO hiveweb::runtime::builtins: meta-tools (invoke_function, invoke_workflow) upserted
+2026-06-26T08:39:41.056409Z  INFO hiveweb::runtime::builtins::tools: builtin agent tools (functions + tool wrappers) upserted count=16
+2026-06-26T08:39:41.063275Z  INFO hiveweb::runtime::llm: LlmRegistry loaded preset_count=2 default=Some("cheap-fast")
+2026-06-26T08:39:41.065223Z  INFO hiveweb: HTTP router initialized with CORS and rate limiting
+2026-06-26T08:39:41.065263Z  INFO hiveweb: Server listening on http://0.0.0.0:3300
+2026-06-26T08:39:41.065271Z  INFO hiveweb: === HiveClaw Admin Center Ready ===

@@ -134,7 +134,7 @@ pub async fn execute_answer_node(
     );
 
     // Try LLM invocation; fall back to direct response if no LLM available
-    let (max_tokens, temperature) = deps.llm.resolve_config(model_preset);
+    let (max_tokens, _temperature) = deps.llm.resolve_config(model_preset);
     let answer = match deps.llm.build_primary(model_preset) {
         Ok((provider, model)) => {
             use providers::ChatRequest;
@@ -142,7 +142,7 @@ pub async fn execute_answer_node(
                 messages: vec![serde_json::json!({"role": "system", "content": resolved_prompt})],
                 model: Some(model.clone()),
                 max_tokens,
-                temperature,
+                temperature: 0f32,
                 tools: None,
                 tool_choice: None,
                 reasoning_effort: None,

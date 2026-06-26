@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
 use super::cache_helper;
-use super::cache_helper::{cached_or_fetch};
+use super::cache_helper::cached_or_fetch;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 struct CcUserMembership {
@@ -48,12 +48,10 @@ pub async fn get_cloud_user_info(
     pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT uid, nickname FROM cloud_user WHERE ID = ?",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as::<_, (String, String)>("SELECT uid, nickname FROM cloud_user WHERE ID = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
 }
 
 // ---------- query_balance support ----------
@@ -279,13 +277,12 @@ pub async fn user_exists_in_cloud_cached(
         .map_err(|e| format!("user_exists_in_cloud: {e}"))?;
 
     // 3. Write to cache with split TTL
-    let ttl = if exists {
-        cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE // 24h — 用户存在，长缓存
-    } else {
-        cache_helper::TTL_CLOUD_USER_EXISTS_NEGATIVE // 5min — 用户不存在，短缓存
-    };
-    if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
-        tracing::debug!(%key, error = %e, "cache write failed");
+    if exists {
+        // 24h — 用户存在，长缓存
+        let ttl = cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE;
+        if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
+            tracing::debug!(%key, error = %e, "cache write failed");
+        }
     }
 
     Ok(exists)

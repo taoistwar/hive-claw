@@ -113,7 +113,7 @@ impl AnthropicProvider {
 
     fn endpoint(&self) -> String {
         let base = self.effective_base.trim_end_matches('/');
-        format!("{base}/v1/messages")
+        format!("{base}/messages")
     }
 
     fn strip_prefix(model: &str) -> String {

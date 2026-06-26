@@ -382,7 +382,7 @@ LEFT JOIN (
 LEFT JOIN (
   select * from cc_ranking_recommended_game
   where logic_game_id = ? order by update_time desc limit 1
-) t9 ont t1.logic_game_id = t9.logic_game_id
+) t9 on t1.logic_game_id = t9.logic_game_id
 where t6.id is null
 AND t7.id is null
 "#,

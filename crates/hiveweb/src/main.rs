@@ -23,20 +23,27 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Load .env file if it exists, but don't fail if it doesn't
-    match dotenvy::dotenv_override() {
-        Ok(path) => {
-            println!("[ENV] Loaded .env from: {}", path.display());
-        }
-        Err(_) => {
-            println!("[ENV] No .env file found, using environment variables");
-        }
-    }
-
     // Initialize logging
     let is_dev = std::env::var("APP_ENV")
         .map(|v| v == "development" || v == "dev")
         .unwrap_or(true);
+
+
+    // Load .env file if it exists, but don't fail if it doesn't
+    match dotenvy::dotenv_override() {
+        Ok(path) => {
+            if is_dev {
+                println!("[ENV] Loaded .env from: {}", path.display());
+            }
+        }
+        Err(_) => {
+            if is_dev {
+                println!("[ENV] No .env file found, using environment variables");
+            }
+        }
+    }
+
+
 
     if is_dev {
         // dev: human-readable debug output to stdout
@@ -47,12 +54,17 @@ async fn main() -> anyhow::Result<()> {
             .with_env_filter(env_filter)
             .init();
     } else {
-        // prod: only warn+ to stdout, suppressing info/debug noise
+        // prod: file output with daily rotation, no console output
+        let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+        std::fs::create_dir_all(&log_dir).ok();
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "hiveweb.log");
         let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("warn"))
-            .add_directive("hiveweb=warn".parse()?);
+            .unwrap_or_else(|_| EnvFilter::new("info"))
+            .add_directive("hiveweb=info".parse()?);
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
+            .with_writer(file_appender)
+            .with_ansi(false)
             .init();
     }
 

@@ -4880,6 +4880,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "uuid",
  "wasmparser 0.221.3",

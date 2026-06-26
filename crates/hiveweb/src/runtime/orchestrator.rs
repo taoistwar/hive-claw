@@ -82,6 +82,8 @@ pub struct OrchestratorDeps {
     pub client_version: String,
     /// 010 Sensitive Word Filter — for output content filtering
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
+    /// 客户端断开时设置为 true，orchestrator 应在安全点检查并退出
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub async fn run_session_user(
@@ -222,6 +224,12 @@ where
     let _ = agent_ctx.set_messages(messages.clone());
 
     for hop in 0..max_hops {
+        // 0. 检查客户端是否已断开
+        if deps.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(hop, session_id, "orchestrator cancelled: client disconnected");
+            return None;
+        }
+
         // 1. 装配当前 agent 资源
         let agent_content =
             match crate::services::agent::fetch_content(&deps.pool, &deps.redis, current_agent_id)

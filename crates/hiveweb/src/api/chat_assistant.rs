@@ -31,6 +31,7 @@ use redis::AsyncCommands;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
 use crate::api::AppState;
@@ -277,6 +278,7 @@ async fn assistant_chat(
             .unwrap_or_default();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: pool.clone(),
@@ -291,6 +293,7 @@ async fn assistant_chat(
         client_type: req.client_type.clone(),
         client_version: req.client_version.clone(),
         sensitive_filter: state.sensitive_filter.clone(),
+        cancel: Arc::clone(&cancel),
     };
     let handle = tokio::spawn(async move {
         crate::runtime::orchestrator::run_session_user(
@@ -304,6 +307,15 @@ async fn assistant_chat(
         )
         .await
     });
+
+    // 客户端断开时取消 orchestrator
+    struct CancelGuard(Arc<AtomicBool>);
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _guard = CancelGuard(cancel);
 
     // Drain SSE events; the orchestrator already saved the assistant message and returns
     // the persisted record via the JoinHandle, so we only need to detect early errors here.

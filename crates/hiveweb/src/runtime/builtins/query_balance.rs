@@ -371,7 +371,9 @@ pub async fn query_balance_async_impl(
     let expiring_soon = days_until_expiry.map(|d| d <= 7).unwrap_or(false);
 
     let upgrade_suggested = has_membership
-        && active_membership.and_then(|m| m.membership_category.as_deref()) != Some("LEGEND");
+        && !membership_subscriptions
+            .iter()
+            .any(|m| m.membership_level.as_deref() == Some("LEGEND"));
     tracing::debug!(
         has_membership,
         expiring_soon,

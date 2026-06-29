@@ -62,7 +62,23 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 /// 3. Navigate JSON: client_type → channel → product_id → settings
 /// 4. Query cc_product for product info
 /// 5. Return single discount extension
+/// 任何步骤失败时返回 "暂无产品优惠"
 async fn handle_discount(
+    user_id: i64,
+    ext_pool: &sqlx::MySqlPool,
+    agent_ctx: Option<&AgentContext>,
+) -> BuiltinResult {
+    let result = try_handle_discount(user_id, ext_pool, agent_ctx).await;
+    match result {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            tracing::warn!(error = %e, "[handle_discount] failed, returning no discount");
+            Ok(serde_json::json!({ "message": "暂无产品优惠活动" }))
+        }
+    }
+}
+
+async fn try_handle_discount(
     user_id: i64,
     ext_pool: &sqlx::MySqlPool,
     agent_ctx: Option<&AgentContext>,
@@ -95,10 +111,15 @@ async fn handle_discount(
 
     // 3. 导航 JSON: client_type → channel → products
     let products_obj = resolve_discount_products(&config, &client_type, &channel)?;
-    tracing::debug!(?products_obj, "[handle_discount] step3: resolved products for {}/{}", client_type, channel);
+    tracing::debug!(
+        ?products_obj,
+        "[handle_discount] step3: resolved products for {}/{}",
+        client_type,
+        channel
+    );
     if products_obj.as_object().map_or(true, |o| o.is_empty()) {
         return Ok(serde_json::json!({
-            "message": "暂无优惠产品"
+            "message": "暂无产品优惠活动"
         }));
     }
 
@@ -208,6 +229,7 @@ pub async fn query_balance_async_impl(
     let need_coins = matches!(category, "coins" | "benefits");
     let need_disk = matches!(category, "disk" | "benefits");
     let need_duration = matches!(category, "duration_card" | "benefits");
+    tracing::debug!(%user_id, %category, need_coins, need_disk, need_duration, "[query_balance] step0: start");
 
     // ★ discount: 从配置表 + 资费表获取优惠产品信息
     if category == "discount" {
@@ -223,10 +245,12 @@ pub async fn query_balance_async_impl(
                 BuiltinError::Exec(format!("金币查询失败: {e}"))
             })?;
         if row.is_none() {
+            tracing::debug!(%user_id, "[query_balance] step1 coins: no data");
             return Ok(json!({
                 "message": "暂无该用户的资产数据，请稍后再试"
             }));
         }
+        tracing::debug!(%user_id, ?row, "[query_balance] step1 coins: row");
         row
     } else {
         None
@@ -240,6 +264,7 @@ pub async fn query_balance_async_impl(
                 tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
                 BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
             })?;
+        tracing::debug!(%user_id, ?row, "[query_balance] step1.2 disk: row");
         row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
         None
@@ -253,6 +278,7 @@ pub async fn query_balance_async_impl(
                 tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
                 BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
             })?;
+    tracing::debug!(%user_id, count = membership_subscriptions.len(), "[query_balance] step1.5 membership: {} rows", membership_subscriptions.len());
 
     // Serialize membership+subscription rows to JSON
     let membership_json: Vec<Value> = membership_subscriptions
@@ -277,15 +303,18 @@ pub async fn query_balance_async_impl(
             })
         })
         .collect();
+    tracing::debug!(?membership_json, "[query_balance] step1.5 membership_json");
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）
     let duration_cards = if need_duration {
-        crate::services::membership::query_duration_cards(ext_pool, user_id)
+        let cards = crate::services::membership::query_duration_cards(ext_pool, user_id)
             .await
             .map_err(|e| {
                 tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
                 BuiltinError::Exec(format!("时长卡查询失败: {e}"))
-            })?
+            })?;
+        tracing::debug!(%user_id, count = cards.len(), "[query_balance] step1.8 duration_cards: {} rows", cards.len());
+        cards
     } else {
         Vec::new()
     };
@@ -310,6 +339,8 @@ pub async fn query_balance_async_impl(
                 "remain_duration": row.remain_duration,
                 "computer_biz_type": row.computer_biz_type,
                 "expire_time": row.expire_time,
+                "card_type": row.card_type,
+                "card_type_name": row.card_type_name,
                 "order_id": row.order_id,
                 "consume_label": row.consume_label,
                 "create_time": row.create_time.map(|t| t.to_string()),
@@ -321,6 +352,10 @@ pub async fn query_balance_async_impl(
             })
         })
         .collect();
+    tracing::debug!(
+        ?duration_card_json,
+        "[query_balance] step1.8 duration_card_json"
+    );
 
     // Derive card type from membership_subscriptions (highest-priority active row)
     let active_membership = membership_subscriptions.iter().find(|row| {
@@ -337,6 +372,13 @@ pub async fn query_balance_async_impl(
 
     let upgrade_suggested = has_membership
         && active_membership.and_then(|m| m.membership_category.as_deref()) != Some("LEGEND");
+    tracing::debug!(
+        has_membership,
+        expiring_soon,
+        upgrade_suggested,
+        days_until_expiry,
+        "[query_balance] step2: card state"
+    );
 
     // 2. 构造返回结果
     let mut result = json!({});
@@ -371,6 +413,7 @@ pub async fn query_balance_async_impl(
             "disk_status": disk_status,
         })
     };
+    tracing::debug!(?reply, "[query_balance] step3: reply");
 
     if let Value::Object(ref mut map) = result {
         // 构造扩展卡片
@@ -387,6 +430,7 @@ pub async fn query_balance_async_impl(
             } else {
                 "sufficient"
             };
+            tracing::debug!(card_type, "[query_balance] step4: card_type");
 
             let mut payload = json!({"type": card_type});
             if let Value::Object(ref mut p) = payload {
@@ -428,8 +472,10 @@ pub async fn query_balance_async_impl(
         };
 
         let payload = build_payload();
+        tracing::debug!(?payload, "[query_balance] step4: payload");
         extension_list.push(json!({
             "content_type": "card",
+            "category": category,
             "payload": payload,
         }));
 
@@ -445,7 +491,7 @@ pub async fn query_balance_async_impl(
         map.insert("_agent_context_updates".into(), updates);
     }
 
-    tracing::debug!("HOP tool call result: {:?}", result);
+    tracing::debug!(?result, "[query_balance] step5: final result");
 
     Ok(result)
 }

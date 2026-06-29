@@ -91,12 +91,12 @@ left join
     where user_id = ?
         and expire_time > UNIX_TIMESTAMP() *1000
         and expire_time < (7*24*60*60*1000+UNIX_TIMESTAMP()*1000)
-        and value>0 AND type=4
+        and value>0 AND type IN (0,1,2,3,4,5,6,7,10,12,13,17,18,19,20)
     group by user_id
 ) m2 on m1.user_id = m2.user_id
 LEFT JOIN (
     select user_id, IFNULL(sum(value), 0) as total_coins from cc_user_asset_coin
-  where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0 AND type=4
+    where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0 AND type IN (0,1,2,3,4,5,6,7,10,12,13,17,18,19,20)
     group by user_id
 ) m7 on m1.user_id = m7.user_id
 "#,
@@ -200,6 +200,8 @@ pub struct DurationCardRow {
     pub remain_duration: Option<i64>,
     pub computer_biz_type: Option<String>,
     pub expire_time: Option<i64>,
+    pub card_type: Option<i8>,
+    pub card_type_name: Option<String>,
     pub order_id: Option<i64>,
     pub consume_label: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
@@ -222,6 +224,12 @@ pub async fn query_duration_cards(
     t1.value               AS remain_duration,
     t1.computer_biz_type   AS computer_biz_type,
     t1.expire_time         AS expire_time,
+    t1.type                AS card_type,
+    CASE t1.type
+        WHEN 8 THEN '金卡'
+        WHEN 9 THEN '黑金卡'
+        ELSE '其他'
+    END                     AS card_type_name,
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
     t1.create_time         AS create_time,
@@ -232,7 +240,12 @@ FROM (
 	SELECT * FROM cc_user_asset_coin
 	WHERE user_id = ?
 	  AND value > 0
-	  AND type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000
+	  AND type IN (8, 9)
+	  AND (
+	    (type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000)
+	    OR
+	    (type = 9 AND (expire_time IS NULL OR expire_time > UNIX_TIMESTAMP() * 1000))
+	  )
 	  AND (consume_label IS NULL
 	       OR NOT JSON_CONTAINS(consume_label, '"FREE_CARD"', '$.gameLabelList'))
 ) t1

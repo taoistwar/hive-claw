@@ -60,10 +60,66 @@ fn flatten_extension(e: &ExtensionContent) -> Value {
     );
     if let Value::Object(data_obj) = &e.data {
         for (k, v) in data_obj {
+            tracing::debug!(key = %k, value = %v, "flatten extension data");
             flat.insert(k.clone(), v.clone());
         }
     }
     Value::Object(flat)
+}
+
+/// 根据 extensions 中空数据情况重置 content
+fn rewrite_content_for_empty_extensions(
+    content: Option<String>,
+    extensions_for_sse: &Option<Value>,
+) -> Option<String> {
+    let exts = match extensions_for_sse {
+        Some(Value::Array(arr)) => arr,
+        _ => return content,
+    };
+
+    for ext in exts {
+        let ct = ext.get("content_type").and_then(|v| v.as_str());
+        if ct != Some("card") {
+            continue;
+        }
+
+        let category = ext
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let payload = ext.get("payload");
+
+        // duration_card 为空
+        let dc_empty = payload
+            .and_then(|p| p.get("duration_card"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(true);
+
+        // disk_total_size == 0
+        let disk_empty = payload
+            .and_then(|p| p.get("info"))
+            .and_then(|i| i.get("disk_total_size"))
+            .and_then(|v| v.as_f64())
+            .map(|s| s == 0.0)
+            .unwrap_or(true);
+
+        if category == "duration_card" && dc_empty {
+            return Some(
+                "暂未查询到您的时长卡购买记录。如您需要更多游戏时长，推荐购买会员产品，通常会比单独购买时长卡更划算。"
+                    .into(),
+            );
+        }
+
+        if category == "disk" && disk_empty {
+            return Some(
+                "暂未查询到您的云硬盘购买记录。如您需要使用云硬盘，可前往「我的」页面点击「云硬盘」进行购买。您也可以购买会员产品，享受赠送的 5GB 会员专属云硬盘权益。"
+                    .into(),
+            );
+        }
+    }
+
+    content
 }
 
 /// 单次会话调用入口（spawned task）
@@ -226,7 +282,11 @@ where
     for hop in 0..max_hops {
         // 0. 检查客户端是否已断开
         if deps.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::info!(hop, session_id, "orchestrator cancelled: client disconnected");
+            tracing::info!(
+                hop,
+                session_id,
+                "orchestrator cancelled: client disconnected"
+            );
             return None;
         }
 
@@ -784,21 +844,25 @@ async fn finalize_with_variant(
     };
     let extensions_json = extensions_for_sse.clone();
 
-    let saved = if content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
-        None
-    } else {
-        let text = content.as_deref().unwrap_or("");
-        append_assistant_message_user(
-            pool,
-            session_id,
-            actor_id,
-            text,
-            Some(elapsed),
-            extensions_json,
-        )
-        .await
-        .ok()
-    };
+    // ★ 根据 extensions 内容重置 empty content
+    let final_content = rewrite_content_for_empty_extensions(content, &extensions_for_sse);
+
+    let saved =
+        if final_content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
+            None
+        } else {
+            let text = final_content.as_deref().unwrap_or("");
+            append_assistant_message_user(
+                pool,
+                session_id,
+                actor_id,
+                text,
+                Some(elapsed),
+                extensions_json,
+            )
+            .await
+            .ok()
+        };
 
     let done = json!({
         "elapsed_ms": elapsed,
@@ -1064,13 +1128,13 @@ async fn handle_meta_tool(
                             ToolOutcome::ok(result)
                         }
                         Err(e) => {
-                        tracing::error!(
-                            func_ident = %func_ident,
-                            error = %e,
-                            "builtin function 执行失败"
-                        );
-                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
-                    }
+                            tracing::error!(
+                                func_ident = %func_ident,
+                                error = %e,
+                                "builtin function 执行失败"
+                            );
+                            ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                        }
                     }
                 }
                 1 | 2 => {
@@ -1271,7 +1335,7 @@ pub(crate) async fn handle_workspace_tool(
                             "builtin function 执行失败"
                         );
                         ToolOutcome::error(format!("builtin function 执行失败: {e}"))
-                    },
+                    }
                 }
             } else {
                 // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
@@ -1321,7 +1385,7 @@ pub(crate) async fn handle_workspace_tool(
                             "plugin invoke failed"
                         );
                         ToolOutcome::error(format!("plugin invoke failed: {e}"))
-                    },
+                    }
                 }
             }
         }

@@ -394,6 +394,7 @@ AND t7.id is null
     .bind(client_type)
     .bind(channel)
     .bind(logic_game_id)
+    .bind(logic_game_id)
     .fetch_all(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("game_info external query: {e}")))

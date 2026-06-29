@@ -355,14 +355,14 @@ pub async fn get_external_game_by_id(
 ) -> Result<Vec<ExternalGameInfo>, AppError> {
     sqlx::query_as::<_, ExternalGameInfo>(
         r#"SELECT
-  t1.logic_game_id, t1.name, t1.description, t1.cover_image, t1.game_tags,
+  t1.logic_game_id, t1.name, t9.recommend_reason as description, t1.cover_image, t1.game_tags,
   t2.computer_id,
   t3.name as platform_name,
   t1.client_type,
   t5.prom_channel as channel,
   t8.game_icon
 FROM (
-  select * from cc_logic_game_wide where logic_game_id=?
+  select * from cc_logic_game_wide where logic_game_id=? and lower(client_type)=lower(?)
 ) t1
 INNER JOIN (
   select * from cc_game where logic_game_id=?
@@ -378,16 +378,22 @@ LEFT JOIN (
 LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
 LEFT JOIN (
   select * from cc_logic_game where id=?
-) t8 on t1.logic_game_id=t8.id
+) t8 on t1.logic_game_id = t8.id
+LEFT JOIN (
+  select * from cc_ranking_recommended_game
+  where logic_game_id = ? order by update_time desc limit 1
+) t9 on t1.logic_game_id = t9.logic_game_id
 where t6.id is null
 AND t7.id is null
 "#,
     )
     .bind(logic_game_id)
+    .bind(client_type)
     .bind(logic_game_id)
     .bind(channel)
     .bind(client_type)
     .bind(channel)
+    .bind(logic_game_id)
     .bind(logic_game_id)
     .fetch_all(ext_pool)
     .await
@@ -445,7 +451,7 @@ FROM (
 INNER JOIN cc_promotion_channel t2 ON t2.game_tag = t1.channel_game_tag AND t2.status = 1
 LEFT JOIN (
     select * from cc_logic_game_exclude
-) t3 on t1.logic_game_id = t3.logic_game_id
+) t3 on t1.logic_game_id = t3.logic_game_id and t2.prom_channel = t3.channel
 where t3.id is null",
     )
     .bind(logic_game_id)
@@ -455,19 +461,23 @@ where t3.id is null",
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
-/// Query client_type from cc_logic_game_wide (external DB).
+/// Query client_type values from cc_logic_game_wide (external DB).
 pub async fn get_game_client_types(
     ext_pool: &MySqlPool,
     logic_game_id: i64,
-) -> Result<Option<serde_json::Value>, AppError> {
-    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
-        r#"SELECT  t1.client_type
+) -> Result<Vec<String>, AppError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r#"SELECT t1.client_type
 FROM (
-  select * from cc_logic_game_wide where logic_game_id = ?
+    SELECT in1.*,in2.prom_channel
+    FROM (
+        select * from cc_logic_game_wide where logic_game_id = ?
+    ) in1
+    INNER JOIN cc_promotion_channel in2 ON in2.game_tag = in1.channel_game_tag AND in2.status = 1
 ) t1
 LEFT JOIN (
   select * from cc_logic_game_exclude where logic_game_id = ?
-) t2 on t1.logic_game_id = t2.logic_game_id
+) t2 on t1.logic_game_id = t2.logic_game_id and t1.prom_channel = t2.channel
 INNER JOIN cc_logic_game_version t3 ON t1.version = t3.version
 LEFT JOIN cc_logic_game_blacklist t4 ON t1.logic_game_id = t4.logic_game_id
 where t2.id is null AND t4.id is null
@@ -475,10 +485,10 @@ group by t1.client_type"#,
     )
     .bind(logic_game_id)
     .bind(logic_game_id)
-    .fetch_optional(ext_pool)
+    .fetch_all(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("game_client_types query: {e}")))?;
-    Ok(row.and_then(|r| r.0))
+    Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
 /// Query trial purchase platform config from external cc_config table.

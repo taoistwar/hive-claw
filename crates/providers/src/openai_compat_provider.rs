@@ -22,11 +22,11 @@ use log::warn;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::base::{ChatRequest, LLMProvider};
-use crate::registry::ProviderSpec;
 use crate::base::extract_retry_after_from_text;
-use crate::base::{enforce_role_alternation, sanitize_empty_content};
+use crate::base::{ChatRequest, LLMProvider};
 use crate::base::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
+use crate::base::{enforce_role_alternation, sanitize_empty_content};
+use crate::registry::ProviderSpec;
 
 const ALLOWED_MSG_KEYS: &[&str] = &[
     "role",
@@ -288,7 +288,11 @@ impl OpenAICompatProvider {
 
     fn endpoint(&self) -> String {
         let base = self.effective_base.trim_end_matches('/');
-        format!("{base}/chat/completions")
+        if base.ends_with("v1") || base.ends_with("v1/") {
+            format!("{base}/chat/completions")
+        } else {
+            format!("{base}/v1/chat/completions")
+        }
     }
 
     fn resolve_model(&self, req_model: Option<&str>) -> String {

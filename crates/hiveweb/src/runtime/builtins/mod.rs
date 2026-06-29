@@ -160,7 +160,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: query_balance,
     },
     BuiltinDef {
-        identifier: "support.card",
+        identifier: "support_card",
         name: "Support Card",
         description: "为客服内容生成支持卡片。",
         input_schema: SUPPORT_CARD_INPUT_SCHEMA,

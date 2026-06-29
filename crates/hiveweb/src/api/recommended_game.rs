@@ -3,27 +3,65 @@ use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
 };
+use redis::AsyncCommands;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::chat_common;
 use crate::api::AppState;
+use crate::api::chat_common;
 use crate::models::Role;
 use crate::models::chat_user::ChatMessageUser;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
 use crate::services::chat_user as chat_svc;
 use crate::services::membership;
-use crate::services::recommended_game::{self as svc, CreateMeta, UpdateMeta};
+use crate::services::recommended_game::{self as svc, CreateMeta, StrategyMeta, UpdateMeta};
 use crate::services::user_auth;
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
+
+/// Expand `"*"` in strategy channel/client_type arrays to all available values
+/// for the given game, queried from the external DB.
+async fn expand_strategy_wildcards(
+    ext_pool: Option<&sqlx::MySqlPool>,
+    game_id: &str,
+    strategies: &mut [StrategyMeta],
+) {
+    let gid: i64 = match game_id.parse() {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    let ext_pool = match ext_pool {
+        Some(p) => p,
+        None => return,
+    };
+
+    let (channels, client_types) = tokio::join!(
+        crate::services::game_service::get_game_channels(ext_pool, gid),
+        crate::services::game_service::get_game_client_types(ext_pool, gid),
+    );
+    let channels = channels.unwrap_or_default();
+    let client_types = client_types.unwrap_or_default();
+
+    for s in strategies {
+        if s.channel.as_array().map_or(false, |a| a.iter().any(|v| v == "*")) {
+            s.channel = serde_json::to_value(&channels).unwrap_or_default();
+        }
+        if s.client_type.as_array().map_or(false, |a| a.iter().any(|v| v == "*")) {
+            s.client_type = serde_json::to_value(&client_types).unwrap_or_default();
+        }
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/recommended-games",
             get(list_recommended_games).post(create_recommended_game),
+        )
+        .route(
+            "/recommended-games/game-ids",
+            get(get_existing_game_ids),
         )
         .route(
             "/recommended-games/:id",
@@ -124,10 +162,19 @@ async fn get_recommended_game(
     Ok(ApiResponse::success(item))
 }
 
+async fn get_existing_game_ids(
+    State(state): State<AppState>,
+) -> Result<ApiResponse<Vec<String>>, ApiResponse<()>> {
+    let ids = svc::fetch_all_game_ids(&state.pool)
+        .await
+        .map_err(|e| e.into_response())?;
+    Ok(ApiResponse::success(ids))
+}
+
 async fn create_recommended_game(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
-    Json(meta): Json<CreateMeta>,
+    Json(mut meta): Json<CreateMeta>,
 ) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
@@ -146,6 +193,16 @@ async fn create_recommended_game(
         );
     }
 
+    // Expand '*' wildcards in strategies to actual values from external DB
+    if let Some(ref mut strategies) = meta.strategies {
+        expand_strategy_wildcards(
+            state.ext_pool.as_ref(),
+            &meta.game_id,
+            strategies,
+        )
+        .await;
+    }
+
     let game = svc::create(&state.pool, meta)
         .await
         .map_err(|e| e.into_response())?;
@@ -159,7 +216,7 @@ async fn update_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     axum::Extension(claims): axum::Extension<Claims>,
-    Json(meta): Json<UpdateMeta>,
+    Json(mut meta): Json<UpdateMeta>,
 ) -> Result<ApiResponse<GameItem>, ApiResponse<()>> {
     let caller_role = match Role::try_from(claims.role) {
         Ok(role) => role,
@@ -176,6 +233,20 @@ async fn update_recommended_game(
             AppError::InsufficientPermission("Insufficient permissions".to_string())
                 .into_response(),
         );
+    }
+
+    // Expand '*' wildcards in strategies to actual values from external DB
+    if let Some(ref mut strategies) = meta.strategies {
+        // Use provided game_id, or fall back to existing game's game_id
+        let gid: String = if let Some(ref gid) = meta.game_id {
+            gid.clone()
+        } else {
+            let existing = svc::fetch_by_id(&state.pool, id)
+                .await
+                .map_err(|e| e.into_response())?;
+            existing.game_id
+        };
+        expand_strategy_wildcards(state.ext_pool.as_ref(), &gid, strategies).await;
     }
 
     let game = svc::update(&state.pool, id, meta)
@@ -269,17 +340,20 @@ async fn top_recommended_games(
     let req: TopRequest = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
 
-    if req.user_id.is_empty() || req.channel.is_empty() || req.client_type.is_empty() || req.client_version.is_empty() {
-        return Err(AppError::BadRequest("user_id, channel, client_type, client_version 不能为空".into()).into_response());
+    if req.user_id.is_empty()
+        || req.channel.is_empty()
+        || req.client_type.is_empty()
+        || req.client_version.is_empty()
+    {
+        return Err(AppError::BadRequest(
+            "user_id, channel, client_type, client_version 不能为空".into(),
+        )
+        .into_response());
     }
 
-    let games = svc::fetch_top_filtered(
-        &state.pool,
-        &req.channel,
-        &req.client_type,
-    )
-    .await
-    .map_err(|e| e.into_response())?;
+    let games = svc::fetch_top_filtered(&state.pool, &req.channel, &req.client_type)
+        .await
+        .map_err(|e| e.into_response())?;
     let result: Vec<TopRecommendedGame> = games
         .into_iter()
         .map(|game| TopRecommendedGame {
@@ -325,12 +399,8 @@ async fn execute_recommendation(
     let req: ExecuteRequest = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
 
-    if req.user_id.trim().is_empty()
-        || req.game_id.trim().is_empty()
-    {
-        return Err(
-            AppError::BadRequest("user_id, game_id 不能为空".into()).into_response(),
-        );
+    if req.user_id.trim().is_empty() || req.game_id.trim().is_empty() {
+        return Err(AppError::BadRequest("user_id, game_id 不能为空".into()).into_response());
     }
 
     let user_id: i64 = req.user_id.trim().parse().map_err(|_| {
@@ -342,22 +412,30 @@ async fn execute_recommendation(
         .await
         .map_err(|e| e.into_response())?;
 
-    // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon（带缓存，按平台优先级排序）
-    let (computer_id, platform_name, game_icon) = if let Some(ext_pool) = state.ext_pool.as_ref() {
-        crate::services::game_service::get_single_external_game_info_cached(
-            &state.redis,
-            ext_pool,
-            game.game_id.parse::<i64>().unwrap_or(0),
-            &req.client_type,
-            &req.channel,
-        )
-        .await
-        .unwrap_or(None)
-        .map(|info| (info.computer_id, info.platform_name, info.game_icon))
-        .unwrap_or((None, None, None))
-    } else {
-        (None, None, None)
-    };
+    // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon/description（带缓存，按平台优先级排序）
+    let (computer_id, platform_name, game_icon, _description) =
+        if let Some(ext_pool) = state.ext_pool.as_ref() {
+            crate::services::game_service::get_single_external_game_info_cached(
+                &state.redis,
+                ext_pool,
+                game.game_id.parse::<i64>().unwrap_or(0),
+                &req.client_type,
+                &req.channel,
+            )
+            .await
+            .unwrap_or(None)
+            .map(|info| {
+                (
+                    info.computer_id,
+                    info.platform_name,
+                    info.game_icon,
+                    info.description,
+                )
+            })
+            .unwrap_or((None, None, None, None))
+        } else {
+            (None, None, None, None)
+        };
 
     // 3c. 同步用户：确保 users 表存在该用户，避免 chat_sessions_user 外键约束失败
     let cloud_info = if let Some(ext_pool) = state.ext_pool.as_ref() {
@@ -401,7 +479,6 @@ async fn execute_recommendation(
                 "client_type": req.client_type,
                 "reason": game.reason,
                 "game_tags": game.game_category,
-                "description": game.reason,
                 "cover_image": game.game_image,
                 "computer_id": computer_id,
                 "platform_name": platform_name,
@@ -412,7 +489,7 @@ async fn execute_recommendation(
     let extensions = serde_json::json!([card]);
 
     // 7. 记录 assistant 消息（extensions = card）
-    let saved = chat_svc::append_assistant_message_user(
+    let mut saved = chat_svc::append_assistant_message_user(
         &state.pool,
         session.id,
         user_id,
@@ -422,6 +499,53 @@ async fn execute_recommendation(
     )
     .await
     .map_err(|e| e.into_response::<()>())?;
+
+    // 8. 追加 usage extension（参考 assistant_chat 逻辑）
+    if let Some(ext_pool) = state.ext_pool.as_ref() {
+        let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+            .await
+            .unwrap_or(false);
+
+        let limit_config =
+            membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
+                .await
+                .unwrap_or_else(|_| membership::AssistantChatLimitConfig::default());
+
+        let total_times = if is_vip {
+            limit_config.vip_ask_times
+        } else {
+            limit_config.normal_ask_times
+        };
+
+        let limit_key = format!("assistant:daily:{}", user_id);
+        let current_count: i64 = {
+            match state.redis.get_multiplexed_async_connection().await {
+                Ok(mut conn) => conn.get(&limit_key).await.unwrap_or(0),
+                Err(_) => 0,
+            }
+        };
+
+        let remaining = total_times - current_count;
+        if limit_config.remain_ask_time > 0 && remaining <= limit_config.remain_ask_time {
+            let usage_ext = serde_json::json!({
+                "content_type": "usage",
+                "payload": {
+                    "used_times": current_count,
+                    "total_times": total_times,
+                    "membership_max_times": limit_config.vip_ask_times,
+                    "remain_ask_time": limit_config.remain_ask_time,
+                }
+            });
+            let mut exts: Vec<serde_json::Value> = saved
+                .extensions
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .map(|a| a.clone())
+                .unwrap_or_default();
+            exts.push(usage_ext);
+            saved.extensions = Some(serde_json::Value::Array(exts));
+        }
+    }
 
     Ok(ApiResponse::success(saved))
 }

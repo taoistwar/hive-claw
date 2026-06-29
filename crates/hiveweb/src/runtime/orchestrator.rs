@@ -82,6 +82,8 @@ pub struct OrchestratorDeps {
     pub client_version: String,
     /// 010 Sensitive Word Filter — for output content filtering
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
+    /// 客户端断开时设置为 true，orchestrator 应在安全点检查并退出
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub async fn run_session_user(
@@ -222,6 +224,12 @@ where
     let _ = agent_ctx.set_messages(messages.clone());
 
     for hop in 0..max_hops {
+        // 0. 检查客户端是否已断开
+        if deps.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(hop, session_id, "orchestrator cancelled: client disconnected");
+            return None;
+        }
+
         // 1. 装配当前 agent 资源
         let agent_content =
             match crate::services::agent::fetch_content(&deps.pool, &deps.redis, current_agent_id)
@@ -402,17 +410,21 @@ where
         let assistant_content = resp.content.clone().unwrap_or_default();
         let tool_calls = resp.tool_calls.clone();
 
-        // 把 assistant 消息加入 history（含 tool_calls 序列化）
+        // 把 assistant 消息加入 history（含 tool_calls 序列化 + reasoning_content）
         if !tool_calls.is_empty() {
             let tc_json: Vec<Value> = tool_calls
                 .iter()
                 .map(|tc| tc.to_openai_tool_call())
                 .collect();
-            messages.push(json!({
+            let mut msg = json!({
                 "role": "assistant",
                 "content": if assistant_content.is_empty() { Value::Null } else { Value::String(assistant_content.clone()) },
                 "tool_calls": tc_json,
-            }));
+            });
+            if let Some(ref rc) = resp.reasoning_content {
+                msg["reasoning_content"] = Value::String(rc.clone());
+            }
+            messages.push(msg);
         } else {
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }
@@ -1051,7 +1063,14 @@ async fn handle_meta_tool(
                             apply_agent_context_updates(&agent_ctx, &result);
                             ToolOutcome::ok(result)
                         }
-                        Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                        Err(e) => {
+                        tracing::error!(
+                            func_ident = %func_ident,
+                            error = %e,
+                            "builtin function 执行失败"
+                        );
+                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                    }
                     }
                 }
                 1 | 2 => {
@@ -1095,7 +1114,14 @@ async fn handle_meta_tool(
                             apply_agent_context_updates(&agent_ctx, &parsed);
                             ToolOutcome::ok(parsed)
                         }
-                        Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                        Err(e) => {
+                            tracing::error!(
+                                func_ident = %func_ident,
+                                error = %e,
+                                "plugin invoke failed"
+                            );
+                            ToolOutcome::error(format!("plugin invoke failed: {e}"))
+                        }
                     }
                 }
                 _ => ToolOutcome::error(format!(
@@ -1238,7 +1264,14 @@ pub(crate) async fn handle_workspace_tool(
                         apply_agent_context_updates(&agent_ctx, &result);
                         ToolOutcome::ok(result)
                     }
-                    Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                    Err(e) => {
+                        tracing::error!(
+                            lookup_id = %lookup_id,
+                            error = %e,
+                            "builtin function 执行失败"
+                        );
+                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                    },
                 }
             } else {
                 // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
@@ -1281,7 +1314,14 @@ pub(crate) async fn handle_workspace_tool(
                             .unwrap_or_else(|_| Value::String(out_str));
                         ToolOutcome::ok(parsed)
                     }
-                    Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                    Err(e) => {
+                        tracing::error!(
+                            tool = %tool_ref.identifier,
+                            error = %e,
+                            "plugin invoke failed"
+                        );
+                        ToolOutcome::error(format!("plugin invoke failed: {e}"))
+                    },
                 }
             }
         }

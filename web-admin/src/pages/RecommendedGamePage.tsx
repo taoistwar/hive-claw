@@ -5,6 +5,7 @@ import type { ColumnsType } from 'antd/es/table'
 import {
   createRecommendedGame,
   deleteRecommendedGame,
+  getExistingGameIds,
   listRecommendedGames,
   updateRecommendedGame,
   type RecommendedGame,
@@ -103,6 +104,7 @@ export default function RecommendedGamePage() {
   const [editForm] = Form.useForm()
   const [externalGames, setExternalGames] = useState<ExternalGameOption[]>([])
   const [externalLoading, setExternalLoading] = useState(false)
+  const [existingGameIds, setExistingGameIds] = useState<Set<string>>(new Set())
   const [availableChannels, setAvailableChannels] = useState<string[]>([])
   const [availableClientTypes, setAvailableClientTypes] = useState<string[]>([])
   const [createStep, setCreateStep] = useState(0)
@@ -140,11 +142,28 @@ export default function RecommendedGamePage() {
     }
   }, [])
 
+  const loadExistingIds = useCallback(async () => {
+    try {
+      const ids = await getExistingGameIds()
+      setExistingGameIds(new Set(ids))
+    } catch {
+      // 获取失败时不阻塞用户操作
+    }
+  }, [])
+
   useEffect(() => {
+    if (createOpen) {
+      createForm.resetFields()
+      setCreateStep(0)
+    }
+    if (editOpen) {
+      setEditStep(0)
+    }
     if (createOpen || editOpen) {
       void loadExternalGames()
+      void loadExistingIds()
     }
-  }, [createOpen, editOpen, loadExternalGames])
+  }, [createOpen, editOpen, loadExternalGames, loadExistingIds, createForm])
 
   const onCreate = async (values: { name: string; reply: string; reason?: string; tag?: string; game_category?: GameTypeItem[]; strategies?: StrategyMeta[]; game_image?: string; sort_value?: number; game_id: string; game_name: string }) => {
     try {
@@ -178,7 +197,7 @@ export default function RecommendedGamePage() {
       getExternalGameDetail(gid).then((detail) => {
         setAvailableChannels(detail.channels ?? [])
         setAvailableClientTypes(detail.client_types ?? [])
-      }).catch(() => {})
+      }).catch(() => { })
     }
     setEditOpen(true)
   }
@@ -259,8 +278,8 @@ export default function RecommendedGamePage() {
             {strategies.map((s, i) => (
               <span key={i} style={{ fontSize: 12 }}>
                 <Tag color={s.strategy === 'EXCLUDE' ? 'red' : 'blue'} style={{ marginRight: 4 }}>{s.strategy}</Tag>
-                渠道:{s.channel?.includes('*') ? 'ALL' : s.channel?.join(',')}
-                {' '}客户端:{s.client_type?.includes('*') ? 'ALL' : s.client_type?.join(',')}
+                渠道:{s.channel?.join(',')}
+                {' '}客户端:{s.client_type?.join(',')}
               </span>
             ))}
           </div>
@@ -328,135 +347,156 @@ export default function RecommendedGamePage() {
       <>
         <div style={{ display: step === 0 ? 'block' : 'none' }}>
           <Form.Item name="tag" label="标签">
-          <Select allowClear placeholder="从三个标签中选择" options={TAG_OPTIONS.map((t) => ({ label: t, value: t }))} />
-        </Form.Item>
-        <Form.Item
-          name="game_id"
-          label="游戏"
-          rules={[{ required: true, message: '请选择游戏' }]}
-          extra="从外部 cc_logic_game 表中获取"
-        >
-          <Select
-            showSearch
-            placeholder="搜索并选择游戏"
-            loading={externalLoading}
-            notFoundContent={externalLoading ? <Spin size="small" /> : '暂无数据'}
-            optionFilterProp="label"
-            options={externalGames.map((g) => ({ value: String(g.id), label: `${g.id} - ${g.name}` }))}
-            onChange={handleGameIdChange}
-            filterOption={(input, option) => {
-              const label = (option?.label ?? '').toString().toLowerCase()
-              return label.includes(input.toLowerCase())
-            }}
-          />
-        </Form.Item>
-        <Form.Item name="game_name" label="游戏名称" rules={[{ required: true, message: '请输入游戏名称' }]}>
-          <Input placeholder="选择游戏后自动填充，可手动修改" />
-        </Form.Item>
-        <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
-          <Input />
-        </Form.Item>
-        <Form.Item name="reply" label="回复" rules={[{ required: true, message: '请输入回复内容' }]}>
-          <Input.TextArea rows={4} />
-        </Form.Item>
-        <Form.Item name="reason" label="推荐理由（可选）">
-          <Input.TextArea rows={3} placeholder="推荐理由" />
-        </Form.Item>
-        <Form.Item name="game_category" label="游戏类型">
-          <Form.List name="game_category">
-            {(fields, { add, remove }) => (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {fields.map(({ key, name, ...rest }) => (
-                  <Space key={key} align="start">
-                    <Form.Item {...rest} name={[name, 'name']} noStyle>
-                      <Input placeholder="类型名称，如：角色扮演" style={{ width: 160 }} />
-                    </Form.Item>
-                    <Form.Item {...rest} name={[name, 'type']} noStyle>
-                      <Input placeholder="类型标识，如：RPG" style={{ width: 160 }} />
-                    </Form.Item>
-                    <Button
-                      type="text"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => remove(name)}
-                    />
-                  </Space>
-                ))}
-                <Button type="dashed" onClick={() => add({ name: '', type: '' })} block icon={<PlusOutlined />}>
-                  添加类型
-                </Button>
-              </div>
-            )}
-          </Form.List>
-        </Form.Item>
-        <Form.Item name="game_image" label="推荐图片地址">
-          <Input placeholder="游戏推荐的图片 URL" />
-        </Form.Item>
-        <Form.Item name="sort_value" label="排序值" tooltip="数值越大越靠前，默认 0">
-          <InputNumber min={0} style={{ width: '100%' }} />
-        </Form.Item>
+            <Select allowClear placeholder="从三个标签中选择" options={TAG_OPTIONS.map((t) => ({ label: t, value: t }))} />
+          </Form.Item>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item
+            name="game_id"
+            label="游戏"
+            rules={[{ required: true, message: '请选择游戏' }]}
+            extra="从外部 cc_logic_game 表中获取"
+          >
+            <Select
+              showSearch
+              placeholder="搜索并选择游戏"
+              loading={externalLoading}
+              notFoundContent={externalLoading ? <Spin size="small" /> : '暂无数据'}
+              optionFilterProp="label"
+              options={externalGames.map((g) => {
+                const gid = String(g.id)
+                // 新建时所有已添加的游戏都禁用；编辑时当前游戏不禁用
+                const disabled = isCreate
+                  ? existingGameIds.has(gid)
+                  : existingGameIds.has(gid) && gid !== String(editingItem?.game_id)
+                return {
+                  value: gid,
+                  label: `${g.id} - ${g.name}${disabled ? '（已添加）' : ''}`,
+                  disabled,
+                }
+              })}
+              onChange={(value) => {
+                const gid = String(value)
+                const dup = isCreate
+                  ? existingGameIds.has(gid)
+                  : existingGameIds.has(gid) && gid !== String(editingItem?.game_id)
+                if (dup) {
+                  void message.warning('该游戏已添加为推荐游戏')
+                  return
+                }
+                handleGameIdChange(value)
+              }}
+              filterOption={(input, option) => {
+                const label = (option?.label ?? '').toString().toLowerCase()
+                return label.includes(input.toLowerCase())
+              }}
+            />
+          </Form.Item>
+          <Form.Item name="game_name" label="游戏名称" rules={[{ required: true, message: '请输入游戏名称' }]}>
+            <Input placeholder="选择游戏后自动填充，可手动修改" />
+          </Form.Item>
+          <Form.Item name="reply" label="回复" rules={[{ required: true, message: '请输入回复内容' }]}>
+            <Input.TextArea rows={4} />
+          </Form.Item>
+          <Form.Item name="reason" label="推荐理由（可选）">
+            <Input.TextArea rows={3} placeholder="推荐理由" />
+          </Form.Item>
+          <Form.Item name="game_category" label="游戏类型">
+            <Form.List name="game_category">
+              {(fields, { add, remove }) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {fields.map(({ key, name, ...rest }) => (
+                    <Space key={key} align="start">
+                      <Form.Item {...rest} name={[name, 'name']} noStyle>
+                        <Input placeholder="类型名称，如：角色扮演" style={{ width: 160 }} />
+                      </Form.Item>
+                      <Form.Item {...rest} name={[name, 'type']} noStyle>
+                        <Input placeholder="类型标识，如：RPG" style={{ width: 160 }} />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(name)}
+                      />
+                    </Space>
+                  ))}
+                  <Button type="dashed" onClick={() => add({ name: '', type: '' })} block icon={<PlusOutlined />}>
+                    添加类型
+                  </Button>
+                </div>
+              )}
+            </Form.List>
+          </Form.Item>
+          <Form.Item name="game_image" label="推荐图片地址">
+            <Input placeholder="游戏推荐的图片 URL" />
+          </Form.Item>
+          <Form.Item name="sort_value" label="排序值" tooltip="数值越大越靠前，默认 0">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
         </div>
         <div style={{ display: step === 1 ? 'block' : 'none' }}>
-      <Form.Item label="策略配置">
-        <Form.List name="strategies">
-            {(fields, { add, remove }) => (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {fields.map(({ key, name, ...rest }) => (
-                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, border: '1px solid #d9d9d9', borderRadius: 6 }}>
-                    <Form.Item {...rest} name={[name, 'strategy']} style={{ marginBottom: 0, width: 120 }}>
-                      <Select
-                        options={[
-                          { label: 'INCLUDE', value: 'INCLUDE' },
-                          { label: 'EXCLUDE', value: 'EXCLUDE' },
-                        ]}
-                      />
-                    </Form.Item>
-                    <Form.Item {...rest} name={[name, 'channel']} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
-                      <Select
-                        mode="multiple"
-                        placeholder="渠道（ALL）"
-                        options={[
-                          { label: 'ALL', value: '*' },
-                          ...availableChannels.map((ch) => ({ label: ch, value: ch })),
-                        ]}
-                        onChange={(vals: string[]) => {
-                          const last = vals[vals.length - 1]
-                          if (last === '*') {
-                            form.setFieldValue(['strategies', name, 'channel'], ['*'])
-                          } else if (vals.includes('*')) {
-                            form.setFieldValue(['strategies', name, 'channel'], vals.filter((v) => v !== '*'))
-                          }
-                        }}
-                      />
-                    </Form.Item>
-                    <Form.Item {...rest} name={[name, 'client_type']} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
-                      <Select
-                        mode="multiple"
-                        placeholder="客户端（ALL）"
-                        options={[
-                          { label: 'ALL', value: '*' },
-                          ...availableClientTypes.map((ct) => ({ label: ct, value: ct })),
-                        ]}
-                        onChange={(vals: string[]) => {
-                          const last = vals[vals.length - 1]
-                          if (last === '*') {
-                            form.setFieldValue(['strategies', name, 'client_type'], ['*'])
-                          } else if (vals.includes('*')) {
-                            form.setFieldValue(['strategies', name, 'client_type'], vals.filter((v) => v !== '*'))
-                          }
-                        }}
-                      />
-                    </Form.Item>
-                    <Button type="text" danger icon={<DeleteOutlined />} size="small" onClick={() => remove(name)} />
-                  </div>
-                ))}
-                <Button type="dashed" onClick={() => add({ channel: ['*'], client_type: ['*'], strategy: 'INCLUDE' })} block icon={<PlusOutlined />}>
-                  添加策略
-                </Button>
-              </div>
-            )}
-          </Form.List>
-        </Form.Item>
+          <Form.Item label="策略配置">
+            <Form.List name="strategies">
+              {(fields, { add, remove }) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {fields.map(({ key, name, ...rest }) => (
+                    <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, border: '1px solid #d9d9d9', borderRadius: 6 }}>
+                      <Form.Item {...rest} name={[name, 'strategy']} style={{ marginBottom: 0, width: 120 }}>
+                        <Select
+                          options={[
+                            { label: 'INCLUDE', value: 'INCLUDE' },
+                            { label: 'EXCLUDE', value: 'EXCLUDE' },
+                          ]}
+                        />
+                      </Form.Item>
+                      <Form.Item {...rest} name={[name, 'channel']} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
+                        <Select
+                          mode="multiple"
+                          placeholder="渠道"
+                          options={[
+                            { label: 'ALL', value: '*' },
+                            ...availableChannels.map((ch) => ({ label: ch, value: ch })),
+                          ]}
+                          onChange={(vals: string[]) => {
+                            const last = vals[vals.length - 1]
+                            if (last === '*') {
+                              form.setFieldValue(['strategies', name, 'channel'], ['*'])
+                            } else if (vals.includes('*')) {
+                              form.setFieldValue(['strategies', name, 'channel'], vals.filter((v: string) => v !== '*'))
+                            }
+                          }}
+                        />
+                      </Form.Item>
+                      <Form.Item {...rest} name={[name, 'client_type']} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
+                        <Select
+                          mode="multiple"
+                          placeholder="客户端"
+                          options={[
+                            { label: 'ALL', value: '*' },
+                            ...availableClientTypes.map((ct) => ({ label: ct, value: ct })),
+                          ]}
+                          onChange={(vals: string[]) => {
+                            const last = vals[vals.length - 1]
+                            if (last === '*') {
+                              form.setFieldValue(['strategies', name, 'client_type'], ['*'])
+                            } else if (vals.includes('*')) {
+                              form.setFieldValue(['strategies', name, 'client_type'], vals.filter((v: string) => v !== '*'))
+                            }
+                          }}
+                        />
+                      </Form.Item>
+                      <Button type="text" danger icon={<DeleteOutlined />} size="small" onClick={() => remove(name)} />
+                    </div>
+                  ))}
+                  <Button type="dashed" onClick={() => add({ channel: ['*'], client_type: ['*'], strategy: 'INCLUDE' })} block icon={<PlusOutlined />}>
+                    添加策略
+                  </Button>
+                </div>
+              )}
+            </Form.List>
+          </Form.Item>
         </div>
       </>
     )
@@ -465,7 +505,7 @@ export default function RecommendedGamePage() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => setCreateOpen(true)}>
+        <Button type="primary" onClick={() => { createForm.resetFields(); setCreateOpen(true) }}>
           新建推荐游戏
         </Button>
         <Input.Search
@@ -548,16 +588,16 @@ export default function RecommendedGamePage() {
           ]}
         />
         {createStep === 0 ? (
-        <div className="rg-modal-split">
-          <div className="rg-modal-split__form">
-            <Form form={createForm} layout="vertical" initialValues={{ sort_value: 0, tag: '运营推荐' }}>
-              {renderFormFields(true, createForm, createStep)}
-            </Form>
+          <div className="rg-modal-split">
+            <div className="rg-modal-split__form">
+              <Form form={createForm} layout="vertical" initialValues={{ sort_value: 0, tag: '运营推荐' }}>
+                {renderFormFields(true, createForm, createStep)}
+              </Form>
+            </div>
+            <div className="rg-modal-split__preview">
+              <PreviewPanel values={createValues ?? {}} />
+            </div>
           </div>
-          <div className="rg-modal-split__preview">
-            <PreviewPanel values={createValues ?? {}} />
-          </div>
-        </div>
         ) : (
           <Form form={createForm} layout="vertical" initialValues={{ sort_value: 0, tag: '运营推荐' }}>
             {renderFormFields(true, createForm, createStep)}
@@ -587,21 +627,21 @@ export default function RecommendedGamePage() {
               ]}
             />
             {editStep === 0 ? (
-            <div className="rg-modal-split">
-              <div className="rg-modal-split__form">
-                <Form form={editForm} layout="vertical">
-                  {renderFormFields(false, editForm, editStep)}
-                  <Form.Item>
-                    <Space>
-                      <Button htmlType="button" type="primary" onClick={() => setEditStep(1)}>下一步</Button>
-                    </Space>
-                  </Form.Item>
-                </Form>
+              <div className="rg-modal-split">
+                <div className="rg-modal-split__form">
+                  <Form form={editForm} layout="vertical">
+                    {renderFormFields(false, editForm, editStep)}
+                    <Form.Item>
+                      <Space>
+                        <Button htmlType="button" type="primary" onClick={() => setEditStep(1)}>下一步</Button>
+                      </Space>
+                    </Form.Item>
+                  </Form>
+                </div>
+                <div className="rg-modal-split__preview">
+                  <PreviewPanel values={editValues ?? {}} />
+                </div>
               </div>
-              <div className="rg-modal-split__preview">
-                <PreviewPanel values={editValues ?? {}} />
-              </div>
-            </div>
             ) : (
               <Form form={editForm} layout="vertical">
                 {renderFormFields(false, editForm, editStep)}

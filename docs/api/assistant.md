@@ -85,7 +85,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
         "disk_total_size": 1099511627776,
         "total_coins": 900000.0,
         "expire_coins_7d": 5000.0,
-        "dist_status": "NORMAL"
+        "disk_status": "NORMAL"
       },
       "membership": [
         {
@@ -111,7 +111,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
             "fps": "60",
             "gpu": "4070",
             "order_id": -1,
-            "card_type": 8,
             "create_time": "2026-06-16 16:00:15 UTC",
             "expire_time": 1781884815303,
             "card_asset_id": 30123507,
@@ -128,9 +127,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
                     "ALL"
                 ]
             },
-            "card_type_name": "金卡",
             "remain_duration": 300000,
-            "computer_biz_type": null
+            "computer_biz_type": null,
+            "product_mirror": {
+                "fps": "60",
+                "gpu": "4070"
+            },
+            "product_title": "金卡",
+            "product_duration": "3600000"
         }
       ]
     }
@@ -195,7 +199,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `disk_total_size` | `f64` | 网盘总大小（字节） |
 | `total_coins` | `f64` | 总金币数 |
 | `expire_coins_7d` | `f64` | 7 天内即将过期的金币数 |
-| `dist_status` | `String` | 网盘状态（来自外部数据库 disk 表），如 `NORMAL` |
+| `disk_status` | `String` | 网盘状态（来自外部数据库 disk 表），如 `NORMAL` |
 
 ### `info` 对象字段（game 卡片）
 
@@ -209,7 +213,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `client_type` | `String` | 请求时的客户端类型 |
 | `reason` | `Option<String>` | 推荐理由 |
 | `game_tags` | `Option<Value>` | 游戏标签数组，元素为 `{"name": "标签名", "type": 1}` |
-| `description` | `Option<String>` | 游戏描述 |
 | `cover_image` | `Option<String>` | 游戏封面图片 URL |
 | `computer_id` | `Option<i64>` | 外部游戏表关联的 computer_id |
 | `platform_name` | `Option<String>` | 平台名称（如 Steam） |
@@ -229,7 +232,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       "client_type": "ANDROID",
       "reason": "因跌宕起伏的剧情与充满魅力的角色...",
       "game_tags": [{"name": "角色扮演", "type": 1}],
-      "description": "因跌宕起伏的剧情与充满魅力的角色...",
       "cover_image": "https://example.com/cover.jpg",
       "computer_id": 10269,
       "platform_name": "Steam",
@@ -269,8 +271,10 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 {
   "content_type": "usage",
   "payload": {
-    "used_times": 48,
-    "total_times": 50
+    "used_times": 8,
+    "total_times": 10,
+    "membership_max_times": 50,
+    "remain_ask_time": 2
   }
 }
 ```
@@ -281,6 +285,8 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 |------|------|------|
 | `used_times` | `i64` | 当日已使用次数 |
 | `total_times` | `i64` | 当日总可用次数（VIP / 普通用户上限，由 `cc_config` 表动态配置） |
+| `membership_max_times` | `i64` | 会员（VIP）每日最大可用次数，用于前端展示升级引导 |
+| `remain_ask_time` | `i64` | 剩余提醒阈值，当 `remaining <=` 该值时触发 usage 扩展；`0` 表示关闭提醒 |
 
 > 该扩展由 `chat_assistant_handler` 在响应返回前根据限流计数结果动态注入，与 Agent 执行过程无关。
 > 可通过后台 `cc_config` 表 `AIassistantChatLimitConfig` 配置项中的 `remain_ask_time` 调整提醒阈值（设为 `0` 关闭提醒）。
@@ -313,21 +319,136 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `remain_duration` | `Option<i64>` | 剩余时长（秒） |
 | `computer_biz_type` | `Option<String>` | 计算业务类型 |
 | `expire_time` | `Option<i64>` | 过期时间（Unix 时间戳） |
-| `card_type` | `Option<i8>` | 卡类型编码（如 8 = 金卡） |
-| `card_type_name` | `Option<String>` | 卡类型显示名称（如"金卡"） |
 | `order_id` | `Option<i64>` | 订单 ID |
 | `consume_label` | `Option<Value>` | 消费标签（JSON 对象，含 `weight`、`channelList`、`gameLabelList`、`clientTypeList`） |
 | `create_time` | `Option<String>` | 创建时间 |
+| `product_mirror` | `Option<Value>` | 购买时产品快照（JSON，含 `fps`、`gpu` 等字段） |
+| `product_title` | `Option<String>` | 商品名称（如"金卡"、"黑金卡"） |
+| `product_duration` | `Option<String>` | 商品时长（毫秒字符串） |
 | `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取） |
 | `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取） |
 
+## 配额查询
+
+```
+GET /api/quota?sign={md5}&user_id={user_id}
+```
+
+查询用户当日配额使用情况，**只读操作不消耗配额**。
+
+### 鉴权
+
+与 [`POST /api/assistant`](#鉴权) 一致，MD5 签名校验。签名计算方式：
+
+```
+MD5(ASSISTANT_SECRET + "/api/quota" + "?body=" + "user_id=12345")
+```
+
+> 注意：`body` 参数为 `user_id=<value>` 字符串。
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `sign` | `String` | 是* | MD5 签名（`ASSISTANT_SECRET` 为空时跳过） |
+| `user_id` | `i64` | 是 | 用户 ID，必须大于 0 |
+
+### 成功响应 `200 OK`
+
+```json
+{
+  "code": 200,
+  "data": {
+    "used_times": 8,
+    "total_times": 10,
+    "membership_max_times": 50,
+    "remain_ask_time": 2
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `used_times` | `i64` | 当日已使用次数 |
+| `total_times` | `i64` | 当日总可用次数（VIP 取 `vip_ask_times`，普通取 `normal_ask_times`） |
+| `membership_max_times` | `i64` | 会员（VIP）每日最大可用次数，用于前端展示升级引导 |
+| `remain_ask_time` | `i64` | 剩余提醒阈值，`0` 表示关闭提醒 |
+
+### 示例请求
+
+```bash
+USER_ID=12345
+SIGN=$(echo -n "${ASSISTANT_SECRET}/api/quota?body=user_id=${USER_ID}" | md5sum | awk '{print $1}')
+
+curl "http://localhost:3300/api/quota?sign=${SIGN}&user_id=${USER_ID}"
+```
+
 ## 错误响应
 
-| 状态码 | 说明 |
-|--------|------|
-| `400` | 参数校验失败（`user_id` ≤ 0、`message` 为空、签名错误、外部用户不存在、限流超限等） |
-| `429` | 同一用户已有活跃会话 |
-| `500` | 内部错误（外部 DB 不可用、orchestrator 异常等） |
+所有错误响应遵循统一格式：
+
+```json
+{
+  "code": 4290,
+  "message": "Daily limit reached (10/10)"
+}
+```
+
+| `code` | HTTP 状态码 | `message` | 说明 |
+|--------|-------------|-----------|------|
+| `0` | `200` | `success` | 请求成功 |
+| `4290` | `429` | `Daily limit reached (50/50)` | 日访问次数超限（括号内为 `total_times/total_times`） |
+| `4291` | `429` | `并发会话过多，请关闭其它对话窗口后重试` | 同一用户已有活跃 SSE 会话 |
+| `4009` | `400` | `内容安全警告：输入的文本数据可能包含不适当的内容！` | 敏感词过滤拦截 |
+| `4000` | `400` | 动态消息（如 `Invalid signature`、`User not found`、`user_id must be positive`、`message must not be empty` 等） | 参数校验/鉴权失败 |
+| `5000` | `500` | 动态消息（如 `Redis unavailable`、`Assistant service unavailable`、orchestrator 异常等） | 内部错误 |
+
+### 错误响应示例
+
+**超出日限额：**
+
+```json
+{
+  "code": 4290,
+  "message": "Daily limit reached (10/10)"
+}
+```
+
+**SSE 并发冲突：**
+
+```json
+{
+  "code": 4291,
+  "message": "并发会话过多，请关闭其它对话窗口后重试"
+}
+```
+
+**签名错误：**
+
+```json
+{
+  "code": 4000,
+  "message": "Invalid signature"
+}
+```
+
+**用户不存在：**
+
+```json
+{
+  "code": 4000,
+  "message": "User not found"
+}
+```
+
+**敏感词拦截：**
+
+```json
+{
+  "code": 4009,
+  "message": "内容安全警告：输入的文本数据可能包含不适当的内容！"
+}
+```
 
 ## 错误回滚
 

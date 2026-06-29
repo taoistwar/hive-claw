@@ -160,6 +160,12 @@ async fn invoke_function(
                 }));
             }
             Err(e) => {
+                tracing::error!(
+                    function_id = id,
+                    identifier = %fn_row.identifier,
+                    error = %e,
+                    "builtin 函数执行失败"
+                );
                 return Err(AppError::Internal(format!(
                     "builtin「{}」执行失败: {}",
                     fn_row.identifier, e
@@ -171,6 +177,11 @@ async fn invoke_function(
 
     // 仅 kind=2 (custom function) 走 Plugin invoker；其他 kind 拒绝
     if fn_row.kind != 2 {
+        tracing::warn!(
+            function_id = id,
+            kind = fn_row.kind,
+            "unsupported function kind"
+        );
         return Err(AppError::BadRequest(format!(
             "unsupported function kind={} for id={}",
             fn_row.kind, id

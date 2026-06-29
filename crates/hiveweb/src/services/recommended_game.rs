@@ -120,10 +120,10 @@ pub async fn list(
     if has_ch || has_ct {
         let mut strat_parts: Vec<String> = Vec::new();
         if has_ch {
-            strat_parts.push("(JSON_CONTAINS(s.channel, '\"*\"') OR JSON_CONTAINS(s.channel, ?))".into());
+            strat_parts.push("JSON_CONTAINS(s.channel, ?)".into());
         }
         if has_ct {
-            strat_parts.push("(JSON_CONTAINS(s.client_type, '\"*\"') OR JSON_CONTAINS(s.client_type, ?))".into());
+            strat_parts.push("JSON_CONTAINS(s.client_type, ?)".into());
         }
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM recommended_games_strategy s WHERE s.recommended_game_id = rg.id AND s.strategy = 'INCLUDE' AND {})",
@@ -228,6 +228,16 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Fetch all existing game_id values from recommended_games.
+pub async fn fetch_all_game_ids(pool: &MySqlPool) -> Result<Vec<String>, AppError> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT game_id FROM recommended_games")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("recommended_game fetch_all_game_ids: {e}")))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame>, AppError> {
     sqlx::query_as::<_, RecommendedGame>(
         "SELECT * FROM recommended_games ORDER BY sort_value DESC, created_at DESC LIMIT ?",
@@ -288,15 +298,15 @@ WHERE rg.tag = ?
     SELECT 1 FROM recommended_games_strategy si
     WHERE si.recommended_game_id = rg.id
       AND si.strategy = 'INCLUDE'
-      AND (JSON_CONTAINS(si.channel, '"*"') OR JSON_CONTAINS(si.channel, ?))
-      AND (JSON_CONTAINS(si.client_type, '"*"') OR JSON_CONTAINS(si.client_type, ?))
+      AND JSON_CONTAINS(si.channel, ?)
+      AND JSON_CONTAINS(si.client_type, ?)
   )
   AND NOT EXISTS (
     SELECT 1 FROM recommended_games_strategy se
     WHERE se.recommended_game_id = rg.id
       AND se.strategy = 'EXCLUDE'
-      AND (JSON_CONTAINS(se.channel, '"*"') OR JSON_CONTAINS(se.channel, ?))
-      AND (JSON_CONTAINS(se.client_type, '"*"') OR JSON_CONTAINS(se.client_type, ?))
+      AND JSON_CONTAINS(se.channel, ?)
+      AND JSON_CONTAINS(se.client_type, ?)
   )
 ORDER BY rg.sort_value DESC, rg.created_at DESC
 LIMIT ?

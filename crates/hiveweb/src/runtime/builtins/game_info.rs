@@ -106,9 +106,7 @@ async fn game_info_async_impl(
         _ => {
             return Ok(serde_json::json!({
                 "found": false,
-                "data": format!("未找到游戏 ID {} 的信息", game_id),
-                "id": game_id,
-                "name": null
+                "name": "未找到相关游戏"
             }));
         }
     };
@@ -119,13 +117,13 @@ async fn game_info_async_impl(
     let game_payload = serde_json::json!({
         "id": id,
         "name": name,
-        "description": game_info.description,
-        "cover_image": game_info.cover_image,
+        "channel": game_info.channel,
+        "client_type": game_info.client_type,
+        "reason": game_info.description,
         "game_tags": game_info.game_tags,
+        "cover_image": game_info.cover_image,
         "computer_id": game_info.computer_id,
         "platform_name": game_info.platform_name,
-        "client_type": game_info.client_type,
-        "channel": game_info.channel,
         "game_icon": game_info.game_icon,
     });
 
@@ -158,31 +156,37 @@ async fn game_info_async_impl(
     Ok(output)
 }
 
-// ─── game_id == 0: LLM 分类 + 模拟数据 ──────────────────────────────────────
+// ─── game_id == 0: LLM 分类 + 外部数据库查询 ──────────────────────────────
 
-/// Mock game categories and their associated game lists.
+/// Query logic_game_ids from cc_logic_game_display filtered by tag_id.
 ///
-/// TODO: 替换为外部数据库查询（cc_logic_game 按 category 过滤）。
-fn mock_games_by_category(_category_id: i64, category_name: &str) -> Vec<MockGameItem> {
-    let all = mock_game_data();
-    let name_lower = category_name.to_lowercase().trim().to_string();
+/// Returns up to 3 distinct logic_game_ids that are visible and have the given tag.
+async fn fetch_logic_game_ids_by_tag(
+    ext_pool: &sqlx::MySqlPool,
+    tag_id: i64,
+) -> Result<Vec<i64>, String> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        r#"SELECT DISTINCT d.logic_game_id
+FROM cc_logic_game_display d
+INNER JOIN cc_logic_game g ON d.logic_game_id = g.id AND g.status = 1
+WHERE
+  EXISTS (
+    SELECT 1
+    FROM cc_logic_game_display_tag t
+    WHERE t.display_id = d.id
+      AND t.logic_game_id = d.logic_game_id
+      AND t.lang_code = d.lang_code
+      AND t.visible = 1
+      AND t.tag_id = ?
+  )
+LIMIT 3"#,
+    )
+    .bind(tag_id)
+    .fetch_all(ext_pool)
+    .await
+    .map_err(|e| format!("cc_logic_game_display query: {e}"))?;
 
-    // 按分类匹配（模糊匹配：分类名包含在 game categories 中或 vice versa）
-    let matched: Vec<&MockGameItem> = all
-        .iter()
-        .filter(|g| {
-            let cats: Vec<String> = g.categories.iter().map(|c| c.to_lowercase()).collect();
-            cats.iter()
-                .any(|c| c.contains(&name_lower) || name_lower.contains(c.as_str()))
-        })
-        .collect();
-
-    if matched.is_empty() {
-        // 无匹配时返回前 3 个作为兜底
-        all.iter().take(3).cloned().collect()
-    } else {
-        matched.into_iter().take(3).cloned().collect()
-    }
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 /// Fetch game categories (tags) from the external cc_game_tag table.
@@ -219,97 +223,6 @@ async fn fetch_categories(
     }
 }
 
-/// Mock game data entry.
-#[derive(Debug, Clone)]
-struct MockGameItem {
-    id: i64,
-    name: String,
-    description: String,
-    cover_image: String,
-    categories: Vec<String>,
-    platform_name: String,
-    game_icon: String,
-}
-
-/// Mock game data.
-///
-/// TODO: 替换为外部数据库查询（cc_logic_game 表）。
-fn mock_game_data() -> Vec<MockGameItem> {
-    vec![
-        MockGameItem {
-            id: 1001,
-            name: "幻境奇谭".into(),
-            description: "一款开放世界角色扮演游戏，探索神秘的幻境大陆。".into(),
-            cover_image: "https://cdn.example.com/covers/huanjing.png".into(),
-            categories: vec!["角色扮演".into(), "开放世界".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/huanjing.png".into(),
-        },
-        MockGameItem {
-            id: 1002,
-            name: "暗影之刃".into(),
-            description: "快节奏动作冒险游戏，扮演暗影刺客执行秘密任务。".into(),
-            cover_image: "https://cdn.example.com/covers/anying.png".into(),
-            categories: vec!["动作冒险".into(), "潜入".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/anying.png".into(),
-        },
-        MockGameItem {
-            id: 1003,
-            name: "星际战线".into(),
-            description: "科幻题材第一人称射击游戏，在外星战场抵御异形入侵。".into(),
-            cover_image: "https://cdn.example.com/covers/xingji.png".into(),
-            categories: vec!["射击游戏".into(), "科幻".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/xingji.png".into(),
-        },
-        MockGameItem {
-            id: 1004,
-            name: "帝国征途".into(),
-            description: "大型策略游戏，建立帝国、指挥军队、征服世界。".into(),
-            cover_image: "https://cdn.example.com/covers/diguo.png".into(),
-            categories: vec!["策略游戏".into(), "历史".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/diguo.png".into(),
-        },
-        MockGameItem {
-            id: 1005,
-            name: "巅峰足球".into(),
-            description: "真实物理引擎足球竞技游戏，支持在线多人对战。".into(),
-            cover_image: "https://cdn.example.com/covers/zuqiu.png".into(),
-            categories: vec!["体育竞技".into(), "足球".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/zuqiu.png".into(),
-        },
-        MockGameItem {
-            id: 1006,
-            name: "天空之城".into(),
-            description: "模拟经营类游戏，建造并管理你的空中城市。".into(),
-            cover_image: "https://cdn.example.com/covers/tiankong.png".into(),
-            categories: vec!["模拟经营".into(), "建造".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/tiankong.png".into(),
-        },
-        MockGameItem {
-            id: 1007,
-            name: "糖果消消乐".into(),
-            description: "轻松愉快的三消休闲游戏，数百个关卡等你挑战。".into(),
-            cover_image: "https://cdn.example.com/covers/tangguo.png".into(),
-            categories: vec!["休闲益智".into(), "三消".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/tangguo.png".into(),
-        },
-        MockGameItem {
-            id: 1008,
-            name: "节奏大师".into(),
-            description: "跟随音乐节拍点击屏幕，挑战你的反应速度。".into(),
-            cover_image: "https://cdn.example.com/covers/jiezou.png".into(),
-            categories: vec!["音乐节奏".into(), "休闲".into()],
-            platform_name: "CloudGame".into(),
-            game_icon: "https://cdn.example.com/icons/jiezou.png".into(),
-        },
-    ]
-}
 
 /// Build an LLM classification prompt to identify the game category from user input.
 fn build_classification_prompt(user_input: &str, categories: &[(i64, String)]) -> String {
@@ -337,8 +250,8 @@ async fn handle_classify_and_list(
     _pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
     redis: Option<&redis::Client>,
-    _channel: &str,
-    _client_type: &str,
+    channel: &str,
+    client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
     agent_id: Option<i64>,
 ) -> BuiltinResult {
@@ -354,7 +267,7 @@ async fn handle_classify_and_list(
     if user_input.is_empty() {
         return Ok(serde_json::json!({
             "found": false,
-            "data": "无法获取用户输入，无法进行分类"
+            "name": "未找到相关游戏"
         }));
     }
 
@@ -365,7 +278,7 @@ async fn handle_classify_and_list(
             tracing::warn!("ext_pool not available, game_info classify aborted");
             return Ok(serde_json::json!({
                 "found": false,
-                "data": "游戏分类服务不可用"
+                "name": "未找到相关游戏"
             }));
         }
     };
@@ -376,14 +289,14 @@ async fn handle_classify_and_list(
             tracing::warn!("cc_game_tag returned empty, game_info classify aborted");
             return Ok(serde_json::json!({
                 "found": false,
-                "data": "暂无游戏分类数据"
+                "name": "未找到相关游戏"
             }));
         }
         Err(e) => {
             tracing::warn!(error = %e, "fetch_categories failed, game_info classify aborted");
             return Ok(serde_json::json!({
                 "found": false,
-                "data": "游戏分类查询失败"
+                "name": "未找到相关游戏"
             }));
         }
     };
@@ -393,7 +306,7 @@ async fn handle_classify_and_list(
             tracing::warn!(user_input = %user_input, "game_info classify returned None");
             return Ok(serde_json::json!({
                 "found": false,
-                "data": "无法识别游戏分类"
+                "name": "未找到相关游戏"
             }));
         }
     };
@@ -412,61 +325,88 @@ async fn handle_classify_and_list(
         "game_info: LLM classified user input"
     );
 
-    // 3. 根据分类获取游戏列表（取前 3 个）
-    let games = mock_games_by_category(category_id, &category_name);
+    // 3. 根据分类查询 3 个 logic_game_id（从 cc_logic_game_display 按 tag 过滤）
+    let game_ids = match fetch_logic_game_ids_by_tag(ext_pool, category_id).await {
+        Ok(ids) => {
+            if ids.is_empty() {
+                tracing::warn!(category_id = %category_id, "no logic_game_id found for tag");
+                return Ok(serde_json::json!({
+                    "found": false,
+                    "name": "未找到相关游戏"
+                }));
+            }
+            ids
+        }
+        Err(e) => {
+            tracing::error!(category_id = %category_id, error = %e, "fetch logic_game_ids failed");
+            return Ok(serde_json::json!({
+                "found": false,
+                "name": "未找到相关游戏"
+            }));
+        }
+    };
 
-    // 4. 构造返回结果
-    let game_items: Vec<Value> = games
-        .iter()
-        .map(|g| {
-            serde_json::json!({
-                "id": g.id,
-                "name": g.name,
-                "description": g.description,
-                "cover_image": g.cover_image,
-                "platform_name": g.platform_name,
-                "game_icon": g.game_icon,
-            })
-        })
-        .collect();
+    // 4. 查询每个游戏的详细信息
+    let redis_ref = redis;
+    let mut games: Vec<Value> = Vec::new();
+    for &gid in &game_ids {
+        let info = if let Some(r) = redis_ref {
+            crate::services::game_service::get_single_external_game_info_cached(
+                r,
+                ext_pool,
+                gid,
+                client_type,
+                channel,
+            )
+            .await
+        } else {
+            let mut results = crate::services::game_service::get_external_game_by_id(
+                ext_pool,
+                gid,
+                client_type,
+                channel,
+            )
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
+            crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut results).await;
+            Ok(results.into_iter().next())
+        };
+        match info {
+            Ok(Some(info)) if info.logic_game_id != 0 => {
+                games.push(serde_json::json!({
+                    "id": info.logic_game_id,
+                    "name": info.name,
+                    "description": info.description,
+                    "cover_image": info.cover_image,
+                    "platform_name": info.platform_name,
+                    "game_icon": info.game_icon,
+                }));
+            }
+            _ => {
+                tracing::warn!(logic_game_id = %gid, "game info not found, skipping");
+            }
+        }
+    }
 
-    let summary = format!(
-        "根据你的描述，分类为「{}」，为你推荐以下 {} 款游戏：\n{}",
-        category_name,
-        game_items.len(),
-        game_items
-            .iter()
-            .enumerate()
-            .map(|(i, g)| format!(
-                "{}. {}（ID: {}）- {}",
-                i + 1,
-                g["name"].as_str().unwrap_or(""),
-                g["id"].as_i64().unwrap_or(0),
-                g["description"].as_str().unwrap_or("")
-            ))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    if games.is_empty() {
+        return Ok(serde_json::json!({
+            "found": false,
+            "name": "未找到相关游戏"
+        }));
+    }
 
+    // 5. 构造返回结果
     let mut output = serde_json::json!({
-        "found": true,
-        "id": 0,
-        "name": null,
-        "data": summary,
-        "category_id": category_id,
-        "category": category_name,
-        "games": game_items,
-        "classified": true,
+        "found": false,
+        "name": "未找到相关游戏"
     });
 
-    // 5. 写入 AgentContext extensions
+    // 6. 写入 AgentContext extensions
     let extension = serde_json::json!({
         "content_type": "card",
         "payload": {
             "type": "game_list",
-            "category_id": category_id,
-            "category": category_name,
-            "games": game_items,
+            "games": games,
         },
     });
     output["_agent_context_updates"] = serde_json::json!({

@@ -86,3 +86,8 @@ export const updateRecommendedGame = async (
 export const deleteRecommendedGame = async (id: number): Promise<void> => {
   await apiClient.delete(`/recommended-games/${id}`)
 }
+
+export const getExistingGameIds = async (): Promise<string[]> => {
+  const { data } = await apiClient.get('/recommended-games/game-ids')
+  return data
+}

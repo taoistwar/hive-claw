@@ -52,6 +52,12 @@ pub mod codes {
     pub const RESOURCE_IN_USE: u16 = 4093;
     pub const OPTIMISTIC_LOCK_CONFLICT: u16 = 4094;
     pub const SSE_CONCURRENCY_EXCEEDED: u16 = 4291;
+
+    /// AI 助手日访问次数超限
+    pub const DAILY_LIMIT_REACHED: u16 = 4290;
+
+    /// 敏感词过滤拦截
+    pub const SENSITIVE_WORD_BLOCKED: u16 = 4009;
     pub const CANNOT_DELETE_MAIN_AGENT: u16 = 5001;
     pub const SCHEMA_MISMATCH: u16 = 5002;
     pub const CAPABILITY_DENIED_CHAT: u16 = 5003;
@@ -128,7 +134,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         }
         codes::NEW_PASSWORD_SAME_AS_OLD => StatusCode::BAD_REQUEST,
         // Generic
-        codes::BAD_REQUEST => StatusCode::BAD_REQUEST,
+        codes::BAD_REQUEST | codes::SENSITIVE_WORD_BLOCKED => StatusCode::BAD_REQUEST,
         codes::NOT_FOUND => StatusCode::NOT_FOUND,
         codes::CONFLICT => StatusCode::CONFLICT,
         codes::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR,
@@ -146,7 +152,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         | codes::DAG_CYCLE
         | codes::RESOURCE_IN_USE
         | codes::OPTIMISTIC_LOCK_CONFLICT => StatusCode::CONFLICT,
-        codes::SSE_CONCURRENCY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
+        codes::SSE_CONCURRENCY_EXCEEDED | codes::DAILY_LIMIT_REACHED => StatusCode::TOO_MANY_REQUESTS,
         codes::CANNOT_DELETE_MAIN_AGENT
         | codes::CAPABILITY_DENIED_CHAT
         | codes::BUILTIN_SKILL_PROTECTED
@@ -212,6 +218,8 @@ pub enum AppError {
     ResourceInUse(String),
     OptimisticLockConflict(String),
     SseConcurrencyExceeded(String),
+    DailyLimitReached(String),
+    SensitiveWordBlocked(String),
     CannotDeleteMainAgent(String),
     SchemaMismatch(String),
     CapabilityDeniedChat(String),
@@ -268,6 +276,8 @@ impl AppError {
             AppError::ResourceInUse(_) => codes::RESOURCE_IN_USE,
             AppError::OptimisticLockConflict(_) => codes::OPTIMISTIC_LOCK_CONFLICT,
             AppError::SseConcurrencyExceeded(_) => codes::SSE_CONCURRENCY_EXCEEDED,
+            AppError::DailyLimitReached(_) => codes::DAILY_LIMIT_REACHED,
+            AppError::SensitiveWordBlocked(_) => codes::SENSITIVE_WORD_BLOCKED,
             AppError::CannotDeleteMainAgent(_) => codes::CANNOT_DELETE_MAIN_AGENT,
             AppError::SchemaMismatch(_) => codes::SCHEMA_MISMATCH,
             AppError::CapabilityDeniedChat(_) => codes::CAPABILITY_DENIED_CHAT,
@@ -312,6 +322,8 @@ impl AppError {
             | AppError::ResourceInUse(m)
             | AppError::OptimisticLockConflict(m)
             | AppError::SseConcurrencyExceeded(m)
+            | AppError::DailyLimitReached(m)
+            | AppError::SensitiveWordBlocked(m)
             | AppError::CannotDeleteMainAgent(m)
             | AppError::SchemaMismatch(m)
             | AppError::CapabilityDeniedChat(m)

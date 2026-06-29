@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
 use super::cache_helper;
-use super::cache_helper::{cached_or_fetch};
+use super::cache_helper::cached_or_fetch;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 struct CcUserMembership {
@@ -48,12 +48,10 @@ pub async fn get_cloud_user_info(
     pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT uid, nickname FROM cloud_user WHERE ID = ?",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as::<_, (String, String)>("SELECT uid, nickname FROM cloud_user WHERE ID = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
 }
 
 // ---------- query_balance support ----------
@@ -72,7 +70,7 @@ pub struct CoinsBalanceRow {
 pub struct DiskBalanceRow {
     pub disk_total_size: Option<Decimal>,
     pub disk_end_time: Option<i64>,
-    pub dist_status: Option<String>,
+    pub disk_status: Option<String>,
 }
 
 /// Query user coins balance: total_coins and expire_coins_7d.
@@ -110,13 +108,13 @@ LEFT JOIN (
     .await
 }
 
-/// Query user disk balance: disk_total_size, disk_end_time, dist_status.
+/// Query user disk balance: disk_total_size, disk_end_time, disk_status.
 pub async fn query_disk_balance(
     ext_pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<DiskBalanceRow>, sqlx::Error> {
     sqlx::query_as(
-        r#"SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status as dist_status
+        r#"SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status as disk_status
 from cc_user_disk
 where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
 group by user_id"#,
@@ -202,13 +200,15 @@ pub struct DurationCardRow {
     pub remain_duration: Option<i64>,
     pub computer_biz_type: Option<String>,
     pub expire_time: Option<i64>,
-    pub card_type: Option<i8>,
-    pub card_type_name: Option<String>,
     pub order_id: Option<i64>,
     pub consume_label: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
     /// product_mirror JSON — 提取 fps / gpu 等字段
     pub product_mirror: Option<serde_json::Value>,
+    /// cc_product.title — 商品名称（如 "金卡"、"黑金卡"）
+    pub product_title: Option<String>,
+    /// cc_product.value — 商品时长
+    pub product_duration: Option<String>,
 }
 
 /// Query duration cards (时长卡) for a user — gold card (type=8) and black gold card (type=9).
@@ -222,26 +222,24 @@ pub async fn query_duration_cards(
     t1.value               AS remain_duration,
     t1.computer_biz_type   AS computer_biz_type,
     t1.expire_time         AS expire_time,
-    t1.type                AS card_type,
-    CASE t1.type
-        WHEN 8 THEN '金卡'
-        WHEN 9 THEN '黑金卡'
-        ELSE '其他'
-    END                     AS card_type_name,
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
     t1.create_time         AS create_time,
-    t2.product_mirror      AS product_mirror
+    t2.product_mirror      AS product_mirror,
+    t3.title               AS product_title,
+    t3.value               AS product_duration
 FROM (
-	select * from cc_user_asset_coin  WHERE user_id = ? AND type IN (8, 9) AND value > 0 AND (
-      (type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000)
-      OR
-      (type = 9 AND (expire_time IS NULL OR expire_time > UNIX_TIMESTAMP() * 1000))
-	)
+	SELECT * FROM cc_user_asset_coin
+	WHERE user_id = ?
+	  AND value > 0
+	  AND type = 8 AND expire_time > UNIX_TIMESTAMP() * 1000
+	  AND (consume_label IS NULL
+	       OR NOT JSON_CONTAINS(consume_label, '"FREE_CARD"', '$.gameLabelList'))
 ) t1
-left join (
-	SELECT * from cc_order where user_id = ?
-) t2 on t1.order_id = t2.id"#,
+LEFT JOIN (
+	SELECT * FROM cc_order WHERE user_id = ?
+) t2 ON t1.order_id = t2.id
+LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id"#,
     )
     .bind(user_id)
     .bind(user_id)
@@ -279,13 +277,12 @@ pub async fn user_exists_in_cloud_cached(
         .map_err(|e| format!("user_exists_in_cloud: {e}"))?;
 
     // 3. Write to cache with split TTL
-    let ttl = if exists {
-        cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE // 24h — 用户存在，长缓存
-    } else {
-        cache_helper::TTL_CLOUD_USER_EXISTS_NEGATIVE // 5min — 用户不存在，短缓存
-    };
-    if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
-        tracing::debug!(%key, error = %e, "cache write failed");
+    if exists {
+        // 24h — 用户存在，长缓存
+        let ttl = cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE;
+        if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
+            tracing::debug!(%key, error = %e, "cache write failed");
+        }
     }
 
     Ok(exists)
@@ -454,6 +451,20 @@ pub async fn get_ai_assistant_chat_limit_config_cached(
         },
     )
     .await
+}
+
+/// Query AIDiscountedProducts config from cc_config table.
+/// Returns the raw JSON content (None if not found).
+pub async fn get_discounted_products_config(
+    ext_pool: &MySqlPool,
+) -> Result<Option<serde_json::Value>, String> {
+    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT content FROM cc_config WHERE label = 'AIDiscountedProducts' AND status = 'ACTIVE' LIMIT 1",
+    )
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| format!("cc_config query: {e}"))?;
+    Ok(row.and_then(|r| r.0))
 }
 
 #[cfg(test)]

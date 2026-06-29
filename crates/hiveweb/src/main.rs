@@ -23,40 +23,48 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Load .env file if it exists, but don't fail if it doesn't
-    match dotenvy::dotenv_override() {
-        Ok(path) => {
-            println!("[ENV] Loaded .env from: {}", path.display());
-        }
-        Err(_) => {
-            println!("[ENV] No .env file found, using environment variables");
-        }
-    }
-
     // Initialize logging
     let is_dev = std::env::var("APP_ENV")
         .map(|v| v == "development" || v == "dev")
         .unwrap_or(true);
+
+    // Load .env file if it exists, but don't fail if it doesn't
+    match dotenvy::dotenv_override() {
+        Ok(path) => {
+            if is_dev {
+                println!("[ENV] Loaded .env from: {}", path.display());
+            }
+        }
+        Err(_) => {
+            if is_dev {
+                println!("[ENV] No .env file found, using environment variables");
+            }
+        }
+    }
 
     if is_dev {
         // dev: human-readable debug output to stdout
         let env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("debug"))
             .add_directive("hiveweb=debug".parse().unwrap());
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     } else {
-        // prod: only warn+ to stdout, suppressing info/debug noise
+        // prod: file output with daily rotation, no console output
+        let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+        std::fs::create_dir_all(&log_dir).ok();
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "hiveweb.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        // 将 _guard 泄漏，使其在进程生命周期内保持有效
+        std::mem::forget(_guard);
         let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("warn"))
-            .add_directive("hiveweb=warn".parse()?);
+            .unwrap_or_else(|_| EnvFilter::new("info"))
+            .add_directive("hiveweb=info".parse()?);
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
+            .with_writer(non_blocking)
+            .with_ansi(false)
             .init();
     }
-
-    tracing::info!("=== HiveClaw Admin Center Starting ===");
 
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = cli.port.unwrap_or_else(|| {
@@ -83,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize S3 client (only when plugin system is enabled)
     let s3_client = if plugin_system_enabled() {
-        let c = storage::s3::create_client().await?;
+        let c: aws_sdk_s3::Client = storage::s3::create_client().await?;
         tracing::info!("S3 storage client initialized (plugin system enabled)");
         Some(c)
     } else {
@@ -133,8 +141,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Start server
     let addr = format!("{}:{}", host, port);
-    tracing::info!("Server listening on http://{}", addr);
-    tracing::info!("=== HiveClaw Admin Center Ready ===");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

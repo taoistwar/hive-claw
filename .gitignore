@@ -29,3 +29,6 @@ BUG_REPORT.md
 build.sh
 *.tar.gz
 WEEK.md
+*.log
+logs/
+hiveweb.log.*

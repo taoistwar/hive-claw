@@ -410,17 +410,21 @@ where
         let assistant_content = resp.content.clone().unwrap_or_default();
         let tool_calls = resp.tool_calls.clone();
 
-        // 把 assistant 消息加入 history（含 tool_calls 序列化）
+        // 把 assistant 消息加入 history（含 tool_calls 序列化 + reasoning_content）
         if !tool_calls.is_empty() {
             let tc_json: Vec<Value> = tool_calls
                 .iter()
                 .map(|tc| tc.to_openai_tool_call())
                 .collect();
-            messages.push(json!({
+            let mut msg = json!({
                 "role": "assistant",
                 "content": if assistant_content.is_empty() { Value::Null } else { Value::String(assistant_content.clone()) },
                 "tool_calls": tc_json,
-            }));
+            });
+            if let Some(ref rc) = resp.reasoning_content {
+                msg["reasoning_content"] = Value::String(rc.clone());
+            }
+            messages.push(msg);
         } else {
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }

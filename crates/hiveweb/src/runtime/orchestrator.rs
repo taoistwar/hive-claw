@@ -50,6 +50,72 @@ fn max_hops() -> usize {
         .unwrap_or(5)
 }
 
+/// Build LLM-side messages from chat history, with content trimming for old messages.
+///
+/// When history count >= 5, old assistant messages (all but the last one) have their
+/// content replaced with a placeholder to reduce context size, while the last assistant
+/// message retains its original content.
+fn build_chat_messages<T: HasRoleContent>(
+    history: &[T],
+    user_content: &str,
+) -> Vec<Value> {
+    let mut messages: Vec<Value> = Vec::new();
+    let mut last_user_content: Option<String> = None;
+
+    // Find the index of the last assistant message
+    let last_assistant_idx = history
+        .iter()
+        .enumerate()
+        .rfind(|(_, m)| m.role_ref() == "assistant")
+        .map(|(i, _)| i);
+
+    let should_trim = history.len() >= 5;
+
+    for (idx, m) in history.iter().enumerate() {
+        let c = m.content_ref();
+        let ext = m.extensions_ref();
+        let has_content = c.is_some_and(|s| !s.trim().is_empty());
+        let has_extensions = ext.is_some_and(|v| !v.is_null());
+
+        if !has_content && !has_extensions {
+            continue;
+        }
+
+        let is_assistant = m.role_ref() == "assistant";
+        let is_last_assistant = last_assistant_idx == Some(idx);
+
+        // Old assistant messages: replace entire content with placeholder
+        if should_trim && is_assistant && !is_last_assistant {
+            messages.push(json!({"role": "assistant", "content": "[已省略]"}));
+            continue;
+        }
+
+        let msg = if has_extensions {
+            let mut obj = serde_json::Map::new();
+            obj.insert("content".into(), json!(c.unwrap_or("")));
+            obj.insert("extensions".into(), ext.unwrap().clone());
+            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
+            json!({"role": m.role_ref(), "content": content})
+        } else {
+            json!({"role": m.role_ref(), "content": c.unwrap_or("")})
+        };
+        messages.push(msg);
+
+        if m.role_ref() == "user" {
+            if let Some(text) = c {
+                last_user_content = Some(text.to_string());
+            }
+        }
+    }
+
+    // Only append user_content if it's not already the last user message in history
+    if last_user_content.as_deref() != Some(user_content) {
+        messages.push(json!({"role": "user", "content": user_content}));
+    }
+
+    messages
+}
+
 /// 将 ExtensionContent 扁平化为 { content_type, ...data_fields } 格式，
 /// 去掉 id / reply / render_hints / data 等包装层。
 fn flatten_extension(e: &ExtensionContent) -> Value {
@@ -238,43 +304,7 @@ where
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息；
     // 有 extensions 时合并 content + extensions 为一个 JSON 对象，空字段不显示。
-    let mut messages: Vec<Value> = Vec::new();
-    let mut last_user_content: Option<String> = None;
-    for m in history {
-        let c = m.content_ref();
-        let ext = m.extensions_ref();
-        let has_content = c.is_some_and(|s| !s.trim().is_empty());
-        let has_extensions = ext.is_some_and(|v| !v.is_null());
-
-        if !has_content && !has_extensions {
-            continue;
-        }
-
-        let msg = if has_extensions {
-            let mut obj = serde_json::Map::new();
-            if has_content {
-                obj.insert("content".into(), json!(c.unwrap()));
-            } else {
-                obj.insert("content".into(), json!(""));
-            }
-            obj.insert("extensions".into(), ext.unwrap().clone());
-            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
-            json!({"role": m.role_ref(), "content": content})
-        } else {
-            json!({"role": m.role_ref(), "content": c.unwrap()})
-        };
-        messages.push(msg);
-
-        if m.role_ref() == "user" {
-            if let Some(text) = c {
-                last_user_content = Some(text.to_string());
-            }
-        }
-    }
-    // Only append user_content if it's not already the last user message in history
-    if last_user_content.as_deref() != Some(user_content) {
-        messages.push(json!({"role": "user", "content": user_content}));
-    }
+    let mut messages = build_chat_messages(&history, user_content);
 
     // ★ Store conversation history in AgentContext for function/workflow access
     let _ = agent_ctx.set_messages(messages.clone());

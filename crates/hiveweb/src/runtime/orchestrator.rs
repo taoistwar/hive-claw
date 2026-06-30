@@ -164,6 +164,32 @@ fn rewrite_content_for_empty_extensions(
             }
         }
 
+        // game_list 卡片：根据 games 列表生成推荐文案
+        if ptype == Some("game_list") {
+            if let Some(games) = payload.and_then(|p| p.get("games")).and_then(|v| v.as_array()) {
+                if !games.is_empty() {
+                    let mut parts: Vec<String> = Vec::new();
+                    parts.push("很遗憾，没有识别出游戏。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
+                    parts.push(String::new());
+                    for game in games {
+                        let name = game.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let desc = game.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                        if !name.is_empty() {
+                            let desc_part = if !desc.is_empty() {
+                                format!("「{name}」是一款{desc}；")
+                            } else {
+                                format!("「{name}」；")
+                            };
+                            parts.push(desc_part);
+                        }
+                    }
+                    parts.push(String::new());
+                    parts.push("这些游戏在玩法、题材或体验上与您查询的游戏较为接近，请尽情体验。".into());
+                    return Some(parts.join("\n"));
+                }
+            }
+        }
+
         let category = ext
             .get("category")
             .and_then(|v| v.as_str())

@@ -22,6 +22,9 @@ struct Cli {
     /// Port to listen on (overrides HIVEWEB_PORT env var)
     #[arg(long)]
     port: Option<u16>,
+    /// 运行模式: dev | prod（优先级高于 APP_ENV 环境变量）
+    #[arg(long)]
+    mode: Option<String>,
 }
 
 pub fn file_tracing() -> anyhow::Result<()> {
@@ -74,13 +77,21 @@ pub fn console_tracing() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_dev() -> bool {
-    let mode = std::env::var("APP_ENV")
-        .map(|v| {
-            v == "development" || v == "dev"
-        })
-        .unwrap_or(true);
-    mode
+fn is_dev(cli_mode: Option<&str>) -> bool {
+    // --mode 命令行参数优先级最高
+    if let Some(m) = cli_mode {
+        let m = m.trim().to_ascii_lowercase();
+        if m == "dev" || m == "development" {
+            return true;
+        }
+        if m == "prod" || m == "production" {
+            return false;
+        }
+    }
+    // 回退到 APP_ENV 环境变量
+    std::env::var("APP_ENV")
+        .map(|v| v == "development" || v == "dev")
+        .unwrap_or(true)
 }
 
 #[tokio::main]
@@ -90,19 +101,19 @@ async fn main() -> anyhow::Result<()> {
     // Load .env file if it exists, but don't fail if it doesn't
     match dotenvy::dotenv_override() {
         Ok(path) => {
-            if is_dev() {
+            if is_dev(cli.mode.as_deref()) {
                 println!("[ENV] Loaded .env from: {}", path.display());
             }
         }
         Err(_) => {
-            if is_dev() {
+            if is_dev(cli.mode.as_deref()) {
                 println!("[ENV] No .env file found, using environment variables");
             }
         }
     }
 
     // Initialize logging
-    if is_dev() {
+    if is_dev(cli.mode.as_deref()) {
         // dev: human-readable debug output to stdout
         println!("init console tracing");
         console_tracing()?

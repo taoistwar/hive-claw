@@ -404,7 +404,6 @@ async fn handle_classify_and_list(
     // 6. 写入 AgentContext extensions
     let extension = serde_json::json!({
         "content_type": "card",
-        "category": "game_list",
         "payload": {
             "type": "game_list",
             "games": games,

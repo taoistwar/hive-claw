@@ -30,8 +30,8 @@ vi.mock('../../services/workflow', () => ({
 vi.mock('../../services/function', () => ({
   listFunctions: vi.fn(async () => ({
     items: [
-      { id: 1, identifier: 'format.template', name: 'Template', kind: 1, plugin_identifier: null, plugin_export: null },
-      { id: 2, identifier: 'json.parse', name: 'JSON Parse', kind: 1, plugin_identifier: null, plugin_export: null },
+      { id: 1, identifier: 'format_template', name: 'Template', kind: 1, plugin_identifier: null, plugin_export: null },
+      { id: 2, identifier: 'json_parse', name: 'JSON Parse', kind: 1, plugin_identifier: null, plugin_export: null },
     ],
     total: 2,
     offset: 0,

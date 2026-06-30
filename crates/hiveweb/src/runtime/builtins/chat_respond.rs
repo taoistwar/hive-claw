@@ -14,7 +14,7 @@ struct ChatRespondReply {
     final_content: String,
 }
 
-/// chat.respond signals orchestrator to "submit the final reply";
+/// chat_respond signals orchestrator to "submit the final reply";
 /// orchestrator takes the final_content field as the done event's final content.
 /// This function itself just passes through + wraps.
 pub fn chat_respond(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {

@@ -84,8 +84,8 @@ vi.mock('../../services/capability', () => ({
 vi.mock('../../services/tool', () => ({
   listTools: vi.fn(async () => ({
     items: [
-      { id: 1, identifier: 'format.template', name: 'Template', kind: 1 },
-      { id: 2, identifier: 'json.parse', name: 'JSON Parse', kind: 1 },
+      { id: 1, identifier: 'format_template', name: 'Template', kind: 1 },
+      { id: 2, identifier: 'json_parse', name: 'JSON Parse', kind: 1 },
     ],
     total: 2,
     offset: 0,

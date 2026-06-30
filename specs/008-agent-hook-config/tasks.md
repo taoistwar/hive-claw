@@ -217,7 +217,7 @@ description: "Task list for Agent Hook Configuration Management"
 
 **Goal**: Hook 可调用平台已有 Function/Workflow（只读观察者），复用现有 invoker 和 workflow executor。
 
-**Independent Test**: 配置 `before_agent_start` Hook（call_function: `format.template`）→ 触发对话 → 验证 `hook_executions` 表有 success 记录。
+**Independent Test**: 配置 `before_agent_start` Hook（call_function: `format_template`）→ 触发对话 → 验证 `hook_executions` 表有 success 记录。
 
 ### 后端 — Function/Workflow 调用
 
@@ -225,7 +225,7 @@ description: "Task list for Agent Hook Configuration Management"
   - 从 `action_params.function_id` 解析 Function
   - 构造入参：合并 `action_params.args` + HookContext 字段
   - 通过 `Invoker` 或 `builtins::lookup()` 执行（沿用现有 capability 鉴权）
-  - `chat.respond` 内置 Function 禁止调用（返回 error）
+  - `chat_respond` 内置 Function 禁止调用（返回 error）
 - [x] T038 [P] [US3] 在 `crates/hiveweb/src/runtime/hook.rs` 中实现 `execute_workflow()`：
   - 从 `action_params.workflow_id` 解析 Workflow
   - 通过 `WorkflowExecutor` 执行
@@ -235,7 +235,7 @@ description: "Task list for Agent Hook Configuration Management"
 ### 前端 — Function/Workflow 选择
 
 - [x] T040 [US3] 在 HookFormModal 中完善 `call_function` 和 `call_workflow` 动作参数表单：
-  - Function 下拉列表（过滤掉 `chat.respond`）
+  - Function 下拉列表（过滤掉 `chat_respond`）
   - Workflow 下拉列表
   - 入参 JSON 编辑器（Monaco Editor 或 TextArea）
 

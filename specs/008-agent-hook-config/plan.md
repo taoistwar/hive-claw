@@ -52,7 +52,7 @@
 - Hook 执行的 capability 鉴权沿用当前 Agent 的 permissions（FR-013）。
 - HTTP Webhook URL 校验复用现有 SSRF 防护（内网 IP + 云 metadata 端点拒绝）。
 - Webhook payload 不携带敏感 header（Authorization 等由管理员显式配置）。
-- `chat.respond` 内置 Function 禁止被 Hook 调用。
+- `chat_respond` 内置 Function 禁止被 Hook 调用。
 
 ✅ **Technology Stack**：Rust + axum + MySQL + React 符合宪法 v1.3.0。不新增外部依赖。
 
@@ -124,39 +124,39 @@ run_session_internal_impl() {
     // ...[setup]...
     for hop in 0..max_hops {
         build_agent_context()  → 同时加载 hooks（按 trigger_point 分组 + 按 seq 排序）
-        
+
         // ★ before_agent_start hook
         run_hooks(&ctx.hooks, "before_agent_start", ctx).await;
-        
+
         build_primary();    → model_preset 解析
-        
+
         // [system_prompt + tools_schema 组装]...
-        
+
         // ★★ before_llm_call hook（per-hop）
         run_hooks(&ctx.hooks, "before_llm_call", ctx).await;
-        
+
         chat_stream_with_retry();  → LLM 调用
-        
+
         // ★★ after_llm_call hook（per-hop）
         run_hooks(&ctx.hooks, "after_llm_call", ctx).await;
-        
+
         for each tool_call {
             // ★★ before_tool_call hook
             run_hooks(&ctx.hooks, "before_tool_call", ctx).await;
-            
+
             handle_route_tool() / handle_workspace_tool();
-            
+
             // ★★ after_tool_call hook
             run_hooks(&ctx.hooks, "after_tool_call", ctx).await;
         }
     }
-    
+
     finalize_with_variant() {
         append_assistant_message();   → 持久化 final 消息
-        
+
         // ★ after_agent_end hook（在 done 事件之前）
         run_hooks(&ctx.hooks, "after_agent_end", ctx).await;
-        
+
         emit done event;
     }
 }
@@ -177,12 +177,12 @@ pub async fn run_hooks(
     let list = get_hooks_for_point(hooks, point);  // 获取该触发点的 Hook，已按 seq 排序
     for hook in list {
         if !hook.enabled { continue; }
-        
+
         let result = tokio::time::timeout(
             Duration::from_millis(hook.timeout_ms.unwrap_or(10_000)),
             execute_hook_action(hook, ctx, deps),
         ).await;
-        
+
         match result {
             Ok(Ok(_)) => audit_hook_success(&pool, hook).await,
             Ok(Err(e)) => {

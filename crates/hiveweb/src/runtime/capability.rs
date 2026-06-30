@@ -32,7 +32,7 @@ pub const SECRET_GET: &str = "secret.get";
 pub const TIME_NOW: &str = "time.now";
 pub const LOG_EMIT: &str = "log.emit";
 /// 扩展：内置函数/工具所需的细粒度 capability
-pub const CHAT_RESPOND: &str = "chat.respond";
+pub const CHAT_RESPOND: &str = "chat_respond";
 pub const EXEC_RUN: &str = "exec.run";
 pub const AGENT_SPAWN: &str = "agent.spawn";
 pub const CRON_MANAGE: &str = "cron.manage";

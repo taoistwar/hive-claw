@@ -404,6 +404,7 @@ async fn handle_classify_and_list(
     // 6. 写入 AgentContext extensions
     let extension = serde_json::json!({
         "content_type": "card",
+        "category": "game_list",
         "payload": {
             "type": "game_list",
             "games": games,
@@ -501,15 +502,15 @@ pub const GAME_INFO_OUTPUT_SCHEMA: &str = r#"{
     },
     "id": {
       "type": "integer",
-      "description": "游戏 ID（logic_game_id），game_id=0 时返回 0"
+      "description": "游戏 ID（logic_game_id）"
     },
     "name": {
       "type": "string",
-      "description": "游戏名称，game_id=0 时为 null"
+      "description": "游戏名称"
     },
     "data": {
       "type": "string",
-      "description": "格式化文本，game_id=0 时为推荐列表摘要"
+      "description": "格式化文本"
     },
     "description": {
       "type": "string",

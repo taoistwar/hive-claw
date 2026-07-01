@@ -206,18 +206,20 @@ pub async fn list_messages_before(
     user_id: i64,
     cutoff: chrono::NaiveDateTime,
 ) -> Result<Vec<ChatMessageUser>, AppError> {
-    let mut res = sqlx::query_as::<_, ChatMessageUser>(
-        "SELECT id, session_id, user_id, role, content, elapsed_ms, extensions, created_at \
-         FROM chat_messages_user \
-         WHERE user_id = ? AND created_at < ? \
-         ORDER BY created_at DESC, id DESC \
-         LIMIT 10",
-    )
-    .bind(user_id)
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("user messages before: {e}")))?;
+    let sql = "SELECT id, session_id, user_id, role, content, elapsed_ms, extensions, created_at \
+               FROM chat_messages_user \
+               WHERE user_id = ? AND UNIX_TIMESTAMP(created_at) < ? \
+               ORDER BY created_at DESC, id DESC \
+               LIMIT 10";
+    let timestamp = cutoff.and_utc().timestamp();
+    tracing::debug!(%user_id, %cutoff, %timestamp, sql, "list_messages_before");
+
+    let mut res = sqlx::query_as::<_, ChatMessageUser>(sql)
+        .bind(user_id)
+        .bind(timestamp)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("user messages before: {e}")))?;
     res.reverse();
     Ok(res)
 }

@@ -368,6 +368,9 @@ INNER JOIN (
   select * from cc_game where logic_game_id=?
 ) t2 ON t1.logic_game_id = t2.logic_game_id
 INNER JOIN cc_game_platform t3 on t2.game_platform_id = t3.id
+INNER JOIN (
+	select * from cc_computer_info where status = 1
+) ci ON t2.computer_id  = ci.id
 INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
 INNER JOIN (
   SELECT pc.id, pc.game_tag, pc.prom_channel FROM cc_promotion_channel pc where pc.prom_channel = ?

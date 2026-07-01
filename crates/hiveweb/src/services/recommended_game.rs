@@ -248,30 +248,15 @@ pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame
     .map_err(|e| AppError::Internal(format!("recommended_game top: {e}")))
 }
 
-/// Filtered top games with strategy-based channel/client_type filtering and per-tag limits.
-/// Fetches 10 candidates per tag, then randomly selects the required number.
-/// - 新游上线: 3, 运营推荐: 4, 本周热玩: 3
-pub async fn fetch_top_filtered(
+/// Query recommended games for a single tag with strategy channel/client_type filtering.
+async fn fetch_by_tag(
     pool: &MySqlPool,
-    channel: &str,
-    client_type: &str,
+    tag: &str,
+    ch: &str,
+    ct: &str,
 ) -> Result<Vec<RecommendedGame>, AppError> {
-    use rand::seq::SliceRandom;
-
-    let tags = [
-        ("运营推荐", 4usize),
-        ("新游上线", 3usize),
-        ("本周热玩", 3usize),
-    ];
-
-    let mut result: Vec<RecommendedGame> = Vec::new();
-    let ch = format!("\"{}\"", channel);
-    let ct = format!("\"{}\"", client_type);
-
-    for (tag, limit) in &tags {
-        let limit = *limit;
-        let rows = sqlx::query_as::<_, RecommendedGame>(r#"
-SELECT rg.* FROM recommended_games rg
+    sqlx::query_as::<_, RecommendedGame>(
+        r#"SELECT rg.* FROM recommended_games rg
 WHERE rg.tag = ?
   AND EXISTS (
     SELECT 1 FROM recommended_games_strategy si
@@ -288,15 +273,45 @@ WHERE rg.tag = ?
       AND JSON_CONTAINS(se.client_type, ?)
   )
 ORDER BY rg.sort_value DESC, rg.created_at DESC
-LIMIT ?
-"#)
-            .bind(*tag)
-            .bind(&ch).bind(&ct)
-            .bind(&ch).bind(&ct)
-            .bind(10i64)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("fetch_top_filtered {tag}: {e}")))?;
+LIMIT ?"#,
+    )
+    .bind(tag)
+    .bind(ch).bind(ct)
+    .bind(ch).bind(ct)
+    .bind(10i64)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("fetch_by_tag {tag}: {e}")))
+}
+
+/// Filtered top games with strategy-based channel/client_type filtering and per-tag limits.
+/// Fetches 10 candidates per tag, then randomly selects the required number.
+/// - 运营推荐: 4, 新游上线: 3, 本周热玩: 3
+/// - If total < 10 after per-tag selection, fills up from remaining candidates of other tags.
+pub async fn fetch_top_filtered(
+    pool: &MySqlPool,
+    channel: &str,
+    client_type: &str,
+) -> Result<Vec<RecommendedGame>, AppError> {
+    use rand::seq::SliceRandom;
+    use std::collections::HashSet;
+
+    let tags = [
+        ("运营推荐", 4usize),
+        ("新游上线", 3usize),
+        ("本周热玩", 3usize),
+    ];
+
+    let mut result: Vec<RecommendedGame> = Vec::new();
+    let mut selected_ids: HashSet<i64> = HashSet::new();
+    // Store all fetched candidates for fallback fill-up
+    let mut all_candidates: Vec<RecommendedGame> = Vec::new();
+    let ch = format!("\"{}\"", channel);
+    let ct = format!("\"{}\"", client_type);
+
+    for (tag, limit) in &tags {
+        let limit = *limit;
+        let rows = fetch_by_tag(pool, tag, &ch, &ct).await?;
 
         // Create RNG per iteration — must not cross .await boundary (thread_rng is !Send)
         let mut rng = rand::thread_rng();
@@ -304,7 +319,34 @@ LIMIT ?
             .choose_multiple(&mut rng, limit.min(rows.len()))
             .cloned()
             .collect();
+        for g in &selected {
+            selected_ids.insert(g.id);
+        }
         result.extend(selected);
+        // Keep remaining candidates for fill-up
+        all_candidates.extend(rows);
+    }
+
+    // Fill up to 10 from remaining candidates of other tags
+    if result.len() < 10 {
+        let remaining: Vec<&RecommendedGame> = all_candidates
+            .iter()
+            .filter(|g| !selected_ids.contains(&g.id))
+            .collect();
+        if !remaining.is_empty() {
+            let mut rng = rand::thread_rng();
+            let needed = 10 - result.len();
+            let fill: Vec<RecommendedGame> = remaining
+                .choose_multiple(&mut rng, needed.min(remaining.len()))
+                .into_iter()
+                .cloned()
+                .cloned()
+                .collect();
+            for g in &fill {
+                selected_ids.insert(g.id);
+            }
+            result.extend(fill);
+        }
     }
 
     Ok(result)

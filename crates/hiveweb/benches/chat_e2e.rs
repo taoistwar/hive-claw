@@ -58,7 +58,7 @@ fn bench_sse_event_construction(c: &mut Criterion) {
             let payload = json!({
                 "tool_call_id": "call_abc123",
                 "name": "invoke_function",
-                "args": { "function_identifier": "json.parse", "function_input": "{\"raw\":\"{}\"}" }
+                "args": { "function_identifier": "json_parse", "function_input": "{\"raw\":\"{}\"}" }
             });
             let data = payload.to_string();
             let event = format!("event: tool_call\ndata: {data}\n\n");

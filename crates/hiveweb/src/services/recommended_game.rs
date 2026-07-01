@@ -270,7 +270,26 @@ pub async fn fetch_top_filtered(
 
     for (tag, limit) in &tags {
         let limit = *limit;
-        let rows = sqlx::query_as::<_, RecommendedGame>(FILTERED_SQL)
+        let rows = sqlx::query_as::<_, RecommendedGame>(r#"
+SELECT rg.* FROM recommended_games rg
+WHERE rg.tag = ?
+  AND EXISTS (
+    SELECT 1 FROM recommended_games_strategy si
+    WHERE si.recommended_game_id = rg.id
+      AND si.strategy = 'INCLUDE'
+      AND JSON_CONTAINS(si.channel, ?)
+      AND JSON_CONTAINS(si.client_type, ?)
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM recommended_games_strategy se
+    WHERE se.recommended_game_id = rg.id
+      AND se.strategy = 'EXCLUDE'
+      AND JSON_CONTAINS(se.channel, ?)
+      AND JSON_CONTAINS(se.client_type, ?)
+  )
+ORDER BY rg.sort_value DESC, rg.created_at DESC
+LIMIT ?
+"#)
             .bind(*tag)
             .bind(&ch).bind(&ct)
             .bind(&ch).bind(&ct)
@@ -291,26 +310,7 @@ pub async fn fetch_top_filtered(
     Ok(result)
 }
 
-const FILTERED_SQL: &str = r#"
-SELECT rg.* FROM recommended_games rg
-WHERE rg.tag = ?
-  AND EXISTS (
-    SELECT 1 FROM recommended_games_strategy si
-    WHERE si.recommended_game_id = rg.id
-      AND si.strategy = 'INCLUDE'
-      AND JSON_CONTAINS(si.channel, ?)
-      AND JSON_CONTAINS(si.client_type, ?)
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM recommended_games_strategy se
-    WHERE se.recommended_game_id = rg.id
-      AND se.strategy = 'EXCLUDE'
-      AND JSON_CONTAINS(se.channel, ?)
-      AND JSON_CONTAINS(se.client_type, ?)
-  )
-ORDER BY rg.sort_value DESC, rg.created_at DESC
-LIMIT ?
-"#;
+
 
 // --- strategy helpers ---
 

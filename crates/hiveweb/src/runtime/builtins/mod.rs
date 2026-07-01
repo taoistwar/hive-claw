@@ -88,7 +88,7 @@ pub struct BuiltinDef {
 
 pub const BUILTINS: &[BuiltinDef] = &[
     BuiltinDef {
-        identifier: "format.template",
+        identifier: "format_template",
         name: "Format Template",
         description: "Render a template string with named {var} placeholders.",
         input_schema: FORMAT_TEMPLATE_INPUT_SCHEMA,
@@ -97,7 +97,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: format_template,
     },
     BuiltinDef {
-        identifier: "json.parse",
+        identifier: "json_parse",
         name: "JSON Parse",
         description: "Parse a JSON string into a structured value.",
         input_schema: JSON_PARSE_INPUT_SCHEMA,
@@ -106,7 +106,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: json_parse,
     },
     BuiltinDef {
-        identifier: "json.stringify",
+        identifier: "json_stringify",
         name: "JSON Stringify",
         description: "Serialize a value to a JSON string (optionally pretty-printed).",
         input_schema: JSON_STRINGIFY_INPUT_SCHEMA,
@@ -115,7 +115,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: json_stringify,
     },
     BuiltinDef {
-        identifier: "text.regex_match",
+        identifier: "text_regex_match",
         name: "Regex Match",
         description: "Apply a Rust-syntax regex against text and return matches with capture groups.",
         input_schema: TEXT_REGEX_MATCH_INPUT_SCHEMA,
@@ -124,7 +124,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: text_regex_match,
     },
     BuiltinDef {
-        identifier: "chat.respond",
+        identifier: "chat_respond",
         name: "Chat Respond",
         description: "Submit the final user-visible reply (signals orchestrator to end the turn).",
         input_schema: CHAT_RESPOND_INPUT_SCHEMA,
@@ -133,7 +133,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: chat_respond,
     },
     BuiltinDef {
-        identifier: "game.list",
+        identifier: "game_list",
         name: "Game List",
         description: "Get merged game list with aliases from internal and external databases.",
         input_schema: GAME_LIST_INPUT_SCHEMA,
@@ -142,7 +142,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: game_list,
     },
     BuiltinDef {
-        identifier: "game.info",
+        identifier: "game_info",
         name: "Game Info",
         description: "根据游戏 ID查询游戏信息，生成游戏卡片。",
         input_schema: GAME_INFO_INPUT_SCHEMA,

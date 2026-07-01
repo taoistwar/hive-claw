@@ -189,7 +189,7 @@ pub async fn list_messages_user(
     session_id: i64,
 ) -> Result<Vec<ChatMessageUser>, AppError> {
     let mut res = sqlx::query_as::<_, ChatMessageUser>(
-        "SELECT * FROM chat_messages_user WHERE session_id = ? ORDER BY created_at DESC, id DESC limit 6",
+        "SELECT * FROM chat_messages_user WHERE session_id = ? ORDER BY created_at DESC, id DESC limit 5",
     )
     .bind(session_id)
     .fetch_all(pool)

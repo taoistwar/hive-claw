@@ -35,7 +35,7 @@ HOOK_EXECUTION_RETENTION_DAYS=30
    - 名称: `测试钩子`
    - 触发点: `before_agent_start`
    - 动作类型: `call_function`
-   - 选择 Function: `format.template`
+   - 选择 Function: `format_template`
    - 参数: `{"template": "Agent 开始执行: {{identifier}}"}`
 4. 点击保存 → 验证列表中出现该 Hook
 

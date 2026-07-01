@@ -1,5 +1,10 @@
 use clap::Parser;
-use tracing_subscriber::{self, EnvFilter};
+
+use tracing_subscriber::{
+    self, EnvFilter,
+    fmt::{self, time::OffsetTime},
+    layer::SubscriberExt,
+};
 
 mod api;
 mod cache;
@@ -11,59 +16,32 @@ mod services;
 mod storage;
 mod utils;
 
-#[derive(Parser)]
-#[command(name = "hiveweb", about = "HiveClaw Admin Center")]
-struct Cli {
-    /// Port to listen on (overrides HIVEWEB_PORT env var)
-    #[arg(long)]
-    port: Option<u16>,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    let is_dev = std::env::var("APP_ENV")
-        .map(|v| v == "development" || v == "dev")
-        .unwrap_or(true);
-
     // Load .env file if it exists, but don't fail if it doesn't
     match dotenvy::dotenv_override() {
         Ok(path) => {
-            if is_dev {
+            if is_dev(cli.mode.as_deref()) {
                 println!("[ENV] Loaded .env from: {}", path.display());
             }
         }
         Err(_) => {
-            if is_dev {
+            if is_dev(cli.mode.as_deref()) {
                 println!("[ENV] No .env file found, using environment variables");
             }
         }
     }
 
-    if is_dev {
+    // Initialize logging
+    if is_dev(cli.mode.as_deref()) {
         // dev: human-readable debug output to stdout
-        let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("debug"))
-            .add_directive("hiveweb=debug".parse().unwrap());
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        println!("init console tracing");
+        console_tracing()?
     } else {
         // prod: file output with daily rotation, no console output
-        let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
-        std::fs::create_dir_all(&log_dir).ok();
-        let file_appender = tracing_appender::rolling::daily(&log_dir, "hiveweb.log");
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-        // 将 _guard 泄漏，使其在进程生命周期内保持有效
-        std::mem::forget(_guard);
-        let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info"))
-            .add_directive("hiveweb=info".parse()?);
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(non_blocking)
-            .with_ansi(false)
-            .init();
+        file_tracing()?;
     }
 
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -146,6 +124,87 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[derive(Parser)]
+#[command(name = "hiveweb", about = "HiveClaw Admin Center")]
+struct Cli {
+    /// Port to listen on (overrides HIVEWEB_PORT env var)
+    #[arg(long)]
+    port: Option<u16>,
+    /// 运行模式: dev | prod（优先级高于 APP_ENV 环境变量）
+    #[arg(long)]
+    mode: Option<String>,
+}
+
+pub fn file_tracing() -> anyhow::Result<()> {
+    // 可以配置日志的自动滚动周期，如下配置表示日志文件保存在logs目录下，日志名称为app.log+时间
+    let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+    std::fs::create_dir_all(&log_dir).ok();
+    let file_appender = tracing_appender::rolling::daily(log_dir, "hiveweb.log");
+    // guard 这是一个守卫，生命周期需要贯穿整个主进程，所以我们在最后将他作为返回参数返回
+    let (non_blocking_appender, guard) = tracing_appender::non_blocking(file_appender);
+    // 将 guard 泄漏，使其在进程生命周期内保持有效
+    std::mem::forget(guard);
+    // fmt — JSON 格式输出到日志文件
+    let fmt_layer = fmt::layer()
+        .json()
+        .with_target(true)
+        .with_level(true)
+        .with_ansi(false)
+        .with_timer(fmt::time::SystemTime::default())
+        .with_writer(non_blocking_appender);
+    // subscriber
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive("hiveweb=info".parse()?);
+    let subscriber = tracing_subscriber::registry::Registry::default()
+        .with(fmt_layer)
+        .with(env_filter);
+    // global
+    tracing::subscriber::set_global_default(subscriber)?;
+    Ok(())
+}
+
+pub fn console_tracing() -> anyhow::Result<()> {
+    use time::{UtcOffset, macros::format_description};
+    // 配置日志时间格式，配置时区为东8区，
+    let offset = UtcOffset::from_hms(8, 0, 0).unwrap_or(UtcOffset::UTC);
+    // 时间格式为  年-月-日 时:分:秒 格式
+    let logger_time = OffsetTime::new(
+        offset,
+        format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
+    );
+    // dev 模式直接使用 debug 级别，忽略 RUST_LOG
+    let env_filter = EnvFilter::new("hiveweb=debug");
+    tracing_subscriber::FmtSubscriber::builder()
+        .with_env_filter(env_filter)
+        .with_timer(logger_time)
+        .pretty()
+        .with_level(true)
+        .with_target(true)
+        .with_ansi(true)
+        .with_file(true)
+        .with_writer(std::io::stdout)
+        .init();
+    Ok(())
+}
+
+fn is_dev(cli_mode: Option<&str>) -> bool {
+    // --mode 命令行参数优先级最高
+    if let Some(m) = cli_mode {
+        let m = m.trim().to_ascii_lowercase();
+        if m == "dev" || m == "development" {
+            return true;
+        }
+        if m == "prod" || m == "production" {
+            return false;
+        }
+    }
+    // 回退到 APP_ENV 环境变量
+    std::env::var("APP_ENV")
+        .map(|v| v == "development" || v == "dev")
+        .unwrap_or(true)
 }
 
 fn mask_url_password(url: &str) -> String {

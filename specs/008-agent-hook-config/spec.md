@@ -22,7 +22,7 @@
 
 **Why this priority**: 这是 Hook 功能的核心价值——让管理员能够在不修改代码的情况下，为 Agent 的执行流程注入自定义行为（如审计增强、外部通知、预处理/后处理逻辑），是整个功能的基础。
 
-**Independent Test**: 创建一个 Agent → 为其配置一个 `before_agent_start` 钩子（动作=调用内置函数 `format.template`）→ 触发该 Agent 执行对话 → 验证钩子动作被执行且结果记录在审计日志中。
+**Independent Test**: 创建一个 Agent → 为其配置一个 `before_agent_start` 钩子（动作=调用内置函数 `format_template`）→ 触发该 Agent 执行对话 → 验证钩子动作被执行且结果记录在审计日志中。
 
 **Acceptance Scenarios**:
 
@@ -56,7 +56,7 @@
 
 **Why this priority**: 复用平台已有的 Function/Workflow 资产，使 Hook 能执行复杂业务逻辑，最大化现有投资价值。
 
-**Independent Test**: 配置 `before_agent_start` Hook（动作=调用 Function `format.template`）→ 触发 Agent 对话 → 验证 Hook 执行成功且执行记录写入 `hook_executions` 表（outcome=success）。
+**Independent Test**: 配置 `before_agent_start` Hook（动作=调用 Function `format_template`）→ 触发 Agent 对话 → 验证 Hook 执行成功且执行记录写入 `hook_executions` 表（outcome=success）。
 
 **Acceptance Scenarios**:
 
@@ -169,7 +169,7 @@
 - Hook 执行不引入新的 Role-Based Access Control 角色，沿用 003-admin-center 的 Super / System / Normal 三级权限模型。
 - 管理员理解基础的事件驱动概念（触发点=事件，动作=响应），无需 Hook 编程教程。
 - Hook 配置的 UI 更改集成到现有 Agent 编辑页面中，作为新增的配置区域（Tab 页或折叠面板）。
-- 内置 Function 集合（`format.template`、`json.parse`、`json.stringify`、`text.regex_match`、`chat.respond`）中，`chat.respond` 不可被 Hook 调用（因其专门用于 Agent 对话回复，被 Hook 误用可能导致混淆）。
+- 内置 Function 集合（`format_template`、`json_parse`、`json_stringify`、`text_regex_match`、`chat_respond`）中，`chat_respond` 不可被 Hook 调用（因其专门用于 Agent 对话回复，被 Hook 误用可能导致混淆）。
 - **Hook 为只读观察者**：Hook 执行结果不注入到 Agent 的 system_prompt 或修改 Agent 运行时状态。若需修改 system_prompt，应通过 Agent 编辑页面直接编辑。
 - **Hook 执行历史保留期**：`hook_executions` 表数据默认保留 30 天（可配 `HOOK_EXECUTION_RETENTION_DAYS` env），每日凌晨 cron 清理超期记录。
 - **Hook 配置与执行记录分离**：Agent 删除时，其 `agent_hooks` 配置级联删除（FK CASCADE），但 `hook_executions` 执行历史保留（无 FK CASCADE，agent_identifier 快照列供追溯"已删除 Agent"场景）。

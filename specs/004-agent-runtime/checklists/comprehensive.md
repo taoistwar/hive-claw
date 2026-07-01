@@ -12,7 +12,7 @@
 
 - [x] CHK001 - Capability 系统的 11 个预定义 capability（`network.http`, `fs.read`, `fs.write`, `s3.read`, `s3.write`, `db.query`, `db.execute`, `llm.invoke`, `secret.get`, `time.now`, `log.emit`）是否在 contracts/host-functions.md 中全部有 payload schema 定义？[Completeness, Spec §FR-001]
 - [x] CHK002 - SSE 聊天端点的 6 种事件类型（token/tool_call/tool_result/routed/fallback_used/done）+ error 是否全部有结构化 JSON schema 定义？[Completeness, Spec §FR-028]
-- [x] CHK003 - 5 个内置 Function（`format.template`/`json.parse`/`json.stringify`/`text.regex_match`/`chat.respond`）的 input_schema 和 output_schema 是否在 data-model 或 tasks 中完整定义？[Completeness, Spec §FR-010]
+- [x] CHK003 - 5 个内置 Function（`format_template`/`json_parse`/`json_stringify`/`text_regex_match`/`chat_respond`）的 input_schema 和 output_schema 是否在 data-model 或 tasks 中完整定义？[Completeness, Spec §FR-010]
 - [x] CHK004 - WASM Plugin 上传期静态校验的 5 个子步骤（magic bytes / 文件大小 / imports 扫描 / manifest 忽略 / sha256 计算）是否每项都有明确的拒绝行为和错误码？[Completeness, Spec §FR-005]
 - [x] CHK005 - 14 个错误码是否全部在 contracts/api.md §Errors 用三列表（code / 内部含义 / 用户文案）固化？[Completeness, Spec §Clarifications 38]
 - [x] CHK006 - Agent 路由的 hard-rule 安全门（深度 ≥ 10 / 循环检测 / 越权拒绝 / 直接子 Agent 限制）是否每项都有对应的错误码和审计行为？[Completeness, Spec §FR-025]

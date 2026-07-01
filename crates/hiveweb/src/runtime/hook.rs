@@ -200,7 +200,7 @@ async fn execute_call_function(
                 ext_pool: deps.ext_pool.as_ref(),
                 redis: deps.redis.as_ref(),
                 agent_ctx: Some(Arc::clone(&deps.agent_ctx)),
-                llm: None,
+                llm: Some(&deps.llm),
                 agent_id: None,
             };
             let output = (builtin.handler)(function_input, &bctx)

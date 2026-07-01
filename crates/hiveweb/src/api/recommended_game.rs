@@ -44,10 +44,16 @@ async fn expand_strategy_wildcards(
     let client_types = client_types.unwrap_or_default();
 
     for s in strategies {
-        if s.channel.as_array().map_or(false, |a| a.iter().any(|v| v == "*")) {
+        if s.channel
+            .as_array()
+            .map_or(false, |a| a.iter().any(|v| v == "*"))
+        {
             s.channel = serde_json::to_value(&channels).unwrap_or_default();
         }
-        if s.client_type.as_array().map_or(false, |a| a.iter().any(|v| v == "*")) {
+        if s.client_type
+            .as_array()
+            .map_or(false, |a| a.iter().any(|v| v == "*"))
+        {
             s.client_type = serde_json::to_value(&client_types).unwrap_or_default();
         }
     }
@@ -59,10 +65,7 @@ pub fn router() -> Router<AppState> {
             "/recommended-games",
             get(list_recommended_games).post(create_recommended_game),
         )
-        .route(
-            "/recommended-games/game-ids",
-            get(get_existing_game_ids),
-        )
+        .route("/recommended-games/game-ids", get(get_existing_game_ids))
         .route(
             "/recommended-games/:id",
             get(get_recommended_game)
@@ -195,12 +198,7 @@ async fn create_recommended_game(
 
     // Expand '*' wildcards in strategies to actual values from external DB
     if let Some(ref mut strategies) = meta.strategies {
-        expand_strategy_wildcards(
-            state.ext_pool.as_ref(),
-            &meta.game_id,
-            strategies,
-        )
-        .await;
+        expand_strategy_wildcards(state.ext_pool.as_ref(), &meta.game_id, strategies).await;
     }
 
     let game = svc::create(&state.pool, meta)
@@ -351,7 +349,15 @@ async fn top_recommended_games(
         .into_response());
     }
 
-    let games = svc::fetch_top_filtered(&state.pool, &req.channel, &req.client_type)
+    let ext_pool = match &state.ext_pool {
+        Some(p) => p,
+        None => {
+            return Err(
+                AppError::Internal("外部数据库未配置".into()).into_response::<()>()
+            );
+        }
+    };
+    let games = svc::fetch_top_filtered(ext_pool, &req.channel, &req.client_type)
         .await
         .map_err(|e| e.into_response())?;
     let result: Vec<TopRecommendedGame> = games
@@ -407,47 +413,48 @@ async fn execute_recommendation(
         AppError::BadRequest("user_id must be a number".into()).into_response::<()>()
     })?;
 
+    let ext_pool = match &state.ext_pool {
+        Some(p) => p,
+        None => {
+            return Err(
+                AppError::Internal("外部数据库未配置".into()).into_response::<()>()
+            );
+        }
+    };
     // 3. 查询推荐游戏
-    let game = svc::fetch_by_game_id(&state.pool, &req.game_id)
+    let game = svc::fetch_by_game_id(ext_pool, &req.game_id)
         .await
         .map_err(|e| e.into_response())?;
 
     // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon/description（带缓存，按平台优先级排序）
     let (computer_id, platform_name, game_icon, _description) =
-        if let Some(ext_pool) = state.ext_pool.as_ref() {
-            crate::services::game_service::get_single_external_game_info_cached(
-                &state.redis,
-                ext_pool,
-                game.game_id.parse::<i64>().unwrap_or(0),
-                &req.client_type,
-                &req.channel,
+        crate::services::game_service::get_single_external_game_info_cached(
+            &state.redis,
+            ext_pool,
+            game.game_id.parse::<i64>().unwrap_or(0),
+            &req.client_type,
+            &req.channel,
+        )
+        .await
+        .unwrap_or(None)
+        .map(|info| {
+            (
+                info.computer_id,
+                info.platform_name,
+                info.game_icon,
+                info.description,
             )
-            .await
-            .unwrap_or(None)
-            .map(|info| {
-                (
-                    info.computer_id,
-                    info.platform_name,
-                    info.game_icon,
-                    info.description,
-                )
-            })
-            .unwrap_or((None, None, None, None))
-        } else {
-            (None, None, None, None)
-        };
+        })
+        .unwrap_or((None, None, None, None));
 
     // 3c. 同步用户：确保 users 表存在该用户，避免 chat_sessions_user 外键约束失败
-    let cloud_info = if let Some(ext_pool) = state.ext_pool.as_ref() {
-        membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(user_id = user_id, error = %e, "get_cloud_user_info_cached failed");
-                None
-            })
-    } else {
-        None
-    };
+    let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(user_id = user_id, error = %e, "get_cloud_user_info_cached failed");
+            None
+        });
+
     let (uid, nickname) = cloud_info
         .as_ref()
         .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
@@ -501,50 +508,48 @@ async fn execute_recommendation(
     .map_err(|e| e.into_response::<()>())?;
 
     // 8. 追加 usage extension（参考 assistant_chat 逻辑）
-    if let Some(ext_pool) = state.ext_pool.as_ref() {
-        let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+        .await
+        .unwrap_or(false);
+
+    let limit_config =
+        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
             .await
-            .unwrap_or(false);
+            .unwrap_or_else(|_| membership::AssistantChatLimitConfig::default());
 
-        let limit_config =
-            membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
-                .await
-                .unwrap_or_else(|_| membership::AssistantChatLimitConfig::default());
+    let total_times = if is_vip {
+        limit_config.vip_ask_times
+    } else {
+        limit_config.normal_ask_times
+    };
 
-        let total_times = if is_vip {
-            limit_config.vip_ask_times
-        } else {
-            limit_config.normal_ask_times
-        };
-
-        let limit_key = format!("assistant:daily:{}", user_id);
-        let current_count: i64 = {
-            match state.redis.get_multiplexed_async_connection().await {
-                Ok(mut conn) => conn.get(&limit_key).await.unwrap_or(0),
-                Err(_) => 0,
-            }
-        };
-
-        let remaining = total_times - current_count;
-        if limit_config.remain_ask_time > 0 && remaining <= limit_config.remain_ask_time {
-            let usage_ext = serde_json::json!({
-                "content_type": "usage",
-                "payload": {
-                    "used_times": current_count,
-                    "total_times": total_times,
-                    "membership_max_times": limit_config.vip_ask_times,
-                    "remain_ask_time": limit_config.remain_ask_time,
-                }
-            });
-            let mut exts: Vec<serde_json::Value> = saved
-                .extensions
-                .as_ref()
-                .and_then(|v| v.as_array())
-                .map(|a| a.clone())
-                .unwrap_or_default();
-            exts.push(usage_ext);
-            saved.extensions = Some(serde_json::Value::Array(exts));
+    let limit_key = format!("assistant:daily:{}", user_id);
+    let current_count: i64 = {
+        match state.redis.get_multiplexed_async_connection().await {
+            Ok(mut conn) => conn.get(&limit_key).await.unwrap_or(0),
+            Err(_) => 0,
         }
+    };
+
+    let remaining = total_times - current_count;
+    if limit_config.remain_ask_time > 0 && remaining <= limit_config.remain_ask_time {
+        let usage_ext = serde_json::json!({
+            "content_type": "usage",
+            "payload": {
+                "used_times": current_count,
+                "total_times": total_times,
+                "membership_max_times": limit_config.vip_ask_times,
+                "remain_ask_time": limit_config.remain_ask_time,
+            }
+        });
+        let mut exts: Vec<serde_json::Value> = saved
+            .extensions
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(|a| a.clone())
+            .unwrap_or_default();
+        exts.push(usage_ext);
+        saved.extensions = Some(serde_json::Value::Array(exts));
     }
 
     Ok(ApiResponse::success(saved))

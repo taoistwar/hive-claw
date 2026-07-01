@@ -16,7 +16,7 @@
 - [ ] CHK004 — Are RBAC requirements consistent for Hook CRUD vs Hook execution history viewing? Spec §FR-017/018 define CRUD roles (Super/System+), but §FR-019 adds session-ownership rules for history — are both checks required on the same handler? [Consistency, Spec §FR-017–FR-019]
 - [ ] CHK005 — Does the spec define what happens when a Super user demotes themselves mid-session while hook execution is in flight (TOCTOU for permission changes)? [Coverage, Edge Case Gap]
 - [x] CHK006 — Are the `action_params.headers` for webhook hooks subject to injection validation — could a System+ admin inject `\r\n` to perform HTTP header injection? [Completeness, Gap] → **已解决**: FR-007b 新增 header name/value 校验规则
-- [ ] CHK007 — Is the `chat.respond` Function exclusion for Hook calls clearly justified in the spec, and are there any other builtin Functions that should similarly be excluded? [Clarity, Spec Assumptions]
+- [ ] CHK007 — Is the `chat_respond` Function exclusion for Hook calls clearly justified in the spec, and are there any other builtin Functions that should similarly be excluded? [Clarity, Spec Assumptions]
 - [ ] CHK008 — Does the spec define whether Hook-triggered Function/Workflow calls are subject to the same capability-based authorization as direct agent tool calls? [Clarity, Spec §FR-013]
 
 ---

@@ -50,6 +50,95 @@ fn max_hops() -> usize {
         .unwrap_or(5)
 }
 
+/// Build LLM-side messages from chat history, with content trimming for old messages.
+///
+/// When history count >= 5, old assistant messages (all but the last one) have their
+/// content replaced with a placeholder to reduce context size, while the last assistant
+/// message retains its original content.
+fn build_chat_messages<T: HasRoleContent>(
+    history: &[T],
+    user_content: &str,
+) -> Vec<Value> {
+    let mut messages: Vec<Value> = Vec::new();
+    let mut last_user_content: Option<String> = None;
+
+    // Find the index of the last assistant message
+    let last_assistant_idx = history
+        .iter()
+        .enumerate()
+        .rfind(|(_, m)| m.role_ref() == "assistant")
+        .map(|(i, _)| i);
+
+    let should_trim = history.len() >= 5;
+
+    for (idx, m) in history.iter().enumerate() {
+        let c = m.content_ref();
+        let ext = m.extensions_ref();
+        let has_content = c.is_some_and(|s| !s.trim().is_empty());
+
+        // Filter out usage/card extensions, keep only non-card/non-usage types
+        let filtered_ext = ext.and_then(|v| {
+            v.as_array().map(|arr| {
+                let filtered: Vec<Value> = arr
+                    .iter()
+                    .filter(|e| {
+                        let ct = e
+                            .get("content_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        ct != "usage" && ct != "card"
+                    })
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(filtered))
+                }
+            })
+            .flatten()
+        });
+        let has_extensions = filtered_ext.is_some();
+
+        if !has_content && !has_extensions {
+            continue;
+        }
+
+        let is_assistant = m.role_ref() == "assistant";
+        let is_last_assistant = last_assistant_idx == Some(idx);
+
+        // Old assistant messages: replace entire content with placeholder
+        if should_trim && is_assistant && !is_last_assistant {
+            messages.push(json!({"role": "assistant", "content": "[已省略]"}));
+            continue;
+        }
+
+        let msg = if has_extensions {
+            let mut obj = serde_json::Map::new();
+            obj.insert("content".into(), json!(c.unwrap_or("")));
+            obj.insert("extensions".into(), filtered_ext.unwrap().clone());
+            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
+            json!({"role": m.role_ref(), "content": content})
+        } else {
+            json!({"role": m.role_ref(), "content": c.unwrap_or("")})
+        };
+        messages.push(msg);
+
+        if m.role_ref() == "user" {
+            if let Some(text) = c {
+                last_user_content = Some(text.to_string());
+            }
+        }
+    }
+
+    // Only append user_content if it's not already the last user message in history
+    if last_user_content.as_deref() != Some(user_content) {
+        messages.push(json!({"role": "user", "content": user_content}));
+    }
+
+    messages
+}
+
 /// 将 ExtensionContent 扁平化为 { content_type, ...data_fields } 格式，
 /// 去掉 id / reply / render_hints / data 等包装层。
 fn flatten_extension(e: &ExtensionContent) -> Value {
@@ -60,10 +149,120 @@ fn flatten_extension(e: &ExtensionContent) -> Value {
     );
     if let Value::Object(data_obj) = &e.data {
         for (k, v) in data_obj {
+            tracing::debug!(key = %k, value = %v, "flatten extension data");
             flat.insert(k.clone(), v.clone());
         }
     }
     Value::Object(flat)
+}
+
+/// 根据 extensions 中空数据情况重置 content
+fn rewrite_content_for_empty_extensions(
+    content: Option<String>,
+    extensions_for_sse: &Option<Value>,
+) -> Option<String> {
+    let exts = match extensions_for_sse {
+        Some(Value::Array(arr)) => arr,
+        _ => return content,
+    };
+
+    for ext in exts {
+        let ct = ext.get("content_type").and_then(|v| v.as_str());
+        if ct != Some("card") {
+            continue;
+        }
+
+        let payload = ext.get("payload");
+        let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
+
+        // support 卡片：根据 category 生成 reply 作为 content
+        if payload_type == Some("support") {
+            let category = payload
+                .and_then(|p| p.get("category"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("other");
+            let reply = support_category_reply(category);
+            if !reply.is_empty() {
+                return Some(reply.to_string());
+            }
+        }
+
+        // game_list 卡片：根据 games 列表生成推荐文案
+        if payload_type == Some("game_list") {
+            if let Some(games) = payload.and_then(|p| p.get("games")).and_then(|v| v.as_array()) {
+                if !games.is_empty() {
+                    let mut parts: Vec<String> = Vec::new();
+                    parts.push("很遗憾，您查询的这款游戏暂未在平台上架。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
+                    parts.push(String::new());
+                    for game in games {
+                        let name = game.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let desc = game.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                        if !name.is_empty() {
+                            let desc_part = if !desc.is_empty() {
+                                format!("「{name}」{desc}；")
+                            } else {
+                                format!("「{name}」；")
+                            };
+                            parts.push(desc_part);
+                        }
+                    }
+                    parts.push(String::new());
+                    parts.push("这些游戏在玩法、题材或体验上与您查询的游戏较为接近，请尽情体验。".into());
+                    return Some(parts.join("\n"));
+                }
+            }
+        }
+
+        let category = ext
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // duration_card 为空
+        let dc_empty = payload
+            .and_then(|p| p.get("duration_card"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(true);
+
+        // disk_total_size == 0
+        let disk_empty = payload
+            .and_then(|p| p.get("info"))
+            .and_then(|i| i.get("disk_total_size"))
+            .and_then(|v| v.as_f64())
+            .map(|s| s == 0.0)
+            .unwrap_or(true);
+
+        if category == "duration_card" && dc_empty {
+            return Some(
+                "暂未查询到您的时长卡购买记录。如您需要更多游戏时长，推荐购买会员产品，通常会比单独购买时长卡更划算。"
+                    .into(),
+            );
+        }
+
+        if category == "disk" && disk_empty {
+            return Some(
+                "暂未查询到您的云硬盘购买记录。如您需要使用云硬盘，可前往「我的」页面点击「云硬盘」进行购买。您也可以购买会员产品，享受赠送的 5GB 会员专属云硬盘权益。"
+                    .into(),
+            );
+        }
+    }
+
+    content
+}
+
+/// 根据 support card 的 category 生成对应的回复文案
+fn support_category_reply(category: &str) -> &'static str {
+    match category {
+        "cannot_play" => "抱歉让你遇到无法正常进入游戏的问题。此类情况可能和游戏服务状态、云端环境、网络连接或游戏本身兼容性有关。我们会尽量保障游戏可正常启动，你可以通过下方「联系客服」继续反馈，我们会协助核实处理。",
+        "lag" => "抱歉影响了你的游戏体验。云游戏对网络稳定性和当前线路状态比较敏感，网络波动、服务器负载或画质设置都可能导致卡顿、延迟高或掉帧。你可以通过下方「联系客服」反馈，我们会进一步协助排查。",
+        "update" => "抱歉当前版本没有及时满足你的使用需求。云游戏内的游戏版本通常需要经过适配、测试和上线流程，可能会比官方版本略有延迟。我们会持续关注版本更新进度，你也可以通过下方「联系客服」反馈具体游戏。",
+        "quality" => "抱歉当前画质没有达到你的预期。云游戏画质会受到网络状态、画质设置、设备显示效果以及云端渲染策略影响。我们会持续优化画质体验，你可以通过下方「联系客服」继续反馈问题。",
+        "account" => "很抱歉遇到账号异常问题。账号封禁或异常通常由游戏官方规则判断，平台本身无法直接修改游戏官方的处理结果。但如果你怀疑和云游戏登录环境有关，可以通过下方「联系客服」反馈，我们会协助核实。",
+        "save_data" => "抱歉给你带来困扰。游戏存档通常和游戏账号、区服、云端同步或游戏自身机制有关，出现丢失时确实会很影响体验。你可以通过下方「联系客服」继续反馈，我们会协助核实是否存在同步异常。",
+        "money" => "抱歉影响了你的充值或会员权益。付费后到账可能受到支付状态、服务器端回调或订单同步延迟影响。请先不要重复支付，可以通过下方「联系客服」反馈，我们会优先协助核实订单处理情况。",
+        _ => "抱歉这次体验让你不满意，我们理解这种情况会很影响心情。你的反馈对我们很重要，我们会持续优化游戏体验和服务稳定性。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。",
+    }
 }
 
 /// 单次会话调用入口（spawned task）
@@ -182,43 +381,7 @@ where
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息；
     // 有 extensions 时合并 content + extensions 为一个 JSON 对象，空字段不显示。
-    let mut messages: Vec<Value> = Vec::new();
-    let mut last_user_content: Option<String> = None;
-    for m in history {
-        let c = m.content_ref();
-        let ext = m.extensions_ref();
-        let has_content = c.is_some_and(|s| !s.trim().is_empty());
-        let has_extensions = ext.is_some_and(|v| !v.is_null());
-
-        if !has_content && !has_extensions {
-            continue;
-        }
-
-        let msg = if has_extensions {
-            let mut obj = serde_json::Map::new();
-            if has_content {
-                obj.insert("content".into(), json!(c.unwrap()));
-            } else {
-                obj.insert("content".into(), json!(""));
-            }
-            obj.insert("extensions".into(), ext.unwrap().clone());
-            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
-            json!({"role": m.role_ref(), "content": content})
-        } else {
-            json!({"role": m.role_ref(), "content": c.unwrap()})
-        };
-        messages.push(msg);
-
-        if m.role_ref() == "user" {
-            if let Some(text) = c {
-                last_user_content = Some(text.to_string());
-            }
-        }
-    }
-    // Only append user_content if it's not already the last user message in history
-    if last_user_content.as_deref() != Some(user_content) {
-        messages.push(json!({"role": "user", "content": user_content}));
-    }
+    let mut messages = build_chat_messages(&history, user_content);
 
     // ★ Store conversation history in AgentContext for function/workflow access
     let _ = agent_ctx.set_messages(messages.clone());
@@ -226,7 +389,11 @@ where
     for hop in 0..max_hops {
         // 0. 检查客户端是否已断开
         if deps.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::info!(hop, session_id, "orchestrator cancelled: client disconnected");
+            tracing::info!(
+                hop,
+                session_id,
+                "orchestrator cancelled: client disconnected"
+            );
             return None;
         }
 
@@ -784,21 +951,25 @@ async fn finalize_with_variant(
     };
     let extensions_json = extensions_for_sse.clone();
 
-    let saved = if content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
-        None
-    } else {
-        let text = content.as_deref().unwrap_or("");
-        append_assistant_message_user(
-            pool,
-            session_id,
-            actor_id,
-            text,
-            Some(elapsed),
-            extensions_json,
-        )
-        .await
-        .ok()
-    };
+    // ★ 根据 extensions 内容重置 empty content
+    let final_content = rewrite_content_for_empty_extensions(content, &extensions_for_sse);
+
+    let saved =
+        if final_content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
+            None
+        } else {
+            let text = final_content.as_deref().unwrap_or("");
+            append_assistant_message_user(
+                pool,
+                session_id,
+                actor_id,
+                text,
+                Some(elapsed),
+                extensions_json,
+            )
+            .await
+            .ok()
+        };
 
     let done = json!({
         "elapsed_ms": elapsed,
@@ -1064,13 +1235,13 @@ async fn handle_meta_tool(
                             ToolOutcome::ok(result)
                         }
                         Err(e) => {
-                        tracing::error!(
-                            func_ident = %func_ident,
-                            error = %e,
-                            "builtin function 执行失败"
-                        );
-                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
-                    }
+                            tracing::error!(
+                                func_ident = %func_ident,
+                                error = %e,
+                                "builtin function 执行失败"
+                            );
+                            ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                        }
                     }
                 }
                 1 | 2 => {
@@ -1271,7 +1442,7 @@ pub(crate) async fn handle_workspace_tool(
                             "builtin function 执行失败"
                         );
                         ToolOutcome::error(format!("builtin function 执行失败: {e}"))
-                    },
+                    }
                 }
             } else {
                 // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
@@ -1321,7 +1492,7 @@ pub(crate) async fn handle_workspace_tool(
                             "plugin invoke failed"
                         );
                         ToolOutcome::error(format!("plugin invoke failed: {e}"))
-                    },
+                    }
                 }
             }
         }

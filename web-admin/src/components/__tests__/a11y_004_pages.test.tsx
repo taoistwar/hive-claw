@@ -49,8 +49,8 @@ vi.mock('../../services/workflow', () => ({
 vi.mock('../../services/function', () => ({
   listFunctions: vi.fn(async () => ({
     items: [
-      { id: 1, identifier: 'format.template', name: 'Template', kind: 1, plugin_identifier: null, plugin_export: null },
-      { id: 2, identifier: 'json.parse', name: 'JSON Parse', kind: 1, plugin_identifier: null, plugin_export: null },
+      { id: 1, identifier: 'format_template', name: 'Template', kind: 1, plugin_identifier: null, plugin_export: null },
+      { id: 2, identifier: 'json_parse', name: 'JSON Parse', kind: 1, plugin_identifier: null, plugin_export: null },
       { id: 3, identifier: 'fn-custom', name: 'Custom Fn', kind: 2, plugin_identifier: 'my-plugin', plugin_export: 'handle' },
     ],
     total: 3,

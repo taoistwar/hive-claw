@@ -470,7 +470,7 @@ async fn execute_recommendation(
         .map_err(|e| e.into_response::<()>())?;
 
     // 5. 记录用户消息（content = game.reply）
-    chat_svc::append_user_message_user(&state.pool, session.id, user_id, &game.reply)
+    chat_svc::append_user_message_user(&state.pool, session.id, user_id, &game.name)
         .await
         .map_err(|e| e.into_response::<()>())?;
 

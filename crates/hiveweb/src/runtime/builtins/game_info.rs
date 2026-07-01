@@ -58,9 +58,22 @@ async fn game_info_async_impl(
     // 1. Parse game_id from input — text → integer
     let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
 
+    tracing::debug!(
+        game_id_str = %game_id_str,
+        channel = %channel,
+        client_type = %client_type,
+        has_llm = llm.is_some(),
+        has_agent_id = agent_id.is_some(),
+        "game_info called"
+    );
+
     let game_id: i64 = match game_id_str.trim().parse() {
-        Ok(id) if id > 0 => id,
+        Ok(id) if id > 0 => {
+            tracing::debug!(game_id = %id, "game_info: direct lookup by id");
+            id
+        }
         _ => {
+            tracing::debug!("game_info: game_id <= 0 or parse failed, entering classify path");
             return handle_classify_and_list(
                 args,
                 pool,
@@ -102,8 +115,16 @@ async fn game_info_async_impl(
     };
 
     let game_info = match game_info {
-        Some(info) if info.logic_game_id != 0 => info,
+        Some(info) if info.logic_game_id != 0 => {
+            tracing::debug!(
+                logic_game_id = %info.logic_game_id,
+                name = %info.name,
+                "game_info: found by direct lookup"
+            );
+            info
+        }
         _ => {
+            tracing::warn!(game_id = %game_id, "game_info: direct lookup returned empty");
             return Ok(serde_json::json!({
                 "found": false,
                 "name": "未找到相关游戏"
@@ -224,8 +245,40 @@ async fn fetch_categories(
 }
 
 
-/// Build an LLM classification prompt to identify the game category from user input.
-fn build_classification_prompt(user_input: &str, categories: &[(i64, String)]) -> String {
+/// Build conversation context from _agent_context messages for LLM classification.
+/// Takes the last 3 messages, formats as "role: content" pairs.
+fn build_classify_context(args: &Value, user_input: &str) -> String {
+    let messages: Vec<&Value> = args
+        .get("_agent_context")
+        .and_then(|ac| ac.get("messages"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            let len = arr.len();
+            if len > 3 {
+                arr.iter().skip(len - 3).collect()
+            } else {
+                arr.iter().collect()
+            }
+        })
+        .unwrap_or_default();
+
+    let mut lines: Vec<String> = Vec::new();
+    for msg in &messages {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if !content.is_empty() {
+            let label = if role == "user" { "用户" } else { "助手" };
+            lines.push(format!("{label}: {content}"));
+        }
+    }
+    // 追加当前用户输入
+    lines.push(format!("用户: {user_input}"));
+
+    lines.join("\n")
+}
+
+/// Build an LLM classification prompt to identify the game category from conversation context.
+fn build_classification_prompt(context: &str, categories: &[(i64, String)]) -> String {
     let cat_list = categories
         .iter()
         .map(|(id, name)| format!("- id:{}, name:{}", id, name))
@@ -238,7 +291,7 @@ fn build_classification_prompt(user_input: &str, categories: &[(i64, String)]) -
 可选的游戏分类如下：
 {cat_list}
 
-对话内容："{user_input}"
+对话内容："{context}"
 
 请只返回一个最匹配的分类 ID（数字），不要输出其他任何内容。如果无法判断，请返回第一个分类的 ID。"#
     )
@@ -253,7 +306,7 @@ async fn handle_classify_and_list(
     channel: &str,
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
-    agent_id: Option<i64>,
+    _agent_id: Option<i64>,
 ) -> BuiltinResult {
     // 1. 获取用户输入文本（从 args._agent_context.user_input.raw_text 读取）
     let user_input = args
@@ -271,6 +324,9 @@ async fn handle_classify_and_list(
         }));
     }
 
+    // 从 AgentContext 取最近 3 条消息构建对话上下文
+    let context = build_classify_context(&args, &user_input);
+
     // 2. 从外部 DB 获取游戏分类标签
     let ext_pool = match ext_pool {
         Some(p) => p,
@@ -284,7 +340,10 @@ async fn handle_classify_and_list(
     };
 
     let categories = match fetch_categories(ext_pool, redis).await {
-        Ok(cats) if !cats.is_empty() => cats,
+        Ok(cats) if !cats.is_empty() => {
+            tracing::debug!(count = cats.len(), "game_info: fetched categories");
+            cats
+        }
         Ok(_) => {
             tracing::warn!("cc_game_tag returned empty, game_info classify aborted");
             return Ok(serde_json::json!({
@@ -300,7 +359,7 @@ async fn handle_classify_and_list(
             }));
         }
     };
-    let category_id = match classify_user_input(&user_input, &categories, llm, agent_id).await {
+    let category_id = match classify_game_category(&context, &categories, llm).await {
         Some(id) => id,
         None => {
             tracing::warn!(user_input = %user_input, "game_info classify returned None");
@@ -328,6 +387,12 @@ async fn handle_classify_and_list(
     // 3. 根据分类查询 3 个 logic_game_id（从 cc_logic_game_display 按 tag 过滤）
     let game_ids = match fetch_logic_game_ids_by_tag(ext_pool, category_id).await {
         Ok(ids) => {
+            tracing::debug!(
+                category_id = %category_id,
+                count = ids.len(),
+                game_ids = ?ids,
+                "game_info: fetched logic_game_ids"
+            );
             if ids.is_empty() {
                 tracing::warn!(category_id = %category_id, "no logic_game_id found for tag");
                 return Ok(serde_json::json!({
@@ -389,11 +454,14 @@ async fn handle_classify_and_list(
     }
 
     if games.is_empty() {
+        tracing::warn!(category_id = %category_id, game_ids = ?game_ids, "game_info: all game lookups failed, no games to return");
         return Ok(serde_json::json!({
             "found": false,
             "name": "未找到相关游戏"
         }));
     }
+
+    tracing::debug!(game_count = games.len(), "game_info: returning game list extension");
 
     // 5. 构造返回结果
     let mut output = serde_json::json!({
@@ -417,15 +485,26 @@ async fn handle_classify_and_list(
 
 /// Call LLM to classify user input into one of the given categories.
 /// Returns the category ID on success, or `None` if classification failed.
-async fn classify_user_input(
+async fn classify_game_category(
     user_input: &str,
     categories: &[(i64, String)],
     llm: Option<&Arc<LlmRegistry>>,
-    agent_id: Option<i64>,
 ) -> Option<i64> {
+    tracing::debug!(
+        user_input = %user_input,
+        category_count = categories.len(),
+        has_llm = llm.is_some(),
+        "classify_game_category: start"
+    );
+
     // 尝试 LLM 分类
-    if let (Some(llm), Some(_agent_id)) = (llm, agent_id) {
+    if llm.is_none() {
+        tracing::debug!("classify_game_category: skipping LLM — llm registry not available");
+    }
+    if let Some(llm) = llm {
         let prompt = build_classification_prompt(user_input, categories);
+        tracing::debug!(prompt_len = prompt.len(), "classify_game_category: built prompt");
+
         let messages = vec![serde_json::json!({
             "role": "user",
             "content": prompt,
@@ -434,7 +513,7 @@ async fn classify_user_input(
         match llm.build_primary(None) {
             Ok((provider, model)) => {
                 let req = ChatRequest {
-                    model: Some(model),
+                    model: Some(model.clone()),
                     messages,
                     max_tokens: 16,
                     temperature: 0.1,
@@ -442,26 +521,36 @@ async fn classify_user_input(
                     tool_choice: None,
                     reasoning_effort: None,
                 };
+                tracing::debug!(model = %model, "classify_game_category: calling LLM");
                 let resp = provider
                     .chat_with_retry(req, RetryMode::Standard, None)
                     .await;
                 let raw_content = resp.content.clone();
+                tracing::debug!(
+                    llm_response = ?raw_content,
+                    finish_reason = %resp.finish_reason,
+                    "classify_game_category: LLM response"
+                );
                 if let Some(content) = raw_content {
                     let trimmed = content.trim().to_string();
                     // 尝试解析为数字 ID
                     if let Ok(id) = trimmed.parse::<i64>() {
                         // 验证 ID 是否在可选分类中
                         if categories.iter().any(|(cid, _)| *cid == id) {
+                            tracing::debug!(category_id = %id, "classify_game_category: matched by ID");
                             return Some(id);
                         }
+                        tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
                     }
                     // 尝试按名称匹配（LLM 可能返回名称而非 ID）
                     let matched = categories
                         .iter()
                         .find(|(_, name)| trimmed.contains(name.as_str()) || name.contains(&trimmed));
-                    if let Some((id, _)) = matched {
+                    if let Some((id, name)) = matched {
+                        tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
                         return Some(*id);
                     }
+                    tracing::debug!(llm_output = %trimmed, "classify_game_category: could not match LLM output to any category");
                 }
                 tracing::warn!(
                     user_input = %user_input,
@@ -478,6 +567,7 @@ async fn classify_user_input(
         }
     }
 
+    tracing::debug!("classify_game_category: no LLM available or classification failed, returning None");
     None
 }
 

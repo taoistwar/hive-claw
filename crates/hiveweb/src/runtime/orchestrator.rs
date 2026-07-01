@@ -75,7 +75,30 @@ fn build_chat_messages<T: HasRoleContent>(
         let c = m.content_ref();
         let ext = m.extensions_ref();
         let has_content = c.is_some_and(|s| !s.trim().is_empty());
-        let has_extensions = ext.is_some_and(|v| !v.is_null());
+
+        // Filter out usage/card extensions, keep only non-card/non-usage types
+        let filtered_ext = ext.and_then(|v| {
+            v.as_array().map(|arr| {
+                let filtered: Vec<Value> = arr
+                    .iter()
+                    .filter(|e| {
+                        let ct = e
+                            .get("content_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        ct != "usage" && ct != "card"
+                    })
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(filtered))
+                }
+            })
+            .flatten()
+        });
+        let has_extensions = filtered_ext.is_some();
 
         if !has_content && !has_extensions {
             continue;
@@ -93,7 +116,7 @@ fn build_chat_messages<T: HasRoleContent>(
         let msg = if has_extensions {
             let mut obj = serde_json::Map::new();
             obj.insert("content".into(), json!(c.unwrap_or("")));
-            obj.insert("extensions".into(), ext.unwrap().clone());
+            obj.insert("extensions".into(), filtered_ext.unwrap().clone());
             let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
             json!({"role": m.role_ref(), "content": content})
         } else {
@@ -150,10 +173,10 @@ fn rewrite_content_for_empty_extensions(
         }
 
         let payload = ext.get("payload");
-        let ptype = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
+        let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
 
         // support 卡片：根据 category 生成 reply 作为 content
-        if ptype == Some("support") {
+        if payload_type == Some("support") {
             let category = payload
                 .and_then(|p| p.get("category"))
                 .and_then(|v| v.as_str())
@@ -165,18 +188,18 @@ fn rewrite_content_for_empty_extensions(
         }
 
         // game_list 卡片：根据 games 列表生成推荐文案
-        if ptype == Some("game_list") {
+        if payload_type == Some("game_list") {
             if let Some(games) = payload.and_then(|p| p.get("games")).and_then(|v| v.as_array()) {
                 if !games.is_empty() {
                     let mut parts: Vec<String> = Vec::new();
-                    parts.push("很遗憾，没有识别出游戏。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
+                    parts.push("很遗憾，您查询的这款游戏暂未在平台上架。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
                     parts.push(String::new());
                     for game in games {
                         let name = game.get("name").and_then(|v| v.as_str()).unwrap_or("");
                         let desc = game.get("description").and_then(|v| v.as_str()).unwrap_or("");
                         if !name.is_empty() {
                             let desc_part = if !desc.is_empty() {
-                                format!("「{name}」是一款{desc}；")
+                                format!("「{name}」{desc}；")
                             } else {
                                 format!("「{name}」；")
                             };

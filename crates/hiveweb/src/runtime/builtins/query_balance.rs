@@ -160,11 +160,12 @@ async fn try_handle_discount(
     .unwrap_or(serde_json::json!({ "id": product_id }));
     tracing::debug!(?product_row, "[handle_discount] step5: product_row");
 
-    // 6. 获取该 product 的配置
+    // 6. 获取该 product 的配置，仅保留指定字段
     let setting = products_obj
         .get(&product_id.to_string())
         .cloned()
         .unwrap_or(serde_json::json!({}));
+    let setting = filter_discount_setting(&setting);
     tracing::debug!(?setting, "[handle_discount] step6: product setting");
 
     // 7. 构建 discount payload
@@ -219,6 +220,21 @@ fn resolve_discount_products(
     })?;
 
     Ok(ch_obj.clone())
+}
+
+/// Filter discount setting to only allow specific fields.
+fn filter_discount_setting(setting: &Value) -> Value {
+    const ALLOWED: &[&str] = &["link", "type", "bgimg", "price", "value", "superscriptDesc"];
+    if let Some(obj) = setting.as_object() {
+        let filtered: serde_json::Map<String, Value> = obj
+            .iter()
+            .filter(|(k, _)| ALLOWED.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Value::Object(filtered)
+    } else {
+        setting.clone()
+    }
 }
 
 pub async fn query_balance_async_impl(

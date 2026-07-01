@@ -310,7 +310,7 @@ pub async fn query_balance_async_impl(
     tracing::debug!(%user_id, count = membership_subscriptions.len(), "[query_balance] step1.5 membership: {} rows", membership_subscriptions.len());
 
     // Serialize membership+subscription rows to JSON
-    let membership_json: Vec<Value> = membership_subscriptions
+    let mut membership_json: Vec<Value> = membership_subscriptions
         .iter()
         .map(|row| {
             json!({
@@ -332,6 +332,10 @@ pub async fn query_balance_async_impl(
             })
         })
         .collect();
+
+    if membership_json.is_empty() {
+        membership_json.push(json!({ "level_name": "普通用户" }));
+    }
     tracing::debug!(?membership_json, "[query_balance] step1.5 membership_json");
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）

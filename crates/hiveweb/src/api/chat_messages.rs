@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::AppState;
 use crate::api::chat_common;
 use crate::models::ChatMessageUser;
+use crate::services::chat_user as svc;
 use crate::utils::error::AppError;
 
 pub fn router() -> Router<AppState> {
@@ -86,7 +87,7 @@ async fn list_messages(
             .into_response();
     }
 
-    // 2. date 格式校验（YYYY-MM-DD HH:MM:SS）
+    // 2. date 格式校验 + 东8区 → UTC 转换
     let date_str = params.date.trim();
     if date_str.is_empty() {
         return AppError::BadRequest("date is required (format: YYYY-MM-DD HH:MM:SS)".into())
@@ -94,7 +95,7 @@ async fn list_messages(
             .into_response();
     }
 
-    let cutoff = match chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
+    let naive = match chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
         Ok(dt) => dt,
         Err(_) => {
             return AppError::BadRequest("date must be in YYYY-MM-DD HH:MM:SS format".into())
@@ -102,20 +103,16 @@ async fn list_messages(
                 .into_response();
         }
     };
+    // 强制解释为东8区，转为 UTC 后与 DB 比较
+    let offset = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 offset");
+    let cutoff = naive
+        .and_local_timezone(offset)
+        .single()
+        .map(|dt| dt.naive_utc())
+        .unwrap_or(naive);
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
-    let messages: Vec<ChatMessageUser> = match sqlx::query_as(
-        "SELECT id, session_id, user_id, role, content, elapsed_ms, extensions, created_at \
-         FROM chat_messages_user \
-         WHERE user_id = ? AND created_at < ? \
-         ORDER BY created_at DESC, id DESC \
-         LIMIT 10",
-    )
-    .bind(params.user_id)
-    .bind(cutoff)
-    .fetch_all(&state.pool)
-    .await
-    {
+    let messages: Vec<ChatMessageUser> = match svc::list_messages_before(&state.pool, params.user_id, cutoff).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, user_id = params.user_id, "failed to query messages");

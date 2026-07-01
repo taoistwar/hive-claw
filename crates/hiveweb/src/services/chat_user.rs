@@ -199,6 +199,29 @@ pub async fn list_messages_user(
     Ok(res)
 }
 
+/// Query messages for a user before a given cutoff datetime (UTC).
+/// Returns up to 10 most recent messages.
+pub async fn list_messages_before(
+    pool: &MySqlPool,
+    user_id: i64,
+    cutoff: chrono::NaiveDateTime,
+) -> Result<Vec<ChatMessageUser>, AppError> {
+    let mut res = sqlx::query_as::<_, ChatMessageUser>(
+        "SELECT id, session_id, user_id, role, content, elapsed_ms, extensions, created_at \
+         FROM chat_messages_user \
+         WHERE user_id = ? AND created_at < ? \
+         ORDER BY created_at DESC, id DESC \
+         LIMIT 10",
+    )
+    .bind(user_id)
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("user messages before: {e}")))?;
+    res.reverse();
+    Ok(res)
+}
+
 pub async fn append_user_message_user(
     pool: &MySqlPool,
     session_id: i64,

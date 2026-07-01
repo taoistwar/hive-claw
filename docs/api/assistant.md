@@ -173,7 +173,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | `String` | 卡片类型：`subscribe` / `repay` / `upgrade` / `sufficient` / `game` / `support` |
+| `type` | `String` | 卡片类型：`subscribe` / `repay` / `upgrade` / `sufficient` / `game` / `support` / `discount` |
 | `info` | `Object` | 卡片信息（余额/游戏详情等，随 `type` 不同而变化） |
 | `membership` | `Array<Object>` | 会员订阅列表（仅在会员相关卡片中出现） |
 | `duration_card` | `Array<Object>` | 时长卡列表（仅在会员相关卡片中出现） |
@@ -188,6 +188,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `sufficient` | 已有充足权益 | 权益充足，不强推付费 |
 | `game` | 游戏推荐 | 游戏推荐卡片 |
 | `support` | 用户请求人工客服 | 转接客服卡片，携带用户原始输入 |
+| `discount` | 用户查询优惠活动 | 优惠产品卡片，展示当前渠道/端的折扣产品 |
 
 ### `info` 对象字段（subscribe / repay / upgrade / sufficient 卡片）
 
@@ -255,6 +256,49 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 ```
 
 触发条件：用户明确表达需要人工客服时，由 Agent 调用 `support_card` builtin 生成此卡片并立即结束 agent loop。
+
+### `payload` 对象字段（discount 卡片）
+
+`discount` 卡片包含 `discount` 字段（注意不是 `info`），来自 `cc_product` 表 + `AIDiscountedProducts` 配置：
+
+**discount 卡片示例：**
+
+```json
+{
+  "content_type": "card",
+  "payload": {
+    "type": "discount",
+    "discount": {
+      "id": 171,
+      "title": "30充5000",
+      "value": "5000",
+      "price": 30,
+      "original_price": 50,
+      "description": "超值充值套餐",
+      "setting": {
+        "bgimg": "",
+        "price": 0,
+        "value": 0,
+        "superscriptDesc": ""
+      }
+    }
+  }
+}
+```
+
+**`discount` 对象字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `i64` | 产品 ID（`cc_product.id`） |
+| `title` | `String` | 产品名称（`cc_product.title`） |
+| `value` | `Option<String>` | 产品价值 |
+| `price` | `Option<i32>` | 折后价格（分） |
+| `original_price` | `Option<i32>` | 原价（分） |
+| `description` | `Option<String>` | 产品描述 |
+| `setting` | `Object` | 来自 `cc_config` 表 `AIDiscountedProducts` 的展示配置（含 `bgimg`、`price`、`value`、`superscriptDesc` 等） |
+
+> 触发条件：用户询问优惠/折扣/促销活动时，Agent 调用 `query_balance(category="discount")` 获取当前渠道和端的优惠产品。
 
 ### `content_type` 为 `usage` 时的结构
 

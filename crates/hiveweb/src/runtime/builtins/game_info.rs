@@ -479,6 +479,9 @@ async fn handle_classify_and_list(
     });
     output["_agent_context_updates"] = serde_json::json!({
         "extensions": [extension],
+        "metadata": {
+            "agent_loop_break": "true"
+        }
     });
     Ok(output)
 }

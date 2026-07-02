@@ -276,6 +276,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       "original_price": 50,
       "description": "超值充值套餐",
       "setting": {
+        "link": "",
         "bgimg": "",
         "price": 0,
         "value": 0,
@@ -296,7 +297,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `price` | `Option<i32>` | 折后价格（分） |
 | `original_price` | `Option<i32>` | 原价（分） |
 | `description` | `Option<String>` | 产品描述 |
-| `setting` | `Object` | 来自 `cc_config` 表 `AIDiscountedProducts` 的展示配置（含 `bgimg`、`price`、`value`、`superscriptDesc` 等） |
+| `setting` | `Object` | 来自 `cc_config` 表 `AIDiscountedProducts` 的展示配置，仅保留 `link`、`bgimg`、`price`、`value`、`superscriptDesc` |
 
 > 触发条件：用户询问优惠/折扣/促销活动时，Agent 调用 `query_balance(category="discount")` 获取当前渠道和端的优惠产品。
 

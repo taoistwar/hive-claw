@@ -49,8 +49,14 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            query_balance_async_impl(user_id, &ext_pool, redis.as_ref(), agent_ctx_clone.as_deref(), &category)
-                .await
+            query_balance_async_impl(
+                user_id,
+                &ext_pool,
+                redis.as_ref(),
+                agent_ctx_clone.as_deref(),
+                &category,
+            )
+            .await
         })
     })
 }
@@ -224,7 +230,7 @@ fn resolve_discount_products(
 
 /// Filter discount setting to only allow specific fields.
 fn filter_discount_setting(setting: &Value) -> Value {
-    const ALLOWED: &[&str] = &["link", "type", "bgimg", "price", "value", "superscriptDesc"];
+    const ALLOWED: &[&str] = &["link", "bgimg", "price", "value", "superscriptDesc"];
     if let Some(obj) = setting.as_object() {
         let filtered: serde_json::Map<String, Value> = obj
             .iter()
@@ -307,22 +313,21 @@ pub async fn query_balance_async_impl(
     };
 
     // 1.5 查询会员与订阅状态
-    let membership_subscriptions =
-        if let Some(r) = redis {
-            crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
-                    BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
-                })?
-        } else {
-            crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
-                    BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
-                })?
-        };
+    let membership_subscriptions = if let Some(r) = redis {
+        crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
+                BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
+            })?
+    } else {
+        crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
+                BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
+            })?
+    };
     tracing::debug!(%user_id, count = membership_subscriptions.len(), "[query_balance] step1.5 membership: {} rows", membership_subscriptions.len());
 
     // Serialize membership+subscription rows to JSON

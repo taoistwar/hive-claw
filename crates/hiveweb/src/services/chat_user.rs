@@ -214,13 +214,12 @@ pub async fn list_messages_before(
     let timestamp = cutoff.and_utc().timestamp();
     tracing::debug!(%user_id, %cutoff, %timestamp, sql, "list_messages_before");
 
-    let mut res = sqlx::query_as::<_, ChatMessageUser>(sql)
+    let res = sqlx::query_as::<_, ChatMessageUser>(sql)
         .bind(user_id)
         .bind(timestamp)
         .fetch_all(pool)
         .await
         .map_err(|e| AppError::Internal(format!("user messages before: {e}")))?;
-    res.reverse();
     Ok(res)
 }
 

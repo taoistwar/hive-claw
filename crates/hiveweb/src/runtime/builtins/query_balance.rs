@@ -420,18 +420,16 @@ pub async fn query_balance_async_impl(
         "[query_balance] step1.8 duration_card_json"
     );
 
-    // Derive card type from membership_subscriptions (highest-priority active row)
-    let active_membership = membership_subscriptions.iter().find(|row| {
-        row.effective_end_time
-            .map(|end| end >= chrono::Utc::now().naive_utc())
-            .unwrap_or(false)
-    });
-
-    let has_membership = active_membership.is_some();
-    let days_until_expiry = active_membership
-        .and_then(|m| m.effective_end_time)
-        .map(|end| (end - chrono::Utc::now().naive_utc()).num_days());
-    let expiring_soon = days_until_expiry.map(|d| d <= 7).unwrap_or(false);
+    let has_membership = !membership_subscriptions.is_empty();
+    let now = chrono::Utc::now().naive_utc();
+    let expiring_soon = membership_subscriptions
+        .iter()
+        .filter(|row| row.effective_end_time.map_or(false, |end| end >= now))
+        .any(|row| {
+            row.effective_end_time
+                .map(|end| (end - now).num_days() <= 7)
+                .unwrap_or(false)
+        });
 
     let upgrade_suggested = has_membership
         && !membership_subscriptions
@@ -441,7 +439,6 @@ pub async fn query_balance_async_impl(
         has_membership,
         expiring_soon,
         upgrade_suggested,
-        days_until_expiry,
         "[query_balance] step2: card state"
     );
 

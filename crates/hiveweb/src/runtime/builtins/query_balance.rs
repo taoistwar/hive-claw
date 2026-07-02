@@ -117,70 +117,23 @@ async fn try_handle_discount(
     tracing::debug!(config = %config, "[handle_discount] step2: AIDiscountedProducts config");
 
     // 3. 导航 JSON: client_type → channel → products
-    let products_obj = resolve_discount_products(&config, &client_type, &channel)?;
+    let discount = resolve_discount_products(&config, &client_type, &channel)?;
     tracing::debug!(
-        ?products_obj,
-        "[handle_discount] step3: resolved products for {}/{}",
+        ?discount,
+        "[handle_discount] step3: resolved discount for {}/{}",
         client_type,
         channel
     );
-    if products_obj.as_object().map_or(true, |o| o.is_empty()) {
+    if discount.as_object().map_or(true, |o| o.is_empty()) {
         return Ok(serde_json::json!({
             "message": "暂无产品优惠活动"
         }));
     }
 
-    // 4. 收集 product IDs
-    let product_ids: Vec<i64> = products_obj
-        .as_object()
-        .map(|o| o.keys().filter_map(|k| k.parse::<i64>().ok()).collect())
-        .unwrap_or_default();
-    tracing::debug!(?product_ids, "[handle_discount] step4: product_ids");
+    // 4. 仅保留指定字段，避免前端收到未预期的配置
+    let discount = filter_discount_fields(&discount);
 
-    if product_ids.is_empty() {
-        return Ok(serde_json::json!({
-            "message": "暂无优惠产品"
-        }));
-    }
-
-    // 5. 批量查询 cc_product（取第一个匹配的产品）
-    let product_id = product_ids[0];
-    tracing::debug!(product_id, "[handle_discount] step5: querying cc_product");
-    let product_row = sqlx::query_as(
-        "SELECT id, title, value, price, original_price, description FROM cc_product WHERE id = ? AND status = 'ACTIVE' LIMIT 1",
-    )
-    .bind(product_id)
-    .fetch_optional(ext_pool)
-    .await
-    .map_err(|e| BuiltinError::Exec(format!("cc_product query: {e}")))?
-    .map(|(id, title, value, price, original_price, description): (i64, String, Option<String>, Option<i32>, Option<i32>, Option<String>)| {
-        serde_json::json!({
-            "id": id,
-            "title": title,
-            "value": value,
-            "price": price,
-            "original_price": original_price,
-            "description": description,
-        })
-    })
-    .unwrap_or(serde_json::json!({ "id": product_id }));
-    tracing::debug!(?product_row, "[handle_discount] step5: product_row");
-
-    // 6. 获取该 product 的配置，仅保留指定字段
-    let setting = products_obj
-        .get(&product_id.to_string())
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-    let setting = filter_discount_setting(&setting);
-    tracing::debug!(?setting, "[handle_discount] step6: product setting");
-
-    // 7. 构建 discount payload
-    let mut discount = product_row;
-    if let serde_json::Value::Object(ref mut map) = discount {
-        map.insert("setting".into(), setting);
-    }
-    tracing::debug!(?discount, "[handle_discount] step7: final discount payload");
-
+    // 5. 直接返回配置作为 discount payload
     let mut result = serde_json::json!({
         "found": true,
     });
@@ -213,25 +166,35 @@ fn resolve_discount_products(
     client_type: &str,
     channel: &str,
 ) -> Result<serde_json::Value, BuiltinError> {
-    let ct_obj = config.get(client_type).ok_or_else(|| {
-        BuiltinError::Exec(format!(
-            "AIDiscountedProducts: 未找到 client_type={client_type}"
-        ))
-    })?;
+    let ct_obj = config
+        .get(client_type)
+        .or_else(|| config.get("__DEFAULT__"))
+        .ok_or_else(|| {
+            BuiltinError::Exec(format!(
+                "AIDiscountedProducts: 未找到 client_type={client_type} 或 __DEFAULT__"
+            ))
+        })?;
 
-    let ch_obj = ct_obj.get(channel).ok_or_else(|| {
-        BuiltinError::Exec(format!(
-            "AIDiscountedProducts: 未找到 channel={channel} in client_type={client_type}"
-        ))
-    })?;
+    let ch_obj = ct_obj
+        .get(channel)
+        .or_else(|| ct_obj.get("__DEFAULT__"))
+        .ok_or_else(|| {
+            BuiltinError::Exec(format!(
+                "AIDiscountedProducts: 未找到 channel={channel} 或 __DEFAULT__ in client_type={client_type}"
+            ))
+        })?;
 
     Ok(ch_obj.clone())
 }
 
-/// Filter discount setting to only allow specific fields.
-fn filter_discount_setting(setting: &Value) -> Value {
-    const ALLOWED: &[&str] = &["link", "bgimg", "price", "value", "superscriptDesc"];
-    if let Some(obj) = setting.as_object() {
+/// Filter discount config to only allow specific fields, preventing frontend
+/// from receiving unexpected structure changes.
+fn filter_discount_fields(discount: &Value) -> Value {
+    const ALLOWED: &[&str] = &[
+        "link", "bgimg", "buttonImg", "titleDesc", "buttonDesc",
+        "titleColor", "buttonColor", "description", "descriptionColor",
+    ];
+    if let Some(obj) = discount.as_object() {
         let filtered: serde_json::Map<String, Value> = obj
             .iter()
             .filter(|(k, _)| ALLOWED.contains(&k.as_str()))
@@ -239,7 +202,7 @@ fn filter_discount_setting(setting: &Value) -> Value {
             .collect();
         Value::Object(filtered)
     } else {
-        setting.clone()
+        discount.clone()
     }
 }
 

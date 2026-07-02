@@ -177,7 +177,7 @@ fn flatten_extension(e: &ExtensionContent) -> Value {
     Value::Object(flat)
 }
 
-/// 根据 extensions 中空数据情况重置 content
+/// 根据 extensions 中数据情况重置 content
 fn rewrite_content_for_empty_extensions(
     content: Option<String>,
     extensions_for_sse: &Option<Value>,
@@ -205,40 +205,6 @@ fn rewrite_content_for_empty_extensions(
             let reply = support_category_reply(category);
             if !reply.is_empty() {
                 return Some(reply.to_string());
-            }
-        }
-
-        // game_list 卡片：根据 games 列表生成推荐文案
-        if payload_type == Some("game_list") {
-            if let Some(games) = payload
-                .and_then(|p| p.get("games"))
-                .and_then(|v| v.as_array())
-            {
-                if !games.is_empty() {
-                    let mut parts: Vec<String> = Vec::new();
-                    parts.push("很遗憾，您查询的这款游戏暂未在平台上架。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
-                    parts.push(String::new());
-                    for game in games {
-                        let name = game.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let desc = game
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if !name.is_empty() {
-                            let desc_part = if !desc.is_empty() {
-                                format!("「{name}」{desc}；")
-                            } else {
-                                format!("「{name}」；")
-                            };
-                            parts.push(desc_part);
-                        }
-                    }
-                    parts.push(String::new());
-                    parts.push(
-                        "这些游戏在玩法、题材或体验上与您查询的游戏较为接近，请尽情体验。".into(),
-                    );
-                    return Some(parts.join("\n"));
-                }
             }
         }
 
@@ -1001,6 +967,7 @@ async fn finalize_with_variant(
             None
         } else {
             let text = final_content.as_deref().unwrap_or("");
+            tracing::debug!("Saving assistant message: {:?}", text);
             append_assistant_message_user(
                 pool,
                 session_id,

@@ -108,8 +108,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       ],
       "duration_card": [
         {
-            "fps": "60",
-            "gpu": "4070",
             "order_id": -1,
             "create_time": "2026-06-16 16:00:15 UTC",
             "expire_time": 1781884815303,
@@ -129,10 +127,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
             },
             "remain_duration": 300000,
             "computer_biz_type": null,
-            "product_mirror": {
-                "fps": "60",
-                "gpu": "4070"
-            },
+            "game_label_list": ["手游", "PC游戏"],
             "product_title": "金卡",
             "product_duration": "3600000"
         }
@@ -366,11 +361,9 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `order_id` | `Option<i64>` | 订单 ID |
 | `consume_label` | `Option<Value>` | 消费标签（JSON 对象，含 `weight`、`channelList`、`gameLabelList`、`clientTypeList`） |
 | `create_time` | `Option<String>` | 创建时间 |
-| `product_mirror` | `Option<Value>` | 购买时产品快照（JSON，含 `fps`、`gpu` 等字段） |
-| `product_title` | `Option<String>` | 商品名称（如"金卡"、"黑金卡"） |
+| `game_label_list` | `Option<Value>` | 游戏标签列表（JSON 数组，码值经 `cc_label` 表解析为中文，如 `["手游","PC游戏","90系云电脑120帧"]`） |
+| `product_title` | `Option<String>` | 商品名称（如"30小时畅玩"、"60小时畅玩"） |
 | `product_duration` | `Option<String>` | 商品时长（毫秒字符串） |
-| `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取） |
-| `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取） |
 
 ## 配额查询
 

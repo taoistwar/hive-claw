@@ -441,8 +441,13 @@ async fn handle_classify_and_list(
                 games.push(serde_json::json!({
                     "id": info.logic_game_id,
                     "name": info.name,
+                    "channel": info.channel,
+                    "client_type": info.client_type,
+                    "reason": info.description,
+                    "game_tags": info.game_tags,
                     "description": info.description,
                     "cover_image": info.cover_image,
+                    "computer_id": info.computer_id,
                     "platform_name": info.platform_name,
                     "game_icon": info.game_icon,
                 }));
@@ -469,16 +474,19 @@ async fn handle_classify_and_list(
         "name": "未找到相关游戏"
     });
 
-    // 6. 写入 AgentContext extensions
-    let extension = serde_json::json!({
-        "content_type": "card",
-        "payload": {
-            "type": "game_list",
-            "games": games,
-        },
-    });
+    // 6. 写入 AgentContext extensions — 每个游戏一个独立 card
+    let extensions: Vec<Value> = games
+        .iter()
+        .map(|g| serde_json::json!({
+            "content_type": "card",
+            "payload": {
+                "type": "game",
+                "info": g,
+            },
+        }))
+        .collect();
     output["_agent_context_updates"] = serde_json::json!({
-        "extensions": [extension],
+        "extensions": extensions,
         "metadata": {
             "agent_loop_break": "true"
         }

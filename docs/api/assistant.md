@@ -259,7 +259,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 ### `payload` 对象字段（discount 卡片）
 
-`discount` 卡片包含 `discount` 字段（注意不是 `info`），来自 `cc_product` 表 + `AIDiscountedProducts` 配置：
+`discount` 卡片包含 `discount` 字段（注意不是 `info`），直接来自 `cc_config` 表 `AIDiscountedProducts` 配置（经 `client_type` / `channel` / `__DEFAULT__` 回退解析）：
 
 **discount 卡片示例：**
 
@@ -269,19 +269,15 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
   "payload": {
     "type": "discount",
     "discount": {
-      "id": 171,
-      "title": "30充5000",
-      "value": "5000",
-      "price": 30,
-      "original_price": 50,
-      "description": "超值充值套餐",
-      "setting": {
-        "link": "",
-        "bgimg": "",
-        "price": 0,
-        "value": 0,
-        "superscriptDesc": ""
-      }
+      "link": "https://h5.haimacloud.com/activity/huyalive?style=1",
+      "bgimg": "https://pc-cos.haimacloud.com/game/1498/cover/11d971e6.webp",
+      "buttonImg": "https://pc-cos.haimacloud.com/logicGame/ee6d1de2.png",
+      "titleDesc": "国庆特惠",
+      "buttonDesc": "立即跳转",
+      "titleColor": "#DB4040",
+      "buttonColor": "#567CCC",
+      "description": "无限暖暖国庆大促",
+      "descriptionColor": "#40820E"
     }
   }
 }
@@ -291,15 +287,18 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | `i64` | 产品 ID（`cc_product.id`） |
-| `title` | `String` | 产品名称（`cc_product.title`） |
-| `value` | `Option<String>` | 产品价值 |
-| `price` | `Option<i32>` | 折后价格（分） |
-| `original_price` | `Option<i32>` | 原价（分） |
-| `description` | `Option<String>` | 产品描述 |
-| `setting` | `Object` | 来自 `cc_config` 表 `AIDiscountedProducts` 的展示配置，仅保留 `link`、`bgimg`、`price`、`value`、`superscriptDesc` |
+| `link` | `String` | 活动跳转链接 |
+| `bgimg` | `String` | 背景图片 URL |
+| `titleDesc` | `String` | 标题文案 |
+| `titleColor` | `String` | 标题颜色（如 `#DB4040`） |
+| `buttonImg` | `String` | 按钮图片 URL |
+| `buttonDesc` | `String` | 按钮文案 |
+| `buttonColor` | `String` | 按钮颜色（如 `#567CCC`） |
+| `description` | `String` | 描述文案 |
+| `descriptionColor` | `String` | 描述颜色（如 `#40820E`） |
 
-> 触发条件：用户询问优惠/折扣/促销活动时，Agent 调用 `query_balance(category="discount")` 获取当前渠道和端的优惠产品。
+> 以上字段为白名单过滤后的结果，`AIDiscountedProducts` 中的其他字段不会传递给前端。
+> 触发条件：用户询问优惠/折扣/促销活动时，Agent 调用 `query_balance(category="discount")` 获取当前渠道和端的优惠产品配置。
 
 ### `content_type` 为 `usage` 时的结构
 

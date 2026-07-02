@@ -41,8 +41,10 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 pub struct MessagesBody {
     pub user_id: i64,
-    /// 最后一条聊天记录的时间（YYYY-MM-DD HH:MM:SS），返回该时间往前的最近 10 条
-    pub date: String,
+    /// 最后一条聊天记录的时间（YYYY-MM-DD HH:MM:SS），返回该时间往前的最近 10 条。
+    /// 不传则取当前时间。
+    #[serde(default)]
+    pub date: Option<String>,
     /// 渠道标识（如 `app`、`web`、`api`）
     #[serde(default)]
     pub channel: Option<String>,
@@ -84,7 +86,7 @@ async fn list_messages(
         Ok(p) => {
             tracing::debug!(
                 user_id = p.user_id,
-                date = %p.date,
+                date = ?p.date,
                 channel = ?p.channel,
                 client_type = ?p.client_type,
                 "list_messages: request parsed"
@@ -105,29 +107,27 @@ async fn list_messages(
             .into_response();
     }
 
-    // 2. date 格式校验 + 东8区 → UTC 转换
-    let date_str = params.date.trim();
-    if date_str.is_empty() {
-        return AppError::BadRequest("date is required (format: YYYY-MM-DD HH:MM:SS)".into())
-            .into_response::<()>()
-            .into_response();
-    }
-
-    let naive = match chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
-        Ok(dt) => dt,
-        Err(_) => {
-            return AppError::BadRequest("date must be in YYYY-MM-DD HH:MM:SS format".into())
-                .into_response::<()>()
-                .into_response();
+    // 2. date 格式校验 + 东8区 → UTC 转换，不传则取当前时间
+    let cutoff = match params.date.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(date_str) => {
+            let naive = match chrono::NaiveDateTime::parse_from_str(date_str.trim(), "%Y-%m-%d %H:%M:%S") {
+                Ok(dt) => dt,
+                Err(_) => {
+                    return AppError::BadRequest("date must be in YYYY-MM-DD HH:MM:SS format".into())
+                        .into_response::<()>()
+                        .into_response();
+                }
+            };
+            let offset = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 offset");
+            naive
+                .and_local_timezone(offset)
+                .single()
+                .map(|dt| dt.naive_utc())
+                .unwrap_or(naive)
         }
+        None => chrono::Utc::now().naive_utc(),
     };
-    // 强制解释为东8区，转为 UTC 后与 DB 比较
-    let offset = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 offset");
-    let cutoff = naive
-        .and_local_timezone(offset)
-        .single()
-        .map(|dt| dt.naive_utc())
-        .unwrap_or(naive);
+    tracing::debug!(?cutoff, "list_messages: cutoff");
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
     let mut messages: Vec<ChatMessageUser> = match svc::list_messages_before(&state.pool, params.user_id, cutoff).await {

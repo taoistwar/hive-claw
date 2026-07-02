@@ -69,7 +69,12 @@ export default function ChatPage() {
     if (userId <= 0) return;
     setLoadingHistory(true);
     try {
-      const msgs = await getMessages({ user_id: userId, date: nowStr() });
+      const msgs = await getMessages({
+        user_id: userId,
+        date: nowStr(),
+        channel,
+        client_type: clientType,
+      });
       // API 返回按时间倒序，前端渲染需要正序
       setHistory(msgs.reverse());
     } catch (e) {

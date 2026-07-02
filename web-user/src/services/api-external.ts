@@ -158,8 +158,15 @@ export async function sendMessage(params: {
 export async function getMessages(params: {
   user_id: number;
   date: string; // YYYY-MM-DD HH:MM:SS
+  channel?: string;
+  client_type?: string;
 }): Promise<ChatMessage[]> {
-  const body = JSON.stringify({ user_id: params.user_id, date: params.date });
+  const body = JSON.stringify({
+    user_id: params.user_id,
+    date: params.date,
+    channel: params.channel,
+    client_type: params.client_type,
+  });
   const secret = getSecret();
 
   let url = `${API_BASE_URL}/messages`;

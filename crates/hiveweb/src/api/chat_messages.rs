@@ -80,8 +80,17 @@ async fn list_messages(
         }
     }
 
-    let params: MessagesBody = match serde_json::from_str(&body) {
-        Ok(p) => p,
+    let params: MessagesBody = match serde_json::from_str::<MessagesBody>(&body) {
+        Ok(p) => {
+            tracing::debug!(
+                user_id = p.user_id,
+                date = %p.date,
+                channel = ?p.channel,
+                client_type = ?p.client_type,
+                "list_messages: request parsed"
+            );
+            p
+        }
         Err(_) => {
             return AppError::BadRequest("Invalid request body".into())
                 .into_response::<()>()
@@ -122,7 +131,10 @@ async fn list_messages(
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
     let mut messages: Vec<ChatMessageUser> = match svc::list_messages_before(&state.pool, params.user_id, cutoff).await {
-        Ok(rows) => rows,
+        Ok(rows) => {
+            tracing::debug!(count = rows.len(), user_id = params.user_id, "list_messages: queried");
+            rows
+        }
         Err(e) => {
             tracing::error!(error = %e, user_id = params.user_id, "failed to query messages");
             return AppError::Internal("Failed to query messages".into())
@@ -133,10 +145,44 @@ async fn list_messages(
 
     // 5. 过滤 extensions 中已下架的游戏卡片
     if let Some(ref ext_pool) = state.ext_pool {
+        let before = count_game_cards(&messages);
         filter_unavailable_games(ext_pool, &mut messages).await;
+        let after = count_game_cards(&messages);
+        tracing::debug!(
+            game_cards_before = before,
+            game_cards_after = after,
+            "list_messages: filtered unavailable games"
+        );
     }
 
+    tracing::debug!(
+        user_id = params.user_id,
+        client_type = ?params.client_type,
+        channel = ?params.channel,
+        message_count = messages.len(),
+        "list_messages: returning"
+    );
+
     axum::Json(MessagesResponse { messages }).into_response()
+}
+
+/// Count the number of game cards across all messages' extensions.
+fn count_game_cards(messages: &[ChatMessageUser]) -> usize {
+    let mut count = 0;
+    for msg in messages {
+        if let Some(ref exts) = msg.extensions {
+            if let Some(arr) = exts.as_array() {
+                for ext in arr {
+                    let ct = ext.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                    let pt = ext.get("payload").and_then(|p| p.get("type")).and_then(|v| v.as_str()).unwrap_or("");
+                    if ct == "card" && pt == "game" {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
 }
 
 // ── Game card filtering ──
@@ -147,7 +193,6 @@ async fn filter_unavailable_games(
     messages: &mut [ChatMessageUser],
 ) {
     use crate::services::game_service;
-    use std::collections::HashSet;
 
     let mut game_ids: Vec<i64> = Vec::new();
     for msg in messages.iter() {
@@ -169,7 +214,12 @@ async fn filter_unavailable_games(
     for msg in messages.iter_mut() {
         if let Some(ref mut exts) = msg.extensions {
             if let Some(arr) = exts.as_array_mut() {
+                let before = arr.len();
                 arr.retain(|ext| retain_game_card(ext, &available));
+                // 有游戏卡片被过滤且 content 为空时，提示已下架
+                if arr.len() < before && msg.content.as_deref().map_or(true, |c| c.trim().is_empty()) {
+                    msg.content = Some("游戏已经下架".into());
+                }
                 if arr.is_empty() {
                     *exts = serde_json::Value::Null;
                 }
@@ -179,11 +229,19 @@ async fn filter_unavailable_games(
 }
 
 fn collect_game_ids(extensions: &Option<serde_json::Value>, ids: &mut Vec<i64>) {
-    let arr = match extensions.as_ref().and_then(|v| v.as_array()) {
+    let extensions = match extensions.as_ref().and_then(|v| v.as_array()) {
         Some(a) => a,
         None => return,
     };
-    for ext in arr {
+    for ext in extensions {
+        let ct = ext.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+        if ct != "card" {
+            continue;
+        }
+        let pt = ext.get("payload").and_then(|p| p.get("type")).and_then(|v| v.as_str()).unwrap_or("");
+        if pt != "game" {
+            continue;
+        }
         if let Some(id) = extract_game_id(ext) {
             ids.push(id);
         }

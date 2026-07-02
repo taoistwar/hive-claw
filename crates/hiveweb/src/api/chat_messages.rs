@@ -153,6 +153,11 @@ async fn list_messages(
             game_cards_after = after,
             "list_messages: filtered unavailable games"
         );
+
+        // 6. 刷新游戏卡片：如果 client_type/channel 与用户传入的不一致，重新查询
+        if let (Some(ref ct), Some(ref ch)) = (params.client_type.as_deref(), params.channel.as_deref()) {
+            refresh_game_cards(ext_pool, ct, ch, &mut messages).await;
+        }
     }
 
     tracing::debug!(
@@ -273,6 +278,103 @@ fn extract_game_id(ext: &serde_json::Value) -> Option<i64> {
         s.parse::<i64>().ok()
     } else {
         id_val.as_i64()
+    }
+}
+
+/// 刷新游戏卡片：如果 card 中的 client_type/channel 与用户传入的不一致，
+/// 根据游戏 ID 重新查询匹配用户 client_type/channel 的游戏信息并替换。
+async fn refresh_game_cards(
+    ext_pool: &sqlx::MySqlPool,
+    client_type: &str,
+    channel: &str,
+    messages: &mut [ChatMessageUser],
+) {
+    use crate::services::game_service;
+    use serde_json::Value;
+
+    for msg in messages.iter_mut() {
+        println!("msg: {:?}", msg);
+        let exts = match msg.extensions.as_mut() {
+            Some(Value::Array(arr)) => arr,
+            _ => continue,
+        };
+        let mut is_game = false; // 当前消息是否包含游戏卡片
+        let mut same = false; // 当前消息中是否有游戏卡片的 client_type/channel 与用户传入的一致
+        let mut exits = false; // 根据用户传入的 client_type/channel 查询到的游戏信息是否存在
+        for ext in exts.iter_mut() {
+            let ct = ext.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+            println!("ext: {:?}, content_type: {}", ext, ct);
+            if ct != "card" {
+                continue;
+            }
+            let payload = ext.get("payload");
+            let pt = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str()).unwrap_or("");
+            println!("payload: {:?}, type: {}", payload, pt);
+            if pt != "game" {
+                continue;
+            }
+            is_game = true;
+            let info = match payload.and_then(|p| p.get("info")) {
+                Some(i) => i,
+                None => continue,
+            };
+            println!("info: {:?}", info);
+
+            let card_ct = info.get("client_type").and_then(|v| v.as_str()).unwrap_or("");
+            let card_ch = info.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+            println!("card client_type: {}, channel: {}, client_type:{}, channel:{}", card_ct, card_ch, client_type, channel);
+            // 如果一致则跳过
+            if card_ct.eq_ignore_ascii_case(client_type) && card_ch.eq_ignore_ascii_case(channel) {
+                same = true;
+                continue;
+            }
+            same = false;
+            let game_id = match info.get("id").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()) {
+                Some(id) => id,
+                None => continue,
+            };
+            println!("game_id: {}", game_id);
+            // 重新查询游戏信息
+            let fresh = match game_service::get_external_game_by_id(
+                ext_pool, game_id, client_type, channel,
+            )
+            .await
+            {
+                Ok(mut games) => {
+                    game_service::sort_external_games_by_priority(ext_pool, &mut games).await;
+                    games.into_iter().next()
+                }
+                Err(_) => None,
+            };
+            println!("fresh: {:?}", fresh);
+            if let Some(info_row) = fresh {
+                if info_row.logic_game_id != 0 {
+                    let obj = ext.as_object_mut().unwrap();
+                    obj.insert("payload".into(), Value::Object({
+                        let mut p = serde_json::Map::new();
+                        p.insert("type".into(), Value::String("game".into()));
+                        p.insert("info".into(), serde_json::json!({
+                            "id": info_row.logic_game_id.to_string(),
+                            "name": info_row.name,
+                            "channel": info_row.channel,
+                            "client_type": info_row.client_type,
+                            "reason": info_row.description,
+                            "game_tags": info_row.game_tags,
+                            "cover_image": info_row.cover_image,
+                            "computer_id": info_row.computer_id,
+                            "platform_name": info_row.platform_name,
+                            "game_icon": info_row.game_icon,
+                        }));
+                        p
+                    }));
+                    exits = true;
+                }
+            }
+        }
+        if is_game && !same && !exits {
+            msg.content = Some("该游戏当前客户端不支持".into());
+            msg.extensions = None;
+        }
     }
 }
 

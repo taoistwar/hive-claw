@@ -82,7 +82,7 @@ export default function ChatPage() {
     } finally {
       setLoadingHistory(false);
     }
-  }, [userId]);
+  }, [userId, channel, clientType]);
 
   // userId 变化时重置并加载历史
   const prevUserId = useRef<number>(0);

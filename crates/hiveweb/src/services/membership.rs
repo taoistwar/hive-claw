@@ -225,7 +225,7 @@ pub async fn query_duration_cards(
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
     t1.create_time         AS create_time,
-    t2.game_label_list      AS game_label_list,
+    t4.game_label_list      AS game_label_list,
     t3.title               AS product_title,
     t3.value               AS product_duration
 FROM (

@@ -382,36 +382,21 @@ pub async fn query_balance_async_impl(
         Vec::new()
     };
 
-    let duration_card_json: Vec<Value> = duration_cards
+    let mut duration_card_json: Vec<Value> = duration_cards
         .iter()
         .map(|row| {
-            let fps = row
-                .product_mirror
-                .as_ref()
-                .and_then(|v| v.get("fps"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let gpu = row
-                .product_mirror
-                .as_ref()
-                .and_then(|v| v.get("gpu"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+
             json!({
                 "card_asset_id": row.card_asset_id,
                 "remain_duration": row.remain_duration,
                 "computer_biz_type": row.computer_biz_type,
                 "expire_time": row.expire_time,
-                "card_type": row.card_type,
-                "card_type_name": row.card_type_name,
                 "order_id": row.order_id,
                 "consume_label": row.consume_label,
                 "create_time": row.create_time.map(|t| t.to_string()),
-                "product_mirror": row.product_mirror,
+                "game_label_list": row.game_label_list,
                 "product_title": row.product_title,
-                "product_duration": row.product_duration,
-                "fps": fps,
-                "gpu": gpu,
+                "product_duration": row.product_duration
             })
         })
         .collect();
@@ -419,6 +404,18 @@ pub async fn query_balance_async_impl(
         ?duration_card_json,
         "[query_balance] step1.8 duration_card_json"
     );
+
+    // Resolve game_label_list codes to human-readable names via cc_label
+    if need_duration && !duration_card_json.is_empty() {
+        if let Err(e) = crate::services::membership::resolve_game_label_names(
+            ext_pool,
+            &mut duration_card_json,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
+        }
+    }
 
     let has_membership = !membership_subscriptions.is_empty();
     let now = chrono::Utc::now().naive_utc();

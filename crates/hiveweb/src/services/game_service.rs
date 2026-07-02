@@ -617,3 +617,28 @@ pub async fn list_external_games_cached(
     })
     .await
 }
+
+/// Check whether games are still active (status=1) in cc_logic_game.
+/// Returns the set of IDs that are still available.
+pub async fn filter_available_games(
+    ext_pool: &MySqlPool,
+    game_ids: &[i64],
+) -> Result<std::collections::HashSet<i64>, String> {
+    if game_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let placeholders: Vec<String> = game_ids.iter().map(|_| "?".to_string()).collect();
+    let sql = format!(
+        "SELECT id FROM cc_logic_game WHERE id IN ({}) AND status = 1",
+        placeholders.join(",")
+    );
+    let mut query = sqlx::query_as(&sql);
+    for id in game_ids {
+        query = query.bind(id);
+    }
+    let rows: Vec<(i64,)> = query
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| format!("filter_available_games: {e}"))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}

@@ -200,13 +200,11 @@ pub struct DurationCardRow {
     pub remain_duration: Option<i64>,
     pub computer_biz_type: Option<String>,
     pub expire_time: Option<i64>,
-    pub card_type: Option<i8>,
-    pub card_type_name: Option<String>,
     pub order_id: Option<i64>,
     pub consume_label: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
-    /// product_mirror JSON — 提取 fps / gpu 等字段
-    pub product_mirror: Option<serde_json::Value>,
+    /// game_label_list JSON — 提取 fps / gpu 等字段
+    pub game_label_list: Option<serde_json::Value>,
     /// cc_product.title — 商品名称（如 "金卡"、"黑金卡"）
     pub product_title: Option<String>,
     /// cc_product.value — 商品时长
@@ -224,16 +222,10 @@ pub async fn query_duration_cards(
     t1.value               AS remain_duration,
     t1.computer_biz_type   AS computer_biz_type,
     t1.expire_time         AS expire_time,
-    t1.type                AS card_type,
-    CASE t1.type
-        WHEN 8 THEN '金卡'
-        WHEN 9 THEN '黑金卡'
-        ELSE '其他'
-    END                     AS card_type_name,
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
     t1.create_time         AS create_time,
-    t2.product_mirror      AS product_mirror,
+    t2.game_label_list      AS game_label_list,
     t3.title               AS product_title,
     t3.value               AS product_duration
 FROM (
@@ -252,7 +244,9 @@ FROM (
 LEFT JOIN (
 	SELECT * FROM cc_order WHERE user_id = ?
 ) t2 ON t1.order_id = t2.id
-LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id"#,
+LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id
+LEFT JOIN cc_product_ext t4 ON t3.id = t4.product_id
+"#,
     )
     .bind(user_id)
     .bind(user_id)
@@ -261,6 +255,68 @@ LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id"#,
     // cc_user_asset_coin t1 join cc_order t2 on t1.order_id = t2.id
     // 排除 t1.customer_label "gameLabelList" 包含 "BOX_CARD",
     // 可以多个
+}
+
+/// Resolve game_label_list codes to human-readable names via cc_label table.
+/// Input: [{"game_label_list": ["ARM_GAME", "PC_GAME"]}, ...]
+/// Output: the same JSON but with codes replaced by names (e.g. ["手游", "PC游戏"])
+pub async fn resolve_game_label_names(
+    ext_pool: &MySqlPool,
+    duration_card_json: &mut [serde_json::Value],
+) -> Result<(), String> {
+    use std::collections::HashMap;
+
+    // Collect all unique label codes
+    let mut codes: Vec<String> = Vec::new();
+    for card in duration_card_json.iter() {
+        if let Some(list) = card.get("game_label_list").and_then(|v| v.as_array()) {
+            for item in list {
+                if let Some(code) = item.as_str() {
+                    if !codes.contains(&code.to_string()) {
+                        codes.push(code.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if codes.is_empty() {
+        return Ok(());
+    }
+
+    // Query cc_label for names
+    let placeholders: Vec<String> = codes.iter().map(|_| "?".to_string()).collect();
+    let sql = format!(
+        "SELECT value, name FROM cc_label WHERE value IN ({})",
+        placeholders.join(",")
+    );
+    let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+    for code in &codes {
+        query = query.bind(code);
+    }
+    let rows: Vec<(String, String)> = query
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| format!("cc_label query: {e}"))?;
+
+    let map: HashMap<String, String> = rows.into_iter().collect();
+
+    // Replace codes with names
+    for card in duration_card_json.iter_mut() {
+        if let Some(list) = card.get_mut("game_label_list").and_then(|v| v.as_array_mut()) {
+            let resolved: Vec<serde_json::Value> = list
+                .iter()
+                .map(|item| {
+                    let code = item.as_str().unwrap_or("");
+                    let name = map.get(code).map(|s| s.as_str()).unwrap_or(code);
+                    serde_json::Value::String(name.to_string())
+                })
+                .collect();
+            *list = resolved;
+        }
+    }
+
+    Ok(())
 }
 
 // ── Redis-cached wrappers ──

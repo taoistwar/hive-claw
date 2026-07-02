@@ -3,8 +3,10 @@
 //! POST /api/messages?sign={md5}
 //!
 //! 请求 Body (JSON)：
-//!   user_id  - 用户 ID，必须 > 0
-//!   date     - 最后一条记录时间（YYYY-MM-DD HH:MM:SS），返回该时间之前的最近 10 条
+//!   user_id     - 用户 ID，必须 > 0
+//!   date        - 最后一条记录时间（YYYY-MM-DD HH:MM:SS），返回该时间之前的最近 10 条
+//!   channel     - 渠道标识（可选，用于过滤已下架游戏）
+//!   client_type - 客户端平台（可选，用于过滤已下架游戏）
 //!
 //! URL 查询参数：
 //!   sign     - MD5 签名：MD5(ASSISTANT_SECRET + canonical_json_body)
@@ -14,6 +16,7 @@
 //!   2. date 格式校验（YYYY-MM-DD HH:MM:SS）
 //!   3. MD5 签名校验（对完整 JSON body 计算 MD5）
 //!   4. 查询 chat_messages_user 表，返回最近 10 条
+//!   5. 过滤 extensions 中已下架的游戏卡片
 
 use axum::{
     Json, Router,
@@ -40,6 +43,12 @@ pub struct MessagesBody {
     pub user_id: i64,
     /// 最后一条聊天记录的时间（YYYY-MM-DD HH:MM:SS），返回该时间往前的最近 10 条
     pub date: String,
+    /// 渠道标识（如 `app`、`web`、`api`）
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// 客户端平台（`android`、`iphone`、`ipad`、`web`）
+    #[serde(default)]
+    pub client_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +121,7 @@ async fn list_messages(
         .unwrap_or(naive);
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
-    let messages: Vec<ChatMessageUser> = match svc::list_messages_before(&state.pool, params.user_id, cutoff).await {
+    let mut messages: Vec<ChatMessageUser> = match svc::list_messages_before(&state.pool, params.user_id, cutoff).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, user_id = params.user_id, "failed to query messages");
@@ -122,7 +131,91 @@ async fn list_messages(
         }
     };
 
+    // 5. 过滤 extensions 中已下架的游戏卡片
+    if let Some(ref ext_pool) = state.ext_pool {
+        filter_unavailable_games(ext_pool, &mut messages).await;
+    }
+
     axum::Json(MessagesResponse { messages }).into_response()
+}
+
+// ── Game card filtering ──
+
+/// 过滤消息中已下架的游戏卡片（cc_logic_game.status != 1）
+async fn filter_unavailable_games(
+    ext_pool: &sqlx::MySqlPool,
+    messages: &mut [ChatMessageUser],
+) {
+    use crate::services::game_service;
+    use std::collections::HashSet;
+
+    let mut game_ids: Vec<i64> = Vec::new();
+    for msg in messages.iter() {
+        collect_game_ids(&msg.extensions, &mut game_ids);
+    }
+
+    if game_ids.is_empty() {
+        return;
+    }
+
+    let available = match game_service::filter_available_games(ext_pool, &game_ids).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(error = %e, "filter_available_games failed, keeping all game cards");
+            return;
+        }
+    };
+
+    for msg in messages.iter_mut() {
+        if let Some(ref mut exts) = msg.extensions {
+            if let Some(arr) = exts.as_array_mut() {
+                arr.retain(|ext| retain_game_card(ext, &available));
+                if arr.is_empty() {
+                    *exts = serde_json::Value::Null;
+                }
+            }
+        }
+    }
+}
+
+fn collect_game_ids(extensions: &Option<serde_json::Value>, ids: &mut Vec<i64>) {
+    let arr = match extensions.as_ref().and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return,
+    };
+    for ext in arr {
+        if let Some(id) = extract_game_id(ext) {
+            ids.push(id);
+        }
+    }
+}
+
+fn retain_game_card(ext: &serde_json::Value, available: &std::collections::HashSet<i64>) -> bool {
+    let ct = ext.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+    if ct != "card" {
+        return true;
+    }
+    let payload = ext.get("payload");
+    let ptype = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str()).unwrap_or("");
+    if ptype != "game" {
+        return true;
+    }
+    match extract_game_id(ext) {
+        Some(id) => available.contains(&id),
+        None => true,
+    }
+}
+
+fn extract_game_id(ext: &serde_json::Value) -> Option<i64> {
+    let info = ext
+        .get("payload")
+        .and_then(|p| p.get("info"))?;
+    let id_val = info.get("id")?;
+    if let Some(s) = id_val.as_str() {
+        s.parse::<i64>().ok()
+    } else {
+        id_val.as_i64()
+    }
 }
 
 // ── 测试 ──

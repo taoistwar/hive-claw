@@ -342,7 +342,7 @@ export default function ChatPage() {
                       session_id: assistantMsg.session_id,
                       user_id: userId,
                       role: 'user',
-                      content: game.reply,
+                      content: game.name,
                       elapsed_ms: null,
                       created_at: new Date().toISOString(),
                     };
@@ -418,7 +418,7 @@ export default function ChatPage() {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {game.game_name}
+                  {game.name}
                 </Text>
               </div>
             ))

@@ -4870,6 +4870,7 @@ dependencies = [
  "sha2 0.10.9",
  "skills",
  "sqlx",
+ "syntect",
  "thiserror 1.0.69",
  "time",
  "tokio",

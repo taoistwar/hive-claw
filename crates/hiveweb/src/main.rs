@@ -165,9 +165,13 @@ pub fn file_tracing() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
     Ok(())
 }
-
 pub fn console_tracing() -> anyhow::Result<()> {
+    use tracing_subscriber::{
+        self, EnvFilter, filter::filter_fn, fmt::time::OffsetTime, prelude::*,
+    };
+
     use time::{UtcOffset, macros::format_description};
+    use hiveweb::sqlx::sqlx_layer::SqlxLayer;
     // 配置日志时间格式，配置时区为东8区，
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap_or(UtcOffset::UTC);
     // 时间格式为  年-月-日 时:分:秒 格式
@@ -176,16 +180,25 @@ pub fn console_tracing() -> anyhow::Result<()> {
         format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
     );
     // dev 模式直接使用 debug 级别，忽略 RUST_LOG
-    let env_filter = EnvFilter::new("hiveweb=debug");
-    tracing_subscriber::FmtSubscriber::builder()
-        .with_env_filter(env_filter)
-        .with_timer(logger_time)
+    let env_filter =
+        EnvFilter::new("sqlx::query=debug,sqlx::formatted_query=debug,hiveweb=debug,info");
+
+    let sqlx_layer = SqlxLayer::new();
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .pretty()
-        .with_level(true)
-        .with_target(true)
         .with_ansi(true)
         .with_file(true)
         .with_writer(std::io::stdout)
+        .with_timer(logger_time)
+        .with_target(true)
+        .with_level(true)
+        .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(sqlx_layer)
         .init();
     Ok(())
 }

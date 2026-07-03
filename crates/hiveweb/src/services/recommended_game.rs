@@ -248,40 +248,59 @@ pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame
     .map_err(|e| AppError::Internal(format!("recommended_game top: {e}")))
 }
 
-/// Query recommended games for a single tag with strategy channel/client_type filtering.
+/// Query recommended games for a single tag, filtered by client_type and channel
+/// via external game tables (cc_logic_game_wide, cc_promotion_channel, cc_computer_info, etc).
 async fn fetch_by_tag(
     pool: &MySqlPool,
     tag: &str,
     ch: &str,
     ct: &str,
 ) -> Result<Vec<RecommendedGame>, AppError> {
-    sqlx::query_as::<_, RecommendedGame>(
-        r#"SELECT rg.* FROM recommended_games rg
-WHERE rg.tag = ?
-  AND EXISTS (
-    SELECT 1 FROM recommended_games_strategy si
-    WHERE si.recommended_game_id = rg.id
-      AND si.strategy = 'INCLUDE'
-      AND JSON_CONTAINS(si.channel, ?)
-      AND JSON_CONTAINS(si.client_type, ?)
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM recommended_games_strategy se
-    WHERE se.recommended_game_id = rg.id
-      AND se.strategy = 'EXCLUDE'
-      AND JSON_CONTAINS(se.channel, ?)
-      AND JSON_CONTAINS(se.client_type, ?)
-  )
-ORDER BY rg.sort_value DESC, rg.created_at DESC
+    let rows = sqlx::query_as::<_, RecommendedGame>(
+        r#"SELECT d1.id, d1.name, d1.reply, d1.reason, d1.tag,
+    d1.game_category, d1.game_image, d1.game_id, d1.game_name,
+    d1.sort_value, d1.created_at, d1.updated_at
+FROM (
+    SELECT DISTINCT t0.*
+    FROM (
+        SELECT * FROM recommended_games WHERE tag = ?
+    ) t0
+    INNER JOIN (
+        SELECT * FROM cc_logic_game_wide WHERE LOWER(client_type) = LOWER(?)
+    ) t1 ON t0.game_id = t1.logic_game_id
+    INNER JOIN cc_game t2 ON t0.game_id = t2.logic_game_id
+    INNER JOIN cc_game_platform t3 ON t2.game_platform_id = t3.id
+    INNER JOIN (
+        SELECT * FROM cc_computer_info WHERE status = 1
+    ) ci ON t2.computer_id = ci.id
+    INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
+    INNER JOIN (
+        SELECT pc.id, pc.game_tag, pc.prom_channel
+        FROM cc_promotion_channel pc
+        WHERE pc.prom_channel = ?
+    ) t5 ON t1.channel_game_tag = t5.game_tag
+    LEFT JOIN (
+        SELECT * FROM cc_logic_game_exclude
+        WHERE client_type = ? AND channel = ?
+    ) t6 ON t0.game_id = t6.logic_game_id
+    LEFT JOIN cc_logic_game_blacklist t7 ON t0.game_id = t7.logic_game_id
+    WHERE t6.id IS NULL AND t7.id IS NULL
+) d1
+ORDER BY d1.sort_value DESC, d1.created_at DESC
 LIMIT ?"#,
     )
     .bind(tag)
-    .bind(ch).bind(ct)
-    .bind(ch).bind(ct)
+    .bind(ct)
+    .bind(ch)
+    .bind(ct)
+    .bind(ch)
     .bind(10i64)
     .fetch_all(pool)
     .await
-    .map_err(|e| AppError::Internal(format!("fetch_by_tag {tag}: {e}")))
+    .map_err(|e| AppError::Internal(format!("fetch_by_tag {tag}: {e}")));
+
+    tracing::debug!(target: "recommended_game", "fetch_by_tag {tag} for channel={ch}, client_type={ct} returned {} rows", rows.as_ref().map(|r| r.len()).unwrap_or(0));
+    rows
 }
 
 /// Filtered top games with strategy-based channel/client_type filtering and per-tag limits.
@@ -306,8 +325,8 @@ pub async fn fetch_top_filtered(
     let mut selected_ids: HashSet<i64> = HashSet::new();
     // Store all fetched candidates for fallback fill-up
     let mut all_candidates: Vec<RecommendedGame> = Vec::new();
-    let ch = format!("\"{}\"", channel);
-    let ct = format!("\"{}\"", client_type);
+    let ch = format!("{}", channel);
+    let ct = format!("{}", client_type);
 
     for (tag, limit) in &tags {
         let limit = *limit;

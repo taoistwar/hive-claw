@@ -36,6 +36,7 @@ license = "Apache-2.0"
 repository = "https://github.com/taoistwar/hive-claw"
 
 [workspace.dependencies]
+
 time = "0.3.45"
 # HTTP / async (HiveClaw)
 axum = { version = "0.8", default-features = false, features = [

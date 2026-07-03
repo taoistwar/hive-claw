@@ -166,23 +166,27 @@ fn resolve_discount_products(
     client_type: &str,
     channel: &str,
 ) -> Result<serde_json::Value, BuiltinError> {
-    let ct_obj = config
-        .get(client_type)
-        .or_else(|| config.get("__DEFAULT__"))
-        .ok_or_else(|| {
-            BuiltinError::Exec(format!(
-                "AIDiscountedProducts: 未找到 client_type={client_type} 或 __DEFAULT__"
-            ))
-        })?;
+    /// 忽略大小写查找 JSON object 中的 key
+    fn find_ignore_case<'a>(obj: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+        obj.as_object().and_then(|map| {
+            map.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .or_else(|| map.iter().find(|(k, _)| k.eq_ignore_ascii_case("__DEFAULT__")))
+                .map(|(_, v)| v)
+        })
+    }
 
-    let ch_obj = ct_obj
-        .get(channel)
-        .or_else(|| ct_obj.get("__DEFAULT__"))
-        .ok_or_else(|| {
-            BuiltinError::Exec(format!(
-                "AIDiscountedProducts: 未找到 channel={channel} 或 __DEFAULT__ in client_type={client_type}"
-            ))
-        })?;
+    let ct_obj = find_ignore_case(config, client_type).ok_or_else(|| {
+        BuiltinError::Exec(format!(
+            "AIDiscountedProducts: 未找到 client_type={client_type} 或 __DEFAULT__"
+        ))
+    })?;
+
+    let ch_obj = find_ignore_case(ct_obj, channel).ok_or_else(|| {
+        BuiltinError::Exec(format!(
+            "AIDiscountedProducts: 未找到 channel={channel} 或 __DEFAULT__ in client_type={client_type}"
+        ))
+    })?;
 
     Ok(ch_obj.clone())
 }

@@ -238,11 +238,9 @@ async fn filter_unavailable_games(ext_pool: &sqlx::MySqlPool, messages: &mut [Ch
             if let Some(arr) = exts.as_array_mut() {
                 let before = arr.len();
                 arr.retain(|ext| retain_game_card(ext, &available));
-                // 有游戏卡片被过滤且 content 为空时，提示已下架
-                if arr.len() < before
-                    && msg.content.as_deref().map_or(true, |c| c.trim().is_empty())
-                {
-                    msg.content = Some("游戏已经下架".into());
+                // 有游戏卡片被过滤时，提示已下架
+                if arr.len() < before {
+                    msg.content = Some("很遗憾，这款游戏暂未在平台上架".into());
                 }
                 if arr.is_empty() {
                     *exts = serde_json::Value::Null;

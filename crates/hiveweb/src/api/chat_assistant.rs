@@ -179,7 +179,7 @@ async fn assistant_chat(
     let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership_cached 查询失败，降级为非VIP");
+            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
             false
         });
 
@@ -604,10 +604,10 @@ async fn assistant_quota(
     }
 
     // 5. 获取会员等级 & 限流配置
-    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+    let is_vip = membership::check_vip_membership(ext_pool, user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::error!(user_id, error = %e, "quota: check_vip_membership_cached failed");
+            tracing::error!(user_id, error = %e, "quota: check_vip_membership failed");
             false
         });
 

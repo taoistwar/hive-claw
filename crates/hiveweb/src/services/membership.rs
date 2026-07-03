@@ -357,19 +357,36 @@ pub async fn user_exists_in_cloud_cached(
     Ok(exists)
 }
 
-/// Cached version of `check_vip_membership`.
+/// VIP 状态查询（智能缓存）：
+/// - 已经是 VIP → 缓存，下次直接返回 true
+/// - 不是 VIP → 不缓存，每次查 DB（确保充值后立即识别）
 pub async fn check_vip_membership_cached(
     redis: &redis::Client,
     pool: &MySqlPool,
     user_id: i64,
 ) -> Result<bool, String> {
     let key = format!("{}:{}", cache_helper::KEY_VIP_STATUS, user_id);
-    cached_or_fetch(redis, &key, cache_helper::TTL_VIP_STATUS, || async {
-        check_vip_membership(pool, user_id)
-            .await
-            .map_err(|e| format!("check_vip_membership: {e}"))
-    })
-    .await
+
+    // 1. 先查缓存
+    if let Ok(Some(cached)) = cache_helper::cached_get::<bool>(redis, &key).await {
+        if cached {
+            return Ok(true);
+        }
+    }
+
+    // 2. 查 DB
+    let is_vip = check_vip_membership(pool, user_id)
+        .await
+        .map_err(|e| format!("check_vip_membership: {e}"))?;
+
+    // 3. 只有 VIP 才缓存
+    if is_vip {
+        if let Err(e) = cache_helper::cached_set(redis, &key, &true, cache_helper::TTL_VIP_STATUS).await {
+            tracing::debug!(%key, error = %e, "VIP cache write failed");
+        }
+    }
+
+    Ok(is_vip)
 }
 
 /// Cached version of `get_cloud_user_info`.

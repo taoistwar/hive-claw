@@ -266,6 +266,9 @@ FROM (
         SELECT * FROM recommended_games WHERE tag = ?
     ) t0
     INNER JOIN (
+        SELECT * FROM cc_logic_game WHERE status = 1
+    ) t8 ON t0.game_id = t8.id
+    INNER JOIN (
         SELECT * FROM cc_logic_game_wide WHERE LOWER(client_type) = LOWER(?)
     ) t1 ON t0.game_id = t1.logic_game_id
     INNER JOIN cc_game t2 ON t0.game_id = t2.logic_game_id
@@ -284,6 +287,7 @@ FROM (
         WHERE client_type = ? AND channel = ?
     ) t6 ON t0.game_id = t6.logic_game_id
     LEFT JOIN cc_logic_game_blacklist t7 ON t0.game_id = t7.logic_game_id
+
     WHERE t6.id IS NULL AND t7.id IS NULL
 ) d1
 ORDER BY d1.sort_value DESC, d1.created_at DESC

@@ -325,12 +325,9 @@ pub async fn fetch_top_filtered(
     let mut selected_ids: HashSet<i64> = HashSet::new();
     // Store all fetched candidates for fallback fill-up
     let mut all_candidates: Vec<RecommendedGame> = Vec::new();
-    let ch = format!("{}", channel);
-    let ct = format!("{}", client_type);
-
     for (tag, limit) in &tags {
         let limit = *limit;
-        let rows = fetch_by_tag(pool, tag, &ch, &ct).await?;
+        let rows = fetch_by_tag(pool, tag, channel, client_type).await?;
 
         // Create RNG per iteration — must not cross .await boundary (thread_rng is !Send)
         let mut rng = rand::thread_rng();

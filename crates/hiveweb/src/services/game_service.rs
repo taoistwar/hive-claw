@@ -381,7 +381,7 @@ LEFT JOIN (
 ) t6 on t1.logic_game_id = t6.logic_game_id
 LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
 LEFT JOIN (
-  select * from cc_logic_game where id=?
+  select * from cc_logic_game where id=? and status = 1
 ) t8 on t1.logic_game_id = t8.id
 LEFT JOIN (
   select * from cc_ranking_recommended_game
@@ -431,7 +431,7 @@ FROM (
   where t2.id is null AND t4.id is null
   group by t1.logic_game_id,t1.name
 ) z1
-INNER JOIN cc_logic_game z2 on z1.logic_game_id = z2.id
+INNER JOIN cc_logic_game z2 on z1.logic_game_id = z2.id and z2.status = 1
     "#;
     sqlx::query_as::<_, (i64, String, String)>(sql)
         .bind(client_type)
@@ -686,4 +686,21 @@ LIMIT ?"#,
     .await
     .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Query cc_logic_game detail by id (for web-admin game lookup).
+pub async fn get_external_game_detail(
+    ext_pool: &MySqlPool,
+    game_id: i64,
+) -> Result<Option<(i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>, AppError> {
+    sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>(
+        "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
+         FROM cc_logic_game g
+         LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
+         WHERE g.id = ?",
+    )
+    .bind(game_id)
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("external game detail: {e}")))
 }

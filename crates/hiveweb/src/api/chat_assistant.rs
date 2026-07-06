@@ -228,7 +228,6 @@ async fn assistant_chat(
     }
     let _guard = SseConcurrencyGuard {
         actor_id: req.user_id,
-        is_admin: false,
     };
 
     // 8. 内部 users 表同步（不存在则创建）

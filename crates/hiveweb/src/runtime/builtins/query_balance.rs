@@ -213,7 +213,7 @@ fn filter_discount_fields(discount: &Value) -> Value {
 pub async fn query_balance_async_impl(
     user_id: i64,
     ext_pool: &sqlx::MySqlPool,
-    redis: Option<&redis::Client>,
+    _redis: Option<&redis::Client>,
     _agent_ctx: Option<&AgentContext>,
     category: &str,
 ) -> BuiltinResult {
@@ -229,21 +229,13 @@ pub async fn query_balance_async_impl(
 
     // 1. 查询金币余额（仅 coins / benefits 需要）
     let coins_row = if need_coins {
-        let row = if let Some(r) = redis {
-            crate::services::membership::query_coins_balance_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
-                    BuiltinError::Exec(format!("金币查询失败: {e}"))
-                })?
-        } else {
+        let row =
             crate::services::membership::query_coins_balance(ext_pool, user_id)
                 .await
                 .map_err(|e| {
                     tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
                     BuiltinError::Exec(format!("金币查询失败: {e}"))
-                })?
-        };
+                })?;
         if row.is_none() {
             tracing::debug!(%user_id, "[query_balance] step1 coins: no data");
             return Ok(json!({
@@ -258,21 +250,13 @@ pub async fn query_balance_async_impl(
 
     // 1.2 查询云硬盘信息（仅 disk / benefits 需要）
     let disk_row = if need_disk {
-        let row = if let Some(r) = redis {
-            crate::services::membership::query_disk_balance_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
-                    BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
-                })?
-        } else {
+        let row =
             crate::services::membership::query_disk_balance(ext_pool, user_id)
                 .await
                 .map_err(|e| {
                     tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
                     BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
-                })?
-        };
+                })?;
         tracing::debug!(%user_id, ?row, "[query_balance] step1.2 disk: row");
         row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
@@ -280,21 +264,13 @@ pub async fn query_balance_async_impl(
     };
 
     // 1.5 查询会员与订阅状态
-    let membership_subscriptions = if let Some(r) = redis {
-        crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
-            .await
-            .map_err(|e| {
-                tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
-                BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
-            })?
-    } else {
+    let membership_subscriptions =
         crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
             .await
             .map_err(|e| {
                 tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
                 BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
-            })?
-    };
+            })?;
     tracing::debug!(%user_id, count = membership_subscriptions.len(), "[query_balance] step1.5 membership: {} rows", membership_subscriptions.len());
 
     // Serialize membership+subscription rows to JSON
@@ -328,21 +304,13 @@ pub async fn query_balance_async_impl(
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）
     let duration_cards = if need_duration {
-        let cards = if let Some(r) = redis {
-            crate::services::membership::query_duration_cards_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
-                    BuiltinError::Exec(format!("时长卡查询失败: {e}"))
-                })?
-        } else {
+        let cards =
             crate::services::membership::query_duration_cards(ext_pool, user_id)
                 .await
                 .map_err(|e| {
                     tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
                     BuiltinError::Exec(format!("时长卡查询失败: {e}"))
-                })?
-        };
+                })?;
         tracing::debug!(%user_id, count = cards.len(), "[query_balance] step1.8 duration_cards: {} rows", cards.len());
         cards
     } else {
@@ -508,7 +476,7 @@ pub async fn query_balance_async_impl(
         // Build _agent_context_updates with extensions (if any) and loop-break signal
         let mut updates = json!({
             "metadata": {
-                "agent_loop_break": "true"
+                "agent_loop_break": "false"
             }
         });
         if !extension_list.is_empty() {

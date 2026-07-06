@@ -496,6 +496,8 @@ async fn check_and_incr_daily_limit(
     }
 
     if current > max_times {
+        // rollback: 超限不计入
+        let _: Result<(), _> = conn.decr(key, 1).await;
         return Err(Some(format!(
             "Daily limit reached ({}/{})",
             max_times, max_times

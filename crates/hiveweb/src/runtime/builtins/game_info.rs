@@ -153,7 +153,7 @@ async fn game_info_async_impl(
         "found": true,
         "id": id,
         "name": name,
-        "description": game_info.description,
+        "description": game_info.raw_description,
         "cover_image": game_info.cover_image,
         "game_tags": game_info.game_tags,
         "computer_id": game_info.computer_id,
@@ -470,7 +470,7 @@ async fn handle_classify_and_list(
     parts.push(String::new());
     for g in &games {
         let name = g.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let desc = g.get("description").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let desc = g.get("raw_description").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
         if !name.is_empty() {
             if let Some(d) = desc {
                 parts.push(format!("「{name}」是一款{d}；"));

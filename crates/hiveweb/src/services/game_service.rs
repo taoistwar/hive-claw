@@ -344,6 +344,7 @@ pub struct ExternalGameInfo {
     pub client_type: Option<String>,
     pub channel: Option<String>,
     pub game_icon: Option<String>,
+    pub raw_description: Option<String>,
 }
 
 /// Query games from cc_logic_game by logic_game_id (foreign key, may return multiple rows).
@@ -355,7 +356,7 @@ pub async fn get_external_game_by_id(
 ) -> Result<Vec<ExternalGameInfo>, AppError> {
     sqlx::query_as::<_, ExternalGameInfo>(
         r#"SELECT
-  t1.logic_game_id, t1.name, t9.recommend_reason as description, t1.cover_image, t1.game_tags,
+  t1.logic_game_id, t1.name, t9.recommend_reason as description, t1.description as raw_description, t1.cover_image, t1.game_tags,
   t2.computer_id,
   t3.name as platform_name,
   t1.client_type,

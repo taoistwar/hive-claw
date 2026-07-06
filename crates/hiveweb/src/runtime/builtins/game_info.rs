@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::runtime::llm::LlmRegistry;
 use providers::{ChatRequest, RetryMode};
@@ -478,6 +479,7 @@ async fn handle_classify_and_list(
     let extensions: Vec<Value> = games
         .iter()
         .map(|g| serde_json::json!({
+            "id": format!("game-{}", g.get("id").and_then(|v| v.as_i64()).map(|id| id.to_string()).unwrap_or_else(|| Uuid::new_v4().to_string())),
             "content_type": "card",
             "payload": {
                 "type": "game",
@@ -485,11 +487,27 @@ async fn handle_classify_and_list(
             },
         }))
         .collect();
+
+    let mut metadata = serde_json::json!({
+        "agent_loop_break": "true"
+    });
+    // ≥2 张推荐游戏时，重置 content 为推荐文案
+    if games.len() >= 2 {
+        let names: Vec<&str> = games
+            .iter()
+            .filter_map(|g| g.get("name").and_then(|v| v.as_str()))
+            .collect();
+        let content = format!(
+            "为您推荐「{}」等 {} 款游戏，点击下方卡片查看详情",
+            names.join("」「"),
+            names.len()
+        );
+        metadata["response_content"] = serde_json::Value::String(content);
+    }
+
     output["_agent_context_updates"] = serde_json::json!({
         "extensions": extensions,
-        "metadata": {
-            "agent_loop_break": "true"
-        }
+        "metadata": metadata,
     });
     Ok(output)
 }

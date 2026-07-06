@@ -164,16 +164,22 @@ fn build_chat_messages<T: HasRoleContent>(history: &[T], user_content: &str) -> 
 /// 去掉 id / reply / render_hints / data 等包装层。
 fn flatten_extension(e: &ExtensionContent) -> Value {
     let mut flat = serde_json::Map::new();
+    tracing::debug!(content_type = %e.content_type, "flatten_extension: start");
     flat.insert(
         "content_type".to_string(),
         json!(e.content_type.to_string()),
     );
+    tracing::debug!("flatten_extension: inserted content_type");
     if let Value::Object(data_obj) = &e.data {
+        tracing::debug!(key_count = data_obj.len(), "flatten_extension: data keys");
         for (k, v) in data_obj {
-            tracing::debug!(key = %k, value = %v, "flatten extension data");
+            tracing::debug!(key = %k, value = %v, "flatten_extension: inserting data key");
             flat.insert(k.clone(), v.clone());
         }
+    } else {
+        tracing::debug!("flatten_extension: data is not an object, skipping");
     }
+    tracing::debug!(flat_key_count = flat.len(), "flatten_extension: done");
     Value::Object(flat)
 }
 
@@ -959,8 +965,18 @@ async fn finalize_with_variant(
     };
     let extensions_json = extensions_for_sse.clone();
 
-    // ★ 根据 extensions 内容重置 empty content
-    let final_content = rewrite_content_for_empty_extensions(content, &extensions_for_sse);
+    // ★ 优先使用 response_content metadata，回退到 rewrite_content_for_empty_extensions
+    let final_content = match hook_deps
+        .agent_ctx
+        .get_metadata("response_content")
+        .filter(|rc| !rc.is_empty())
+    {
+        Some(rc) => {
+            tracing::debug!(response_content = %rc, "using response_content from metadata");
+            Some(rc)
+        }
+        _ => rewrite_content_for_empty_extensions(content, &extensions_for_sse),
+    };
 
     let saved =
         if final_content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {

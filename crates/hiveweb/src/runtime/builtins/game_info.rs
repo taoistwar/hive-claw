@@ -391,6 +391,7 @@ async fn handle_classify_and_list(
                     "computer_id": info.computer_id,
                     "platform_name": info.platform_name,
                     "game_icon": info.game_icon,
+                    "raw_description": info.raw_description,
                 }));
                 if games.len() >= 3 {
                     break;
@@ -421,14 +422,20 @@ async fn handle_classify_and_list(
     // 6. 写入 AgentContext extensions — 每个游戏一个独立 card
     let extensions: Vec<Value> = games
         .iter()
-        .map(|g| serde_json::json!({
-            "id": format!("game-{}", g.get("id").and_then(|v| v.as_i64()).map(|id| id.to_string()).unwrap_or_else(|| Uuid::new_v4().to_string())),
-            "content_type": "card",
-            "payload": {
-                "type": "game",
-                "info": g,
-            },
-        }))
+        .map(|g| {
+            let mut info = g.clone();
+            if let Some(obj) = info.as_object_mut() {
+                obj.remove("raw_description");
+            }
+            serde_json::json!({
+                "id": format!("game-{}", g.get("id").and_then(|v| v.as_i64()).map(|id| id.to_string()).unwrap_or_else(|| Uuid::new_v4().to_string())),
+                "content_type": "card",
+                "payload": {
+                    "type": "game",
+                    "info": info,
+                },
+            })
+        })
         .collect();
 
     let mut metadata = serde_json::json!({

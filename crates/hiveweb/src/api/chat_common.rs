@@ -52,7 +52,7 @@ impl SseSlotConfig {
     };
     pub const USER: Self = Self {
         env_var: "CHAT_SSE_MAX_CONCURRENT_PER_USER",
-        default_cap: 2,
+        default_cap: 1,
     };
 }
 

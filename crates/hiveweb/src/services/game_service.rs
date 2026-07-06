@@ -431,7 +431,9 @@ FROM (
   where t2.id is null AND t4.id is null
   group by t1.logic_game_id,t1.name
 ) z1
-INNER JOIN cc_logic_game z2 on z1.logic_game_id = z2.id and z2.status = 1
+INNER JOIN (
+  select * from cc_logic_game where status = 1
+) z2 on z1.logic_game_id = z2.id
     "#;
     sqlx::query_as::<_, (i64, String, String)>(sql)
         .bind(client_type)

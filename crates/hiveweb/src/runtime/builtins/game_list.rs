@@ -16,10 +16,9 @@ pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
         .unwrap_or_default();
 
     let ext_pool = ctx.ext_pool.cloned();
-    let redis = ctx.redis.cloned();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            game_list_async_impl(ext_pool.as_ref(), redis.as_ref(), &channel, &client_type).await
+            game_list_async_impl(ext_pool.as_ref(), &channel, &client_type).await
         })
     })
 }
@@ -28,22 +27,16 @@ pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 /// Output: "- id: name、alias1、alias2"
 async fn game_list_async_impl(
     ext_pool: Option<&sqlx::MySqlPool>,
-    redis: Option<&redis::Client>,
     channel: &str,
     client_type: &str,
 ) -> BuiltinResult {
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
-    // 1. Query cc_logic_game from external DB, filtered by channel & client_type（Redis 缓存优先）
-    let external = if let Some(r) = redis {
-        crate::services::game_service::list_external_games_cached(r, ext_pool, channel, client_type)
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("{e}")))?
-    } else {
+    // 1. Query cc_logic_game from external DB, filtered by channel & client_type
+    let external =
         crate::services::game_service::list_external_games(ext_pool, channel, client_type)
             .await
-            .map_err(|e| BuiltinError::Exec(format!("{e}")))?
-    };
+            .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 
     // 2. Collect aliases from external game data
     let mut entries: Vec<(i64, String, Vec<String>)> = Vec::new();

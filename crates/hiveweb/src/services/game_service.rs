@@ -642,3 +642,34 @@ pub async fn filter_available_games(
         .map_err(|e| format!("filter_available_games: {e}"))?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
+
+/// Query logic_game_ids from cc_logic_game_display filtered by tag_id.
+/// Returns up to `limit` distinct logic_game_ids that are visible and have the given tag.
+pub async fn fetch_logic_game_ids_by_tag(
+    ext_pool: &MySqlPool,
+    tag_id: i64,
+    limit: i64,
+) -> Result<Vec<i64>, String> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        r#"SELECT DISTINCT d.logic_game_id
+FROM cc_logic_game_display d
+INNER JOIN cc_logic_game g ON d.logic_game_id = g.id AND g.status = 1
+WHERE
+  EXISTS (
+    SELECT 1
+    FROM cc_logic_game_display_tag t
+    WHERE t.display_id = d.id
+      AND t.logic_game_id = d.logic_game_id
+      AND t.lang_code = d.lang_code
+      AND t.visible = 1
+      AND t.tag_id = ?
+  )
+LIMIT ?"#,
+    )
+    .bind(tag_id)
+    .bind(limit)
+    .fetch_all(ext_pool)
+    .await
+    .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}

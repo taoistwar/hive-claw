@@ -180,37 +180,6 @@ async fn game_info_async_impl(
 
 // ─── game_id == 0: LLM 分类 + 外部数据库查询 ──────────────────────────────
 
-/// Query logic_game_ids from cc_logic_game_display filtered by tag_id.
-///
-/// Returns up to 3 distinct logic_game_ids that are visible and have the given tag.
-async fn fetch_logic_game_ids_by_tag(
-    ext_pool: &sqlx::MySqlPool,
-    tag_id: i64,
-) -> Result<Vec<i64>, String> {
-    let rows: Vec<(i64,)> = sqlx::query_as(
-        r#"SELECT DISTINCT d.logic_game_id
-FROM cc_logic_game_display d
-INNER JOIN cc_logic_game g ON d.logic_game_id = g.id AND g.status = 1
-WHERE
-  EXISTS (
-    SELECT 1
-    FROM cc_logic_game_display_tag t
-    WHERE t.display_id = d.id
-      AND t.logic_game_id = d.logic_game_id
-      AND t.lang_code = d.lang_code
-      AND t.visible = 1
-      AND t.tag_id = ?
-  )
-LIMIT 3"#,
-    )
-    .bind(tag_id)
-    .fetch_all(ext_pool)
-    .await
-    .map_err(|e| format!("cc_logic_game_display query: {e}"))?;
-
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
 /// Fetch game categories (tags) from the external cc_game_tag table.
 ///
 /// Queries `SELECT id, name FROM cc_game_tag WHERE type = 1`.
@@ -385,8 +354,8 @@ async fn handle_classify_and_list(
         "game_info: LLM classified user input"
     );
 
-    // 3. 根据分类查询 3 个 logic_game_id（从 cc_logic_game_display 按 tag 过滤）
-    let game_ids = match fetch_logic_game_ids_by_tag(ext_pool, category_id).await {
+    // 3. 根据分类查询 logic_game_id（从 cc_logic_game_display 按 tag 过滤，查10取3）
+    let game_ids = match crate::services::game_service::fetch_logic_game_ids_by_tag(ext_pool, category_id, 10).await {
         Ok(ids) => {
             tracing::debug!(
                 category_id = %category_id,
@@ -412,7 +381,7 @@ async fn handle_classify_and_list(
         }
     };
 
-    // 4. 查询每个游戏的详细信息
+    // 4. 查询每个游戏的详细信息（查 10 个，取前 3 个有效）
     let redis_ref = redis;
     let mut games: Vec<Value> = Vec::new();
     for &gid in &game_ids {
@@ -452,6 +421,9 @@ async fn handle_classify_and_list(
                     "platform_name": info.platform_name,
                     "game_icon": info.game_icon,
                 }));
+                if games.len() >= 3 {
+                    break;
+                }
             }
             _ => {
                 tracing::warn!(logic_game_id = %gid, "game info not found, skipping");
@@ -491,19 +463,27 @@ async fn handle_classify_and_list(
     let mut metadata = serde_json::json!({
         "agent_loop_break": "true"
     });
-    // ≥2 张推荐游戏时，重置 content 为推荐文案
-    if games.len() >= 2 {
-        let names: Vec<&str> = games
-            .iter()
-            .filter_map(|g| g.get("name").and_then(|v| v.as_str()))
-            .collect();
-        let content = format!(
-            "为您推荐「{}」等 {} 款游戏，点击下方卡片查看详情",
-            names.join("」「"),
-            names.len()
-        );
-        metadata["response_content"] = serde_json::Value::String(content);
+    // 推荐游戏时，重置 content 为推荐文案
+
+    let mut parts: Vec<String> = Vec::new();
+    parts.push("很遗憾，您查询的这款游戏暂未在平台上架。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
+    parts.push(String::new());
+    for g in &games {
+        let name = g.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = g.get("description").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        if !name.is_empty() {
+            if let Some(d) = desc {
+                parts.push(format!("「{name}」是一款{d}；"));
+            } else {
+                parts.push(format!("「{name}」；"));
+            }
+        }
     }
+    parts.push(String::new());
+    parts.push("这些游戏在玩法、题材或体验上与您查询的游戏较为接近，请尽情体验。".into());
+    let content = parts.join("\n");
+    metadata["response_content"] = serde_json::Value::String(content);
+
 
     output["_agent_context_updates"] = serde_json::json!({
         "extensions": extensions,

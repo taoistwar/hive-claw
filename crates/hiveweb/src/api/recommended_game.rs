@@ -428,8 +428,7 @@ async fn execute_recommendation(
 
     // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon/description（带缓存，按平台优先级排序）
     let (computer_id, platform_name, game_icon, _description) =
-        crate::services::game_service::get_single_external_game_info_cached(
-            &state.redis,
+        crate::services::game_service::get_single_external_game_info(
             ext_pool,
             game.game_id.parse::<i64>().unwrap_or(0),
             &req.client_type,

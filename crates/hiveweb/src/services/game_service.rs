@@ -598,6 +598,19 @@ pub async fn get_single_external_game_info_cached(
     Ok(result)
 }
 
+/// Non-cached single-game lookup: queries external DB by (game_id, client_type, channel),
+/// sorts by platform priority, and returns only the top-priority result.
+pub async fn get_single_external_game_info(
+    ext_pool: &MySqlPool,
+    game_id: i64,
+    client_type: &str,
+    channel: &str,
+) -> Result<Option<ExternalGameInfo>, AppError> {
+    let mut games = get_external_game_by_id(ext_pool, game_id, client_type, channel).await?;
+    sort_external_games_by_priority(ext_pool, &mut games).await;
+    Ok(games.into_iter().next())
+}
+
 /// Cached version of `list_external_games`.
 pub async fn list_external_games_cached(
     redis: &redis::Client,

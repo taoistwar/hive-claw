@@ -92,28 +92,14 @@ async fn game_info_async_impl(
     let ext_pool = ext_pool.ok_or_else(|| BuiltinError::Exec("外部数据库未配置".into()))?;
 
     // 2. Query external DB with caching — single top-priority game info
-    let game_info = if let Some(r) = redis {
-        crate::services::game_service::get_single_external_game_info_cached(
-            r,
-            ext_pool,
-            game_id,
-            client_type,
-            channel,
-        )
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?
-    } else {
-        let mut games = crate::services::game_service::get_external_game_by_id(
-            ext_pool,
-            game_id,
-            client_type,
-            channel,
-        )
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
-        crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut games).await;
-        games.into_iter().next()
-    };
+    let game_info = crate::services::game_service::get_single_external_game_info(
+        ext_pool,
+        game_id,
+        client_type,
+        channel,
+    )
+    .await
+    .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 
     let game_info = match game_info {
         Some(info) if info.logic_game_id != 0 => {
@@ -382,30 +368,15 @@ async fn handle_classify_and_list(
     };
 
     // 4. 查询每个游戏的详细信息（查 10 个，取前 3 个有效）
-    let redis_ref = redis;
     let mut games: Vec<Value> = Vec::new();
     for &gid in &game_ids {
-        let info = if let Some(r) = redis_ref {
-            crate::services::game_service::get_single_external_game_info_cached(
-                r,
-                ext_pool,
-                gid,
-                client_type,
-                channel,
-            )
-            .await
-        } else {
-            let mut results = crate::services::game_service::get_external_game_by_id(
-                ext_pool,
-                gid,
-                client_type,
-                channel,
-            )
-            .await
-            .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
-            crate::services::game_service::sort_external_games_by_priority(ext_pool, &mut results).await;
-            Ok(results.into_iter().next())
-        };
+        let info = crate::services::game_service::get_single_external_game_info(
+            ext_pool,
+            gid,
+            client_type,
+            channel,
+        )
+        .await;
         match info {
             Ok(Some(info)) if info.logic_game_id != 0 => {
                 games.push(serde_json::json!({

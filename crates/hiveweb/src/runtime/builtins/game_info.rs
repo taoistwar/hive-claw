@@ -19,6 +19,10 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
         .as_ref()
         .and_then(|ac| ac.get_user_metadata("client_type"))
         .unwrap_or_default();
+    let target_client_type = agent_ctx
+        .as_ref()
+        .and_then(|ac| ac.get_metadata("target_client_type"))
+        .filter(|s| !s.is_empty());
 
     let pool = ctx.pool.clone();
     let ext_pool = ctx.ext_pool.cloned();
@@ -36,6 +40,7 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
                 &client_type,
                 llm.as_ref(),
                 agent_id,
+                target_client_type.as_deref(),
             )
             .await
         })
@@ -55,6 +60,7 @@ async fn game_info_async_impl(
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
     agent_id: Option<i64>,
+    target_client_type: Option<&str>,
 ) -> BuiltinResult {
     // 1. Parse game_id from input — text → integer
     let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -84,6 +90,7 @@ async fn game_info_async_impl(
                 client_type,
                 llm,
                 agent_id,
+                target_client_type,
             )
             .await;
         }
@@ -114,7 +121,7 @@ async fn game_info_async_impl(
             tracing::warn!(game_id = %game_id, "game_info: direct lookup returned empty");
             return Ok(serde_json::json!({
                 "found": false,
-                "name": "未找到相关游戏"
+                "data": "未找到相关游戏"
             }));
         }
     };
@@ -122,7 +129,7 @@ async fn game_info_async_impl(
     let id = game_info.logic_game_id;
     let name = &game_info.name;
 
-    let game_payload = serde_json::json!({
+    let mut game_payload = serde_json::json!({
         "id": id,
         "name": name,
         "channel": game_info.channel,
@@ -134,6 +141,17 @@ async fn game_info_async_impl(
         "platform_name": game_info.platform_name,
         "game_icon": game_info.game_icon,
     });
+
+    // 如果目标客户端平台与当前不一致，提醒用户并隐藏 computer_id
+    let cross_platform = target_client_type
+        .filter(|t| !t.eq_ignore_ascii_case(client_type))
+        .is_some();
+
+    if cross_platform {
+        if let Some(obj) = game_payload.as_object_mut() {
+            obj.remove("computer_id");
+        }
+    }
 
     let mut output = serde_json::json!({
         "found": true,
@@ -148,6 +166,22 @@ async fn game_info_async_impl(
         "channel": game_info.channel,
         "game_icon": game_info.game_icon,
     });
+
+    if cross_platform {
+        if let Some(obj) = output.as_object_mut() {
+            obj.remove("computer_id");
+            obj.insert(
+                "data".into(),
+                serde_json::Value::String(format!(
+                    "注意：游戏《{}》信息为 {} 客户端，与您当前使用的 {} 客户端，需要到{}客户端才能玩。",
+                    game_info.name,
+                    target_client_type.unwrap_or(""),
+                    client_type,
+                    target_client_type.unwrap_or(""),
+                )),
+            );
+        }
+    }
 
     // 6. 写入 AgentContext extensions
     let extension = serde_json::json!({
@@ -192,14 +226,14 @@ async fn fetch_categories(
         )
         .await
     } else {
-        let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM cc_game_tag WHERE `type` = 1")
-            .fetch_all(ext_pool)
-            .await
-            .map_err(|e| format!("cc_game_tag query: {e}"))?;
+        let rows: Vec<(i64, String)> =
+            sqlx::query_as("SELECT id, name FROM cc_game_tag WHERE `type` = 1")
+                .fetch_all(ext_pool)
+                .await
+                .map_err(|e| format!("cc_game_tag query: {e}"))?;
         Ok(rows)
     }
 }
-
 
 /// Build conversation context from _agent_context messages for LLM classification.
 /// Takes the last 3 messages, formats as "role: content" pairs.
@@ -263,6 +297,7 @@ async fn handle_classify_and_list(
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
     _agent_id: Option<i64>,
+    target_client_type: Option<&str>,
 ) -> BuiltinResult {
     // 1. 获取用户输入文本（从 args._agent_context.user_input.raw_text 读取）
     let user_input = args
@@ -276,7 +311,7 @@ async fn handle_classify_and_list(
     if user_input.is_empty() {
         return Ok(serde_json::json!({
             "found": false,
-            "name": "未找到相关游戏"
+            "data": "未找到相关游戏"
         }));
     }
 
@@ -290,7 +325,7 @@ async fn handle_classify_and_list(
             tracing::warn!("ext_pool not available, game_info classify aborted");
             return Ok(serde_json::json!({
                 "found": false,
-                "name": "未找到相关游戏"
+                "data": "未找到相关游戏"
             }));
         }
     };
@@ -304,14 +339,14 @@ async fn handle_classify_and_list(
             tracing::warn!("cc_game_tag returned empty, game_info classify aborted");
             return Ok(serde_json::json!({
                 "found": false,
-                "name": "未找到相关游戏"
+                "data": "未找到相关游戏"
             }));
         }
         Err(e) => {
             tracing::warn!(error = %e, "fetch_categories failed, game_info classify aborted");
             return Ok(serde_json::json!({
                 "found": false,
-                "name": "未找到相关游戏"
+                "data": "未找到相关游戏"
             }));
         }
     };
@@ -321,7 +356,7 @@ async fn handle_classify_and_list(
             tracing::warn!(user_input = %user_input, "game_info classify returned None");
             return Ok(serde_json::json!({
                 "found": false,
-                "name": "未找到相关游戏"
+                "data": "未找到相关游戏"
             }));
         }
     };
@@ -341,7 +376,13 @@ async fn handle_classify_and_list(
     );
 
     // 3. 根据分类查询 logic_game_id（从 cc_logic_game_display 按 tag 过滤，查10取3）
-    let game_ids = match crate::services::game_service::fetch_logic_game_ids_by_tag(ext_pool, category_id, 10).await {
+    let game_ids = match crate::services::game_service::fetch_logic_game_ids_by_tag(
+        ext_pool,
+        category_id,
+        10,
+    )
+    .await
+    {
         Ok(ids) => {
             tracing::debug!(
                 category_id = %category_id,
@@ -353,7 +394,7 @@ async fn handle_classify_and_list(
                 tracing::warn!(category_id = %category_id, "no logic_game_id found for tag");
                 return Ok(serde_json::json!({
                     "found": false,
-                    "name": "未找到相关游戏"
+                    "data": "未找到相关游戏"
                 }));
             }
             ids
@@ -362,7 +403,7 @@ async fn handle_classify_and_list(
             tracing::error!(category_id = %category_id, error = %e, "fetch logic_game_ids failed");
             return Ok(serde_json::json!({
                 "found": false,
-                "name": "未找到相关游戏"
+                "data": "未找到相关游戏"
             }));
         }
     };
@@ -407,16 +448,31 @@ async fn handle_classify_and_list(
         tracing::warn!(category_id = %category_id, game_ids = ?game_ids, "game_info: all game lookups failed, no games to return");
         return Ok(serde_json::json!({
             "found": false,
-            "name": "未找到相关游戏"
+            "data": "未找到相关游戏"
         }));
     }
 
-    tracing::debug!(game_count = games.len(), "game_info: returning game list extension");
+    tracing::debug!(
+        game_count = games.len(),
+        "game_info: returning game list extension"
+    );
+
+    // 跨平台时移除 computer_id，添加提醒
+    let cross_platform = target_client_type
+        .filter(|t| !t.eq_ignore_ascii_case(client_type))
+        .is_some();
+    if cross_platform {
+        for g in &mut games {
+            if let Some(obj) = g.as_object_mut() {
+                obj.remove("computer_id");
+            }
+        }
+    }
 
     // 5. 构造返回结果
     let mut output = serde_json::json!({
         "found": false,
-        "name": "未找到相关游戏"
+        "data": "未找到相关游戏"
     });
 
     // 6. 写入 AgentContext extensions — 每个游戏一个独立 card
@@ -448,7 +504,10 @@ async fn handle_classify_and_list(
     parts.push(String::new());
     for g in &games {
         let name = g.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let desc = g.get("raw_description").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let desc = g
+            .get("raw_description")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
         if !name.is_empty() {
             if let Some(d) = desc {
                 parts.push(format!("「{name}」是一款{d}；"));
@@ -459,9 +518,17 @@ async fn handle_classify_and_list(
     }
     parts.push(String::new());
     parts.push("这些游戏在玩法、题材或体验上与您查询的游戏较为接近，请尽情体验。".into());
+
+    if cross_platform {
+        parts.push(format!(
+            "注意：以下游戏信息为 {} 平台数据，与您当前使用的 {} 平台不同，需要到相应客户端才能玩。",
+            target_client_type.unwrap_or(""),
+            client_type
+        ));
+
+    }
     let content = parts.join("\n");
     metadata["response_content"] = serde_json::Value::String(content);
-
 
     output["_agent_context_updates"] = serde_json::json!({
         "extensions": extensions,
@@ -490,7 +557,10 @@ async fn classify_game_category(
     }
     if let Some(llm) = llm {
         let prompt = build_classification_prompt(user_input, categories);
-        tracing::debug!(prompt_len = prompt.len(), "classify_game_category: built prompt");
+        tracing::debug!(
+            prompt_len = prompt.len(),
+            "classify_game_category: built prompt"
+        );
 
         let messages = vec![serde_json::json!({
             "role": "user",
@@ -530,9 +600,9 @@ async fn classify_game_category(
                         tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
                     }
                     // 尝试按名称匹配（LLM 可能返回名称而非 ID）
-                    let matched = categories
-                        .iter()
-                        .find(|(_, name)| trimmed.contains(name.as_str()) || name.contains(&trimmed));
+                    let matched = categories.iter().find(|(_, name)| {
+                        trimmed.contains(name.as_str()) || name.contains(&trimmed)
+                    });
                     if let Some((id, name)) = matched {
                         tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
                         return Some(*id);
@@ -554,7 +624,9 @@ async fn classify_game_category(
         }
     }
 
-    tracing::debug!("classify_game_category: no LLM available or classification failed, returning None");
+    tracing::debug!(
+        "classify_game_category: no LLM available or classification failed, returning None"
+    );
     None
 }
 

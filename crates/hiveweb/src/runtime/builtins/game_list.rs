@@ -4,15 +4,25 @@ use super::{BuiltinContext, BuiltinError, BuiltinResult};
 
 /// sync wrapper: bridges async DB queries inside the tokio runtime via `block_in_place`.
 /// channel and client_type are extracted from AgentContext metadata.
-pub fn game_list(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
+/// client_type can be overridden via args: { "client_type": "mac" }
+pub fn game_list(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let agent_ctx = ctx.agent_ctx.clone();
     let channel = agent_ctx
         .as_ref()
         .and_then(|ac| ac.get_user_metadata("channel"))
         .unwrap_or_default();
-    let client_type = agent_ctx
-        .as_ref()
-        .and_then(|ac| ac.get_user_metadata("client_type"))
+    // 参数中的 client_type 优先，否则取 AgentContext
+    let client_type = args
+        .get("client_type")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            agent_ctx
+                .as_ref()
+                .and_then(|ac| ac.get_user_metadata("client_type"))
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_default();
 
     let ext_pool = ctx.ext_pool.cloned();
@@ -82,12 +92,22 @@ async fn game_list_async_impl(
     Ok(serde_json::json!({
         "data": lines.join("\n"),
         "games": games,
+        "_agent_context_updates": {
+            "metadata": {
+                "target_client_type": client_type,
+            }
+        }
     }))
 }
 
 pub const GAME_LIST_INPUT_SCHEMA: &str = r#"{
   "type": "object",
-  "properties": {}
+  "properties": {
+    "client_type": {
+      "type": "string",
+      "description": "目标客户端平台, 可选值: ANDROID、ANDROID_PAD、BOX、HANDHELD、IOS、IPAD、MAC、MINIPROGRAM、NATIVE_WINDOWS、WEB、WINDOWS、XR。默认值: 用户当前使用的客户端"
+    }
+  }
 }"#;
 
 pub const GAME_LIST_OUTPUT_SCHEMA: &str = r#"{

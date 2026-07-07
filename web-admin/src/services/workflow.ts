@@ -190,6 +190,8 @@ export interface WorkflowExecuteRequest {
 export interface WorkflowExecuteResult {
   workflow_id: number;
   node_results: Record<string, unknown>;
+  node_inputs: Record<string, unknown>;
+  node_agent_contexts: Record<string, unknown>;
   elapsed_ms: number;
   agent_context?: unknown;
 }

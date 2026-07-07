@@ -69,6 +69,10 @@ pub struct ExecutorDeps {
 pub struct ExecuteOutcome {
     pub end_value: Value,
     pub node_results: HashMap<String, Value>,
+    /// Per-node input values as resolved before execution (keyed by node_key)
+    pub node_inputs: HashMap<String, Value>,
+    /// Per-node AgentContext snapshot at execution time (keyed by node_key)
+    pub node_agent_contexts: HashMap<String, Value>,
 }
 
 #[derive(Debug, Default)]
@@ -177,7 +181,7 @@ impl WorkflowExecutor {
             ),
         )
         .await;
-        let outputs: HashMap<String, Value> = match result {
+        let (node_inputs, outputs, node_agent_contexts) = match result {
             Ok(inner) => match inner {
                 Ok(r) => r,
                 Err(e) => return Err(e),
@@ -191,6 +195,8 @@ impl WorkflowExecutor {
         Ok(ExecuteOutcome {
             end_value,
             node_results: outputs,
+            node_inputs,
+            node_agent_contexts,
         })
     }
 }
@@ -263,8 +269,10 @@ pub(super) async fn run_layers(
     workflow_id: i64,
     agent_perms: &[String],
     agent_ctx: Arc<AgentContext>,
-) -> Result<HashMap<String, Value>, WorkflowError> {
+) -> Result<(HashMap<String, Value>, HashMap<String, Value>, HashMap<String, Value>), WorkflowError> {
     let mut outputs: HashMap<String, Value> = HashMap::new();
+    let mut node_inputs: HashMap<String, Value> = HashMap::new();
+    let mut node_agent_contexts: HashMap<String, Value> = HashMap::new();
     let mut remaining: HashSet<String> = nodes.iter().map(|(_, k, _, _, _)| k.clone()).collect();
     let t0 = Instant::now();
 
@@ -309,6 +317,19 @@ pub(super) async fn run_layers(
                 .get(node_key)
                 .ok_or_else(|| WorkflowError::MissingFunction(node_key.clone()))?;
             let nk = node_key.clone();
+            // Record the resolved input for inspection (strip _agent_context)
+            let mut clean_input = node_input.clone();
+            if let Some(obj) = clean_input.as_object_mut() {
+                obj.remove("_agent_context");
+            }
+            node_inputs.insert(nk.clone(), clean_input);
+            // Capture AgentContext snapshot for debugging
+            let ac_snapshot = agent_ctx
+                .snapshot()
+                .ok()
+                .and_then(|s| serde_json::to_value(s).ok())
+                .unwrap_or(Value::Null);
+            node_agent_contexts.insert(nk.clone(), ac_snapshot);
             futures.push(execute_node(
                 deps,
                 function_id_opt,
@@ -328,7 +349,6 @@ pub(super) async fn run_layers(
             match r {
                 Ok((nk, out)) => {
                     // 立即同步 _agent_context_updates 到 AgentContext
-                    // 后续节点可通过 inject_agent_context_snapshot 获取最新状态
                     apply_agent_context_updates(&agent_ctx, &out);
                     outputs.insert(nk.clone(), out);
                     remaining.remove(&nk);
@@ -359,7 +379,7 @@ pub(super) async fn run_layers(
         elapsed_ms = t0.elapsed().as_millis(),
         "workflow executed"
     );
-    Ok(outputs)
+    Ok((node_inputs, outputs, node_agent_contexts))
 }
 
 /// Resolve a node's input by reading the structured `InputSpec` from its
@@ -491,12 +511,9 @@ fn resolve_from_external(
             "external_input is not a JSON object".to_string(),
         )
     })?;
-    ext.get(key).cloned().ok_or_else(|| {
-        (
-            field.to_string(),
-            format!("start (external_input) has no field '{key}'"),
-        )
-    })
+    Ok(ext.get(key)
+        .cloned()
+        .unwrap_or(Value::String(String::new())))
 }
 
 fn resolve_from_agent_context(

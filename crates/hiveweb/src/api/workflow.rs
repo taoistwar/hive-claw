@@ -317,6 +317,8 @@ async fn execute_workflow(
     Ok(ApiResponse::success(serde_json::json!({
         "workflow_id": id,
         "node_results": outcome.node_results,
+        "node_inputs": outcome.node_inputs,
+        "node_agent_contexts": outcome.node_agent_contexts,
         "elapsed_ms": elapsed_ms,
         "agent_context": agent_context_snapshot,
     })))

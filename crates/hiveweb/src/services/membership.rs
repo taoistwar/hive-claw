@@ -209,6 +209,8 @@ pub struct DurationCardRow {
     pub product_title: Option<String>,
     /// cc_product.value — 商品时长
     pub product_duration: Option<String>,
+    /// cc_product.price — 下次扣款费用（单位：分）
+    pub next_price: Option<i32>,
 }
 
 /// Query duration cards (时长卡) for a user — gold card (type=8) and black gold card (type=9).
@@ -227,7 +229,8 @@ pub async fn query_duration_cards(
     t1.create_time         AS create_time,
     t4.game_label_list      AS game_label_list,
     t3.title               AS product_title,
-    t3.value               AS product_duration
+    t3.value               AS product_duration,
+    t3.price               AS next_price
 FROM (
 	SELECT * FROM cc_user_asset_coin
 	WHERE user_id = ?

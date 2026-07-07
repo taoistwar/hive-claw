@@ -331,7 +331,8 @@ pub async fn query_balance_async_impl(
                 "create_time": row.create_time.map(|t| t.to_string()),
                 "game_label_list": row.game_label_list,
                 "product_title": row.product_title,
-                "product_duration": row.product_duration
+                "product_duration": row.product_duration,
+                "next_price": row.next_price,
             })
         })
         .collect();

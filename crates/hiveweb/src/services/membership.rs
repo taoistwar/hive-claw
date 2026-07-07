@@ -179,16 +179,24 @@ pub async fn query_membership_subscriptions(
     us.payment_method           AS payment_method,
     us.start_time               AS subscription_start_time,
     us.end_time                 AS subscription_end_time,
-    t4.price                    AS next_price
+    o.order_price                    AS next_price
 FROM
 (select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
 LEFT JOIN (
 	select * from cc_user_subscription where user_id=?
-) us ON um.user_subscription_id = us.id
-LEFT JOIN cc_product t4 ON um.product_id = t4.id
+) us ON um.user_id = us.user_id
+LEFT JOIN (
+    select * from cc_subscription_order where user_id=?
+) so ON so.user_subscription_id = us.id
+LEFT JOIN (
+    select * from cc_order where user_id = ?
+) o ON o.id = so.order_id
+
 ORDER BY ml.level_order DESC, um.effective_end_time DESC"#,
     )
+    .bind(user_id)
+    .bind(user_id)
     .bind(user_id)
     .bind(user_id)
     .fetch_all(ext_pool)
@@ -306,7 +314,10 @@ pub async fn resolve_game_label_names(
 
     // Replace codes with names
     for card in duration_card_json.iter_mut() {
-        if let Some(list) = card.get_mut("game_label_list").and_then(|v| v.as_array_mut()) {
+        if let Some(list) = card
+            .get_mut("game_label_list")
+            .and_then(|v| v.as_array_mut())
+        {
             let resolved: Vec<serde_json::Value> = list
                 .iter()
                 .map(|item| {
@@ -384,7 +395,9 @@ pub async fn check_vip_membership_cached(
 
     // 3. 只有 VIP 才缓存
     if is_vip {
-        if let Err(e) = cache_helper::cached_set(redis, &key, &true, cache_helper::TTL_VIP_STATUS).await {
+        if let Err(e) =
+            cache_helper::cached_set(redis, &key, &true, cache_helper::TTL_VIP_STATUS).await
+        {
             tracing::debug!(%key, error = %e, "VIP cache write failed");
         }
     }

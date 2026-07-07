@@ -379,7 +379,9 @@ async fn handle_classify_and_list(
     let game_ids = match crate::services::game_service::fetch_logic_game_ids_by_tag(
         ext_pool,
         category_id,
-        10,
+        target_client_type.unwrap_or(client_type),
+        channel,
+        10
     )
     .await
     {

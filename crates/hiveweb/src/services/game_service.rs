@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
-use serde::{Serialize, Deserialize};
 
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
@@ -659,31 +659,41 @@ pub async fn filter_available_games(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// Query logic_game_ids from cc_logic_game_display filtered by tag_id.
-/// Returns up to `limit` distinct logic_game_ids that are visible and have the given tag.
+/// Query available logic_game_ids filtered by client_type, channel, and game tag type.
+/// Returns distinct game IDs that pass version/exclude/blacklist checks.
 pub async fn fetch_logic_game_ids_by_tag(
     ext_pool: &MySqlPool,
     tag_id: i64,
-    limit: i64,
+    client_type: &str,
+    channel: &str,
+    limit: i32,
 ) -> Result<Vec<i64>, String> {
+    let tag_json = format!("{{\"type\": {}}}", tag_id);
     let rows: Vec<(i64,)> = sqlx::query_as(
-        r#"SELECT DISTINCT d.logic_game_id
-FROM cc_logic_game_display d
-INNER JOIN cc_logic_game g ON d.logic_game_id = g.id AND g.status = 1
-WHERE
-  EXISTS (
-    SELECT 1
-    FROM cc_logic_game_display_tag t
-    WHERE t.display_id = d.id
-      AND t.logic_game_id = d.logic_game_id
-      AND t.lang_code = d.lang_code
-      AND t.visible = 1
-      AND t.tag_id = ?
-  )
-ORDER BY RAND()
-LIMIT ?"#,
+        r#"SELECT
+  distinct z2.id
+FROM (
+  SELECT t1.logic_game_id
+  FROM (
+    select * from cc_logic_game_wide where client_type=? AND JSON_CONTAINS(game_tags, ?)
+  ) t1
+  LEFT JOIN (
+    select * from cc_logic_game_exclude where client_type=? and channel=?
+  ) t2 on t1.logic_game_id = t2.logic_game_id
+  INNER JOIN cc_logic_game_version t3 ON t1.version = t3.version
+  LEFT JOIN cc_logic_game_blacklist t4 ON t1.logic_game_id = t4.logic_game_id
+  where t2.id is null AND t4.id is null
+  group by t1.logic_game_id
+) z1
+INNER JOIN (
+  select * from cc_logic_game where status = 1
+) z2 on z1.logic_game_id = z2.id
+limit ?"#,
     )
-    .bind(tag_id)
+    .bind(client_type)
+    .bind(&tag_json)
+    .bind(client_type)
+    .bind(channel)
     .bind(limit)
     .fetch_all(ext_pool)
     .await
@@ -695,8 +705,26 @@ LIMIT ?"#,
 pub async fn get_external_game_detail(
     ext_pool: &MySqlPool,
     game_id: i64,
-) -> Result<Option<(i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>, AppError> {
-    sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>(
+) -> Result<
+    Option<(
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<serde_json::Value>,
+    )>,
+    AppError,
+> {
+    sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<serde_json::Value>,
+        ),
+    >(
         "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
          FROM cc_logic_game g
          LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id

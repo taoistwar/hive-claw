@@ -9,7 +9,3 @@ CREATE TABLE IF NOT EXISTS global_configs (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='全局配置表';
 
--- 默认配置项
-INSERT INTO global_configs (name, `key`, type, data) VALUES
-    ('非会员次数', 'normal_ask_times', 'number', JSON_OBJECT('value', 5)),
-    ('会员次数', 'vip_ask_times', 'number', JSON_OBJECT('value', 50));

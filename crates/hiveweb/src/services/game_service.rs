@@ -680,6 +680,7 @@ WHERE
       AND t.visible = 1
       AND t.tag_id = ?
   )
+ORDER BY RAND()
 LIMIT ?"#,
     )
     .bind(tag_id)

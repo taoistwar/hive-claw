@@ -290,7 +290,7 @@ FROM (
 
     WHERE t6.id IS NULL AND t7.id IS NULL
 ) d1
-ORDER BY d1.sort_value DESC, d1.created_at DESC
+ORDER BY RAND()
 LIMIT ?"#,
     )
     .bind(tag)

@@ -3,7 +3,7 @@ set -e
 
 TOTAL_START=$(date +%s)
 SCRIPT_DIR="$(dirname "$0")"
-
+DEPLOY_DIR="/mnt/d/tmp/hive-claw"
 if [ -z "${DEPLOY_DIR}" ]; then
     DEPLOY_DIR="${SCRIPT_DIR}/tmp"
 fi

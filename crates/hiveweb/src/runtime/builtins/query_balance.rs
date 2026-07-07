@@ -293,6 +293,7 @@ pub async fn query_balance_async_impl(
                 "payment_method": row.payment_method,
                 "subscription_start_time": row.subscription_start_time.map(|t| t.to_string()),
                 "subscription_end_time": row.subscription_end_time.map(|t| t.to_string()),
+                "next_price": row.next_price,
             })
         })
         .collect();
@@ -332,7 +333,6 @@ pub async fn query_balance_async_impl(
                 "game_label_list": row.game_label_list,
                 "product_title": row.product_title,
                 "product_duration": row.product_duration,
-                "next_price": row.next_price,
             })
         })
         .collect();

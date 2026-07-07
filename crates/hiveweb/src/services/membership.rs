@@ -143,6 +143,8 @@ pub struct MembershipSubscriptionRow {
     pub payment_method: Option<String>,
     pub subscription_start_time: Option<chrono::NaiveDateTime>,
     pub subscription_end_time: Option<chrono::NaiveDateTime>,
+    /// cc_product.price — 下次扣款费用（单位：分）
+    pub next_price: Option<i32>,
 }
 
 /// Query all membership records and associated subscription status for a user.
@@ -176,14 +178,15 @@ pub async fn query_membership_subscriptions(
     us.auto_renew               AS auto_renew,
     us.payment_method           AS payment_method,
     us.start_time               AS subscription_start_time,
-    us.end_time                 AS subscription_end_time
+    us.end_time                 AS subscription_end_time,
+    t4.price                    AS next_price
 FROM
 (select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
 LEFT JOIN (
 	select * from cc_user_subscription where user_id=?
 ) us ON um.user_subscription_id = us.id
-
+LEFT JOIN cc_product t4 ON um.product_id = t4.id
 ORDER BY ml.level_order DESC, um.effective_end_time DESC"#,
     )
     .bind(user_id)
@@ -209,8 +212,6 @@ pub struct DurationCardRow {
     pub product_title: Option<String>,
     /// cc_product.value — 商品时长
     pub product_duration: Option<String>,
-    /// cc_product.price — 下次扣款费用（单位：分）
-    pub next_price: Option<i32>,
 }
 
 /// Query duration cards (时长卡) for a user — gold card (type=8) and black gold card (type=9).
@@ -229,8 +230,7 @@ pub async fn query_duration_cards(
     t1.create_time         AS create_time,
     t4.game_label_list      AS game_label_list,
     t3.title               AS product_title,
-    t3.value               AS product_duration,
-    t3.price               AS next_price
+    t3.value               AS product_duration
 FROM (
 	SELECT * FROM cc_user_asset_coin
 	WHERE user_id = ?

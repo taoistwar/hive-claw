@@ -349,6 +349,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `payment_method` | `Option<String>` | 支付方式 |
 | `subscription_start_time` | `Option<String>` | 订阅开始时间 |
 | `subscription_end_time` | `Option<String>` | 订阅结束时间 |
+| `next_price` | `Option<i32>` | 下次扣款费用（单位：分） |
 
 ### `duration_card` 数组元素字段
 
@@ -364,6 +365,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `game_label_list` | `Option<Value>` | 游戏标签列表（JSON 数组，码值经 `cc_label` 表解析为中文，如 `["手游","PC游戏","90系云电脑120帧"]`） |
 | `product_title` | `Option<String>` | 商品名称（如"30小时畅玩"、"60小时畅玩"） |
 | `product_duration` | `Option<String>` | 商品时长（毫秒字符串） |
+
 
 ## 配额查询
 

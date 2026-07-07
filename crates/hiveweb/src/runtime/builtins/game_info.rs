@@ -572,7 +572,7 @@ async fn classify_game_category(
                 let req = ChatRequest {
                     model: Some(model.clone()),
                     messages,
-                    max_tokens: 16,
+                    max_tokens: 1024,
                     temperature: 0.1,
                     tools: None,
                     tool_choice: None,
@@ -590,24 +590,27 @@ async fn classify_game_category(
                 );
                 if let Some(content) = raw_content {
                     let trimmed = content.trim().to_string();
-                    // 尝试解析为数字 ID
-                    if let Ok(id) = trimmed.parse::<i64>() {
-                        // 验证 ID 是否在可选分类中
-                        if categories.iter().any(|(cid, _)| *cid == id) {
-                            tracing::debug!(category_id = %id, "classify_game_category: matched by ID");
-                            return Some(id);
+                    if !trimmed.is_empty() {
+                        // 尝试解析为数字 ID
+                        if let Ok(id) = trimmed.parse::<i64>() {
+                            if categories.iter().any(|(cid, _)| *cid == id) {
+                                tracing::debug!(category_id = %id, "classify_game_category: matched by ID");
+                                return Some(id);
+                            }
+                            tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
                         }
-                        tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
+                        // 尝试按名称匹配
+                        let matched = categories
+                            .iter()
+                            .find(|(_, name)| trimmed.contains(name.as_str()) || name.contains(&trimmed));
+                        if let Some((id, name)) = matched {
+                            tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
+                            return Some(*id);
+                        }
+                        tracing::debug!(llm_output = %trimmed, "classify_game_category: could not match LLM output to any category");
+                    } else {
+                        tracing::debug!("classify_game_category: LLM returned empty string");
                     }
-                    // 尝试按名称匹配（LLM 可能返回名称而非 ID）
-                    let matched = categories.iter().find(|(_, name)| {
-                        trimmed.contains(name.as_str()) || name.contains(&trimmed)
-                    });
-                    if let Some((id, name)) = matched {
-                        tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
-                        return Some(*id);
-                    }
-                    tracing::debug!(llm_output = %trimmed, "classify_game_category: could not match LLM output to any category");
                 }
                 tracing::warn!(
                     user_input = %user_input,

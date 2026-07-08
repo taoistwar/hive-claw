@@ -467,9 +467,13 @@ where
             }
         };
 
-        // 3. 准备 system + tools
+        // 3. 准备 system + tools（追加当前客户端信息）
+        let system_prompt = format!(
+            "{}\n\n[当前客户端]\n渠道：{}\n平台：{}\n版本：{}",
+            agent_content.system_prompt, deps.channel, deps.client_type, deps.client_version
+        );
         let mut hop_msgs: Vec<Value> =
-            vec![json!({"role": "system", "content": agent_content.system_prompt})];
+            vec![json!({"role": "system", "content": system_prompt})];
         hop_msgs.extend(messages.clone());
 
         let tools_schema = build_tools_schema(&agent_content);

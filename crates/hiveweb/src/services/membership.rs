@@ -184,7 +184,7 @@ FROM
 (select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
 LEFT JOIN (
-	select * from cc_user_subscription where user_id=?
+	select * from cc_user_subscription where user_id=? and status ='ACTIVE'
 ) us ON um.user_id = us.user_id
 LEFT JOIN (
     select * from cc_subscription_order where user_id=?

@@ -510,7 +510,7 @@ async fn handle_classify_and_list(
             .filter(|s| !s.is_empty());
         if !name.is_empty() {
             if let Some(d) = desc {
-                parts.push(format!("「{name}」是一款{d}；"));
+                parts.push(format!("「{name}」：{d}；"));
             } else {
                 parts.push(format!("「{name}」；"));
             }

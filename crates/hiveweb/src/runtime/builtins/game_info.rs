@@ -261,8 +261,6 @@ fn build_classify_context(args: &Value, user_input: &str) -> String {
             lines.push(format!("{label}: {content}"));
         }
     }
-    // 追加当前用户输入
-    lines.push(format!("用户: {user_input}"));
 
     lines.join("\n")
 }
@@ -378,7 +376,7 @@ async fn handle_classify_and_list(
     // 3. 根据分类查询 logic_game_id（从 cc_logic_game_display 按 tag 过滤，查10取3）
     let game_ids = match crate::services::game_service::fetch_logic_game_ids_by_tag(
         ext_pool,
-        category_id,
+        &category_name,
         target_client_type.unwrap_or(client_type),
         channel,
         10
@@ -387,7 +385,7 @@ async fn handle_classify_and_list(
     {
         Ok(ids) => {
             tracing::debug!(
-                category_id = %category_id,
+                category_name = %category_name,
                 count = ids.len(),
                 game_ids = ?ids,
                 "game_info: fetched logic_game_ids"

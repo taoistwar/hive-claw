@@ -663,19 +663,20 @@ pub async fn filter_available_games(
 /// Returns distinct game IDs that pass version/exclude/blacklist checks.
 pub async fn fetch_logic_game_ids_by_tag(
     ext_pool: &MySqlPool,
-    tag_id: i64,
+    category_name: &str,
     client_type: &str,
     channel: &str,
     limit: i32,
 ) -> Result<Vec<i64>, String> {
-    let tag_json = format!("{{\"type\": {}}}", tag_id);
-    let rows: Vec<(i64,)> = sqlx::query_as(
+    let sql = format!(
         r#"SELECT
   distinct z2.id
 FROM (
   SELECT t1.logic_game_id
   FROM (
-    select * from cc_logic_game_wide where client_type=? AND JSON_CONTAINS(game_tags, ?)
+    select * from cc_logic_game_wide where client_type=?
+    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('type', 1))
+    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('name', '{}'))
   ) t1
   LEFT JOIN (
     select * from cc_logic_game_exclude where client_type=? and channel=?
@@ -688,16 +689,23 @@ FROM (
 INNER JOIN (
   select * from cc_logic_game where status = 1
 ) z2 on z1.logic_game_id = z2.id
+order by RAND()
 limit ?"#,
-    )
-    .bind(client_type)
-    .bind(&tag_json)
-    .bind(client_type)
-    .bind(channel)
-    .bind(limit)
-    .fetch_all(ext_pool)
-    .await
-    .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
+        category_name
+    );
+    let rows: Vec<(i64,)> = sqlx::query_as(&sql)
+        .bind(client_type)
+        .bind(client_type)
+        .bind(channel)
+        .bind(limit)
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
+    tracing::debug!(
+        %client_type, %channel, %category_name, %limit,
+        result_count = rows.len(),
+        "fetch_logic_game_ids_by_tag done"
+    );
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 

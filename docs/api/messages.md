@@ -40,7 +40,7 @@ MD5(ASSISTANT_SECRET + "/api/messages?body=" + json_body)
 | `user_id` | `i64` | 是 | 用户 ID，必须大于 0 |
 | `date` | `Option<String>` | 否 | 最后一条聊天记录的时间，格式 `YYYY-MM-DD HH:MM:SS`，不传则取当前时间 |
 | `channel` | `Option<String>` | 否 | 渠道标识（如 `haimayun`、`native`、`qa_verify`），用于过滤已下架游戏 |
-| `client_type` | `Option<String>` | 否 | 客户端平台（`android`、`iphone`、`ipad`、`web`），用于过滤已下架游戏 |
+| `client_type` | `Option<String>` | 否 | 客户端平台（如 `ANDROID`、`ANDROID_PAD`、`BOX`、`HANDHELD`、`IOS`、`IPAD`、`MAC`、`MINIPROGRAM`、`NATIVE_WINDOWS`、`WEB`、`WINDOWS`、`XR`），用于过滤已下架游戏 |
 
 ## URL 查询参数
 

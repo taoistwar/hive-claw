@@ -4,7 +4,7 @@
 POST /api/messages?sign={md5}
 ```
 
-获取指定时间之前的最近 10 条用户聊天记录。
+获取用户的最近 10 条聊天记录，可按时间过滤。
 
 ## 鉴权
 
@@ -29,14 +29,18 @@ MD5(ASSISTANT_SECRET + "/api/messages?body=" + json_body)
 ```json
 {
   "user_id": 12345,
-  "date": "2026-06-03 14:30:00"
+  "date": "2026-06-03 14:30:00",
+  "channel": "app",
+  "client_type": "android"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `user_id` | `i64` | 是 | 用户 ID，必须大于 0 |
-| `date` | `String` | 是 | 最后一条聊天记录的时间，格式 `YYYY-MM-DD HH:MM:SS`，返回该时间之前的最近 10 条 |
+| `date` | `Option<String>` | 否 | 最后一条聊天记录的时间，格式 `YYYY-MM-DD HH:MM:SS`，不传则取当前时间 |
+| `channel` | `Option<String>` | 否 | 渠道标识（如 `haimayun`、`native`、`qa_verify`），用于过滤已下架游戏 |
+| `client_type` | `Option<String>` | 否 | 客户端平台（`android`、`iphone`、`ipad`、`web`），用于过滤已下架游戏 |
 
 ## URL 查询参数
 
@@ -49,7 +53,7 @@ MD5(ASSISTANT_SECRET + "/api/messages?body=" + json_body)
 ```bash
 USER_ID=12345
 DATE="2026-06-03 14:30:00"
-BODY="{\"user_id\":${USER_ID},\"date\":\"${DATE}\"}"
+BODY="{\"user_id\":${USER_ID},\"date\":\"${DATE}\",\"channel\":\"app\",\"client_type\":\"android\"}"
 SIGN_STR="/api/messages?body=${BODY}"
 SIGN=$(echo -n "${ASSISTANT_SECRET}${SIGN_STR}" | md5sum | awk '{print $1}')
 

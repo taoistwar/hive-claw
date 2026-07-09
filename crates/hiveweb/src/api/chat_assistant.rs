@@ -175,8 +175,8 @@ async fn assistant_chat(
         }
     }
 
-    // 6. 获取会员等级 & 判断是否 VIP（Redis 缓存优先）
-    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, req.user_id)
+    // 6. 获取会员等级 & 判断是否 VIP
+    let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
             tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
@@ -482,7 +482,7 @@ async fn check_and_incr_daily_limit(
         }
     };
 
-    let current: i64 = match conn.incr(key, 1).await {
+    let mut current: i64 = match conn.incr(key, 1).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("Redis INCR failed: {e}");
@@ -498,6 +498,7 @@ async fn check_and_incr_daily_limit(
     if current > max_times {
         // rollback: 超限不计入
         let _: Result<(), _> = conn.decr(key, 1).await;
+        let max_times = max_times - 1;
         return Err(Some(format!(
             "Daily limit reached ({}/{})",
             max_times, max_times
@@ -566,10 +567,7 @@ async fn assistant_quota(
     }
 
     // 2. 解析 user_id
-    let user_id: i64 = match params
-        .get("user_id")
-        .and_then(|v| v.parse().ok())
-    {
+    let user_id: i64 = match params.get("user_id").and_then(|v| v.parse().ok()) {
         Some(uid) if uid > 0 => uid,
         _ => {
             return AppError::BadRequest("user_id must be positive".into())

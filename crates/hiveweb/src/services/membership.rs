@@ -21,7 +21,7 @@ struct CcUserMembership {
 pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
     sqlx::query_as::<_, CcUserMembership>(
         r#"SELECT id, membership_level, effective_end_time FROM cc_user_membership
-        WHERE user_id = ? and effective_end_time > now() AND effective_start_time < now() LIMIT 1"#,
+        WHERE user_id = ? and effective_end_time > now() AND effective_start_time <= now() LIMIT 1"#,
     )
     .bind(user_id)
     .fetch_optional(pool)
@@ -36,7 +36,6 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
                 now=?now,
                 "check_vip_membership: found active membership"
             );
-
             m.effective_end_time.map_or(true, |end| end >= now)
         })
     })

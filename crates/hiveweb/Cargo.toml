@@ -137,5 +137,5 @@ name = "chat-retention"
 path = "src/bin/chat_retention.rs"
 
 [[bin]]
-name = "quota-test"
-path = "src/bin/quota_test.rs"
+name = "api-test"
+path = "src/bin/api_test.rs"

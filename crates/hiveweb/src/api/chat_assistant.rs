@@ -611,7 +611,7 @@ async fn assistant_quota(
             tracing::error!(user_id, error = %e, "quota: check_vip_membership failed");
             false
         });
-
+    tracing::debug!(user_id, is_vip, "quota: user VIP status");
     let limit_config =
         membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
             .await

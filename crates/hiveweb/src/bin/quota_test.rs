@@ -1,7 +1,7 @@
 //! 测试 /api/quota 接口
 //!
 //! 用法:
-//!   cargo run -p hiveweb --bin quota-test -- <user_id>
+//!   cargo run -p hiveweb --bin quota-test -- <host> <user_id>
 //!
 //! 环境变量:
 //!   HIVEWEB_PORT   — 服务端口（默认 3000）
@@ -19,15 +19,16 @@ async fn main() -> anyhow::Result<()> {
         .nth(1)
         .unwrap_or_default()
         .parse()
-        .context("usage: quota-test <user_id>")?;
+        .context("usage: quota-test <user_id> [host]")?;
+
+    let host = env::args().nth(2).unwrap_or_else(|| "127.0.0.1".into());
 
     if user_id <= 0 {
         anyhow::bail!("user_id must be positive, got {user_id}");
     }
 
     let port = env::var("HIVEWEB_PORT").unwrap_or_else(|_| "3000".into());
-    let secret =
-        env::var("ASSISTANT_SECRET").unwrap_or_default();
+    let secret = env::var("ASSISTANT_SECRET").unwrap_or_default();
 
     // 构造签名: MD5(secret + path + "?body=" + body)
     let path = "/api/quota";
@@ -35,7 +36,10 @@ async fn main() -> anyhow::Result<()> {
     let sign_string = format!("{}{}?body={}", secret, path, body);
     let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
 
-    let url = format!("http://127.0.0.1:{}/api/quota?sign={}&user_id={}", port, sign, user_id);
+    let url = format!(
+        "http://{}:{}/api/quota?sign={}&user_id={}",
+        host, port, sign, user_id
+    );
 
     tracing::info!(%url, "sending quota request");
 

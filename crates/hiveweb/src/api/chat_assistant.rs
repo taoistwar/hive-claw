@@ -159,21 +159,21 @@ async fn assistant_chat(
         }
     };
 
-    // 5. 校验 user_id 是否存在于外部 cloud_user 表（Redis 缓存优先）
-    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, req.user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // 5. 获取 cloud_user 信息并校验用户是否存在（缓存优先）
+    let cloud_info = match membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id).await {
+        Ok(Some(info)) => info,
+        Ok(None) => {
             return AppError::BadRequest("User not found".into())
                 .into_response::<()>()
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud_cached 查询失败");
+            tracing::error!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached 查询失败");
             return AppError::Internal("用户数据查询失败，请稍后重试".into())
                 .into_response::<()>()
                 .into_response();
         }
-    }
+    };
 
     // 6. 获取会员等级 & 判断是否 VIP
     let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
@@ -231,16 +231,7 @@ async fn assistant_chat(
     };
 
     // 8. 内部 users 表同步（不存在则创建）
-    let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached failed");
-            None
-        });
-    let (uid, nickname) = cloud_info
-        .as_ref()
-        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
-        .unwrap_or((None, None));
+    let (uid, nickname) = (Some(cloud_info.0.as_str()), Some(cloud_info.1.as_str()));
 
     if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -482,7 +473,7 @@ async fn check_and_incr_daily_limit(
         }
     };
 
-    let mut current: i64 = match conn.incr(key, 1).await {
+    let current: i64 = match conn.incr(key, 1).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("Redis INCR failed: {e}");
@@ -587,15 +578,15 @@ async fn assistant_quota(
     };
 
     // 4. 校验 user_id 是否存在于外部 cloud_user 表
-    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
+    match membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
             return AppError::BadRequest("User not found".into())
                 .into_response::<()>()
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id, error = %e, "quota: user_exists_in_cloud_cached failed");
+            tracing::error!(user_id, error = %e, "quota: get_cloud_user_info_cached failed");
             return AppError::Internal("Query failed".into())
                 .into_response::<()>()
                 .into_response();

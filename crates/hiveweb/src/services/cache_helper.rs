@@ -105,8 +105,6 @@ pub async fn cached_del(redis: &redis::Client, key: &str) -> Result<(), String> 
 
 // ── Cache key constants ──
 
-/// cloud_user existence check → bool
-pub const KEY_CLOUD_USER_EXISTS: &str = "cloud_user:exists";
 /// VIP membership status → bool
 pub const KEY_VIP_STATUS: &str = "vip:status";
 /// cloud_user uid + nickname → (String, String)
@@ -132,8 +130,6 @@ pub const KEY_AGENT_CONTENT_PREFIX: &str = "agent:content";
 
 // ── TTL constants (seconds) ──
 
-pub const TTL_CLOUD_USER_EXISTS_POSITIVE: u64 = 86400; // 24h — 用户存在则长缓存
-pub const TTL_CLOUD_USER_EXISTS_NEGATIVE: u64 = 300; // 5min — 用户不存在则短缓存（可能新注册）
 pub const TTL_VIP_STATUS: u64 = 300; // 5 min
 pub const TTL_CLOUD_USER_INFO: u64 = 900; // 15 min
 pub const TTL_BALANCE: u64 = 60; // 1 min

@@ -41,15 +41,6 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
     })
 }
 
-/// Check if a user exists in the external cloud_user table.
-pub async fn user_exists_in_cloud(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM cloud_user WHERE ID = ?")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .map(|count| count > 0)
-}
-
 /// Get cloud_user uid and nickname for a given user ID.
 pub async fn get_cloud_user_info(
     pool: &MySqlPool,
@@ -348,42 +339,6 @@ pub async fn resolve_game_label_names(
 }
 
 // ── Redis-cached wrappers ──
-
-/// Cached version of `user_exists_in_cloud`.
-///
-/// Split-TTL strategy: if the user exists, cache for a long duration (24h)
-/// because accounts never disappear. If the user does not exist, cache only
-/// briefly (5min) because they may be a newly registered user.
-pub async fn user_exists_in_cloud_cached(
-    redis: &redis::Client,
-    pool: &MySqlPool,
-    user_id: i64,
-) -> Result<bool, String> {
-    let key = format!("{}:{}", cache_helper::KEY_CLOUD_USER_EXISTS, user_id);
-
-    // 1. Try Redis
-    match cache_helper::cached_get::<bool>(redis, &key).await {
-        Ok(Some(value)) => return Ok(value),
-        Ok(None) => {} // cache miss
-        Err(e) => tracing::debug!(%key, error = %e, "cache read failed, falling back to DB"),
-    }
-
-    // 2. Fetch from DB
-    let exists = user_exists_in_cloud(pool, user_id)
-        .await
-        .map_err(|e| format!("user_exists_in_cloud: {e}"))?;
-
-    // 3. Write to cache with split TTL
-    if exists {
-        // 24h — 用户存在，长缓存
-        let ttl = cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE;
-        if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
-            tracing::debug!(%key, error = %e, "cache write failed");
-        }
-    }
-
-    Ok(exists)
-}
 
 /// VIP 状态查询（智能缓存）：
 /// - 已经是 VIP → 缓存，下次直接返回 true

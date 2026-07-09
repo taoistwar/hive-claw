@@ -28,8 +28,16 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
     .await
     .map(|row| {
         row.map_or(false, |m| {
-            m.effective_end_time
-                .map_or(true, |end| end >= chrono::Utc::now().naive_utc())
+            let now = chrono::Utc::now().naive_utc();
+            tracing::debug!(
+                user_id = user_id,
+                membership_level = ?m.membership_level,
+                effective_end_time = ?m.effective_end_time,
+                now=?now,
+                "check_vip_membership: found active membership"
+            );
+
+            m.effective_end_time.map_or(true, |end| end >= now)
         })
     })
 }
@@ -192,13 +200,13 @@ FROM
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
 LEFT JOIN (
 	select * from cc_user_subscription where user_id=? and status ='ACTIVE'
-) us ON um.user_id = us.user_id
+) us ON um.user_id = us.user_id AND um.product_id = us.product_id
 LEFT JOIN (
     select * from cc_subscription_order where user_id=?
-) so ON so.user_subscription_id = us.id
+) so ON so.user_subscription_id = us.id AND us.product_id = so.product_id
 LEFT JOIN (
     select * from cc_order where user_id = ?
-) o ON o.id = so.order_id
+) o ON o.id = so.order_id AND o.asset_product_id = so.product_id
 
 ORDER BY ml.level_order DESC, um.effective_end_time DESC"#,
     )

@@ -166,8 +166,8 @@ pub async fn query_membership_subscriptions(
     ml.level_name               AS level_name,
     um.membership_category      AS membership_category,
     CASE um.membership_category
-        WHEN 'SUBSCRIPTION' THEN '订阅型'
-        WHEN 'ONE_TIME' THEN '一次性'
+        WHEN 'SUBSCRIPTION' THEN '连续订阅'
+        WHEN 'ONE_TIME' THEN '单次购买'
         ELSE um.membership_category
     END                         AS membership_category_name,
     um.effective_start_time     AS effective_start_time,
@@ -179,7 +179,7 @@ pub async fn query_membership_subscriptions(
         ELSE null
     END                        AS subscription_status,
     CASE um.membership_category
-        WHEN 'SUBSCRIPTION' THEN '生效'
+        WHEN 'SUBSCRIPTION' THEN '生效中'
         ELSE null
     END                        AS subscription_status_name,
 

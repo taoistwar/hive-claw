@@ -174,12 +174,19 @@ pub async fn query_membership_subscriptions(
         WHEN 'PENDING' THEN '待签约'
         ELSE us.status
     END                         AS subscription_status_name,
-    us.next_billing_time        AS next_billing_time,
+
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN us.next_billing_time
+        ELSE null
+    END AS next_billing_time,
     us.auto_renew               AS auto_renew,
     us.payment_method           AS payment_method,
     us.start_time               AS subscription_start_time,
     us.end_time                 AS subscription_end_time,
-    o.order_price                    AS next_price
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN o.order_price
+        ELSE null
+    END                        AS next_price
 FROM
 (select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code

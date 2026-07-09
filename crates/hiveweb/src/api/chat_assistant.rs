@@ -182,15 +182,16 @@ async fn assistant_chat(
             tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
             false
         });
-
+    tracing::debug!(user_id = req.user_id, is_vip, "用户 VIP 状态");
     // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
     let limit_config =
-        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
+        membership::get_ai_assistant_chat_limit_config(ext_pool)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
-                membership::AssistantChatLimitConfig::default()
-            });
+                None
+            })
+            .unwrap_or_default();
 
     let max_times = if is_vip {
         limit_config.vip_ask_times
@@ -602,12 +603,13 @@ async fn assistant_quota(
         });
     tracing::debug!(user_id, is_vip, "quota: user VIP status");
     let limit_config =
-        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
+        membership::get_ai_assistant_chat_limit_config(ext_pool)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "quota: limit config failed, using default");
-                membership::AssistantChatLimitConfig::default()
-            });
+                None
+            })
+            .unwrap_or_default();
 
     let total_times = if is_vip {
         limit_config.vip_ask_times

@@ -507,14 +507,15 @@ async fn execute_recommendation(
     .map_err(|e| e.into_response::<()>())?;
 
     // 8. 追加 usage extension（参考 assistant_chat 逻辑）
-    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+    let is_vip = membership::check_vip_membership(ext_pool, user_id)
         .await
         .unwrap_or(false);
 
     let limit_config =
-        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
+        membership::get_ai_assistant_chat_limit_config(ext_pool)
             .await
-            .unwrap_or_else(|_| membership::AssistantChatLimitConfig::default());
+            .unwrap_or_else(|_| None)
+            .unwrap_or_default();
 
     let total_times = if is_vip {
         limit_config.vip_ask_times

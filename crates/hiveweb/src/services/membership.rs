@@ -338,41 +338,6 @@ pub async fn resolve_game_label_names(
     Ok(())
 }
 
-// ── Redis-cached wrappers ──
-
-/// VIP 状态查询（智能缓存）：
-/// - 已经是 VIP → 缓存，下次直接返回 true
-/// - 不是 VIP → 不缓存，每次查 DB（确保充值后立即识别）
-pub async fn check_vip_membership_cached(
-    redis: &redis::Client,
-    pool: &MySqlPool,
-    user_id: i64,
-) -> Result<bool, String> {
-    let key = format!("{}:{}", cache_helper::KEY_VIP_STATUS, user_id);
-
-    // 1. 先查缓存
-    if let Ok(Some(cached)) = cache_helper::cached_get::<bool>(redis, &key).await {
-        if cached {
-            return Ok(true);
-        }
-    }
-
-    // 2. 查 DB
-    let is_vip = check_vip_membership(pool, user_id)
-        .await
-        .map_err(|e| format!("check_vip_membership: {e}"))?;
-
-    // 3. 只有 VIP 才缓存
-    if is_vip {
-        if let Err(e) =
-            cache_helper::cached_set(redis, &key, &true, cache_helper::TTL_VIP_STATUS).await
-        {
-            tracing::debug!(%key, error = %e, "VIP cache write failed");
-        }
-    }
-
-    Ok(is_vip)
-}
 
 /// Cached version of `get_cloud_user_info`.
 pub async fn get_cloud_user_info_cached(
@@ -506,23 +471,6 @@ pub async fn get_ai_assistant_chat_limit_config(
 }
 
 /// Cached version of `get_ai_assistant_chat_limit_config`.
-pub async fn get_ai_assistant_chat_limit_config_cached(
-    redis: &redis::Client,
-    ext_pool: &MySqlPool,
-) -> Result<AssistantChatLimitConfig, String> {
-    let key = cache_helper::KEY_AI_ASSISTANT_CHAT_LIMIT_CONFIG;
-    cached_or_fetch(
-        redis,
-        key,
-        cache_helper::TTL_AI_ASSISTANT_CHAT_LIMIT_CONFIG,
-        || async {
-            get_ai_assistant_chat_limit_config(ext_pool)
-                .await
-                .map(|opt| opt.unwrap_or_default())
-        },
-    )
-    .await
-}
 
 /// Query AIDiscountedProducts config from cc_config table.
 /// Returns the raw JSON content (None if not found).

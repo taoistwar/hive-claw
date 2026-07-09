@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         // prod: file output with daily rotation, no console output
         file_tracing()?;
+        console_tracing()?
     }
 
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());

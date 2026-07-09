@@ -166,14 +166,14 @@ pub async fn query_membership_subscriptions(
     um.effective_end_time       AS effective_end_time,
     um.product_title            AS product_title,
     us.id                       AS subscription_id,
-    us.status                   AS subscription_status,
-    CASE us.status
-        WHEN 'ACTIVE'  THEN '生效'
-        WHEN 'REVOKE'  THEN '已解约'
-        WHEN 'EXPIRED' THEN '已过期'
-        WHEN 'PENDING' THEN '待签约'
-        ELSE us.status
-    END                         AS subscription_status_name,
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN us.status
+        ELSE null
+    END                        AS subscription_status,
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN '生效'
+        ELSE null
+    END                        AS subscription_status_name,
 
     CASE um.membership_category
         WHEN 'SUBSCRIPTION' THEN us.next_billing_time

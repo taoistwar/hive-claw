@@ -38,11 +38,11 @@ async fn main() -> anyhow::Result<()> {
     if is_dev(cli.mode.as_deref()) {
         // dev: human-readable debug output to stdout
         println!("init console tracing");
-        console_tracing()?
+        console_tracing(true)?
     } else {
         // prod: file output with daily rotation, no console output
         file_tracing()?;
-        console_tracing()?
+        console_tracing(false)?;
     }
 
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -166,13 +166,13 @@ pub fn file_tracing() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
     Ok(())
 }
-pub fn console_tracing() -> anyhow::Result<()> {
+pub fn console_tracing(pretty: bool) -> anyhow::Result<()> {
     use tracing_subscriber::{
         self, EnvFilter, filter::filter_fn, fmt::time::OffsetTime, prelude::*,
     };
 
-    use time::{UtcOffset, macros::format_description};
     use hiveweb::sqlx::sqlx_layer::SqlxLayer;
+    use time::{UtcOffset, macros::format_description};
     // 配置日志时间格式，配置时区为东8区，
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap_or(UtcOffset::UTC);
     // 时间格式为  年-月-日 时:分:秒 格式
@@ -186,21 +186,37 @@ pub fn console_tracing() -> anyhow::Result<()> {
 
     let sqlx_layer = SqlxLayer::new();
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_ansi(true)
-        .with_file(true)
-        .with_writer(std::io::stdout)
-        .with_timer(logger_time)
-        .with_target(true)
-        .with_level(true)
-        .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
+    if pretty {
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .pretty()
+            .with_ansi(true)
+            .with_file(true)
+            .with_writer(std::io::stdout)
+            .with_timer(logger_time)
+            .with_target(true)
+            .with_level(true)
+            .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(sqlx_layer)
+            .init();
+    } else {
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(true)
+            .with_file(true)
+            .with_writer(std::io::stdout)
+            .with_timer(logger_time)
+            .with_target(true)
+            .with_level(true)
+            .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(sqlx_layer)
+            .init();
+    };
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(sqlx_layer)
-        .init();
     Ok(())
 }
 

@@ -14,6 +14,34 @@ use crate::runtime::builtins::BuiltinContext;
 use crate::runtime::builtins::BuiltinError;
 use crate::runtime::builtins::BuiltinResult;
 
+fn format_disk_end_date(timestamp_ms: i64) -> Option<String> {
+    if timestamp_ms <= 0 {
+        return None;
+    }
+
+    let china_offset = chrono::FixedOffset::east_opt(8 * 60 * 60)?;
+    chrono::DateTime::from_timestamp_millis(timestamp_ms).map(|date_time| {
+        date_time
+            .with_timezone(&china_offset)
+            .format("%Y-%m-%d")
+            .to_string()
+    })
+}
+
+fn disk_status_text(status: &str) -> String {
+    match status.trim() {
+        "EXPIRED" => "已过期".into(),
+        "NORMAL" => "生效中".into(),
+        "NOT_ALLOCATE" => "未挂载".into(),
+        "RESERVE_PERIOD" => "保留期".into(),
+        unknown => unknown.into(),
+    }
+}
+
+fn format_disk_total_size(size_gb: f64) -> String {
+    format!("{size_gb}GB")
+}
+
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
 /// user_id is extracted from AgentContext, not from LLM args.
 /// category is optionally provided in args to filter the payload:
@@ -407,12 +435,18 @@ pub async fn query_balance_async_impl(
             .as_ref()
             .and_then(|r| r.disk_status.clone())
             .unwrap_or_default();
+        let disk_end_date = format_disk_end_date(disk_end_time);
+        let disk_status_text = disk_status_text(&disk_status);
+        let disk_total_size_text = format_disk_total_size(disk_total_size);
         json!({
             "total_coins": total_coins,
             "expire_coins_7d": expire_coins_7d,
             "disk_end_time": disk_end_time,
+            "disk_end_date": disk_end_date,
             "disk_total_size": disk_total_size,
+            "disk_total_size_text": disk_total_size_text,
             "disk_status": disk_status,
+            "disk_status_text": disk_status_text,
         })
     };
     tracing::debug!(?reply, "[query_balance] step3: reply");
@@ -457,8 +491,11 @@ pub async fn query_balance_async_impl(
                             "info".into(),
                             json!({
                                 "disk_end_time": reply.get("disk_end_time"),
+                                "disk_end_date": reply.get("disk_end_date"),
                                 "disk_total_size": reply.get("disk_total_size"),
+                                "disk_total_size_text": reply.get("disk_total_size_text"),
                                 "disk_status": reply.get("disk_status"),
+                                "disk_status_text": reply.get("disk_status_text"),
                             }),
                         );
                     }
@@ -517,3 +554,32 @@ pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
     }
   }
 }"#;
+
+#[cfg(test)]
+mod tests {
+    use super::{disk_status_text, format_disk_end_date, format_disk_total_size};
+
+    #[test]
+    fn formats_disk_end_time_in_china_timezone() {
+        assert_eq!(
+            format_disk_end_date(1_813_744_787_000).as_deref(),
+            Some("2027-06-23")
+        );
+        assert_eq!(format_disk_end_date(0), None);
+    }
+
+    #[test]
+    fn translates_disk_status_for_llm_display() {
+        assert_eq!(disk_status_text("EXPIRED"), "已过期");
+        assert_eq!(disk_status_text("NORMAL"), "生效中");
+        assert_eq!(disk_status_text(" NOT_ALLOCATE "), "未挂载");
+        assert_eq!(disk_status_text("RESERVE_PERIOD"), "保留期");
+        assert_eq!(disk_status_text(" UNKNOWN "), "UNKNOWN");
+    }
+
+    #[test]
+    fn formats_disk_total_size_with_gb_unit() {
+        assert_eq!(format_disk_total_size(50.0), "50GB");
+        assert_eq!(format_disk_total_size(50.5), "50.5GB");
+    }
+}

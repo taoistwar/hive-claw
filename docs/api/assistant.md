@@ -81,11 +81,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
     "payload": {
       "type": "sufficient",
       "info": {
-        "disk_end_time": 1735689600,
-        "disk_total_size": 1099511627776,
+        "disk_end_time": 1735689600000,
+        "disk_end_date": "2025-01-01",
+        "disk_total_size": 50,
+        "disk_total_size_text": "50GB",
         "total_coins": 900000.0,
         "expire_coins_7d": 5000.0,
-        "disk_status": "NORMAL"
+        "disk_status": "NORMAL",
+        "disk_status_text": "生效中"
       },
       "membership": [
         {
@@ -191,11 +194,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `disk_end_time` | `u64` | 网盘截止时间（Unix 时间戳），0 表示无 |
-| `disk_total_size` | `f64` | 网盘总大小（字节） |
+| `disk_end_time` | `u64` | 网盘截止时间（Unix 毫秒时间戳），0 表示无；保留供卡片兼容使用 |
+| `disk_end_date` | `String \| null` | 按北京时间格式化的网盘到期日期（`YYYY-MM-DD`），供模型和文本展示直接使用 |
+| `disk_total_size` | `f64` | 网盘总容量，单位为 GB；保留供卡片兼容使用 |
+| `disk_total_size_text` | `String` | 带 GB 单位的展示容量，如 `50GB`，供模型直接使用 |
 | `total_coins` | `f64` | 总金币数 |
 | `expire_coins_7d` | `f64` | 7 天内即将过期的金币数 |
-| `disk_status` | `String` | 网盘状态（来自外部数据库 disk 表），如 `NORMAL` |
+| `disk_status` | `String` | 网盘原始状态码：`EXPIRED`（已过期）、`NORMAL`（生效中）、`NOT_ALLOCATE`（未挂载）、`RESERVE_PERIOD`（保留期） |
+| `disk_status_text` | `String` | 网盘状态中文：`已过期`、`生效中`、`未挂载`或`保留期`，供模型直接使用 |
 
 ### `info` 对象字段（game 卡片）
 

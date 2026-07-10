@@ -66,8 +66,15 @@ export interface SubscribeCardPayload {
 
 export interface SubscribeInfo {
   total_coins: number;
+  /** Unix timestamp in milliseconds; retained for card compatibility. */
   disk_end_time: number;
+  /** Display-ready expiration date in Asia/Shanghai timezone. */
+  disk_end_date?: string | null;
+  /** Numeric capacity in GB; retained for card compatibility. */
   disk_total_size: number;
+  disk_total_size_text?: string;
+  disk_status?: string;
+  disk_status_text?: string;
   expire_coins_7d: number;
 }
 

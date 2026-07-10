@@ -511,7 +511,9 @@ async fn clear_session(sessions: &Arc<Mutex<SessionManager>>, session_key: &str)
     let removed = s.messages.len();
     s.clear();
     match mgr.save(s, false) {
-        Ok(()) => format!("Cleared session {session_key} ({removed} messages)."),
+        Ok(()) => {
+            format!("Cleared session {session_key} ({removed} messages).")
+        }
         Err(e) => format!(
             "Cleared in-memory session {session_key} ({removed} messages) but failed to persist: {e}"
         ),

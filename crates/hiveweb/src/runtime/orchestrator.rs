@@ -472,8 +472,7 @@ where
             "{}\n\n[当前客户端]\n渠道：{}\n平台：{}\n版本：{}",
             agent_content.system_prompt, deps.channel, deps.client_type, deps.client_version
         );
-        let mut hop_msgs: Vec<Value> =
-            vec![json!({"role": "system", "content": system_prompt})];
+        let mut hop_msgs: Vec<Value> = vec![json!({"role": "system", "content": system_prompt})];
         hop_msgs.extend(messages.clone());
 
         let tools_schema = build_tools_schema(&agent_content);
@@ -1196,7 +1195,9 @@ async fn handle_meta_tool(
             };
             let mut function_input = match tc.arguments.get("function_input") {
                 Some(v) => v.clone(),
-                None => return ToolOutcome::error("invoke_function: function_input 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_function: function_input 缺失".into());
+                }
             };
             // 查询 function 信息（包含 required_capabilities）
             let func_row: Option<(i64, i8, Option<i64>, Option<String>, Option<Value>)> = sqlx::query_as(
@@ -1283,7 +1284,9 @@ async fn handle_meta_tool(
                     };
                     let input_json = match serde_json::to_string(&function_input) {
                         Ok(s) => s,
-                        Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                        Err(e) => {
+                            return ToolOutcome::error(format!("args serialize: {e}"));
+                        }
                     };
                     let dispatch_ctx = DispatchCtx {
                         request_id: None,
@@ -1342,7 +1345,9 @@ async fn handle_meta_tool(
             };
             let mut workflow_input = match tc.arguments.get("workflow_input") {
                 Some(v) => v.clone(),
-                None => return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into());
+                }
             };
 
             // ★ Inject AgentContext snapshot so workflow can read runtime state
@@ -1484,7 +1489,9 @@ pub(crate) async fn handle_workspace_tool(
                 let args_value: Value = Value::Object(tc.arguments.clone());
                 let input_json = match serde_json::to_string(&args_value) {
                     Ok(s) => s,
-                    Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                    Err(e) => {
+                        return ToolOutcome::error(format!("args serialize: {e}"));
+                    }
                 };
                 let dispatch_ctx = DispatchCtx {
                     request_id: None,

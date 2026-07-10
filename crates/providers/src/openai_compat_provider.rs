@@ -760,7 +760,9 @@ impl LLMProvider for OpenAICompatProvider {
         }
         let body_text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading LLM body: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading LLM body: {e}"));
+            }
         };
         let Ok(value) = serde_json::from_str::<Value>(&body_text) else {
             return LLMResponse::error(format!("Error: malformed JSON from provider: {body_text}"));

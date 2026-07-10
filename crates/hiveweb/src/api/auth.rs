@@ -201,11 +201,15 @@ pub async fn get_current_user(
 ) -> ApiResponse<AdminPublic> {
     let admin_id = match claims.admin_id {
         Some(id) => id,
-        None => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        None => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
     };
     let admin = match admin::get_admin_by_id(&state.pool, admin_id).await {
         Ok(Some(admin)) => admin,
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -222,7 +226,9 @@ pub async fn change_password(
 ) -> ApiResponse<()> {
     let admin_id = match claims.admin_id {
         Some(id) => id,
-        None => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        None => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
     };
 
     let is_locked = match admin::get_admin_by_id(&state.pool, admin_id).await {
@@ -236,7 +242,9 @@ pub async fn change_password(
             };
             locked
         }
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -252,7 +260,9 @@ pub async fn change_password(
 
     let admin = match admin::get_admin_by_id(&state.pool, admin_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();

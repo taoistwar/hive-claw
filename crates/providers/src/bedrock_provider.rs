@@ -10,11 +10,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use log::warn;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::base::{ChatRequest, LLMProvider, StreamDeltaCallback};
 use crate::base::extract_retry_after_from_text;
 use crate::base::sanitize_empty_content;
+use crate::base::{ChatRequest, LLMProvider, StreamDeltaCallback};
 use crate::base::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
 
 // Model constants mirroring the Python module.
@@ -70,7 +70,10 @@ fn content_blocks(content: &Value, for_tool_result: bool) -> Vec<Value> {
                 };
 
                 let item_type = obj.get("type").and_then(|v| v.as_str());
-                if matches!(item_type, Some("text") | Some("input_text") | Some("output_text")) {
+                if matches!(
+                    item_type,
+                    Some("text") | Some("input_text") | Some("output_text")
+                ) {
                     if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
                         if !text.is_empty() {
                             blocks.push(json!({"text": text}));
@@ -98,7 +101,8 @@ fn content_blocks(content: &Value, for_tool_result: bool) -> Vec<Value> {
                     if for_tool_result {
                         blocks.push(json!({"json": item}));
                     } else {
-                        blocks.push(json!({"text": serde_json::to_string(item).unwrap_or_default()}));
+                        blocks
+                            .push(json!({"text": serde_json::to_string(item).unwrap_or_default()}));
                     }
                 }
             }
@@ -141,14 +145,19 @@ fn system_blocks(content: &Value) -> Vec<Value> {
         .into_iter()
         .filter(|b| {
             b.as_object().map_or(false, |o| {
-                o.contains_key("text") || o.contains_key("cachePoint") || o.contains_key("guardContent")
+                o.contains_key("text")
+                    || o.contains_key("cachePoint")
+                    || o.contains_key("guardContent")
             })
         })
         .collect()
 }
 
 fn tool_result_block(msg: &Value) -> Value {
-    let tool_call_id = msg.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+    let tool_call_id = msg
+        .get("tool_call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     json!({
         "toolResult": {
             "toolUseId": tool_call_id,
@@ -186,7 +195,10 @@ fn reasoning_block(block: &Value) -> Option<Value> {
         return None;
     }
     if let (Some(text), Some(signature)) = (
-        block.get("thinking").or_else(|| block.get("text")).and_then(|v| v.as_str()),
+        block
+            .get("thinking")
+            .or_else(|| block.get("text"))
+            .and_then(|v| v.as_str()),
         block.get("signature").and_then(|v| v.as_str()),
     ) {
         return Some(json!({
@@ -250,9 +262,9 @@ fn has_tool_use(msg: &Value) -> bool {
         return false;
     };
     content.iter().any(|block| {
-        block
-            .as_object()
-            .map_or(false, |o| o.contains_key("toolUse") || o.contains_key("toolResult"))
+        block.as_object().map_or(false, |o| {
+            o.contains_key("toolUse") || o.contains_key("toolResult")
+        })
     })
 }
 
@@ -277,7 +289,8 @@ fn merge_consecutive(messages: Vec<Value>) -> Vec<Value> {
                             arr.push(json!({"text": cur_content.to_string()}));
                         }
                     } else {
-                        *prev = json!([{"text": prev.to_string()}, {"text": cur_content.to_string()}]);
+                        *prev =
+                            json!([{"text": prev.to_string()}, {"text": cur_content.to_string()}]);
                     }
                 }
                 continue;
@@ -348,7 +361,8 @@ fn convert_messages(messages: &[Value]) -> (Vec<Value>, Vec<Value>) {
             }
             "user" => {
                 if let Some(content) = msg.get("content") {
-                    converted.push(json!({"role": "user", "content": content_blocks(content, false)}));
+                    converted
+                        .push(json!({"role": "user", "content": content_blocks(content, false)}));
                 }
             }
             _ => {}
@@ -411,9 +425,9 @@ fn contains_tool_blocks(messages: &[Value]) -> bool {
             return false;
         };
         content.iter().any(|block| {
-            block
-                .as_object()
-                .map_or(false, |o| o.contains_key("toolUse") || o.contains_key("toolResult"))
+            block.as_object().map_or(false, |o| {
+                o.contains_key("toolUse") || o.contains_key("toolResult")
+            })
         })
     })
 }
@@ -434,7 +448,11 @@ fn convert_tool_choice(tool_choice: Option<&ToolChoice>) -> Option<Value> {
         Some(ToolChoice::Required) => Some(json!({"any": {}})),
         Some(ToolChoice::None) => None,
         Some(ToolChoice::Specific(v)) => {
-            if let Some(name) = v.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()) {
+            if let Some(name) = v
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+            {
                 Some(json!({"tool": {"name": name}}))
             } else {
                 Some(json!({"auto": {}}))
@@ -451,7 +469,10 @@ fn adaptive_thinking(reasoning_effort: Option<&str>) -> Option<Value> {
     let mut thinking = json!({"type": "adaptive"});
     if effort != "adaptive" {
         if let Some(obj) = thinking.as_object_mut() {
-            obj.insert("effort".into(), Value::String(reasoning_effort?.to_string()));
+            obj.insert(
+                "effort".into(),
+                Value::String(reasoning_effort?.to_string()),
+            );
         }
     }
     Some(thinking)
@@ -496,7 +517,10 @@ fn parse_reasoning(block: &Value) -> (Option<String>, Option<Value>) {
     };
     if let Some(text_obj) = reasoning.get("reasoningText").and_then(|v| v.as_object()) {
         if let Some(text) = text_obj.get("text").and_then(|v| v.as_str()) {
-            let signature = text_obj.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+            let signature = text_obj
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             return (
                 Some(text.to_string()),
                 Some(json!({
@@ -580,8 +604,7 @@ fn parse_response(response: &Value) -> LLMResponse {
         tool_calls,
         finish_reason: finish_reason(response.get("stopReason").and_then(|v| v.as_str())),
         usage: usage_map(response.get("usage")),
-        reasoning_content: (!reasoning_parts.is_empty())
-            .then(|| reasoning_parts.join("")),
+        reasoning_content: (!reasoning_parts.is_empty()).then(|| reasoning_parts.join("")),
         thinking_blocks: (!thinking_blocks.is_empty()).then_some(thinking_blocks),
         ..Default::default()
     }
@@ -675,9 +698,7 @@ impl BedrockProvider {
             return format!("{base}/model/{model_id}/converse");
         }
         let region = self.cfg.region.as_deref().unwrap_or("us-east-1");
-        format!(
-            "https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse"
-        )
+        format!("https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse")
     }
 
     fn converse_stream_url(&self, model_id: &str) -> String {
@@ -686,15 +707,10 @@ impl BedrockProvider {
             return format!("{base}/model/{model_id}/converse-stream");
         }
         let region = self.cfg.region.as_deref().unwrap_or("us-east-1");
-        format!(
-            "https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse-stream"
-        )
+        format!("https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse-stream")
     }
 
-    fn build_kwargs(
-        &self,
-        req: &ChatRequest,
-    ) -> (String, Map<String, Value>) {
+    fn build_kwargs(&self, req: &ChatRequest) -> (String, Map<String, Value>) {
         let model_id = strip_prefix(req.model.as_deref().unwrap_or(&self.cfg.default_model));
         let messages = sanitize_empty_content(&req.messages);
         let (system, bedrock_messages) = convert_messages(&messages);
@@ -729,7 +745,10 @@ impl BedrockProvider {
             deep_merge(&mut additional, &self.cfg.extra_body);
         }
         if !additional.is_empty() {
-            kwargs.insert("additionalModelRequestFields".into(), Value::Object(additional));
+            kwargs.insert(
+                "additionalModelRequestFields".into(),
+                Value::Object(additional),
+            );
         }
 
         let bedrock_tools = convert_tools(req.tools.as_deref().unwrap_or(&[]));
@@ -764,7 +783,10 @@ impl BedrockProvider {
         on_tool_call_delta: Option<&crate::responses::ToolCallDeltaCallback>,
     ) -> Option<String> {
         if let Some(data) = event.get("contentBlockStart").and_then(|v| v.as_object()) {
-            let idx = data.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let idx = data
+                .get("contentBlockIndex")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
             if let Some(start) = data.get("start").and_then(|v| v.as_object()) {
                 if let Some(tool_use) = start.get("toolUse").and_then(|v| v.as_object()) {
                     let mut buf = Map::new();
@@ -813,22 +835,23 @@ impl BedrockProvider {
         }
 
         if let Some(data) = event.get("contentBlockDelta").and_then(|v| v.as_object()) {
-            let idx = data.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let idx = data
+                .get("contentBlockIndex")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
             if let Some(delta) = data.get("delta").and_then(|v| v.as_object()) {
                 if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
                     content_parts.push(text.to_string());
                     return Some(text.to_string());
                 }
                 if let Some(tool_delta) = delta.get("toolUse").and_then(|v| v.as_object()) {
-                    let buf = tool_buffers
-                        .entry(idx)
-                        .or_insert_with(|| {
-                            let mut m = Map::new();
-                            m.insert("id".into(), Value::String(String::new()));
-                            m.insert("name".into(), Value::String(String::new()));
-                            m.insert("input".into(), Value::String(String::new()));
-                            m
-                        });
+                    let buf = tool_buffers.entry(idx).or_insert_with(|| {
+                        let mut m = Map::new();
+                        m.insert("id".into(), Value::String(String::new()));
+                        m.insert("name".into(), Value::String(String::new()));
+                        m.insert("input".into(), Value::String(String::new()));
+                        m
+                    });
                     if let Some(input_delta) = tool_delta.get("input").and_then(|v| v.as_str()) {
                         if let Some(Value::String(existing)) = buf.get_mut("input") {
                             existing.push_str(input_delta);
@@ -836,9 +859,8 @@ impl BedrockProvider {
                     }
                 }
                 if let Some(reasoning) = delta.get("reasoningContent").and_then(|v| v.as_object()) {
-                    let buf: &mut Map<String, Value> = reasoning_buffers
-                        .entry(idx)
-                        .or_insert_with(|| {
+                    let buf: &mut Map<String, Value> =
+                        reasoning_buffers.entry(idx).or_insert_with(|| {
                             let mut m = Map::new();
                             m.insert("text".into(), Value::String(String::new()));
                             m.insert("signature".into(), Value::String(String::new()));
@@ -855,7 +877,10 @@ impl BedrockProvider {
                         buf.insert("signature".into(), Value::String(sig.to_string()));
                     }
                     if reasoning.contains_key("redactedContent") {
-                        buf.insert("redactedContent".into(), reasoning["redactedContent"].clone());
+                        buf.insert(
+                            "redactedContent".into(),
+                            reasoning["redactedContent"].clone(),
+                        );
                     }
                 }
             }
@@ -863,7 +888,10 @@ impl BedrockProvider {
         }
 
         if let Some(data) = event.get("contentBlockStop").and_then(|v| v.as_object()) {
-            let idx = data.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let idx = data
+                .get("contentBlockIndex")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
             if let Some(buf) = reasoning_buffers.remove(&idx) {
                 if let Some(Value::String(text)) = buf.get("text") {
                     if !text.is_empty() {
@@ -946,12 +974,9 @@ impl BedrockProvider {
         LLMResponse {
             content: (!content_parts.is_empty()).then(|| content_parts.join("")),
             tool_calls,
-            finish_reason: finish_reason(
-                state.get("stop_reason").and_then(|v| v.as_str()),
-            ),
+            finish_reason: finish_reason(state.get("stop_reason").and_then(|v| v.as_str())),
             usage: usage_map(state.get("usage")),
-            reasoning_content: (!reasoning_parts.is_empty())
-                .then(|| reasoning_parts.join("")),
+            reasoning_content: (!reasoning_parts.is_empty()).then(|| reasoning_parts.join("")),
             thinking_blocks: (!thinking_blocks.is_empty()).then_some(thinking_blocks.to_vec()),
             ..Default::default()
         }
@@ -963,7 +988,10 @@ impl BedrockProvider {
         let msg = if body_text.trim().is_empty() {
             format!("Error calling AWS Bedrock: {e}")
         } else {
-            format!("Error: {}", body_text.trim().chars().take(500).collect::<String>())
+            format!(
+                "Error: {}",
+                body_text.trim().chars().take(500).collect::<String>()
+            )
         };
         let retry_after = extract_retry_after_from_text(Some(&msg));
 
@@ -1009,13 +1037,7 @@ impl LLMProvider for BedrockProvider {
         let (model_id, kwargs) = self.build_kwargs(&req);
         let url = self.converse_url(&model_id);
 
-        let resp = match self
-            .client
-            .post(&url)
-            .json(&kwargs)
-            .send()
-            .await
-        {
+        let resp = match self.client.post(&url).json(&kwargs).send().await {
             Ok(r) => r,
             Err(e) => return Self::handle_error(&e, None, None),
         };
@@ -1027,7 +1049,10 @@ impl LLMProvider for BedrockProvider {
             let msg = if text.trim().is_empty() {
                 format!("Error calling AWS Bedrock: HTTP {status}")
             } else {
-                format!("Error: {}", text.trim().chars().take(500).collect::<String>())
+                format!(
+                    "Error: {}",
+                    text.trim().chars().take(500).collect::<String>()
+                )
             };
             return LLMResponse {
                 content: Some(msg),
@@ -1041,7 +1066,9 @@ impl LLMProvider for BedrockProvider {
 
         let body = match resp.json::<Value>().await {
             Ok(b) => b,
-            Err(e) => return LLMResponse::error(format!("Error parsing Bedrock response: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error parsing Bedrock response: {e}"));
+            }
         };
         parse_response(&body)
     }
@@ -1055,13 +1082,7 @@ impl LLMProvider for BedrockProvider {
         let (model_id, kwargs) = self.build_kwargs(&req);
         let url = self.converse_stream_url(&model_id);
 
-        let resp = match self
-            .client
-            .post(&url)
-            .json(&kwargs)
-            .send()
-            .await
-        {
+        let resp = match self.client.post(&url).json(&kwargs).send().await {
             Ok(r) => r,
             Err(e) => return Self::handle_error(&e, None, None),
         };
@@ -1073,7 +1094,10 @@ impl LLMProvider for BedrockProvider {
             let msg = if text.trim().is_empty() {
                 format!("Error calling AWS Bedrock: HTTP {status}")
             } else {
-                format!("Error: {}", text.trim().chars().take(500).collect::<String>())
+                format!(
+                    "Error: {}",
+                    text.trim().chars().take(500).collect::<String>()
+                )
             };
             return LLMResponse {
                 content: Some(msg),
@@ -1087,7 +1111,9 @@ impl LLMProvider for BedrockProvider {
 
         let body_text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading Bedrock stream: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading Bedrock stream: {e}"));
+            }
         };
 
         let events = crate::responses::parse_sse_events(&body_text);
@@ -1147,7 +1173,10 @@ mod tests {
         assert_eq!(finish_reason(Some("end_turn")), "stop");
         assert_eq!(finish_reason(Some("tool_use")), "tool_calls");
         assert_eq!(finish_reason(Some("max_tokens")), "length");
-        assert_eq!(finish_reason(Some("guardrail_intervened")), "guardrail_intervened");
+        assert_eq!(
+            finish_reason(Some("guardrail_intervened")),
+            "guardrail_intervened"
+        );
     }
 
     #[test]

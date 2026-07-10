@@ -264,7 +264,9 @@ impl Tool for GrepTool {
             .build()
         {
             Ok(r) => r,
-            Err(e) => return Ok(Value::String(format!("Error: invalid regex pattern: {e}"))),
+            Err(e) => {
+                return Ok(Value::String(format!("Error: invalid regex pattern: {e}")));
+            }
         };
         let glob_matcher = glob_pat.as_deref().and_then(compile_glob);
         let root = if target.is_dir() {

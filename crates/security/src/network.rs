@@ -1,5 +1,4 @@
 /// Network security utilities — SSRF protection and internal URL detection.
-
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::RwLock;
 
@@ -78,22 +77,21 @@ static BLOCKED_NETWORKS: Lazy<Vec<CidrBlock>> = Lazy::new(|| {
     [
         "0.0.0.0/8",
         "10.0.0.0/8",
-        "100.64.0.0/10",    // carrier-grade NAT
+        "100.64.0.0/10", // carrier-grade NAT
         "127.0.0.0/8",
-        "169.254.0.0/16",   // link-local / cloud metadata
+        "169.254.0.0/16", // link-local / cloud metadata
         "172.16.0.0/12",
         "192.168.0.0/16",
         "::1/128",
-        "fc00::/7",         // unique local
-        "fe80::/10",        // link-local v6
+        "fc00::/7",  // unique local
+        "fe80::/10", // link-local v6
     ]
     .iter()
     .map(|s| CidrBlock::parse(s).expect("valid static CIDR"))
     .collect()
 });
 
-static URL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?i)https?://[^\s"'`;|<>]+"#).unwrap());
+static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)https?://[^\s"'`;|<>]+"#).unwrap());
 
 static ALLOWED_NETWORKS: Lazy<RwLock<Vec<CidrBlock>>> = Lazy::new(|| RwLock::new(Vec::new()));
 
@@ -187,7 +185,9 @@ pub fn validate_url_target(url: &str) -> (bool, String) {
 
     let infos = match resolve_host(&hostname) {
         Ok(v) => v,
-        Err(_) => return (false, format!("Cannot resolve hostname: {hostname}")),
+        Err(_) => {
+            return (false, format!("Cannot resolve hostname: {hostname}"));
+        }
     };
 
     for addr in infos {

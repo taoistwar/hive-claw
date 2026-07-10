@@ -12,11 +12,11 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::base::{ChatRequest, LLMProvider};
+use crate::base::{GenerationSettings, LLMResponse};
 use crate::oauth::{FileTokenStorage, OAuthToken};
 use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
-use crate::base::{ChatRequest, LLMProvider};
 use crate::registry::find_by_name;
-use crate::base::{GenerationSettings, LLMResponse};
 
 pub const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -126,7 +126,11 @@ impl DeviceFlow {
             .and_then(|v| v.as_str())
             .unwrap_or(&verification_uri)
             .to_string();
-        let interval = body.get("interval").and_then(|v| v.as_u64()).unwrap_or(5).max(1);
+        let interval = body
+            .get("interval")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .max(1);
         let expires_in = body
             .get("expires_in")
             .and_then(|v| v.as_u64())
@@ -159,10 +163,7 @@ impl DeviceFlow {
                 .form(&[
                     ("client_id", GITHUB_COPILOT_CLIENT_ID),
                     ("device_code", info.device_code.as_str()),
-                    (
-                        "grant_type",
-                        "urn:ietf:params:oauth:grant-type:device_code",
-                    ),
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ])
                 .send()
                 .await
@@ -190,7 +191,9 @@ impl DeviceFlow {
                 "expired_token" => {
                     return Err("GitHub device code expired. Please run login again.".into());
                 }
-                "access_denied" => return Err("GitHub device flow was denied.".into()),
+                "access_denied" => {
+                    return Err("GitHub device flow was denied.".into());
+                }
                 "" => {}
                 other => {
                     let desc = body
@@ -213,23 +216,30 @@ impl DeviceFlow {
             .send()
             .await
             .ok()
-            .and_then(|resp| if resp.status().is_success() { Some(resp) } else { None })
+            .and_then(|resp| {
+                if resp.status().is_success() {
+                    Some(resp)
+                } else {
+                    None
+                }
+            })
             .map(|resp| async move {
-                resp.json::<Value>()
-                    .await
-                    .ok()
-                    .and_then(|body| {
-                        body.get("login")
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                            .or_else(|| {
-                                body.get("id")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|n| n.to_string())
-                            })
-                    })
+                resp.json::<Value>().await.ok().and_then(|body| {
+                    body.get("login")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .or_else(|| {
+                            body.get("id")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n.to_string())
+                        })
+                })
             });
-        let account_id = if let Some(fut) = account_id { fut.await } else { None };
+        let account_id = if let Some(fut) = account_id {
+            fut.await
+        } else {
+            None
+        };
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -327,7 +337,8 @@ impl GitHubCopilotProvider {
         }
 
         let github_token = storage().load().ok_or_else(|| {
-            "GitHub Copilot is not logged in. Run: nanobot provider login github-copilot".to_string()
+            "GitHub Copilot is not logged in. Run: nanobot provider login github-copilot"
+                .to_string()
         })?;
         if github_token.access.is_empty() {
             return Err(
@@ -445,7 +456,10 @@ mod tests {
     #[test]
     fn copilot_headers_include_editor() {
         let hs = copilot_headers("abc");
-        assert!(hs.iter().any(|(k, v)| *k == "Authorization" && v == "token abc"));
+        assert!(
+            hs.iter()
+                .any(|(k, v)| *k == "Authorization" && v == "token abc")
+        );
         assert!(hs.iter().any(|(k, _)| *k == "Editor-Version"));
     }
 }

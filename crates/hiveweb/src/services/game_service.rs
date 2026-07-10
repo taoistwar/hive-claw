@@ -577,7 +577,9 @@ pub async fn get_single_external_game_info_cached(
     match cache_helper::cached_get::<Option<ExternalGameInfo>>(redis, &key).await {
         Ok(Some(cached)) => return Ok(cached),
         Ok(None) => {} // cache miss
-        Err(e) => tracing::debug!(%key, error = %e, "cache read failed, falling back to DB"),
+        Err(e) => {
+            tracing::debug!(%key, error = %e, "cache read failed, falling back to DB")
+        }
     }
 
     // 2. Fetch from DB, sort by platform priority, take first

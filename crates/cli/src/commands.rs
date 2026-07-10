@@ -240,7 +240,11 @@ pub async fn dispatch() -> Result<(), String> {
             )
             .await
         }
-        Command::Gateway { host, port, verbose } => {
+        Command::Gateway {
+            host,
+            port,
+            verbose,
+        } => {
             gateway::run(GatewayArgs {
                 workspace: ws_path,
                 config: cfg_path,
@@ -396,7 +400,9 @@ mod tests {
     fn parse_agent_with_message() {
         let cli = Cli::try_parse_from(["nanobot", "agent", "-m", "hello"]).unwrap();
         match cli.command {
-            Command::Agent { message, .. } => assert_eq!(message.as_deref(), Some("hello")),
+            Command::Agent { message, .. } => {
+                assert_eq!(message.as_deref(), Some("hello"))
+            }
             _ => panic!("wrong subcommand"),
         }
     }
@@ -422,7 +428,9 @@ mod tests {
         match cli.command {
             Command::Provider {
                 sub: ProviderCommand::Login { name },
-            } => assert_eq!(name, "openai-codex"),
+            } => {
+                assert_eq!(name, "openai-codex")
+            }
             _ => panic!("wrong subcommand"),
         }
     }

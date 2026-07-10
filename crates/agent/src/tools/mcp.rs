@@ -1559,7 +1559,9 @@ async fn connect_single_server(
 
             match tokio::time::timeout(std::time::Duration::from_secs(30), init_rx).await {
                 Ok(Ok(Ok(_))) => {}
-                Ok(Ok(Err(e))) => return Err(format!("Initialize failed: {}", e)),
+                Ok(Ok(Err(e))) => {
+                    return Err(format!("Initialize failed: {}", e));
+                }
                 Ok(Err(_)) => return Err("Initialize channel closed".into()),
                 Err(_) => return Err("Initialize timed out".into()),
             }
@@ -1611,7 +1613,9 @@ async fn connect_single_server(
 
             match result {
                 Ok(_) => {}
-                Err(e) => return Err(format!("Initialize failed: {}", e.message)),
+                Err(e) => {
+                    return Err(format!("Initialize failed: {}", e.message));
+                }
             }
 
             let _ = session
@@ -1660,7 +1664,9 @@ async fn connect_single_server(
 
             match result {
                 Ok(_) => {}
-                Err(e) => return Err(format!("Initialize failed: {}", e.message)),
+                Err(e) => {
+                    return Err(format!("Initialize failed: {}", e.message));
+                }
             }
 
             let _ = session

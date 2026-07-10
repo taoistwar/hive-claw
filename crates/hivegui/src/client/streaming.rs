@@ -80,7 +80,9 @@ pub async fn send(
     let stream = events.filter_map(|event| async move {
         let ev = match event {
             Ok(ev) => ev,
-            Err(e) => return Some(Err(ClientError::StreamingProtocol(e.to_string()))),
+            Err(e) => {
+                return Some(Err(ClientError::StreamingProtocol(e.to_string())));
+            }
         };
         // The terminator frame: `data: [DONE]` with no event name.
         if ev.event.is_empty() && ev.data.trim() == "[DONE]" {

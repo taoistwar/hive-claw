@@ -129,7 +129,13 @@ pub fn format_tool_hints(tool_calls: &[ToolCallView]) -> String {
     }
     hints
         .into_iter()
-        .map(|(h, c)| if c > 1 { format!("{h} \u{00d7} {c}") } else { h })
+        .map(|(h, c)| {
+            if c > 1 {
+                format!("{h} \u{00d7} {c}")
+            } else {
+                h
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -211,11 +217,14 @@ fn fmt_mcp(tc: &ToolCallView) -> String {
         return name.clone();
     }
     let args = get_args(tc);
-    let first_str = args
-        .as_object()
-        .and_then(|o| o.values().find_map(|v| v.as_str().filter(|s| !s.is_empty())));
+    let first_str = args.as_object().and_then(|o| {
+        o.values()
+            .find_map(|v| v.as_str().filter(|s| !s.is_empty()))
+    });
     match first_str {
-        Some(v) => format!("{server}::{tool}(\"{}\")", abbreviate_path_with_len(v, 40)),
+        Some(v) => {
+            format!("{server}::{tool}(\"{}\")", abbreviate_path_with_len(v, 40))
+        }
         None => format!("{server}::{tool}"),
     }
 }
@@ -265,10 +274,7 @@ mod tests {
 
     #[test]
     fn mcp_tool_with_server_split() {
-        let hint = format_tool_hints(&[tc(
-            "mcp_github__get_issue",
-            json!({ "owner": "foo" }),
-        )]);
+        let hint = format_tool_hints(&[tc("mcp_github__get_issue", json!({ "owner": "foo" }))]);
         assert!(hint.starts_with("github::get_issue"), "got {hint}");
     }
 

@@ -39,7 +39,9 @@ pub fn resolve_template_vars(template: &str, input: &Value) -> String {
 pub fn build_history_context(agent_ctx: &AgentContext, limit: usize) -> String {
     let messages: Vec<serde_json::Value> = match agent_ctx.get_messages() {
         Ok(msgs) if !msgs.is_empty() => msgs,
-        Ok(_) | Err(_) => return format!("用户A:{}", agent_ctx.user_input().raw_text),
+        Ok(_) | Err(_) => {
+            return format!("用户A:{}", agent_ctx.user_input().raw_text);
+        }
     };
 
     // Take the most recent `limit` messages when limit > 0

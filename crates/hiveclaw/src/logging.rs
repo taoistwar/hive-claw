@@ -1,5 +1,5 @@
 use tracing::Level;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 pub fn init(level: Level) {
     let filter = EnvFilter::try_from_env("HIVECLAW_LOG_LEVEL")

@@ -25,11 +25,10 @@ pub use artifacts::{
     store_generated_image_artifact,
 };
 pub use file_edit_events::{
-    FileEditTracker, FileSnapshot, StreamingFileEditTracker,
-    build_file_edit_end_event, build_file_edit_error_event, build_file_edit_live_event,
-    build_file_edit_pending_event, build_file_edit_start_event, display_file_edit_path,
-    is_file_edit_tool, line_diff_stats, prepare_file_edit_tracker, read_file_snapshot,
-    resolve_file_edit_path,
+    FileEditTracker, FileSnapshot, StreamingFileEditTracker, build_file_edit_end_event,
+    build_file_edit_error_event, build_file_edit_live_event, build_file_edit_pending_event,
+    build_file_edit_start_event, display_file_edit_path, is_file_edit_tool, line_diff_stats,
+    prepare_file_edit_tracker, read_file_snapshot, resolve_file_edit_path,
 };
 pub use helpers::{
     StatusContent, TokenCounter, build_assistant_message, build_image_content_blocks,

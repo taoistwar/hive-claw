@@ -67,7 +67,8 @@ impl FileTokenStorage {
     /// Primary storage path: `~/.<app>/<filename>`.
     pub fn path(&self) -> PathBuf {
         let home = home_dir();
-        home.join(format!(".{}", self.app_name)).join(&self.token_filename)
+        home.join(format!(".{}", self.app_name))
+            .join(&self.token_filename)
     }
 
     /// Codex CLI fallback path: `~/.codex/auth.json`.
@@ -138,7 +139,9 @@ fn read_codex_cli_token(path: &Path) -> Option<OAuthToken> {
         .get("account_id")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| decode_account_id_from_id_token(tokens.get("id_token").and_then(|v| v.as_str())));
+        .or_else(|| {
+            decode_account_id_from_id_token(tokens.get("id_token").and_then(|v| v.as_str()))
+        });
 
     Some(OAuthToken {
         access,
@@ -172,7 +175,11 @@ fn decode_account_id_from_id_token(id_token: Option<&str>) -> Option<String> {
     v.get("chatgpt_account_id")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| v.get("account_id").and_then(|v| v.as_str()).map(String::from))
+        .or_else(|| {
+            v.get("account_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
 }
 
 fn base64_url_decode(input: &str) -> Option<Vec<u8>> {

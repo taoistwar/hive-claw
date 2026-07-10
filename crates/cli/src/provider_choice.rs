@@ -53,7 +53,11 @@ pub fn default_provider(
     model: Option<String>,
 ) -> Result<Arc<dyn LLMProvider>, String> {
     let choice = choice
-        .or_else(|| std::env::var("PROVIDER").ok().and_then(|s| ProviderChoice::parse(&s)))
+        .or_else(|| {
+            std::env::var("PROVIDER")
+                .ok()
+                .and_then(|s| ProviderChoice::parse(&s))
+        })
         .unwrap_or(ProviderChoice::OpenAI);
 
     match choice {
@@ -131,9 +135,7 @@ pub fn default_provider(
             build_provider(Backend::AzureOpenAI, cfg)
         }
         ProviderChoice::Bedrock => {
-            let model = model.unwrap_or_else(|| {
-                "bedrock/global.anthropic.claude-opus-4-7".into()
-            });
+            let model = model.unwrap_or_else(|| "bedrock/global.anthropic.claude-opus-4-7".into());
             let cfg = ProviderBuildConfig {
                 model,
                 api_key: env_api_key("AWS_ACCESS_KEY_ID"),
@@ -167,16 +169,34 @@ mod tests {
 
     #[test]
     fn parse_choice_aliases() {
-        assert_eq!(ProviderChoice::parse("openai"), Some(ProviderChoice::OpenAI));
-        assert_eq!(ProviderChoice::parse("Claude"), Some(ProviderChoice::Anthropic));
-        assert_eq!(ProviderChoice::parse("azure-openai"), Some(ProviderChoice::Azure));
-        assert_eq!(ProviderChoice::parse("bedrock"), Some(ProviderChoice::Bedrock));
-        assert_eq!(ProviderChoice::parse("aws-bedrock"), Some(ProviderChoice::Bedrock));
+        assert_eq!(
+            ProviderChoice::parse("openai"),
+            Some(ProviderChoice::OpenAI)
+        );
+        assert_eq!(
+            ProviderChoice::parse("Claude"),
+            Some(ProviderChoice::Anthropic)
+        );
+        assert_eq!(
+            ProviderChoice::parse("azure-openai"),
+            Some(ProviderChoice::Azure)
+        );
+        assert_eq!(
+            ProviderChoice::parse("bedrock"),
+            Some(ProviderChoice::Bedrock)
+        );
+        assert_eq!(
+            ProviderChoice::parse("aws-bedrock"),
+            Some(ProviderChoice::Bedrock)
+        );
         assert_eq!(
             ProviderChoice::parse("github-copilot"),
             Some(ProviderChoice::GithubCopilot)
         );
-        assert_eq!(ProviderChoice::parse("custom"), Some(ProviderChoice::Custom));
+        assert_eq!(
+            ProviderChoice::parse("custom"),
+            Some(ProviderChoice::Custom)
+        );
         assert_eq!(ProviderChoice::parse("nope"), None);
     }
 

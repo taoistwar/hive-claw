@@ -152,7 +152,9 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         | codes::DAG_CYCLE
         | codes::RESOURCE_IN_USE
         | codes::OPTIMISTIC_LOCK_CONFLICT => StatusCode::CONFLICT,
-        codes::SSE_CONCURRENCY_EXCEEDED | codes::DAILY_LIMIT_REACHED => StatusCode::TOO_MANY_REQUESTS,
+        codes::SSE_CONCURRENCY_EXCEEDED | codes::DAILY_LIMIT_REACHED => {
+            StatusCode::TOO_MANY_REQUESTS
+        }
         codes::CANNOT_DELETE_MAIN_AGENT
         | codes::CAPABILITY_DENIED_CHAT
         | codes::BUILTIN_SKILL_PROTECTED

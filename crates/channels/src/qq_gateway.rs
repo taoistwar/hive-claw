@@ -27,7 +27,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{interval, sleep};
 use tokio_tungstenite::tungstenite::Message;
@@ -48,7 +48,10 @@ pub enum GatewayEvent {
     /// `DIRECT_MESSAGE_CREATE` — guild direct message (legacy).
     DirectMessage(Value),
     /// Connection became ready (`READY` dispatch).
-    Ready { session_id: String, bot_name: String },
+    Ready {
+        session_id: String,
+        bot_name: String,
+    },
 }
 
 /// Authentication config required to identify against the gateway.
@@ -194,10 +197,7 @@ pub async fn run_session(
             }
             9 => {
                 // Invalid session — wipe state, sleep, then re-identify.
-                let resumable = payload
-                    .get("d")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let resumable = payload.get("d").and_then(|v| v.as_bool()).unwrap_or(false);
                 warn!(
                     "QQ gateway: invalid session (resumable={resumable}, was_resuming={resuming})"
                 );
@@ -371,7 +371,15 @@ pub async fn run_with_reconnect(
                 continue;
             }
         };
-        match run_session(&url, &auth, session_state.clone(), running.clone(), tx.clone()).await {
+        match run_session(
+            &url,
+            &auth,
+            session_state.clone(),
+            running.clone(),
+            tx.clone(),
+        )
+        .await
+        {
             Ok(_) => {
                 if !running.load(Ordering::SeqCst) {
                     break;

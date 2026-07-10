@@ -202,33 +202,33 @@ impl Render for RootView {
                             .h_full()
                             .child(window_button(
                                 "―",
-                                gpui::rgba(0x0000001a),  // 10% 透明度的黑色
-                                gpui::rgba(0x00000026),  // 15% 透明度的黑色
+                                gpui::rgba(0x0000001a), // 10% 透明度的黑色
+                                gpui::rgba(0x00000026), // 15% 透明度的黑色
                                 rgb(0x111111),
                                 rgb(0x111111),
                                 |window, _, _| {
                                     window.minimize_window();
-                                }
+                                },
                             ))
                             .child(window_button(
                                 "□",
-                                gpui::rgba(0x0000001a),  // 10% 透明度的黑色
-                                gpui::rgba(0x00000026),  // 15% 透明度的黑色
+                                gpui::rgba(0x0000001a), // 10% 透明度的黑色
+                                gpui::rgba(0x00000026), // 15% 透明度的黑色
                                 rgb(0x111111),
                                 rgb(0x111111),
                                 |window, _, _| {
                                     window.zoom_window();
-                                }
+                                },
                             ))
                             .child(window_button(
                                 "✕",
-                                gpui::rgba(0xff5f57ff),  // 关闭按钮红色
-                                gpui::rgba(0xff3b30ff),  // 点击时更深的红色
+                                gpui::rgba(0xff5f57ff), // 关闭按钮红色
+                                gpui::rgba(0xff3b30ff), // 点击时更深的红色
                                 rgb(0x111111),
                                 rgb(0xffffff),
                                 |_, _, cx| {
                                     cx.quit();
-                                }
+                                },
                             )),
                     ),
             )
@@ -256,7 +256,7 @@ impl Render for RootView {
                             .text_size(px(12.0))
                             .child(format!("当前页面：{}", route.display_name()))
                             .text_color(rgb(0xffffff))
-                            .bg(rgb(0x44355d ))
+                            .bg(rgb(0x44355d)),
                     ),
             )
     }
@@ -281,15 +281,8 @@ fn window_button(
         .text_size(px(12.0))
         .text_color(text_color)
         .cursor(CursorStyle::PointingHand)
-        .hover(|style| {
-            style
-                .bg(hover_color)
-                .text_color(hover_text_color)
-        })
-        .active(|style| {
-            style
-                .bg(active_color)
-        })
+        .hover(|style| style.bg(hover_color).text_color(hover_text_color))
+        .active(|style| style.bg(active_color))
         .child(icon)
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
             on_click(window, event, cx);

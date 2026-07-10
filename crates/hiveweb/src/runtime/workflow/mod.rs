@@ -5,8 +5,8 @@
 //!
 //! mapping 解析：每个 edge 的 `mapping = {"dst.input.<field>": "<src_node_key>.output.<path>"}`
 //! 路径 `<path>` 支持简单 dot-path (e.g. `temp_c` 或 `nested.field`)。
-mod generate_answer_node;
 mod function_node;
+mod generate_answer_node;
 mod node_executor;
 mod workflow_executor;
-pub use workflow_executor::{ExecuteOutcome, WorkflowExecutor, ExecutorDeps, WorkflowError};
+pub use workflow_executor::{ExecuteOutcome, ExecutorDeps, WorkflowError, WorkflowExecutor};

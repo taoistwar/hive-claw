@@ -15,8 +15,8 @@ use bus::{MessageBus, OutboundMessage};
 use config::schema::Config;
 use utils::restart::{consume_restart_notice_from_env, format_restart_completed_message};
 
-use crate::base::{Channel, TranscriptionSettings, STREAM_DELTA_KEY, STREAM_END_KEY};
-use crate::registry::{build_enabled_channels, ChannelEntry};
+use crate::base::{Channel, STREAM_DELTA_KEY, STREAM_END_KEY, TranscriptionSettings};
+use crate::registry::{ChannelEntry, build_enabled_channels};
 
 /// Retry delays (seconds) for outbound sends — exponential backoff,
 /// matching the Python `_SEND_RETRY_DELAYS = (1, 2, 4)` constant.
@@ -75,7 +75,12 @@ impl ChannelManager {
             .channels
             .try_write()
             .expect("init_channels runs before any other task");
-        for ChannelEntry { name, channel, display_name } in entries {
+        for ChannelEntry {
+            name,
+            channel,
+            display_name,
+        } in entries
+        {
             info!("{display_name} channel enabled");
             guard.insert(name, channel);
         }
@@ -219,13 +224,18 @@ impl ChannelManager {
                     .await
                 {
                     Ok(Some(m)) => m,
-                    Ok(None) => break, // bus closed
+                    Ok(None) => break,  // bus closed
                     Err(_) => continue, // poll-tick timeout
                 }
             };
 
             // Filter progress / tool-hint messages per config.
-            if msg.metadata.get("_progress").map(is_truthy).unwrap_or(false) {
+            if msg
+                .metadata
+                .get("_progress")
+                .map(is_truthy)
+                .unwrap_or(false)
+            {
                 let is_tool_hint = msg
                     .metadata
                     .get("_tool_hint")
@@ -249,8 +259,16 @@ impl ChannelManager {
 
             // Coalesce consecutive _stream_delta entries for the same
             // (channel, chat_id) target.
-            let msg = if msg.metadata.get(STREAM_DELTA_KEY).map(is_truthy).unwrap_or(false)
-                && !msg.metadata.get(STREAM_END_KEY).map(is_truthy).unwrap_or(false)
+            let msg = if msg
+                .metadata
+                .get(STREAM_DELTA_KEY)
+                .map(is_truthy)
+                .unwrap_or(false)
+                && !msg
+                    .metadata
+                    .get(STREAM_END_KEY)
+                    .map(is_truthy)
+                    .unwrap_or(false)
             {
                 let (merged, extras) = self.coalesce_stream_deltas(msg).await;
                 pending.extend(extras);
@@ -280,11 +298,14 @@ impl ChannelManager {
         // the dispatcher). We can't peek at the unbounded queue, so we
         // try a 0-duration timeout to yield once to other tasks.
         loop {
-            let next = match tokio::time::timeout(Duration::from_millis(0), self.bus.consume_outbound()).await {
-                Ok(Some(m)) => m,
-                Ok(None) => break,
-                Err(_) => break,
-            };
+            let next =
+                match tokio::time::timeout(Duration::from_millis(0), self.bus.consume_outbound())
+                    .await
+                {
+                    Ok(Some(m)) => m,
+                    Ok(None) => break,
+                    Err(_) => break,
+                };
 
             let same_target = (next.channel.clone(), next.chat_id.clone()) == target_key;
             let is_delta = next
@@ -297,10 +318,7 @@ impl ChannelManager {
                 .get(STREAM_END_KEY)
                 .map(is_truthy)
                 .unwrap_or(false);
-            let already_ended = metadata
-                .get(STREAM_END_KEY)
-                .map(is_truthy)
-                .unwrap_or(false);
+            let already_ended = metadata.get(STREAM_END_KEY).map(is_truthy).unwrap_or(false);
 
             if same_target && is_delta && !already_ended {
                 combined.push_str(&next.content);
@@ -427,4 +445,3 @@ fn is_truthy(v: &Value) -> bool {
         Value::Object(o) => !o.is_empty(),
     }
 }
-

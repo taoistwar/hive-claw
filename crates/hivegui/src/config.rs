@@ -10,7 +10,9 @@ use url::Url;
 pub enum ConfigError {
     #[error("HIVECLAW_URL is not a valid URL: {0}")]
     InvalidHiveclawUrl(String),
-    #[error("HIVEGUI_LOG_LEVEL is not a valid level (expected one of trace, debug, info, warn, error): {0}")]
+    #[error(
+        "HIVEGUI_LOG_LEVEL is not a valid level (expected one of trace, debug, info, warn, error): {0}"
+    )]
     InvalidLogLevel(String),
     #[error("could not resolve a per-user data directory for HiveGUI logs")]
     NoLogDir,

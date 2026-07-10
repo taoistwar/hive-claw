@@ -443,7 +443,12 @@ fn game_card_matches(info: &Value, client_type: &str, channel: &str) -> bool {
 fn parse_game_id(info: &Value) -> Option<i64> {
     tracing::debug!(info = %info, "parse_game_id: input");
     let id_val = info.get("id").inspect(|v| {
-        tracing::debug!(?v, is_string = v.is_string(), is_number = v.is_number(), "parse_game_id: id raw value");
+        tracing::debug!(
+            ?v,
+            is_string = v.is_string(),
+            is_number = v.is_number(),
+            "parse_game_id: id raw value"
+        );
     })?;
     let id = if let Some(s) = id_val.as_str() {
         tracing::debug!(s, "parse_game_id: id as string");
@@ -491,9 +496,7 @@ async fn handle_single_game_card(
     }
 
     // 尝试刷新
-    let game_id = info.and_then(|i| {
-        parse_game_id(i)
-    });
+    let game_id = info.and_then(|i| parse_game_id(i));
     tracing::debug!(
         game_id = ?game_id,
         client_type = client_type,

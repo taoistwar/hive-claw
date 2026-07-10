@@ -74,7 +74,9 @@ pub fn image_path_to_data_url(path: &Path) -> Result<String, ImageGenerationErro
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
 
-pub fn image_path_to_inline_data(path: &Path) -> Result<HashMap<String, String>, ImageGenerationError> {
+pub fn image_path_to_inline_data(
+    path: &Path,
+) -> Result<HashMap<String, String>, ImageGenerationError> {
     let (mime, encoded) = _read_image_b64(path)?;
     let mut map = HashMap::new();
     map.insert("mimeType".to_string(), mime);
@@ -87,8 +89,7 @@ fn _b64_image_data_url(value: &str) -> Result<String, ImageGenerationError> {
     let raw = base64::engine::general_purpose::STANDARD
         .decode(&encoded)
         .map_err(|_| ImageGenerationError::InvalidBase64)?;
-    let mime = detect_image_mime(&raw)
-        .ok_or_else(|| ImageGenerationError::UnsupportedPayload)?;
+    let mime = detect_image_mime(&raw).ok_or_else(|| ImageGenerationError::UnsupportedPayload)?;
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
 
@@ -130,16 +131,22 @@ async fn _download_image_data_url(
     client: &Client,
     url: &str,
 ) -> Result<String, ImageGenerationError> {
-    let response = client.get(url).send().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
     let status = response.status();
     if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
         let preview: String = detail.chars().take(500).collect();
         return Err(ImageGenerationError::DownloadFailed(preview));
     }
-    let raw = response.bytes().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
-    let mime = detect_image_mime(&raw)
-        .ok_or_else(|| ImageGenerationError::UnsupportedUrl)?;
+    let raw = response
+        .bytes()
+        .await
+        .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+    let mime = detect_image_mime(&raw).ok_or_else(|| ImageGenerationError::UnsupportedUrl)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
@@ -157,14 +164,19 @@ type ImageGenProviderCtor = fn(
     client: Option<Client>,
 ) -> Box<dyn ImageGenerationProvider>;
 
-static _IMAGE_GEN_PROVIDERS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, ImageGenProviderCtor>>> = std::sync::OnceLock::new();
+static _IMAGE_GEN_PROVIDERS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, ImageGenProviderCtor>>,
+> = std::sync::OnceLock::new();
 
 fn _get_registry() -> &'static std::sync::Mutex<HashMap<String, ImageGenProviderCtor>> {
     _IMAGE_GEN_PROVIDERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 pub fn register_image_gen_provider(name: &str, ctor: ImageGenProviderCtor) {
-    _get_registry().lock().unwrap().insert(name.to_string(), ctor);
+    _get_registry()
+        .lock()
+        .unwrap()
+        .insert(name.to_string(), ctor);
 }
 
 pub fn get_image_gen_provider(name: &str) -> Option<ImageGenProviderCtor> {
@@ -221,11 +233,13 @@ pub trait ImageGenerationProvider: Send + Sync {
         let label = self.provider_name();
         if let Some(err) = provider_error {
             return Err(ImageGenerationError::new(format!(
-                "{} returned no images: {}", label, err
+                "{} returned no images: {}",
+                label, err
             )));
         }
         Err(ImageGenerationError::new(format!(
-            "{} returned no images for this request", label
+            "{} returned no images for this request",
+            label
         )))
     }
 
@@ -241,7 +255,9 @@ pub trait ImageGenerationProvider: Send + Sync {
             req = req.header(k, v);
         }
         req = req.json(body);
-        req.send().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))
+        req.send()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))
     }
 }
 
@@ -331,9 +347,8 @@ impl ImageGenerationProvider for OpenRouterImageGenerationClient {
             if refs.is_empty() {
                 Value::String(prompt.to_string())
             } else {
-                let mut blocks: Vec<Value> = vec![
-                    serde_json::json!({"type": "text", "text": prompt}),
-                ];
+                let mut blocks: Vec<Value> =
+                    vec![serde_json::json!({"type": "text", "text": prompt})];
                 for path in refs {
                     let data_url = image_path_to_data_url(Path::new(path))?;
                     blocks.push(serde_json::json!({
@@ -366,7 +381,9 @@ impl ImageGenerationProvider for OpenRouterImageGenerationClient {
         }
 
         if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) = (body.as_object_mut(), self.extra_body.as_object()) {
+            if let (Some(body_obj), Some(extra_obj)) =
+                (body.as_object_mut(), self.extra_body.as_object())
+            {
                 for (k, v) in extra_obj {
                     body_obj.insert(k.clone(), v.clone());
                 }
@@ -390,11 +407,15 @@ impl ImageGenerationProvider for OpenRouterImageGenerationClient {
             let detail = response.text().await.unwrap_or_default();
             let preview: String = detail.chars().take(500).collect();
             return Err(ImageGenerationError::new(format!(
-                "OpenRouter image generation failed: {}", preview
+                "OpenRouter image generation failed: {}",
+                preview
             )));
         }
 
-        let data: Value = response.json().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
 
         let mut images: Vec<String> = Vec::new();
         let mut text_parts: Vec<String> = Vec::new();
@@ -413,8 +434,8 @@ impl ImageGenerationProvider for OpenRouterImageGenerationClient {
                             if !image.is_object() {
                                 continue;
                             }
-                            let image_url = image.get("image_url")
-                                .or_else(|| image.get("imageUrl"));
+                            let image_url =
+                                image.get("image_url").or_else(|| image.get("imageUrl"));
                             if let Some(obj) = image_url.and_then(|v| v.as_object()) {
                                 if let Some(url_value) = obj.get("url").and_then(|v| v.as_str()) {
                                     if url_value.starts_with("data:image/") {
@@ -536,15 +557,8 @@ impl ImageGenerationProvider for AIHubMixImageGenerationClient {
                 .unwrap()
         });
 
-        self._generate_with_client(
-            &client,
-            prompt,
-            model,
-            &refs,
-            &size,
-            &headers,
-        )
-        .await
+        self._generate_with_client(&client, prompt, model, &refs, &size, &headers)
+            .await
     }
 }
 
@@ -569,7 +583,9 @@ impl AIHubMixImageGenerationClient {
             if image_refs.len() == 1 {
                 Some(Value::String(image_refs[0].clone()))
             } else {
-                Some(Value::Array(image_refs.into_iter().map(Value::String).collect()))
+                Some(Value::Array(
+                    image_refs.into_iter().map(Value::String).collect(),
+                ))
             }
         };
 
@@ -584,7 +600,9 @@ impl AIHubMixImageGenerationClient {
         }
 
         if self.extra_body.is_object() {
-            if let (Some(input_obj), Some(extra_obj)) = (input_body.as_object_mut(), self.extra_body.as_object()) {
+            if let (Some(input_obj), Some(extra_obj)) =
+                (input_body.as_object_mut(), self.extra_body.as_object())
+            {
                 for (k, v) in extra_obj {
                     input_obj.insert(k.clone(), v.clone());
                 }
@@ -605,11 +623,15 @@ impl AIHubMixImageGenerationClient {
             let detail = response.text().await.unwrap_or_default();
             let preview: String = detail.chars().take(500).collect();
             return Err(ImageGenerationError::new(format!(
-                "AIHubMix image generation failed: {}", preview
+                "AIHubMix image generation failed: {}",
+                preview
             )));
         }
 
-        let payload: Value = response.json().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
 
         let images = _aihubmix_images_from_payload(client, &payload).await?;
 
@@ -856,7 +878,9 @@ impl GeminiImageGenerationClient {
         });
 
         if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) = (body.as_object_mut(), self.extra_body.as_object()) {
+            if let (Some(body_obj), Some(extra_obj)) =
+                (body.as_object_mut(), self.extra_body.as_object())
+            {
                 for (k, v) in extra_obj {
                     body_obj.insert(k.clone(), v.clone());
                 }
@@ -888,14 +912,19 @@ impl GeminiImageGenerationClient {
             let detail = response.text().await.unwrap_or_default();
             let preview: String = detail.chars().take(500).collect();
             error!(
-                "Gemini Imagen generation failed (HTTP {}): {}", status, preview
+                "Gemini Imagen generation failed (HTTP {}): {}",
+                status, preview
             );
             return Err(ImageGenerationError::new(format!(
-                "Gemini Imagen generation failed (HTTP {}): {}", status, preview
+                "Gemini Imagen generation failed (HTTP {}): {}",
+                status, preview
             )));
         }
 
-        let data: Value = response.json().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
 
         let mut images: Vec<String> = Vec::new();
 
@@ -904,7 +933,10 @@ impl GeminiImageGenerationClient {
                 if !prediction.is_object() {
                     continue;
                 }
-                if let Some(b64) = prediction.get("bytesBase64Encoded").and_then(|v| v.as_str()) {
+                if let Some(b64) = prediction
+                    .get("bytesBase64Encoded")
+                    .and_then(|v| v.as_str())
+                {
                     let mime = prediction
                         .get("mimeType")
                         .and_then(|v| v.as_str())
@@ -948,7 +980,9 @@ impl GeminiImageGenerationClient {
         });
 
         if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) = (body.as_object_mut(), self.extra_body.as_object()) {
+            if let (Some(body_obj), Some(extra_obj)) =
+                (body.as_object_mut(), self.extra_body.as_object())
+            {
                 for (k, v) in extra_obj {
                     body_obj.insert(k.clone(), v.clone());
                 }
@@ -980,14 +1014,19 @@ impl GeminiImageGenerationClient {
             let detail = response.text().await.unwrap_or_default();
             let preview: String = detail.chars().take(500).collect();
             error!(
-                "Gemini image generation failed (HTTP {}): {}", status, preview
+                "Gemini image generation failed (HTTP {}): {}",
+                status, preview
             );
             return Err(ImageGenerationError::new(format!(
-                "Gemini image generation failed (HTTP {}): {}", status, preview
+                "Gemini image generation failed (HTTP {}): {}",
+                status, preview
             )));
         }
 
-        let data: Value = response.json().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
 
         let mut images: Vec<String> = Vec::new();
         let mut text_parts: Vec<String> = Vec::new();
@@ -1006,7 +1045,8 @@ impl GeminiImageGenerationClient {
                             if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                                 text_parts.push(text.to_string());
                             }
-                            if let Some(inline) = part.get("inlineData").and_then(|v| v.as_object()) {
+                            if let Some(inline) = part.get("inlineData").and_then(|v| v.as_object())
+                            {
                                 let mime = inline
                                     .get("mimeType")
                                     .and_then(|v| v.as_str())
@@ -1174,7 +1214,9 @@ impl ImageGenerationProvider for MiniMaxImageGenerationClient {
         }
 
         if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) = (body.as_object_mut(), self.extra_body.as_object()) {
+            if let (Some(body_obj), Some(extra_obj)) =
+                (body.as_object_mut(), self.extra_body.as_object())
+            {
                 for (k, v) in extra_obj {
                     body_obj.insert(k.clone(), v.clone());
                 }
@@ -1208,11 +1250,15 @@ impl MiniMaxImageGenerationClient {
             let detail = response.text().await.unwrap_or_default();
             let preview: String = detail.chars().take(500).collect();
             return Err(ImageGenerationError::new(format!(
-                "MiniMax image generation failed: {}", preview
+                "MiniMax image generation failed: {}",
+                preview
             )));
         }
 
-        let payload: Value = response.json().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
 
         let images = _minimax_images_from_payload(&payload);
 
@@ -1232,7 +1278,10 @@ fn _minimax_images_from_payload(payload: &Value) -> Vec<String> {
     if !data.map(|v| v.is_object()).unwrap_or(false) {
         return images;
     }
-    if let Some(image_base64) = data.and_then(|v| v.get("image_base64")).and_then(|v| v.as_array()) {
+    if let Some(image_base64) = data
+        .and_then(|v| v.get("image_base64"))
+        .and_then(|v| v.as_array())
+    {
         for b64 in image_base64 {
             if let Some(b64_str) = b64.as_str() {
                 if !b64_str.is_empty() {
@@ -1391,7 +1440,9 @@ impl ImageGenerationProvider for StepFunImageGenerationClient {
         }
 
         if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) = (body.as_object_mut(), self.extra_body.as_object()) {
+            if let (Some(body_obj), Some(extra_obj)) =
+                (body.as_object_mut(), self.extra_body.as_object())
+            {
                 for (k, v) in extra_obj {
                     body_obj.insert(k.clone(), v.clone());
                 }
@@ -1413,11 +1464,15 @@ impl ImageGenerationProvider for StepFunImageGenerationClient {
             let detail = response.text().await.unwrap_or_default();
             let preview: String = detail.chars().take(500).collect();
             return Err(ImageGenerationError::new(format!(
-                "StepFun image generation failed: {}", preview
+                "StepFun image generation failed: {}",
+                preview
             )));
         }
 
-        let payload: Value = response.json().await.map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
 
         let images = _stepfun_images_from_payload(&payload);
 
@@ -1436,29 +1491,69 @@ impl ImageGenerationProvider for StepFunImageGenerationClient {
 // ---------------------------------------------------------------------------
 
 pub fn register_all_image_gen_providers() {
-    register_image_gen_provider("openrouter", |api_key, api_base, extra_headers, extra_body, timeout, client| {
-        Box::new(OpenRouterImageGenerationClient::new(
-            api_key, api_base, extra_headers, extra_body, timeout, client,
-        ))
-    });
-    register_image_gen_provider("aihubmix", |api_key, api_base, extra_headers, extra_body, timeout, client| {
-        Box::new(AIHubMixImageGenerationClient::new(
-            api_key, api_base, extra_headers, extra_body, timeout, client,
-        ))
-    });
-    register_image_gen_provider("gemini", |api_key, api_base, extra_headers, extra_body, timeout, client| {
-        Box::new(GeminiImageGenerationClient::new(
-            api_key, api_base, extra_headers, extra_body, timeout, client,
-        ))
-    });
-    register_image_gen_provider("minimax", |api_key, api_base, extra_headers, extra_body, timeout, client| {
-        Box::new(MiniMaxImageGenerationClient::new(
-            api_key, api_base, extra_headers, extra_body, timeout, client,
-        ))
-    });
-    register_image_gen_provider("stepfun", |api_key, api_base, extra_headers, extra_body, timeout, client| {
-        Box::new(StepFunImageGenerationClient::new(
-            api_key, api_base, extra_headers, extra_body, timeout, client,
-        ))
-    });
+    register_image_gen_provider(
+        "openrouter",
+        |api_key, api_base, extra_headers, extra_body, timeout, client| {
+            Box::new(OpenRouterImageGenerationClient::new(
+                api_key,
+                api_base,
+                extra_headers,
+                extra_body,
+                timeout,
+                client,
+            ))
+        },
+    );
+    register_image_gen_provider(
+        "aihubmix",
+        |api_key, api_base, extra_headers, extra_body, timeout, client| {
+            Box::new(AIHubMixImageGenerationClient::new(
+                api_key,
+                api_base,
+                extra_headers,
+                extra_body,
+                timeout,
+                client,
+            ))
+        },
+    );
+    register_image_gen_provider(
+        "gemini",
+        |api_key, api_base, extra_headers, extra_body, timeout, client| {
+            Box::new(GeminiImageGenerationClient::new(
+                api_key,
+                api_base,
+                extra_headers,
+                extra_body,
+                timeout,
+                client,
+            ))
+        },
+    );
+    register_image_gen_provider(
+        "minimax",
+        |api_key, api_base, extra_headers, extra_body, timeout, client| {
+            Box::new(MiniMaxImageGenerationClient::new(
+                api_key,
+                api_base,
+                extra_headers,
+                extra_body,
+                timeout,
+                client,
+            ))
+        },
+    );
+    register_image_gen_provider(
+        "stepfun",
+        |api_key, api_base, extra_headers, extra_body, timeout, client| {
+            Box::new(StepFunImageGenerationClient::new(
+                api_key,
+                api_base,
+                extra_headers,
+                extra_body,
+                timeout,
+                client,
+            ))
+        },
+    );
 }

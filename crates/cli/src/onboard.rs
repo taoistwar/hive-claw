@@ -7,8 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use config::schema::{
-    AgentDefaults, ApiConfig, Config, GatewayConfig, ProviderConfig,
-    ToolsConfig,
+    AgentDefaults, ApiConfig, Config, GatewayConfig, ProviderConfig, ToolsConfig,
 };
 use config::{get_config_path, paths::get_workspace_path, set_config_path};
 use console::{Style, Term};
@@ -69,7 +68,11 @@ fn mask_value(value: &str) -> String {
     if value.len() <= 4 {
         "****".to_string()
     } else {
-        format!("{}{}", "*".repeat(value.len() - 4), &value[value.len() - 4..])
+        format!(
+            "{}{}",
+            "*".repeat(value.len() - 4),
+            &value[value.len() - 4..]
+        )
     }
 }
 
@@ -122,15 +125,14 @@ fn format_value_for_input(value: &serde_json::Value, field_type: &str) -> String
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Array(arr) if field_type == "list" => {
-            arr.iter()
-                .map(|v| match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        }
+        serde_json::Value::Array(arr) if field_type == "list" => arr
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
         serde_json::Value::Object(obj) if field_type == "dict" => {
             serde_json::to_string(obj).unwrap_or_default()
         }
@@ -211,7 +213,10 @@ fn input_with_existing(
         && current.as_object().map(|o| !o.is_empty()).unwrap_or(true);
 
     if has_existing && !current.is_array() {
-        let mut choices = vec!["Enter new value".to_string(), "Keep existing value".to_string()];
+        let mut choices = vec![
+            "Enter new value".to_string(),
+            "Keep existing value".to_string(),
+        ];
         let selection = Select::with_theme(&theme())
             .with_prompt(display_name)
             .items(&choices)
@@ -236,7 +241,9 @@ fn input_select(prompt: &str, choices: &[String], default: Option<&str>) -> Sele
         return SelectResult::Cancel;
     }
 
-    let default_idx = default.and_then(|d| choices.iter().position(|c| c == d)).unwrap_or(0);
+    let default_idx = default
+        .and_then(|d| choices.iter().position(|c| c == d))
+        .unwrap_or(0);
 
     match Select::with_theme(&theme())
         .with_prompt(prompt)
@@ -250,7 +257,11 @@ fn input_select(prompt: &str, choices: &[String], default: Option<&str>) -> Sele
     }
 }
 
-fn input_model_with_autocomplete(display_name: &str, current: &str, _provider: &str) -> Option<String> {
+fn input_model_with_autocomplete(
+    display_name: &str,
+    current: &str,
+    _provider: &str,
+) -> Option<String> {
     let result: String = Input::with_theme(&theme())
         .with_prompt(display_name)
         .default(current.to_string())
@@ -258,7 +269,11 @@ fn input_model_with_autocomplete(display_name: &str, current: &str, _provider: &
         .interact_text()
         .ok()?;
 
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 fn input_context_window(
@@ -267,7 +282,10 @@ fn input_context_window(
     model_name: Option<&str>,
     provider: &str,
 ) -> Option<u32> {
-    let mut choices = vec!["Enter new value".to_string(), "[?] Get recommended value".to_string()];
+    let mut choices = vec![
+        "Enter new value".to_string(),
+        "[?] Get recommended value".to_string(),
+    ];
     if current.is_some() {
         choices.insert(1, "Keep existing value".to_string());
     }
@@ -277,12 +295,16 @@ fn input_context_window(
         SelectResult::Value(v) if v == "[?] Get recommended value" => {
             let model = model_name?;
             if let Some(limit) = get_model_context_limit(model, provider) {
-                println!("+ Recommended context window: {} tokens", format_token_count(limit));
+                println!(
+                    "+ Recommended context window: {} tokens",
+                    format_token_count(limit)
+                );
                 Some(limit)
             } else {
                 println!("! Could not fetch model info, please enter manually");
                 let default_str = current.map(|v| v.to_string()).unwrap_or_default();
-                input_text(display_name, &default_str, "int").and_then(|v| v.as_u64().map(|n| n as u32))
+                input_text(display_name, &default_str, "int")
+                    .and_then(|v| v.as_u64().map(|n| n as u32))
             }
         }
         SelectResult::Back | SelectResult::Cancel => current,
@@ -294,7 +316,11 @@ fn input_context_window(
                 .allow_empty(true)
                 .interact_text()
                 .ok()?;
-            if result.is_empty() { current } else { result.trim().parse::<u32>().ok() }
+            if result.is_empty() {
+                current
+            } else {
+                result.trim().parse::<u32>().ok()
+            }
         }
     }
 }
@@ -359,28 +385,96 @@ struct FieldDef {
 
 fn get_agent_defaults_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { name: "model".into(), display_name: "Model".into(), field_type: "string".into() },
-        FieldDef { name: "provider".into(), display_name: "Provider".into(), field_type: "select_provider".into() },
-        FieldDef { name: "max_tokens".into(), display_name: "Max Tokens".into(), field_type: "int".into() },
-        FieldDef { name: "context_window_tokens".into(), display_name: "Context Window Tokens".into(), field_type: "int".into() },
-        FieldDef { name: "context_block_limit".into(), display_name: "Context Block Limit".into(), field_type: "int".into() },
-        FieldDef { name: "temperature".into(), display_name: "Temperature".into(), field_type: "float".into() },
-        FieldDef { name: "max_tool_iterations".into(), display_name: "Max Tool Iterations".into(), field_type: "int".into() },
-        FieldDef { name: "max_tool_result_chars".into(), display_name: "Max Tool Result Chars".into(), field_type: "int".into() },
-        FieldDef { name: "provider_retry_mode".into(), display_name: "Provider Retry Mode".into(), field_type: "select".into() },
-        FieldDef { name: "reasoning_effort".into(), display_name: "Reasoning Effort".into(), field_type: "select_reasoning".into() },
-        FieldDef { name: "timezone".into(), display_name: "Timezone".into(), field_type: "string".into() },
-        FieldDef { name: "unified_session".into(), display_name: "Unified Session".into(), field_type: "bool".into() },
-        FieldDef { name: "disabled_skills".into(), display_name: "Disabled Skills".into(), field_type: "list".into() },
-        FieldDef { name: "session_ttl_minutes".into(), display_name: "Session TTL Minutes".into(), field_type: "int".into() },
-        FieldDef { name: "workspace".into(), display_name: "Workspace".into(), field_type: "string".into() },
+        FieldDef {
+            name: "model".into(),
+            display_name: "Model".into(),
+            field_type: "string".into(),
+        },
+        FieldDef {
+            name: "provider".into(),
+            display_name: "Provider".into(),
+            field_type: "select_provider".into(),
+        },
+        FieldDef {
+            name: "max_tokens".into(),
+            display_name: "Max Tokens".into(),
+            field_type: "int".into(),
+        },
+        FieldDef {
+            name: "context_window_tokens".into(),
+            display_name: "Context Window Tokens".into(),
+            field_type: "int".into(),
+        },
+        FieldDef {
+            name: "context_block_limit".into(),
+            display_name: "Context Block Limit".into(),
+            field_type: "int".into(),
+        },
+        FieldDef {
+            name: "temperature".into(),
+            display_name: "Temperature".into(),
+            field_type: "float".into(),
+        },
+        FieldDef {
+            name: "max_tool_iterations".into(),
+            display_name: "Max Tool Iterations".into(),
+            field_type: "int".into(),
+        },
+        FieldDef {
+            name: "max_tool_result_chars".into(),
+            display_name: "Max Tool Result Chars".into(),
+            field_type: "int".into(),
+        },
+        FieldDef {
+            name: "provider_retry_mode".into(),
+            display_name: "Provider Retry Mode".into(),
+            field_type: "select".into(),
+        },
+        FieldDef {
+            name: "reasoning_effort".into(),
+            display_name: "Reasoning Effort".into(),
+            field_type: "select_reasoning".into(),
+        },
+        FieldDef {
+            name: "timezone".into(),
+            display_name: "Timezone".into(),
+            field_type: "string".into(),
+        },
+        FieldDef {
+            name: "unified_session".into(),
+            display_name: "Unified Session".into(),
+            field_type: "bool".into(),
+        },
+        FieldDef {
+            name: "disabled_skills".into(),
+            display_name: "Disabled Skills".into(),
+            field_type: "list".into(),
+        },
+        FieldDef {
+            name: "session_ttl_minutes".into(),
+            display_name: "Session TTL Minutes".into(),
+            field_type: "int".into(),
+        },
+        FieldDef {
+            name: "workspace".into(),
+            display_name: "Workspace".into(),
+            field_type: "string".into(),
+        },
     ]
 }
 
 fn get_provider_config_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { name: "api_key".into(), display_name: "API Key".into(), field_type: "string".into() },
-        FieldDef { name: "api_base".into(), display_name: "API Base URL".into(), field_type: "string".into() },
+        FieldDef {
+            name: "api_key".into(),
+            display_name: "API Key".into(),
+            field_type: "string".into(),
+        },
+        FieldDef {
+            name: "api_base".into(),
+            display_name: "API Base URL".into(),
+            field_type: "string".into(),
+        },
     ]
 }
 
@@ -463,7 +557,11 @@ fn get_provider_names() -> Vec<(String, String)> {
 }
 
 fn get_current_provider(config_value: &serde_json::Value) -> String {
-    config_value.get("provider").and_then(|v| v.as_str()).unwrap_or("auto").to_string()
+    config_value
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -552,10 +650,18 @@ fn get_provider_value(cfg: &Config, name: &str, _fields: &[FieldDef]) -> serde_j
 fn apply_value_to_provider(cfg: &mut Config, name: &str, value: &serde_json::Value) {
     if let Some(pc) = get_provider_config_mut(cfg, name) {
         if let Some(key) = value.get("api_key").and_then(|v| v.as_str()) {
-            pc.api_key = if key.is_empty() { None } else { Some(key.to_string()) };
+            pc.api_key = if key.is_empty() {
+                None
+            } else {
+                Some(key.to_string())
+            };
         }
         if let Some(base) = value.get("api_base").and_then(|v| v.as_str()) {
-            pc.api_base = if base.is_empty() { None } else { Some(base.to_string()) };
+            pc.api_base = if base.is_empty() {
+                None
+            } else {
+                Some(base.to_string())
+            };
         }
     }
 }
@@ -582,11 +688,11 @@ fn configure_provider(cfg: &mut Config, provider_name: &str) {
         }
     }
 
-    if let Some(value) = configure_pydantic_model(
-        display_name,
-        &get_provider_config_fields(),
-        |fields| get_provider_value(cfg, provider_name, fields),
-    ) {
+    if let Some(value) =
+        configure_pydantic_model(display_name, &get_provider_config_fields(), |fields| {
+            get_provider_value(cfg, provider_name, fields)
+        })
+    {
         apply_value_to_provider(cfg, provider_name, &value);
     }
 }
@@ -599,7 +705,10 @@ fn configure_providers(cfg: &mut Config) {
     loop {
         let term = Term::stdout();
         let _ = term.clear_screen();
-        show_section_header("LLM Providers", "Select a provider to configure API key and endpoint");
+        show_section_header(
+            "LLM Providers",
+            "Select a provider to configure API key and endpoint",
+        );
 
         let provider_names = get_provider_names();
         let mut choices: Vec<String> = Vec::new();
@@ -624,7 +733,9 @@ fn configure_providers(cfg: &mut Config) {
         {
             Ok(Some(idx)) => {
                 let answer = &choices[idx];
-                if answer == "<- Back" { break; }
+                if answer == "<- Back" {
+                    break;
+                }
                 let provider_name = answer.replace(" *", "");
                 for (name, display) in &provider_names {
                     if *display == provider_name {
@@ -654,7 +765,10 @@ fn configure_channel(_cfg: &mut Config, channel_name: &str) {
 
 fn configure_channels(_cfg: &mut Config) {
     let _ = Term::stdout().clear_screen();
-    show_section_header("Chat Channels", "Select a channel to configure connection settings");
+    show_section_header(
+        "Chat Channels",
+        "Select a channel to configure connection settings",
+    );
 
     let channel_names: Vec<String> = vec![
         "telegram".to_string(),
@@ -690,9 +804,14 @@ fn configure_general_settings(cfg: &mut Config, section_title: &str) {
         "Agent Settings" => (
             "Agent Defaults",
             get_agent_defaults_fields(),
-            Box::new(|c: &Config| serde_json::to_value(&c.agents.defaults).unwrap_or(serde_json::Value::Object(Default::default()))) as Box<dyn Fn(&Config) -> serde_json::Value>,
+            Box::new(|c: &Config| {
+                serde_json::to_value(&c.agents.defaults)
+                    .unwrap_or(serde_json::Value::Object(Default::default()))
+            }) as Box<dyn Fn(&Config) -> serde_json::Value>,
             Box::new(|c: &mut Config, v: serde_json::Value| {
-                if let Ok(updated) = serde_json::from_value::<AgentDefaults>(v) { c.agents.defaults = updated; }
+                if let Ok(updated) = serde_json::from_value::<AgentDefaults>(v) {
+                    c.agents.defaults = updated;
+                }
             }) as Box<dyn Fn(&mut Config, serde_json::Value)>,
         ),
         "Channel Common" => {
@@ -704,44 +823,97 @@ fn configure_general_settings(cfg: &mut Config, section_title: &str) {
         "API Server" => (
             "API Server",
             vec![
-                FieldDef { name: "host".into(), display_name: "Host".into(), field_type: "string".into() },
-                FieldDef { name: "port".into(), display_name: "Port".into(), field_type: "int".into() },
-                FieldDef { name: "timeout".into(), display_name: "Timeout".into(), field_type: "float".into() },
+                FieldDef {
+                    name: "host".into(),
+                    display_name: "Host".into(),
+                    field_type: "string".into(),
+                },
+                FieldDef {
+                    name: "port".into(),
+                    display_name: "Port".into(),
+                    field_type: "int".into(),
+                },
+                FieldDef {
+                    name: "timeout".into(),
+                    display_name: "Timeout".into(),
+                    field_type: "float".into(),
+                },
             ],
-            Box::new(|c: &Config| serde_json::to_value(&c.api).unwrap_or(serde_json::Value::Object(Default::default()))) as Box<dyn Fn(&Config) -> serde_json::Value>,
+            Box::new(|c: &Config| {
+                serde_json::to_value(&c.api)
+                    .unwrap_or(serde_json::Value::Object(Default::default()))
+            }) as Box<dyn Fn(&Config) -> serde_json::Value>,
             Box::new(|c: &mut Config, v: serde_json::Value| {
-                if let Ok(updated) = serde_json::from_value::<ApiConfig>(v) { c.api = updated; }
+                if let Ok(updated) = serde_json::from_value::<ApiConfig>(v) {
+                    c.api = updated;
+                }
             }) as Box<dyn Fn(&mut Config, serde_json::Value)>,
         ),
         "Gateway" => (
             "Gateway Settings",
             vec![
-                FieldDef { name: "host".into(), display_name: "Host".into(), field_type: "string".into() },
-                FieldDef { name: "port".into(), display_name: "Port".into(), field_type: "int".into() },
+                FieldDef {
+                    name: "host".into(),
+                    display_name: "Host".into(),
+                    field_type: "string".into(),
+                },
+                FieldDef {
+                    name: "port".into(),
+                    display_name: "Port".into(),
+                    field_type: "int".into(),
+                },
             ],
-            Box::new(|c: &Config| serde_json::to_value(&c.gateway).unwrap_or(serde_json::Value::Object(Default::default()))) as Box<dyn Fn(&Config) -> serde_json::Value>,
+            Box::new(|c: &Config| {
+                serde_json::to_value(&c.gateway)
+                    .unwrap_or(serde_json::Value::Object(Default::default()))
+            }) as Box<dyn Fn(&Config) -> serde_json::Value>,
             Box::new(|c: &mut Config, v: serde_json::Value| {
-                if let Ok(updated) = serde_json::from_value::<GatewayConfig>(v) { c.gateway = updated; }
+                if let Ok(updated) = serde_json::from_value::<GatewayConfig>(v) {
+                    c.gateway = updated;
+                }
             }) as Box<dyn Fn(&mut Config, serde_json::Value)>,
         ),
         "Tools" => (
             "Tools Settings",
             vec![
-                FieldDef { name: "web".into(), display_name: "Web Tools".into(), field_type: "model".into() },
-                FieldDef { name: "exec".into(), display_name: "Exec Tool".into(), field_type: "model".into() },
-                FieldDef { name: "my".into(), display_name: "My Tool".into(), field_type: "model".into() },
-                FieldDef { name: "restrict_to_workspace".into(), display_name: "Restrict to Workspace".into(), field_type: "bool".into() },
+                FieldDef {
+                    name: "web".into(),
+                    display_name: "Web Tools".into(),
+                    field_type: "model".into(),
+                },
+                FieldDef {
+                    name: "exec".into(),
+                    display_name: "Exec Tool".into(),
+                    field_type: "model".into(),
+                },
+                FieldDef {
+                    name: "my".into(),
+                    display_name: "My Tool".into(),
+                    field_type: "model".into(),
+                },
+                FieldDef {
+                    name: "restrict_to_workspace".into(),
+                    display_name: "Restrict to Workspace".into(),
+                    field_type: "bool".into(),
+                },
             ],
-            Box::new(|c: &Config| serde_json::to_value(&c.tools).unwrap_or(serde_json::Value::Object(Default::default()))) as Box<dyn Fn(&Config) -> serde_json::Value>,
+            Box::new(|c: &Config| {
+                serde_json::to_value(&c.tools)
+                    .unwrap_or(serde_json::Value::Object(Default::default()))
+            }) as Box<dyn Fn(&Config) -> serde_json::Value>,
             Box::new(|c: &mut Config, v: serde_json::Value| {
-                if let Ok(updated) = serde_json::from_value::<ToolsConfig>(v) { c.tools = updated; }
+                if let Ok(updated) = serde_json::from_value::<ToolsConfig>(v) {
+                    c.tools = updated;
+                }
             }) as Box<dyn Fn(&mut Config, serde_json::Value)>,
         ),
         _ => return,
     };
 
     let current_value = getter(cfg);
-    if let Some(updated) = configure_pydantic_model(display_name, &fields, |_| current_value.clone()) {
+    if let Some(updated) =
+        configure_pydantic_model(display_name, &fields, |_| current_value.clone())
+    {
         setter(cfg, updated);
     }
 }
@@ -755,22 +927,33 @@ fn configure_pydantic_model(
     fields: &[FieldDef],
     getter: impl Fn(&[FieldDef]) -> serde_json::Value,
 ) -> Option<serde_json::Value> {
-    if fields.is_empty() { return None; }
+    if fields.is_empty() {
+        return None;
+    }
 
     let mut working = getter(fields);
     let mut last_idx = 0;
 
     loop {
-        let items: Vec<(String, String)> = fields.iter().map(|f| {
-            let val = working.get(&f.name).cloned();
-            let display = format_value_for_display(val.as_ref().unwrap_or(&serde_json::Value::Null), &f.name);
-            (f.display_name.clone(), display)
-        }).collect();
+        let items: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| {
+                let val = working.get(&f.name).cloned();
+                let display = format_value_for_display(
+                    val.as_ref().unwrap_or(&serde_json::Value::Null),
+                    &f.name,
+                );
+                (f.display_name.clone(), display)
+            })
+            .collect();
 
         let _ = Term::stdout().clear_screen();
         show_config_panel(display_name, &items);
 
-        let mut choice_items: Vec<String> = items.iter().map(|(field, value)| format!("{}: {}", field, value)).collect();
+        let mut choice_items: Vec<String> = items
+            .iter()
+            .map(|(field, value)| format!("{}: {}", field, value))
+            .collect();
         choice_items.push("[Done]".to_string());
 
         let default_idx = last_idx.min(choice_items.len() - 1);
@@ -782,7 +965,9 @@ fn configure_pydantic_model(
             .interact_opt()
         {
             Ok(Some(idx)) => {
-                if idx >= fields.len() { return Some(working); }
+                if idx >= fields.len() {
+                    return Some(working);
+                }
                 last_idx = idx;
                 let field = &fields[idx];
 
@@ -798,11 +983,17 @@ fn configure_pydantic_model(
 }
 
 fn input_generic_field(value: &mut serde_json::Value, field: &FieldDef) -> SelectResult<()> {
-    let current = value.get(&field.name).cloned().unwrap_or(serde_json::Value::Null);
+    let current = value
+        .get(&field.name)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
 
     match field.field_type.as_str() {
         "select_provider" => {
-            let provider_names: Vec<String> = get_provider_names().iter().map(|(n, _)| n.clone()).collect();
+            let provider_names: Vec<String> = get_provider_names()
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect();
             let mut choices = vec!["auto".to_string()];
             choices.extend(provider_names);
             let current_str = current.as_str().unwrap_or("auto").to_string();
@@ -817,7 +1008,12 @@ fn input_generic_field(value: &mut serde_json::Value, field: &FieldDef) -> Selec
             }
         }
         "select_reasoning" => {
-            let choices = vec!["low".to_string(), "medium".to_string(), "high".to_string(), "(clear/unset)".to_string()];
+            let choices = vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "(clear/unset)".to_string(),
+            ];
             let default_val = current.as_str().unwrap_or("low");
             match input_select(&field.display_name, &choices, Some(default_val)) {
                 SelectResult::Value(v) => {
@@ -858,7 +1054,10 @@ fn input_generic_field(value: &mut serde_json::Value, field: &FieldDef) -> Selec
         }
         "model" => {
             let term = Term::stdout();
-            let _ = term.write_line(&format!("\n[dim]{}: nested config not yet supported in Rust build[/dim]", field.display_name));
+            let _ = term.write_line(&format!(
+                "\n[dim]{}: nested config not yet supported in Rust build[/dim]",
+                field.display_name
+            ));
             pause();
         }
         _ => {
@@ -889,7 +1088,13 @@ fn show_summary(cfg: &Config) {
     for (name, display) in get_provider_names() {
         let status = get_provider_ref(cfg, &name)
             .and_then(|p| p.api_key.as_deref())
-            .map(|k| if k.is_empty() { "not configured" } else { "configured" })
+            .map(|k| {
+                if k.is_empty() {
+                    "not configured"
+                } else {
+                    "configured"
+                }
+            })
             .unwrap_or("not configured");
         provider_rows.push((display, status.to_string()));
     }
@@ -910,12 +1115,24 @@ fn summarize_agent_defaults(defaults: &AgentDefaults) -> Vec<(String, String)> {
         items.push(("Provider".to_string(), defaults.provider.clone()));
     }
     items.push(("Max Tokens".to_string(), defaults.max_tokens.to_string()));
-    items.push(("Context Window".to_string(), defaults.context_window_tokens.to_string()));
-    items.push(("Temperature".to_string(), format!("{}", defaults.temperature)));
+    items.push((
+        "Context Window".to_string(),
+        defaults.context_window_tokens.to_string(),
+    ));
+    items.push((
+        "Temperature".to_string(),
+        format!("{}", defaults.temperature),
+    ));
     if defaults.reasoning_effort.is_some() {
-        items.push(("Reasoning Effort".to_string(), defaults.reasoning_effort.clone().unwrap()));
+        items.push((
+            "Reasoning Effort".to_string(),
+            defaults.reasoning_effort.clone().unwrap(),
+        ));
     }
-    items.push(("Max Tool Iterations".to_string(), defaults.max_tool_iterations.to_string()));
+    items.push((
+        "Max Tool Iterations".to_string(),
+        defaults.max_tool_iterations.to_string(),
+    ));
     items.push(("Timezone".to_string(), defaults.timezone.clone()));
     items
 }
@@ -1009,8 +1226,18 @@ pub fn run_onboard(initial_config: Option<Config>) -> OnboardResult {
             _ => {
                 let action = prompt_main_menu_exit(has_unsaved_changes(&original_config, &config));
                 match action.as_str() {
-                    "save" => return OnboardResult { config, should_save: true },
-                    _ => return OnboardResult { config: original_config.clone(), should_save: false },
+                    "save" => {
+                        return OnboardResult {
+                            config,
+                            should_save: true,
+                        };
+                    }
+                    _ => {
+                        return OnboardResult {
+                            config: original_config.clone(),
+                            should_save: false,
+                        };
+                    }
                 }
             }
         };
@@ -1024,8 +1251,18 @@ pub fn run_onboard(initial_config: Option<Config>) -> OnboardResult {
             "[G] Gateway" => configure_general_settings(&mut config, "Gateway"),
             "[T] Tools" => configure_general_settings(&mut config, "Tools"),
             "[V] View Configuration Summary" => show_summary(&config),
-            "[S] Save and Exit" => return OnboardResult { config, should_save: true },
-            "[X] Exit Without Saving" => return OnboardResult { config: original_config.clone(), should_save: false },
+            "[S] Save and Exit" => {
+                return OnboardResult {
+                    config,
+                    should_save: true,
+                };
+            }
+            "[X] Exit Without Saving" => {
+                return OnboardResult {
+                    config: original_config.clone(),
+                    should_save: false,
+                };
+            }
             _ => {}
         }
     }
@@ -1084,12 +1321,17 @@ pub async fn run(args: OnboardArgs) -> Result<(), String> {
         Config::from_config(Some(&config_path))
     } else if args.overwrite {
         let cfg = apply_workspace_override(Config::default(), args.workspace.as_deref());
-        cfg.save_config(Some(&config_path)).map_err(|e| e.to_string())?;
-        println!("\u{2713} Config reset to defaults at {}", config_path.display());
+        cfg.save_config(Some(&config_path))
+            .map_err(|e| e.to_string())?;
+        println!(
+            "\u{2713} Config reset to defaults at {}",
+            config_path.display()
+        );
         cfg
     } else {
         let cfg = apply_workspace_override(Config::default(), args.workspace.as_deref());
-        cfg.save_config(Some(&config_path)).map_err(|e| e.to_string())?;
+        cfg.save_config(Some(&config_path))
+            .map_err(|e| e.to_string())?;
         println!("\u{2713} Created config at {}", config_path.display());
         cfg
     };
@@ -1099,7 +1341,10 @@ pub async fn run(args: OnboardArgs) -> Result<(), String> {
     let result = run_onboard(Some(cfg));
 
     if result.should_save {
-        result.config.save_config(Some(&config_path)).map_err(|e| e.to_string())?;
+        result
+            .config
+            .save_config(Some(&config_path))
+            .map_err(|e| e.to_string())?;
         println!("\n\u{2713} Config saved to {}", config_path.display());
     } else {
         println!("\nConfig changes discarded.");
@@ -1143,13 +1388,18 @@ fn apply_workspace_override(mut cfg: Config, workspace: Option<&Path>) -> Config
 }
 
 fn onboard_plugins(config_path: &Path) {
-    let Ok(text) = std::fs::read_to_string(config_path) else { return; };
-    let Ok(mut data) = serde_json::from_str::<serde_json::Value>(&text) else { return; };
+    let Ok(text) = std::fs::read_to_string(config_path) else {
+        return;
+    };
+    let Ok(mut data) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
     let root = match data.as_object_mut() {
         Some(o) => o,
         None => return,
     };
-    root.entry("channels").or_insert_with(|| serde_json::Value::Object(Default::default()));
+    root.entry("channels")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
     if let Ok(out) = serde_json::to_string_pretty(&data) {
         let _ = std::fs::write(config_path, out);
     }

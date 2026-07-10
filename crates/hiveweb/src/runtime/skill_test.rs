@@ -189,26 +189,7 @@ pub async fn run_skill_test(
 
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
-        runtime_audit::record(
-            AuditRecord {
-                request_id: None,
-                session_id: None,
-                agent_id: None,
-                plugin_id: None,
-                function_id: None,
-                capability: None,
-                event_type: "llm_invoke",
-                outcome: "error",
-                elapsed_ms: Some(llm_elapsed_ms),
-                error_message: Some(&err_msg),
-                payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
-            },
-        );
-        return Err(format!("LLM error: {}", err_msg));
-    }
-
-    runtime_audit::record(
-        AuditRecord {
+        runtime_audit::record(AuditRecord {
             request_id: None,
             session_id: None,
             agent_id: None,
@@ -216,12 +197,27 @@ pub async fn run_skill_test(
             function_id: None,
             capability: None,
             event_type: "llm_invoke",
-            outcome: "success",
+            outcome: "error",
             elapsed_ms: Some(llm_elapsed_ms),
-            error_message: None,
+            error_message: Some(&err_msg),
             payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
-        },
-    );
+        });
+        return Err(format!("LLM error: {}", err_msg));
+    }
+
+    runtime_audit::record(AuditRecord {
+        request_id: None,
+        session_id: None,
+        agent_id: None,
+        plugin_id: None,
+        function_id: None,
+        capability: None,
+        event_type: "llm_invoke",
+        outcome: "success",
+        elapsed_ms: Some(llm_elapsed_ms),
+        error_message: None,
+        payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
+    });
 
     let assistant_content = resp.content.unwrap_or_default();
     let tool_calls = resp.tool_calls;

@@ -160,7 +160,13 @@ async fn assistant_chat(
     };
 
     // 5. 获取 cloud_user 信息并校验用户是否存在（缓存优先）
-    let cloud_info = match membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id).await {
+    let cloud_info = match membership::get_cloud_user_info_cached(
+        &state.redis,
+        ext_pool,
+        req.user_id,
+    )
+    .await
+    {
         Ok(Some(info)) => info,
         Ok(None) => {
             return AppError::BadRequest("User not found".into())
@@ -184,14 +190,13 @@ async fn assistant_chat(
         });
     tracing::debug!(user_id = req.user_id, is_vip, "用户 VIP 状态");
     // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
-    let limit_config =
-        membership::get_ai_assistant_chat_limit_config(ext_pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
-                None
-            })
-            .unwrap_or_default();
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
+            None
+        })
+        .unwrap_or_default();
 
     let max_times = if is_vip {
         limit_config.vip_ask_times
@@ -602,14 +607,13 @@ async fn assistant_quota(
             false
         });
     tracing::debug!(user_id, is_vip, "quota: user VIP status");
-    let limit_config =
-        membership::get_ai_assistant_chat_limit_config(ext_pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "quota: limit config failed, using default");
-                None
-            })
-            .unwrap_or_default();
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "quota: limit config failed, using default");
+            None
+        })
+        .unwrap_or_default();
 
     let total_times = if is_vip {
         limit_config.vip_ask_times

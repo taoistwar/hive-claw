@@ -1,8 +1,8 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chacha20poly1305::{
-    aead::{Aead, OsRng},
-    aead::rand_core::RngCore,
     ChaCha20Poly1305, KeyInit, Nonce,
+    aead::rand_core::RngCore,
+    aead::{Aead, OsRng},
 };
 use zeroize::Zeroize;
 
@@ -22,9 +22,7 @@ impl Drop for Crypto {
 
 impl Crypto {
     pub fn new(key: &[u8; KEY_SIZE]) -> Self {
-        Self {
-            key: key.to_vec(),
-        }
+        Self { key: key.to_vec() }
     }
 
     pub fn generate_key() -> [u8; KEY_SIZE] {

@@ -9,17 +9,17 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use config::schema::{Config, ProviderConfig};
-use config::{get_config_path, paths::is_default_workspace, set_config_path};
+use crate::GenerationSettings;
 use crate::anthropic_provider::{AnthropicConfig, AnthropicProvider};
 use crate::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
+use crate::base::LLMProvider;
 use crate::bedrock_provider::{BedrockConfig, BedrockProvider};
 use crate::github_copilot_provider::GitHubCopilotProvider;
 use crate::openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
 use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
-use crate::base::LLMProvider;
-use crate::registry::{Backend, ProviderSpec, find_by_name, find_by_model};
-use crate::GenerationSettings;
+use crate::registry::{Backend, ProviderSpec, find_by_model, find_by_name};
+use config::schema::{Config, ProviderConfig};
+use config::{get_config_path, paths::is_default_workspace, set_config_path};
 
 /// Snapshot of a built provider chain, including fallback windows and config signature.
 #[derive(Clone)]
@@ -53,7 +53,10 @@ fn preset_signature(
     let extra_headers = provider_config
         .and_then(|p| p.extra_headers.as_ref())
         .map(|h| {
-            let m: Map<String, Value> = h.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+            let m: Map<String, Value> = h
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
             Value::Object(m)
         })
         .unwrap_or(Value::Null);
@@ -212,8 +215,7 @@ fn build_azure_openai(cfg: &ProviderBuildConfig) -> Result<Arc<dyn LLMProvider>,
             }
         }
     }
-    let p = AzureOpenAIProvider::new(azure_cfg)
-        .map_err(|e| e.to_string())?;
+    let p = AzureOpenAIProvider::new(azure_cfg).map_err(|e| e.to_string())?;
     Ok(Arc::new(p))
 }
 
@@ -247,8 +249,8 @@ fn build_bedrock(cfg: &ProviderBuildConfig) -> Result<Arc<dyn LLMProvider>, Stri
     if let Some(extra) = &cfg.extra_body {
         bcfg = bcfg.with_extra_body(extra.clone());
     }
-    let p = BedrockProvider::new(bcfg)
-        .map_err(|e| format!("failed to init bedrock provider: {e}"))?;
+    let p =
+        BedrockProvider::new(bcfg).map_err(|e| format!("failed to init bedrock provider: {e}"))?;
     Ok(Arc::new(p))
 }
 
@@ -431,7 +433,11 @@ pub fn make_provider(cfg: &Config) -> Result<Arc<dyn LLMProvider>, String> {
             if let Some(base) = resolve_api_base(provider_spec, provider_config) {
                 bc = bc.with_api_base(base);
             }
-            Arc::new(BedrockProvider::new(bc).map_err(|e| format!("bedrock: {e}"))?.with_generation(generation))
+            Arc::new(
+                BedrockProvider::new(bc)
+                    .map_err(|e| format!("bedrock: {e}"))?
+                    .with_generation(generation),
+            )
         }
     };
     Ok(provider)
@@ -468,7 +474,6 @@ pub fn resolve_spec(cfg: &Config) -> Option<&'static ProviderSpec> {
     }
     find_by_model(&defaults.model)
 }
-
 
 /// Pull the [`ProviderConfig`] entry matching *spec* from the root config.
 pub fn provider_config_for<'a>(
@@ -510,4 +515,3 @@ pub fn provider_config_for<'a>(
         _ => return None,
     })
 }
-

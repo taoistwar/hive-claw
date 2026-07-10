@@ -14,11 +14,11 @@ pub mod router;
 pub mod types;
 
 pub use builtin::{
-    build_help_text, build_status_content, extract_changed_files, format_changed_files,
-    format_dream_log_content, format_dream_restore_list, register_builtin_commands,
-    set_restart_notice_to_env, NANOBOT_VERSION,
+    NANOBOT_VERSION, build_help_text, build_status_content, extract_changed_files,
+    format_changed_files, format_dream_log_content, format_dream_restore_list,
+    register_builtin_commands, set_restart_notice_to_env,
 };
-pub use router::{handler, CommandContext, CommandRouter, Handler};
+pub use router::{CommandContext, CommandRouter, Handler, handler};
 pub use types::{
     Bus, Consolidator, DreamCommit, DreamGit, DreamRunner, InboundMessage, Loop, MemoryStore,
     OutboundMessage, ProviderGenerationView, Session, SessionManager, SubagentRegistry,

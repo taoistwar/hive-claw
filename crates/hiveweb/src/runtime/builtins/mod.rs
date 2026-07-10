@@ -21,8 +21,8 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 
-use agent::context::AgentContext;
 use crate::runtime::llm::LlmRegistry;
+use agent::context::AgentContext;
 
 // Re-export handlers for the registry
 use chat_respond::chat_respond;

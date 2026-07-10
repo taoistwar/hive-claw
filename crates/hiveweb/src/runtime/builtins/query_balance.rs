@@ -167,11 +167,17 @@ fn resolve_discount_products(
     channel: &str,
 ) -> Result<serde_json::Value, BuiltinError> {
     /// 忽略大小写查找 JSON object 中的 key
-    fn find_ignore_case<'a>(obj: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    fn find_ignore_case<'a>(
+        obj: &'a serde_json::Value,
+        key: &str,
+    ) -> Option<&'a serde_json::Value> {
         obj.as_object().and_then(|map| {
             map.iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(key))
-                .or_else(|| map.iter().find(|(k, _)| k.eq_ignore_ascii_case("__DEFAULT__")))
+                .or_else(|| {
+                    map.iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("__DEFAULT__"))
+                })
                 .map(|(_, v)| v)
         })
     }
@@ -195,8 +201,15 @@ fn resolve_discount_products(
 /// from receiving unexpected structure changes.
 fn filter_discount_fields(discount: &Value) -> Value {
     const ALLOWED: &[&str] = &[
-        "link", "bgimg", "buttonImg", "titleDesc", "buttonDesc",
-        "titleColor", "buttonColor", "description", "descriptionColor",
+        "link",
+        "bgimg",
+        "buttonImg",
+        "titleDesc",
+        "buttonDesc",
+        "titleColor",
+        "buttonColor",
+        "description",
+        "descriptionColor",
     ];
     if let Some(obj) = discount.as_object() {
         let filtered: serde_json::Map<String, Value> = obj
@@ -229,13 +242,12 @@ pub async fn query_balance_async_impl(
 
     // 1. 查询金币余额（仅 coins / benefits 需要）
     let coins_row = if need_coins {
-        let row =
-            crate::services::membership::query_coins_balance(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
-                    BuiltinError::Exec(format!("金币查询失败: {e}"))
-                })?;
+        let row = crate::services::membership::query_coins_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
+                BuiltinError::Exec(format!("金币查询失败: {e}"))
+            })?;
         if row.is_none() {
             tracing::debug!(%user_id, "[query_balance] step1 coins: no data");
             return Ok(json!({
@@ -250,13 +262,12 @@ pub async fn query_balance_async_impl(
 
     // 1.2 查询云硬盘信息（仅 disk / benefits 需要）
     let disk_row = if need_disk {
-        let row =
-            crate::services::membership::query_disk_balance(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
-                    BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
-                })?;
+        let row = crate::services::membership::query_disk_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
+                BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
+            })?;
         tracing::debug!(%user_id, ?row, "[query_balance] step1.2 disk: row");
         row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
@@ -305,13 +316,12 @@ pub async fn query_balance_async_impl(
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）
     let duration_cards = if need_duration {
-        let cards =
-            crate::services::membership::query_duration_cards(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
-                    BuiltinError::Exec(format!("时长卡查询失败: {e}"))
-                })?;
+        let cards = crate::services::membership::query_duration_cards(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
+                BuiltinError::Exec(format!("时长卡查询失败: {e}"))
+            })?;
         tracing::debug!(%user_id, count = cards.len(), "[query_balance] step1.8 duration_cards: {} rows", cards.len());
         cards
     } else {
@@ -321,7 +331,6 @@ pub async fn query_balance_async_impl(
     let mut duration_card_json: Vec<Value> = duration_cards
         .iter()
         .map(|row| {
-
             json!({
                 "card_asset_id": row.card_asset_id,
                 "remain_duration": row.remain_duration,
@@ -343,11 +352,9 @@ pub async fn query_balance_async_impl(
 
     // Resolve game_label_list codes to human-readable names via cc_label
     if need_duration && !duration_card_json.is_empty() {
-        if let Err(e) = crate::services::membership::resolve_game_label_names(
-            ext_pool,
-            &mut duration_card_json,
-        )
-        .await
+        if let Err(e) =
+            crate::services::membership::resolve_game_label_names(ext_pool, &mut duration_card_json)
+                .await
         {
             tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
         }

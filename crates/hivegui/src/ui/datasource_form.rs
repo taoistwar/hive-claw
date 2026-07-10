@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::*, px, rgb, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    FontWeight, MouseButton, SharedString, Window,
+    App, Context, CursorStyle, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
+    SharedString, Window, div, prelude::*, px, rgb, rgba,
 };
 
 use crate::datasource::{DataSource, MysqlClient, Store};
@@ -123,15 +123,20 @@ impl DataSourceForm {
 
         let password_bytes = password.into_bytes();
         cx.spawn(async move |this, cx| {
-            let result = MysqlClient::test_connection(&host, port, &username, &password_bytes).await;
+            let result =
+                MysqlClient::test_connection(&host, port, &username, &password_bytes).await;
             this.update(cx, |form, cx| {
                 form.status = match result {
                     Ok(()) => FormStatus::TestingSuccess,
-                    Err(e) => FormStatus::TestingFailed(SharedString::from(format!("连接失败: {}", e))),
+                    Err(e) => {
+                        FormStatus::TestingFailed(SharedString::from(format!("连接失败: {}", e)))
+                    }
                 };
                 cx.notify();
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -165,31 +170,46 @@ impl DataSourceForm {
 
         cx.spawn(async move |this, cx| {
             let result = match &mode {
-                FormMode::Add => {
-                    store.create(&name, &host, port, &username, password.as_bytes()).await.map(|_| ())
-                }
+                FormMode::Add => store
+                    .create(&name, &host, port, &username, password.as_bytes())
+                    .await
+                    .map(|_| ()),
                 FormMode::Edit(id) => {
                     if password.is_empty() {
-                        store.update(*id, &name, &host, port, &username, None).await.map(|_| ())
+                        store
+                            .update(*id, &name, &host, port, &username, None)
+                            .await
+                            .map(|_| ())
                     } else {
-                        store.update(*id, &name, &host, port, &username, Some(password.as_bytes())).await.map(|_| ())
+                        store
+                            .update(
+                                *id,
+                                &name,
+                                &host,
+                                port,
+                                &username,
+                                Some(password.as_bytes()),
+                            )
+                            .await
+                            .map(|_| ())
                     }
                 }
             };
 
-            this.update(cx, |form, cx| {
-                match result {
-                    Ok(_) => {
-                        form.status = FormStatus::Saved;
-                        cx.notify();
-                    }
-                    Err(e) => {
-                        form.status = FormStatus::TestingFailed(SharedString::from(format!("保存失败: {}", e)));
-                        cx.notify();
-                    }
+            this.update(cx, |form, cx| match result {
+                Ok(_) => {
+                    form.status = FormStatus::Saved;
+                    cx.notify();
                 }
-            }).ok();
-        }).detach();
+                Err(e) => {
+                    form.status =
+                        FormStatus::TestingFailed(SharedString::from(format!("保存失败: {}", e)));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn is_done(&self) -> bool {
@@ -214,7 +234,9 @@ impl Render for DataSourceForm {
             FormStatus::Idle => None,
             FormStatus::Testing => Some((SharedString::from("测试连接中..."), rgba(0x888888ff))),
             FormStatus::TestingFailed(msg) => Some((msg.clone(), rgba(0xcc0000ff))),
-            FormStatus::TestingSuccess => Some((SharedString::from("连接成功！"), rgba(0x008800ff))),
+            FormStatus::TestingSuccess => {
+                Some((SharedString::from("连接成功！"), rgba(0x008800ff)))
+            }
             FormStatus::Saving => Some((SharedString::from("保存中..."), rgba(0x888888ff))),
             FormStatus::Saved => Some((SharedString::from("保存成功！"), rgba(0x008800ff))),
             FormStatus::Cancelled => None,
@@ -262,56 +284,53 @@ impl Render for DataSourceForm {
                                     .flex()
                                     .justify_between()
                                     .items_center()
+                                    .child(div().flex().gap(px(8.0)).child(action_button(
+                                        "连接测试",
+                                        rgba(0x4a90d9ff),
+                                        matches!(self.status, FormStatus::Testing),
+                                        {
+                                            let this = cx.weak_entity();
+                                            move |_event, _window, cx| {
+                                                this.update(cx, |form, cx| {
+                                                    form.test_connection(cx);
+                                                })
+                                                .ok();
+                                            }
+                                        },
+                                    )))
                                     .child(
-                                        div().flex().gap(px(8.0)).child(
-                                            action_button(
-                                                "连接测试",
-                                                rgba(0x4a90d9ff),
-                                                matches!(self.status, FormStatus::Testing),
+                                        div()
+                                            .flex()
+                                            .gap(px(8.0))
+                                            .child(action_button(
+                                                "取消",
+                                                rgba(0xccccccff),
+                                                false,
                                                 {
                                                     let this = cx.weak_entity();
                                                     move |_event, _window, cx| {
                                                         this.update(cx, |form, cx| {
-                                                            form.test_connection(cx);
-                                                        }).ok();
+                                                            form.status = FormStatus::Cancelled;
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
                                                     }
                                                 },
-                                            )
-                                        ),
-                                    )
-                                    .child(
-                                        div().flex().gap(px(8.0))
-                                            .child(
-                                                action_button(
-                                                    "取消",
-                                                    rgba(0xccccccff),
-                                                    false,
-                                                    {
-                                                        let this = cx.weak_entity();
-                                                        move |_event, _window, cx| {
-                                                            this.update(cx, |form, cx| {
-                                                                form.status = FormStatus::Cancelled;
-                                                                cx.notify();
-                                                            }).ok();
-                                                        }
-                                                    },
-                                                )
-                                            )
-                                            .child(
-                                                action_button(
-                                                    "保存",
-                                                    rgba(0x2d8a4eff),
-                                                    matches!(self.status, FormStatus::Saving),
-                                                    {
-                                                        let this = cx.weak_entity();
-                                                        move |_event, _window, cx| {
-                                                            this.update(cx, |form, cx| {
-                                                                form.save(cx);
-                                                            }).ok();
-                                                        }
-                                                    },
-                                                )
-                                            )
+                                            ))
+                                            .child(action_button(
+                                                "保存",
+                                                rgba(0x2d8a4eff),
+                                                matches!(self.status, FormStatus::Saving),
+                                                {
+                                                    let this = cx.weak_entity();
+                                                    move |_event, _window, cx| {
+                                                        this.update(cx, |form, cx| {
+                                                            form.save(cx);
+                                                        })
+                                                        .ok();
+                                                    }
+                                                },
+                                            )),
                                     ),
                             )
                             .child(if let Some((msg, color)) = status_text {

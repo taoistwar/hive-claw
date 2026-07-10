@@ -19,8 +19,8 @@ pub mod server;
 pub mod types;
 
 pub use agent::{ApiAgent, ApiAnswer, ApiRequest, StreamSink};
-pub use media::{save_base64_data_url, safe_filename, FileSizeExceeded, MAX_FILE_SIZE};
-pub use server::{build_router, serve, ApiServerConfig, ServerState};
+pub use media::{FileSizeExceeded, MAX_FILE_SIZE, safe_filename, save_base64_data_url};
+pub use server::{ApiServerConfig, ServerState, build_router, serve};
 pub use types::{
     ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ModelInfo,
     ModelsList, Usage,

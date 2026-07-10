@@ -1,8 +1,8 @@
 //! Exercise the HiveGUI sync client against an in-process axum mock that
 //! returns canned synchronous OpenResponses JSON.
 
-use axum::{routing::post, Json, Router};
-use hivegui::client::{self, sync, OpenResponsesRequest};
+use axum::{Json, Router, routing::post};
+use hivegui::client::{self, OpenResponsesRequest, sync};
 use serde_json::json;
 use tokio::net::TcpListener;
 use url::Url;

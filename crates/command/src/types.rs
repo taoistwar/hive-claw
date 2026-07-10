@@ -193,9 +193,9 @@ pub trait Loop: Send + Sync {
         // the future with a warning so tests without a runtime still run.
         match tokio_spawn(fut) {
             Ok(()) => {}
-            Err(_) => log::warn!(
-                "schedule_background: no tokio runtime active; dropping background task"
-            ),
+            Err(_) => {
+                log::warn!("schedule_background: no tokio runtime active; dropping background task")
+            }
         }
     }
 }

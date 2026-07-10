@@ -18,11 +18,12 @@ pub async fn create_user_session(
     user_id: i64,
     title: Option<String>,
 ) -> Result<ChatSessionUser, AppError> {
-    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let user: Option<(String,)> =
+        sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
     let uid = user.map(|u| u.0).unwrap_or_default();
 
     let res = sqlx::query(
@@ -72,11 +73,12 @@ pub async fn clear_and_create_session(
         .map_err(|e| AppError::Internal(format!("user sessions cleanup: {e}")))?;
 
     // 3. 查询用户 uid
-    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let user: Option<(String,)> =
+        sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
     let uid = user.map(|u| u.0).unwrap_or_default();
 
     // 4. 创建新会话
@@ -299,7 +301,6 @@ pub async fn delete_session_user(pool: &MySqlPool, session_id: i64) -> Result<()
         .map_err(|e| AppError::Internal(format!("user session delete: {e}")))?;
     Ok(())
 }
-
 
 /// Get the latest session for a user, or create a new one if none exists.
 pub async fn get_or_create_session_user(

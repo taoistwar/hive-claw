@@ -12,7 +12,7 @@ use log::warn;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::time::sleep;
 
 // ===========================================================================
@@ -194,10 +194,7 @@ fn sanitize_empty_content_one(mut msg: Value) -> Value {
         return msg;
     };
     let role = obj.get("role").and_then(|v| v.as_str()).map(String::from);
-    let has_tool_calls = obj
-        .get("tool_calls")
-        .map(|v| !v.is_null())
-        .unwrap_or(false);
+    let has_tool_calls = obj.get("tool_calls").map(|v| !v.is_null()).unwrap_or(false);
 
     match obj.get("content").cloned() {
         Some(Value::String(s)) if s.is_empty() => {
@@ -291,10 +288,7 @@ pub fn enforce_role_alternation(messages: &[Value]) -> Vec<Value> {
                 .and_then(|m| m.get("tool_calls"))
                 .map(|v| !v.is_null())
                 .unwrap_or(false);
-            let curr_has_tools = msg
-                .get("tool_calls")
-                .map(|v| !v.is_null())
-                .unwrap_or(false);
+            let curr_has_tools = msg.get("tool_calls").map(|v| !v.is_null()).unwrap_or(false);
 
             if role == "assistant" {
                 if curr_has_tools {
@@ -412,11 +406,7 @@ pub fn strip_image_content(messages: &[Value]) -> Option<Vec<Value>> {
         })
         .collect();
 
-    if found {
-        Some(result)
-    } else {
-        None
-    }
+    if found { Some(result) } else { None }
 }
 
 /// Replace image_url blocks with text placeholder *in-place*.
@@ -487,7 +477,10 @@ fn tool_cache_marker_indices(tools: &[Value]) -> Vec<usize> {
 }
 
 /// Keep only provider-safe message keys and normalize assistant content.
-pub fn sanitize_request_messages(messages: &[Value], allowed_keys: &std::collections::HashSet<String>) -> Vec<Value> {
+pub fn sanitize_request_messages(
+    messages: &[Value],
+    allowed_keys: &std::collections::HashSet<String>,
+) -> Vec<Value> {
     messages
         .iter()
         .map(|msg| {
@@ -544,10 +537,7 @@ pub fn extract_retry_after_from_headers(headers: &Value) -> Option<f64> {
         return None;
     }
 
-    if retry_after_text
-        .parse::<f64>()
-        .is_ok()
-    {
+    if retry_after_text.parse::<f64>().is_ok() {
         if let Ok(seconds) = retry_after_text.parse::<f64>() {
             return Some(to_retry_seconds(seconds, Some("s")));
         }
@@ -634,9 +624,7 @@ pub fn is_transient_text(content: Option<&str>) -> bool {
         return false;
     };
     let lower = s.to_ascii_lowercase();
-    TRANSIENT_ERROR_MARKERS
-        .iter()
-        .any(|m| lower.contains(m))
+    TRANSIENT_ERROR_MARKERS.iter().any(|m| lower.contains(m))
 }
 
 pub fn is_transient_response(resp: &LLMResponse) -> bool {
@@ -676,18 +664,11 @@ fn is_retryable_429(resp: &LLMResponse) -> bool {
         .flatten()
         .collect();
 
-    if tokens
-        .iter()
-        .any(|t| NON_RETRYABLE_429_TOKENS.contains(t))
-    {
+    if tokens.iter().any(|t| NON_RETRYABLE_429_TOKENS.contains(t)) {
         return false;
     }
 
-    let content_lower = resp
-        .content
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let content_lower = resp.content.as_deref().unwrap_or("").to_ascii_lowercase();
     if NON_RETRYABLE_429_TEXT
         .iter()
         .any(|m| content_lower.contains(m))
@@ -698,10 +679,7 @@ fn is_retryable_429(resp: &LLMResponse) -> bool {
     if tokens.iter().any(|t| RETRYABLE_429_TOKENS.contains(t)) {
         return true;
     }
-    if RETRYABLE_429_TEXT
-        .iter()
-        .any(|m| content_lower.contains(m))
-    {
+    if RETRYABLE_429_TEXT.iter().any(|m| content_lower.contains(m)) {
         return true;
     }
     // Unknown 429 => retry.
@@ -915,7 +893,14 @@ pub trait LLMProvider: Send + Sync {
             if persistent && identical_count >= PERSISTENT_IDENTICAL_ERROR_LIMIT {
                 warn!(
                     "Stopping persistent retry after {identical_count} identical transient errors: {}",
-                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                    response
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                        .to_lowercase()
                 );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
@@ -929,7 +914,14 @@ pub trait LLMProvider: Send + Sync {
             if !persistent && attempt as usize > delays.len() {
                 warn!(
                     "LLM request failed after {attempt} retries, giving up: {}",
-                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                    response
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                        .to_lowercase()
                 );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
@@ -954,7 +946,14 @@ pub trait LLMProvider: Send + Sync {
             warn!(
                 "LLM transient error (attempt {counter}), retrying in {}s: {}",
                 delay.round() as i64,
-                response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                response
+                    .content
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+                    .to_lowercase()
             );
             sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
         }
@@ -995,7 +994,9 @@ pub trait LLMProvider: Send + Sync {
 
         loop {
             attempt += 1;
-            let response = self.chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone()).await;
+            let response = self
+                .chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone())
+                .await;
             if response.finish_reason != "error" {
                 return response;
             }
@@ -1019,7 +1020,9 @@ pub trait LLMProvider: Send + Sync {
                 if !images_stripped && strip_image_content_inplace(&mut req.messages) {
                     warn!("Non-transient LLM error with image content, retrying without images");
                     images_stripped = true;
-                    let result = self.chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone()).await;
+                    let result = self
+                        .chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone())
+                        .await;
                     if result.finish_reason != "error" {
                         strip_image_content_inplace(&mut req.messages);
                     }
@@ -1031,7 +1034,14 @@ pub trait LLMProvider: Send + Sync {
             if persistent && identical_count >= PERSISTENT_IDENTICAL_ERROR_LIMIT {
                 warn!(
                     "Stopping persistent retry after {identical_count} identical transient errors: {}",
-                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                    response
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                        .to_lowercase()
                 );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
@@ -1045,7 +1055,14 @@ pub trait LLMProvider: Send + Sync {
             if !persistent && attempt as usize > delays.len() {
                 warn!(
                     "LLM stream request failed after {attempt} retries, giving up: {}",
-                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                    response
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                        .to_lowercase()
                 );
                 if let Some(cb) = on_retry_wait.as_ref() {
                     (cb)(format!(
@@ -1070,7 +1087,14 @@ pub trait LLMProvider: Send + Sync {
             warn!(
                 "LLM stream transient error (attempt {counter}), retrying in {}s: {}",
                 delay.round() as i64,
-                response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>().to_lowercase()
+                response
+                    .content
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+                    .to_lowercase()
             );
             sleep_with_heartbeat(delay, attempt, persistent, on_retry_wait.as_ref()).await;
         }

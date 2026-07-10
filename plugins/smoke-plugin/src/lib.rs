@@ -7,9 +7,9 @@
 //!   cargo build --target wasm32-unknown-unknown --release -p smoke-plugin
 //!   cp target/wasm32-unknown-unknown/release/smoke_plugin.wasm .
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use extism_pdk::*;
 use serde::{Deserialize, Serialize};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 // ---------- Host call envelope (matches contracts/host-functions.md §2) ----------
 
@@ -134,7 +134,10 @@ pub fn echo(input: String) -> FnResult<String> {
             message: format!("smoke-plugin echo: {input}"),
             fields: {
                 let mut m = serde_json::Map::new();
-                m.insert("source".into(), serde_json::Value::String("smoke-plugin".into()));
+                m.insert(
+                    "source".into(),
+                    serde_json::Value::String("smoke-plugin".into()),
+                );
                 Some(m)
             },
         },
@@ -215,10 +218,9 @@ pub fn fs_roundtrip(input: String) -> FnResult<String> {
         .into());
     }
     let read_data = read_resp.data.unwrap_or_default();
-    let content = String::from_utf8_lossy(
-        &BASE64.decode(&read_data.content_base64).unwrap_or_default(),
-    )
-    .into_owned();
+    let content =
+        String::from_utf8_lossy(&BASE64.decode(&read_data.content_base64).unwrap_or_default())
+            .into_owned();
 
     let out = serde_json::json!({
         "written": input.len(),
@@ -240,22 +242,29 @@ pub fn full_demo(input: String) -> FnResult<String> {
         };
         let envelope_json = serde_json::to_string(&envelope)?;
         match unsafe { host_call(envelope_json) } {
-            Ok(resp_str) => {
-                match serde_json::from_str::<HostCallReply<TimeNowData>>(&resp_str) {
-                    Ok(r) if r.ok => {
-                        let d = r.data.unwrap_or_default();
-                        results.insert("time".into(), serde_json::json!({ "ok": true, "unix_ms": d.unix_ms }));
-                    }
-                    Ok(r) => {
-                        results.insert("time".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", r.code, r.message) }));
-                    }
-                    Err(e) => {
-                        results.insert("time".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
-                    }
+            Ok(resp_str) => match serde_json::from_str::<HostCallReply<TimeNowData>>(&resp_str) {
+                Ok(r) if r.ok => {
+                    let d = r.data.unwrap_or_default();
+                    results.insert(
+                        "time".into(),
+                        serde_json::json!({ "ok": true, "unix_ms": d.unix_ms }),
+                    );
                 }
-            }
+                Ok(r) => {
+                    results.insert("time".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", r.code, r.message) }));
+                }
+                Err(e) => {
+                    results.insert(
+                        "time".into(),
+                        serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                    );
+                }
+            },
             Err(e) => {
-                results.insert("time".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
+                results.insert(
+                    "time".into(),
+                    serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                );
             }
         }
     }
@@ -272,21 +281,25 @@ pub fn full_demo(input: String) -> FnResult<String> {
         };
         let envelope_json = serde_json::to_string(&envelope)?;
         match unsafe { host_call(envelope_json) } {
-            Ok(resp_str) => {
-                match serde_json::from_str::<HostCallReply<LogEmitData>>(&resp_str) {
-                    Ok(r) if r.ok => {
-                        results.insert("log".into(), serde_json::json!({ "ok": true }));
-                    }
-                    Ok(r) => {
-                        results.insert("log".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", r.code, r.message) }));
-                    }
-                    Err(e) => {
-                        results.insert("log".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
-                    }
+            Ok(resp_str) => match serde_json::from_str::<HostCallReply<LogEmitData>>(&resp_str) {
+                Ok(r) if r.ok => {
+                    results.insert("log".into(), serde_json::json!({ "ok": true }));
                 }
-            }
+                Ok(r) => {
+                    results.insert("log".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", r.code, r.message) }));
+                }
+                Err(e) => {
+                    results.insert(
+                        "log".into(),
+                        serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                    );
+                }
+            },
             Err(e) => {
-                results.insert("log".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
+                results.insert(
+                    "log".into(),
+                    serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                );
             }
         }
     }
@@ -303,52 +316,62 @@ pub fn full_demo(input: String) -> FnResult<String> {
         };
         let envelope_json = serde_json::to_string(&write_envelope)?;
         match unsafe { host_call(envelope_json) } {
-            Ok(resp_str) => {
-                match serde_json::from_str::<HostCallReply<FsWriteData>>(&resp_str) {
-                    Ok(wr) if wr.ok => {
-                        let read_envelope = HostCallEnvelope {
-                            capability: "fs.read",
-                            args: FsReadArgs { path },
-                        };
-                        let read_json = serde_json::to_string(&read_envelope)?;
-                        match unsafe { host_call(read_json) } {
-                            Ok(read_str) => {
-                                match serde_json::from_str::<HostCallReply<FsReadData>>(&read_str) {
-                                    Ok(rr) if rr.ok => {
-                                        let rd = rr.data.unwrap_or_default();
-                                        let content = String::from_utf8_lossy(
-                                            &BASE64.decode(&rd.content_base64).unwrap_or_default(),
-                                        )
-                                        .into_owned();
-                                        results.insert("fs".into(), serde_json::json!({
+            Ok(resp_str) => match serde_json::from_str::<HostCallReply<FsWriteData>>(&resp_str) {
+                Ok(wr) if wr.ok => {
+                    let read_envelope = HostCallEnvelope {
+                        capability: "fs.read",
+                        args: FsReadArgs { path },
+                    };
+                    let read_json = serde_json::to_string(&read_envelope)?;
+                    match unsafe { host_call(read_json) } {
+                        Ok(read_str) => {
+                            match serde_json::from_str::<HostCallReply<FsReadData>>(&read_str) {
+                                Ok(rr) if rr.ok => {
+                                    let rd = rr.data.unwrap_or_default();
+                                    let content = String::from_utf8_lossy(
+                                        &BASE64.decode(&rd.content_base64).unwrap_or_default(),
+                                    )
+                                    .into_owned();
+                                    results.insert(
+                                        "fs".into(),
+                                        serde_json::json!({
                                             "ok": true,
                                             "written": wr.data.map(|d| d.bytes_written),
                                             "read_match": content == input,
-                                        }));
-                                    }
-                                    Ok(rr) => {
-                                        results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", rr.code, rr.message) }));
-                                    }
-                                    Err(e) => {
-                                        results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
-                                    }
+                                        }),
+                                    );
+                                }
+                                Ok(rr) => {
+                                    results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", rr.code, rr.message) }));
+                                }
+                                Err(e) => {
+                                    results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
                                 }
                             }
-                            Err(e) => {
-                                results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
-                            }
+                        }
+                        Err(e) => {
+                            results.insert(
+                                "fs".into(),
+                                serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                            );
                         }
                     }
-                    Ok(wr) => {
-                        results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", wr.code, wr.message) }));
-                    }
-                    Err(e) => {
-                        results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
-                    }
                 }
-            }
+                Ok(wr) => {
+                    results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("code={:?} msg={:?}", wr.code, wr.message) }));
+                }
+                Err(e) => {
+                    results.insert(
+                        "fs".into(),
+                        serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                    );
+                }
+            },
             Err(e) => {
-                results.insert("fs".into(), serde_json::json!({ "ok": false, "error": format!("{e:?}") }));
+                results.insert(
+                    "fs".into(),
+                    serde_json::json!({ "ok": false, "error": format!("{e:?}") }),
+                );
             }
         }
     }
@@ -363,4 +386,3 @@ pub fn full_demo(input: String) -> FnResult<String> {
 extern "ExtismHost" {
     fn host_call(envelope: String) -> String;
 }
-

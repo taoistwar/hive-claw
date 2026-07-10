@@ -12,8 +12,7 @@ pub(crate) struct SqlHighlighter {
 
 impl SqlHighlighter {
     pub(crate) fn new() -> Self {
-        Self::with_theme("base16-ocean.dark")
-            .expect("Default theme 'base16-ocean.dark' not found")
+        Self::with_theme("base16-ocean.dark").expect("Default theme 'base16-ocean.dark' not found")
     }
 
     /// Create a new `SqlHighlighter` with a custom theme.
@@ -32,10 +31,7 @@ impl SqlHighlighter {
             .find_syntax_by_extension("sql")
             .expect("SQL syntax definition not found.")
             .clone();
-        let theme = ThemeSet::load_defaults()
-            .themes
-            .get(theme_name)
-            .cloned()?;
+        let theme = ThemeSet::load_defaults().themes.get(theme_name).cloned()?;
 
         Some(Self {
             syntax,

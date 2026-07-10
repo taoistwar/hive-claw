@@ -10,8 +10,8 @@ pub mod registry;
 pub mod anthropic_provider;
 pub mod azure_openai_provider;
 pub mod bedrock_provider;
-pub mod fallback_provider;
 pub mod factory;
+pub mod fallback_provider;
 pub mod github_copilot_provider;
 pub mod image_generation;
 pub mod oauth;
@@ -26,37 +26,34 @@ pub use base::{
     extract_retry_after_from_text, is_transient_response, pick_delay, sanitize_empty_content,
     strip_image_content, strip_image_content_inplace,
 };
-pub use registry::{find_by_model, find_by_name, Backend, ProviderSpec, PROVIDERS};
+pub use registry::{Backend, PROVIDERS, ProviderSpec, find_by_model, find_by_name};
 
 pub use anthropic_provider::AnthropicProvider;
 pub use azure_openai_provider::AzureOpenAIProvider;
 pub use bedrock_provider::BedrockProvider;
 pub use factory::{
-    make_provider,
-    provider_config_for,
-    resolve_spec,
-    build_provider, detect_backend_and_build, env_api_base, env_api_key, env_region,
-    ProviderBuildConfig,
+    ProviderBuildConfig, build_provider, detect_backend_and_build, env_api_base, env_api_key,
+    env_region, make_provider, provider_config_for, resolve_spec,
 };
+pub use fallback_provider::{FallbackPreset, FallbackProvider, ProviderFactory};
 pub use github_copilot_provider::{
-    get_github_copilot_login_status, login_github_copilot, DeviceCodeInfo, DeviceFlow,
-    GitHubCopilotProvider,
+    DeviceCodeInfo, DeviceFlow, GitHubCopilotProvider, get_github_copilot_login_status,
+    login_github_copilot,
+};
+pub use image_generation::{
+    AIHubMixImageGenerationClient, GeminiImageGenerationClient, GeneratedImageResponse,
+    ImageGenerationError, ImageGenerationProvider, MiniMaxImageGenerationClient,
+    OpenRouterImageGenerationClient, StepFunImageGenerationClient, get_image_gen_provider,
+    image_gen_provider_names, register_all_image_gen_providers, register_image_gen_provider,
 };
 pub use oauth::{FileTokenStorage, OAuthToken};
 pub use openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
 pub use openai_compat_provider::OpenAICompatProvider;
 pub use responses::{
-    consume_events, consume_sse, convert_messages as convert_responses_messages,
-    convert_tools as convert_responses_tools, parse_response_output, parse_sse_events,
-    ContentDeltaCallback, ToolCallDeltaCallback,
+    ContentDeltaCallback, ToolCallDeltaCallback, consume_events, consume_sse,
+    convert_messages as convert_responses_messages, convert_tools as convert_responses_tools,
+    parse_response_output, parse_sse_events,
 };
 pub use transcription::{
     GroqTranscriptionProvider, OpenAITranscriptionProvider, TranscriptionProvider,
-};
-pub use fallback_provider::{FallbackPreset, FallbackProvider, ProviderFactory};
-pub use image_generation::{
-    register_all_image_gen_providers, GeneratedImageResponse, ImageGenerationError,
-    ImageGenerationProvider, AIHubMixImageGenerationClient, GeminiImageGenerationClient,
-    MiniMaxImageGenerationClient, OpenRouterImageGenerationClient, StepFunImageGenerationClient,
-    image_gen_provider_names, get_image_gen_provider, register_image_gen_provider,
 };

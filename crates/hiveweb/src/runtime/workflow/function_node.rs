@@ -35,7 +35,7 @@ pub async fn execute_function_node(
         })?;
 
     // Builtin (kind=1) → direct handler
-    if meta.kind == 1  {
+    if meta.kind == 1 {
         return execute_builtin_function(deps, node_key, &meta.identifier, input, agent_ctx).await;
     }
 

@@ -82,24 +82,22 @@ async fn t166_plugin_with_excessive_memory_allocation_fails() -> anyhow::Result<
 
     // Verify that audit logging works (for memory limit violations)
     // Verify that audit logging works (for memory limit violations)
-    hiveweb::services::runtime_audit::record(
-        hiveweb::services::runtime_audit::AuditRecord {
-            request_id: Some("test-t166"),
-            session_id: None,
-            agent_id: Some(1),
-            plugin_id: Some(99999),
-            function_id: None,
-            capability: Some("memory_limit_test"),
-            event_type: "plugin_invoke",
-            outcome: "error",
-            elapsed_ms: Some(50),
-            error_message: Some("WASM linear memory limit exceeded (128 MB)"),
-            payload_summary: Some(serde_json::json!({
-                "memory_requested_mb": 256,
-                "memory_limit_mb": 128
-            })),
-        },
-    );
+    hiveweb::services::runtime_audit::record(hiveweb::services::runtime_audit::AuditRecord {
+        request_id: Some("test-t166"),
+        session_id: None,
+        agent_id: Some(1),
+        plugin_id: Some(99999),
+        function_id: None,
+        capability: Some("memory_limit_test"),
+        event_type: "plugin_invoke",
+        outcome: "error",
+        elapsed_ms: Some(50),
+        error_message: Some("WASM linear memory limit exceeded (128 MB)"),
+        payload_summary: Some(serde_json::json!({
+            "memory_requested_mb": 256,
+            "memory_limit_mb": 128
+        })),
+    });
 
     tracing::info!("t166: memory limit enforcement verified via config + audit path");
 

@@ -85,14 +85,12 @@ pub async fn fetch_by_game_id(
     pool: &MySqlPool,
     game_id: &str,
 ) -> Result<RecommendedGame, AppError> {
-    sqlx::query_as::<_, RecommendedGame>(
-        "SELECT * FROM recommended_games WHERE game_id = ?",
-    )
-    .bind(game_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("recommended_game fetch by game_id: {e}")))?
-    .ok_or_else(|| AppError::NotFound(format!("recommended_game game_id={game_id} not found")))
+    sqlx::query_as::<_, RecommendedGame>("SELECT * FROM recommended_games WHERE game_id = ?")
+        .bind(game_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("recommended_game fetch by game_id: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("recommended_game game_id={game_id} not found")))
 }
 
 pub async fn list(
@@ -149,7 +147,9 @@ pub async fn list(
     if let Some(ref v) = ct_json {
         count_query = count_query.bind(v);
     }
-    let total: (i64,) = count_query.fetch_one(pool).await
+    let total: (i64,) = count_query
+        .fetch_one(pool)
+        .await
         .map_err(|e| AppError::Internal(format!("recommended_game count: {e}")))?;
 
     // Data query
@@ -168,7 +168,9 @@ pub async fn list(
         data_query = data_query.bind(v);
     }
     data_query = data_query.bind(page_size).bind(offset);
-    let items: Vec<RecommendedGame> = data_query.fetch_all(pool).await
+    let items: Vec<RecommendedGame> = data_query
+        .fetch_all(pool)
+        .await
         .map_err(|e| AppError::Internal(format!("recommended_game list: {e}")))?;
 
     Ok((items, total.0))
@@ -230,11 +232,10 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
 
 /// Fetch all existing game_id values from recommended_games.
 pub async fn fetch_all_game_ids(pool: &MySqlPool) -> Result<Vec<String>, AppError> {
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT game_id FROM recommended_games")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("recommended_game fetch_all_game_ids: {e}")))?;
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT game_id FROM recommended_games")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("recommended_game fetch_all_game_ids: {e}")))?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -371,8 +372,6 @@ pub async fn fetch_top_filtered(
 
     Ok(result)
 }
-
-
 
 // --- strategy helpers ---
 

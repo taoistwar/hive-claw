@@ -136,7 +136,12 @@ pub struct DreamConfig {
     pub cron: Option<String>,
 
     /// Optional Dream-specific model override.
-    #[serde(default, alias = "model", alias = "model_override", alias = "modelOverride")]
+    #[serde(
+        default,
+        alias = "model",
+        alias = "model_override",
+        alias = "modelOverride"
+    )]
     pub model_override: Option<String>,
 
     /// Max history entries per run (>=1).
@@ -964,11 +969,7 @@ pub struct Config {
     pub gateway: GatewayConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
-    #[serde(
-        default,
-        rename = "modelPresets",
-        alias = "model_presets"
-    )]
+    #[serde(default, rename = "modelPresets", alias = "model_presets")]
     pub model_presets: HashMap<String, ModelPresetConfig>,
 }
 
@@ -984,42 +985,330 @@ struct ProviderSpec {
 }
 
 const PROVIDERS: &[ProviderSpec] = &[
-    ProviderSpec { name: "anthropic", keywords: &["claude", "anthropic"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://api.anthropic.com/v1"), detect_by_base_keyword: None },
-    ProviderSpec { name: "openai", keywords: &["gpt", "o1", "o3", "openai"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://api.openai.com/v1"), detect_by_base_keyword: None },
-    ProviderSpec { name: "openrouter", keywords: &["openrouter"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://openrouter.ai/api/v1"), detect_by_base_keyword: None },
-    ProviderSpec { name: "deepseek", keywords: &["deepseek"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://api.deepseek.com"), detect_by_base_keyword: None },
-    ProviderSpec { name: "groq", keywords: &["groq"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://api.groq.com/openai/v1"), detect_by_base_keyword: None },
-    ProviderSpec { name: "zhipu", keywords: &["zhipu", "glm"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "dashscope", keywords: &["dashscope", "qwen"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "huggingface", keywords: &["huggingface", "hugging", "hf"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "skywork", keywords: &["skywork"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "moonshot", keywords: &["moonshot"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "minimax", keywords: &["minimax"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "minimax_anthropic", keywords: &["minimax-anthropic"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "mistral", keywords: &["mistral"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://api.mistral.ai/v1"), detect_by_base_keyword: None },
-    ProviderSpec { name: "stepfun", keywords: &["stepfun"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "xiaomi_mimo", keywords: &["mimo", "xiaomi"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "longcat", keywords: &["longcat"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "ant_ling", keywords: &["ant_ling", "antling"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "aihubmix", keywords: &["aihubmix"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "siliconflow", keywords: &["siliconflow"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "volcengine", keywords: &["volcengine"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "volcengine_coding_plan", keywords: &["volcengine-coding-plan"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "byteplus", keywords: &["byteplus"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "byteplus_coding_plan", keywords: &["byteplus-coding-plan"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "qianfan", keywords: &["qianfan", "baidu"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "nvidia", keywords: &["nvidia", "nvapi"], is_oauth: false, is_local: false, is_direct: true, default_api_base: Some("https://integrate.api.nvidia.com/v1"), detect_by_base_keyword: None },
-    ProviderSpec { name: "gemini", keywords: &["gemini", "google"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "ollama", keywords: &["ollama"], is_oauth: false, is_local: true, is_direct: false, default_api_base: Some("http://localhost:11434/v1"), detect_by_base_keyword: Some("11434") },
-    ProviderSpec { name: "lm_studio", keywords: &["lm-studio"], is_oauth: false, is_local: true, is_direct: false, default_api_base: Some("http://localhost:1234/v1"), detect_by_base_keyword: Some("1234") },
-    ProviderSpec { name: "atomic_chat", keywords: &["atomic-chat"], is_oauth: false, is_local: true, is_direct: false, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "vllm", keywords: &["vllm"], is_oauth: false, is_local: true, is_direct: false, default_api_base: Some("http://localhost:8000/v1"), detect_by_base_keyword: Some("8000") },
-    ProviderSpec { name: "ovms", keywords: &["ovms", "openvino"], is_oauth: false, is_local: true, is_direct: false, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "openai_codex", keywords: &["codex"], is_oauth: true, is_local: false, is_direct: false, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "github_copilot", keywords: &["github-copilot", "copilot"], is_oauth: true, is_local: false, is_direct: false, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "azure_openai", keywords: &["azure"], is_oauth: false, is_local: false, is_direct: false, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "bedrock", keywords: &["bedrock"], is_oauth: false, is_local: false, is_direct: true, default_api_base: None, detect_by_base_keyword: None },
-    ProviderSpec { name: "custom", keywords: &[], is_oauth: false, is_local: false, is_direct: false, default_api_base: None, detect_by_base_keyword: None },
+    ProviderSpec {
+        name: "anthropic",
+        keywords: &["claude", "anthropic"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://api.anthropic.com/v1"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "openai",
+        keywords: &["gpt", "o1", "o3", "openai"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://api.openai.com/v1"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "openrouter",
+        keywords: &["openrouter"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://openrouter.ai/api/v1"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "deepseek",
+        keywords: &["deepseek"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://api.deepseek.com"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "groq",
+        keywords: &["groq"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://api.groq.com/openai/v1"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "zhipu",
+        keywords: &["zhipu", "glm"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "dashscope",
+        keywords: &["dashscope", "qwen"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "huggingface",
+        keywords: &["huggingface", "hugging", "hf"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "skywork",
+        keywords: &["skywork"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "moonshot",
+        keywords: &["moonshot"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "minimax",
+        keywords: &["minimax"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "minimax_anthropic",
+        keywords: &["minimax-anthropic"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "mistral",
+        keywords: &["mistral"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://api.mistral.ai/v1"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "stepfun",
+        keywords: &["stepfun"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "xiaomi_mimo",
+        keywords: &["mimo", "xiaomi"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "longcat",
+        keywords: &["longcat"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "ant_ling",
+        keywords: &["ant_ling", "antling"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "aihubmix",
+        keywords: &["aihubmix"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "siliconflow",
+        keywords: &["siliconflow"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "volcengine",
+        keywords: &["volcengine"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "volcengine_coding_plan",
+        keywords: &["volcengine-coding-plan"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "byteplus",
+        keywords: &["byteplus"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "byteplus_coding_plan",
+        keywords: &["byteplus-coding-plan"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "qianfan",
+        keywords: &["qianfan", "baidu"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "nvidia",
+        keywords: &["nvidia", "nvapi"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: Some("https://integrate.api.nvidia.com/v1"),
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "gemini",
+        keywords: &["gemini", "google"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "ollama",
+        keywords: &["ollama"],
+        is_oauth: false,
+        is_local: true,
+        is_direct: false,
+        default_api_base: Some("http://localhost:11434/v1"),
+        detect_by_base_keyword: Some("11434"),
+    },
+    ProviderSpec {
+        name: "lm_studio",
+        keywords: &["lm-studio"],
+        is_oauth: false,
+        is_local: true,
+        is_direct: false,
+        default_api_base: Some("http://localhost:1234/v1"),
+        detect_by_base_keyword: Some("1234"),
+    },
+    ProviderSpec {
+        name: "atomic_chat",
+        keywords: &["atomic-chat"],
+        is_oauth: false,
+        is_local: true,
+        is_direct: false,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "vllm",
+        keywords: &["vllm"],
+        is_oauth: false,
+        is_local: true,
+        is_direct: false,
+        default_api_base: Some("http://localhost:8000/v1"),
+        detect_by_base_keyword: Some("8000"),
+    },
+    ProviderSpec {
+        name: "ovms",
+        keywords: &["ovms", "openvino"],
+        is_oauth: false,
+        is_local: true,
+        is_direct: false,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "openai_codex",
+        keywords: &["codex"],
+        is_oauth: true,
+        is_local: false,
+        is_direct: false,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "github_copilot",
+        keywords: &["github-copilot", "copilot"],
+        is_oauth: true,
+        is_local: false,
+        is_direct: false,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "azure_openai",
+        keywords: &["azure"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: false,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "bedrock",
+        keywords: &["bedrock"],
+        is_oauth: false,
+        is_local: false,
+        is_direct: true,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
+    ProviderSpec {
+        name: "custom",
+        keywords: &[],
+        is_oauth: false,
+        is_local: false,
+        is_direct: false,
+        default_api_base: None,
+        detect_by_base_keyword: None,
+    },
 ];
 
 fn find_provider_spec(name: &str) -> Option<&'static ProviderSpec> {
@@ -1049,7 +1338,12 @@ impl Config {
     pub fn resolve_preset(&self, name: Option<&str>) -> Result<ModelPresetConfig, ConfigError> {
         let name = match name {
             Some(n) => n,
-            None => self.agents.defaults.model_preset.as_deref().unwrap_or("default"),
+            None => self
+                .agents
+                .defaults
+                .model_preset
+                .as_deref()
+                .unwrap_or("default"),
         };
         if name.is_empty() || name == "default" {
             return Ok(self.resolve_default_preset());
@@ -1066,7 +1360,10 @@ impl Config {
         model: Option<&str>,
         preset: Option<&ModelPresetConfig>,
     ) -> (Option<ProviderConfig>, Option<String>) {
-        let resolved = preset.map(|p| p.clone()).unwrap_or_else(|| self.resolve_preset(None).unwrap_or_else(|_| self.resolve_default_preset()));
+        let resolved = preset.map(|p| p.clone()).unwrap_or_else(|| {
+            self.resolve_preset(None)
+                .unwrap_or_else(|_| self.resolve_default_preset())
+        });
         let forced = &resolved.provider;
 
         if forced != "auto" {
@@ -1087,7 +1384,8 @@ impl Config {
 
         fn kw_matches(kw: &str, model_lower: &str, model_normalized: &str) -> bool {
             let kw_lower = kw.to_lowercase();
-            model_lower.contains(&kw_lower) || model_normalized.contains(&kw_lower.replace('-', "_"))
+            model_lower.contains(&kw_lower)
+                || model_normalized.contains(&kw_lower.replace('-', "_"))
         }
 
         // Explicit provider prefix wins
@@ -1103,7 +1401,12 @@ impl Config {
         // Match by keyword
         for spec in PROVIDERS {
             let p = self.get_provider_by_spec(spec);
-            if p.0.is_some() && spec.keywords.iter().any(|kw| kw_matches(kw, &model_lower, &model_normalized)) {
+            if p.0.is_some()
+                && spec
+                    .keywords
+                    .iter()
+                    .any(|kw| kw_matches(kw, &model_lower, &model_normalized))
+            {
                 if spec.is_oauth || spec.is_local || spec.is_direct || self.has_api_key(spec.name) {
                     return p;
                 }
@@ -1147,44 +1450,146 @@ impl Config {
         (None, None)
     }
 
-    fn get_provider_by_spec(&self, spec: &ProviderSpec) -> (Option<ProviderConfig>, Option<String>) {
+    fn get_provider_by_spec(
+        &self,
+        spec: &ProviderSpec,
+    ) -> (Option<ProviderConfig>, Option<String>) {
         let has_config = match spec.name {
-            "anthropic" => self.providers.anthropic.api_key.is_some() || self.providers.anthropic.api_base.is_some(),
-            "openai" => self.providers.openai.api_key.is_some() || self.providers.openai.api_base.is_some(),
-            "openrouter" => self.providers.openrouter.api_key.is_some() || self.providers.openrouter.api_base.is_some(),
-            "deepseek" => self.providers.deepseek.api_key.is_some() || self.providers.deepseek.api_base.is_some(),
-            "groq" => self.providers.groq.api_key.is_some() || self.providers.groq.api_base.is_some(),
-            "zhipu" => self.providers.zhipu.api_key.is_some() || self.providers.zhipu.api_base.is_some(),
-            "dashscope" => self.providers.dashscope.api_key.is_some() || self.providers.dashscope.api_base.is_some(),
-            "huggingface" => self.providers.huggingface.api_key.is_some() || self.providers.huggingface.api_base.is_some(),
-            "skywork" => self.providers.skywork.api_key.is_some() || self.providers.skywork.api_base.is_some(),
-            "moonshot" => self.providers.moonshot.api_key.is_some() || self.providers.moonshot.api_base.is_some(),
-            "minimax" => self.providers.minimax.api_key.is_some() || self.providers.minimax.api_base.is_some(),
-            "minimax_anthropic" => self.providers.minimax_anthropic.api_key.is_some() || self.providers.minimax_anthropic.api_base.is_some(),
-            "mistral" => self.providers.mistral.api_key.is_some() || self.providers.mistral.api_base.is_some(),
-            "stepfun" => self.providers.stepfun.api_key.is_some() || self.providers.stepfun.api_base.is_some(),
-            "xiaomi_mimo" => self.providers.xiaomi_mimo.api_key.is_some() || self.providers.xiaomi_mimo.api_base.is_some(),
-            "longcat" => self.providers.longcat.api_key.is_some() || self.providers.longcat.api_base.is_some(),
-            "ant_ling" => self.providers.ant_ling.api_key.is_some() || self.providers.ant_ling.api_base.is_some(),
-            "aihubmix" => self.providers.aihubmix.api_key.is_some() || self.providers.aihubmix.api_base.is_some(),
-            "siliconflow" => self.providers.siliconflow.api_key.is_some() || self.providers.siliconflow.api_base.is_some(),
-            "volcengine" => self.providers.volcengine.api_key.is_some() || self.providers.volcengine.api_base.is_some(),
-            "volcengine_coding_plan" => self.providers.volcengine_coding_plan.api_key.is_some() || self.providers.volcengine_coding_plan.api_base.is_some(),
-            "byteplus" => self.providers.byteplus.api_key.is_some() || self.providers.byteplus.api_base.is_some(),
-            "byteplus_coding_plan" => self.providers.byteplus_coding_plan.api_key.is_some() || self.providers.byteplus_coding_plan.api_base.is_some(),
-            "qianfan" => self.providers.qianfan.api_key.is_some() || self.providers.qianfan.api_base.is_some(),
-            "nvidia" => self.providers.nvidia.api_key.is_some() || self.providers.nvidia.api_base.is_some(),
-            "gemini" => self.providers.gemini.api_key.is_some() || self.providers.gemini.api_base.is_some(),
-            "ollama" => self.providers.ollama.api_key.is_some() || self.providers.ollama.api_base.is_some(),
-            "lm_studio" => self.providers.lm_studio.api_key.is_some() || self.providers.lm_studio.api_base.is_some(),
-            "atomic_chat" => self.providers.atomic_chat.api_key.is_some() || self.providers.atomic_chat.api_base.is_some(),
-            "vllm" => self.providers.vllm.api_key.is_some() || self.providers.vllm.api_base.is_some(),
-            "ovms" => self.providers.ovms.api_key.is_some() || self.providers.ovms.api_base.is_some(),
-            "openai_codex" => self.providers.openai_codex.api_key.is_some() || self.providers.openai_codex.api_base.is_some(),
-            "github_copilot" => self.providers.github_copilot.api_key.is_some() || self.providers.github_copilot.api_base.is_some(),
-            "azure_openai" => self.providers.azure_openai.api_key.is_some() || self.providers.azure_openai.api_base.is_some(),
-            "bedrock" => self.providers.bedrock.api_key.is_some() || self.providers.bedrock.api_base.is_some(),
-            "custom" => self.providers.custom.api_key.is_some() || self.providers.custom.api_base.is_some(),
+            "anthropic" => {
+                self.providers.anthropic.api_key.is_some()
+                    || self.providers.anthropic.api_base.is_some()
+            }
+            "openai" => {
+                self.providers.openai.api_key.is_some() || self.providers.openai.api_base.is_some()
+            }
+            "openrouter" => {
+                self.providers.openrouter.api_key.is_some()
+                    || self.providers.openrouter.api_base.is_some()
+            }
+            "deepseek" => {
+                self.providers.deepseek.api_key.is_some()
+                    || self.providers.deepseek.api_base.is_some()
+            }
+            "groq" => {
+                self.providers.groq.api_key.is_some() || self.providers.groq.api_base.is_some()
+            }
+            "zhipu" => {
+                self.providers.zhipu.api_key.is_some() || self.providers.zhipu.api_base.is_some()
+            }
+            "dashscope" => {
+                self.providers.dashscope.api_key.is_some()
+                    || self.providers.dashscope.api_base.is_some()
+            }
+            "huggingface" => {
+                self.providers.huggingface.api_key.is_some()
+                    || self.providers.huggingface.api_base.is_some()
+            }
+            "skywork" => {
+                self.providers.skywork.api_key.is_some()
+                    || self.providers.skywork.api_base.is_some()
+            }
+            "moonshot" => {
+                self.providers.moonshot.api_key.is_some()
+                    || self.providers.moonshot.api_base.is_some()
+            }
+            "minimax" => {
+                self.providers.minimax.api_key.is_some()
+                    || self.providers.minimax.api_base.is_some()
+            }
+            "minimax_anthropic" => {
+                self.providers.minimax_anthropic.api_key.is_some()
+                    || self.providers.minimax_anthropic.api_base.is_some()
+            }
+            "mistral" => {
+                self.providers.mistral.api_key.is_some()
+                    || self.providers.mistral.api_base.is_some()
+            }
+            "stepfun" => {
+                self.providers.stepfun.api_key.is_some()
+                    || self.providers.stepfun.api_base.is_some()
+            }
+            "xiaomi_mimo" => {
+                self.providers.xiaomi_mimo.api_key.is_some()
+                    || self.providers.xiaomi_mimo.api_base.is_some()
+            }
+            "longcat" => {
+                self.providers.longcat.api_key.is_some()
+                    || self.providers.longcat.api_base.is_some()
+            }
+            "ant_ling" => {
+                self.providers.ant_ling.api_key.is_some()
+                    || self.providers.ant_ling.api_base.is_some()
+            }
+            "aihubmix" => {
+                self.providers.aihubmix.api_key.is_some()
+                    || self.providers.aihubmix.api_base.is_some()
+            }
+            "siliconflow" => {
+                self.providers.siliconflow.api_key.is_some()
+                    || self.providers.siliconflow.api_base.is_some()
+            }
+            "volcengine" => {
+                self.providers.volcengine.api_key.is_some()
+                    || self.providers.volcengine.api_base.is_some()
+            }
+            "volcengine_coding_plan" => {
+                self.providers.volcengine_coding_plan.api_key.is_some()
+                    || self.providers.volcengine_coding_plan.api_base.is_some()
+            }
+            "byteplus" => {
+                self.providers.byteplus.api_key.is_some()
+                    || self.providers.byteplus.api_base.is_some()
+            }
+            "byteplus_coding_plan" => {
+                self.providers.byteplus_coding_plan.api_key.is_some()
+                    || self.providers.byteplus_coding_plan.api_base.is_some()
+            }
+            "qianfan" => {
+                self.providers.qianfan.api_key.is_some()
+                    || self.providers.qianfan.api_base.is_some()
+            }
+            "nvidia" => {
+                self.providers.nvidia.api_key.is_some() || self.providers.nvidia.api_base.is_some()
+            }
+            "gemini" => {
+                self.providers.gemini.api_key.is_some() || self.providers.gemini.api_base.is_some()
+            }
+            "ollama" => {
+                self.providers.ollama.api_key.is_some() || self.providers.ollama.api_base.is_some()
+            }
+            "lm_studio" => {
+                self.providers.lm_studio.api_key.is_some()
+                    || self.providers.lm_studio.api_base.is_some()
+            }
+            "atomic_chat" => {
+                self.providers.atomic_chat.api_key.is_some()
+                    || self.providers.atomic_chat.api_base.is_some()
+            }
+            "vllm" => {
+                self.providers.vllm.api_key.is_some() || self.providers.vllm.api_base.is_some()
+            }
+            "ovms" => {
+                self.providers.ovms.api_key.is_some() || self.providers.ovms.api_base.is_some()
+            }
+            "openai_codex" => {
+                self.providers.openai_codex.api_key.is_some()
+                    || self.providers.openai_codex.api_base.is_some()
+            }
+            "github_copilot" => {
+                self.providers.github_copilot.api_key.is_some()
+                    || self.providers.github_copilot.api_base.is_some()
+            }
+            "azure_openai" => {
+                self.providers.azure_openai.api_key.is_some()
+                    || self.providers.azure_openai.api_base.is_some()
+            }
+            "bedrock" => {
+                self.providers.bedrock.api_key.is_some()
+                    || self.providers.bedrock.api_base.is_some()
+            }
+            "custom" => {
+                self.providers.custom.api_key.is_some() || self.providers.custom.api_base.is_some()
+            }
             _ => false,
         };
 

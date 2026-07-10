@@ -1,6 +1,5 @@
 use gpui::{
-    div, prelude::*, px, rgb, CursorStyle, MouseButton, SharedString, Window, Context,
-    AnyElement,
+    AnyElement, Context, CursorStyle, MouseButton, SharedString, Window, div, prelude::*, px, rgb,
 };
 
 use crate::model::tools::ToolSeriesKind;
@@ -90,7 +89,11 @@ impl SidebarNav {
             .justify_center()
             .rounded(px(8.0))
             .cursor(CursorStyle::PointingHand)
-            .bg(if is_active { rgb(0xd8d8e8) } else { rgb(0xf0f0f7) })
+            .bg(if is_active {
+                rgb(0xd8d8e8)
+            } else {
+                rgb(0xf0f0f7)
+            })
             .hover(|style| style.bg(rgb(0xd8d8e8)))
             .child(icon)
             .on_mouse_down(MouseButton::Left, move |_event, window, cx| {

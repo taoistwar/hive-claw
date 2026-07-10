@@ -2,7 +2,7 @@
 //!
 //! Port of `nanobot.providers.openai_responses.converters`.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Map a Responses API status to a Chat-Completions-style finish reason.
 pub fn map_finish_reason(status: Option<&str>) -> String {
@@ -21,7 +21,11 @@ pub fn split_tool_call_id(tool_call_id: Option<&str>) -> (String, Option<String>
         return ("call_0".to_string(), None);
     };
     if let Some((a, b)) = id.split_once('|') {
-        let item = if b.is_empty() { None } else { Some(b.to_string()) };
+        let item = if b.is_empty() {
+            None
+        } else {
+            Some(b.to_string())
+        };
         return (a.to_string(), item);
     }
     (id.to_string(), None)
@@ -38,7 +42,9 @@ pub fn convert_user_message(content: &Value) -> Value {
         Value::Array(items) => {
             let mut converted: Vec<Value> = Vec::new();
             for item in items {
-                let Some(obj) = item.as_object() else { continue };
+                let Some(obj) = item.as_object() else {
+                    continue;
+                };
                 match obj.get("type").and_then(|v| v.as_str()) {
                     Some("text") => {
                         let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -101,9 +107,8 @@ pub fn convert_messages(messages: &[Value]) -> (String, Vec<Value>) {
                 if let Some(tcs) = msg.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tcs {
                         let fn_obj = tc.get("function").cloned().unwrap_or(Value::Null);
-                        let (call_id, item_id) = split_tool_call_id(
-                            tc.get("id").and_then(|v| v.as_str()),
-                        );
+                        let (call_id, item_id) =
+                            split_tool_call_id(tc.get("id").and_then(|v| v.as_str()));
                         let item_id_out = item_id.unwrap_or_else(|| format!("fc_{idx}"));
                         let call_id_out = if call_id.is_empty() || call_id == "call_0" {
                             format!("call_{idx}")
@@ -130,9 +135,8 @@ pub fn convert_messages(messages: &[Value]) -> (String, Vec<Value>) {
                 }
             }
             "tool" => {
-                let (call_id, _) = split_tool_call_id(
-                    msg.get("tool_call_id").and_then(|v| v.as_str()),
-                );
+                let (call_id, _) =
+                    split_tool_call_id(msg.get("tool_call_id").and_then(|v| v.as_str()));
                 let output_text = match &content {
                     Value::String(s) => s.clone(),
                     other => serde_json::to_string(other).unwrap_or_default(),

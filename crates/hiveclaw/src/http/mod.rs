@@ -1,6 +1,6 @@
 pub mod responses;
 
-use axum::{routing::get, routing::post, Router};
+use axum::{Router, routing::get, routing::post};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 

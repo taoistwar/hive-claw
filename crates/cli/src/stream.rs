@@ -5,7 +5,6 @@
 /// so the content persists on screen. `transient=true` ensures the live
 /// area is erased before `stop()` returns, avoiding the duplication bug
 /// that plagued earlier approaches.
-
 use std::fmt::Write as _;
 use std::io::Write as _;
 
@@ -80,12 +79,7 @@ pub struct StreamRenderer {
 }
 
 impl StreamRenderer {
-    pub fn new(
-        render_markdown: bool,
-        show_spinner: bool,
-        bot_name: &str,
-        bot_icon: &str,
-    ) -> Self {
+    pub fn new(render_markdown: bool, show_spinner: bool, bot_name: &str, bot_icon: &str) -> Self {
         let mut renderer = Self {
             md: render_markdown,
             show_spinner,

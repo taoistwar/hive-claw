@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, rgb, Context, Window};
+use gpui::{Context, Window, div, prelude::*, px, rgb};
 
 use crate::ui::strings_zh;
 

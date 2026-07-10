@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use log::warn;
 use serde_json::Value;
 
-use crate::responses::converters::map_finish_reason;
 use crate::base::{LLMResponse, ToolCallRequest};
+use crate::responses::converters::map_finish_reason;
 
 /// Minimal SSE parser: yields one JSON event per blank-line-delimited chunk.
 pub fn parse_sse_events(input: &str) -> Vec<Value> {
@@ -47,9 +47,7 @@ pub fn parse_sse_events(input: &str) -> Vec<Value> {
 }
 
 /// Consume a sequence of already-decoded SSE events into a final response.
-pub fn consume_events(
-    events: &[Value],
-) -> Result<(String, Vec<ToolCallRequest>, String), String> {
+pub fn consume_events(events: &[Value]) -> Result<(String, Vec<ToolCallRequest>, String), String> {
     let mut content = String::new();
     let mut tool_call_buffers: HashMap<String, (String, String, String)> = HashMap::new();
     let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
@@ -122,8 +120,8 @@ pub fn consume_events(
                 let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) else {
                     continue;
                 };
-                let (item_id, name, args_accum) = tool_call_buffers.remove(call_id).unwrap_or_else(
-                    || {
+                let (item_id, name, args_accum) =
+                    tool_call_buffers.remove(call_id).unwrap_or_else(|| {
                         (
                             item.get("id")
                                 .and_then(|v| v.as_str())
@@ -138,8 +136,7 @@ pub fn consume_events(
                                 .unwrap_or("{}")
                                 .to_string(),
                         )
-                    },
-                );
+                    });
                 let args_raw = if args_accum.is_empty() {
                     "{}".into()
                 } else {
@@ -203,7 +200,9 @@ pub fn parse_response_output(response: &Value) -> LLMResponse {
     let mut reasoning_content: Option<String> = None;
 
     for item in output {
-        let Some(obj) = item.as_object() else { continue };
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
         match obj.get("type").and_then(|v| v.as_str()) {
             Some("message") => {
                 if let Some(blocks) = obj.get("content").and_then(|v| v.as_array()) {
@@ -381,9 +380,9 @@ pub async fn consume_sse(
                         if let Some(cb) = &on_tool_call_delta {
                             let mut map_delta = serde_json::Map::new();
                             map_delta.insert("call_id".into(), Value::String(id.to_string()));
+                            map_delta.insert("name".into(), Value::String(buf.1.clone()));
                             map_delta
-                                .insert("name".into(), Value::String(buf.1.clone()));
-                            map_delta.insert("arguments_delta".into(), Value::String(delta.to_string()));
+                                .insert("arguments_delta".into(), Value::String(delta.to_string()));
                             cb(map_delta);
                         }
                     }
@@ -412,8 +411,8 @@ pub async fn consume_sse(
                 let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) else {
                     continue;
                 };
-                let (item_id, name, args_accum) = tool_call_buffers.remove(call_id).unwrap_or_else(
-                    || {
+                let (item_id, name, args_accum) =
+                    tool_call_buffers.remove(call_id).unwrap_or_else(|| {
                         (
                             item.get("id")
                                 .and_then(|v| v.as_str())
@@ -428,8 +427,7 @@ pub async fn consume_sse(
                                 .unwrap_or("{}")
                                 .to_string(),
                         )
-                    },
-                );
+                    });
                 let args_raw = if args_accum.is_empty() {
                     "{}".into()
                 } else {
@@ -573,9 +571,9 @@ pub async fn consume_sdk_stream(
                         if let Some(cb) = &on_tool_call_delta {
                             let mut map_delta = serde_json::Map::new();
                             map_delta.insert("call_id".into(), Value::String(id.to_string()));
+                            map_delta.insert("name".into(), Value::String(buf.1.clone()));
                             map_delta
-                                .insert("name".into(), Value::String(buf.1.clone()));
-                            map_delta.insert("arguments_delta".into(), Value::String(delta.to_string()));
+                                .insert("arguments_delta".into(), Value::String(delta.to_string()));
                             cb(map_delta);
                         }
                     }
@@ -604,8 +602,8 @@ pub async fn consume_sdk_stream(
                 let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) else {
                     continue;
                 };
-                let (item_id, name, args_accum) = tool_call_buffers.remove(call_id).unwrap_or_else(
-                    || {
+                let (item_id, name, args_accum) =
+                    tool_call_buffers.remove(call_id).unwrap_or_else(|| {
                         (
                             item.get("id")
                                 .and_then(|v| v.as_str())
@@ -620,8 +618,7 @@ pub async fn consume_sdk_stream(
                                 .unwrap_or("{}")
                                 .to_string(),
                         )
-                    },
-                );
+                    });
                 let args_raw = if args_accum.is_empty() {
                     "{}".into()
                 } else {
@@ -657,9 +654,7 @@ pub async fn consume_sdk_stream(
 
                 if let Some(resp_obj) = resp.and_then(|v| v.as_object()) {
                     if let Some(usage_obj) = resp_obj.get("usage").and_then(|v| v.as_object()) {
-                        let as_i = |k: &str| {
-                            usage_obj.get(k).and_then(|v| v.as_i64()).unwrap_or(0)
-                        };
+                        let as_i = |k: &str| usage_obj.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
                         usage.insert("prompt_tokens".into(), as_i("input_tokens"));
                         usage.insert("completion_tokens".into(), as_i("output_tokens"));
                         usage.insert("total_tokens".into(), as_i("total_tokens"));
@@ -667,9 +662,7 @@ pub async fn consume_sdk_stream(
 
                     if let Some(output_arr) = resp_obj.get("output").and_then(|v| v.as_array()) {
                         for out_item in output_arr {
-                            if out_item.get("type").and_then(|v| v.as_str())
-                                == Some("reasoning")
-                            {
+                            if out_item.get("type").and_then(|v| v.as_str()) == Some("reasoning") {
                                 if let Some(summary) =
                                     out_item.get("summary").and_then(|v| v.as_array())
                                 {
@@ -680,8 +673,8 @@ pub async fn consume_sdk_stream(
                                             if let Some(text) =
                                                 s.get("text").and_then(|v| v.as_str())
                                             {
-                                                let entry =
-                                                    reasoning_content.get_or_insert_with(String::new);
+                                                let entry = reasoning_content
+                                                    .get_or_insert_with(String::new);
                                                 entry.push_str(text);
                                             }
                                         }
@@ -717,8 +710,7 @@ mod tests {
 
     #[test]
     fn parse_sse_events_basic() {
-        let body =
-            "event: a\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: [DONE]\n\n";
+        let body = "event: a\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: [DONE]\n\n";
         let evs = parse_sse_events(body);
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0]["type"], "response.output_text.delta");

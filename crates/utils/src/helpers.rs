@@ -89,7 +89,9 @@ pub fn strip_think(text: &str) -> String {
     // Strip trailing partial control tags like </thi, <channe|, etc.
     let partial_tag = RE_PARTIAL_CONTROL_TAG.replace_all(&s, "");
     // Strip edge-case `<|` prefix at the start of the string.
-    let partial_tag = regex::Regex::new(r"^\s*<\|?$").unwrap().replace_all(&partial_tag, "");
+    let partial_tag = regex::Regex::new(r"^\s*<\|?$")
+        .unwrap()
+        .replace_all(&partial_tag, "");
     partial_tag.trim().to_string()
 }
 
@@ -163,11 +165,7 @@ impl IncrementalThinkExtractor {
             thinking.trim().to_string()
         };
         self.emitted = thinking;
-        if new.is_empty() {
-            None
-        } else {
-            Some(new)
-        }
+        if new.is_empty() { None } else { Some(new) }
     }
 }
 
@@ -222,7 +220,14 @@ pub fn extract_reasoning(
     }
     if let Some(c) = content {
         let (thinking, cleaned) = extract_think(c);
-        return (thinking, if cleaned.is_empty() { None } else { Some(cleaned) });
+        return (
+            thinking,
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            },
+        );
     }
     (None, content.map(|s| s.to_string()))
 }
@@ -249,12 +254,7 @@ pub fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
 }
 
 /// Build native image blocks plus a short text label.
-pub fn build_image_content_blocks(
-    raw: &[u8],
-    mime: &str,
-    path: &str,
-    label: &str,
-) -> Vec<Value> {
+pub fn build_image_content_blocks(raw: &[u8], mime: &str, path: &str, label: &str) -> Vec<Value> {
     let b64 = B64.encode(raw);
     vec![
         serde_json::json!({
@@ -298,7 +298,11 @@ pub fn current_time_str(timezone: Option<&str>) -> String {
     match timezone.and_then(|tz| tz.parse::<Tz>().ok()) {
         Some(tz) => {
             let now = chrono::Utc::now().with_timezone(&tz);
-            format_time(now.format("%Y-%m-%d %H:%M (%A)").to_string(), &now.format("%z").to_string(), timezone.unwrap_or("UTC"))
+            format_time(
+                now.format("%Y-%m-%d %H:%M (%A)").to_string(),
+                &now.format("%z").to_string(),
+                timezone.unwrap_or("UTC"),
+            )
         }
         None => {
             let now = Local::now();
@@ -374,7 +378,11 @@ pub fn find_legal_message_start(messages: &[Value]) -> usize {
             Some("tool") => {
                 let tid = msg
                     .get("tool_call_id")
-                    .and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .and_then(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .or_else(|| v.as_i64().map(|n| n.to_string()))
+                    })
                     .unwrap_or_default();
                 if !tid.is_empty() && !declared.contains(&tid) {
                     start = i + 1;
@@ -542,10 +550,8 @@ pub fn maybe_persist_tool_result(
     if !path.exists() {
         let text_out = if suffix == "json" {
             match &content {
-                Value::Array(arr) => {
-                    serde_json::to_string_pretty(&Value::Array(arr.clone()))
-                        .unwrap_or_else(|_| text_payload.clone())
-                }
+                Value::Array(arr) => serde_json::to_string_pretty(&Value::Array(arr.clone()))
+                    .unwrap_or_else(|_| text_payload.clone()),
                 _ => text_payload.clone(),
             }
         } else {
@@ -554,7 +560,10 @@ pub fn maybe_persist_tool_result(
         let _ = write_text_atomic(&path, &text_out);
     }
 
-    let preview: String = text_payload.chars().take(TOOL_RESULT_PREVIEW_CHARS).collect();
+    let preview: String = text_payload
+        .chars()
+        .take(TOOL_RESULT_PREVIEW_CHARS)
+        .collect();
     let original_size = text_payload.chars().count();
     Value::String(render_tool_result_reference(
         &path,
@@ -818,11 +827,11 @@ pub fn build_status_content(p: StatusContent<'_>) -> String {
 
     let ctx_total = p.context_window_tokens;
     // Mirror Consolidator formula: ctx - max_completion - safety_buffer.
-    let ctx_budget = ctx_total.saturating_sub(p.max_completion_tokens).saturating_sub(1024).max(1);
-    let ctx_pct = std::cmp::min(
-        (p.context_tokens_estimate * 100 / ctx_budget) as u64,
-        999,
-    );
+    let ctx_budget = ctx_total
+        .saturating_sub(p.max_completion_tokens)
+        .saturating_sub(1024)
+        .max(1);
+    let ctx_pct = std::cmp::min((p.context_tokens_estimate * 100 / ctx_budget) as u64, 999);
 
     let ctx_used_str = if p.context_tokens_estimate >= 1000 {
         format!("{}k", p.context_tokens_estimate / 1000)
@@ -843,9 +852,7 @@ pub fn build_status_content(p: StatusContent<'_>) -> String {
         format!("\u{1f408} nanobot v{}", p.version),
         format!("\u{1f9e0} Model: {}", p.model),
         token_line,
-        format!(
-            "\u{1f4da} Context: {ctx_used_str}/{ctx_total_str} ({ctx_pct}% of input budget)"
-        ),
+        format!("\u{1f4da} Context: {ctx_used_str}/{ctx_total_str} ({ctx_pct}% of input budget)"),
         format!("\u{1f4ac} Session: {} messages", p.session_msg_count),
         format!("\u{23f1} Uptime: {uptime}"),
         format!("\u{26a1} Tasks: {} active", p.active_task_count),

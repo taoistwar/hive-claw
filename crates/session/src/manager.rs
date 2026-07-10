@@ -73,7 +73,8 @@ fn message_preview_text(msg: &Value) -> String {
     let mut content = msg.get("content").cloned().unwrap_or(Value::Null);
     if msg.get("injected_event").and_then(|v| v.as_str()) == Some("subagent_result") {
         if let Some(s) = content.as_str() {
-            content = Value::String(utils::subagent_channel_display::scrub_subagent_announce_body(s));
+            content =
+                Value::String(utils::subagent_channel_display::scrub_subagent_announce_body(s));
         }
     }
     text_preview(&content)
@@ -88,10 +89,7 @@ fn annotate_message_time(content: &str) -> String {
 
 /// Rough estimate of token count for a message (4 chars ≈ 1 token for English).
 fn estimate_tokens_for_message(msg: &Value) -> usize {
-    let content = msg
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let base = content.len() / 4;
     let tool_calls = msg
         .get("tool_calls")
@@ -145,10 +143,7 @@ impl Session {
         let mut msg = serde_json::Map::new();
         msg.insert("role".into(), Value::String(role.into()));
         msg.insert("content".into(), Value::String(content.to_string()));
-        msg.insert(
-            "timestamp".into(),
-            Value::String(Local::now().to_rfc3339()),
-        );
+        msg.insert("timestamp".into(), Value::String(Local::now().to_rfc3339()));
         for (k, v) in extra {
             msg.insert(k, v);
         }
@@ -235,7 +230,10 @@ impl Session {
 
         for message in &sliced {
             let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            let mut content = message.get("content").cloned().unwrap_or(Value::String(String::new()));
+            let mut content = message
+                .get("content")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
 
             // Sanitize assistant replay text.
             if role == "assistant" {
@@ -267,7 +265,10 @@ impl Session {
 
             // Annotate user messages with persisted timestamp for relative-date reasoning.
             if include_timestamps && role == "user" {
-                if let (Some(s), Some(ts)) = (content.as_str(), message.get("timestamp").and_then(|v| v.as_str())) {
+                if let (Some(s), Some(ts)) = (
+                    content.as_str(),
+                    message.get("timestamp").and_then(|v| v.as_str()),
+                ) {
                     content = Value::String(format!("[Message Time: {ts}]\n{s}"));
                 }
             }
@@ -307,20 +308,39 @@ impl Session {
             kept.reverse();
 
             // Keep history aligned to the first visible user turn.
-            let first_user = kept.iter().position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+            let first_user = kept
+                .iter()
+                .position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
             if let Some(idx) = first_user {
                 kept = kept[idx..].to_vec();
             } else {
                 // Recover nearest user turn from original output.
-                let recovered_user = sliced.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+                let recovered_user = sliced
+                    .iter()
+                    .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
                 if let Some(idx) = recovered_user {
                     // Re-build from idx.
                     kept.clear();
                     for message in &sliced[idx..] {
                         let mut entry = serde_json::Map::new();
-                        entry.insert("role".into(), message.get("role").cloned().unwrap_or(Value::Null));
-                        entry.insert("content".into(), message.get("content").cloned().unwrap_or(Value::String(String::new())));
-                        for key in ["tool_calls", "tool_call_id", "name", "reasoning_content", "thinking_blocks"] {
+                        entry.insert(
+                            "role".into(),
+                            message.get("role").cloned().unwrap_or(Value::Null),
+                        );
+                        entry.insert(
+                            "content".into(),
+                            message
+                                .get("content")
+                                .cloned()
+                                .unwrap_or(Value::String(String::new())),
+                        );
+                        for key in [
+                            "tool_calls",
+                            "tool_call_id",
+                            "name",
+                            "reasoning_content",
+                            "thinking_blocks",
+                        ] {
                             if let Some(v) = message.get(key) {
                                 entry.insert(key.into(), v.clone());
                             }
@@ -362,13 +382,18 @@ impl Session {
         let mut retained: Vec<Value> = self.messages[self.messages.len() - max_messages..].to_vec();
 
         // Prefer starting at a user turn when one exists within the tail.
-        let first_user = retained.iter().position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+        let first_user = retained
+            .iter()
+            .position(|m| m.get("role").and_then(Value::as_str) == Some("user"));
         if let Some(idx) = first_user {
             retained = retained[idx..].to_vec();
         } else {
             // If the tail is assistant/tool-only, anchor to the latest user in
             // the full session and take a capped forward window from there.
-            let latest_user = self.messages.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
+            let latest_user = self
+                .messages
+                .iter()
+                .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
             if let Some(idx) = latest_user {
                 let end = (idx + max_messages).min(self.messages.len());
                 retained = self.messages[idx..end].to_vec();
@@ -459,7 +484,8 @@ impl SessionManager {
     }
 
     fn session_path(&self, key: &str) -> PathBuf {
-        self.sessions_dir.join(format!("{}.jsonl", Self::safe_key(key)))
+        self.sessions_dir
+            .join(format!("{}.jsonl", Self::safe_key(key)))
     }
 
     fn legacy_session_path(&self, key: &str) -> PathBuf {
@@ -536,10 +562,7 @@ impl SessionManager {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             if data.get("_type").and_then(Value::as_str) == Some("metadata") {
                 if let Some(m) = data.get("metadata").and_then(Value::as_object) {
-                    metadata = m
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
+                    metadata = m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 }
                 created_at = data
                     .get("created_at")
@@ -750,10 +773,7 @@ impl SessionManager {
                     };
                     if data.get("_type").and_then(Value::as_str) == Some("metadata") {
                         if let Some(m) = data.get("metadata").and_then(Value::as_object) {
-                            metadata = m
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
+                            metadata = m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                         }
                         created_at = data
                             .get("created_at")
@@ -763,10 +783,7 @@ impl SessionManager {
                             .get("updated_at")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        stored_key = data
-                            .get("key")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
+                        stored_key = data.get("key").and_then(Value::as_str).map(str::to_string);
                     } else {
                         messages.push(data);
                     }
@@ -846,11 +863,21 @@ impl SessionManager {
         let created_at = data.get("created_at").cloned();
         let updated_at = data.get("updated_at").cloned();
 
-        let metadata = data.get("metadata").and_then(|v| v.as_object()).map(|m| {
-            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<HashMap<String, Value>>()
-        }).unwrap_or_default();
+        let metadata = data
+            .get("metadata")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<HashMap<String, Value>>()
+            })
+            .unwrap_or_default();
 
-        let title = metadata.get("title").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
+        let title = metadata
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default();
 
         // Read messages to find preview (prefer first user, fallback to first assistant).
         let mut preview = String::new();
@@ -858,16 +885,26 @@ impl SessionManager {
         for line in reader.lines() {
             let Ok(line) = line else { continue };
             let line = line.trim();
-            if line.is_empty() { continue };
-            let Ok(item) = serde_json::from_str::<Value>(line) else { continue };
-            if item.get("_type").and_then(Value::as_str) == Some("metadata") { continue };
+            if line.is_empty() {
+                continue;
+            };
+            let Ok(item) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if item.get("_type").and_then(Value::as_str) == Some("metadata") {
+                continue;
+            };
             let text = message_preview_text(&item);
-            if text.is_empty() { continue };
+            if text.is_empty() {
+                continue;
+            };
             if item.get("role").and_then(Value::as_str) == Some("user") {
                 preview = text;
                 break;
             }
-            if fallback_preview.is_empty() && item.get("role").and_then(Value::as_str) == Some("assistant") {
+            if fallback_preview.is_empty()
+                && item.get("role").and_then(Value::as_str) == Some("assistant")
+            {
                 fallback_preview = text;
             }
         }

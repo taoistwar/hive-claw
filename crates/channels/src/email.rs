@@ -2,7 +2,6 @@
 ///
 /// Uses IMAP polling for receiving and SMTP for sending.
 /// This is a skeleton implementation with TODOs for the full email integration.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Email channel configuration.
@@ -51,10 +50,18 @@ pub struct EmailConfig {
     pub allow_from: Vec<String>,
 }
 
-fn default_imap_port() -> u16 { 993 }
-fn default_smtp_port() -> u16 { 587 }
-fn default_true() -> bool { true }
-fn default_poll_interval() -> u64 { 30 }
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_true() -> bool {
+    true
+}
+fn default_poll_interval() -> u64 {
+    30
+}
 
 impl Default for EmailConfig {
     fn default() -> Self {
@@ -91,8 +98,8 @@ impl EmailChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: EmailConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid email config: {}", e))?;
+        let config: EmailConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid email config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -104,15 +111,25 @@ impl EmailChannel {
 
 #[async_trait]
 impl Channel for EmailChannel {
-    fn name() -> &'static str { "email" }
-    fn display_name() -> &'static str { "Email" }
-    fn bus(&self) -> &MessageBus { &self.bus }
-    fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
+    fn name() -> &'static str {
+        "email"
+    }
+    fn display_name() -> &'static str {
+        "Email"
+    }
+    fn bus(&self) -> &MessageBus {
+        &self.bus
+    }
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
 
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.imap_host.is_empty() || self.config.smtp_host.is_empty() {
             error!("Email IMAP/SMTP not configured");
-            return Err(ChannelError::Config("imap_host and smtp_host required".into()));
+            return Err(ChannelError::Config(
+                "imap_host and smtp_host required".into(),
+            ));
         }
         self.running.store(true, Ordering::SeqCst);
         info!("Email channel started (IMAP polling + SMTP)");
@@ -144,12 +161,17 @@ impl Channel for EmailChannel {
         Ok(())
     }
 
-    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> { Ok(true) }
+    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> {
+        Ok(true)
+    }
 
     fn default_config() -> Map<String, serde_json::Value> {
         let config = EmailConfig::default();
         let value = serde_json::to_value(&config).unwrap_or(serde_json::Value::Object(Map::new()));
-        match value { serde_json::Value::Object(map) => map, _ => Map::new() }
+        match value {
+            serde_json::Value::Object(map) => map,
+            _ => Map::new(),
+        }
     }
 }
 

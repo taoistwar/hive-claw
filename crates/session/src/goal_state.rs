@@ -3,7 +3,6 @@
 /// Tools set `metadata[GOAL_STATE_KEY]`. Reads accept the legacy session key `thread_goal`
 /// for older sessions. Callers use `goal_state_runtime_lines`, `goal_state_ws_blob`, and
 /// `runner_wall_llm_timeout_s` without importing tool implementations.
-
 use std::collections::HashMap;
 
 use serde_json::Value;
@@ -55,8 +54,12 @@ pub fn parse_goal_state(blob: Option<&Value>) -> Option<serde_json::Map<String, 
 
 /// Lines appended inside the Runtime Context block when a goal is active.
 pub fn goal_state_runtime_lines(metadata: Option<&HashMap<String, Value>>) -> Vec<String> {
-    let Some(metadata) = metadata else { return vec![] };
-    let Some(goal) = parse_goal_state(session_goal_raw(Some(metadata))) else { return vec![] };
+    let Some(metadata) = metadata else {
+        return vec![];
+    };
+    let Some(goal) = parse_goal_state(session_goal_raw(Some(metadata))) else {
+        return vec![];
+    };
 
     if goal.get("status").and_then(|v| v.as_str()) != Some("active") {
         return vec![];

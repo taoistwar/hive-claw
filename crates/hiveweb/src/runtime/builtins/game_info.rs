@@ -379,7 +379,7 @@ async fn handle_classify_and_list(
         &category_name,
         target_client_type.unwrap_or(client_type),
         channel,
-        10
+        10,
     )
     .await
     {
@@ -525,7 +525,6 @@ async fn handle_classify_and_list(
             target_client_type.unwrap_or(""),
             client_type
         ));
-
     }
     let content = parts.join("\n");
     metadata["response_content"] = serde_json::Value::String(content);
@@ -600,9 +599,9 @@ async fn classify_game_category(
                             tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
                         }
                         // 尝试按名称匹配
-                        let matched = categories
-                            .iter()
-                            .find(|(_, name)| trimmed.contains(name.as_str()) || name.contains(&trimmed));
+                        let matched = categories.iter().find(|(_, name)| {
+                            trimmed.contains(name.as_str()) || name.contains(&trimmed)
+                        });
                         if let Some((id, name)) = matched {
                             tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
                             return Some(*id);

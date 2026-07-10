@@ -17,7 +17,11 @@ pub fn to_snake(name: &str) -> String {
             // - it's not the first character, AND
             // - previous char was lowercase, OR
             // - previous char was uppercase and next char is lowercase
-            let next_is_lower = name[i + ch.len_utf8()..].chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
+            let next_is_lower = name[i + ch.len_utf8()..]
+                .chars()
+                .next()
+                .map(|c| c.is_lowercase())
+                .unwrap_or(false);
             if i > 0 && (prev_is_lower || (prev_is_upper && next_is_lower)) {
                 result.push('_');
             }

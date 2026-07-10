@@ -2,15 +2,13 @@
 //!
 //! Uses `run_layers`, `build_node_input`, etc. from the parent module.
 
-
-
 use aws_sdk_s3::Client as S3Client;
 use serde_json::{Map, Value};
 use sqlx::MySqlPool;
-use tokio::time::timeout;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::time::timeout;
 
 use crate::runtime::capability::CapabilityRegistry;
 use crate::runtime::hook::apply_agent_context_updates;
@@ -18,8 +16,6 @@ use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 use crate::runtime::workflow::node_executor::execute_node;
 use agent::context::AgentContext;
-
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {
@@ -40,7 +36,6 @@ pub enum WorkflowError {
         message: String,
     },
 }
-
 
 /// Dependencies needed at execution time
 pub struct ExecutorDeps {
@@ -269,7 +264,14 @@ pub(super) async fn run_layers(
     workflow_id: i64,
     agent_perms: &[String],
     agent_ctx: Arc<AgentContext>,
-) -> Result<(HashMap<String, Value>, HashMap<String, Value>, HashMap<String, Value>), WorkflowError> {
+) -> Result<
+    (
+        HashMap<String, Value>,
+        HashMap<String, Value>,
+        HashMap<String, Value>,
+    ),
+    WorkflowError,
+> {
     let mut outputs: HashMap<String, Value> = HashMap::new();
     let mut node_inputs: HashMap<String, Value> = HashMap::new();
     let mut node_agent_contexts: HashMap<String, Value> = HashMap::new();
@@ -511,7 +513,8 @@ fn resolve_from_external(
             "external_input is not a JSON object".to_string(),
         )
     })?;
-    Ok(ext.get(key)
+    Ok(ext
+        .get(key)
         .cloned()
         .unwrap_or(Value::String(String::new())))
 }
@@ -598,6 +601,3 @@ fn resolve_from_agent_context(
         }
     }
 }
-
-
-

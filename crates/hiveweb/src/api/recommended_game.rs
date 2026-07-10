@@ -352,9 +352,7 @@ async fn top_recommended_games(
     let ext_pool = match &state.ext_pool {
         Some(p) => p,
         None => {
-            return Err(
-                AppError::Internal("外部数据库未配置".into()).into_response::<()>()
-            );
+            return Err(AppError::Internal("外部数据库未配置".into()).into_response::<()>());
         }
     };
     let games = svc::fetch_top_filtered(ext_pool, &req.channel, &req.client_type)
@@ -416,9 +414,7 @@ async fn execute_recommendation(
     let ext_pool = match &state.ext_pool {
         Some(p) => p,
         None => {
-            return Err(
-                AppError::Internal("外部数据库未配置".into()).into_response::<()>()
-            );
+            return Err(AppError::Internal("外部数据库未配置".into()).into_response::<()>());
         }
     };
     // 3. 查询推荐游戏
@@ -511,11 +507,10 @@ async fn execute_recommendation(
         .await
         .unwrap_or(false);
 
-    let limit_config =
-        membership::get_ai_assistant_chat_limit_config(ext_pool)
-            .await
-            .unwrap_or_else(|_| None)
-            .unwrap_or_default();
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|_| None)
+        .unwrap_or_default();
 
     let total_times = if is_vip {
         limit_config.vip_ask_times

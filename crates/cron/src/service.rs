@@ -242,7 +242,12 @@ impl CronService {
     ) -> Result<CronJob, CronError> {
         validate_schedule_for_add(&schedule)?;
         let now = now_ms();
-        let id: String = Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let id: String = Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect();
         let job = CronJob {
             id,
             name: name.to_string(),
@@ -500,9 +505,7 @@ impl Inner {
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    let backup = self.store_path.with_extension(format!(
-                        "json.corrupt-{ts}"
-                    ));
+                    let backup = self.store_path.with_extension(format!("json.corrupt-{ts}"));
                     if let Err(rename_err) = std::fs::rename(&self.store_path, &backup) {
                         error!("Cron: failed to rename corrupt store: {rename_err}");
                     } else {
@@ -666,11 +669,7 @@ async fn on_timer(inner: Arc<Mutex<Inner>>) {
                 s.jobs
                     .iter()
                     .filter(|j| {
-                        j.enabled
-                            && j.state
-                                .next_run_at_ms
-                                .map(|t| now >= t)
-                                .unwrap_or(false)
+                        j.enabled && j.state.next_run_at_ms.map(|t| now >= t).unwrap_or(false)
                     })
                     .cloned()
                     .collect()
@@ -789,9 +788,7 @@ fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
             let parsed: CronExprSchedule = normalized.parse().ok()?;
             let secs = now_ms / 1000;
             let nanos = ((now_ms % 1000) * 1_000_000) as u32;
-            let base = Utc
-                .timestamp_opt(secs, nanos)
-                .single()?;
+            let base = Utc.timestamp_opt(secs, nanos).single()?;
             let next = match schedule.tz.as_ref().and_then(|tz| tz.parse::<Tz>().ok()) {
                 Some(tz) => {
                     let base_tz = base.with_timezone(&tz);
@@ -917,10 +914,7 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "nanobot-cron-{}",
-            Uuid::new_v4().simple()
-        ));
+        let p = std::env::temp_dir().join(format!("nanobot-cron-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&p).unwrap();
         p
     }

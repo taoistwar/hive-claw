@@ -22,9 +22,9 @@ use std::collections::HashMap;
 
 use crate::api::AppState;
 use crate::api::chat_common;
+use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
-use crate::services::chat_user as svc;
 use crate::utils::error::AppError;
 
 pub fn router() -> Router<AppState> {
@@ -88,7 +88,13 @@ async fn create_new_session(
         }
     };
 
-    let cloud_info = match membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id).await {
+    let cloud_info = match membership::get_cloud_user_info_cached(
+        &state.redis,
+        ext_pool,
+        req.user_id,
+    )
+    .await
+    {
         Ok(Some(info)) => info,
         Ok(None) => {
             return AppError::BadRequest("User not found".into())
@@ -118,7 +124,11 @@ async fn create_new_session(
         }
     };
 
-    tracing::info!(user_id = req.user_id, session_id = session.id, "New session created");
+    tracing::info!(
+        user_id = req.user_id,
+        session_id = session.id,
+        "New session created"
+    );
 
     axum::Json(serde_json::json!({ "success": true })).into_response()
 }

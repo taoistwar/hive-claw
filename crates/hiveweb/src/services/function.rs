@@ -552,11 +552,13 @@ pub async fn fetch_runtime_meta(
     .fetch_optional(pool)
     .await
     .map(|row| {
-        row.map(|(kind, plugin_id, plugin_export, identifier)| FunctionRuntimeMeta {
-            kind,
-            plugin_id,
-            plugin_export,
-            identifier,
-        })
+        row.map(
+            |(kind, plugin_id, plugin_export, identifier)| FunctionRuntimeMeta {
+                kind,
+                plugin_id,
+                plugin_export,
+                identifier,
+            },
+        )
     })
 }

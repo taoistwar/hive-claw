@@ -54,28 +54,40 @@ fn body(user_id: &str, channel: &str, client_type: &str, client_version: &str) -
 async fn missing_user_id_returns_error() {
     let b = r#"{"channel":"web","client_type":"pc","client_version":"1.0"}"#;
     let (status, body) = call_top(b).await;
-    assert!(status.is_client_error(), "expected 4xx, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "expected 4xx, got {status}: {body}"
+    );
 }
 
 #[tokio::test]
 async fn missing_channel_returns_error() {
     let b = r#"{"user_id":"123","client_type":"pc","client_version":"1.0"}"#;
     let (status, body) = call_top(b).await;
-    assert!(status.is_client_error(), "expected 4xx, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "expected 4xx, got {status}: {body}"
+    );
 }
 
 #[tokio::test]
 async fn missing_client_type_returns_error() {
     let b = r#"{"user_id":"123","channel":"web","client_version":"1.0"}"#;
     let (status, body) = call_top(b).await;
-    assert!(status.is_client_error(), "expected 4xx, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "expected 4xx, got {status}: {body}"
+    );
 }
 
 #[tokio::test]
 async fn missing_client_version_returns_error() {
     let b = r#"{"user_id":"123","channel":"web","client_type":"pc"}"#;
     let (status, body) = call_top(b).await;
-    assert!(status.is_client_error(), "expected 4xx, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "expected 4xx, got {status}: {body}"
+    );
 }
 
 // ── T002: empty required params ──
@@ -83,8 +95,14 @@ async fn missing_client_version_returns_error() {
 #[tokio::test]
 async fn empty_params_return_error() {
     let (status, body) = call_top(&body("", "", "", "")).await;
-    assert!(status.is_client_error(), "expected 4xx, got {status}: {body}");
-    assert!(body.contains("不能为空"), "expected non-empty error: {body}");
+    assert!(
+        status.is_client_error(),
+        "expected 4xx, got {status}: {body}"
+    );
+    assert!(
+        body.contains("不能为空"),
+        "expected non-empty error: {body}"
+    );
 }
 
 // ── T003: valid request ──

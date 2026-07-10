@@ -2,7 +2,6 @@
 ///
 /// Uses the python-telegram-bot SDK in Python; this is a skeleton implementation
 /// with TODOs for the full teloxide/grammers integration.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Telegram channel configuration.
@@ -49,10 +48,18 @@ pub struct TelegramConfig {
     pub transcription: Option<serde_json::Value>,
 }
 
-fn default_pool_size() -> usize { 32 }
-fn default_pool_timeout() -> f64 { 5.0 }
-fn default_true() -> bool { true }
-fn default_edit_interval() -> f64 { 0.6 }
+fn default_pool_size() -> usize {
+    32
+}
+fn default_pool_timeout() -> f64 {
+    5.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_edit_interval() -> f64 {
+    0.6
+}
 
 impl Default for TelegramConfig {
     fn default() -> Self {
@@ -88,8 +95,8 @@ impl TelegramChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: TelegramConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid telegram config: {}", e))?;
+        let config: TelegramConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid telegram config: {}", e))?;
         Ok(Self {
             config,
             bus,

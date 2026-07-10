@@ -2,8 +2,8 @@
 //! `contracts/openresponses-v1.md` §Validation rules (the rows added by
 //! T059 for FR-003a).
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use hiveclaw::http;
 use serde_json::json;
 use tokio::net::TcpListener;

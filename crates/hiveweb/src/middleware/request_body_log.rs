@@ -7,11 +7,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 
 pub async fn log_request_body_middleware(request: Request, next: Next) -> Response {
-    let is_dev = std::env::var("APP_ENV")
-        .map(|v| v == "development" || v == "dev")
-        .unwrap_or(true);
-
-    if !is_dev || request.method() != Method::POST {
+    if crate::app_mode::get().is_production() || request.method() != Method::POST {
         return next.run(request).await;
     }
 

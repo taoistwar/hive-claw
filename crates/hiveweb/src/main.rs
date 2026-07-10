@@ -7,6 +7,7 @@ use tracing_subscriber::{
 };
 
 mod api;
+mod app_mode;
 mod cache;
 mod db;
 mod middleware;
@@ -23,26 +24,22 @@ async fn main() -> anyhow::Result<()> {
     // Load .env file if it exists, but don't fail if it doesn't
     match dotenvy::dotenv_override() {
         Ok(path) => {
-            if is_dev(cli.mode.as_deref()) {
+            if !app_mode::init(cli.mode.as_deref()).is_production() {
                 println!("[ENV] Loaded .env from: {}", path.display());
             }
         }
         Err(_) => {
-            if is_dev(cli.mode.as_deref()) {
+            if !app_mode::init(cli.mode.as_deref()).is_production() {
                 println!("[ENV] No .env file found, using environment variables");
             }
         }
     }
 
     // Initialize logging
-    if is_dev(cli.mode.as_deref()) {
-        // dev: human-readable debug output to stdout
-        println!("init console tracing");
-        console_tracing(true)?
-    } else {
-        // prod: file output with daily rotation, no console output
-        file_tracing()?;
-        console_tracing(false)?;
+    match app_mode::get() {
+        app_mode::AppMode::Production => file_tracing()?,
+        app_mode::AppMode::Development => console_tracing()?,
+        app_mode::AppMode::Test => test_tracing()?,
     }
 
     let host = std::env::var("HIVEWEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -133,7 +130,7 @@ struct Cli {
     /// Port to listen on (overrides HIVEWEB_PORT env var)
     #[arg(long)]
     port: Option<u16>,
-    /// 运行模式: dev | prod（优先级高于 APP_ENV 环境变量）
+    /// 运行模式: prod | dev | test（优先级高于 APP_ENV 环境变量）
     #[arg(long)]
     mode: Option<String>,
 }
@@ -166,7 +163,7 @@ pub fn file_tracing() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
     Ok(())
 }
-pub fn console_tracing(pretty: bool) -> anyhow::Result<()> {
+pub fn console_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::{
         self, EnvFilter, filter::filter_fn, fmt::time::OffsetTime, prelude::*,
     };
@@ -186,55 +183,69 @@ pub fn console_tracing(pretty: bool) -> anyhow::Result<()> {
 
     let sqlx_layer = SqlxLayer::new();
 
-    if pretty {
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .pretty()
-            .with_ansi(true)
-            .with_file(true)
-            .with_writer(std::io::stdout)
-            .with_timer(logger_time)
-            .with_target(true)
-            .with_level(true)
-            .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .with(sqlx_layer)
-            .init();
-    } else {
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_ansi(true)
-            .with_file(true)
-            .with_writer(std::io::stdout)
-            .with_timer(logger_time)
-            .with_target(true)
-            .with_level(true)
-            .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .with(sqlx_layer)
-            .init();
-    };
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_ansi(true)
+        .with_file(true)
+        .with_writer(std::io::stdout)
+        .with_timer(logger_time)
+        .with_target(true)
+        .with_level(true)
+        .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(sqlx_layer)
+        .init();
 
     Ok(())
 }
 
-fn is_dev(cli_mode: Option<&str>) -> bool {
-    // --mode 命令行参数优先级最高
-    if let Some(m) = cli_mode {
-        let m = m.trim().to_ascii_lowercase();
-        if m == "dev" || m == "development" {
-            return true;
-        }
-        if m == "prod" || m == "production" {
-            return false;
-        }
-    }
-    // 回退到 APP_ENV 环境变量
-    std::env::var("APP_ENV")
-        .map(|v| v == "development" || v == "dev")
-        .unwrap_or(true)
+/// Test mode: compact console output plus daily JSON file output.
+pub fn test_tracing() -> anyhow::Result<()> {
+    use tracing_subscriber::{filter::filter_fn, prelude::*};
+
+    use hiveweb::sqlx::sqlx_layer::SqlxLayer;
+    use time::{UtcOffset, macros::format_description};
+
+    let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+    std::fs::create_dir_all(&log_dir)?;
+    let file_appender = tracing_appender::rolling::daily(log_dir, "hiveweb.log");
+    let (non_blocking_appender, guard) = tracing_appender::non_blocking(file_appender);
+    std::mem::forget(guard);
+
+    let file_layer = fmt::layer()
+        .json()
+        .with_target(true)
+        .with_level(true)
+        .with_ansi(false)
+        .with_timer(fmt::time::SystemTime::default())
+        .with_writer(non_blocking_appender);
+
+    let offset = UtcOffset::from_hms(8, 0, 0).unwrap_or(UtcOffset::UTC);
+    let logger_time = OffsetTime::new(
+        offset,
+        format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
+    );
+    let console_layer = fmt::layer()
+        .with_ansi(true)
+        .with_file(true)
+        .with_writer(std::io::stdout)
+        .with_timer(logger_time)
+        .with_target(true)
+        .with_level(true)
+        .with_filter(filter_fn(|metadata| metadata.target() != "sqlx::query"));
+
+    let env_filter =
+        EnvFilter::new("sqlx::query=debug,sqlx::formatted_query=debug,hiveweb=debug,info");
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(file_layer)
+        .with(console_layer)
+        .with(SqlxLayer::new())
+        .init();
+
+    Ok(())
 }
 
 fn mask_url_password(url: &str) -> String {

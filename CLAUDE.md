@@ -16,6 +16,7 @@ cargo build --workspace         # build everything (needs system libs for GUI)
 
 # Run server
 export DATABASE_URL=mysql://... REDIS_URL=redis://...
+cargo run -p hiveweb --bin migrate  # required first in development/test; server never creates tables
 cargo run -p hiveweb            # starts on port from HIVEWEB_PORT or 3000
 
 # Database management

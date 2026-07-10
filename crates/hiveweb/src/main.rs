@@ -55,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = db::connection::create_pool(&database_url).await?;
 
+    // Schema creation and migrations are intentionally excluded from service startup.
+    // Production schemas are provisioned before deployment; development and test
+    // environments must run `cargo run -p hiveweb --bin migrate` before this binary.
+
     // Mask password from database URL for logging
     let db_url_display = mask_url_password(&database_url);
     tracing::info!("Database initialized: {}", db_url_display);

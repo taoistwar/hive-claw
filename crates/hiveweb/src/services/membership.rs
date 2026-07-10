@@ -19,26 +19,67 @@ struct CcUserMembership {
 
 /// Check if a user has an active VIP membership in the external database.
 pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
-    sqlx::query_as::<_, CcUserMembership>(
+    let started_at = std::time::Instant::now();
+    let sql = format!(
         r#"SELECT id, membership_level, effective_end_time FROM cc_user_membership
-        WHERE user_id = ? and effective_end_time > now() AND effective_start_time <= now() LIMIT 1"#,
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .map(|row| {
-        row.map_or(false, |m| {
+        WHERE user_id = {} AND effective_end_time > NOW()
+        AND effective_start_time <= NOW() LIMIT 1"#,
+        user_id
+    );
+    tracing::debug!(
+        operation = "check_vip_membership",
+        user_id,
+        sql,
+        "checking active VIP membership"
+    );
+
+    let row = sqlx::query_as::<_, CcUserMembership>(&sql)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await;
+
+    match row {
+        Ok(Some(membership)) => {
             let now = chrono::Utc::now().naive_utc();
+            let is_active = membership
+                .effective_end_time
+                .is_none_or(|end_time| end_time >= now);
             tracing::debug!(
-                user_id = user_id,
-                membership_level = ?m.membership_level,
-                effective_end_time = ?m.effective_end_time,
-                now=?now,
-                "check_vip_membership: found active membership"
+                operation = "check_vip_membership",
+                outcome = "membership_found",
+                user_id,
+                membership_id = membership.id,
+                membership_level = ?membership.membership_level,
+                effective_end_time = ?membership.effective_end_time,
+                now = ?now,
+                is_active,
+                duration_ms = started_at.elapsed().as_millis(),
+                "finished checking VIP membership"
             );
-            m.effective_end_time.map_or(true, |end| end >= now)
-        })
-    })
+            Ok(is_active)
+        }
+        Ok(None) => {
+            tracing::debug!(
+                operation = "check_vip_membership",
+                outcome = "membership_not_found",
+                user_id,
+                duration_ms = started_at.elapsed().as_millis(),
+                "finished checking VIP membership"
+            );
+            Ok(false)
+        }
+        Err(error) => {
+            tracing::debug!(
+                operation = "check_vip_membership",
+                outcome = "query_error",
+                user_id,
+                error = %error,
+                duration_ms = started_at.elapsed().as_millis(),
+                "failed to check VIP membership"
+            );
+            Err(error)
+        }
+    }
 }
 
 /// Get cloud_user uid and nickname for a given user ID.
@@ -337,7 +378,6 @@ pub async fn resolve_game_label_names(
 
     Ok(())
 }
-
 
 /// Cached version of `get_cloud_user_info`.
 pub async fn get_cloud_user_info_cached(

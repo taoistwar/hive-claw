@@ -39,11 +39,10 @@ fn disk_status_text(status: &str) -> String {
 }
 
 fn format_disk_total_size(size_gb: f64) -> String {
+    if size_gb <= 0f64 {
+        return "".to_string();
+    }
     format!("{size_gb}GB")
-}
-
-fn missing_disk_response(category: &str, has_disk: bool) -> Option<Value> {
-    (category == "disk" && !has_disk).then(|| json!({"message": "未查询到云硬盘的购买记录。"}))
 }
 
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
@@ -305,9 +304,6 @@ pub async fn query_balance_async_impl(
     } else {
         None
     };
-    if let Some(response) = missing_disk_response(category, disk_row.is_some()) {
-        return Ok(response);
-    }
 
     // 1.5 查询会员与订阅状态
     let membership_subscriptions =

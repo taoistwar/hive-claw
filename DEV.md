@@ -1,9 +1,15 @@
 # 测试环境
 
-## 数据库
+## 服务器
 
-DATABASE_URL=mysql://hiveweb:hiveweb@172.16.208.111:13306/hiveweb
+ssh
 
-## 配置文件
+- 主机：172.16.208.113
+- 端口：2299
+- 用户名：haima
+- 密码：
 
-/home/developer/agent/hive-claw/.env
+
+### 安装目录
+
+/opt/hive-claw/

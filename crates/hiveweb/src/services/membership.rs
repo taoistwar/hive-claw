@@ -296,7 +296,14 @@ FROM (
 	    (type = 9 AND (expire_time IS NULL OR expire_time > UNIX_TIMESTAMP() * 1000))
 	  )
 	  AND (consume_label IS NULL
-	       OR NOT JSON_CONTAINS(consume_label, '"FREE_CARD"', '$.gameLabelList'))
+	       OR
+           (
+                NOT JSON_CONTAINS(consume_label, '"FREE_CARD"', '$.gameLabelList')
+                AND
+                    NOT JSON_CONTAINS(consume_label, '"BOX_CARD"', '$.gameLabelList')
+                AND
+                    NOT JSON_CONTAINS(consume_label, '"BOX_CARD_MEMBER"', '$.gameLabelList')
+           ))
 ) t1
 LEFT JOIN (
 	SELECT * FROM cc_order WHERE user_id = ?

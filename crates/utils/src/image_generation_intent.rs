@@ -1,5 +1,4 @@
 /// Helpers for WebUI image-generation intent metadata.
-
 use std::collections::HashMap;
 
 use serde_json::Value;
@@ -24,11 +23,9 @@ pub fn image_generation_prompt(content: &str, metadata: Option<&HashMap<String, 
                  When calling generate_image, pass aspect_ratio={ar:?}."
             )
         }
-        _ => {
-            "The user selected WebUI image generation mode. Use the generate_image tool. \
+        _ => "The user selected WebUI image generation mode. Use the generate_image tool. \
              Choose the most suitable aspect_ratio yourself from the prompt and intended use."
-                .to_string()
-        }
+            .to_string(),
     };
 
     format!("{content}\n\n[WebUI image generation instruction: {instruction}]")

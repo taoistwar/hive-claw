@@ -2,7 +2,6 @@
 ///
 /// Connects to a Node.js bridge (@whiskeysockets/baileys) via WebSocket.
 /// This is a skeleton implementation with TODOs.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// WhatsApp channel configuration.
@@ -35,7 +34,9 @@ pub struct WhatsAppConfig {
     pub transcription: Option<serde_json::Value>,
 }
 
-fn default_bridge_url() -> String { "ws://localhost:3001".to_string() }
+fn default_bridge_url() -> String {
+    "ws://localhost:3001".to_string()
+}
 
 impl Default for WhatsAppConfig {
     fn default() -> Self {
@@ -64,8 +65,8 @@ impl WhatsAppChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: WhatsAppConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid whatsapp config: {}", e))?;
+        let config: WhatsAppConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid whatsapp config: {}", e))?;
         Ok(Self {
             config,
             bus,

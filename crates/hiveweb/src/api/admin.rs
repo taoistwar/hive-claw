@@ -145,7 +145,9 @@ pub async fn get_admin(
 ) -> ApiResponse<AdminPublic> {
     let admin = match admin::get_admin_by_id(&state.pool, id).await {
         Ok(Some(admin)) => admin,
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -184,7 +186,9 @@ pub async fn create_admin(
 
     let target_role = match Role::try_from(req.role) {
         Ok(role) => role,
-        Err(_) => return AppError::BadRequest("Invalid role value".to_string()).into_response(),
+        Err(_) => {
+            return AppError::BadRequest("Invalid role value".to_string()).into_response();
+        }
     };
 
     if !caller_role.can_modify_role(&target_role) {
@@ -259,7 +263,9 @@ pub async fn update_admin(
 
     let target_role = match Role::try_from(req.role) {
         Ok(role) => role,
-        Err(_) => return AppError::BadRequest("Invalid role value".to_string()).into_response(),
+        Err(_) => {
+            return AppError::BadRequest("Invalid role value".to_string()).into_response();
+        }
     };
 
     if !caller_role.can_modify_role(&target_role) {
@@ -280,13 +286,19 @@ pub async fn update_admin(
                 .into_response();
             }
         }
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
-        Err(_) => return AppError::Internal("Service unavailable".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
+        Err(_) => {
+            return AppError::Internal("Service unavailable".to_string()).into_response();
+        }
     }
 
     let updated_admin = match admin::update_admin(&state.pool, id, &req.nickname, req.role).await {
         Ok(admin) => admin,
-        Err(_) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Err(_) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
     };
 
     if let Err(e) = audit_event(

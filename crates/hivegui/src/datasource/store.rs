@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::{
+    Pool, Row, Sqlite,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    Pool, Sqlite, Row,
 };
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -29,8 +29,8 @@ impl Store {
         std::fs::create_dir_all(db_dir)?;
 
         let db_path = db_dir.join(DB_FILENAME);
-        let conn_opts = SqliteConnectOptions::from_str(&db_path.to_string_lossy())?
-            .create_if_missing(true);
+        let conn_opts =
+            SqliteConnectOptions::from_str(&db_path.to_string_lossy())?.create_if_missing(true);
 
         let pool = SqlitePoolOptions::new().connect_with(conn_opts).await?;
 
@@ -51,11 +51,9 @@ impl Store {
         .execute(&pool)
         .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_data_sources_name ON data_sources(name)",
-        )
-        .execute(&pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_data_sources_name ON data_sources(name)")
+            .execute(&pool)
+            .await?;
 
         let key = Self::load_or_generate_key(db_dir)?;
         let crypto = Crypto::new(&key);
@@ -175,9 +173,9 @@ impl Store {
 
         let id = result.last_insert_rowid();
 
-        self.get(id).await?.ok_or_else(|| {
-            anyhow::anyhow!("Failed to retrieve newly created data source")
-        })
+        self.get(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Failed to retrieve newly created data source"))
     }
 
     pub async fn update(

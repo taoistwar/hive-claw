@@ -159,38 +159,44 @@ async fn assistant_chat(
         }
     };
 
-    // 5. 校验 user_id 是否存在于外部 cloud_user 表（Redis 缓存优先）
-    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, req.user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // 5. 获取 cloud_user 信息并校验用户是否存在（缓存优先）
+    let cloud_info = match membership::get_cloud_user_info_cached(
+        &state.redis,
+        ext_pool,
+        req.user_id,
+    )
+    .await
+    {
+        Ok(Some(info)) => info,
+        Ok(None) => {
             return AppError::BadRequest("User not found".into())
                 .into_response::<()>()
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud_cached 查询失败");
+            tracing::error!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached 查询失败");
             return AppError::Internal("用户数据查询失败，请稍后重试".into())
                 .into_response::<()>()
                 .into_response();
         }
-    }
+    };
 
-    // 6. 获取会员等级 & 判断是否 VIP（Redis 缓存优先）
-    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, req.user_id)
+    // 6. 获取会员等级 & 判断是否 VIP
+    let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership_cached 查询失败，降级为非VIP");
+            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
             false
         });
-
+    tracing::debug!(user_id = req.user_id, is_vip, "用户 VIP 状态");
     // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
-    let limit_config =
-        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
-                membership::AssistantChatLimitConfig::default()
-            });
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
+            None
+        })
+        .unwrap_or_default();
 
     let max_times = if is_vip {
         limit_config.vip_ask_times
@@ -228,20 +234,10 @@ async fn assistant_chat(
     }
     let _guard = SseConcurrencyGuard {
         actor_id: req.user_id,
-        is_admin: false,
     };
 
     // 8. 内部 users 表同步（不存在则创建）
-    let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached failed");
-            None
-        });
-    let (uid, nickname) = cloud_info
-        .as_ref()
-        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
-        .unwrap_or((None, None));
+    let (uid, nickname) = (Some(cloud_info.0.as_str()), Some(cloud_info.1.as_str()));
 
     if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -497,6 +493,9 @@ async fn check_and_incr_daily_limit(
     }
 
     if current > max_times {
+        // rollback: 超限不计入
+        let _: Result<(), _> = conn.decr(key, 1).await;
+        let max_times = max_times - 1;
         return Err(Some(format!(
             "Daily limit reached ({}/{})",
             max_times, max_times
@@ -565,10 +564,7 @@ async fn assistant_quota(
     }
 
     // 2. 解析 user_id
-    let user_id: i64 = match params
-        .get("user_id")
-        .and_then(|v| v.parse().ok())
-    {
+    let user_id: i64 = match params.get("user_id").and_then(|v| v.parse().ok()) {
         Some(uid) if uid > 0 => uid,
         _ => {
             return AppError::BadRequest("user_id must be positive".into())
@@ -588,15 +584,15 @@ async fn assistant_quota(
     };
 
     // 4. 校验 user_id 是否存在于外部 cloud_user 表
-    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
+    match membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
             return AppError::BadRequest("User not found".into())
                 .into_response::<()>()
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id, error = %e, "quota: user_exists_in_cloud_cached failed");
+            tracing::error!(user_id, error = %e, "quota: get_cloud_user_info_cached failed");
             return AppError::Internal("Query failed".into())
                 .into_response::<()>()
                 .into_response();
@@ -604,20 +600,20 @@ async fn assistant_quota(
     }
 
     // 5. 获取会员等级 & 限流配置
-    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+    let is_vip = membership::check_vip_membership(ext_pool, user_id)
         .await
         .unwrap_or_else(|e| {
-            tracing::error!(user_id, error = %e, "quota: check_vip_membership_cached failed");
+            tracing::error!(user_id, error = %e, "quota: check_vip_membership failed");
             false
         });
-
-    let limit_config =
-        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "quota: limit config failed, using default");
-                membership::AssistantChatLimitConfig::default()
-            });
+    tracing::debug!(user_id, is_vip, "quota: user VIP status");
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "quota: limit config failed, using default");
+            None
+        })
+        .unwrap_or_default();
 
     let total_times = if is_vip {
         limit_config.vip_ask_times

@@ -249,21 +249,19 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         Ok(e) => e,
         Err(e) => {
             let reply = ReplyEnvelope::err(4000, format!("invalid host_call envelope: {e}"));
-            runtime_audit::record(
-                AuditRecord {
-                    request_id,
-                    session_id: ctx.session_id,
-                    agent_id: Some(ctx.agent_id),
-                    plugin_id: Some(ctx.plugin_id),
-                    function_id: ctx.function_id,
-                    capability: None,
-                    event_type: "capability_call",
-                    outcome: "error",
-                    elapsed_ms: Some(t0.elapsed().as_millis() as i32),
-                    error_message: Some("invalid envelope"),
-                    payload_summary: None,
-                },
-            );
+            runtime_audit::record(AuditRecord {
+                request_id,
+                session_id: ctx.session_id,
+                agent_id: Some(ctx.agent_id),
+                plugin_id: Some(ctx.plugin_id),
+                function_id: ctx.function_id,
+                capability: None,
+                event_type: "capability_call",
+                outcome: "error",
+                elapsed_ms: Some(t0.elapsed().as_millis() as i32),
+                error_message: Some("invalid envelope"),
+                payload_summary: None,
+            });
             return serde_json::to_string(&reply).unwrap_or_default();
         }
     };
@@ -272,21 +270,19 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     let cap_name = envelope.capability.clone();
     if registry.lookup(&cap_name).is_none() {
         let reply = ReplyEnvelope::err(4045, format!("unknown capability: {cap_name}"));
-        runtime_audit::record(
-            AuditRecord {
-                request_id,
-                session_id: ctx.session_id,
-                agent_id: Some(ctx.agent_id),
-                plugin_id: Some(ctx.plugin_id),
-                function_id: ctx.function_id,
-                capability: Some(&cap_name),
-                event_type: "capability_denied",
-                outcome: "denied",
-                elapsed_ms: Some(t0.elapsed().as_millis() as i32),
-                error_message: Some("unknown capability"),
-                payload_summary: Some(runtime_audit::redact_args(&envelope.args)),
-            },
-        );
+        runtime_audit::record(AuditRecord {
+            request_id,
+            session_id: ctx.session_id,
+            agent_id: Some(ctx.agent_id),
+            plugin_id: Some(ctx.plugin_id),
+            function_id: ctx.function_id,
+            capability: Some(&cap_name),
+            event_type: "capability_denied",
+            outcome: "denied",
+            elapsed_ms: Some(t0.elapsed().as_millis() as i32),
+            error_message: Some("unknown capability"),
+            payload_summary: Some(runtime_audit::redact_args(&envelope.args)),
+        });
         return serde_json::to_string(&reply).unwrap_or_default();
     }
 
@@ -305,21 +301,19 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     };
     if !granted.contains(&cap_name) {
         let reply = ReplyEnvelope::err(4030, format!("当前 Agent 未授权调用能力「{cap_name}」"));
-        runtime_audit::record(
-            AuditRecord {
-                request_id,
-                session_id: ctx.session_id,
-                agent_id: Some(ctx.agent_id),
-                plugin_id: Some(ctx.plugin_id),
-                function_id: ctx.function_id,
-                capability: Some(&cap_name),
-                event_type: "capability_denied",
-                outcome: "denied",
-                elapsed_ms: Some(t0.elapsed().as_millis() as i32),
-                error_message: Some("capability not granted"),
-                payload_summary: Some(runtime_audit::redact_args(&envelope.args)),
-            },
-        );
+        runtime_audit::record(AuditRecord {
+            request_id,
+            session_id: ctx.session_id,
+            agent_id: Some(ctx.agent_id),
+            plugin_id: Some(ctx.plugin_id),
+            function_id: ctx.function_id,
+            capability: Some(&cap_name),
+            event_type: "capability_denied",
+            outcome: "denied",
+            elapsed_ms: Some(t0.elapsed().as_millis() as i32),
+            error_message: Some("capability not granted"),
+            payload_summary: Some(runtime_audit::redact_args(&envelope.args)),
+        });
         return serde_json::to_string(&reply).unwrap_or_default();
     }
 
@@ -376,7 +370,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         },
         S3_READ => match deps.s3.as_ref() {
             None => (
-                ReplyEnvelope::err(codes::PLUGIN_SYSTEM_DISABLED, "插件系统已关闭，s3.read 不可用"),
+                ReplyEnvelope::err(
+                    codes::PLUGIN_SYSTEM_DISABLED,
+                    "插件系统已关闭，s3.read 不可用",
+                ),
                 "error",
                 Some("plugin system disabled".into()),
             ),
@@ -387,7 +384,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         },
         S3_WRITE => match deps.s3.as_ref() {
             None => (
-                ReplyEnvelope::err(codes::PLUGIN_SYSTEM_DISABLED, "插件系统已关闭，s3.write 不可用"),
+                ReplyEnvelope::err(
+                    codes::PLUGIN_SYSTEM_DISABLED,
+                    "插件系统已关闭，s3.write 不可用",
+                ),
                 "error",
                 Some("plugin system disabled".into()),
             ),
@@ -421,24 +421,22 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         ),
     };
 
-    runtime_audit::record(
-        AuditRecord {
-            request_id,
-            session_id: ctx.session_id,
-            agent_id: Some(ctx.agent_id),
-            plugin_id: Some(ctx.plugin_id),
-            function_id: ctx.function_id,
-            capability: Some(&cap_name),
-            event_type: "capability_call",
-            outcome,
-            elapsed_ms: Some(t0.elapsed().as_millis() as i32),
-            error_message: err_msg.as_deref(),
-            payload_summary: Some(json!({
-                "args": runtime_audit::redact_args(&envelope.args),
-                "ok": reply.ok,
-            })),
-        },
-    );
+    runtime_audit::record(AuditRecord {
+        request_id,
+        session_id: ctx.session_id,
+        agent_id: Some(ctx.agent_id),
+        plugin_id: Some(ctx.plugin_id),
+        function_id: ctx.function_id,
+        capability: Some(&cap_name),
+        event_type: "capability_call",
+        outcome,
+        elapsed_ms: Some(t0.elapsed().as_millis() as i32),
+        error_message: err_msg.as_deref(),
+        payload_summary: Some(json!({
+            "args": runtime_audit::redact_args(&envelope.args),
+            "ok": reply.ok,
+        })),
+    });
 
     serde_json::to_string(&reply).unwrap_or_default()
 }

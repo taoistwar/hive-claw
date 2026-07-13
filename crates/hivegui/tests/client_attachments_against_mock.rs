@@ -2,10 +2,10 @@
 //! asserts the outbound JSON has the FR-003a shape and that the file
 //! bytes round-trip through base64.
 
-use axum::{extract::Request, http::StatusCode, response::IntoResponse, routing::post, Router};
-use base64::engine::general_purpose::STANDARD as B64;
+use axum::{Router, extract::Request, http::StatusCode, response::IntoResponse, routing::post};
 use base64::Engine;
-use hivegui::client::{self, sync, OpenResponsesRequest};
+use base64::engine::general_purpose::STANDARD as B64;
+use hivegui::client::{self, OpenResponsesRequest, sync};
 use hivegui::model::conversation::{Attachment, AttachmentId, AttachmentPayload};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;

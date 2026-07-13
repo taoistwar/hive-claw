@@ -221,14 +221,13 @@ async fn execute_call_function(
             let input_json = serde_json::to_string(&function_input)
                 .map_err(|e| ActionError(format!("args serialize: {e}")))?;
             // 查询当前 agent 的 capability 权限
-            let perms: Vec<String> = sqlx::query_as(
-                "SELECT capability FROM agent_permissions WHERE agent_id = ?",
-            )
-            .bind(ctx.agent_id)
-            .fetch_all(pool.as_ref())
-            .await
-            .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
-            .unwrap_or_default();
+            let perms: Vec<String> =
+                sqlx::query_as("SELECT capability FROM agent_permissions WHERE agent_id = ?")
+                    .bind(ctx.agent_id)
+                    .fetch_all(pool.as_ref())
+                    .await
+                    .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
+                    .unwrap_or_default();
             let dispatch_ctx = DispatchCtx {
                 request_id: None,
                 session_id: Some(ctx.session_id),
@@ -285,14 +284,13 @@ async fn execute_call_workflow(
     inject_agent_context_snapshot(&mut workflow_input, &deps.agent_ctx);
 
     // 查询当前 agent 的 capability 权限
-    let perms: Vec<String> = sqlx::query_as(
-        "SELECT capability FROM agent_permissions WHERE agent_id = ?",
-    )
-    .bind(ctx.agent_id)
-    .fetch_all(&*pool)
-    .await
-    .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
-    .unwrap_or_default();
+    let perms: Vec<String> =
+        sqlx::query_as("SELECT capability FROM agent_permissions WHERE agent_id = ?")
+            .bind(ctx.agent_id)
+            .fetch_all(&*pool)
+            .await
+            .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
+            .unwrap_or_default();
 
     let executor_deps = super::workflow::ExecutorDeps {
         pool: (*pool).clone(),
@@ -728,7 +726,9 @@ pub enum HookError {
 impl std::fmt::Display for HookError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HookError::BlockingFailed(s) | HookError::Timeout(s) => write!(f, "{s}"),
+            HookError::BlockingFailed(s) | HookError::Timeout(s) => {
+                write!(f, "{s}")
+            }
         }
     }
 }

@@ -55,10 +55,7 @@ fn max_hops() -> usize {
 /// When history count >= 5, old assistant messages (all but the last one) have their
 /// content replaced with a placeholder to reduce context size, while the last assistant
 /// message retains its original content.
-fn build_chat_messages<T: HasRoleContent>(
-    history: &[T],
-    user_content: &str,
-) -> Vec<Value> {
+fn build_chat_messages<T: HasRoleContent>(history: &[T], user_content: &str) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
     let mut last_user_content: Option<String> = None;
 
@@ -70,45 +67,65 @@ fn build_chat_messages<T: HasRoleContent>(
         .map(|(i, _)| i);
 
     let should_trim = history.len() >= 5;
+    tracing::debug!(
+        history_len = history.len(),
+        should_trim,
+        last_assistant_idx,
+        "build_chat_messages: start"
+    );
 
     for (idx, m) in history.iter().enumerate() {
+        tracing::debug!(
+            idx,
+            role = m.role_ref(),
+            "build_chat_messages: processing message"
+        );
         let c = m.content_ref();
-        let ext = m.extensions_ref();
+        let extensions = m.extensions_ref();
         let has_content = c.is_some_and(|s| !s.trim().is_empty());
 
-        // Filter out usage/card extensions, keep only non-card/non-usage types
-        let filtered_ext = ext.and_then(|v| {
-            v.as_array().map(|arr| {
-                let filtered: Vec<Value> = arr
-                    .iter()
-                    .filter(|e| {
-                        let ct = e
-                            .get("content_type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        ct != "usage" && ct != "card"
-                    })
-                    .cloned()
-                    .collect();
-                if filtered.is_empty() {
-                    None
-                } else {
-                    Some(Value::Array(filtered))
-                }
-            })
-            .flatten()
-        });
-        let has_extensions = filtered_ext.is_some();
-
-        if !has_content && !has_extensions {
-            continue;
-        }
-
         let is_assistant = m.role_ref() == "assistant";
+        let mut has_extensions = false;
+        let mut filtered_ext: Option<Value> = None;
+        if is_assistant {
+            // Filter out usage/card extensions, keep only non-card/non-usage types
+            filtered_ext = extensions.and_then(|v| {
+                v.as_array()
+                    .map(|arr| {
+                        let filtered: Vec<Value> = arr
+                            .iter()
+                            .filter(|e| {
+                                let ct =
+                                    e.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                                ct != "usage" && ct != "card"
+                            })
+                            .cloned()
+                            .collect();
+                        if filtered.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Array(filtered))
+                        }
+                    })
+                    .flatten()
+            });
+            has_extensions = filtered_ext.is_some();
+
+            if !has_content && !has_extensions {
+                tracing::debug!(
+                    idx,
+                    role = m.role_ref(),
+                    "build_chat_messages: skipping empty message"
+                );
+                messages.push(json!({"role": "assistant", "content": "[已省略]"}));
+                continue;
+            }
+        }
         let is_last_assistant = last_assistant_idx == Some(idx);
 
         // Old assistant messages: replace entire content with placeholder
         if should_trim && is_assistant && !is_last_assistant {
+            tracing::debug!(idx, "build_chat_messages: trimming old assistant message");
             messages.push(json!({"role": "assistant", "content": "[已省略]"}));
             continue;
         }
@@ -133,9 +150,13 @@ fn build_chat_messages<T: HasRoleContent>(
 
     // Only append user_content if it's not already the last user message in history
     if last_user_content.as_deref() != Some(user_content) {
+        tracing::debug!("build_chat_messages: appending current user message");
         messages.push(json!({"role": "user", "content": user_content}));
+    } else {
+        tracing::debug!("build_chat_messages: user content already at end, skipping append");
     }
 
+    tracing::debug!(message_count = messages.len(), "build_chat_messages: done");
     messages
 }
 
@@ -143,20 +164,26 @@ fn build_chat_messages<T: HasRoleContent>(
 /// 去掉 id / reply / render_hints / data 等包装层。
 fn flatten_extension(e: &ExtensionContent) -> Value {
     let mut flat = serde_json::Map::new();
+    tracing::debug!(content_type = %e.content_type, "flatten_extension: start");
     flat.insert(
         "content_type".to_string(),
         json!(e.content_type.to_string()),
     );
+    tracing::debug!("flatten_extension: inserted content_type");
     if let Value::Object(data_obj) = &e.data {
+        tracing::debug!(key_count = data_obj.len(), "flatten_extension: data keys");
         for (k, v) in data_obj {
-            tracing::debug!(key = %k, value = %v, "flatten extension data");
+            tracing::debug!(key = %k, value = %v, "flatten_extension: inserting data key");
             flat.insert(k.clone(), v.clone());
         }
+    } else {
+        tracing::debug!("flatten_extension: data is not an object, skipping");
     }
+    tracing::debug!(flat_key_count = flat.len(), "flatten_extension: done");
     Value::Object(flat)
 }
 
-/// 根据 extensions 中空数据情况重置 content
+/// 根据 extensions 中数据情况重置 content
 fn rewrite_content_for_empty_extensions(
     content: Option<String>,
     extensions_for_sse: &Option<Value>,
@@ -187,36 +214,7 @@ fn rewrite_content_for_empty_extensions(
             }
         }
 
-        // game_list 卡片：根据 games 列表生成推荐文案
-        if payload_type == Some("game_list") {
-            if let Some(games) = payload.and_then(|p| p.get("games")).and_then(|v| v.as_array()) {
-                if !games.is_empty() {
-                    let mut parts: Vec<String> = Vec::new();
-                    parts.push("很遗憾，您查询的这款游戏暂未在平台上架。为您推荐相似游戏，这些游戏支持云端畅玩，您可以点击下方游戏卡片查看详情。".into());
-                    parts.push(String::new());
-                    for game in games {
-                        let name = game.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let desc = game.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                        if !name.is_empty() {
-                            let desc_part = if !desc.is_empty() {
-                                format!("「{name}」{desc}；")
-                            } else {
-                                format!("「{name}」；")
-                            };
-                            parts.push(desc_part);
-                        }
-                    }
-                    parts.push(String::new());
-                    parts.push("这些游戏在玩法、题材或体验上与您查询的游戏较为接近，请尽情体验。".into());
-                    return Some(parts.join("\n"));
-                }
-            }
-        }
-
-        let category = ext
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let category = ext.get("category").and_then(|v| v.as_str()).unwrap_or("");
 
         // duration_card 为空
         let dc_empty = payload
@@ -254,14 +252,30 @@ fn rewrite_content_for_empty_extensions(
 /// 根据 support card 的 category 生成对应的回复文案
 fn support_category_reply(category: &str) -> &'static str {
     match category {
-        "cannot_play" => "抱歉让你遇到无法正常进入游戏的问题。此类情况可能和游戏服务状态、云端环境、网络连接或游戏本身兼容性有关。我们会尽量保障游戏可正常启动，你可以通过下方「联系客服」继续反馈，我们会协助核实处理。",
-        "lag" => "抱歉影响了你的游戏体验。云游戏对网络稳定性和当前线路状态比较敏感，网络波动、服务器负载或画质设置都可能导致卡顿、延迟高或掉帧。你可以通过下方「联系客服」反馈，我们会进一步协助排查。",
-        "update" => "抱歉当前版本没有及时满足你的使用需求。云游戏内的游戏版本通常需要经过适配、测试和上线流程，可能会比官方版本略有延迟。我们会持续关注版本更新进度，你也可以通过下方「联系客服」反馈具体游戏。",
-        "quality" => "抱歉当前画质没有达到你的预期。云游戏画质会受到网络状态、画质设置、设备显示效果以及云端渲染策略影响。我们会持续优化画质体验，你可以通过下方「联系客服」继续反馈问题。",
-        "account" => "很抱歉遇到账号异常问题。账号封禁或异常通常由游戏官方规则判断，平台本身无法直接修改游戏官方的处理结果。但如果你怀疑和云游戏登录环境有关，可以通过下方「联系客服」反馈，我们会协助核实。",
-        "save_data" => "抱歉给你带来困扰。游戏存档通常和游戏账号、区服、云端同步或游戏自身机制有关，出现丢失时确实会很影响体验。你可以通过下方「联系客服」继续反馈，我们会协助核实是否存在同步异常。",
-        "money" => "抱歉影响了你的充值或会员权益。付费后到账可能受到支付状态、服务器端回调或订单同步延迟影响。请先不要重复支付，可以通过下方「联系客服」反馈，我们会优先协助核实订单处理情况。",
-        _ => "抱歉这次体验让你不满意，我们理解这种情况会很影响心情。你的反馈对我们很重要，我们会持续优化游戏体验和服务稳定性。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。",
+        "cannot_play" => {
+            "抱歉让你遇到无法正常进入游戏的问题。此类情况可能和游戏服务状态、云端环境、网络连接或游戏本身兼容性有关。我们会尽量保障游戏可正常启动，你可以通过下方「联系客服」继续反馈，我们会协助核实处理。"
+        }
+        "lag" => {
+            "抱歉影响了你的游戏体验。云游戏对网络稳定性和当前线路状态比较敏感，网络波动、服务器负载或画质设置都可能导致卡顿、延迟高或掉帧。你可以通过下方「联系客服」反馈，我们会进一步协助排查。"
+        }
+        "update" => {
+            "抱歉当前版本没有及时满足你的使用需求。云游戏内的游戏版本通常需要经过适配、测试和上线流程，可能会比官方版本略有延迟。我们会持续关注版本更新进度，你也可以通过下方「联系客服」反馈具体游戏。"
+        }
+        "quality" => {
+            "抱歉当前画质没有达到你的预期。云游戏画质会受到网络状态、画质设置、设备显示效果以及云端渲染策略影响。我们会持续优化画质体验，你可以通过下方「联系客服」继续反馈问题。"
+        }
+        "account" => {
+            "很抱歉遇到账号异常问题。账号封禁或异常通常由游戏官方规则判断，平台本身无法直接修改游戏官方的处理结果。但如果你怀疑和云游戏登录环境有关，可以通过下方「联系客服」反馈，我们会协助核实。"
+        }
+        "save_data" => {
+            "抱歉给你带来困扰。游戏存档通常和游戏账号、区服、云端同步或游戏自身机制有关，出现丢失时确实会很影响体验。你可以通过下方「联系客服」继续反馈，我们会协助核实是否存在同步异常。"
+        }
+        "money" => {
+            "抱歉影响了你的充值或会员权益。付费后到账可能受到支付状态、服务器端回调或订单同步延迟影响。请先不要重复支付，可以通过下方「联系客服」反馈，我们会优先协助核实订单处理情况。"
+        }
+        _ => {
+            "抱歉这次体验让你不满意，我们理解这种情况会很影响心情。你的反馈对我们很重要，我们会持续优化游戏体验和服务稳定性。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
+        }
     }
 }
 
@@ -453,9 +467,12 @@ where
             }
         };
 
-        // 3. 准备 system + tools
-        let mut hop_msgs: Vec<Value> =
-            vec![json!({"role": "system", "content": agent_content.system_prompt})];
+        // 3. 准备 system + tools（追加当前客户端信息）
+        let system_prompt = format!(
+            "{}\n\n[当前客户端]\n渠道：{}\n平台：{}\n版本：{}",
+            agent_content.system_prompt, deps.channel, deps.client_type, deps.client_version
+        );
+        let mut hop_msgs: Vec<Value> = vec![json!({"role": "system", "content": system_prompt})];
         hop_msgs.extend(messages.clone());
 
         let tools_schema = build_tools_schema(&agent_content);
@@ -951,14 +968,25 @@ async fn finalize_with_variant(
     };
     let extensions_json = extensions_for_sse.clone();
 
-    // ★ 根据 extensions 内容重置 empty content
-    let final_content = rewrite_content_for_empty_extensions(content, &extensions_for_sse);
+    // ★ 优先使用 response_content metadata，回退到 rewrite_content_for_empty_extensions
+    let final_content = match hook_deps
+        .agent_ctx
+        .get_metadata("response_content")
+        .filter(|rc| !rc.is_empty())
+    {
+        Some(rc) => {
+            tracing::debug!(response_content = %rc, "using response_content from metadata");
+            Some(rc)
+        }
+        _ => rewrite_content_for_empty_extensions(content, &extensions_for_sse),
+    };
 
     let saved =
         if final_content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
             None
         } else {
             let text = final_content.as_deref().unwrap_or("");
+            tracing::debug!("Saving assistant message: {:?}", text);
             append_assistant_message_user(
                 pool,
                 session_id,
@@ -1167,7 +1195,9 @@ async fn handle_meta_tool(
             };
             let mut function_input = match tc.arguments.get("function_input") {
                 Some(v) => v.clone(),
-                None => return ToolOutcome::error("invoke_function: function_input 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_function: function_input 缺失".into());
+                }
             };
             // 查询 function 信息（包含 required_capabilities）
             let func_row: Option<(i64, i8, Option<i64>, Option<String>, Option<Value>)> = sqlx::query_as(
@@ -1254,7 +1284,9 @@ async fn handle_meta_tool(
                     };
                     let input_json = match serde_json::to_string(&function_input) {
                         Ok(s) => s,
-                        Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                        Err(e) => {
+                            return ToolOutcome::error(format!("args serialize: {e}"));
+                        }
                     };
                     let dispatch_ctx = DispatchCtx {
                         request_id: None,
@@ -1313,7 +1345,9 @@ async fn handle_meta_tool(
             };
             let mut workflow_input = match tc.arguments.get("workflow_input") {
                 Some(v) => v.clone(),
-                None => return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into());
+                }
             };
 
             // ★ Inject AgentContext snapshot so workflow can read runtime state
@@ -1455,7 +1489,9 @@ pub(crate) async fn handle_workspace_tool(
                 let args_value: Value = Value::Object(tc.arguments.clone());
                 let input_json = match serde_json::to_string(&args_value) {
                     Ok(s) => s,
-                    Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                    Err(e) => {
+                        return ToolOutcome::error(format!("args serialize: {e}"));
+                    }
                 };
                 let dispatch_ctx = DispatchCtx {
                     request_id: None,

@@ -2,13 +2,13 @@
 //! that emits the canonical four SSE events.
 
 use axum::{
+    Router,
     response::sse::{Event, KeepAlive, Sse},
     routing::post,
-    Router,
 };
-use futures::stream;
 use futures::StreamExt;
-use hivegui::client::{self, streaming, OpenResponsesRequest};
+use futures::stream;
+use hivegui::client::{self, OpenResponsesRequest, streaming};
 use std::convert::Infallible;
 use tokio::net::TcpListener;
 use url::Url;

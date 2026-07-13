@@ -75,7 +75,9 @@ fn tokenize(src: &str) -> Vec<Token> {
             let lower = trimmed.to_lowercase();
             if lower.starts_with("include ") {
                 let name = trimmed[8..].trim();
-                let name = name.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                let name = name
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
                     .or_else(|| name.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
                     .unwrap_or(name);
                 tokens.push(Token::Include(name.to_string()));
@@ -110,7 +112,10 @@ fn tokenize(src: &str) -> Vec<Token> {
         } else {
             let mut text = String::new();
             while i < len {
-                if i + 1 < len && ((chars[i] == '{' && chars[i + 1] == '%') || (chars[i] == '{' && chars[i + 1] == '{')) {
+                if i + 1 < len
+                    && ((chars[i] == '{' && chars[i + 1] == '%')
+                        || (chars[i] == '{' && chars[i + 1] == '{'))
+                {
                     break;
                 }
                 text.push(chars[i]);
@@ -133,11 +138,14 @@ fn render_tokens(
     include_depth: usize,
 ) -> String {
     if include_depth > 10 {
-        return tokens.iter().filter_map(|t| match t {
-            Token::Text(s) => Some(s.clone()),
-            Token::Variable(name) => context.get(name).cloned(),
-            _ => None,
-        }).collect();
+        return tokens
+            .iter()
+            .filter_map(|t| match t {
+                Token::Text(s) => Some(s.clone()),
+                Token::Variable(name) => context.get(name).cloned(),
+                _ => None,
+            })
+            .collect();
     }
 
     let mut result = String::new();
@@ -158,11 +166,24 @@ fn render_tokens(
             Token::Include(name) => {
                 if let Some(src) = loader.load(name) {
                     let included_tokens = tokenize(&src);
-                    result.push_str(&render_tokens(&included_tokens, loader, context, false, include_depth + 1));
+                    result.push_str(&render_tokens(
+                        &included_tokens,
+                        loader,
+                        context,
+                        false,
+                        include_depth + 1,
+                    ));
                 }
             }
             Token::If(condition) => {
-                let (branches_consumed, rendered) = process_if_chain(&tokens[i..], condition.clone(), loader, context, strip, include_depth + 1);
+                let (branches_consumed, rendered) = process_if_chain(
+                    &tokens[i..],
+                    condition.clone(),
+                    loader,
+                    context,
+                    strip,
+                    include_depth + 1,
+                );
                 result.push_str(&rendered);
                 i += branches_consumed;
                 continue;
@@ -179,10 +200,18 @@ fn render_tokens(
                         raw_content.push_str(s);
                     } else {
                         match &tokens[i] {
-                            Token::Variable(name) => raw_content.push_str(&format!("{{{{ {} }}}}", name)),
-                            Token::Include(name) => raw_content.push_str(&format!("{{% include '{}' %}}", name)),
-                            Token::If(cond) => raw_content.push_str(&format!("{{% if {} %}}", cond)),
-                            Token::Elif(cond) => raw_content.push_str(&format!("{{% elif {} %}}", cond)),
+                            Token::Variable(name) => {
+                                raw_content.push_str(&format!("{{{{ {} }}}}", name))
+                            }
+                            Token::Include(name) => {
+                                raw_content.push_str(&format!("{{% include '{}' %}}", name))
+                            }
+                            Token::If(cond) => {
+                                raw_content.push_str(&format!("{{% if {} %}}", cond))
+                            }
+                            Token::Elif(cond) => {
+                                raw_content.push_str(&format!("{{% elif {} %}}", cond))
+                            }
                             Token::Else => raw_content.push_str("{% else %}"),
                             Token::Endif => raw_content.push_str("{% endif %}"),
                             Token::Raw => raw_content.push_str("{% raw %}"),
@@ -195,8 +224,7 @@ fn render_tokens(
                 result.push_str(&raw_content);
                 continue;
             }
-            Token::Elif(_) | Token::Else | Token::Endif | Token::Endraw => {
-            }
+            Token::Elif(_) | Token::Else | Token::Endif | Token::Endraw => {}
         }
         i += 1;
     }
@@ -459,9 +487,7 @@ mod tests {
 
     #[test]
     fn substitutes_known_keys() {
-        let templates = HashMap::from([
-            ("hi.md".to_string(), "Hello, {{ name }}!\n".to_string()),
-        ]);
+        let templates = HashMap::from([("hi.md".to_string(), "Hello, {{ name }}!\n".to_string())]);
         let loader = InMemory(templates);
         let ctx = HashMap::from([("name".to_string(), "world".to_string())]);
         assert_eq!(
@@ -473,7 +499,10 @@ mod tests {
     #[test]
     fn include_support() {
         let templates = HashMap::from([
-            ("main.md".to_string(), "Before{% include 'snippet.md' %}After".to_string()),
+            (
+                "main.md".to_string(),
+                "Before{% include 'snippet.md' %}After".to_string(),
+            ),
             ("snippet.md".to_string(), " [INCLUDED] ".to_string()),
         ]);
         let loader = InMemory(templates);
@@ -486,9 +515,10 @@ mod tests {
 
     #[test]
     fn if_block_basic() {
-        let templates = HashMap::from([
-            ("test.md".to_string(), "{% if show %}visible{% endif %}".to_string()),
-        ]);
+        let templates = HashMap::from([(
+            "test.md".to_string(),
+            "{% if show %}visible{% endif %}".to_string(),
+        )]);
         let loader = InMemory(templates);
 
         let ctx = HashMap::from([("show".to_string(), "true".to_string())]);
@@ -506,9 +536,10 @@ mod tests {
 
     #[test]
     fn if_else_support() {
-        let templates = HashMap::from([
-            ("test.md".to_string(), "{% if mode %}A{% else %}B{% endif %}".to_string()),
-        ]);
+        let templates = HashMap::from([(
+            "test.md".to_string(),
+            "{% if mode %}A{% else %}B{% endif %}".to_string(),
+        )]);
         let loader = InMemory(templates);
 
         let ctx = HashMap::from([("mode".to_string(), "x".to_string())]);
@@ -528,9 +559,7 @@ mod tests {
     fn if_elif_else_support() {
         let src = "{% if channel == 'telegram' %}TG{% elif channel == 'discord' %}DC{% else %}Other{% endif %}";
 
-        let templates = HashMap::from([
-            ("test.md".to_string(), src.to_string()),
-        ]);
+        let templates = HashMap::from([("test.md".to_string(), src.to_string())]);
         let loader = InMemory(templates);
 
         let ctx = HashMap::from([("channel".to_string(), "telegram".to_string())]);
@@ -568,9 +597,10 @@ mod tests {
 
     #[test]
     fn raw_block() {
-        let templates = HashMap::from([
-            ("test.md".to_string(), "{% raw %}{{ not_replaced }}{% endraw %}".to_string()),
-        ]);
+        let templates = HashMap::from([(
+            "test.md".to_string(),
+            "{% raw %}{{ not_replaced }}{% endraw %}".to_string(),
+        )]);
         let loader = InMemory(templates);
         let ctx = HashMap::new();
         assert_eq!(
@@ -581,9 +611,10 @@ mod tests {
 
     #[test]
     fn nested_if_blocks() {
-        let templates = HashMap::from([
-            ("test.md".to_string(), "{% if a %}{% if b %}both{% else %}only a{% endif %}{% endif %}".to_string()),
-        ]);
+        let templates = HashMap::from([(
+            "test.md".to_string(),
+            "{% if a %}{% if b %}both{% else %}only a{% endif %}{% endif %}".to_string(),
+        )]);
         let loader = InMemory(templates);
 
         let ctx = HashMap::from([
@@ -608,7 +639,10 @@ mod tests {
     #[test]
     fn include_with_variables() {
         let templates = HashMap::from([
-            ("main.md".to_string(), "Hello, {% include 'greeting.md' %}!".to_string()),
+            (
+                "main.md".to_string(),
+                "Hello, {% include 'greeting.md' %}!".to_string(),
+            ),
             ("greeting.md".to_string(), "{{ name }}".to_string()),
         ]);
         let loader = InMemory(templates);

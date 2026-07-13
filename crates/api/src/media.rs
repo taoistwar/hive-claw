@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use regex::Regex;
 use thiserror::Error;
 use uuid::Uuid;
@@ -119,7 +119,14 @@ mod tests {
         let url = format!("data:image/png;base64,{payload}");
         let saved = save_base64_data_url(&url, &dir).unwrap();
         assert!(saved.exists());
-        assert!(saved.extension().unwrap().to_str().unwrap().eq_ignore_ascii_case("png"));
+        assert!(
+            saved
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .eq_ignore_ascii_case("png")
+        );
         let bytes = fs::read(&saved).unwrap();
         assert!(bytes.len() > 10);
     }

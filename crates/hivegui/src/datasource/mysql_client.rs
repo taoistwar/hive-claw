@@ -192,7 +192,11 @@ impl MysqlClient {
             let ddl: Option<String> = row.get_opt(1).unwrap_or(Ok(None))?;
             Ok(ddl.unwrap_or_default())
         } else {
-            Err(anyhow::anyhow!("Table `{}.{}` not found", db_name, table_name))
+            Err(anyhow::anyhow!(
+                "Table `{}.{}` not found",
+                db_name,
+                table_name
+            ))
         }
     }
 
@@ -216,24 +220,23 @@ impl MysqlClient {
                 escaped_db, escaped_table, where_clause
             )
         } else {
-            format!(
-                "SELECT COUNT(*) FROM `{}`.`{}`",
-                escaped_db, escaped_table
-            )
+            format!("SELECT COUNT(*) FROM `{}`.`{}`", escaped_db, escaped_table)
         };
 
         let count_rows: Vec<Row> = conn.query(&count_query).await?;
         let total_count: i64 = count_rows
             .first()
-            .and_then(|r| {
-                match r.get_opt(0) {
-                    Some(Ok(v)) => Some(v),
-                    _ => None,
-                }
+            .and_then(|r| match r.get_opt(0) {
+                Some(Ok(v)) => Some(v),
+                _ => None,
             })
             .unwrap_or(0);
 
-        let limit = if req.limit > 0 { req.limit } else { DEFAULT_QUERY_LIMIT };
+        let limit = if req.limit > 0 {
+            req.limit
+        } else {
+            DEFAULT_QUERY_LIMIT
+        };
 
         let mut data_query = if let Some(ref where_clause) = req.where_clause {
             format!(

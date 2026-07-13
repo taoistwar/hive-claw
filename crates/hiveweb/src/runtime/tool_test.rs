@@ -58,10 +58,7 @@ impl DebugLogger {
 
     pub fn log(&self, msg: &str) {
         let line = format!("[tool_test] {}", msg);
-        let is_dev = std::env::var("APP_ENV")
-            .map(|v| v == "development" || v == "dev")
-            .unwrap_or(true);
-        if is_dev {
+        if !crate::app_mode::get().is_production() {
             if let Some(ref tid) = self.trace_id {
                 let _ = std::fs::create_dir_all("/tmp/tool_test_logs");
                 let path = format!("/tmp/tool_test_logs/{}.log", tid);
@@ -325,26 +322,7 @@ pub async fn run_tool_test(
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
         logger.log(&format!("FAIL: LLM error: {}", err_msg));
-        runtime_audit::record(
-            AuditRecord {
-                request_id: None,
-                session_id: None,
-                agent_id: None,
-                plugin_id: None,
-                function_id: None,
-                capability: None,
-                event_type: "llm_invoke",
-                outcome: "error",
-                elapsed_ms: Some(llm_elapsed_ms),
-                error_message: Some(&err_msg),
-                payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
-            },
-        );
-        return Err(format!("LLM error: {}", err_msg));
-    }
-
-    runtime_audit::record(
-        AuditRecord {
+        runtime_audit::record(AuditRecord {
             request_id: None,
             session_id: None,
             agent_id: None,
@@ -352,12 +330,27 @@ pub async fn run_tool_test(
             function_id: None,
             capability: None,
             event_type: "llm_invoke",
-            outcome: "success",
+            outcome: "error",
             elapsed_ms: Some(llm_elapsed_ms),
-            error_message: None,
+            error_message: Some(&err_msg),
             payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
-        },
-    );
+        });
+        return Err(format!("LLM error: {}", err_msg));
+    }
+
+    runtime_audit::record(AuditRecord {
+        request_id: None,
+        session_id: None,
+        agent_id: None,
+        plugin_id: None,
+        function_id: None,
+        capability: None,
+        event_type: "llm_invoke",
+        outcome: "success",
+        elapsed_ms: Some(llm_elapsed_ms),
+        error_message: None,
+        payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
+    });
     logger.log(&format!(
         "STEP7 OK: LLM success, tool_calls_count={}",
         resp.tool_calls.len()

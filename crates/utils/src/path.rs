@@ -98,10 +98,7 @@ fn split_url(url: &str) -> Option<(&str, &str)> {
     let cut = after.find('/').unwrap_or(after.len());
     let (netloc, rest) = after.split_at(cut);
     // rest starts with `/` or is empty. Also strip query / fragment.
-    let rest = rest
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("");
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
     Some((netloc, rest))
 }
 
@@ -172,13 +169,16 @@ mod tests {
         let got = abbreviate_path(p);
         assert!(got.ends_with("file.txt"), "got = {got}");
         assert!(got.starts_with('\u{2026}'), "got = {got}");
-        assert!(got.chars().count() <= 40, "got len = {}", got.chars().count());
+        assert!(
+            got.chars().count() <= 40,
+            "got len = {}",
+            got.chars().count()
+        );
     }
 
     #[test]
     fn url_keeps_domain_and_filename() {
-        let url =
-            "https://raw.githubusercontent.com/owner/repo/refs/heads/main/path/to/file.json";
+        let url = "https://raw.githubusercontent.com/owner/repo/refs/heads/main/path/to/file.json";
         let got = abbreviate_path(url);
         assert!(got.contains("raw.githubusercontent.com"), "got = {got}");
         assert!(got.ends_with("file.json"), "got = {got}");

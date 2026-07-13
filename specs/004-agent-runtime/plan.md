@@ -173,23 +173,24 @@ web/
 
 ## Startup Initialization Order（CHK234）
 
+DB migration 是**服务启动之外的部署前置步骤**：生产环境由部署流程预先创建并升级表结构；开发和测试环境必须先执行 `cargo run -p hiveweb --bin migrate`。`hiveweb` 主服务在任何运行模式下都不执行 migration，也不执行 `CREATE TABLE`。
+
 hiveweb 启动期严格按以下顺序执行；任一步失败 → panic 退出（fail-fast，不 warn-and-continue）：
 
 1. **加载 env / dotenv** — `.env` 与系统 env 合并，校验必需变量（`DATABASE_URL` / `JWT_SECRET` / `LLM_PRESETS_PATH` 等）
-2. **DB migrations** — `migrate.rs` 运行至最新 schema（V001..V018）
-3. **Capability 注册表 upsert** — 代码静态列表 → `INSERT ... ON DUPLICATE KEY UPDATE` 到 `capabilities` 表；DB 中存在但代码已移除的项仅 warn 不删
-4. **Builtin Function upsert** — 5 个 builtin function（FR-010 v5）→ idempotent upsert 到 `functions` 表（`kind = 1`）
-5. **Custom Function 索引** — 拉所有 DB 中 `kind = 2` 的 Function + 关联 Plugin metadata，构建 `Arc<HashMap<identifier, FunctionDef>>` 缓存
-6. **llm_presets.toml 加载** — 解析所有命名 preset，逐个调 `providers::make_provider` 构造 primary + `providers::FallbackProvider::new` 套上 fallback 链；校验**正好 1 个** `default = true`（违反 → panic）
-7. **ToolRegistry 装配** — builtin Tools（5 个）+ DB custom Tools + Workflow-wrapped Tools 全部注册到 `agent::ToolRegistry`
-8. **SubagentManager / MemoryStore 初始化** — 从 DB 加载 Agent 树 + ChatSession 摘要到 `crates/agent::*` 内存结构
-9. **Instance Pool 初始化** — 创建空 `HashMap<PluginId, PluginPool>`；不预热（lazy 编译，命中 SC-005 冷启动预算）
-10. **HTTP Router 装配** — middleware 链（request_id → CORS → rate_limit-with-SSE-bypass → auth）→ 各 API group
-11. **后台任务启动** — chat_retention cron / audit_retention cron / pool idle reaper
-12. **HTTP server listen** — 在所有前置完成后才开始接 socket
+2. **Capability 注册表 upsert** — 代码静态列表 → `INSERT ... ON DUPLICATE KEY UPDATE` 到 `capabilities` 表；DB 中存在但代码已移除的项仅 warn 不删
+3. **Builtin Function upsert** — 5 个 builtin function（FR-010 v5）→ idempotent upsert 到 `functions` 表（`kind = 1`）
+4. **Custom Function 索引** — 拉所有 DB 中 `kind = 2` 的 Function + 关联 Plugin metadata，构建 `Arc<HashMap<identifier, FunctionDef>>` 缓存
+5. **llm_presets.toml 加载** — 解析所有命名 preset，逐个调 `providers::make_provider` 构造 primary + `providers::FallbackProvider::new` 套上 fallback 链；校验**正好 1 个** `default = true`（违反 → panic）
+6. **ToolRegistry 装配** — builtin Tools（5 个）+ DB custom Tools + Workflow-wrapped Tools 全部注册到 `agent::ToolRegistry`
+7. **SubagentManager / MemoryStore 初始化** — 从 DB 加载 Agent 树 + ChatSession 摘要到 `crates/agent::*` 内存结构
+8. **Instance Pool 初始化** — 创建空 `HashMap<PluginId, PluginPool>`；不预热（lazy 编译，命中 SC-005 冷启动预算）
+9. **HTTP Router 装配** — middleware 链（request_id → CORS → rate_limit-with-SSE-bypass → auth）→ 各 API group
+10. **后台任务启动** — chat_retention cron / audit_retention cron / pool idle reaper
+11. **HTTP server listen** — 在所有前置完成后才开始接 socket
 
 启动期任一步失败的处理：
-- env 缺失 / DB 不可连 / migration 失败 / llm_presets 缺 default → **panic + 退出码 1**
+- env 缺失 / DB 不可连 / 所需表不存在 / llm_presets 缺 default → **panic + 退出码 1**；表不存在时先在开发/测试环境运行 `migrate`，生产环境修复预建 schema
 - builtin function upsert 因 DB 唯一冲突失败 → panic（schema 错乱比启动失败更严重）
 - 旧 capability 在 DB 中但代码已删 → warn 日志 + 继续启动
 - llm_presets 中某个非 default preset 解析失败 → warn 日志 + 跳过该 preset + 继续启动（已有 default 兜底）

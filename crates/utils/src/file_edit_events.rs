@@ -47,13 +47,21 @@ pub fn display_file_edit_path(path: &Path, workspace: Option<&Path>) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-pub fn resolve_file_edit_path(workspace: Option<&Path>, params: &serde_json::Value) -> Option<PathBuf> {
+pub fn resolve_file_edit_path(
+    workspace: Option<&Path>,
+    params: &serde_json::Value,
+) -> Option<PathBuf> {
     let raw_path = params.get("path")?.as_str()?;
     if raw_path.trim().is_empty() {
         return None;
     }
     if let Some(workspace) = workspace {
-        Some(workspace.join(raw_path).canonicalize().unwrap_or_else(|_| PathBuf::from(raw_path)))
+        Some(
+            workspace
+                .join(raw_path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(raw_path)),
+        )
     } else {
         Some(PathBuf::from(raw_path))
     }
@@ -267,7 +275,10 @@ fn predict_after_text(
         "edit_file" => {
             let old_text = params.get("old_text")?.as_str()?;
             let new_text = params.get("new_text")?.as_str()?;
-            let replace_all = params.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let replace_all = params
+                .get("replace_all")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if old_text.is_empty() {
                 if !before.exists {
                     return Some(new_text.to_string());
@@ -355,11 +366,19 @@ fn predict_notebook_after_text(params: &serde_json::Value, before_text: &str) ->
                 return None;
             }
             let cell = cells[cell_index].as_object_mut()?;
-            cell.insert("source".to_string(), serde_json::Value::String(new_source.to_string()));
-            cell.insert("cell_type".to_string(), serde_json::Value::String(cell_type.to_string()));
+            cell.insert(
+                "source".to_string(),
+                serde_json::Value::String(new_source.to_string()),
+            );
+            cell.insert(
+                "cell_type".to_string(),
+                serde_json::Value::String(cell_type.to_string()),
+            );
             if cell_type == "code" {
-                cell.entry("outputs".to_string()).or_insert_with(|| json!([]));
-                cell.entry("execution_count".to_string()).or_insert(serde_json::Value::Null);
+                cell.entry("outputs".to_string())
+                    .or_insert_with(|| json!([]));
+                cell.entry("execution_count".to_string())
+                    .or_insert(serde_json::Value::Null);
             } else {
                 cell.remove("outputs");
                 cell.remove("execution_count");
@@ -369,7 +388,10 @@ fn predict_notebook_after_text(params: &serde_json::Value, before_text: &str) ->
     serde_json::to_string(&nb).ok()
 }
 
-pub fn build_file_edit_start_event(tracker: &FileEditTracker, params: &serde_json::Value) -> serde_json::Value {
+pub fn build_file_edit_start_event(
+    tracker: &FileEditTracker,
+    params: &serde_json::Value,
+) -> serde_json::Value {
     let predicted_after = predict_after_text(&tracker.tool, params, &tracker.before);
     let (added, deleted) = if tracker.before.countable() && predicted_after.is_some() {
         line_diff_stats(tracker.before.text.as_deref(), predicted_after.as_deref())
@@ -379,7 +401,10 @@ pub fn build_file_edit_start_event(tracker: &FileEditTracker, params: &serde_jso
     event_payload(tracker, "start", "editing", added, deleted, true, false)
 }
 
-pub fn build_file_edit_end_event(tracker: &FileEditTracker, params: Option<&serde_json::Value>) -> serde_json::Value {
+pub fn build_file_edit_end_event(
+    tracker: &FileEditTracker,
+    params: Option<&serde_json::Value>,
+) -> serde_json::Value {
     let after = read_file_snapshot(&tracker.path);
     let params = params.unwrap_or(&serde_json::Value::Null);
     let mut counted = false;
@@ -399,7 +424,10 @@ pub fn build_file_edit_end_event(tracker: &FileEditTracker, params: Option<&serd
     event_payload(tracker, "end", "done", added, deleted, false, binary)
 }
 
-pub fn build_file_edit_error_event(tracker: &FileEditTracker, error: Option<&str>) -> serde_json::Value {
+pub fn build_file_edit_error_event(
+    tracker: &FileEditTracker,
+    error: Option<&str>,
+) -> serde_json::Value {
     let mut payload = event_payload(tracker, "error", "error", 0, 0, false, false);
     if let Some(err) = error {
         let err = err.trim();
@@ -408,11 +436,20 @@ pub fn build_file_edit_error_event(tracker: &FileEditTracker, error: Option<&str
     payload
 }
 
-pub fn build_file_edit_live_event(tracker: &FileEditTracker, added: usize, deleted: usize) -> serde_json::Value {
+pub fn build_file_edit_live_event(
+    tracker: &FileEditTracker,
+    added: usize,
+    deleted: usize,
+) -> serde_json::Value {
     event_payload(tracker, "start", "editing", added, deleted, true, false)
 }
 
-pub fn build_file_edit_pending_event(call_id: &str, tool_name: &str, added: usize, deleted: usize) -> serde_json::Value {
+pub fn build_file_edit_pending_event(
+    call_id: &str,
+    tool_name: &str,
+    added: usize,
+    deleted: usize,
+) -> serde_json::Value {
     json!({
         "version": 1,
         "call_id": call_id,
@@ -482,7 +519,10 @@ impl StreamingJsonStringField {
         }
         if self.scan_pos.is_none() {
             let pattern = format!("\"{}\"\\s*:\\s*\"", regex::escape(&self.key));
-            if let Some(m) = regex::Regex::new(&pattern).ok().and_then(|re| re.find(source)) {
+            if let Some(m) = regex::Regex::new(&pattern)
+                .ok()
+                .and_then(|re| re.find(source))
+            {
                 self.scan_pos = Some(m.end());
             } else {
                 return;
@@ -688,7 +728,10 @@ impl StreamingFileEditState {
     fn matches_final_tool_call(&mut self, tool_call: &serde_json::Value) -> bool {
         let call_id = tool_call.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let canonical = if self.call_id.is_empty() {
-            self.tracker.as_ref().map(|t| t.call_id.as_str()).unwrap_or("")
+            self.tracker
+                .as_ref()
+                .map(|t| t.call_id.as_str())
+                .unwrap_or("")
         } else {
             &self.call_id
         };
@@ -803,7 +846,8 @@ pub fn prepare_file_edit_tracker(
     })
 }
 
-pub type EmitFn = Arc<dyn Fn(Vec<serde_json::Value>) -> tokio::sync::oneshot::Receiver<()> + Send + Sync>;
+pub type EmitFn =
+    Arc<dyn Fn(Vec<serde_json::Value>) -> tokio::sync::oneshot::Receiver<()> + Send + Sync>;
 
 pub struct StreamingFileEditTracker {
     workspace: Option<PathBuf>,
@@ -826,7 +870,9 @@ impl StreamingFileEditTracker {
             return;
         }
         let mut states = self.states.lock().await;
-        let state = states.entry(key).or_insert_with_key(|k| StreamingFileEditState::new(k));
+        let state = states
+            .entry(key)
+            .or_insert_with_key(|k| StreamingFileEditState::new(k));
         state.apply_delta(payload);
         if state.name != "write_file" && state.name != "edit_file" {
             return;
@@ -843,7 +889,11 @@ impl StreamingFileEditTracker {
             if state.should_emit_pending(added, deleted, now) {
                 state.mark_pending_emitted(added, deleted, now);
                 let event = build_file_edit_pending_event(
-                    if state.call_id.is_empty() { &state.key } else { &state.call_id },
+                    if state.call_id.is_empty() {
+                        &state.key
+                    } else {
+                        &state.call_id
+                    },
                     &state.name,
                     added,
                     deleted,
@@ -855,7 +905,11 @@ impl StreamingFileEditTracker {
         if state.tracker.is_none() {
             let params = json!({"path": state.path.as_ref().unwrap()});
             state.tracker = prepare_file_edit_tracker(
-                if state.call_id.is_empty() { &state.key } else { &state.call_id },
+                if state.call_id.is_empty() {
+                    &state.key
+                } else {
+                    &state.call_id
+                },
                 &state.name,
                 self.workspace.as_deref(),
                 &params,
@@ -896,7 +950,11 @@ impl StreamingFileEditTracker {
                 continue;
             }
             state.mark_emitted(added, deleted, now);
-            events.push(build_file_edit_live_event(state.tracker.as_ref().unwrap(), added, deleted));
+            events.push(build_file_edit_live_event(
+                state.tracker.as_ref().unwrap(),
+                added,
+                deleted,
+            ));
         }
         if !events.is_empty() {
             let _ = (self.emit)(events).await;
@@ -906,7 +964,10 @@ impl StreamingFileEditTracker {
     pub async fn apply_final_call_ids(&self, final_tool_calls: &[serde_json::Value]) {
         let mut states = self.states.lock().await;
         for tool_call in final_tool_calls {
-            if let Some(_canonical) = self.canonical_call_id_for_inner(tool_call, &mut states).await {
+            if let Some(_canonical) = self
+                .canonical_call_id_for_inner(tool_call, &mut states)
+                .await
+            {
                 if let Some(id) = tool_call.get("id") {
                     let _ = id;
                 }
@@ -921,13 +982,15 @@ impl StreamingFileEditTracker {
     ) -> Option<String> {
         for state in states.values_mut() {
             if state.matches_final_tool_call(tool_call) {
-                return Some(
-                    if state.call_id.is_empty() {
-                        state.tracker.as_ref().map(|t| t.call_id.clone()).unwrap_or(state.key.clone())
-                    } else {
-                        state.call_id.clone()
-                    },
-                );
+                return Some(if state.call_id.is_empty() {
+                    state
+                        .tracker
+                        .as_ref()
+                        .map(|t| t.call_id.clone())
+                        .unwrap_or(state.key.clone())
+                } else {
+                    state.call_id.clone()
+                });
             }
         }
         None
@@ -935,7 +998,8 @@ impl StreamingFileEditTracker {
 
     pub async fn canonical_call_id_for(&self, tool_call: &serde_json::Value) -> Option<String> {
         let mut states = self.states.lock().await;
-        self.canonical_call_id_for_inner(tool_call, &mut states).await
+        self.canonical_call_id_for_inner(tool_call, &mut states)
+            .await
     }
 
     pub async fn error_unmatched(&self, final_tool_calls: &[serde_json::Value], error: &str) {
@@ -945,11 +1009,16 @@ impl StreamingFileEditTracker {
             if state.tracker.is_none() {
                 continue;
             }
-            let matched = final_tool_calls.iter().any(|tc| state.matches_final_tool_call(tc));
+            let matched = final_tool_calls
+                .iter()
+                .any(|tc| state.matches_final_tool_call(tc));
             if matched {
                 continue;
             }
-            events.push(build_file_edit_error_event(state.tracker.as_ref().unwrap(), Some(error)));
+            events.push(build_file_edit_error_event(
+                state.tracker.as_ref().unwrap(),
+                Some(error),
+            ));
         }
         drop(states);
         if !events.is_empty() {

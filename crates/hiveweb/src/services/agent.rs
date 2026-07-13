@@ -590,18 +590,15 @@ pub async fn fetch_content(
 }
 
 /// DB-only path for fetching agent content (used as the fetch closure in cached_or_fetch).
-async fn fetch_content_from_db(
-    pool: &MySqlPool,
-    agent_id: i64,
-) -> Result<AgentContent, AppError> {
+async fn fetch_content_from_db(pool: &MySqlPool, agent_id: i64) -> Result<AgentContent, AppError> {
     let row: Option<(String, String, Option<String>)> =
         sqlx::query_as("SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?")
             .bind(agent_id)
             .fetch_optional(pool)
             .await
             .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
-    let (identifier, mut system_prompt, model_preset) = row
-        .ok_or_else(|| AppError::NotFound(format!("agent id={agent_id} not found")))?;
+    let (identifier, mut system_prompt, model_preset) =
+        row.ok_or_else(|| AppError::NotFound(format!("agent id={agent_id} not found")))?;
 
     // Skill markdown 拼到 system prompt
     let skills: Vec<(String,)> = sqlx::query_as(

@@ -1,10 +1,10 @@
 use std::ops::Range;
 
 use gpui::{
-    actions, div, fill, hsla, prelude::*, px, rgba, App, Bounds, ClipboardItem, Context,
-    CursorStyle, DefiniteLength, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    Focusable, MouseButton, PaintQuad, Pixels, Point, ShapedLine, SharedString, UTF16Selection,
-    UnderlineStyle, Window,
+    App, Bounds, ClipboardItem, Context, CursorStyle, DefiniteLength, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, Focusable, MouseButton, PaintQuad, Pixels, Point, ShapedLine,
+    SharedString, UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla, prelude::*, px,
+    rgba,
 };
 
 actions!(
@@ -307,11 +307,7 @@ impl TextInput {
 
     /// Replace text at the current selection or marked range.
     /// `new_text` is the string to insert.
-    fn replace_text_internal(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-    ) {
+    fn replace_text_internal(&mut self, range_utf16: Option<Range<usize>>, new_text: &str) {
         let range = range_utf16
             .clone()
             .unwrap_or_else(|| self.selected_range.clone());
@@ -319,8 +315,7 @@ impl TextInput {
         let start = self.utf16_to_utf8_offset(range.start);
         let end = self.utf16_to_utf8_offset(range.end);
 
-        self.content =
-            (self.content[..start].to_owned() + new_text + &self.content[end..]).into();
+        self.content = (self.content[..start].to_owned() + new_text + &self.content[end..]).into();
 
         let new_cursor = range.start + new_text.encode_utf16().count();
         self.selected_range = new_cursor..new_cursor;
@@ -388,7 +383,12 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        eprintln!("[TextInput] replace_text_in_range: range={:?}, text={:?}, len={}", range_utf16, new_text, new_text.len());
+        eprintln!(
+            "[TextInput] replace_text_in_range: range={:?}, text={:?}, len={}",
+            range_utf16,
+            new_text,
+            new_text.len()
+        );
         self.replace_text_internal(range_utf16, new_text);
         cx.notify();
     }
@@ -401,7 +401,10 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        eprintln!("[TextInput] replace_and_mark_text_in_range: range={:?}, text={:?}, sel={:?}", range_utf16, new_text, new_selected_range_utf16);
+        eprintln!(
+            "[TextInput] replace_and_mark_text_in_range: range={:?}, text={:?}, sel={:?}",
+            range_utf16, new_text, new_selected_range_utf16
+        );
         let range = range_utf16
             .clone()
             .or(self.marked_range.clone())
@@ -410,8 +413,7 @@ impl EntityInputHandler for TextInput {
         let start = self.utf16_to_utf8_offset(range.start);
         let end = self.utf16_to_utf8_offset(range.end);
 
-        self.content =
-            (self.content[..start].to_owned() + new_text + &self.content[end..]).into();
+        self.content = (self.content[..start].to_owned() + new_text + &self.content[end..]).into();
 
         let new_text_utf16_len = new_text.encode_utf16().count();
 
@@ -448,10 +450,7 @@ impl EntityInputHandler for TextInput {
         let start = self.utf16_to_utf8_offset(range_utf16.start);
         let end = self.utf16_to_utf8_offset(range_utf16.end);
         Some(Bounds::from_corners(
-            Point::new(
-                bounds.left() + last_layout.x_for_index(start),
-                bounds.top(),
-            ),
+            Point::new(bounds.left() + last_layout.x_for_index(start), bounds.top()),
             Point::new(
                 bounds.left() + last_layout.x_for_index(end),
                 bounds.bottom(),

@@ -1,5 +1,4 @@
 /// Artifact persistence helpers for generated media.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -17,10 +16,9 @@ pub trait MediaDirResolver: Send + Sync {
     fn get_media_dir(&self) -> PathBuf;
 }
 
-static DATA_IMAGE_RE: once_cell::sync::Lazy<regex::Regex> =
-    once_cell::sync::Lazy::new(|| {
-        regex::Regex::new(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$").unwrap()
-    });
+static DATA_IMAGE_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$").unwrap()
+});
 
 const MIME_EXTENSIONS: &[(&str, &str)] = &[
     ("image/png", ".png"),
@@ -79,14 +77,19 @@ fn safe_relative_dir(save_dir: &str) -> Result<PathBuf, ArtifactError> {
         return Err(ArtifactError::EmptySaveDir);
     }
     if normalized.starts_with('/')
-        || normalized.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err(ArtifactError::UnsafeSaveDir);
     }
     Ok(PathBuf::from(normalized))
 }
 
-fn artifact_root(save_dir: &str, media_resolver: &dyn MediaDirResolver) -> Result<PathBuf, ArtifactError> {
+fn artifact_root(
+    save_dir: &str,
+    media_resolver: &dyn MediaDirResolver,
+) -> Result<PathBuf, ArtifactError> {
     let media_root = media_resolver.get_media_dir();
     let media_root = media_root.canonicalize().unwrap_or(media_root);
     let root = media_root.join(safe_relative_dir(save_dir)?);
@@ -128,7 +131,10 @@ pub fn store_generated_image_artifact(
 
     let metadata: HashMap<String, Value> = [
         ("id".to_string(), Value::String(artifact_id.clone())),
-        ("path".to_string(), Value::String(image_path.to_string_lossy().to_string())),
+        (
+            "path".to_string(),
+            Value::String(image_path.to_string_lossy().to_string()),
+        ),
         ("mime".to_string(), Value::String(mime.clone())),
         ("prompt".to_string(), Value::String(prompt.to_string())),
         ("model".to_string(), Value::String(model.to_string())),

@@ -22,9 +22,9 @@ use std::collections::HashMap;
 
 use crate::api::AppState;
 use crate::api::chat_common;
+use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
-use crate::services::chat_user as svc;
 use crate::utils::error::AppError;
 
 pub fn router() -> Router<AppState> {
@@ -88,31 +88,27 @@ async fn create_new_session(
         }
     };
 
-    match membership::user_exists_in_cloud_cached(&state.redis, ext_pool, req.user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
+    let cloud_info = match membership::get_cloud_user_info_cached(
+        &state.redis,
+        ext_pool,
+        req.user_id,
+    )
+    .await
+    {
+        Ok(Some(info)) => info,
+        Ok(None) => {
             return AppError::BadRequest("User not found".into())
                 .into_response::<()>()
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud_cached 查询失败");
+            tracing::error!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached 查询失败");
             return AppError::Internal("用户数据查询失败，请稍后重试".into())
                 .into_response::<()>()
                 .into_response();
         }
-    }
-
-    let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached failed");
-            None
-        });
-    let (uid, nickname) = cloud_info
-        .as_ref()
-        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
-        .unwrap_or((None, None));
+    };
+    let (uid, nickname) = (Some(cloud_info.0.as_str()), Some(cloud_info.1.as_str()));
 
     if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
         return AppError::Internal(format!("user sync: {e}"))
@@ -128,7 +124,11 @@ async fn create_new_session(
         }
     };
 
-    tracing::info!(user_id = req.user_id, session_id = session.id, "New session created");
+    tracing::info!(
+        user_id = req.user_id,
+        session_id = session.id,
+        "New session created"
+    );
 
     axum::Json(serde_json::json!({ "success": true })).into_response()
 }

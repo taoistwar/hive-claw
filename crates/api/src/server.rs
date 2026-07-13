@@ -16,8 +16,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use futures::stream::{self, Stream, StreamExt};
 use log::{error, info, warn};
 use regex::Regex;
@@ -415,7 +415,9 @@ async fn parse_json(body: axum::body::Body) -> Result<ParsedRequest, ParseError>
         .map_err(|e| ParseError::BadRequest(format!("failed to read body: {e}")))?;
     let json: ChatCompletionRequest = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
-        Err(_) => return Err(ParseError::BadRequest("Invalid JSON body".into())),
+        Err(_) => {
+            return Err(ParseError::BadRequest("Invalid JSON body".into()));
+        }
     };
     let (text, media) = extract_json_content(&json)?;
     Ok(ParsedRequest {
@@ -483,7 +485,9 @@ fn extract_json_content(req: &ChatCompletionRequest) -> Result<(String, Vec<Path
             }
             chunks.join(" ")
         }
-        _ => return Err(ParseError::BadRequest("Invalid content format".into())),
+        _ => {
+            return Err(ParseError::BadRequest("Invalid content format".into()));
+        }
     };
     Ok((text, media_paths))
 }
@@ -957,7 +961,14 @@ mod tests {
         let url = format!("data:image/png;base64,{payload}");
         let saved = save_base64_data_url(&url, &dir).unwrap();
         assert!(saved.exists());
-        assert!(saved.extension().unwrap().to_str().unwrap().eq_ignore_ascii_case("png"));
+        assert!(
+            saved
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .eq_ignore_ascii_case("png")
+        );
         let bytes = fs::read(&saved).unwrap();
         assert!(bytes.len() > 10);
     }

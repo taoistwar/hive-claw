@@ -55,15 +55,16 @@ impl ApiAgent for AgentLoopApi {
             chat_id: req.chat_id.clone(),
             content: req.content.clone(),
             timestamp: Local::now(),
-            media: req.media.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+            media: req
+                .media
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
             metadata: HashMap::new(),
             session_key_override: Some(session_key.clone()),
         };
 
-        let result = self
-            .loop_
-            .process_message(msg, Some(session_key))
-            .await?;
+        let result = self.loop_.process_message(msg, Some(session_key)).await?;
 
         match result {
             Some(outbound) => Ok(ApiAnswer {

@@ -66,8 +66,15 @@ export interface SubscribeCardPayload {
 
 export interface SubscribeInfo {
   total_coins: number;
+  /** Unix timestamp in milliseconds; retained for card compatibility. */
   disk_end_time: number;
+  /** Display-ready expiration date in Asia/Shanghai timezone. */
+  disk_end_date?: string | null;
+  /** Numeric capacity in GB; retained for card compatibility. */
   disk_total_size: number;
+  disk_total_size_text?: string;
+  disk_status?: string;
+  disk_status_text?: string;
   expire_coins_7d: number;
 }
 
@@ -158,8 +165,15 @@ export async function sendMessage(params: {
 export async function getMessages(params: {
   user_id: number;
   date: string; // YYYY-MM-DD HH:MM:SS
+  channel?: string;
+  client_type?: string;
 }): Promise<ChatMessage[]> {
-  const body = JSON.stringify({ user_id: params.user_id, date: params.date });
+  const body = JSON.stringify({
+    user_id: params.user_id,
+    date: params.date,
+    channel: params.channel,
+    client_type: params.client_type,
+  });
   const secret = getSecret();
 
   let url = `${API_BASE_URL}/messages`;

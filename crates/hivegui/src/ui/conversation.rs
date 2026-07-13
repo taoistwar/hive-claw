@@ -1,18 +1,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use futures::StreamExt;
 use gpui::{
-    div, prelude::*, px, rgb, AsyncApp, Context, Entity, MouseButton, SharedString, StatefulInteractiveElement, Window,
+    AsyncApp, Context, Entity, MouseButton, SharedString, StatefulInteractiveElement, Window, div,
+    prelude::*, px, rgb,
 };
 use uuid::Uuid;
 
-use crate::client::{self, streaming, OpenResponsesRequest};
+use crate::client::{self, OpenResponsesRequest, streaming};
 use crate::model::conversation::{
-    Attachment, AttachmentId, AttachmentPayload, Author, PendingTurnId, TurnContent, TurnError,
-    TurnErrorKind, TurnStatus, MAX_ATTACHMENTS_PER_TURN, TOTAL_ATTACHMENTS_MAX_BYTES,
+    Attachment, AttachmentId, AttachmentPayload, Author, MAX_ATTACHMENTS_PER_TURN, PendingTurnId,
+    TOTAL_ATTACHMENTS_MAX_BYTES, TurnContent, TurnError, TurnErrorKind, TurnStatus,
 };
 use crate::ui::app::{AppRoute, HiveGuiAppState};
 use crate::ui::input::TextInput;
@@ -52,12 +53,7 @@ impl Render for ConversationView {
 
         self.transient_error = pending.transient_error.clone().map(SharedString::from);
 
-        let mut turns_col = div()
-            .id("turns")
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .p(px(16.0));
+        let mut turns_col = div().id("turns").flex().flex_col().gap(px(8.0)).p(px(16.0));
 
         let snapshot: Vec<TurnSnapshot> = {
             let app = cx.global::<HiveGuiAppState>();
@@ -290,7 +286,7 @@ impl Render for ConversationView {
                     .id("turns-scroll")
                     .flex_1()
                     .overflow_y_scroll()
-                    .child(turns_col)
+                    .child(turns_col),
             )
             .children(indicator)
             .child(chip_row)
@@ -357,8 +353,8 @@ impl From<&crate::model::conversation::ConversationTurn> for TurnSnapshot {
 // --- send / retry / attach pipelines ----------------------------------
 
 fn retry_turn(turn_id: crate::model::conversation::TurnId, cx: &mut gpui::App) {
-    let Some((pending, model, text, attachments, url, http)) =
-        cx.update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, cx| {
+    let Some((pending, model, text, attachments, url, http)) = cx
+        .update_global::<HiveGuiAppState, _>(|app: &mut HiveGuiAppState, cx| {
             let url = app.config.hiveclaw_url.clone();
             let http = app.http.clone();
             let (pending, text, attachments) = app.conversation.update(

@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
-use serde::{Serialize, Deserialize};
 
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
@@ -344,6 +344,7 @@ pub struct ExternalGameInfo {
     pub client_type: Option<String>,
     pub channel: Option<String>,
     pub game_icon: Option<String>,
+    pub raw_description: Option<String>,
 }
 
 /// Query games from cc_logic_game by logic_game_id (foreign key, may return multiple rows).
@@ -355,7 +356,7 @@ pub async fn get_external_game_by_id(
 ) -> Result<Vec<ExternalGameInfo>, AppError> {
     sqlx::query_as::<_, ExternalGameInfo>(
         r#"SELECT
-  t1.logic_game_id, t1.name, t9.recommend_reason as description, t1.cover_image, t1.game_tags,
+  t1.logic_game_id, t1.name, t9.recommend_reason as description, t1.description as raw_description, t1.cover_image, t1.game_tags,
   t2.computer_id,
   t3.name as platform_name,
   t1.client_type,
@@ -367,7 +368,10 @@ FROM (
 INNER JOIN (
   select * from cc_game where logic_game_id=?
 ) t2 ON t1.logic_game_id = t2.logic_game_id
-INNER JOIN cc_game_platform t3 on t2.platform = t3.code
+INNER JOIN cc_game_platform t3 on t2.game_platform_id = t3.id
+INNER JOIN (
+	select * from cc_computer_info where status = 1
+) ci ON t2.computer_id  = ci.id
 INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
 INNER JOIN (
   SELECT pc.id, pc.game_tag, pc.prom_channel FROM cc_promotion_channel pc where pc.prom_channel = ?
@@ -377,7 +381,7 @@ LEFT JOIN (
 ) t6 on t1.logic_game_id = t6.logic_game_id
 LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
 LEFT JOIN (
-  select * from cc_logic_game where id=?
+  select * from cc_logic_game where id=? and status = 1
 ) t8 on t1.logic_game_id = t8.id
 LEFT JOIN (
   select * from cc_ranking_recommended_game
@@ -427,7 +431,9 @@ FROM (
   where t2.id is null AND t4.id is null
   group by t1.logic_game_id,t1.name
 ) z1
-INNER JOIN cc_logic_game z2 on z1.logic_game_id = z2.id
+INNER JOIN (
+  select * from cc_logic_game where status = 1
+) z2 on z1.logic_game_id = z2.id
     "#;
     sqlx::query_as::<_, (i64, String, String)>(sql)
         .bind(client_type)
@@ -571,7 +577,9 @@ pub async fn get_single_external_game_info_cached(
     match cache_helper::cached_get::<Option<ExternalGameInfo>>(redis, &key).await {
         Ok(Some(cached)) => return Ok(cached),
         Ok(None) => {} // cache miss
-        Err(e) => tracing::debug!(%key, error = %e, "cache read failed, falling back to DB"),
+        Err(e) => {
+            tracing::debug!(%key, error = %e, "cache read failed, falling back to DB")
+        }
     }
 
     // 2. Fetch from DB, sort by platform priority, take first
@@ -594,6 +602,19 @@ pub async fn get_single_external_game_info_cached(
     Ok(result)
 }
 
+/// Non-cached single-game lookup: queries external DB by (game_id, client_type, channel),
+/// sorts by platform priority, and returns only the top-priority result.
+pub async fn get_single_external_game_info(
+    ext_pool: &MySqlPool,
+    game_id: i64,
+    client_type: &str,
+    channel: &str,
+) -> Result<Option<ExternalGameInfo>, AppError> {
+    let mut games = get_external_game_by_id(ext_pool, game_id, client_type, channel).await?;
+    sort_external_games_by_priority(ext_pool, &mut games).await;
+    Ok(games.into_iter().next())
+}
+
 /// Cached version of `list_external_games`.
 pub async fn list_external_games_cached(
     redis: &redis::Client,
@@ -613,4 +634,114 @@ pub async fn list_external_games_cached(
             .map_err(|e| format!("list_external_games: {e}"))
     })
     .await
+}
+
+/// Check whether games are still active (status=1) in cc_logic_game.
+/// Returns the set of IDs that are still available.
+pub async fn filter_available_games(
+    ext_pool: &MySqlPool,
+    game_ids: &[i64],
+) -> Result<std::collections::HashSet<i64>, String> {
+    if game_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let placeholders: Vec<String> = game_ids.iter().map(|_| "?".to_string()).collect();
+    let sql = format!(
+        "SELECT id FROM cc_logic_game WHERE id IN ({}) AND status = 1",
+        placeholders.join(",")
+    );
+    let mut query = sqlx::query_as(&sql);
+    for id in game_ids {
+        query = query.bind(id);
+    }
+    let rows: Vec<(i64,)> = query
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| format!("filter_available_games: {e}"))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Query available logic_game_ids filtered by client_type, channel, and game tag type.
+/// Returns distinct game IDs that pass version/exclude/blacklist checks.
+pub async fn fetch_logic_game_ids_by_tag(
+    ext_pool: &MySqlPool,
+    category_name: &str,
+    client_type: &str,
+    channel: &str,
+    limit: i32,
+) -> Result<Vec<i64>, String> {
+    let sql = format!(
+        r#"SELECT
+  distinct z2.id
+FROM (
+  SELECT t1.logic_game_id
+  FROM (
+    select * from cc_logic_game_wide where client_type=?
+    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('type', 1))
+    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('name', '{}'))
+  ) t1
+  LEFT JOIN (
+    select * from cc_logic_game_exclude where client_type=? and channel=?
+  ) t2 on t1.logic_game_id = t2.logic_game_id
+  INNER JOIN cc_logic_game_version t3 ON t1.version = t3.version
+  LEFT JOIN cc_logic_game_blacklist t4 ON t1.logic_game_id = t4.logic_game_id
+  where t2.id is null AND t4.id is null
+  group by t1.logic_game_id
+) z1
+INNER JOIN (
+  select * from cc_logic_game where status = 1
+) z2 on z1.logic_game_id = z2.id
+order by RAND()
+limit ?"#,
+        category_name
+    );
+    let rows: Vec<(i64,)> = sqlx::query_as(&sql)
+        .bind(client_type)
+        .bind(client_type)
+        .bind(channel)
+        .bind(limit)
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
+    tracing::debug!(
+        %client_type, %channel, %category_name, %limit,
+        result_count = rows.len(),
+        "fetch_logic_game_ids_by_tag done"
+    );
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Query cc_logic_game detail by id (for web-admin game lookup).
+pub async fn get_external_game_detail(
+    ext_pool: &MySqlPool,
+    game_id: i64,
+) -> Result<
+    Option<(
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<serde_json::Value>,
+    )>,
+    AppError,
+> {
+    sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<serde_json::Value>,
+        ),
+    >(
+        "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
+         FROM cc_logic_game g
+         LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
+         WHERE g.id = ?",
+    )
+    .bind(game_id)
+    .fetch_optional(ext_pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("external game detail: {e}")))
 }

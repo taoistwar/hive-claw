@@ -70,10 +70,12 @@ fn test_regex_match_miss() {
 async fn test_cache_refresh_picks_up_new_word() {
     let pool = common::test_pool().await.unwrap();
     // Insert a test word directly
-    sqlx::query("INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES ('测试敏感词007', 'exact')")
-        .execute(&pool)
-        .await
-        .ok();
+    sqlx::query(
+        "INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES ('测试敏感词007', 'exact')",
+    )
+    .execute(&pool)
+    .await
+    .ok();
 
     let filter = SensitiveFilter::new();
     filter.load_from_db(&pool).await.ok();
@@ -163,19 +165,23 @@ async fn test_create_sensitive_word() {
 
     // Clean up any leftover
     let _ = sqlx::query("DELETE FROM sensitive_words WHERE word = 'test-create-word'")
-        .execute(&pool).await;
+        .execute(&pool)
+        .await;
 
     let req = hiveweb::models::sensitive_word::CreateSensitiveWordRequest {
         word: "test-create-word".into(),
         match_mode: "exact".into(),
     };
-    let result = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
+    let result =
+        hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 
     // Clean up
     if let Ok(word) = result {
         let _ = sqlx::query("DELETE FROM sensitive_words WHERE id = ?")
-            .bind(word.id).execute(&pool).await;
+            .bind(word.id)
+            .execute(&pool)
+            .await;
     }
 }
 
@@ -188,7 +194,8 @@ async fn test_create_invalid_regex_rejected() {
         word: "(unclosed".into(),
         match_mode: "regex".into(),
     };
-    let result = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
+    let result =
+        hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
     assert!(result.is_err(), "Invalid regex should be rejected");
 }
 
@@ -199,24 +206,30 @@ async fn test_create_duplicate_rejected() {
 
     let word = format!("dup-test-{}", std::process::id());
     let _ = sqlx::query("DELETE FROM sensitive_words WHERE word = ?")
-        .bind(&word).execute(&pool).await;
+        .bind(&word)
+        .execute(&pool)
+        .await;
 
     let req = hiveweb::models::sensitive_word::CreateSensitiveWordRequest {
         word: word.clone(),
         match_mode: "exact".into(),
     };
     // First create should succeed
-    let first = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
+    let first =
+        hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
     assert!(first.is_ok());
 
     // Second create should fail (duplicate)
-    let second = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
+    let second =
+        hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await;
     assert!(second.is_err());
 
     // Clean up
     if let Ok(w) = first {
         let _ = sqlx::query("DELETE FROM sensitive_words WHERE id = ?")
-            .bind(w.id).execute(&pool).await;
+            .bind(w.id)
+            .execute(&pool)
+            .await;
     }
 }
 
@@ -227,14 +240,18 @@ async fn test_update_triggers_cache_refresh() {
 
     let word = format!("update-test-{}", std::process::id());
     let _ = sqlx::query("DELETE FROM sensitive_words WHERE word = ?")
-        .bind(&word).execute(&pool).await;
+        .bind(&word)
+        .execute(&pool)
+        .await;
 
     // Create
     let req = hiveweb::models::sensitive_word::CreateSensitiveWordRequest {
         word: word.clone(),
         match_mode: "exact".into(),
     };
-    let created = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await.unwrap();
+    let created = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req)
+        .await
+        .unwrap();
 
     // Update
     let update = hiveweb::models::sensitive_word::UpdateSensitiveWordRequest {
@@ -242,13 +259,18 @@ async fn test_update_triggers_cache_refresh() {
         match_mode: None,
         enabled: Some(false),
     };
-    let result = hiveweb::services::sensitive_filter::update_sensitive_word(&pool, &filter, created.id, &update).await;
+    let result = hiveweb::services::sensitive_filter::update_sensitive_word(
+        &pool, &filter, created.id, &update,
+    )
+    .await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap().enabled, false);
 
     // Clean up
     let _ = sqlx::query("DELETE FROM sensitive_words WHERE id = ?")
-        .bind(created.id).execute(&pool).await;
+        .bind(created.id)
+        .execute(&pool)
+        .await;
 }
 
 #[tokio::test]
@@ -258,21 +280,29 @@ async fn test_delete_triggers_cache_refresh() {
 
     let word = format!("delete-test-{}", std::process::id());
     let _ = sqlx::query("DELETE FROM sensitive_words WHERE word = ?")
-        .bind(&word).execute(&pool).await;
+        .bind(&word)
+        .execute(&pool)
+        .await;
 
     // Create then delete
     let req = hiveweb::models::sensitive_word::CreateSensitiveWordRequest {
         word: word.clone(),
         match_mode: "exact".into(),
     };
-    let created = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req).await.unwrap();
+    let created = hiveweb::services::sensitive_filter::create_sensitive_word(&pool, &filter, &req)
+        .await
+        .unwrap();
 
-    let result = hiveweb::services::sensitive_filter::delete_sensitive_word(&pool, &filter, created.id).await;
+    let result =
+        hiveweb::services::sensitive_filter::delete_sensitive_word(&pool, &filter, created.id)
+            .await;
     assert!(result.is_ok());
     assert!(result.unwrap());
 
     // Verify deleted by trying to delete again
-    let result2 = hiveweb::services::sensitive_filter::delete_sensitive_word(&pool, &filter, created.id).await;
+    let result2 =
+        hiveweb::services::sensitive_filter::delete_sensitive_word(&pool, &filter, created.id)
+            .await;
     assert!(!result2.unwrap());
 }
 
@@ -281,9 +311,8 @@ async fn test_list_with_search_and_pagination() {
     let pool = common::test_pool().await.unwrap();
 
     // Just verify the query runs without error
-    let result = hiveweb::services::sensitive_filter::list_sensitive_words(
-        &pool, 1, 10, None, None,
-    ).await;
+    let result =
+        hiveweb::services::sensitive_filter::list_sensitive_words(&pool, 1, 10, None, None).await;
     assert!(result.is_ok());
     let list = result.unwrap();
     assert!(list.words.len() <= 10);

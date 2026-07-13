@@ -260,16 +260,9 @@ async fn get_external_game_detail(
         }
     };
 
-    let row = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>(
-        "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
-         FROM cc_logic_game g
-         LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
-         WHERE g.id = ?",
-    )
-    .bind(id)
-    .fetch_optional(ext_pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("external game detail: {}", e)).into_response())?;
+    let row = crate::services::game_service::get_external_game_detail(ext_pool, id)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")).into_response())?;
 
     match row {
         Some((gid, name, description, cover_image, game_tags)) => {

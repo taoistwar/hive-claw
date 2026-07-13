@@ -6,11 +6,10 @@
 /// - Implements `log::Log` to capture and format log records
 /// - Prefixes messages with `[lib_name]` for easy identification
 /// - Provides best-effort global logger registration
-
 use std::io::{Write, stderr};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use log::{Log, Metadata, Record, LevelFilter, SetLoggerError};
+use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
 
 /// Route `log` crate records into a custom handler with consistent formatting.
 ///
@@ -73,7 +72,9 @@ impl LoguruBridge {
     /// Returns `true` if the record's target matches this bridge's lib prefix.
     fn matches_target(&self, record: &Record) -> bool {
         let target = record.target();
-        target == self.lib_name || target.starts_with(&format!("{}::", self.lib_name)) || target.starts_with(&format!("{}.", self.lib_name))
+        target == self.lib_name
+            || target.starts_with(&format!("{}::", self.lib_name))
+            || target.starts_with(&format!("{}.", self.lib_name))
     }
 }
 
@@ -135,12 +136,30 @@ mod tests {
 
     #[test]
     fn level_parsing() {
-        assert_eq!(LoguruBridge::new("test", Some("debug")).level_filter, LevelFilter::Debug);
-        assert_eq!(LoguruBridge::new("test", Some("INFO")).level_filter, LevelFilter::Info);
-        assert_eq!(LoguruBridge::new("test", Some("warning")).level_filter, LevelFilter::Warn);
-        assert_eq!(LoguruBridge::new("test", Some("error")).level_filter, LevelFilter::Error);
-        assert_eq!(LoguruBridge::new("test", None).level_filter, LevelFilter::Trace);
-        assert_eq!(LoguruBridge::new("test", Some("invalid")).level_filter, LevelFilter::Trace);
+        assert_eq!(
+            LoguruBridge::new("test", Some("debug")).level_filter,
+            LevelFilter::Debug
+        );
+        assert_eq!(
+            LoguruBridge::new("test", Some("INFO")).level_filter,
+            LevelFilter::Info
+        );
+        assert_eq!(
+            LoguruBridge::new("test", Some("warning")).level_filter,
+            LevelFilter::Warn
+        );
+        assert_eq!(
+            LoguruBridge::new("test", Some("error")).level_filter,
+            LevelFilter::Error
+        );
+        assert_eq!(
+            LoguruBridge::new("test", None).level_filter,
+            LevelFilter::Trace
+        );
+        assert_eq!(
+            LoguruBridge::new("test", Some("invalid")).level_filter,
+            LevelFilter::Trace
+        );
     }
 
     #[test]
@@ -150,7 +169,14 @@ mod tests {
             .level(LevelFilter::Info.to_level().unwrap())
             .target("my_lib")
             .build();
-        assert!(bridge.matches_target(&Record::builder().metadata(metadata).args(format_args!("")).build()));
+        assert!(
+            bridge.matches_target(
+                &Record::builder()
+                    .metadata(metadata)
+                    .args(format_args!(""))
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -160,7 +186,14 @@ mod tests {
             .level(LevelFilter::Info.to_level().unwrap())
             .target("my_lib::sub::module")
             .build();
-        assert!(bridge.matches_target(&Record::builder().metadata(metadata).args(format_args!("")).build()));
+        assert!(
+            bridge.matches_target(
+                &Record::builder()
+                    .metadata(metadata)
+                    .args(format_args!(""))
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -170,7 +203,14 @@ mod tests {
             .level(LevelFilter::Info.to_level().unwrap())
             .target("other_lib::something")
             .build();
-        assert!(!bridge.matches_target(&Record::builder().metadata(metadata).args(format_args!("")).build()));
+        assert!(
+            !bridge.matches_target(
+                &Record::builder()
+                    .metadata(metadata)
+                    .args(format_args!(""))
+                    .build()
+            )
+        );
     }
 
     #[test]

@@ -57,8 +57,7 @@ fn is_enabled(section: &Value) -> bool {
         .unwrap_or(false)
 }
 
-type ChannelCtor =
-    fn(Value, MessageBus, TranscriptionSettings) -> Result<ChannelEntry, String>;
+type ChannelCtor = fn(Value, MessageBus, TranscriptionSettings) -> Result<ChannelEntry, String>;
 
 fn known_channels() -> &'static [(&'static str, ChannelCtor)] {
     &[

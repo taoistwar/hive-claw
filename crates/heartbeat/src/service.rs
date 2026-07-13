@@ -154,7 +154,10 @@ impl HeartbeatDecider for LLMHeartbeatDecider {
             tool_choice: None,
         };
 
-        let response = self.provider.chat_with_retry(req, RetryMode::Standard, None).await;
+        let response = self
+            .provider
+            .chat_with_retry(req, RetryMode::Standard, None)
+            .await;
 
         if !response.should_execute_tools() {
             if response.has_tool_calls() {
@@ -200,7 +203,10 @@ impl HeartbeatDecider for LLMHeartbeatDecider {
             .to_string();
 
         if action_str == "run" && !tasks.is_empty() {
-            info!("Heartbeat decision: run ({})", &tasks[..tasks.len().min(80)]);
+            info!(
+                "Heartbeat decision: run ({})",
+                &tasks[..tasks.len().min(80)]
+            );
             HeartbeatDecision {
                 action: HeartbeatAction::Run,
                 tasks,

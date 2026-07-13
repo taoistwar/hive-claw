@@ -1,18 +1,17 @@
 /// Structured progress-event helpers shared by agent runtimes.
-
 use serde_json::{Map, Value};
 
 /// Progress callback type.
 pub type ProgressCallback = Box<
     dyn Fn(
-        String,
-        bool,
-        Option<Vec<Map<String, Value>>>,
-        Option<Vec<Map<String, Value>>>,
-        bool,
-        bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-    + Send,
+            String,
+            bool,
+            Option<Vec<Map<String, Value>>>,
+            Option<Vec<Map<String, Value>>>,
+            bool,
+            bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send,
 >;
 
 /// Check if an on_progress callback accepts `tool_events` parameter.
@@ -71,5 +70,3 @@ pub async fn invoke_file_edit_progress(
     )
     .await;
 }
-
-

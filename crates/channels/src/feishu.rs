@@ -52,18 +52,27 @@ fn _extract_share_card_content(content_json: &serde_json::Value, msg_type: &str)
 
     match msg_type {
         "share_chat" => {
-            let chat_id = content_json.get("chat_id").and_then(|v| v.as_str()).unwrap_or("");
+            let chat_id = content_json
+                .get("chat_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             parts.push(format!("[shared chat: {}]", chat_id));
         }
         "share_user" => {
-            let user_id = content_json.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+            let user_id = content_json
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             parts.push(format!("[shared user: {}]", user_id));
         }
         "interactive" => {
             parts.extend(_extract_interactive_content(content_json));
         }
         "share_calendar_event" => {
-            let event_key = content_json.get("event_key").and_then(|v| v.as_str()).unwrap_or("");
+            let event_key = content_json
+                .get("event_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             parts.push(format!("[shared calendar event: {}]", event_key));
         }
         "system" => {
@@ -184,7 +193,8 @@ fn _extract_element_content(element: &serde_json::Map<String, serde_json::Value>
             if let Some(fields) = element.get("fields").and_then(|v| v.as_array()) {
                 for field in fields {
                     if let Some(field_obj) = field.as_object() {
-                        if let Some(field_text) = field_obj.get("text").and_then(|v| v.as_object()) {
+                        if let Some(field_text) = field_obj.get("text").and_then(|v| v.as_object())
+                        {
                             if let Some(c) = field_text.get("content").and_then(|v| v.as_str()) {
                                 if !c.is_empty() {
                                     parts.push(c.to_string());
@@ -215,16 +225,13 @@ fn _extract_element_content(element: &serde_json::Map<String, serde_json::Value>
                     }
                 }
             }
-            let url = element
-                .get("url")
-                .and_then(|v| v.as_str())
-                .or_else(|| {
-                    element
-                        .get("multi_url")
-                        .and_then(|v| v.as_object())
-                        .and_then(|o| o.get("url"))
-                        .and_then(|v| v.as_str())
-                });
+            let url = element.get("url").and_then(|v| v.as_str()).or_else(|| {
+                element
+                    .get("multi_url")
+                    .and_then(|v| v.as_object())
+                    .and_then(|o| o.get("url"))
+                    .and_then(|v| v.as_str())
+            });
             if let Some(u) = url {
                 if !u.is_empty() {
                     parts.push(format!("link: {}", u));
@@ -288,10 +295,20 @@ fn _extract_element_content(element: &serde_json::Map<String, serde_json::Value>
 
 /// Extract text and image keys from Feishu post (rich text) message.
 fn _extract_post_content(content_json: &serde_json::Value) -> (String, Vec<String>) {
-    fn parse_block(block: &serde_json::Map<String, serde_json::Value>) -> (Option<String>, Vec<String>) {
+    fn parse_block(
+        block: &serde_json::Map<String, serde_json::Value>,
+    ) -> (Option<String>, Vec<String>) {
         let content_arr = match block.get("content").and_then(|v| v.as_array()) {
             Some(c) => c,
-            None => return (block.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()), Vec::new()),
+            None => {
+                return (
+                    block
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    Vec::new(),
+                );
+            }
         };
 
         let mut texts = Vec::new();
@@ -319,11 +336,17 @@ fn _extract_post_content(content_json: &serde_json::Value) -> (String, Vec<Strin
                         }
                     }
                     "at" => {
-                        let user_name = el_obj.get("user_name").and_then(|v| v.as_str()).unwrap_or("user");
+                        let user_name = el_obj
+                            .get("user_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("user");
                         texts.push(format!("@{}", user_name));
                     }
                     "code_block" => {
-                        let lang = el_obj.get("language").and_then(|v| v.as_str()).unwrap_or("");
+                        let lang = el_obj
+                            .get("language")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         let code_text = el_obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         texts.push(format!("\n```\n{}\n{}\n```\n", lang, code_text));
                     }
@@ -535,19 +558,29 @@ impl FeishuChannelInner {
     /// TODO: Implement with actual Lark SDK.
     fn _add_reaction_sync(&self, _message_id: &str, _emoji_type: &str) -> Option<String> {
         // TODO: Actual SDK call
-        debug!("add_reaction: {} {} (placeholder)", _message_id, _emoji_type);
+        debug!(
+            "add_reaction: {} {} (placeholder)",
+            _message_id, _emoji_type
+        );
         None
     }
 
     /// Remove a reaction emoji from a message (sync placeholder).
     fn _remove_reaction_sync(&self, _message_id: &str, _reaction_id: &str) {
         // TODO: Actual SDK call
-        debug!("remove_reaction: {} {} (placeholder)", _message_id, _reaction_id);
+        debug!(
+            "remove_reaction: {} {} (placeholder)",
+            _message_id, _reaction_id
+        );
     }
 
     /// Download an image from Feishu message.
     /// TODO: Implement with actual Lark SDK.
-    fn _download_image_sync(&self, _message_id: &str, _image_key: &str) -> (Option<Vec<u8>>, Option<String>) {
+    fn _download_image_sync(
+        &self,
+        _message_id: &str,
+        _image_key: &str,
+    ) -> (Option<Vec<u8>>, Option<String>) {
         warn!("_download_image_sync: not implemented (Lark SDK placeholder)");
         (None, None)
     }
@@ -580,7 +613,10 @@ impl FeishuChannelInner {
         _reply_in_thread: bool,
     ) -> bool {
         // TODO: Actual SDK call
-        debug!("_reply_message_sync: {} {} (placeholder)", _parent_message_id, _msg_type);
+        debug!(
+            "_reply_message_sync: {} {} (placeholder)",
+            _parent_message_id, _msg_type
+        );
         false
     }
 
@@ -593,7 +629,10 @@ impl FeishuChannelInner {
         _content: &str,
     ) -> Option<String> {
         // TODO: Actual SDK call
-        debug!("_send_message_sync: {} {} (placeholder)", _receive_id, _msg_type);
+        debug!(
+            "_send_message_sync: {} {} (placeholder)",
+            _receive_id, _msg_type
+        );
         None
     }
 
@@ -627,26 +666,41 @@ impl FeishuChannelInner {
     /// Stream-update the markdown element on a CardKit card (sync placeholder).
     fn _stream_update_text_sync(&self, _card_id: &str, _content: &str, _sequence: u64) -> bool {
         // TODO: Actual SDK call
-        debug!("_stream_update_text_sync: {} seq={} (placeholder)", _card_id, _sequence);
+        debug!(
+            "_stream_update_text_sync: {} seq={} (placeholder)",
+            _card_id, _sequence
+        );
         false
     }
 
     /// Turn off CardKit streaming_mode (sync placeholder).
     fn _close_streaming_mode_sync(&self, _card_id: &str, _sequence: u64) -> bool {
         // TODO: Actual SDK call
-        debug!("_close_streaming_mode_sync: {} seq={} (placeholder)", _card_id, _sequence);
+        debug!(
+            "_close_streaming_mode_sync: {} seq={} (placeholder)",
+            _card_id, _sequence
+        );
         false
     }
 
     /// Return whether a group reply should create a Feishu thread/topic.
     fn _should_use_reply_in_thread(&self, metadata: &HashMap<String, serde_json::Value>) -> bool {
-        let chat_type = metadata.get("chat_type").and_then(|v| v.as_str()).unwrap_or("group");
+        let chat_type = metadata
+            .get("chat_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("group");
         chat_type == "group" && self.config.reply_to_message
     }
 
     /// Return the message_id that should receive a Reply API response.
-    fn _thread_reply_target(&self, metadata: &HashMap<String, serde_json::Value>) -> Option<String> {
-        let chat_type = metadata.get("chat_type").and_then(|v| v.as_str()).unwrap_or("group");
+    fn _thread_reply_target(
+        &self,
+        metadata: &HashMap<String, serde_json::Value>,
+    ) -> Option<String> {
+        let chat_type = metadata
+            .get("chat_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("group");
         if chat_type != "group" {
             return None;
         }
@@ -654,7 +708,10 @@ impl FeishuChannelInner {
         if message_id.is_none() {
             return None;
         }
-        let has_thread = metadata.get("thread_id").map(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false)).unwrap_or(false);
+        let has_thread = metadata
+            .get("thread_id")
+            .map(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+            .unwrap_or(false);
         if has_thread || self.config.reply_to_message {
             return message_id.map(|s| s.to_string());
         }
@@ -696,7 +753,11 @@ impl FeishuChannel {
 
     /// Check if a sender is allowed.
     fn is_allowed(&self, sender_id: &str) -> bool {
-        crate::base::is_allowed(FeishuChannel::name(), &self.inner.config.allow_from, sender_id)
+        crate::base::is_allowed(
+            FeishuChannel::name(),
+            &self.inner.config.allow_from,
+            sender_id,
+        )
     }
 
     /// Fetch the bot's own open_id via GET /open-apis/bot/v3/info.
@@ -765,7 +826,12 @@ impl FeishuChannel {
                 }
             } else {
                 // Fallback heuristic
-                let has_user_id = mid.unwrap().user_id.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+                let has_user_id = mid
+                    .unwrap()
+                    .user_id
+                    .as_ref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
                 if !has_user_id && mention_open_id.starts_with("ou_") {
                     return true;
                 }
@@ -791,12 +857,10 @@ impl FeishuChannel {
         let message_id = message_id.to_string();
         let emoji_type = emoji_type.to_string();
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            inner._add_reaction_sync(&message_id, &emoji_type)
-        })
-        .await
-        .ok()
-        .flatten()
+        tokio::task::spawn_blocking(move || inner._add_reaction_sync(&message_id, &emoji_type))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Remove a reaction emoji from a message.
@@ -875,22 +939,14 @@ impl FeishuChannel {
     fn complex_md_re() -> &'static Regex {
         use std::sync::OnceLock;
         static RE: OnceLock<Regex> = OnceLock::new();
-        RE.get_or_init(|| {
-            Regex::new(
-                r"```|^\|.+\|.*\n\s*\|[-:\s|]+\||^#{1,6}\s+",
-            )
-            .unwrap()
-        })
+        RE.get_or_init(|| Regex::new(r"```|^\|.+\|.*\n\s*\|[-:\s|]+\||^#{1,6}\s+").unwrap())
     }
 
     fn simple_md_re() -> &'static Regex {
         use std::sync::OnceLock;
         static RE: OnceLock<Regex> = OnceLock::new();
         RE.get_or_init(|| {
-            Regex::new(
-                r"\*\*.+?\*\*|__.+?__|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|~~.+?~~",
-            )
-            .unwrap()
+            Regex::new(r"\*\*.+?\*\*|__.+?__|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|~~.+?~~").unwrap()
         })
     }
 
@@ -979,7 +1035,11 @@ impl FeishuChannel {
             .map(|r| {
                 let mut obj = serde_json::Map::new();
                 for i in 0..headers.len() {
-                    let val = if i < r.len() { r[i].clone() } else { String::new() };
+                    let val = if i < r.len() {
+                        r[i].clone()
+                    } else {
+                        String::new()
+                    };
                     obj.insert(format!("c{}", i), serde_json::Value::String(val));
                 }
                 serde_json::Value::Object(obj)
@@ -1016,7 +1076,8 @@ impl FeishuChannel {
                     "content": before,
                 }));
             }
-            let text = Self::_strip_md_formatting(m.get(2).map(|g| g.as_str()).unwrap_or("").trim());
+            let text =
+                Self::_strip_md_formatting(m.get(2).map(|g| g.as_str()).unwrap_or("").trim());
             let display_text = if !text.is_empty() {
                 format!("**{}**", text)
             } else {
@@ -1098,7 +1159,10 @@ impl FeishuChannel {
     }
 
     /// Split card elements into groups with at most max_tables table elements each.
-    fn _split_elements_by_table_limit(elements: &[serde_json::Value], max_tables: usize) -> Vec<Vec<serde_json::Value>> {
+    fn _split_elements_by_table_limit(
+        elements: &[serde_json::Value],
+        max_tables: usize,
+    ) -> Vec<Vec<serde_json::Value>> {
         if elements.is_empty() {
             return vec![Vec::new()];
         }
@@ -1273,7 +1337,13 @@ impl FeishuChannel {
             let msg_type_for_download = msg_type.to_string();
             let (d, f) = tokio::task::spawn_blocking({
                 let inner = Arc::clone(&self.inner);
-                move || inner._download_file_sync(&msg_id, &file_key_for_download, &msg_type_for_download)
+                move || {
+                    inner._download_file_sync(
+                        &msg_id,
+                        &file_key_for_download,
+                        &msg_type_for_download,
+                    )
+                }
             })
             .await
             .unwrap_or((None, None));
@@ -1292,7 +1362,10 @@ impl FeishuChannel {
             // Feishu voice messages: use .ogg for Whisper compatibility
             if msg_type == "audio" {
                 if let Some(ref fn_val) = filename {
-                    if !fn_val.ends_with(".opus") && !fn_val.ends_with(".ogg") && !fn_val.ends_with(".oga") {
+                    if !fn_val.ends_with(".opus")
+                        && !fn_val.ends_with(".ogg")
+                        && !fn_val.ends_with(".oga")
+                    {
                         filename = Some(format!("{}.ogg", fn_val));
                     }
                 }
@@ -1371,7 +1444,12 @@ impl FeishuChannel {
             parts.push(s.trim().to_string());
         }
 
-        parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join("\n")
+        parts
+            .iter()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Format a tool hint delta with the configured prefix.
@@ -1518,7 +1596,11 @@ impl Channel for FeishuChannel {
                 if buf.card_id.is_some() {
                     // Delegate to send_delta
                     let delta = format!("\n\n{}\n\n", self._format_tool_hint_delta(hint));
-                    let meta_clone: serde_json::Map<String, serde_json::Value> = msg.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    let meta_clone: serde_json::Map<String, serde_json::Value> = msg
+                        .metadata
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
                     return self.send_delta(msg.chat_id, delta, meta_clone).await;
                 }
             }
@@ -1538,7 +1620,12 @@ impl Channel for FeishuChannel {
                 let target_id = target_id.clone();
                 let reply_in_thread = self.inner._should_use_reply_in_thread(&msg.metadata);
                 tokio::task::spawn_blocking(move || {
-                    inner._reply_message_sync(&target_id, "interactive", &card_str, reply_in_thread);
+                    inner._reply_message_sync(
+                        &target_id,
+                        "interactive",
+                        &card_str,
+                        reply_in_thread,
+                    );
                 })
                 .await
                 .ok();
@@ -1555,8 +1642,16 @@ impl Channel for FeishuChannel {
 
         // Determine reply target
         let mut reply_message_id: Option<String> = None;
-        let msg_id = msg.metadata.get("message_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let has_thread_id = msg.metadata.get("thread_id").map(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false)).unwrap_or(false);
+        let msg_id = msg
+            .metadata
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let has_thread_id = msg
+            .metadata
+            .get("thread_id")
+            .map(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+            .unwrap_or(false);
 
         if self.inner.config.reply_to_message && msg.metadata.get("_progress").is_none() {
             reply_message_id = msg_id.clone();
@@ -1641,15 +1736,35 @@ impl Channel for FeishuChannel {
                     let mut sent = false;
                     if let Some(ref rid) = reply_id {
                         if has_thread {
-                            sent = inner_for_task._reply_message_sync(rid, &msg_type, &content_str, reply_in_thread);
+                            sent = inner_for_task._reply_message_sync(
+                                rid,
+                                &msg_type,
+                                &content_str,
+                                reply_in_thread,
+                            );
                         } else if first_send {
-                            sent = inner_for_task._reply_message_sync(rid, &msg_type, &content_str, reply_in_thread);
+                            sent = inner_for_task._reply_message_sync(
+                                rid,
+                                &msg_type,
+                                &content_str,
+                                reply_in_thread,
+                            );
                         }
                         if !sent {
-                            inner_for_task._send_message_sync(&receive_id_type, &chat_id, &msg_type, &content_str);
+                            inner_for_task._send_message_sync(
+                                &receive_id_type,
+                                &chat_id,
+                                &msg_type,
+                                &content_str,
+                            );
                         }
                     } else {
-                        inner_for_task._send_message_sync(&receive_id_type, &chat_id, &msg_type, &content_str);
+                        inner_for_task._send_message_sync(
+                            &receive_id_type,
+                            &chat_id,
+                            &msg_type,
+                            &content_str,
+                        );
                     }
                 })
                 .await
@@ -1677,15 +1792,35 @@ impl Channel for FeishuChannel {
                         let mut sent = false;
                         if let Some(ref rid) = reply_id {
                             if has_thread {
-                                sent = inner_for_task._reply_message_sync(rid, "text", &text_str, reply_in_thread);
+                                sent = inner_for_task._reply_message_sync(
+                                    rid,
+                                    "text",
+                                    &text_str,
+                                    reply_in_thread,
+                                );
                             } else if first_send {
-                                sent = inner_for_task._reply_message_sync(rid, "text", &text_str, reply_in_thread);
+                                sent = inner_for_task._reply_message_sync(
+                                    rid,
+                                    "text",
+                                    &text_str,
+                                    reply_in_thread,
+                                );
                             }
                             if !sent {
-                                inner_for_task._send_message_sync(&receive_id_type, &chat_id, "text", &text_str);
+                                inner_for_task._send_message_sync(
+                                    &receive_id_type,
+                                    &chat_id,
+                                    "text",
+                                    &text_str,
+                                );
                             }
                         } else {
-                            inner_for_task._send_message_sync(&receive_id_type, &chat_id, "text", &text_str);
+                            inner_for_task._send_message_sync(
+                                &receive_id_type,
+                                &chat_id,
+                                "text",
+                                &text_str,
+                            );
                         }
                     })
                     .await
@@ -1704,15 +1839,35 @@ impl Channel for FeishuChannel {
                         let mut sent = false;
                         if let Some(ref rid) = reply_id {
                             if has_thread {
-                                sent = inner_for_task._reply_message_sync(rid, "post", &post_body, reply_in_thread);
+                                sent = inner_for_task._reply_message_sync(
+                                    rid,
+                                    "post",
+                                    &post_body,
+                                    reply_in_thread,
+                                );
                             } else if first_send {
-                                sent = inner_for_task._reply_message_sync(rid, "post", &post_body, reply_in_thread);
+                                sent = inner_for_task._reply_message_sync(
+                                    rid,
+                                    "post",
+                                    &post_body,
+                                    reply_in_thread,
+                                );
                             }
                             if !sent {
-                                inner_for_task._send_message_sync(&receive_id_type, &chat_id, "post", &post_body);
+                                inner_for_task._send_message_sync(
+                                    &receive_id_type,
+                                    &chat_id,
+                                    "post",
+                                    &post_body,
+                                );
                             }
                         } else {
-                            inner_for_task._send_message_sync(&receive_id_type, &chat_id, "post", &post_body);
+                            inner_for_task._send_message_sync(
+                                &receive_id_type,
+                                &chat_id,
+                                "post",
+                                &post_body,
+                            );
                         }
                     })
                     .await
@@ -1740,15 +1895,35 @@ impl Channel for FeishuChannel {
                             let mut sent = false;
                             if let Some(ref rid) = reply_id {
                                 if has_thread {
-                                    sent = inner_for_task._reply_message_sync(rid, "interactive", &card_str, reply_in_thread);
+                                    sent = inner_for_task._reply_message_sync(
+                                        rid,
+                                        "interactive",
+                                        &card_str,
+                                        reply_in_thread,
+                                    );
                                 } else if first_send {
-                                    sent = inner_for_task._reply_message_sync(rid, "interactive", &card_str, reply_in_thread);
+                                    sent = inner_for_task._reply_message_sync(
+                                        rid,
+                                        "interactive",
+                                        &card_str,
+                                        reply_in_thread,
+                                    );
                                 }
                                 if !sent {
-                                    inner_for_task._send_message_sync(&receive_id_type, &chat_id, "interactive", &card_str);
+                                    inner_for_task._send_message_sync(
+                                        &receive_id_type,
+                                        &chat_id,
+                                        "interactive",
+                                        &card_str,
+                                    );
                                 }
                             } else {
-                                inner_for_task._send_message_sync(&receive_id_type, &chat_id, "interactive", &card_str);
+                                inner_for_task._send_message_sync(
+                                    &receive_id_type,
+                                    &chat_id,
+                                    "interactive",
+                                    &card_str,
+                                );
                             }
                         })
                         .await
@@ -1772,7 +1947,10 @@ impl Channel for FeishuChannel {
             return Ok(());
         }
 
-        let metadata_hm: HashMap<String, serde_json::Value> = metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let metadata_hm: HashMap<String, serde_json::Value> = metadata
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let stream_key = FeishuChannel::_stream_key(&chat_id, &metadata_hm);
         let rid_type = if chat_id.starts_with("oc_") {
             "chat_id"
@@ -1784,7 +1962,10 @@ impl Channel for FeishuChannel {
 
         // Stream end
         if metadata.get("_stream_end").is_some() {
-            let message_id = metadata.get("message_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let message_id = metadata
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
 
             // Reaction cleanup
             if let Some(ref mid) = message_id {
@@ -1864,9 +2045,19 @@ impl Channel for FeishuChannel {
 
                     tokio::task::spawn_blocking(move || {
                         if let Some(ref target) = fallback_id {
-                            inner_for_task._reply_message_sync(target, "interactive", &card_str, reply_in_thread);
+                            inner_for_task._reply_message_sync(
+                                target,
+                                "interactive",
+                                &card_str,
+                                reply_in_thread,
+                            );
                         } else {
-                            inner_for_task._send_message_sync(&rid_type, &chat_id, "interactive", &card_str);
+                            inner_for_task._send_message_sync(
+                                &rid_type,
+                                &chat_id,
+                                "interactive",
+                                &card_str,
+                            );
                         }
                     })
                     .await
@@ -1931,7 +2122,10 @@ impl Channel for FeishuChannel {
         } else {
             // Throttle edits
             let should_update = match buf.last_edit {
-                Some(last) => now.duration_since(last).as_secs_f64() >= FeishuChannel::STREAM_EDIT_INTERVAL_SECS,
+                Some(last) => {
+                    now.duration_since(last).as_secs_f64()
+                        >= FeishuChannel::STREAM_EDIT_INTERVAL_SECS
+                }
                 None => true,
             };
 
@@ -2146,7 +2340,11 @@ impl FeishuChannel {
             }
             for img_key in image_keys {
                 let (file_path, content_text) = self
-                    ._download_and_save_media("image", &serde_json::json!({ "image_key": img_key }), Some(&message_id))
+                    ._download_and_save_media(
+                        "image",
+                        &serde_json::json!({ "image_key": img_key }),
+                        Some(&message_id),
+                    )
                     .await;
                 if let Some(fp) = file_path {
                     media_paths.push(fp);
@@ -2178,7 +2376,12 @@ impl FeishuChannel {
             content_parts.push(content_text);
         } else if matches!(
             msg_type.as_str(),
-            "share_chat" | "share_user" | "interactive" | "share_calendar_event" | "system" | "merge_forward"
+            "share_chat"
+                | "share_user"
+                | "interactive"
+                | "share_calendar_event"
+                | "system"
+                | "merge_forward"
         ) {
             let text = _extract_share_card_content(&content_json, &msg_type);
             if !text.is_empty() {
@@ -2296,8 +2499,8 @@ pub fn build(
     bus: bus::MessageBus,
     transcription: TranscriptionSettings,
 ) -> Result<crate::registry::ChannelEntry, String> {
-    let config: FeishuConfig = serde_json::from_value(section)
-        .map_err(|e| format!("invalid feishu config: {}", e))?;
+    let config: FeishuConfig =
+        serde_json::from_value(section).map_err(|e| format!("invalid feishu config: {}", e))?;
 
     if !config.enabled {
         return Err("feishu channel not enabled".to_string());
@@ -2382,12 +2585,18 @@ mod tests {
 
     #[test]
     fn test_detect_msg_format_interactive_heading() {
-        assert_eq!(FeishuChannel::_detect_msg_format("# Title\nSome text"), "interactive");
+        assert_eq!(
+            FeishuChannel::_detect_msg_format("# Title\nSome text"),
+            "interactive"
+        );
     }
 
     #[test]
     fn test_detect_msg_format_interactive_code() {
-        assert_eq!(FeishuChannel::_detect_msg_format("```\ncode\n```"), "interactive");
+        assert_eq!(
+            FeishuChannel::_detect_msg_format("```\ncode\n```"),
+            "interactive"
+        );
     }
 
     #[test]
@@ -2400,7 +2609,10 @@ mod tests {
 
     #[test]
     fn test_detect_msg_format_interactive_bold() {
-        assert_eq!(FeishuChannel::_detect_msg_format("**bold text**"), "interactive");
+        assert_eq!(
+            FeishuChannel::_detect_msg_format("**bold text**"),
+            "interactive"
+        );
     }
 
     #[test]
@@ -2411,7 +2623,10 @@ mod tests {
 
     #[test]
     fn test_detect_msg_format_interactive_list() {
-        assert_eq!(FeishuChannel::_detect_msg_format("- item1\n- item2"), "interactive");
+        assert_eq!(
+            FeishuChannel::_detect_msg_format("- item1\n- item2"),
+            "interactive"
+        );
     }
 
     #[test]
@@ -2472,9 +2687,18 @@ mod tests {
 
     #[test]
     fn test_safe_media_filename() {
-        assert_eq!(FeishuChannel::_safe_media_filename(Some("test.txt"), "fallback.txt"), "test.txt");
-        assert_eq!(FeishuChannel::_safe_media_filename(None, "fallback.txt"), "fallback.txt");
-        assert_eq!(FeishuChannel::_safe_media_filename(Some("../../../etc/passwd"), "safe.txt"), "safe.txt");
+        assert_eq!(
+            FeishuChannel::_safe_media_filename(Some("test.txt"), "fallback.txt"),
+            "test.txt"
+        );
+        assert_eq!(
+            FeishuChannel::_safe_media_filename(None, "fallback.txt"),
+            "fallback.txt"
+        );
+        assert_eq!(
+            FeishuChannel::_safe_media_filename(Some("../../../etc/passwd"), "safe.txt"),
+            "safe.txt"
+        );
     }
 
     #[test]

@@ -13,9 +13,9 @@ pub mod chat_assistant;
 pub mod chat_common;
 pub mod chat_messages;
 pub mod function;
-pub mod newsession;
 pub mod game;
 pub mod global_config;
+pub mod newsession;
 pub mod plugin;
 pub mod recommended_game;
 pub mod runtime;
@@ -75,21 +75,23 @@ pub struct AppState {
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 }
 
-/// 启动期严格 12 步顺序（plan §Startup Initialization Order）：
-///   1. env / dotenv —— 由 main.rs 完成（DATABASE_URL/JWT_SECRET 等 fail-fast）
-///   2. DB migrations —— `cargo run --bin migrate`
-///   3. capability registry upsert —— 启动期 INSERT ... ON DUPLICATE KEY UPDATE
-///   4. builtin function upsert —— FR-010 v5 的 5 个 builtin（kind=1）
-///   5. custom function 索引 —— 拉 DB 全部 kind=2，构 Arc<HashMap<identifier, FunctionDef>>
-///   6. llm_presets.toml 加载 —— LlmRegistry::load_from_path()
-///   7. ToolRegistry 装配 —— builtin + custom + workflow-wrap，注册到 agent::ToolRegistry
-///   8. SubagentManager / MemoryStore 初始化
-///   9. Instance Pool 空池
-///  10. HTTP Router 装配（middleware → API group）
-///  11. 后台任务启动（retention cron / pool idle reaper）
-///  12. HTTP server listen
+/// DB migration 是服务启动外的前置步骤：生产环境由部署流程预建表，开发/测试环境
+/// 必须先运行 `cargo run -p hiveweb --bin migrate`。主服务不会自动建表或迁移。
 ///
-/// 当前 create_router 完成 9 + 10；3..8 + 11 在 main.rs 的 setup 阶段调用具体
+/// 启动期严格 11 步顺序（plan §Startup Initialization Order）：
+///   1. env / dotenv —— 由 main.rs 完成（DATABASE_URL/JWT_SECRET 等 fail-fast）
+///   2. capability registry upsert —— 启动期 INSERT ... ON DUPLICATE KEY UPDATE
+///   3. builtin function upsert —— FR-010 v5 的 5 个 builtin（kind=1）
+///   4. custom function 索引 —— 拉 DB 全部 kind=2，构 Arc<HashMap<identifier, FunctionDef>>
+///   5. llm_presets.toml 加载 —— LlmRegistry::load_from_path()
+///   6. ToolRegistry 装配 —— builtin + custom + workflow-wrap，注册到 agent::ToolRegistry
+///   7. SubagentManager / MemoryStore 初始化
+///   8. Instance Pool 空池
+///   9. HTTP Router 装配（middleware → API group）
+///  10. 后台任务启动（retention cron / pool idle reaper）
+///  11. HTTP server listen
+///
+/// 当前 create_router 完成 8 + 9；2..7 + 10 在 main.rs 的 setup 阶段调用具体
 /// services（Phase 3..7 实现后接入）。
 pub fn create_router(
     pool: MySqlPool,

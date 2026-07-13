@@ -199,21 +199,19 @@ impl Invoker {
             }
         };
 
-        runtime_audit::record(
-            AuditRecord {
-                request_id: None,
-                session_id: None,
-                agent_id: None,
-                plugin_id: Some(plugin_id_local),
-                function_id: None,
-                capability: None,
-                event_type: "plugin_invoke",
-                outcome,
-                elapsed_ms: Some(elapsed_ms),
-                error_message: err_msg.as_deref(),
-                payload_summary: None,
-            },
-        );
+        runtime_audit::record(AuditRecord {
+            request_id: None,
+            session_id: None,
+            agent_id: None,
+            plugin_id: Some(plugin_id_local),
+            function_id: None,
+            capability: None,
+            event_type: "plugin_invoke",
+            outcome,
+            elapsed_ms: Some(elapsed_ms),
+            error_message: err_msg.as_deref(),
+            payload_summary: None,
+        });
 
         match (output, outcome) {
             (Some(s), _) => Ok(s),

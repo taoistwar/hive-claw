@@ -81,11 +81,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
     "payload": {
       "type": "sufficient",
       "info": {
-        "disk_end_time": 1735689600,
-        "disk_total_size": 1099511627776,
+        "disk_end_time": 1735689600000,
+        "disk_end_date": "2025-01-01",
+        "disk_total_size": 50,
+        "disk_total_size_text": "50GB",
         "total_coins": 900000.0,
         "expire_coins_7d": 5000.0,
-        "disk_status": "NORMAL"
+        "disk_status": "NORMAL",
+        "disk_status_text": "生效中"
       },
       "membership": [
         {
@@ -108,8 +111,6 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
       ],
       "duration_card": [
         {
-            "fps": "60",
-            "gpu": "4070",
             "order_id": -1,
             "create_time": "2026-06-16 16:00:15 UTC",
             "expire_time": 1781884815303,
@@ -129,10 +130,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
             },
             "remain_duration": 300000,
             "computer_biz_type": null,
-            "product_mirror": {
-                "fps": "60",
-                "gpu": "4070"
-            },
+            "game_label_list": ["手游", "PC游戏"],
             "product_title": "金卡",
             "product_duration": "3600000"
         }
@@ -173,7 +171,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | `String` | 卡片类型：`subscribe` / `repay` / `upgrade` / `sufficient` / `game` / `support` |
+| `type` | `String` | 卡片类型：`subscribe` / `repay` / `upgrade` / `sufficient` / `game` / `support` / `discount` |
 | `info` | `Object` | 卡片信息（余额/游戏详情等，随 `type` 不同而变化） |
 | `membership` | `Array<Object>` | 会员订阅列表（仅在会员相关卡片中出现） |
 | `duration_card` | `Array<Object>` | 时长卡列表（仅在会员相关卡片中出现） |
@@ -188,6 +186,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `sufficient` | 已有充足权益 | 权益充足，不强推付费 |
 | `game` | 游戏推荐 | 游戏推荐卡片 |
 | `support` | 用户请求人工客服 | 转接客服卡片，携带用户原始输入 |
+| `discount` | 用户查询优惠活动 | 优惠产品卡片，展示当前渠道/端的折扣产品 |
 
 ### `info` 对象字段（subscribe / repay / upgrade / sufficient 卡片）
 
@@ -195,11 +194,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `disk_end_time` | `u64` | 网盘截止时间（Unix 时间戳），0 表示无 |
-| `disk_total_size` | `f64` | 网盘总大小（字节） |
+| `disk_end_time` | `u64` | 网盘截止时间（Unix 毫秒时间戳），0 表示无；保留供卡片兼容使用 |
+| `disk_end_date` | `String \| null` | 按北京时间格式化的网盘到期日期（`YYYY-MM-DD`），供模型和文本展示直接使用 |
+| `disk_total_size` | `f64` | 网盘总容量，单位为 GB；保留供卡片兼容使用 |
+| `disk_total_size_text` | `String` | 带 GB 单位的展示容量，如 `50GB`，供模型直接使用 |
 | `total_coins` | `f64` | 总金币数 |
 | `expire_coins_7d` | `f64` | 7 天内即将过期的金币数 |
-| `disk_status` | `String` | 网盘状态（来自外部数据库 disk 表），如 `NORMAL` |
+| `disk_status` | `String` | 网盘原始状态码：`EXPIRED`（已过期）、`NORMAL`（生效中）、`NOT_ALLOCATE`（未挂载）、`RESERVE_PERIOD`（保留期） |
+| `disk_status_text` | `String` | 网盘状态中文：`已过期`、`生效中`、`未挂载`或`保留期`，供模型直接使用 |
 
 ### `info` 对象字段（game 卡片）
 
@@ -256,6 +258,49 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 触发条件：用户明确表达需要人工客服时，由 Agent 调用 `support_card` builtin 生成此卡片并立即结束 agent loop。
 
+### `payload` 对象字段（discount 卡片）
+
+`discount` 卡片包含 `discount` 字段（注意不是 `info`），直接来自 `cc_config` 表 `AIDiscountedProducts` 配置（经 `client_type` / `channel` / `__DEFAULT__` 回退解析）：
+
+**discount 卡片示例：**
+
+```json
+{
+  "content_type": "card",
+  "payload": {
+    "type": "discount",
+    "discount": {
+      "link": "https://h5.haimacloud.com/activity/huyalive?style=1",
+      "bgimg": "https://pc-cos.haimacloud.com/game/1498/cover/11d971e6.webp",
+      "buttonImg": "https://pc-cos.haimacloud.com/logicGame/ee6d1de2.png",
+      "titleDesc": "国庆特惠",
+      "buttonDesc": "立即跳转",
+      "titleColor": "#DB4040",
+      "buttonColor": "#567CCC",
+      "description": "无限暖暖国庆大促",
+      "descriptionColor": "#40820E"
+    }
+  }
+}
+```
+
+**`discount` 对象字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `link` | `String` | 活动跳转链接 |
+| `bgimg` | `String` | 背景图片 URL |
+| `titleDesc` | `String` | 标题文案 |
+| `titleColor` | `String` | 标题颜色（如 `#DB4040`） |
+| `buttonImg` | `String` | 按钮图片 URL |
+| `buttonDesc` | `String` | 按钮文案 |
+| `buttonColor` | `String` | 按钮颜色（如 `#567CCC`） |
+| `description` | `String` | 描述文案 |
+| `descriptionColor` | `String` | 描述颜色（如 `#40820E`） |
+
+> 以上字段为白名单过滤后的结果，`AIDiscountedProducts` 中的其他字段不会传递给前端。
+> 触发条件：用户询问优惠/折扣/促销活动时，Agent 调用 `query_balance(category="discount")` 获取当前渠道和端的优惠产品配置。
+
 ### `content_type` 为 `usage` 时的结构
 
 当用户当日剩余可用次数达到提醒阈值时，响应中的 `extensions` 会追加一个 `usage` 类型的扩展，用于提示用户剩余配额。
@@ -310,6 +355,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `payment_method` | `Option<String>` | 支付方式 |
 | `subscription_start_time` | `Option<String>` | 订阅开始时间 |
 | `subscription_end_time` | `Option<String>` | 订阅结束时间 |
+| `next_price` | `Option<i32>` | 下次扣款费用（单位：分） |
 
 ### `duration_card` 数组元素字段
 
@@ -322,11 +368,10 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `order_id` | `Option<i64>` | 订单 ID |
 | `consume_label` | `Option<Value>` | 消费标签（JSON 对象，含 `weight`、`channelList`、`gameLabelList`、`clientTypeList`） |
 | `create_time` | `Option<String>` | 创建时间 |
-| `product_mirror` | `Option<Value>` | 购买时产品快照（JSON，含 `fps`、`gpu` 等字段） |
-| `product_title` | `Option<String>` | 商品名称（如"金卡"、"黑金卡"） |
+| `game_label_list` | `Option<Value>` | 游戏标签列表（JSON 数组，码值经 `cc_label` 表解析为中文，如 `["手游","PC游戏","90系云电脑120帧"]`） |
+| `product_title` | `Option<String>` | 商品名称（如"30小时畅玩"、"60小时畅玩"） |
 | `product_duration` | `Option<String>` | 商品时长（毫秒字符串） |
-| `fps` | `Option<String>` | 帧率（从 `product_mirror.fps` 提取） |
-| `gpu` | `Option<String>` | GPU 型号（从 `product_mirror.gpu` 提取） |
+
 
 ## 配额查询
 

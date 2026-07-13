@@ -1,4 +1,8 @@
-//! Forward-only schema migrations for the admin center.
+//! Explicit, forward-only schema migrations for the admin center.
+//!
+//! The main `hiveweb` service never invokes this binary or creates tables at
+//! startup. Run it before starting hiveweb in development/test environments;
+//! production deployments may provision the same schema beforehand.
 //!
 //! Migration files live in `crates/hiveweb/migrations/` and follow the
 //! Flyway-style naming convention `V###__description.sql` documented in

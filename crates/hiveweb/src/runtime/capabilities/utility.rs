@@ -33,10 +33,18 @@ pub struct LogEmitArgs {
 pub fn log_emit(args: LogEmitArgs, plugin_id: Option<i64>, agent_id: Option<i64>) -> Value {
     let level = args.level.as_deref().unwrap_or("info").to_ascii_lowercase();
     match level.as_str() {
-        "error" => tracing::error!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message),
-        "warn" => tracing::warn!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message),
-        "debug" => tracing::debug!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message),
-        _ => tracing::info!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message),
+        "error" => {
+            tracing::error!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message)
+        }
+        "warn" => {
+            tracing::warn!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message)
+        }
+        "debug" => {
+            tracing::debug!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message)
+        }
+        _ => {
+            tracing::info!(plugin_id, agent_id, fields = ?args.fields, "{}", args.message)
+        }
     }
     Value::Object(serde_json::Map::new())
 }

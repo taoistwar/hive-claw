@@ -69,7 +69,12 @@ export default function ChatPage() {
     if (userId <= 0) return;
     setLoadingHistory(true);
     try {
-      const msgs = await getMessages({ user_id: userId, date: nowStr() });
+      const msgs = await getMessages({
+        user_id: userId,
+        date: nowStr(),
+        channel,
+        client_type: clientType,
+      });
       // API 返回按时间倒序，前端渲染需要正序
       setHistory(msgs.reverse());
     } catch (e) {
@@ -77,7 +82,7 @@ export default function ChatPage() {
     } finally {
       setLoadingHistory(false);
     }
-  }, [userId]);
+  }, [userId, channel, clientType]);
 
   // userId 变化时重置并加载历史
   const prevUserId = useRef<number>(0);
@@ -337,7 +342,7 @@ export default function ChatPage() {
                       session_id: assistantMsg.session_id,
                       user_id: userId,
                       role: 'user',
-                      content: game.reply,
+                      content: game.name,
                       elapsed_ms: null,
                       created_at: new Date().toISOString(),
                     };
@@ -413,7 +418,7 @@ export default function ChatPage() {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {game.game_name}
+                  {game.name}
                 </Text>
               </div>
             ))

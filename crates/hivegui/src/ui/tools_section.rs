@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, rgb, Context, MouseButton, Window};
+use gpui::{Context, MouseButton, Window, div, prelude::*, px, rgb};
 
 use crate::model::tools::{ToolSeries, ToolSeriesKind};
 use crate::ui::app::{AppRoute, HiveGuiAppState};

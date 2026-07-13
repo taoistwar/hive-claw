@@ -2,7 +2,6 @@
 ///
 /// Uses the nio SDK in Python; this is a skeleton implementation with TODOs
 /// for the full ruma/matrix-sdk integration.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Matrix channel configuration.
@@ -71,8 +70,8 @@ impl MatrixChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: MatrixConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid matrix config: {}", e))?;
+        let config: MatrixConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid matrix config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -84,15 +83,25 @@ impl MatrixChannel {
 
 #[async_trait]
 impl Channel for MatrixChannel {
-    fn name() -> &'static str { "matrix" }
-    fn display_name() -> &'static str { "Matrix" }
-    fn bus(&self) -> &MessageBus { &self.bus }
-    fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
+    fn name() -> &'static str {
+        "matrix"
+    }
+    fn display_name() -> &'static str {
+        "Matrix"
+    }
+    fn bus(&self) -> &MessageBus {
+        &self.bus
+    }
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
 
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.homeserver_url.is_empty() || self.config.user_id.is_empty() {
             error!("Matrix homeserver_url/user_id not configured");
-            return Err(ChannelError::Config("homeserver_url and user_id required".into()));
+            return Err(ChannelError::Config(
+                "homeserver_url and user_id required".into(),
+            ));
         }
         self.running.store(true, Ordering::SeqCst);
         info!("Matrix channel started");
@@ -124,12 +133,17 @@ impl Channel for MatrixChannel {
         Ok(())
     }
 
-    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> { Ok(true) }
+    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> {
+        Ok(true)
+    }
 
     fn default_config() -> Map<String, serde_json::Value> {
         let config = MatrixConfig::default();
         let value = serde_json::to_value(&config).unwrap_or(serde_json::Value::Object(Map::new()));
-        match value { serde_json::Value::Object(map) => map, _ => Map::new() }
+        match value {
+            serde_json::Value::Object(map) => map,
+            _ => Map::new(),
+        }
     }
 }
 

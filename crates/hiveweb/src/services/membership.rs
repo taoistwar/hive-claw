@@ -19,28 +19,67 @@ struct CcUserMembership {
 
 /// Check if a user has an active VIP membership in the external database.
 pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
-    sqlx::query_as::<_, CcUserMembership>(
+    let started_at = std::time::Instant::now();
+    let sql = format!(
         r#"SELECT id, membership_level, effective_end_time FROM cc_user_membership
-        WHERE user_id = ? and effective_end_time > now() AND effective_start_time < now() LIMIT 1"#,
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .map(|row| {
-        row.map_or(false, |m| {
-            m.effective_end_time
-                .map_or(true, |end| end >= chrono::Utc::now().naive_utc())
-        })
-    })
-}
+        WHERE user_id = {} AND effective_end_time > NOW()
+        AND effective_start_time <= NOW() LIMIT 1"#,
+        user_id
+    );
+    tracing::debug!(
+        operation = "check_vip_membership",
+        user_id,
+        sql,
+        "checking active VIP membership"
+    );
 
-/// Check if a user exists in the external cloud_user table.
-pub async fn user_exists_in_cloud(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM cloud_user WHERE ID = ?")
+    let row = sqlx::query_as::<_, CcUserMembership>(&sql)
         .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .map(|count| count > 0)
+        .fetch_optional(pool)
+        .await;
+
+    match row {
+        Ok(Some(membership)) => {
+            let now = chrono::Utc::now().naive_utc();
+            let is_active = membership
+                .effective_end_time
+                .is_none_or(|end_time| end_time >= now);
+            tracing::debug!(
+                operation = "check_vip_membership",
+                outcome = "membership_found",
+                user_id,
+                membership_id = membership.id,
+                membership_level = ?membership.membership_level,
+                effective_end_time = ?membership.effective_end_time,
+                now = ?now,
+                is_active,
+                duration_ms = started_at.elapsed().as_millis(),
+                "finished checking VIP membership"
+            );
+            Ok(is_active)
+        }
+        Ok(None) => {
+            tracing::debug!(
+                operation = "check_vip_membership",
+                outcome = "membership_not_found",
+                user_id,
+                duration_ms = started_at.elapsed().as_millis(),
+                "finished checking VIP membership"
+            );
+            Ok(false)
+        }
+        Err(error) => {
+            tracing::debug!(
+                operation = "check_vip_membership",
+                outcome = "query_error",
+                user_id,
+                error = %error,
+                duration_ms = started_at.elapsed().as_millis(),
+                "failed to check VIP membership"
+            );
+            Err(error)
+        }
+    }
 }
 
 /// Get cloud_user uid and nickname for a given user ID.
@@ -143,6 +182,8 @@ pub struct MembershipSubscriptionRow {
     pub payment_method: Option<String>,
     pub subscription_start_time: Option<chrono::NaiveDateTime>,
     pub subscription_end_time: Option<chrono::NaiveDateTime>,
+    /// cc_product.price — 下次扣款费用（单位：分）
+    pub next_price: Option<i32>,
 }
 
 /// Query all membership records and associated subscription status for a user.
@@ -156,36 +197,52 @@ pub async fn query_membership_subscriptions(
     ml.level_name               AS level_name,
     um.membership_category      AS membership_category,
     CASE um.membership_category
-        WHEN 'SUBSCRIPTION' THEN '订阅型'
-        WHEN 'ONE_TIME' THEN '一次性'
+        WHEN 'SUBSCRIPTION' THEN '连续订阅'
+        WHEN 'ONE_TIME' THEN '单次购买'
         ELSE um.membership_category
     END                         AS membership_category_name,
     um.effective_start_time     AS effective_start_time,
     um.effective_end_time       AS effective_end_time,
     um.product_title            AS product_title,
     us.id                       AS subscription_id,
-    us.status                   AS subscription_status,
-    CASE us.status
-        WHEN 'ACTIVE'  THEN '生效'
-        WHEN 'REVOKE'  THEN '已解约'
-        WHEN 'EXPIRED' THEN '已过期'
-        WHEN 'PENDING' THEN '待签约'
-        ELSE us.status
-    END                         AS subscription_status_name,
-    us.next_billing_time        AS next_billing_time,
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN us.status
+        ELSE null
+    END                        AS subscription_status,
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN '生效中'
+        ELSE null
+    END                        AS subscription_status_name,
+
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN us.next_billing_time
+        ELSE null
+    END AS next_billing_time,
     us.auto_renew               AS auto_renew,
     us.payment_method           AS payment_method,
     us.start_time               AS subscription_start_time,
-    us.end_time                 AS subscription_end_time
+    us.end_time                 AS subscription_end_time,
+    CASE um.membership_category
+        WHEN 'SUBSCRIPTION' THEN o.order_price
+        ELSE null
+    END                        AS next_price
 FROM
 (select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
 LEFT JOIN (
-	select * from cc_user_subscription where user_id=?
-) us ON um.user_subscription_id = us.id
+	select * from cc_user_subscription where user_id=? and status ='ACTIVE'
+) us ON um.user_id = us.user_id AND um.product_id = us.product_id
+LEFT JOIN (
+    select * from cc_subscription_order where user_id=?
+) so ON so.user_subscription_id = us.id AND us.product_id = so.product_id
+LEFT JOIN (
+    select * from cc_order where user_id = ?
+) o ON o.id = so.order_id AND o.asset_product_id = so.product_id
 
 ORDER BY ml.level_order DESC, um.effective_end_time DESC"#,
     )
+    .bind(user_id)
+    .bind(user_id)
     .bind(user_id)
     .bind(user_id)
     .fetch_all(ext_pool)
@@ -200,13 +257,11 @@ pub struct DurationCardRow {
     pub remain_duration: Option<i64>,
     pub computer_biz_type: Option<String>,
     pub expire_time: Option<i64>,
-    pub card_type: Option<i8>,
-    pub card_type_name: Option<String>,
     pub order_id: Option<i64>,
     pub consume_label: Option<serde_json::Value>,
     pub create_time: Option<chrono::DateTime<chrono::Utc>>,
-    /// product_mirror JSON — 提取 fps / gpu 等字段
-    pub product_mirror: Option<serde_json::Value>,
+    /// game_label_list JSON — 提取 fps / gpu 等字段
+    pub game_label_list: Option<serde_json::Value>,
     /// cc_product.title — 商品名称（如 "金卡"、"黑金卡"）
     pub product_title: Option<String>,
     /// cc_product.value — 商品时长
@@ -224,16 +279,10 @@ pub async fn query_duration_cards(
     t1.value               AS remain_duration,
     t1.computer_biz_type   AS computer_biz_type,
     t1.expire_time         AS expire_time,
-    t1.type                AS card_type,
-    CASE t1.type
-        WHEN 8 THEN '金卡'
-        WHEN 9 THEN '黑金卡'
-        ELSE '其他'
-    END                     AS card_type_name,
     t1.order_id            AS order_id,
     t1.consume_label       AS consume_label,
     t1.create_time         AS create_time,
-    t2.product_mirror      AS product_mirror,
+    t4.game_label_list      AS game_label_list,
     t3.title               AS product_title,
     t3.value               AS product_duration
 FROM (
@@ -252,7 +301,9 @@ FROM (
 LEFT JOIN (
 	SELECT * FROM cc_order WHERE user_id = ?
 ) t2 ON t1.order_id = t2.id
-LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id"#,
+LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id
+LEFT JOIN cc_product_ext t4 ON t3.id = t4.product_id
+"#,
     )
     .bind(user_id)
     .bind(user_id)
@@ -263,57 +314,69 @@ LEFT JOIN cc_product t3 ON t2.asset_product_id = t3.id"#,
     // 可以多个
 }
 
-// ── Redis-cached wrappers ──
+/// Resolve game_label_list codes to human-readable names via cc_label table.
+/// Input: [{"game_label_list": ["ARM_GAME", "PC_GAME"]}, ...]
+/// Output: the same JSON but with codes replaced by names (e.g. ["手游", "PC游戏"])
+pub async fn resolve_game_label_names(
+    ext_pool: &MySqlPool,
+    duration_card_json: &mut [serde_json::Value],
+) -> Result<(), String> {
+    use std::collections::HashMap;
 
-/// Cached version of `user_exists_in_cloud`.
-///
-/// Split-TTL strategy: if the user exists, cache for a long duration (24h)
-/// because accounts never disappear. If the user does not exist, cache only
-/// briefly (5min) because they may be a newly registered user.
-pub async fn user_exists_in_cloud_cached(
-    redis: &redis::Client,
-    pool: &MySqlPool,
-    user_id: i64,
-) -> Result<bool, String> {
-    let key = format!("{}:{}", cache_helper::KEY_CLOUD_USER_EXISTS, user_id);
-
-    // 1. Try Redis
-    match cache_helper::cached_get::<bool>(redis, &key).await {
-        Ok(Some(value)) => return Ok(value),
-        Ok(None) => {} // cache miss
-        Err(e) => tracing::debug!(%key, error = %e, "cache read failed, falling back to DB"),
-    }
-
-    // 2. Fetch from DB
-    let exists = user_exists_in_cloud(pool, user_id)
-        .await
-        .map_err(|e| format!("user_exists_in_cloud: {e}"))?;
-
-    // 3. Write to cache with split TTL
-    if exists {
-        // 24h — 用户存在，长缓存
-        let ttl = cache_helper::TTL_CLOUD_USER_EXISTS_POSITIVE;
-        if let Err(e) = cache_helper::cached_set(redis, &key, &exists, ttl).await {
-            tracing::debug!(%key, error = %e, "cache write failed");
+    // Collect all unique label codes
+    let mut codes: Vec<String> = Vec::new();
+    for card in duration_card_json.iter() {
+        if let Some(list) = card.get("game_label_list").and_then(|v| v.as_array()) {
+            for item in list {
+                if let Some(code) = item.as_str() {
+                    if !codes.contains(&code.to_string()) {
+                        codes.push(code.to_string());
+                    }
+                }
+            }
         }
     }
 
-    Ok(exists)
-}
+    if codes.is_empty() {
+        return Ok(());
+    }
 
-/// Cached version of `check_vip_membership`.
-pub async fn check_vip_membership_cached(
-    redis: &redis::Client,
-    pool: &MySqlPool,
-    user_id: i64,
-) -> Result<bool, String> {
-    let key = format!("{}:{}", cache_helper::KEY_VIP_STATUS, user_id);
-    cached_or_fetch(redis, &key, cache_helper::TTL_VIP_STATUS, || async {
-        check_vip_membership(pool, user_id)
-            .await
-            .map_err(|e| format!("check_vip_membership: {e}"))
-    })
-    .await
+    // Query cc_label for names
+    let placeholders: Vec<String> = codes.iter().map(|_| "?".to_string()).collect();
+    let sql = format!(
+        "SELECT value, name FROM cc_label WHERE value IN ({})",
+        placeholders.join(",")
+    );
+    let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+    for code in &codes {
+        query = query.bind(code);
+    }
+    let rows: Vec<(String, String)> = query
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| format!("cc_label query: {e}"))?;
+
+    let map: HashMap<String, String> = rows.into_iter().collect();
+
+    // Replace codes with names
+    for card in duration_card_json.iter_mut() {
+        if let Some(list) = card
+            .get_mut("game_label_list")
+            .and_then(|v| v.as_array_mut())
+        {
+            let resolved: Vec<serde_json::Value> = list
+                .iter()
+                .map(|item| {
+                    let code = item.as_str().unwrap_or("");
+                    let name = map.get(code).map(|s| s.as_str()).unwrap_or(code);
+                    serde_json::Value::String(name.to_string())
+                })
+                .collect();
+            *list = resolved;
+        }
+    }
+
+    Ok(())
 }
 
 /// Cached version of `get_cloud_user_info`.
@@ -448,23 +511,6 @@ pub async fn get_ai_assistant_chat_limit_config(
 }
 
 /// Cached version of `get_ai_assistant_chat_limit_config`.
-pub async fn get_ai_assistant_chat_limit_config_cached(
-    redis: &redis::Client,
-    ext_pool: &MySqlPool,
-) -> Result<AssistantChatLimitConfig, String> {
-    let key = cache_helper::KEY_AI_ASSISTANT_CHAT_LIMIT_CONFIG;
-    cached_or_fetch(
-        redis,
-        key,
-        cache_helper::TTL_AI_ASSISTANT_CHAT_LIMIT_CONFIG,
-        || async {
-            get_ai_assistant_chat_limit_config(ext_pool)
-                .await
-                .map(|opt| opt.unwrap_or_default())
-        },
-    )
-    .await
-}
 
 /// Query AIDiscountedProducts config from cc_config table.
 /// Returns the raw JSON content (None if not found).

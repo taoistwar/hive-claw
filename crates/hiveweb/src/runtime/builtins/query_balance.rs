@@ -14,6 +14,34 @@ use crate::runtime::builtins::BuiltinContext;
 use crate::runtime::builtins::BuiltinError;
 use crate::runtime::builtins::BuiltinResult;
 
+fn format_disk_end_date(timestamp_ms: i64) -> Option<String> {
+    if timestamp_ms <= 0 {
+        return None;
+    }
+
+    let china_offset = chrono::FixedOffset::east_opt(8 * 60 * 60)?;
+    chrono::DateTime::from_timestamp_millis(timestamp_ms).map(|date_time| {
+        date_time
+            .with_timezone(&china_offset)
+            .format("%Y-%m-%d")
+            .to_string()
+    })
+}
+
+fn disk_status_text(status: &str) -> String {
+    match status.trim() {
+        "EXPIRED" => "已过期".into(),
+        "NORMAL" => "生效中".into(),
+        "NOT_ALLOCATE" => "未挂载".into(),
+        "RESERVE_PERIOD" => "保留期".into(),
+        unknown => unknown.into(),
+    }
+}
+
+fn format_disk_total_size(size_gb: f64) -> String {
+    format!("{size_gb}GB")
+}
+
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
 /// user_id is extracted from AgentContext, not from LLM args.
 /// category is optionally provided in args to filter the payload:
@@ -49,8 +77,14 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            query_balance_async_impl(user_id, &ext_pool, redis.as_ref(), agent_ctx_clone.as_deref(), &category)
-                .await
+            query_balance_async_impl(
+                user_id,
+                &ext_pool,
+                redis.as_ref(),
+                agent_ctx_clone.as_deref(),
+                &category,
+            )
+            .await
         })
     })
 }
@@ -111,69 +145,23 @@ async fn try_handle_discount(
     tracing::debug!(config = %config, "[handle_discount] step2: AIDiscountedProducts config");
 
     // 3. 导航 JSON: client_type → channel → products
-    let products_obj = resolve_discount_products(&config, &client_type, &channel)?;
+    let discount = resolve_discount_products(&config, &client_type, &channel)?;
     tracing::debug!(
-        ?products_obj,
-        "[handle_discount] step3: resolved products for {}/{}",
+        ?discount,
+        "[handle_discount] step3: resolved discount for {}/{}",
         client_type,
         channel
     );
-    if products_obj.as_object().map_or(true, |o| o.is_empty()) {
+    if discount.as_object().map_or(true, |o| o.is_empty()) {
         return Ok(serde_json::json!({
             "message": "暂无产品优惠活动"
         }));
     }
 
-    // 4. 收集 product IDs
-    let product_ids: Vec<i64> = products_obj
-        .as_object()
-        .map(|o| o.keys().filter_map(|k| k.parse::<i64>().ok()).collect())
-        .unwrap_or_default();
-    tracing::debug!(?product_ids, "[handle_discount] step4: product_ids");
+    // 4. 仅保留指定字段，避免前端收到未预期的配置
+    let discount = filter_discount_fields(&discount);
 
-    if product_ids.is_empty() {
-        return Ok(serde_json::json!({
-            "message": "暂无优惠产品"
-        }));
-    }
-
-    // 5. 批量查询 cc_product（取第一个匹配的产品）
-    let product_id = product_ids[0];
-    tracing::debug!(product_id, "[handle_discount] step5: querying cc_product");
-    let product_row = sqlx::query_as(
-        "SELECT id, title, value, price, original_price, description FROM cc_product WHERE id = ? AND status = 'ACTIVE' LIMIT 1",
-    )
-    .bind(product_id)
-    .fetch_optional(ext_pool)
-    .await
-    .map_err(|e| BuiltinError::Exec(format!("cc_product query: {e}")))?
-    .map(|(id, title, value, price, original_price, description): (i64, String, Option<String>, Option<i32>, Option<i32>, Option<String>)| {
-        serde_json::json!({
-            "id": id,
-            "title": title,
-            "value": value,
-            "price": price,
-            "original_price": original_price,
-            "description": description,
-        })
-    })
-    .unwrap_or(serde_json::json!({ "id": product_id }));
-    tracing::debug!(?product_row, "[handle_discount] step5: product_row");
-
-    // 6. 获取该 product 的配置
-    let setting = products_obj
-        .get(&product_id.to_string())
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-    tracing::debug!(?setting, "[handle_discount] step6: product setting");
-
-    // 7. 构建 discount payload
-    let mut discount = product_row;
-    if let serde_json::Value::Object(ref mut map) = discount {
-        map.insert("setting".into(), setting);
-    }
-    tracing::debug!(?discount, "[handle_discount] step7: final discount payload");
-
+    // 5. 直接返回配置作为 discount payload
     let mut result = serde_json::json!({
         "found": true,
     });
@@ -206,25 +194,67 @@ fn resolve_discount_products(
     client_type: &str,
     channel: &str,
 ) -> Result<serde_json::Value, BuiltinError> {
-    let ct_obj = config.get(client_type).ok_or_else(|| {
+    /// 忽略大小写查找 JSON object 中的 key
+    fn find_ignore_case<'a>(
+        obj: &'a serde_json::Value,
+        key: &str,
+    ) -> Option<&'a serde_json::Value> {
+        obj.as_object().and_then(|map| {
+            map.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .or_else(|| {
+                    map.iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("__DEFAULT__"))
+                })
+                .map(|(_, v)| v)
+        })
+    }
+
+    let ct_obj = find_ignore_case(config, client_type).ok_or_else(|| {
         BuiltinError::Exec(format!(
-            "AIDiscountedProducts: 未找到 client_type={client_type}"
+            "AIDiscountedProducts: 未找到 client_type={client_type} 或 __DEFAULT__"
         ))
     })?;
 
-    let ch_obj = ct_obj.get(channel).ok_or_else(|| {
+    let ch_obj = find_ignore_case(ct_obj, channel).ok_or_else(|| {
         BuiltinError::Exec(format!(
-            "AIDiscountedProducts: 未找到 channel={channel} in client_type={client_type}"
+            "AIDiscountedProducts: 未找到 channel={channel} 或 __DEFAULT__ in client_type={client_type}"
         ))
     })?;
 
     Ok(ch_obj.clone())
 }
 
+/// Filter discount config to only allow specific fields, preventing frontend
+/// from receiving unexpected structure changes.
+fn filter_discount_fields(discount: &Value) -> Value {
+    const ALLOWED: &[&str] = &[
+        "link",
+        "bgimg",
+        "buttonImg",
+        "titleDesc",
+        "buttonDesc",
+        "titleColor",
+        "buttonColor",
+        "description",
+        "descriptionColor",
+    ];
+    if let Some(obj) = discount.as_object() {
+        let filtered: serde_json::Map<String, Value> = obj
+            .iter()
+            .filter(|(k, _)| ALLOWED.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Value::Object(filtered)
+    } else {
+        discount.clone()
+    }
+}
+
 pub async fn query_balance_async_impl(
     user_id: i64,
     ext_pool: &sqlx::MySqlPool,
-    redis: Option<&redis::Client>,
+    _redis: Option<&redis::Client>,
     _agent_ctx: Option<&AgentContext>,
     category: &str,
 ) -> BuiltinResult {
@@ -240,21 +270,12 @@ pub async fn query_balance_async_impl(
 
     // 1. 查询金币余额（仅 coins / benefits 需要）
     let coins_row = if need_coins {
-        let row = if let Some(r) = redis {
-            crate::services::membership::query_coins_balance_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
-                    BuiltinError::Exec(format!("金币查询失败: {e}"))
-                })?
-        } else {
-            crate::services::membership::query_coins_balance(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
-                    BuiltinError::Exec(format!("金币查询失败: {e}"))
-                })?
-        };
+        let row = crate::services::membership::query_coins_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
+                BuiltinError::Exec(format!("金币查询失败: {e}"))
+            })?;
         if row.is_none() {
             tracing::debug!(%user_id, "[query_balance] step1 coins: no data");
             return Ok(json!({
@@ -269,21 +290,12 @@ pub async fn query_balance_async_impl(
 
     // 1.2 查询云硬盘信息（仅 disk / benefits 需要）
     let disk_row = if need_disk {
-        let row = if let Some(r) = redis {
-            crate::services::membership::query_disk_balance_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
-                    BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
-                })?
-        } else {
-            crate::services::membership::query_disk_balance(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
-                    BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
-                })?
-        };
+        let row = crate::services::membership::query_disk_balance(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
+                BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
+            })?;
         tracing::debug!(%user_id, ?row, "[query_balance] step1.2 disk: row");
         row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
@@ -292,25 +304,16 @@ pub async fn query_balance_async_impl(
 
     // 1.5 查询会员与订阅状态
     let membership_subscriptions =
-        if let Some(r) = redis {
-            crate::services::membership::query_membership_subscriptions_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
-                    BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
-                })?
-        } else {
-            crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
-                    BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
-                })?
-        };
+        crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
+                BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
+            })?;
     tracing::debug!(%user_id, count = membership_subscriptions.len(), "[query_balance] step1.5 membership: {} rows", membership_subscriptions.len());
 
     // Serialize membership+subscription rows to JSON
-    let membership_json: Vec<Value> = membership_subscriptions
+    let mut membership_json: Vec<Value> = membership_subscriptions
         .iter()
         .map(|row| {
             json!({
@@ -329,64 +332,44 @@ pub async fn query_balance_async_impl(
                 "payment_method": row.payment_method,
                 "subscription_start_time": row.subscription_start_time.map(|t| t.to_string()),
                 "subscription_end_time": row.subscription_end_time.map(|t| t.to_string()),
+                "next_price": row.next_price,
             })
         })
         .collect();
+
+    if membership_json.is_empty() {
+        membership_json.push(json!({ "level_name": "普通用户" }));
+    }
     tracing::debug!(?membership_json, "[query_balance] step1.5 membership_json");
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）
     let duration_cards = if need_duration {
-        let cards = if let Some(r) = redis {
-            crate::services::membership::query_duration_cards_cached(r, ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
-                    BuiltinError::Exec(format!("时长卡查询失败: {e}"))
-                })?
-        } else {
-            crate::services::membership::query_duration_cards(ext_pool, user_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
-                    BuiltinError::Exec(format!("时长卡查询失败: {e}"))
-                })?
-        };
+        let cards = crate::services::membership::query_duration_cards(ext_pool, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
+                BuiltinError::Exec(format!("时长卡查询失败: {e}"))
+            })?;
         tracing::debug!(%user_id, count = cards.len(), "[query_balance] step1.8 duration_cards: {} rows", cards.len());
         cards
     } else {
         Vec::new()
     };
 
-    let duration_card_json: Vec<Value> = duration_cards
+    let mut duration_card_json: Vec<Value> = duration_cards
         .iter()
         .map(|row| {
-            let fps = row
-                .product_mirror
-                .as_ref()
-                .and_then(|v| v.get("fps"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let gpu = row
-                .product_mirror
-                .as_ref()
-                .and_then(|v| v.get("gpu"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
             json!({
                 "card_asset_id": row.card_asset_id,
                 "remain_duration": row.remain_duration,
                 "computer_biz_type": row.computer_biz_type,
                 "expire_time": row.expire_time,
-                "card_type": row.card_type,
-                "card_type_name": row.card_type_name,
                 "order_id": row.order_id,
                 "consume_label": row.consume_label,
                 "create_time": row.create_time.map(|t| t.to_string()),
-                "product_mirror": row.product_mirror,
+                "game_label_list": row.game_label_list,
                 "product_title": row.product_title,
                 "product_duration": row.product_duration,
-                "fps": fps,
-                "gpu": gpu,
             })
         })
         .collect();
@@ -395,18 +378,26 @@ pub async fn query_balance_async_impl(
         "[query_balance] step1.8 duration_card_json"
     );
 
-    // Derive card type from membership_subscriptions (highest-priority active row)
-    let active_membership = membership_subscriptions.iter().find(|row| {
-        row.effective_end_time
-            .map(|end| end >= chrono::Utc::now().naive_utc())
-            .unwrap_or(false)
-    });
+    // Resolve game_label_list codes to human-readable names via cc_label
+    if need_duration && !duration_card_json.is_empty() {
+        if let Err(e) =
+            crate::services::membership::resolve_game_label_names(ext_pool, &mut duration_card_json)
+                .await
+        {
+            tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
+        }
+    }
 
-    let has_membership = active_membership.is_some();
-    let days_until_expiry = active_membership
-        .and_then(|m| m.effective_end_time)
-        .map(|end| (end - chrono::Utc::now().naive_utc()).num_days());
-    let expiring_soon = days_until_expiry.map(|d| d <= 7).unwrap_or(false);
+    let has_membership = !membership_subscriptions.is_empty();
+    let now = chrono::Utc::now().naive_utc();
+    let expiring_soon = membership_subscriptions
+        .iter()
+        .filter(|row| row.effective_end_time.map_or(false, |end| end >= now))
+        .any(|row| {
+            row.effective_end_time
+                .map(|end| (end - now).num_days() <= 7)
+                .unwrap_or(false)
+        });
 
     let upgrade_suggested = has_membership
         && !membership_subscriptions
@@ -416,7 +407,6 @@ pub async fn query_balance_async_impl(
         has_membership,
         expiring_soon,
         upgrade_suggested,
-        days_until_expiry,
         "[query_balance] step2: card state"
     );
 
@@ -445,12 +435,18 @@ pub async fn query_balance_async_impl(
             .as_ref()
             .and_then(|r| r.disk_status.clone())
             .unwrap_or_default();
+        let disk_end_date = format_disk_end_date(disk_end_time);
+        let disk_status_text = disk_status_text(&disk_status);
+        let disk_total_size_text = format_disk_total_size(disk_total_size);
         json!({
             "total_coins": total_coins,
             "expire_coins_7d": expire_coins_7d,
             "disk_end_time": disk_end_time,
+            "disk_end_date": disk_end_date,
             "disk_total_size": disk_total_size,
+            "disk_total_size_text": disk_total_size_text,
             "disk_status": disk_status,
+            "disk_status_text": disk_status_text,
         })
     };
     tracing::debug!(?reply, "[query_balance] step3: reply");
@@ -495,8 +491,11 @@ pub async fn query_balance_async_impl(
                             "info".into(),
                             json!({
                                 "disk_end_time": reply.get("disk_end_time"),
+                                "disk_end_date": reply.get("disk_end_date"),
                                 "disk_total_size": reply.get("disk_total_size"),
+                                "disk_total_size_text": reply.get("disk_total_size_text"),
                                 "disk_status": reply.get("disk_status"),
+                                "disk_status_text": reply.get("disk_status_text"),
                             }),
                         );
                     }
@@ -522,7 +521,7 @@ pub async fn query_balance_async_impl(
         // Build _agent_context_updates with extensions (if any) and loop-break signal
         let mut updates = json!({
             "metadata": {
-                "agent_loop_break": "true"
+                "agent_loop_break": "false"
             }
         });
         if !extension_list.is_empty() {
@@ -555,3 +554,32 @@ pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
     }
   }
 }"#;
+
+#[cfg(test)]
+mod tests {
+    use super::{disk_status_text, format_disk_end_date, format_disk_total_size};
+
+    #[test]
+    fn formats_disk_end_time_in_china_timezone() {
+        assert_eq!(
+            format_disk_end_date(1_813_744_787_000).as_deref(),
+            Some("2027-06-23")
+        );
+        assert_eq!(format_disk_end_date(0), None);
+    }
+
+    #[test]
+    fn translates_disk_status_for_llm_display() {
+        assert_eq!(disk_status_text("EXPIRED"), "已过期");
+        assert_eq!(disk_status_text("NORMAL"), "生效中");
+        assert_eq!(disk_status_text(" NOT_ALLOCATE "), "未挂载");
+        assert_eq!(disk_status_text("RESERVE_PERIOD"), "保留期");
+        assert_eq!(disk_status_text(" UNKNOWN "), "UNKNOWN");
+    }
+
+    #[test]
+    fn formats_disk_total_size_with_gb_unit() {
+        assert_eq!(format_disk_total_size(50.0), "50GB");
+        assert_eq!(format_disk_total_size(50.5), "50.5GB");
+    }
+}

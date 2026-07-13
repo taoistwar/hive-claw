@@ -14,17 +14,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aes::Aes128;
-use aes::cipher::{
-    BlockDecrypt, BlockEncrypt, KeyInit,
-    generic_array::GenericArray,
-};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use log::{debug, error, info, warn};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::fs;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
@@ -36,8 +33,7 @@ use config::paths::{get_media_dir, get_runtime_subdir};
 use utils::helpers::split_message;
 
 use crate::base::{
-    handle_inbound, transcribe_audio, Channel, ChannelError, ChannelResult,
-    TranscriptionSettings,
+    Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound, transcribe_audio,
 };
 use crate::registry::ChannelEntry;
 
@@ -80,13 +76,17 @@ const UPLOAD_MEDIA_FILE: u32 = 3;
 const UPLOAD_MEDIA_VOICE: u32 = 4;
 
 fn image_exts() -> &'static [&'static str] {
-    &[".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg"]
+    &[
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg",
+    ]
 }
 fn video_exts() -> &'static [&'static str] {
     &[".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"]
 }
 fn voice_exts() -> &'static [&'static str] {
-    &[".mp3", ".wav", ".amr", ".silk", ".ogg", ".m4a", ".aac", ".flac"]
+    &[
+        ".mp3", ".wav", ".amr", ".silk", ".ogg", ".m4a", ".aac", ".flac",
+    ]
 }
 
 fn build_client_version(version: &str) -> u32 {
@@ -103,9 +103,18 @@ fn base_info() -> Value {
 
 fn has_downloadable_media_locator(media: Option<&Value>) -> bool {
     let Some(media) = media else { return false };
-    let Some(obj) = media.as_object() else { return false };
-    let q = obj.get("encrypt_query_param").and_then(|v| v.as_str()).unwrap_or("");
-    let f = obj.get("full_url").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let Some(obj) = media.as_object() else {
+        return false;
+    };
+    let q = obj
+        .get("encrypt_query_param")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let f = obj
+        .get("full_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     !q.is_empty() || !f.is_empty()
 }
 
@@ -329,7 +338,10 @@ impl WeixinChannel {
         h.insert("iLink-App-Id", ILINK_APP_ID.parse().unwrap());
         h.insert(
             "iLink-App-ClientVersion",
-            build_client_version(WEIXIN_CHANNEL_VERSION).to_string().parse().unwrap(),
+            build_client_version(WEIXIN_CHANNEL_VERSION)
+                .to_string()
+                .parse()
+                .unwrap(),
         );
         if auth {
             let token = self.inner.lock().await.state.token.clone();
@@ -385,7 +397,12 @@ impl WeixinChannel {
         Ok(resp.json::<Value>().await?)
     }
 
-    async fn api_post(&self, endpoint: &str, mut body: Value, auth: bool) -> Result<Value, ChannelError> {
+    async fn api_post(
+        &self,
+        endpoint: &str,
+        mut body: Value,
+        auth: bool,
+    ) -> Result<Value, ChannelError> {
         let base = self.config.read().await.base_url.clone();
         let url = format!("{base}/{endpoint}");
         if body.get("base_info").is_none() {
@@ -410,7 +427,11 @@ impl WeixinChannel {
 
     async fn fetch_qr_code(&self) -> Result<(String, String), ChannelError> {
         let data = self
-            .api_get("ilink/bot/get_bot_qrcode", Some(&[("bot_type", "3")]), false)
+            .api_get(
+                "ilink/bot/get_bot_qrcode",
+                Some(&[("bot_type", "3")]),
+                false,
+            )
             .await?;
         let qrcode_id = data
             .get("qrcode")
@@ -427,7 +448,11 @@ impl WeixinChannel {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let scan = if img_content.is_empty() { qrcode_id.clone() } else { img_content };
+        let scan = if img_content.is_empty() {
+            qrcode_id.clone()
+        } else {
+            img_content
+        };
         Ok((qrcode_id, scan))
     }
 
@@ -497,9 +522,7 @@ impl WeixinChannel {
                         self.config.write().await.base_url = new_base;
                     }
                     self.save_state().await;
-                    info!(
-                        "WeChat login successful! bot_id={bot_id} user_id={user_id}"
-                    );
+                    info!("WeChat login successful! bot_id={bot_id} user_id={user_id}");
                     return true;
                 }
                 "scaned_but_redirect" => {
@@ -510,11 +533,12 @@ impl WeixinChannel {
                         .trim()
                         .to_string();
                     if !host.is_empty() {
-                        let redirected = if host.starts_with("http://") || host.starts_with("https://") {
-                            host
-                        } else {
-                            format!("https://{host}")
-                        };
+                        let redirected =
+                            if host.starts_with("http://") || host.starts_with("https://") {
+                                host
+                            } else {
+                                format!("https://{host}")
+                            };
                         if redirected != current_base {
                             current_base = redirected;
                         }
@@ -642,10 +666,10 @@ impl WeixinChannel {
             )));
         }
 
-        if let Some(server_timeout_ms) = data.get("longpolling_timeout_ms").and_then(|v| v.as_u64()) {
+        if let Some(server_timeout_ms) = data.get("longpolling_timeout_ms").and_then(|v| v.as_u64())
+        {
             if server_timeout_ms > 0 {
-                self.inner.lock().await.next_poll_timeout_s =
-                    (server_timeout_ms / 1000).max(5);
+                self.inner.lock().await.next_poll_timeout_s = (server_timeout_ms / 1000).max(5);
             }
         }
 
@@ -673,7 +697,9 @@ impl WeixinChannel {
     // ------------------------------------------------------------------
 
     async fn process_message(self: &Arc<Self>, msg: Value) -> Result<(), ChannelError> {
-        let m = msg.as_object().ok_or_else(|| ChannelError::Other("msg not object".into()))?;
+        let m = msg
+            .as_object()
+            .ok_or_else(|| ChannelError::Other("msg not object".into()))?;
         if m.get("message_type").and_then(|v| v.as_u64()).unwrap_or(0) == MESSAGE_TYPE_BOT as u64 {
             return Ok(());
         }
@@ -786,7 +812,8 @@ impl WeixinChannel {
                             if parts.is_empty() {
                                 content_parts.push(text);
                             } else {
-                                content_parts.push(format!("[引用: {}]\n{text}", parts.join(" | ")));
+                                content_parts
+                                    .push(format!("[引用: {}]\n{text}", parts.join(" | ")));
                             }
                         }
                     } else {
@@ -809,7 +836,10 @@ impl WeixinChannel {
                 }
                 t if t == ITEM_VOICE => {
                     let voice_item = item.get("voice_item").cloned().unwrap_or(Value::Null);
-                    let voice_text = voice_item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let voice_text = voice_item
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if !voice_text.is_empty() {
                         content_parts.push(format!("[voice] {voice_text}"));
                     } else {
@@ -881,20 +911,23 @@ impl WeixinChannel {
                     .and_then(|v| v.get("message_item"))
                     .cloned()
                     .unwrap_or(Value::Null);
-                let ref_type =
-                    candidate.get("type").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let ref_type = candidate.get("type").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 match ref_type {
                     t if t == ITEM_IMAGE => {
-                        let image_item = candidate.get("image_item").cloned().unwrap_or(Value::Null);
-                        if let Some(p) = self.download_media_item(&image_item, "image", None).await {
+                        let image_item =
+                            candidate.get("image_item").cloned().unwrap_or(Value::Null);
+                        if let Some(p) = self.download_media_item(&image_item, "image", None).await
+                        {
                             content_parts.push(format!("[image]\n[Image: source: {p}]"));
                             media_paths.push(p);
                             break;
                         }
                     }
                     t if t == ITEM_VOICE => {
-                        let voice_item = candidate.get("voice_item").cloned().unwrap_or(Value::Null);
-                        if let Some(p) = self.download_media_item(&voice_item, "voice", None).await {
+                        let voice_item =
+                            candidate.get("voice_item").cloned().unwrap_or(Value::Null);
+                        if let Some(p) = self.download_media_item(&voice_item, "voice", None).await
+                        {
                             let transcription = self.transcribe_audio_helper(&p).await;
                             if !transcription.is_empty() {
                                 content_parts.push(format!("[voice] {transcription}"));
@@ -916,15 +949,16 @@ impl WeixinChannel {
                             .download_media_item(&file_item, "file", Some(&file_name))
                             .await
                         {
-                            content_parts
-                                .push(format!("[file: {file_name}]\n[File: source: {p}]"));
+                            content_parts.push(format!("[file: {file_name}]\n[File: source: {p}]"));
                             media_paths.push(p);
                             break;
                         }
                     }
                     t if t == ITEM_VIDEO => {
-                        let video_item = candidate.get("video_item").cloned().unwrap_or(Value::Null);
-                        if let Some(p) = self.download_media_item(&video_item, "video", None).await {
+                        let video_item =
+                            candidate.get("video_item").cloned().unwrap_or(Value::Null);
+                        if let Some(p) = self.download_media_item(&video_item, "video", None).await
+                        {
                             content_parts.push(format!("[video]\n[Video: source: {p}]"));
                             media_paths.push(p);
                             break;
@@ -945,7 +979,11 @@ impl WeixinChannel {
             from_user_id,
             item_list
                 .iter()
-                .map(|i| i.get("type").and_then(|v| v.as_u64()).unwrap_or(0).to_string())
+                .map(|i| i
+                    .get("type")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    .to_string())
                 .collect::<Vec<_>>()
                 .join(","),
             content.len()
@@ -956,7 +994,8 @@ impl WeixinChannel {
         let chat_id_for_typing = from_user_id.clone();
         let ctx_token_for_typing = ctx_token.clone();
         tokio::spawn(async move {
-            this.start_typing(&chat_id_for_typing, &ctx_token_for_typing).await;
+            this.start_typing(&chat_id_for_typing, &ctx_token_for_typing)
+                .await;
         });
 
         let mut metadata = Map::new();
@@ -1030,10 +1069,7 @@ impl WeixinChannel {
             .get("aeskey")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let media_aes_key_b64 = media
-            .get("aes_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let media_aes_key_b64 = media.get("aes_key").and_then(|v| v.as_str()).unwrap_or("");
 
         let aes_key_b64: String = if !raw_aeskey_hex.is_empty() {
             match hex::decode(raw_aeskey_hex) {
@@ -1069,7 +1105,12 @@ impl WeixinChannel {
         let client = self.ensure_http(120).await?;
         let mut data = Vec::<u8>::new();
         for (i, (source, url)) in candidates.iter().enumerate() {
-            match client.get(url).send().await.and_then(|r| r.error_for_status()) {
+            match client
+                .get(url)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+            {
                 Ok(resp) => match resp.bytes().await {
                     Ok(b) => {
                         data = b.to_vec();
@@ -1189,13 +1230,22 @@ impl WeixinChannel {
             .map(|e| e.retry_delay_s)
             .unwrap_or(CONFIG_CACHE_INITIAL_RETRY_S as f64);
         let next_delay = (prev * 2.0).min(CONFIG_CACHE_MAX_RETRY_S as f64);
-        let entry = inner.state.typing_tickets.entry(user_id.into()).or_default();
+        let entry = inner
+            .state
+            .typing_tickets
+            .entry(user_id.into())
+            .or_default();
         entry.next_fetch_at = now + next_delay;
         entry.retry_delay_s = next_delay;
         entry.ticket.clone()
     }
 
-    async fn send_typing(&self, user_id: &str, ticket: &str, status: u32) -> Result<(), ChannelError> {
+    async fn send_typing(
+        &self,
+        user_id: &str,
+        ticket: &str,
+        status: u32,
+    ) -> Result<(), ChannelError> {
         if ticket.is_empty() {
             return Ok(());
         }
@@ -1221,7 +1271,10 @@ impl WeixinChannel {
         if ticket.is_empty() {
             return;
         }
-        if let Err(e) = self.send_typing(chat_id, &ticket, TYPING_STATUS_TYPING).await {
+        if let Err(e) = self
+            .send_typing(chat_id, &ticket, TYPING_STATUS_TYPING)
+            .await
+        {
             debug!("WeChat typing indicator start failed for {chat_id}: {e}");
             return;
         }
@@ -1241,10 +1294,10 @@ impl WeixinChannel {
                 }
             }
         });
-        self.typing.lock().await.insert(
-            chat_id.to_string(),
-            TypingTask { stop, handle },
-        );
+        self.typing
+            .lock()
+            .await
+            .insert(chat_id.to_string(), TypingTask { stop, handle });
     }
 
     async fn stop_typing(&self, chat_id: &str, clear_remote: bool) {
@@ -1268,7 +1321,10 @@ impl WeixinChannel {
         if ticket.is_empty() {
             return;
         }
-        if let Err(e) = self.send_typing(chat_id, &ticket, TYPING_STATUS_CANCEL).await {
+        if let Err(e) = self
+            .send_typing(chat_id, &ticket, TYPING_STATUS_CANCEL)
+            .await
+        {
             debug!("WeChat typing clear failed for {chat_id}: {e}");
         }
     }
@@ -1371,7 +1427,9 @@ impl WeixinChannel {
             "aeskey": aes_key_hex,
         });
 
-        let upload_resp = self.api_post("ilink/bot/getuploadurl", upload_body, true).await?;
+        let upload_resp = self
+            .api_post("ilink/bot/getuploadurl", upload_body, true)
+            .await?;
         let upload_full_url = upload_resp
             .get("upload_full_url")
             .and_then(|v| v.as_str())
@@ -1440,7 +1498,8 @@ impl WeixinChannel {
                 media_item["video_size"] = json!(padded_size);
             }
             t if t == ITEM_FILE => {
-                media_item["file_name"] = json!(p.file_name().and_then(|s| s.to_str()).unwrap_or(""));
+                media_item["file_name"] =
+                    json!(p.file_name().and_then(|s| s.to_str()).unwrap_or(""));
                 media_item["len"] = json!(raw_size.to_string());
             }
             _ => {}
@@ -1506,14 +1565,17 @@ impl Channel for WeixinChannel {
         }
         // Init HTTP for the login flow
         let _ = self.ensure_http(60).await?;
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let ok = self.qr_login().await;
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(ok)
     }
 
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let poll_to = self.config.read().await.poll_timeout;
         self.inner.lock().await.next_poll_timeout_s = poll_to;
         // Build HTTP with a generous total timeout (poll + 10s buffer).
@@ -1528,7 +1590,8 @@ impl Channel for WeixinChannel {
         } else if !self.load_state().await {
             if !self.qr_login().await {
                 error!("WeChat login failed. Run 'nanobot channels login weixin' to authenticate.");
-                self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+                self.running
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 return Ok(());
             }
         }
@@ -1564,7 +1627,8 @@ impl Channel for WeixinChannel {
     }
 
     async fn stop(self: Arc<Self>) -> ChannelResult<()> {
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let chats: Vec<String> = self.typing.lock().await.keys().cloned().collect();
         for chat in chats {
             self.stop_typing(&chat, false).await;
@@ -1654,7 +1718,11 @@ impl Channel for WeixinChannel {
                         .unwrap_or(media);
                     error!("Failed to send WeChat media {media}: {e}");
                     let _ = self
-                        .send_text(&msg.chat_id, &format!("[Failed to send: {filename}]"), &ctx_token)
+                        .send_text(
+                            &msg.chat_id,
+                            &format!("[Failed to send: {filename}]"),
+                            &ctx_token,
+                        )
                         .await;
                 }
             }

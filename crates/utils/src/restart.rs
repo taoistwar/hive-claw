@@ -69,10 +69,22 @@ pub fn set_restart_notice_to_env(channel: &str, chat_id: &str, metadata: Option<
 /// `std::env::remove_var` is only safe when no other threads touch the
 /// environment.
 pub fn consume_restart_notice_from_env() -> Option<RestartNotice> {
-    let channel = env::var(RESTART_NOTIFY_CHANNEL_ENV).unwrap_or_default().trim().to_string();
-    let chat_id = env::var(RESTART_NOTIFY_CHAT_ID_ENV).unwrap_or_default().trim().to_string();
-    let started_at_raw = env::var(RESTART_STARTED_AT_ENV).unwrap_or_default().trim().to_string();
-    let metadata_raw = env::var(RESTART_NOTIFY_METADATA_ENV).unwrap_or_default().trim().to_string();
+    let channel = env::var(RESTART_NOTIFY_CHANNEL_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let chat_id = env::var(RESTART_NOTIFY_CHAT_ID_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let started_at_raw = env::var(RESTART_STARTED_AT_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let metadata_raw = env::var(RESTART_NOTIFY_METADATA_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     unsafe {
         env::remove_var(RESTART_NOTIFY_CHANNEL_ENV);
         env::remove_var(RESTART_NOTIFY_CHAT_ID_ENV);

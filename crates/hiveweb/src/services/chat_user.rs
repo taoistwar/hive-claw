@@ -18,11 +18,12 @@ pub async fn create_user_session(
     user_id: i64,
     title: Option<String>,
 ) -> Result<ChatSessionUser, AppError> {
-    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let user: Option<(String,)> =
+        sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
     let uid = user.map(|u| u.0).unwrap_or_default();
 
     let res = sqlx::query(
@@ -72,11 +73,12 @@ pub async fn clear_and_create_session(
         .map_err(|e| AppError::Internal(format!("user sessions cleanup: {e}")))?;
 
     // 3. 查询用户 uid
-    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let user: Option<(String,)> =
+        sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
     let uid = user.map(|u| u.0).unwrap_or_default();
 
     // 4. 创建新会话
@@ -199,6 +201,30 @@ pub async fn list_messages_user(
     Ok(res)
 }
 
+/// Query messages for a user before a given cutoff datetime (UTC).
+/// Returns up to 10 most recent messages.
+pub async fn list_messages_before(
+    pool: &MySqlPool,
+    user_id: i64,
+    cutoff: chrono::NaiveDateTime,
+) -> Result<Vec<ChatMessageUser>, AppError> {
+    let sql = "SELECT id, session_id, user_id, role, content, elapsed_ms, extensions, created_at \
+               FROM chat_messages_user \
+               WHERE user_id = ? AND UNIX_TIMESTAMP(created_at) < ? \
+               ORDER BY created_at DESC, id DESC \
+               LIMIT 10";
+    let timestamp = cutoff.and_utc().timestamp();
+    tracing::debug!(%user_id, %cutoff, %timestamp, sql, "list_messages_before");
+
+    let res = sqlx::query_as::<_, ChatMessageUser>(sql)
+        .bind(user_id)
+        .bind(timestamp)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("user messages before: {e}")))?;
+    Ok(res)
+}
+
 pub async fn append_user_message_user(
     pool: &MySqlPool,
     session_id: i64,
@@ -275,7 +301,6 @@ pub async fn delete_session_user(pool: &MySqlPool, session_id: i64) -> Result<()
         .map_err(|e| AppError::Internal(format!("user session delete: {e}")))?;
     Ok(())
 }
-
 
 /// Get the latest session for a user, or create a new one if none exists.
 pub async fn get_or_create_session_user(

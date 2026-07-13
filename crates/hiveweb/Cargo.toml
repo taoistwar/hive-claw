@@ -16,9 +16,15 @@ tokio = { version = "1", features = ["full"] }
 clap = { workspace = true }
 
 # Database — 004 加 json feature 以便序列化 JSON 列
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "mysql", "chrono", "json", "rust_decimal"] }
+sqlx = { workspace = true, features = [
+  "runtime-tokio-rustls",
+  "mysql",
+  "chrono",
+  "json",
+  "rust_decimal",
+] }
 rust_decimal = { workspace = true }
-
+syntect = { workspace = true }
 # Redis
 redis = { workspace = true }
 
@@ -129,3 +135,7 @@ path = "src/bin/seed_bench.rs"
 [[bin]]
 name = "chat-retention"
 path = "src/bin/chat_retention.rs"
+
+[[bin]]
+name = "api-test"
+path = "src/bin/api_test.rs"

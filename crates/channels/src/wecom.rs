@@ -1,7 +1,6 @@
 /// WeCom (企业微信/Enterprise WeChat) channel implementation using WebSocket long connection.
 ///
 /// Uses the wecom_aibot_sdk in Python; this is a skeleton implementation with TODOs.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,7 +13,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// WeCom channel configuration.
@@ -61,8 +60,8 @@ impl WecomChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: WecomConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid wecom config: {}", e))?;
+        let config: WecomConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid wecom config: {}", e))?;
         Ok(Self {
             config,
             bus,

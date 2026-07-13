@@ -2,7 +2,6 @@
 ///
 /// Nanobot acts as a WebSocket server serving connected clients.
 /// This is a highly complex channel with many features - skeleton implementation with TODOs.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// WebSocket server channel configuration.
@@ -57,12 +56,24 @@ pub struct WebSocketConfig {
     pub transcription: Option<serde_json::Value>,
 }
 
-fn default_port() -> u16 { 8765 }
-fn default_true() -> bool { true }
-fn default_token_ttl() -> u64 { 300 }
-fn default_max_bytes() -> usize { 37_748_736 }
-fn default_ping_interval() -> f64 { 20.0 }
-fn default_ping_timeout() -> f64 { 20.0 }
+fn default_port() -> u16 {
+    8765
+}
+fn default_true() -> bool {
+    true
+}
+fn default_token_ttl() -> u64 {
+    300
+}
+fn default_max_bytes() -> usize {
+    37_748_736
+}
+fn default_ping_interval() -> f64 {
+    20.0
+}
+fn default_ping_timeout() -> f64 {
+    20.0
+}
 
 impl Default for WebSocketConfig {
     fn default() -> Self {

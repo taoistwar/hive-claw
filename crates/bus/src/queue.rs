@@ -6,11 +6,11 @@
 //! protected by an async mutex so any number of producers / a single
 //! consumer pair can share one `MessageBus` via `Arc`.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::events::{InboundMessage, OutboundMessage};
 

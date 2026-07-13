@@ -28,7 +28,10 @@ impl CommitInfo {
     /// Format this commit for display, optionally with a diff.
     pub fn format(&self, diff: &str) -> String {
         let first_line = self.message.lines().next().unwrap_or("");
-        let header = format!("## {}\n`{}` \u{2014} {}\n", first_line, self.sha, self.timestamp);
+        let header = format!(
+            "## {}\n`{}` \u{2014} {}\n",
+            first_line, self.sha, self.timestamp
+        );
         if !diff.is_empty() {
             format!("{header}\n```diff\n{diff}\n```")
         } else {
@@ -107,7 +110,14 @@ impl GitStore {
             );
             return false;
         }
-        if self.git().arg("init").output().ok().map(|o| o.status.success()) != Some(true) {
+        if self
+            .git()
+            .arg("init")
+            .output()
+            .ok()
+            .map(|o| o.status.success())
+            != Some(true)
+        {
             warn!("Git store init failed for {}", self.workspace.display());
             return false;
         }
@@ -115,8 +125,7 @@ impl GitStore {
         let dream_entries = self.build_gitignore();
         if gitignore_path.exists() {
             if let Ok(existing) = std::fs::read_to_string(&gitignore_path) {
-                let existing_lines: std::collections::HashSet<&str> =
-                    existing.lines().collect();
+                let existing_lines: std::collections::HashSet<&str> = existing.lines().collect();
                 let new_lines: Vec<&str> = dream_entries
                     .lines()
                     .filter(|l| !existing_lines.contains(l))
@@ -149,13 +158,25 @@ impl GitStore {
         for f in &self.tracked_files {
             add_args.push(f.as_str());
         }
-        if self.git().args(&add_args).output().ok().map(|o| o.status.success()) != Some(true) {
+        if self
+            .git()
+            .args(&add_args)
+            .output()
+            .ok()
+            .map(|o| o.status.success())
+            != Some(true)
+        {
             warn!("Git store init: initial add failed");
             return true;
         }
         let _ = self
             .git()
-            .args(["commit", "-m", "init: nanobot memory store", "--allow-empty"])
+            .args([
+                "commit",
+                "-m",
+                "init: nanobot memory store",
+                "--allow-empty",
+            ])
             .output();
         info!("Git store initialized at {}", self.workspace.display());
         true
@@ -176,7 +197,14 @@ impl GitStore {
         for f in &self.tracked_files {
             add_args.push(f.as_str());
         }
-        if self.git().args(&add_args).output().ok().map(|o| o.status.success()) != Some(true) {
+        if self
+            .git()
+            .args(&add_args)
+            .output()
+            .ok()
+            .map(|o| o.status.success())
+            != Some(true)
+        {
             warn!("Git auto-commit add failed: {message}");
             return None;
         }

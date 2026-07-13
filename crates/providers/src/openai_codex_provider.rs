@@ -12,14 +12,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::oauth::{FileTokenStorage, OAuthToken};
-use crate::base::{ChatRequest, LLMProvider};
-use crate::responses::{consume_events, convert_messages, convert_tools, parse_sse_events};
 use crate::base::extract_retry_after_from_text;
+use crate::base::{ChatRequest, LLMProvider};
 use crate::base::{GenerationSettings, LLMResponse, ToolChoice};
+use crate::oauth::{FileTokenStorage, OAuthToken};
+use crate::responses::{consume_events, convert_messages, convert_tools, parse_sse_events};
 
 pub const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 pub const DEFAULT_ORIGINATOR: &str = "nanobot";
@@ -199,7 +199,9 @@ impl LLMProvider for OpenAICodexProvider {
         };
         let headers = match self.build_headers(&token) {
             Ok(h) => h,
-            Err(e) => return LLMResponse::error(format!("Invalid Codex headers: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Invalid Codex headers: {e}"));
+            }
         };
         let body = self.build_body(&req);
 
@@ -230,8 +232,8 @@ impl LLMProvider for OpenAICodexProvider {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<f64>().ok());
             let text = response.text().await.unwrap_or_default();
-            let retry_after = retry_after_hdr
-                .or_else(|| extract_retry_after_from_text(Some(&text)));
+            let retry_after =
+                retry_after_hdr.or_else(|| extract_retry_after_from_text(Some(&text)));
             let message = friendly_error(status.as_u16(), &text);
             return LLMResponse {
                 content: Some(message),
@@ -247,7 +249,9 @@ impl LLMProvider for OpenAICodexProvider {
         // true streaming here (the caller doesn't receive deltas).
         let body_text = match response.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading Codex stream: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading Codex stream: {e}"));
+            }
         };
         let events = parse_sse_events(&body_text);
         match consume_events(&events) {
@@ -279,13 +283,13 @@ fn strip_model_prefix(model: &str) -> String {
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
-            let sorted: std::collections::BTreeMap<_, _> =
-                map.iter().map(|(k, v)| (k.clone(), sort_value(v))).collect();
+            let sorted: std::collections::BTreeMap<_, _> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), sort_value(v)))
+                .collect();
             Value::Object(sorted.into_iter().collect())
         }
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(sort_value).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.iter().map(sort_value).collect()),
         other => other.clone(),
     }
 }

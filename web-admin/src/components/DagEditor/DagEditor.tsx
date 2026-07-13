@@ -42,6 +42,7 @@ import {
   Space,
   Spin,
   Switch,
+  Tabs,
   Typography,
   message,
 } from 'antd';
@@ -53,6 +54,7 @@ import {
   type AnswerNodeConfig,
   type GraphEdge,
   type GraphNode,
+  type InputSource,
   type InputSpec,
   type NodeType,
   type WorkflowExecuteResult,
@@ -1115,14 +1117,55 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         ]}
         width={700}
       >
-        {selectedNodeResult && (
-          <CollapsibleJsonView
-            data={selectedNodeResult.result}
-            initialDepth={3}
-            maxHeight={500}
-            title="节点结果 JSON"
-          />
-        )}
+        {selectedNodeResult && (() => {
+          const nodeInput = executionResult?.node_inputs?.[selectedNodeResult.nodeKey];
+          const agentCtx = executionResult?.node_agent_contexts?.[selectedNodeResult.nodeKey];
+          const items = [];
+          // 节点输出（默认）
+          items.push({
+            key: 'output',
+            label: '节点输出',
+            children: (
+              <CollapsibleJsonView
+                data={selectedNodeResult.result}
+                initialDepth={3}
+                maxHeight={500}
+                title="节点输出 JSON"
+              />
+            ),
+          });
+          // 节点输入
+          items.push({
+            key: 'input',
+            label: '节点输入',
+            children: nodeInput && typeof nodeInput === 'object' && Object.keys(nodeInput as object).length > 0 ? (
+              <CollapsibleJsonView
+                data={nodeInput}
+                initialDepth={3}
+                maxHeight={500}
+                title="节点输入 JSON"
+              />
+            ) : (
+              <Text type="secondary">（无输入）</Text>
+            ),
+          });
+          // AgentContext
+          if (agentCtx) {
+            items.push({
+              key: 'agentctx',
+              label: 'AgentContext',
+              children: (
+                <CollapsibleJsonView
+                  data={agentCtx}
+                  initialDepth={2}
+                  maxHeight={500}
+                  title="AgentContext 快照"
+                />
+              ),
+            });
+          }
+          return <Tabs defaultActiveKey="output" items={items} />;
+        })()}
       </Modal>
       {cycle ? (
         <Alert

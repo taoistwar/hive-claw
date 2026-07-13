@@ -4,8 +4,8 @@
 //! finding F10 → moved into T065 per the analyse-fix pass).
 
 use hivegui::model::conversation::{
-    Attachment, AttachmentId, AttachmentPayload, Conversation, SendError, TurnContent, TurnError,
-    TurnErrorKind, MAX_ATTACHMENTS_PER_TURN, TOTAL_ATTACHMENTS_MAX_BYTES,
+    Attachment, AttachmentId, AttachmentPayload, Conversation, MAX_ATTACHMENTS_PER_TURN, SendError,
+    TOTAL_ATTACHMENTS_MAX_BYTES, TurnContent, TurnError, TurnErrorKind,
 };
 use uuid::Uuid;
 

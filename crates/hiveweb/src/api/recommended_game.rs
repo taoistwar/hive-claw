@@ -352,9 +352,7 @@ async fn top_recommended_games(
     let ext_pool = match &state.ext_pool {
         Some(p) => p,
         None => {
-            return Err(
-                AppError::Internal("外部数据库未配置".into()).into_response::<()>()
-            );
+            return Err(AppError::Internal("外部数据库未配置".into()).into_response::<()>());
         }
     };
     let games = svc::fetch_top_filtered(ext_pool, &req.channel, &req.client_type)
@@ -416,9 +414,7 @@ async fn execute_recommendation(
     let ext_pool = match &state.ext_pool {
         Some(p) => p,
         None => {
-            return Err(
-                AppError::Internal("外部数据库未配置".into()).into_response::<()>()
-            );
+            return Err(AppError::Internal("外部数据库未配置".into()).into_response::<()>());
         }
     };
     // 3. 查询推荐游戏
@@ -428,8 +424,7 @@ async fn execute_recommendation(
 
     // 3b. 查询外部 DB 获取 computer_id / platform_name / game_icon/description（带缓存，按平台优先级排序）
     let (computer_id, platform_name, game_icon, _description) =
-        crate::services::game_service::get_single_external_game_info_cached(
-            &state.redis,
+        crate::services::game_service::get_single_external_game_info(
             ext_pool,
             game.game_id.parse::<i64>().unwrap_or(0),
             &req.client_type,
@@ -470,7 +465,7 @@ async fn execute_recommendation(
         .map_err(|e| e.into_response::<()>())?;
 
     // 5. 记录用户消息（content = game.reply）
-    chat_svc::append_user_message_user(&state.pool, session.id, user_id, &game.reply)
+    chat_svc::append_user_message_user(&state.pool, session.id, user_id, &game.name)
         .await
         .map_err(|e| e.into_response::<()>())?;
 
@@ -508,14 +503,14 @@ async fn execute_recommendation(
     .map_err(|e| e.into_response::<()>())?;
 
     // 8. 追加 usage extension（参考 assistant_chat 逻辑）
-    let is_vip = membership::check_vip_membership_cached(&state.redis, ext_pool, user_id)
+    let is_vip = membership::check_vip_membership(ext_pool, user_id)
         .await
         .unwrap_or(false);
 
-    let limit_config =
-        membership::get_ai_assistant_chat_limit_config_cached(&state.redis, ext_pool)
-            .await
-            .unwrap_or_else(|_| membership::AssistantChatLimitConfig::default());
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|_| None)
+        .unwrap_or_default();
 
     let total_times = if is_vip {
         limit_config.vip_ask_times

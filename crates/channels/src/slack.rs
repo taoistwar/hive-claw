@@ -2,7 +2,6 @@
 ///
 /// Uses the slack-sdk in Python; this is a skeleton implementation with TODOs
 /// for the full Rust Slack SDK integration.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Slack DM policy configuration.
@@ -29,7 +28,9 @@ pub struct SlackDMConfig {
     pub allow_from: Vec<String>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for SlackDMConfig {
     fn default() -> Self {
@@ -78,7 +79,9 @@ pub struct SlackConfig {
     pub transcription: Option<serde_json::Value>,
 }
 
-fn default_thread_limit() -> usize { 20 }
+fn default_thread_limit() -> usize {
+    20
+}
 
 impl Default for SlackConfig {
     fn default() -> Self {
@@ -117,8 +120,8 @@ impl SlackChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: SlackConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid slack config: {}", e))?;
+        let config: SlackConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid slack config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -163,12 +166,17 @@ impl Channel for SlackChannel {
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.bot_token.is_empty() || self.config.app_token.is_empty() {
             error!("Slack bot_token/app_token not configured");
-            return Err(ChannelError::Config("bot_token and app_token required".into()));
+            return Err(ChannelError::Config(
+                "bot_token and app_token required".into(),
+            ));
         }
 
         if self.config.mode != "socket" {
             error!("Unsupported Slack mode: {}", self.config.mode);
-            return Err(ChannelError::Config(format!("Unsupported mode: {}", self.config.mode)));
+            return Err(ChannelError::Config(format!(
+                "Unsupported mode: {}",
+                self.config.mode
+            )));
         }
 
         self.running.store(true, Ordering::SeqCst);

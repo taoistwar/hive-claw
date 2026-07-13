@@ -46,7 +46,10 @@ fn nanobot_home() -> PathBuf {
 /// Instance-level runtime data directory (parent of the active config file).
 pub fn get_data_dir() -> PathBuf {
     let cfg = get_config_path();
-    let parent = cfg.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let parent = cfg
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     ensure_dir(parent)
 }
 

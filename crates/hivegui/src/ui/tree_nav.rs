@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::*, px, rgb, CursorStyle, Entity, MouseButton, SharedString, Window, Context,
-    ScrollHandle, AnyElement,
+    AnyElement, Context, CursorStyle, Entity, MouseButton, ScrollHandle, SharedString, Window, div,
+    prelude::*, px, rgb,
 };
 
 use crate::datasource::{MysqlClient, Store, TableInfo};
@@ -103,13 +103,25 @@ fn icon_database() -> AnyElement {
                 .justify_between()
                 .py(px(1.0))
                 .child(
-                    div().w(px(10.0)).h(px(1.5)).bg(rgb(0x555555)).rounded(px(0.75))
+                    div()
+                        .w(px(10.0))
+                        .h(px(1.5))
+                        .bg(rgb(0x555555))
+                        .rounded(px(0.75)),
                 )
                 .child(
-                    div().w(px(10.0)).h(px(1.5)).bg(rgb(0x555555)).rounded(px(0.75))
+                    div()
+                        .w(px(10.0))
+                        .h(px(1.5))
+                        .bg(rgb(0x555555))
+                        .rounded(px(0.75)),
                 )
                 .child(
-                    div().w(px(10.0)).h(px(1.5)).bg(rgb(0x555555)).rounded(px(0.75))
+                    div()
+                        .w(px(10.0))
+                        .h(px(1.5))
+                        .bg(rgb(0x555555))
+                        .rounded(px(0.75)),
                 ),
         )
         .into_any()
@@ -176,7 +188,13 @@ fn icon_table() -> AnyElement {
                         .border_b_1()
                         .border_color(rgb(0x555555))
                         .flex()
-                        .child(div().w(px(6.0)).h_full().border_r_1().border_color(rgb(0x555555)))
+                        .child(
+                            div()
+                                .w(px(6.0))
+                                .h_full()
+                                .border_r_1()
+                                .border_color(rgb(0x555555)),
+                        ),
                 )
                 .child(
                     div()
@@ -185,14 +203,22 @@ fn icon_table() -> AnyElement {
                         .border_b_1()
                         .border_color(rgb(0x555555))
                         .flex()
-                        .child(div().w(px(6.0)).h_full().border_r_1().border_color(rgb(0x555555)))
+                        .child(
+                            div()
+                                .w(px(6.0))
+                                .h_full()
+                                .border_r_1()
+                                .border_color(rgb(0x555555)),
+                        ),
                 )
                 .child(
-                    div()
-                        .w_full()
-                        .h(px(3.0))
-                        .flex()
-                        .child(div().w(px(6.0)).h_full().border_r_1().border_color(rgb(0x555555)))
+                    div().w_full().h(px(3.0)).flex().child(
+                        div()
+                            .w(px(6.0))
+                            .h_full()
+                            .border_r_1()
+                            .border_color(rgb(0x555555)),
+                    ),
                 ),
         )
         .into_any()
@@ -222,8 +248,15 @@ pub struct DatabaseNode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TreeSelection {
     DataSource(i64),
-    Database { source_id: i64, database: String },
-    Table { source_id: i64, database: String, table: String },
+    Database {
+        source_id: i64,
+        database: String,
+    },
+    Table {
+        source_id: i64,
+        database: String,
+        table: String,
+    },
 }
 
 pub struct TreeNav {
@@ -274,8 +307,9 @@ impl TreeNav {
             let result = store_clone.list().await;
             match result {
                 Ok(sources) => {
-                    let nodes: Vec<TreeNode> = sources.into_iter().map(|ds| {
-                        TreeNode::DataSource {
+                    let nodes: Vec<TreeNode> = sources
+                        .into_iter()
+                        .map(|ds| TreeNode::DataSource {
                             id: ds.id,
                             name: ds.name,
                             host: ds.host,
@@ -284,29 +318,40 @@ impl TreeNav {
                             encrypted_password: ds.encrypted_password,
                             expanded: false,
                             databases: Vec::new(),
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
                         tree.nodes = nodes;
                         tree.error = None;
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
                         tree.show_error("加载数据源失败".to_string(), format!("{}", e), cx);
-                    }).ok();
+                    })
+                    .ok();
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn toggle_data_source(&mut self, index: usize, cx: &mut Context<Self>) {
         let node = self.nodes[index].clone();
-        let TreeNode::DataSource { expanded, databases, host, port, username, encrypted_password, .. } = node;
+        let TreeNode::DataSource {
+            expanded,
+            databases,
+            host,
+            port,
+            username,
+            encrypted_password,
+            ..
+        } = node;
 
         if expanded {
             if let Some(TreeNode::DataSource { expanded, .. }) = self.nodes.get_mut(index) {
@@ -338,50 +383,68 @@ impl TreeNav {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
                         tree.show_error("解密失败".to_string(), format!("{}", e), cx);
-                    }).ok();
+                    })
+                    .ok();
                     return;
                 }
             };
 
-            let result = MysqlClient::query_databases(
-                &host,
-                port,
-                &username,
-                &password,
-            ).await;
+            let result = MysqlClient::query_databases(&host, port, &username, &password).await;
 
             match result {
                 Ok(dbs) => {
-                    let db_nodes: Vec<DatabaseNode> = dbs.into_iter().map(|db| {
-                        DatabaseNode {
+                    let db_nodes: Vec<DatabaseNode> = dbs
+                        .into_iter()
+                        .map(|db| DatabaseNode {
                             name: db.name,
                             expanded: false,
                             tables: Vec::new(),
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        if let Some(TreeNode::DataSource { databases, expanded, .. }) = tree.nodes.get_mut(index) {
+                        if let Some(TreeNode::DataSource {
+                            databases,
+                            expanded,
+                            ..
+                        }) = tree.nodes.get_mut(index)
+                        {
                             *databases = db_nodes;
                             *expanded = true;
                         }
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
                         tree.show_error("加载数据库失败".to_string(), format!("{}", e), cx);
-                    }).ok();
+                    })
+                    .ok();
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
-    pub fn toggle_database(&mut self, source_index: usize, db_index: usize, cx: &mut Context<Self>) {
+    pub fn toggle_database(
+        &mut self,
+        source_index: usize,
+        db_index: usize,
+        cx: &mut Context<Self>,
+    ) {
         let node = self.nodes[source_index].clone();
-        let TreeNode::DataSource { id: _source_id, host, port, username, encrypted_password, databases, .. } = node;
+        let TreeNode::DataSource {
+            id: _source_id,
+            host,
+            port,
+            username,
+            encrypted_password,
+            databases,
+            ..
+        } = node;
         let db_node = databases[db_index].clone();
 
         if db_node.expanded {
@@ -414,40 +477,41 @@ impl TreeNav {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
                         tree.show_error("解密失败".to_string(), format!("{}", e), cx);
-                    }).ok();
+                    })
+                    .ok();
                     return;
                 }
             };
 
-            let result = MysqlClient::query_tables(
-                &host,
-                port,
-                &username,
-                &password,
-                &db_node.name,
-            ).await;
+            let result =
+                MysqlClient::query_tables(&host, port, &username, &password, &db_node.name).await;
 
             match result {
                 Ok(tables) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
-                        if let Some(TreeNode::DataSource { databases, .. }) = tree.nodes.get_mut(source_index) {
+                        if let Some(TreeNode::DataSource { databases, .. }) =
+                            tree.nodes.get_mut(source_index)
+                        {
                             if let Some(db) = databases.get_mut(db_index) {
                                 db.tables = tables;
                                 db.expanded = true;
                             }
                         }
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
                 Err(e) => {
                     this.update(cx, |tree, cx| {
                         tree.loading = false;
                         tree.show_error("加载表失败".to_string(), format!("{}", e), cx);
-                    }).ok();
+                    })
+                    .ok();
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn select_item(&mut self, selection: TreeSelection, cx: &mut Context<Self>) {
@@ -499,49 +563,40 @@ pub enum PendingAction {
 impl Render for TreeNav {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.weak_entity();
-        let mut col = div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(rgb(0xfafafa))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .child("数据源"),
-                    )
-                    .child(
-                        div()
-                            .id("btn-add")
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(0x4a90d9))
-                            .text_size(px(12.0))
-                            .text_color(rgb(0xffffff))
-                            .cursor(CursorStyle::PointingHand)
-                            .on_mouse_down(MouseButton::Left, {
-                                let panel = this.clone();
-                                move |_event, _window, cx| {
-                                    panel
-                                        .update(cx, |p, cx| {
-                                            p.pending_action = Some(PendingAction::Add);
-                                            cx.notify();
-                                        })
-                                        .ok();
-                                }
-                            })
-                            .child("+ 添加"),
-                    ),
-            );
+        let mut col = div().flex().flex_col().size_full().bg(rgb(0xfafafa)).child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(12.0))
+                .py(px(8.0))
+                .border_b_1()
+                .border_color(rgb(0xe0e0e0))
+                .child(div().text_size(px(14.0)).child("数据源"))
+                .child(
+                    div()
+                        .id("btn-add")
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .bg(rgb(0x4a90d9))
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xffffff))
+                        .cursor(CursorStyle::PointingHand)
+                        .on_mouse_down(MouseButton::Left, {
+                            let panel = this.clone();
+                            move |_event, _window, cx| {
+                                panel
+                                    .update(cx, |p, cx| {
+                                        p.pending_action = Some(PendingAction::Add);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }
+                        })
+                        .child("+ 添加"),
+                ),
+        );
 
         if self.loading && self.nodes.is_empty() {
             col = col.child(
@@ -591,7 +646,11 @@ impl Render for TreeNav {
                             self.selected,
                             Some(TreeSelection::DataSource(ref s)) if s == id
                         );
-                        let bg = if is_selected { rgb(0xd0e0f0) } else { rgb(0xfafafa) };
+                        let bg = if is_selected {
+                            rgb(0xd0e0f0)
+                        } else {
+                            rgb(0xfafafa)
+                        };
 
                         let ds_item = div()
                             .id(format!("ds-{id}"))
@@ -601,11 +660,11 @@ impl Render for TreeNav {
                             .py(px(6.0))
                             .bg(bg)
                             .cursor(CursorStyle::PointingHand)
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .child(if *expanded { icon_caret_down() } else { icon_caret_right() }),
-                            )
+                            .child(div().w(px(16.0)).child(if *expanded {
+                                icon_caret_down()
+                            } else {
+                                icon_caret_right()
+                            }))
                             .child(icon_data_source())
                             .child(
                                 div()
@@ -613,11 +672,7 @@ impl Render for TreeNav {
                                     .pl(px(6.0))
                                     .flex()
                                     .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(px(13.0))
-                                            .child(name.clone()),
-                                    )
+                                    .child(div().text_size(px(13.0)).child(name.clone()))
                                     .child(
                                         div()
                                             .text_size(px(11.0))
@@ -645,10 +700,13 @@ impl Render for TreeNav {
                                                 let id = *id;
                                                 move |_, _, cx| {
                                                     cx.stop_propagation();
-                                                    this_for_edit.update(cx, |p, cx| {
-                                                        p.pending_action = Some(PendingAction::Edit(id));
-                                                        cx.notify();
-                                                    }).ok();
+                                                    this_for_edit
+                                                        .update(cx, |p, cx| {
+                                                            p.pending_action =
+                                                                Some(PendingAction::Edit(id));
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
                                                 }
                                             })
                                             .child("编辑"),
@@ -668,10 +726,13 @@ impl Render for TreeNav {
                                                 let id = *id;
                                                 move |_, _, cx| {
                                                     cx.stop_propagation();
-                                                    this_for_delete.update(cx, |p, cx| {
-                                                        p.pending_action = Some(PendingAction::Delete(id));
-                                                        cx.notify();
-                                                    }).ok();
+                                                    this_for_delete
+                                                        .update(cx, |p, cx| {
+                                                            p.pending_action =
+                                                                Some(PendingAction::Delete(id));
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
                                                 }
                                             })
                                             .child("删除"),
@@ -682,10 +743,12 @@ impl Render for TreeNav {
                                 let idx = idx;
                                 let id = *id;
                                 move |_, _, cx| {
-                                    this_for_ds.update(cx, |tree, cx| {
-                                        tree.toggle_data_source(idx, cx);
-                                        tree.select_item(TreeSelection::DataSource(id), cx);
-                                    }).ok();
+                                    this_for_ds
+                                        .update(cx, |tree, cx| {
+                                            tree.toggle_data_source(idx, cx);
+                                            tree.select_item(TreeSelection::DataSource(id), cx);
+                                        })
+                                        .ok();
                                 }
                             });
 
@@ -699,7 +762,11 @@ impl Render for TreeNav {
                                     Some(TreeSelection::Database { source_id: s, database: d })
                                         if s == id && d == &db.name
                                 );
-                                let db_bg = if is_db_selected { rgb(0xd0e0f0) } else { rgb(0xfafafa) };
+                                let db_bg = if is_db_selected {
+                                    rgb(0xd0e0f0)
+                                } else {
+                                    rgb(0xfafafa)
+                                };
 
                                 let db_item = div()
                                     .id(format!("db-{id}-{db_name_owned}"))
@@ -712,11 +779,11 @@ impl Render for TreeNav {
                                     .border_t_1()
                                     .border_color(rgb(0xf0f0f0))
                                     .cursor(CursorStyle::PointingHand)
-                                    .child(
-                                        div()
-                                            .w(px(16.0))
-                                            .child(if db.expanded { icon_caret_down() } else { icon_caret_right() }),
-                                    )
+                                    .child(div().w(px(16.0)).child(if db.expanded {
+                                        icon_caret_down()
+                                    } else {
+                                        icon_caret_right()
+                                    }))
                                     .child(icon_database())
                                     .child(
                                         div()
@@ -732,13 +799,18 @@ impl Render for TreeNav {
                                         let source_id = *id;
                                         let db_name = db.name.clone();
                                         move |_, _, cx| {
-                                            this_for_db.update(cx, |tree, cx| {
-                                                tree.toggle_database(source_idx, db_idx, cx);
-                                                tree.select_item(TreeSelection::Database {
-                                                    source_id,
-                                                    database: db_name.clone(),
-                                                }, cx);
-                                            }).ok();
+                                            this_for_db
+                                                .update(cx, |tree, cx| {
+                                                    tree.toggle_database(source_idx, db_idx, cx);
+                                                    tree.select_item(
+                                                        TreeSelection::Database {
+                                                            source_id,
+                                                            database: db_name.clone(),
+                                                        },
+                                                        cx,
+                                                    );
+                                                })
+                                                .ok();
                                         }
                                     });
 
@@ -752,10 +824,16 @@ impl Render for TreeNav {
                                             Some(TreeSelection::Table { source_id: s, database: d, table: t })
                                                 if s == id && d == &db.name && t == &table.name
                                         );
-                                        let tbl_bg = if is_tbl_selected { rgb(0xd0e0f0) } else { rgb(0xffffff) };
+                                        let tbl_bg = if is_tbl_selected {
+                                            rgb(0xd0e0f0)
+                                        } else {
+                                            rgb(0xffffff)
+                                        };
 
                                         let tbl_item = div()
-                                            .id(format!("tbl-{id}-{db_name_owned}-{table_name_owned}"))
+                                            .id(format!(
+                                                "tbl-{id}-{db_name_owned}-{table_name_owned}"
+                                            ))
                                             .flex()
                                             .items_center()
                                             .pl(px(40.0))
@@ -779,13 +857,18 @@ impl Render for TreeNav {
                                                 let db_name = db.name.clone();
                                                 let table_name = table.name.clone();
                                                 move |_, _, cx| {
-                                                    this_for_tbl.update(cx, |tree, cx| {
-                                                        tree.select_item(TreeSelection::Table {
-                                                            source_id,
-                                                            database: db_name.clone(),
-                                                            table: table_name.clone(),
-                                                        }, cx);
-                                                    }).ok();
+                                                    this_for_tbl
+                                                        .update(cx, |tree, cx| {
+                                                            tree.select_item(
+                                                                TreeSelection::Table {
+                                                                    source_id,
+                                                                    database: db_name.clone(),
+                                                                    table: table_name.clone(),
+                                                                },
+                                                                cx,
+                                                            );
+                                                        })
+                                                        .ok();
                                                 }
                                             });
 

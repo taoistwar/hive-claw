@@ -56,9 +56,7 @@ impl CommandContext {
 /// mutable reference to the context and returns an optional outbound
 /// message.
 pub type Handler = Arc<
-    dyn for<'a> Fn(&'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>>
-        + Send
-        + Sync,
+    dyn for<'a> Fn(&'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> + Send + Sync,
 >;
 
 /// Helper to box a concrete async function into a [`Handler`].
@@ -109,8 +107,7 @@ impl CommandRouter {
 
     pub fn prefix(&mut self, pfx: impl Into<String>, handler: Handler) {
         self.prefix.push((pfx.into(), handler));
-        self.prefix
-            .sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        self.prefix.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     }
 
     pub fn intercept(&mut self, handler: Handler) {
@@ -135,10 +132,7 @@ impl CommandRouter {
     }
 
     /// Dispatch a priority command. Called from `run()` without the lock.
-    pub async fn dispatch_priority(
-        &self,
-        ctx: &mut CommandContext,
-    ) -> Option<OutboundMessage> {
+    pub async fn dispatch_priority(&self, ctx: &mut CommandContext) -> Option<OutboundMessage> {
         let key = ctx.raw.to_lowercase();
         let handler = self.priority.get(&key)?.clone();
         handler(ctx).await
@@ -206,10 +200,7 @@ mod tests {
         router.prefix("/team ", echo("team"));
 
         let mut ctx = mk_ctx("/help");
-        assert_eq!(
-            router.dispatch(&mut ctx).await.unwrap().content,
-            "help:"
-        );
+        assert_eq!(router.dispatch(&mut ctx).await.unwrap().content, "help:");
 
         let mut ctx = mk_ctx("/team foo bar");
         let out = router.dispatch(&mut ctx).await.unwrap();
@@ -224,10 +215,7 @@ mod tests {
         router.prefix("/dream ", echo("dream"));
 
         let mut ctx = mk_ctx("/dream-log abc");
-        assert_eq!(
-            router.dispatch(&mut ctx).await.unwrap().content,
-            "log:abc"
-        );
+        assert_eq!(router.dispatch(&mut ctx).await.unwrap().content, "log:abc");
     }
 
     #[tokio::test]

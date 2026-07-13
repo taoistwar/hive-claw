@@ -12,19 +12,16 @@ use crate::helpers::stringify_text_blocks;
 const MAX_REPEAT_EXTERNAL_LOOKUPS: u32 = 2;
 const MAX_REPEAT_WORKSPACE_VIOLATIONS: u32 = 2;
 
-static OUTSIDE_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?:^|[\s|>'"])((?:/[^\s"'>;|<]+)|(?:~[^\s"'>;|<]+))"#).unwrap()
-});
+static OUTSIDE_PATH_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?:^|[\s|>'"])((?:/[^\s"'>;|<]+)|(?:~[^\s"'>;|<]+))"#).unwrap());
 
-pub const EMPTY_FINAL_RESPONSE_MESSAGE: &str =
-    "I completed the tool steps but couldn't produce a final answer. \
+pub const EMPTY_FINAL_RESPONSE_MESSAGE: &str = "I completed the tool steps but couldn't produce a final answer. \
      Please try again or narrow the task.";
 
 pub const FINALIZATION_RETRY_PROMPT: &str =
     "Please provide your response to the user based on the conversation above.";
 
-pub const LENGTH_RECOVERY_PROMPT: &str =
-    "Output limit reached. Continue exactly where you left off \
+pub const LENGTH_RECOVERY_PROMPT: &str = "Output limit reached. Continue exactly where you left off \
      — no recap, no apology. Break remaining work into smaller steps if needed.";
 
 /// Short prompt-safe marker for tools that completed without visible output.
@@ -98,7 +95,11 @@ pub fn external_lookup_signature(tool_name: &str, arguments: &Value) -> Option<S
         "web_search" => {
             let query = {
                 let q = get_str("query");
-                if q.is_empty() { get_str("search_term") } else { q }
+                if q.is_empty() {
+                    get_str("search_term")
+                } else {
+                    q
+                }
             };
             if query.is_empty() {
                 None
@@ -138,16 +139,18 @@ pub fn repeated_external_lookup_error(
 
 /// Normalize *raw* path so that equivalent spellings collide on the same key.
 fn normalize_violation_target(raw: &str) -> String {
-    let normalized = Path::new(raw)
-        .to_string_lossy()
-        .replace("\\", "/");
+    let normalized = Path::new(raw).to_string_lossy().replace("\\", "/");
     format!("violation:{}", normalized.to_lowercase())
 }
 
 /// Return a stable cross-tool signature for the outside-workspace target.
 pub fn workspace_violation_signature(tool_name: &str, arguments: &Value) -> Option<String> {
     let get_str = |key: &str| -> Option<&str> {
-        arguments.get(key).and_then(Value::as_str).map(|s| s.trim()).filter(|s| !s.is_empty())
+        arguments
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
     };
     for key in ["path", "file_path", "target", "source", "destination"] {
         if let Some(val) = get_str(key) {
@@ -194,12 +197,9 @@ pub fn repeated_workspace_violation_error(
         &signature.chars().take(160).collect::<String>(),
         count,
     );
-    let target = signature
-        .strip_prefix("violation:")
-        .unwrap_or(&signature);
-    Some(
-        format!(
-            "Error: refusing repeated workspace-bypass attempts.\n\
+    let target = signature.strip_prefix("violation:").unwrap_or(&signature);
+    Some(format!(
+        "Error: refusing repeated workspace-bypass attempts.\n\
              You have tried to access '{target}' (or an equivalent path) \
              {count} times in this turn. This is a hard policy boundary -- \
              switching tools, shell tricks, working_dir overrides, symlinks, \
@@ -207,8 +207,7 @@ pub fn repeated_workspace_violation_error(
              If the user genuinely needs this resource, tell them you cannot \
              access it and ask how they want to proceed (e.g. copy the file \
              into the workspace, or disable restrict_to_workspace for this run)."
-        )
-    )
+    ))
 }
 
 #[cfg(test)]

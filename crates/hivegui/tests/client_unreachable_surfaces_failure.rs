@@ -4,7 +4,7 @@
 //! `Conversation::record_failure` produces a retryable failed turn that
 //! the UI would attach a `重试` affordance to.
 
-use hivegui::client::{self, sync, OpenResponsesRequest};
+use hivegui::client::{self, OpenResponsesRequest, sync};
 use hivegui::model::conversation::{Conversation, TurnError, TurnErrorKind, TurnStatus};
 use url::Url;
 use uuid::Uuid;

@@ -2,7 +2,6 @@
 ///
 /// Uses Socket.IO + HTTP polling fallback in Python.
 /// This is a skeleton implementation with TODOs for the full integration.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Mochat channel configuration.
@@ -56,8 +55,8 @@ impl MochatChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: MochatConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid mochat config: {}", e))?;
+        let config: MochatConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid mochat config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -69,10 +68,18 @@ impl MochatChannel {
 
 #[async_trait]
 impl Channel for MochatChannel {
-    fn name() -> &'static str { "mochat" }
-    fn display_name() -> &'static str { "Mochat" }
-    fn bus(&self) -> &MessageBus { &self.bus }
-    fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
+    fn name() -> &'static str {
+        "mochat"
+    }
+    fn display_name() -> &'static str {
+        "Mochat"
+    }
+    fn bus(&self) -> &MessageBus {
+        &self.bus
+    }
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
 
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.server_url.is_empty() {
@@ -109,12 +116,17 @@ impl Channel for MochatChannel {
         Ok(())
     }
 
-    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> { Ok(true) }
+    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> {
+        Ok(true)
+    }
 
     fn default_config() -> Map<String, serde_json::Value> {
         let config = MochatConfig::default();
         let value = serde_json::to_value(&config).unwrap_or(serde_json::Value::Object(Map::new()));
-        match value { serde_json::Value::Object(map) => map, _ => Map::new() }
+        match value {
+            serde_json::Value::Object(map) => map,
+            _ => Map::new(),
+        }
     }
 }
 

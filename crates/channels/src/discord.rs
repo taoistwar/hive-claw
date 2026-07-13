@@ -2,7 +2,6 @@
 ///
 /// Uses the discord.py SDK in Python; this is a skeleton implementation with TODOs
 /// for the full discord-rs integration.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Discord channel configuration.
@@ -39,7 +38,9 @@ pub struct DiscordConfig {
     pub streaming: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for DiscordConfig {
     fn default() -> Self {
@@ -70,8 +71,8 @@ impl DiscordChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: DiscordConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid discord config: {}", e))?;
+        let config: DiscordConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid discord config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -83,10 +84,18 @@ impl DiscordChannel {
 
 #[async_trait]
 impl Channel for DiscordChannel {
-    fn name() -> &'static str { "discord" }
-    fn display_name() -> &'static str { "Discord" }
-    fn bus(&self) -> &MessageBus { &self.bus }
-    fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
+    fn name() -> &'static str {
+        "discord"
+    }
+    fn display_name() -> &'static str {
+        "Discord"
+    }
+    fn bus(&self) -> &MessageBus {
+        &self.bus
+    }
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
 
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.bot_token.is_empty() {
@@ -123,12 +132,17 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
-    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> { Ok(true) }
+    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> {
+        Ok(true)
+    }
 
     fn default_config() -> Map<String, serde_json::Value> {
         let config = DiscordConfig::default();
         let value = serde_json::to_value(&config).unwrap_or(serde_json::Value::Object(Map::new()));
-        match value { serde_json::Value::Object(map) => map, _ => Map::new() }
+        match value {
+            serde_json::Value::Object(map) => map,
+            _ => Map::new(),
+        }
     }
 }
 

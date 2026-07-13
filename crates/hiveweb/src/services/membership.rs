@@ -17,33 +17,35 @@ struct CcUserMembership {
     effective_end_time: Option<chrono::NaiveDateTime>,
 }
 
+const ACTIVE_MEMBERSHIP_SQL: &str = r#"SELECT id, membership_level, effective_end_time
+FROM cc_user_membership
+WHERE user_id = ? AND effective_end_time > ?
+AND effective_start_time <= ? LIMIT 1"#;
+
 /// Check if a user has an active VIP membership in the external database.
 pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool, sqlx::Error> {
     let started_at = std::time::Instant::now();
-    let sql = format!(
-        r#"SELECT id, membership_level, effective_end_time FROM cc_user_membership
-        WHERE user_id = {} AND effective_end_time > NOW()
-        AND effective_start_time <= NOW() LIMIT 1"#,
-        user_id
-    );
+    let china_offset =
+        chrono::FixedOffset::east_opt(8 * 60 * 60).expect("UTC+8 is a valid fixed timezone offset");
+    let current_time = chrono::Utc::now()
+        .with_timezone(&china_offset)
+        .naive_local();
     tracing::debug!(
         operation = "check_vip_membership",
         user_id,
-        sql,
+        current_time = ?current_time,
         "checking active VIP membership"
     );
 
-    let row = sqlx::query_as::<_, CcUserMembership>(&sql)
+    let row = sqlx::query_as::<_, CcUserMembership>(ACTIVE_MEMBERSHIP_SQL)
         .bind(user_id)
+        .bind(current_time)
+        .bind(current_time)
         .fetch_optional(pool)
         .await;
 
     match row {
         Ok(Some(membership)) => {
-            let now = chrono::Utc::now().naive_utc();
-            let is_active = membership
-                .effective_end_time
-                .is_none_or(|end_time| end_time >= now);
             tracing::debug!(
                 operation = "check_vip_membership",
                 outcome = "membership_found",
@@ -51,12 +53,10 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
                 membership_id = membership.id,
                 membership_level = ?membership.membership_level,
                 effective_end_time = ?membership.effective_end_time,
-                now = ?now,
-                is_active,
                 duration_ms = started_at.elapsed().as_millis(),
                 "finished checking VIP membership"
             );
-            Ok(is_active)
+            Ok(true)
         }
         Ok(None) => {
             tracing::debug!(
@@ -529,6 +529,12 @@ pub async fn get_discounted_products_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_membership_query_uses_bound_time_instead_of_database_now() {
+        assert_eq!(ACTIVE_MEMBERSHIP_SQL.matches('?').count(), 3);
+        assert!(!ACTIVE_MEMBERSHIP_SQL.to_ascii_uppercase().contains("NOW()"));
+    }
 
     #[tokio::test]
     #[ignore = "requires external DB"]

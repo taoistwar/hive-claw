@@ -42,6 +42,10 @@ fn format_disk_total_size(size_gb: f64) -> String {
     format!("{size_gb}GB")
 }
 
+fn missing_disk_response(category: &str, has_disk: bool) -> Option<Value> {
+    (category == "disk" && !has_disk).then(|| json!({"message": "未查询到云硬盘的购买记录。"}))
+}
+
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
 /// user_id is extracted from AgentContext, not from LLM args.
 /// category is optionally provided in args to filter the payload:
@@ -301,6 +305,9 @@ pub async fn query_balance_async_impl(
     } else {
         None
     };
+    if let Some(response) = missing_disk_response(category, disk_row.is_some()) {
+        return Ok(response);
+    }
 
     // 1.5 查询会员与订阅状态
     let membership_subscriptions =
@@ -557,7 +564,20 @@ pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
 
 #[cfg(test)]
 mod tests {
-    use super::{disk_status_text, format_disk_end_date, format_disk_total_size};
+    use super::{
+        disk_status_text, format_disk_end_date, format_disk_total_size, missing_disk_response,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn returns_message_when_disk_category_has_no_purchase_record() {
+        assert_eq!(
+            missing_disk_response("disk", false),
+            Some(json!({"message": "未查询到云硬盘的购买记录。"}))
+        );
+        assert_eq!(missing_disk_response("benefits", false), None);
+        assert_eq!(missing_disk_response("disk", true), None);
+    }
 
     #[test]
     fn formats_disk_end_time_in_china_timezone() {

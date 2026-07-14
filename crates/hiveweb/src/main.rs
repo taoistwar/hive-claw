@@ -103,10 +103,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Startup step 4 (plan §Startup Initialization Order): builtin function upsert
-    if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
-        // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
-        panic!("builtin functions upsert failed: {e}");
+    // Development/test keeps builtin metadata in sync. Production data is
+    // provisioned by SQL import and must not be rewritten during startup.
+    if app_mode::get().should_register_builtins() {
+        if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
+            // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
+            panic!("builtin functions upsert failed: {e}");
+        }
+    } else {
+        tracing::info!("Production mode: builtin registration skipped");
     }
 
     // Startup: initialize sensitive word filter

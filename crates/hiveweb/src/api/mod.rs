@@ -29,7 +29,7 @@ pub mod users;
 pub mod workflow;
 
 use aws_sdk_s3::Client;
-use axum::{Router, http::HeaderValue, middleware};
+use axum::{Router, http::HeaderValue, http::StatusCode, middleware};
 use redis::Client as RedisClient;
 use sqlx::MySqlPool;
 use tower_http::{
@@ -203,6 +203,7 @@ pub fn create_router(
     let api_routes = Router::new()
         .merge(public_routes)
         .merge(admin_protected_routes)
+        .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state);
 
     Router::new()

@@ -9,3 +9,4 @@ pub mod services;
 pub mod sqlx;
 pub mod storage;
 pub mod utils;
+pub mod web_admin;

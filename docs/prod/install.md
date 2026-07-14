@@ -5,8 +5,9 @@
 
 ## 1. 部署拓扑
 
-- `hiveweb`：HTTP API 服务，仅监听 `127.0.0.1:3300`，由 Nginx 反向代理。
-- `web-admin`：静态管理页面，仅允许公司网络访问。
+- `hiveweb`：HTTP API 服务并托管 `web-admin` 静态页面，仅监听 `127.0.0.1:3300`，
+  由 Nginx 反向代理。
+- `web-admin`：构建产物放在 `hiveweb` 二进制同级的 `dist/`，仅允许公司网络访问。
 - MySQL 8.0+：业务元数据和管理端数据。
 - Redis：登录锁定、限流及运行时缓存。
 - Rustfs/S3：插件系统已关闭不需要。插件系统启用时必需；不使用插件时可关闭。
@@ -61,14 +62,14 @@ Extism/Wasmtime、TLS 和目标系统兼容性。
 ```bash
 sudo useradd --system --home /opt/hive-claw --shell /usr/sbin/nologin hiveclaw
 sudo install -d -o hiveclaw -g hiveclaw /opt/hive-claw/bin
+sudo install -d -o hiveclaw -g hiveclaw /opt/hive-claw/bin/dist
 sudo install -d -o hiveclaw -g hiveclaw /opt/hive-claw/config
 sudo install -d -o hiveclaw -g hiveclaw /opt/hive-claw/logs
-sudo install -d -o hiveclaw -g hiveclaw /var/www/hive-admin
 
 sudo install -m 0755 target/release/hiveweb /opt/hive-claw/bin/
 sudo install -m 0755 target/release/migrate /opt/hive-claw/bin/
 sudo install -m 0755 target/release/create-super-admin /opt/hive-claw/bin/
-sudo cp -a web-admin/dist/. /var/www/hive-admin/
+sudo cp -a web-admin/dist/. /opt/hive-claw/bin/dist/
 ```
 
 部署新版本时先上传到临时文件，再原子替换二进制，避免进程读取到不完整文件。
@@ -232,6 +233,9 @@ sudo tail -n 200 /opt/hive-claw/logs/hiveweb.log.*
 
 服务启动失败时优先检查数据库、Redis、LLM 配置文件、S3 配置和日志目录权限。
 
+管理端仅挂载在 `/web-admin`，根路径不会返回管理页面。该路径本身不替代访问控制，
+仍需通过 Nginx 和防火墙限制管理端来源网络。
+
 ## 10. Nginx 与内网管理端
 
 管理端应使用独立的内网域名，并在 Nginx 和防火墙两层限制公司网段。示例中的网段、
@@ -248,11 +252,8 @@ server {
     allow 10.0.0.0/8;
     deny all;
 
-    root /var/www/hive-admin;
-    index index.html;
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:3300/api/;
+    location / {
+        proxy_pass http://127.0.0.1:3300;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -260,10 +261,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 60s;
         proxy_buffering off;
-    }
-
-    location / {
-        try_files $uri $uri/ /index.html;
     }
 }
 ```

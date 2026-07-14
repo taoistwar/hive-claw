@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { webAdminUrl } from '../config/basePath';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -40,7 +41,7 @@ apiClient.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('auth_token');
-      window.location.href = '/login';
+      window.location.href = webAdminUrl('/login');
     }
     return Promise.reject(error);
   }

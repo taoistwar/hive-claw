@@ -20,11 +20,17 @@ pub fn router(database: MySqlPool, redis: RedisClient) -> Router {
     Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
+        .route("/health", get(not_found))
+        .route("/health/*path", get(not_found))
         .with_state(HealthState { database, redis })
 }
 
 async fn live() -> Json<Value> {
     Json(json!({"status": "ok"}))
+}
+
+async fn not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
 }
 
 async fn ready(State(state): State<HealthState>) -> (StatusCode, Json<Value>) {

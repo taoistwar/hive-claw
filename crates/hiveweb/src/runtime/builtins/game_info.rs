@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::cache::redis::RedisClient;
 use crate::runtime::llm::LlmRegistry;
 use providers::{ChatRequest, RetryMode};
 
@@ -55,7 +56,7 @@ async fn game_info_async_impl(
     args: Value,
     pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
-    redis: Option<&redis::Client>,
+    redis: Option<&RedisClient>,
     channel: &str,
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
@@ -207,7 +208,7 @@ async fn game_info_async_impl(
 /// Returns `Ok(Vec::new())` if no rows are returned.
 async fn fetch_categories(
     ext_pool: &sqlx::MySqlPool,
-    redis: Option<&redis::Client>,
+    redis: Option<&RedisClient>,
 ) -> Result<Vec<(i64, String)>, String> {
     if let Some(r) = redis {
         let cache_key = "game_tags:cc_game_tag_type1";
@@ -290,7 +291,7 @@ async fn handle_classify_and_list(
     args: Value,
     _pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
-    redis: Option<&redis::Client>,
+    redis: Option<&RedisClient>,
     channel: &str,
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,

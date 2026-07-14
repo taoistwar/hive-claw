@@ -21,6 +21,7 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 
+use crate::cache::redis::RedisClient;
 use crate::runtime::llm::LlmRegistry;
 use agent::context::AgentContext;
 
@@ -61,7 +62,7 @@ pub struct BuiltinContext<'a> {
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
     /// Redis client for cache-aside operations. `None` when Redis is unavailable.
-    pub redis: Option<&'a redis::Client>,
+    pub redis: Option<&'a RedisClient>,
     /// AgentContext for reading/writing runtime state during hook/tool execution.
     /// `None` when called from contexts without AgentContext (e.g., workflow executor).
     pub agent_ctx: Option<Arc<AgentContext>>,

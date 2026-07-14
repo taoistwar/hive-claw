@@ -18,6 +18,8 @@ use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 
+use crate::cache::redis::RedisClient;
+
 /// Context passed to each hook invocation.
 #[derive(Debug, Clone, Serialize)]
 pub struct HookContext {
@@ -47,7 +49,7 @@ pub struct HookDeps {
     pub invoker: Arc<Invoker>,
     pub ext_pool: Option<MySqlPool>,
     /// Redis client for cache-aside operations.
-    pub redis: Option<redis::Client>,
+    pub redis: Option<RedisClient>,
     /// AgentContext for functions/workflows to read/write runtime state
     pub agent_ctx: Arc<AgentContext>,
 }

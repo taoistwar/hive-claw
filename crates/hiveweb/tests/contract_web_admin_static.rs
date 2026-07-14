@@ -101,7 +101,7 @@ async fn spa_fallback_does_not_handle_backend_routes() {
     let redis = redis::Client::open("redis://127.0.0.1:1").expect("lazy Redis client");
     let app = hiveweb::api::create_router(
         database,
-        redis,
+        redis.into(),
         None,
         None,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),

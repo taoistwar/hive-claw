@@ -29,7 +29,7 @@ flowchart LR
     nginx -->|所有 HTTP 请求| server
 
     api --> mysql[("主 MySQL<br/>配置与业务数据")]
-    api --> redis[("Redis<br/>缓存与会话状态")]
+    api --> redis[("Redis<br/>缓存 / 登录锁定 / 助手配额")]
     runtime --> llm["LLM 服务"]
     runtime -.->|只读 / 可选| external_db[("外部业务 MySQL")]
     runtime -.->|插件启用时| s3[("S3 / RustFS<br/>插件存储")]
@@ -41,6 +41,9 @@ flowchart LR
 - 主 MySQL 和 Redis 是核心依赖；外部业务库与 S3/RustFS 根据功能配置启用。
 
 ## 后端开发
+
+Redis 的连接模式、认证规则、实际 key 和故障行为见
+[Redis 开发指南](dev-redis.md)。
 
 ```bash
 # 运行测试

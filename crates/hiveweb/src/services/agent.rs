@@ -12,6 +12,7 @@ use sqlx::MySqlPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::cache::redis::RedisClient;
 use crate::models::Agent;
 use crate::runtime::capability::CapabilityRegistry;
 use crate::runtime::llm::LlmRegistry;
@@ -119,7 +120,7 @@ fn check_dangerous_permissions(
 
 pub async fn create(
     pool: &MySqlPool,
-    redis: &redis::Client,
+    redis: &RedisClient,
     registry: &CapabilityRegistry,
     llm: &LlmRegistry,
     actor_role: i8,
@@ -288,7 +289,7 @@ pub async fn list_tree(pool: &MySqlPool) -> Result<Vec<AgentTreeNode>, AppError>
 
 pub async fn update(
     pool: &MySqlPool,
-    redis: &redis::Client,
+    redis: &RedisClient,
     registry: &CapabilityRegistry,
     llm: &LlmRegistry,
     actor_role: i8,
@@ -435,7 +436,7 @@ pub async fn update(
     fetch_detail(pool, id).await
 }
 
-pub async fn delete(pool: &MySqlPool, redis: &redis::Client, id: i64) -> Result<(), AppError> {
+pub async fn delete(pool: &MySqlPool, redis: &RedisClient, id: i64) -> Result<(), AppError> {
     let row: Option<(String, Option<i64>)> =
         sqlx::query_as("SELECT identifier, parent_agent_id FROM agents WHERE id = ?")
             .bind(id)
@@ -556,7 +557,7 @@ fn agent_content_key(agent_id: i64) -> String {
     format!("{}:{}", cache_helper::KEY_AGENT_CONTENT_PREFIX, agent_id)
 }
 
-pub async fn invalidate_content_cache(redis: &redis::Client, agent_id: i64) {
+pub async fn invalidate_content_cache(redis: &RedisClient, agent_id: i64) {
     let key = agent_content_key(agent_id);
     if let Err(e) = cache_helper::cached_del(redis, &key).await {
         tracing::warn!(error=%e, agent_id, "agent content cache invalidate failed");
@@ -574,7 +575,7 @@ pub async fn invalidate_content_cache(redis: &redis::Client, agent_id: i64) {
 /// 降级走 DB，不影响业务正确性。
 pub async fn fetch_content(
     pool: &MySqlPool,
-    redis: &redis::Client,
+    redis: &RedisClient,
     agent_id: i64,
 ) -> Result<AgentContent, AppError> {
     let cache_key = agent_content_key(agent_id);

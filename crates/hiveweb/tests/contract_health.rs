@@ -6,11 +6,13 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-fn unavailable_dependencies() -> (sqlx::MySqlPool, redis::Client) {
+use hiveweb::cache::redis::RedisClient;
+
+fn unavailable_dependencies() -> (sqlx::MySqlPool, RedisClient) {
     let database = sqlx::MySqlPool::connect_lazy("mysql://health:health@127.0.0.1:1/health")
         .expect("lazy MySQL pool");
     let redis = redis::Client::open("redis://127.0.0.1:1").expect("lazy Redis client");
-    (database, redis)
+    (database, redis.into())
 }
 
 async fn get(path: &str) -> (StatusCode, Value) {

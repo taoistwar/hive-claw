@@ -10,6 +10,7 @@ use agent::context::AgentContext;
 
 use serde_json::json;
 
+use crate::cache::redis::RedisClient;
 use crate::runtime::builtins::BuiltinContext;
 use crate::runtime::builtins::BuiltinError;
 use crate::runtime::builtins::BuiltinResult;
@@ -257,7 +258,7 @@ fn filter_discount_fields(discount: &Value) -> Value {
 pub async fn query_balance_async_impl(
     user_id: i64,
     ext_pool: &sqlx::MySqlPool,
-    _redis: Option<&redis::Client>,
+    _redis: Option<&RedisClient>,
     _agent_ctx: Option<&AgentContext>,
     category: &str,
 ) -> BuiltinResult {

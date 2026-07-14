@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
 
+use crate::cache::redis::RedisClient;
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
     MAX_ALIASES_COUNT, MAX_NAME_LENGTH, MAX_PAGE_SIZE, UpdateGameRequest,
@@ -559,7 +560,7 @@ pub async fn sort_external_games_by_priority(
 ///
 /// Cache TTL: 1 day when found, 5 minutes when not found.
 pub async fn get_single_external_game_info_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     ext_pool: &MySqlPool,
     game_id: i64,
     client_type: &str,
@@ -617,7 +618,7 @@ pub async fn get_single_external_game_info(
 
 /// Cached version of `list_external_games`.
 pub async fn list_external_games_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     ext_pool: &MySqlPool,
     channel: &str,
     client_type: &str,

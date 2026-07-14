@@ -19,7 +19,6 @@ use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
 use chrono::Utc;
 use providers::{ChatRequest, RetryMode, ToolCallRequest};
-use redis::Client as RedisClient;
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::convert::Infallible;
@@ -27,6 +26,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::cache::redis::RedisClient;
 use crate::models::ChatMessageUser;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::hook::{

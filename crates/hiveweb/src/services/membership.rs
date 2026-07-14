@@ -9,6 +9,7 @@ use sqlx::MySqlPool;
 
 use super::cache_helper;
 use super::cache_helper::cached_or_fetch;
+use crate::cache::redis::RedisClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 struct CcUserMembership {
@@ -388,7 +389,7 @@ pub async fn resolve_game_label_names(
 
 /// Cached version of `get_cloud_user_info`.
 pub async fn get_cloud_user_info_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<(String, String)>, String> {
@@ -403,7 +404,7 @@ pub async fn get_cloud_user_info_cached(
 
 /// Cached version of `query_coins_balance`.
 pub async fn query_coins_balance_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     ext_pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<CoinsBalanceRow>, String> {
@@ -418,7 +419,7 @@ pub async fn query_coins_balance_cached(
 
 /// Cached version of `query_disk_balance`.
 pub async fn query_disk_balance_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     ext_pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<DiskBalanceRow>, String> {
@@ -433,7 +434,7 @@ pub async fn query_disk_balance_cached(
 
 /// Cached version of `query_membership_subscriptions`.
 pub async fn query_membership_subscriptions_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     ext_pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Vec<MembershipSubscriptionRow>, String> {
@@ -448,7 +449,7 @@ pub async fn query_membership_subscriptions_cached(
 
 /// Cached version of `query_duration_cards`.
 pub async fn query_duration_cards_cached(
-    redis: &redis::Client,
+    redis: &RedisClient,
     ext_pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Vec<DurationCardRow>, String> {

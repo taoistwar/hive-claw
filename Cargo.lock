@@ -7842,6 +7842,7 @@ dependencies = [
  "itoa",
  "percent-encoding",
  "pin-project-lite",
+ "rand 0.8.6",
  "ryu",
  "sha1_smol",
  "socket2 0.4.10",

@@ -7,6 +7,8 @@
 use redis::AsyncCommands;
 use serde::{Serialize, de::DeserializeOwned};
 
+use crate::cache::redis::RedisClient;
+
 /// Try to read a cached value from Redis, or fetch from DB and cache it.
 ///
 /// - `redis`: Redis client
@@ -17,7 +19,7 @@ use serde::{Serialize, de::DeserializeOwned};
 /// Returns the value from cache or DB. Cache failures are logged and
 /// silently fall back to the DB result.
 pub async fn cached_or_fetch<T, F, Fut>(
-    redis: &redis::Client,
+    redis: &RedisClient,
     key: &str,
     ttl_secs: u64,
     fetch: F,
@@ -49,7 +51,7 @@ where
 
 /// Read a value from Redis cache. Returns `None` on cache miss.
 pub async fn cached_get<T: DeserializeOwned>(
-    redis: &redis::Client,
+    redis: &RedisClient,
     key: &str,
 ) -> Result<Option<T>, String> {
     let mut conn = redis
@@ -72,7 +74,7 @@ pub async fn cached_get<T: DeserializeOwned>(
 
 /// Write a value to Redis cache with TTL.
 pub async fn cached_set<T: Serialize>(
-    redis: &redis::Client,
+    redis: &RedisClient,
     key: &str,
     value: &T,
     ttl_secs: u64,
@@ -91,7 +93,7 @@ pub async fn cached_set<T: Serialize>(
 
 /// Delete a key from Redis (for cache invalidation).
 #[allow(dead_code)]
-pub async fn cached_del(redis: &redis::Client, key: &str) -> Result<(), String> {
+pub async fn cached_del(redis: &RedisClient, key: &str) -> Result<(), String> {
     let mut conn = redis
         .get_multiplexed_async_connection()
         .await

@@ -2,9 +2,8 @@
 
 ## Redis
 
-```bash
-docker run -d --restart=always --name agent_redis_16379 -p 16379:6379 redis redis-server --requirepass "ai123456"
-```
+本地启动命令、Direct/Sentinel 配置和当前 Redis 用途见
+[Redis 开发指南](dev-redis.md)，避免维护两份不一致的端口和密码示例。
 
 ## Rustfs
 

@@ -24,6 +24,7 @@ import SensitiveWordPage from './pages/SensitiveWordPage'
 import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
+import { WEB_ADMIN_BASE_PATH } from './config/basePath'
 
 const THEME_TOKENS = {
   dark: {
@@ -144,7 +145,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 function AppRoutes() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={WEB_ADMIN_BASE_PATH}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>

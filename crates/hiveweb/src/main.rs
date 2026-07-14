@@ -16,6 +16,7 @@ mod runtime;
 mod services;
 mod storage;
 mod utils;
+mod web_admin;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -103,10 +104,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Startup step 4 (plan §Startup Initialization Order): builtin function upsert
-    if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
-        // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
-        panic!("builtin functions upsert failed: {e}");
+    // Development/test keeps builtin metadata in sync. Production data is
+    // provisioned by SQL import and must not be rewritten during startup.
+    if app_mode::get().should_register_builtins() {
+        if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
+            // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
+            panic!("builtin functions upsert failed: {e}");
+        }
+    } else {
+        tracing::info!("Production mode: builtin registration skipped");
     }
 
     // Startup: initialize sensitive word filter
@@ -115,8 +121,22 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "Failed to load sensitive words from DB, filter disabled");
     }
 
-    // Create router
+    // Create router and serve the web-admin SPA from the mode-specific dist directory.
     let app = api::create_router(pool, redis, s3_client, ext_pool, sensitive_filter);
+    let web_admin_dist = web_admin::dist_dir(app_mode::get())?;
+    if web_admin_dist.join("index.html").is_file() {
+        tracing::info!(
+            path = %web_admin_dist.display(),
+            mount = "/web-admin",
+            "web-admin dist initialized"
+        );
+    } else {
+        tracing::warn!(
+            path = %web_admin_dist.display(),
+            "web-admin index.html not found; API remains available but admin pages return 404"
+        );
+    }
+    let app = web_admin::serve_dist(app, &web_admin_dist);
     tracing::info!("HTTP router initialized with CORS and rate limiting");
 
     // Start server

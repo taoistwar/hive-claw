@@ -39,6 +39,9 @@ fn disk_status_text(status: &str) -> String {
 }
 
 fn format_disk_total_size(size_gb: f64) -> String {
+    if size_gb <= 0f64 {
+        return "".to_string();
+    }
     format!("{size_gb}GB")
 }
 
@@ -557,7 +560,20 @@ pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
 
 #[cfg(test)]
 mod tests {
-    use super::{disk_status_text, format_disk_end_date, format_disk_total_size};
+    use super::{
+        disk_status_text, format_disk_end_date, format_disk_total_size, missing_disk_response,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn returns_message_when_disk_category_has_no_purchase_record() {
+        assert_eq!(
+            missing_disk_response("disk", false),
+            Some(json!({"message": "未查询到云硬盘的购买记录。"}))
+        );
+        assert_eq!(missing_disk_response("benefits", false), None);
+        assert_eq!(missing_disk_response("disk", true), None);
+    }
 
     #[test]
     fn formats_disk_end_time_in_china_timezone() {

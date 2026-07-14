@@ -15,6 +15,10 @@ impl AppMode {
     pub fn is_production(self) -> bool {
         self == Self::Production
     }
+
+    pub fn should_register_builtins(self) -> bool {
+        !self.is_production()
+    }
 }
 
 /// Initialize the process-wide mode. The CLI value takes precedence over `APP_ENV`.

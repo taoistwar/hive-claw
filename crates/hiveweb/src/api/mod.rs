@@ -15,6 +15,7 @@ pub mod chat_messages;
 pub mod function;
 pub mod game;
 pub mod global_config;
+pub mod health;
 pub mod newsession;
 pub mod plugin;
 pub mod recommended_game;
@@ -28,7 +29,7 @@ pub mod users;
 pub mod workflow;
 
 use aws_sdk_s3::Client;
-use axum::{Router, http::HeaderValue, middleware};
+use axum::{Router, http::HeaderValue, http::StatusCode, middleware};
 use redis::Client as RedisClient;
 use sqlx::MySqlPool;
 use tower_http::{
@@ -100,6 +101,7 @@ pub fn create_router(
     ext_pool: Option<MySqlPool>,
     sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 ) -> Router {
+    let health_routes = health::router(pool.clone(), redis.clone());
     let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
 
     let cors = if allowed_origins == "*" {
@@ -201,9 +203,11 @@ pub fn create_router(
     let api_routes = Router::new()
         .merge(public_routes)
         .merge(admin_protected_routes)
+        .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state);
 
     Router::new()
+        .merge(health_routes)
         .nest("/api", api_routes)
         .layer(cors)
         .layer(tracing_layer)

@@ -30,7 +30,6 @@ pub mod workflow;
 
 use aws_sdk_s3::Client;
 use axum::{Router, http::HeaderValue, http::StatusCode, middleware};
-use redis::Client as RedisClient;
 use sqlx::MySqlPool;
 use tower_http::{
     cors::CorsLayer,
@@ -38,6 +37,7 @@ use tower_http::{
 };
 use tracing::Level;
 
+use crate::cache::redis::RedisClient;
 use crate::middleware::auth::admin_auth_middleware;
 use crate::middleware::rate_limit::{RateLimitState, rate_limit_middleware};
 use crate::middleware::request_body_log::log_request_body_middleware;

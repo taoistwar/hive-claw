@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
+use crate::cache::redis::RedisClient;
 use crate::runtime::capability::CapabilityRegistry;
 use crate::runtime::hook::apply_agent_context_updates;
 use crate::runtime::invoker::Invoker;
@@ -48,7 +49,7 @@ pub struct ExecutorDeps {
     /// 外部数据库连接池（用于依赖外部 DB 的内置函数，如 query_balance）
     pub ext_pool: Option<MySqlPool>,
     /// Redis client for cache-aside operations.
-    pub redis: Option<redis::Client>,
+    pub redis: Option<RedisClient>,
     /// Agent 的 capability 权限（生产路径传入 agent 实际权限，测试端点传入全部权限）
     pub permissions: Vec<String>,
 }

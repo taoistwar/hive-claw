@@ -37,6 +37,7 @@ use std::sync::{Arc, OnceLock};
 use crate::api::AppState;
 use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
+use crate::cache::redis::RedisClient;
 use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
@@ -466,7 +467,7 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
 /// Returns `Err(Some(msg))` when the daily limit is reached,
 /// or `Err(None)` for Redis/infra errors.
 async fn check_and_incr_daily_limit(
-    redis: &redis::Client,
+    redis: &RedisClient,
     key: &str,
     max_times: i64,
     reset_hour: u32,
@@ -506,7 +507,7 @@ async fn check_and_incr_daily_limit(
 }
 
 /// 配额回滚：LLM 调用失败或内部错误时 DECR 计数器
-async fn decr_daily_limit(redis: &redis::Client, key: &str) -> Result<(), ()> {
+async fn decr_daily_limit(redis: &RedisClient, key: &str) -> Result<(), ()> {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
@@ -635,7 +636,7 @@ async fn assistant_quota(
 }
 
 /// 读取 Redis 当日计数器（GET，不增加）。
-async fn read_daily_limit(redis: &redis::Client, key: &str) -> i64 {
+async fn read_daily_limit(redis: &RedisClient, key: &str) -> i64 {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
@@ -805,7 +806,7 @@ mod tests {
     #[ignore = "requires MySQL + Redis + external DB + LLM"]
     async fn integration_successful_request() {
         // T024: 合法用户成功请求
-        // 需要：DATABASE_URL, REDIS_URL, EXTERNAL_DB_URL, ASSISTANT_SECRET
+        // 需要：DATABASE_URL、Redis 直连或 Sentinel 配置、EXTERNAL_DB_URL、ASSISTANT_SECRET
         // 以及 agents 表中 id=1 的 Main Agent
     }
 

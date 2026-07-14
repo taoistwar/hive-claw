@@ -3,9 +3,10 @@
 use std::time::{Duration, Instant};
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
-use redis::Client as RedisClient;
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
+
+use crate::cache::redis::RedisClient;
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 

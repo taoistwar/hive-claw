@@ -93,7 +93,9 @@ HIVEWEB_PORT=3300
 LOG_DIR=/opt/hive-claw/logs
 
 DATABASE_URL=mysql://<user>:<password>@<host>:3306/hiveweb
+REDIS_MODE=direct
 REDIS_URL=redis://:<password>@<host>:6379
+REDIS_CONNECT_TIMEOUT_MS=5000
 
 JWT_SECRET=<至少32字节的随机值>
 ASSISTANT_SECRET=<独立的随机值>
@@ -107,6 +109,39 @@ LLM_PRESETS_PATH=/opt/hive-claw/config/llm_presets.toml
 
 可使用 `openssl rand -hex 32` 生成独立随机密钥。`JWT_SECRET` 与
 `ASSISTANT_SECRET` 不应复用。
+
+### Redis Sentinel
+
+生产 Redis 由 Sentinel 管理时，将上面的直连配置替换为：
+
+```dotenv
+REDIS_MODE=sentinel
+REDIS_SENTINEL_MASTER=mymaster
+REDIS_SENTINEL_NODES=<sentinel-1>:26379,<sentinel-2>:26379,<sentinel-3>:26379
+REDIS_DATABASE=0
+REDIS_SENTINEL_REFRESH_MS=1000
+REDIS_USERNAME=<data-node-acl-user>
+REDIS_PASSWORD=<data-node-password>
+REDIS_CONNECT_TIMEOUT_MS=5000
+
+# 仅当 Sentinel 服务自身也启用了认证时配置
+REDIS_SENTINEL_USERNAME=<sentinel-acl-user>
+REDIS_SENTINEL_PASSWORD=<sentinel-password>
+```
+
+Sentinel 模式忽略 `REDIS_URL`。`REDIS_USERNAME` 和 `REDIS_PASSWORD` 用于
+Sentinel 返回的数据主节点；Sentinel 自身的认证信息使用
+`REDIS_SENTINEL_USERNAME` 和 `REDIS_SENTINEL_PASSWORD`。建议列出所有
+Sentinel 节点，避免单个 Sentinel 不可用导致启动失败。
+
+hiveweb 启动时会发现当前 master、建立连接并执行 `PING`；运行期间缓存当前
+master，并按 `REDIS_SENTINEL_REFRESH_MS` 定期刷新。刷新期间其他请求继续使用
+最近一次成功发现的 master，不会排队等待 Sentinel。单次运行期刷新最多等待
+`REDIS_CONNECT_TIMEOUT_MS` 的一半，且上限为 1 秒；如果部署环境中 Sentinel
+发现与 Redis `ROLE` 校验通常超过 1 秒，应先排查网络延迟。请确认 Sentinel
+返回的 master 地址能从 hiveweb 所在主机或容器解析并访问。若 Redis 位于容器
+或 NAT 后，应同时检查 Redis/Sentinel 的 announce 地址和端口配置。
+当前 Sentinel 模式仅支持普通 TCP，不接受 `rediss://` 地址。
 
 ### 插件系统
 

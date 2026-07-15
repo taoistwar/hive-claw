@@ -21,6 +21,7 @@ pub mod tool;
 pub mod user;
 pub mod workflow;
 
+#[allow(deprecated)]
 pub use game::Game;
 pub use global_config::GlobalConfig;
 
@@ -34,6 +35,7 @@ pub use category::Category;
 pub use chat_user::{ChatMessageUser, ChatSessionUser};
 pub use function::Function;
 pub use plugin::Plugin;
+#[allow(deprecated)]
 pub use recommended_game::RecommendedGame;
 pub use skill::Skill;
 pub use tag::Tag;

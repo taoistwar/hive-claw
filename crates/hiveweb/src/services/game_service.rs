@@ -1,8 +1,16 @@
+//! Game data services.
+//!
+//! The local `games`/`game_alias_entries` CRUD functions at the start of this
+//! module back the deprecated game-alias management feature and are retained
+//! only for compatibility. External-database query helpers later in this file
+//! are still used by the assistant runtime and are not deprecated.
+
 use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
 
 use crate::cache::redis::RedisClient;
+#[allow(deprecated)]
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
     MAX_ALIASES_COUNT, MAX_NAME_LENGTH, MAX_PAGE_SIZE, UpdateGameRequest,
@@ -12,6 +20,11 @@ use crate::utils::error::AppError;
 use super::cache_helper;
 use super::cache_helper::cached_or_fetch;
 
+// Legacy game-alias management service. Keep the CRUD behavior and schema for
+// compatibility, but do not add new callers or features.
+
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias service; retained for compatibility only")]
 pub async fn list_games(
     pool: &MySqlPool,
     page: i64,
@@ -88,6 +101,8 @@ pub async fn list_games(
     })
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias service; retained for compatibility only")]
 pub async fn get_game_by_id(pool: &MySqlPool, id: i64) -> Result<Option<Game>, AppError> {
     let row = sqlx::query(
         "SELECT g.id, g.name, g.created_at, g.updated_at,
@@ -108,6 +123,8 @@ pub async fn get_game_by_id(pool: &MySqlPool, id: i64) -> Result<Option<Game>, A
     }
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias service; retained for compatibility only")]
 pub async fn create_game(pool: &MySqlPool, req: CreateGameRequest) -> Result<Game, AppError> {
     validate_name(&req.name)?;
     validate_aliases(&req.aliases)?;
@@ -171,6 +188,8 @@ pub async fn create_game(pool: &MySqlPool, req: CreateGameRequest) -> Result<Gam
         .ok_or_else(|| AppError::Internal("Game created but not found".to_string()))
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias service; retained for compatibility only")]
 pub async fn update_game(
     pool: &MySqlPool,
     id: i64,
@@ -260,6 +279,8 @@ pub async fn update_game(
         .ok_or_else(|| AppError::Internal("Game updated but not found".to_string()))
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias service; retained for compatibility only")]
 pub async fn delete_game(pool: &MySqlPool, id: i64) -> Result<bool, AppError> {
     let result = sqlx::query("DELETE FROM games WHERE id = ?")
         .bind(id)
@@ -306,6 +327,7 @@ fn validate_aliases(aliases: &[String]) -> Result<(), AppError> {
     Ok(())
 }
 
+#[allow(deprecated)]
 fn row_to_game(row: &sqlx::mysql::MySqlRow) -> Game {
     let id: i64 = row.get("id");
     let name: String = row.get("name");
@@ -331,6 +353,9 @@ fn row_to_game(row: &sqlx::mysql::MySqlRow) -> Game {
         updated_at: updated_at.and_utc(),
     }
 }
+
+// Active assistant-runtime external-game queries begin here. These helpers are
+// independent of the deprecated local game-alias management tables.
 
 /// Row returned by `get_external_game_by_id`.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

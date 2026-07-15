@@ -5,6 +5,8 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 # Tasks: Agent Runtime（Capability-based WASM Plugin Runtime）
 
+> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+
 **Input**: Design documents from `/specs/004-agent-runtime/`
 **Prerequisites**: plan.md (required), spec.md (required), research.md, data-model.md, contracts/
 

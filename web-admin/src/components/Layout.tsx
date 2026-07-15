@@ -56,12 +56,14 @@ const AppLayout: React.FC = () => {
                 {
                   key: '/recommended-games',
                   icon: <StarOutlined />,
-                  label: '推荐游戏',
+                  // @deprecated 仅为兼容历史数据保留入口。
+                  label: '推荐游戏（已废弃）',
                 },
                 {
                   key: '/game-aliases',
                   icon: <TagsOutlined />,
-                  label: '游戏别名管理',
+                  // @deprecated 仅为兼容历史数据保留入口。
+                  label: '游戏别名管理（已废弃）',
                 },
               ],
             },

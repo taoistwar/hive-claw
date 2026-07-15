@@ -22,12 +22,17 @@ pub enum Operation {
     Delete,
     Enable,
     Disable,
+    // Legacy game-alias audit values retained for historical compatibility.
+    #[deprecated(note = "Legacy game-alias audit value; retained for compatibility only")]
     GameAliasCreate,
+    #[deprecated(note = "Legacy game-alias audit value; retained for compatibility only")]
     GameAliasUpdate,
+    #[deprecated(note = "Legacy game-alias audit value; retained for compatibility only")]
     GameAliasDelete,
 }
 
 impl Operation {
+    #[allow(deprecated)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Operation::Create => "create",
@@ -72,6 +77,8 @@ pub async fn record(
     Ok(())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias audit helper; retained for compatibility only")]
 pub async fn record_game_alias(
     pool: &MySqlPool,
     operator_id: i64,

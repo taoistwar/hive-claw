@@ -1,5 +1,7 @@
 # Data Model: Game Alias Management
 
+> **已废弃（Legacy，2026-07-14）：** 本规格描述的游戏别名管理前后端已停止业务使用，仅为兼容历史数据、接口和审计记录保留。不得以本文档为依据新增调用、部署或功能扩展；下文仅作为历史设计档案。
+
 **Created**: 2026-06-01  
 **Feature**: Game Alias Management (006-game-alias-management)
 

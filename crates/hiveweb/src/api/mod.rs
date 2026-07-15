@@ -165,9 +165,15 @@ pub fn create_router(
         .on_request(DefaultOnRequest::new().level(Level::INFO))
         .on_response(DefaultOnResponse::new().level(Level::INFO));
 
+    #[allow(deprecated)]
+    let legacy_recommended_public_routes = recommended_game::router_public();
+    #[allow(deprecated)]
+    let legacy_recommended_admin_routes = recommended_game::router();
+
     let public_routes = Router::new()
         .merge(auth::router_public())
-        .merge(recommended_game::router_public())
+        // Legacy public recommendation endpoints retained for compatibility.
+        .merge(legacy_recommended_public_routes)
         .merge(chat_assistant::router())
         .merge(chat_messages::router())
         .merge(newsession::router());
@@ -190,8 +196,10 @@ pub fn create_router(
         .merge(agent_hook::router())
         .merge(workflow::router())
         .merge(user::router())
-        .merge(recommended_game::router())
+        // Legacy recommended-game admin CRUD retained for compatibility.
+        .merge(legacy_recommended_admin_routes)
         .merge(global_config::router())
+        // Mixed module: legacy /game-aliases plus active /external-games.
         .merge(game::router())
         .merge(sensitive_word::router())
         .layer(middleware::from_fn(admin_auth_middleware))

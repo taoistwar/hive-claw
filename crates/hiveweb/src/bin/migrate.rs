@@ -75,6 +75,8 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/V014__seed.sql"),
     },
     Migration {
+        // Legacy recommended-game schema retained for compatibility. Applied
+        // migrations must remain available even though the feature is retired.
         version: "V015__recommended_games",
         sql: include_str!("../../migrations/V015__recommended_games.sql"),
     },
@@ -94,7 +96,7 @@ const MIGRATIONS: &[Migration] = &[
         version: "V019__create_global_configs",
         sql: include_str!("../../migrations/V019__create_global_configs.sql"),
     },
-    // ---------- 006 Game Alias Management ----------
+    // ---------- 006 Game Alias Management (legacy, schema retained) ----------
     Migration {
         version: "V020__create_games_table",
         sql: include_str!("../../migrations/V020__create_games_table.sql"),
@@ -133,6 +135,8 @@ const MIGRATIONS: &[Migration] = &[
         version: "V028__drop_phone_password_status_from_users",
         sql: include_str!("../../migrations/V028__drop_phone_password_status_from_users.sql"),
     },
+    // Legacy recommended-game follow-up migrations. They remain in the chain
+    // so existing and newly provisioned databases converge to the same schema.
     Migration {
         version: "V029__game_category_json",
         sql: include_str!("../../migrations/V029__game_category_json.sql"),

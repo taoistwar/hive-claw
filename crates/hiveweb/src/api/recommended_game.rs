@@ -1,3 +1,13 @@
+//! Legacy recommended-game HTTP API.
+//!
+//! The admin CRUD routes and the public `top`/`execute` routes are deprecated
+//! business functionality. They remain registered only for compatibility with
+//! existing clients and data; do not add new callers or extend this API.
+
+// This module is the compatibility implementation of the deprecated API, so
+// its handlers necessarily use deprecated request, model, and service items.
+#![allow(deprecated)]
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -59,6 +69,11 @@ async fn expand_strategy_wildcards(
     }
 }
 
+/// Builds the legacy admin CRUD routes under `/api/recommended-games`.
+///
+/// These routes remain available for compatibility; the feature is no longer
+/// developed.
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -74,12 +89,18 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+/// Builds the legacy public recommendation routes.
+///
+/// `/api/recommended-games/top` and `/api/recommended-games/execute` remain
+/// available for compatibility; new integrations must not depend on them.
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 pub fn router_public() -> Router<AppState> {
     Router::new()
         .route("/recommended-games/top", post(top_recommended_games))
         .route("/recommended-games/execute", post(execute_recommendation))
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default)]
@@ -101,12 +122,14 @@ fn default_page_size() -> i64 {
     20
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 #[derive(Debug, Serialize)]
 pub struct ListResponse {
     pub items: Vec<GameItem>,
     pub total: i64,
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 #[derive(Debug, Serialize)]
 pub struct GameItem {
     #[serde(flatten)]
@@ -124,6 +147,7 @@ impl GameItem {
     }
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn list_recommended_games(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
@@ -152,6 +176,7 @@ async fn list_recommended_games(
     }))
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn get_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -165,6 +190,7 @@ async fn get_recommended_game(
     Ok(ApiResponse::success(item))
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn get_existing_game_ids(
     State(state): State<AppState>,
 ) -> Result<ApiResponse<Vec<String>>, ApiResponse<()>> {
@@ -174,6 +200,7 @@ async fn get_existing_game_ids(
     Ok(ApiResponse::success(ids))
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn create_recommended_game(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
@@ -210,6 +237,7 @@ async fn create_recommended_game(
     Ok(ApiResponse::success(item))
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn update_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -256,6 +284,7 @@ async fn update_recommended_game(
     Ok(ApiResponse::success(item))
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn delete_recommended_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -285,6 +314,7 @@ async fn delete_recommended_game(
 }
 
 /// 对外公开的推荐游戏精简响应（去除内部字段）
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 #[derive(Debug, Serialize)]
 pub struct TopRecommendedGame {
     pub name: String,
@@ -312,6 +342,7 @@ impl From<GameItem> for TopRecommendedGame {
     }
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 struct TopRequest {
     user_id: String,
@@ -320,6 +351,7 @@ struct TopRequest {
     client_version: String,
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn top_recommended_games(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -376,6 +408,7 @@ async fn top_recommended_games(
 
 // ── 执行推荐：记录两条聊天消息 ──
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 struct ExecuteRequest {
     user_id: String,
@@ -385,6 +418,7 @@ struct ExecuteRequest {
     client_version: String,
 }
 
+#[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
 async fn execute_recommendation(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,

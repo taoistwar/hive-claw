@@ -184,7 +184,7 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 | `repay` | 会员即将到期（≤ 7 天） | 引导续费 |
 | `upgrade` | 已有会员但非最高等级 | 引导升级到更高等级 |
 | `sufficient` | 已有充足权益 | 权益充足，不强推付费 |
-| `game` | 游戏推荐 | 游戏推荐卡片 |
+| `game` | 游戏查询或推荐 | 游戏卡片；Agent builtin 仍在使用，与已废弃的推荐游戏管理业务不是同一功能 |
 | `support` | 用户请求人工客服 | 转接客服卡片，携带用户原始输入 |
 | `discount` | 用户查询优惠活动 | 优惠产品卡片，展示当前渠道/端的折扣产品 |
 
@@ -205,12 +205,14 @@ curl -X POST "http://localhost:3300/api/assistant?sign=${SIGN}" \
 
 ### `info` 对象字段（game 卡片）
 
-以下为 `game` 卡片的 `info` 字段（来自推荐游戏 + 外部游戏 DB）：
+以下为 `game` 卡片的 `info` 字段。当前 Agent builtin 可从外部游戏 DB 生成该卡片；
+历史上的推荐游戏执行接口也复用了这一结构，但该接口及其 `recommended_games` 业务
+已经废弃，新集成不得依赖该遗留入口。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | `String` | 游戏 ID（对应推荐游戏表的 `game_id`） |
-| `name` | `String` | 游戏名称（对应推荐游戏表的 `game_name`） |
+| `id` | `String` | 游戏逻辑 ID；遗留推荐游戏接口中曾对应 `recommended_games.game_id` |
+| `name` | `String` | 游戏名称；遗留推荐游戏接口中曾对应 `recommended_games.game_name` |
 | `channel` | `String` | 请求时的渠道标识 |
 | `client_type` | `String` | 请求时的客户端类型 |
 | `reason` | `Option<String>` | 推荐理由 |

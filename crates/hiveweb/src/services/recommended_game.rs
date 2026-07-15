@@ -1,3 +1,12 @@
+//! Legacy recommended-game persistence and selection service.
+//!
+//! This service backs both the deprecated admin management API and the
+//! deprecated public recommendation API. Its tables and behavior are retained
+//! for compatibility only; do not add new callers or features here.
+
+// Internal calls remain necessary while compatibility routes are registered.
+#![allow(deprecated)]
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sqlx::MySqlPool;
@@ -5,6 +14,7 @@ use sqlx::MySqlPool;
 use crate::models::RecommendedGame;
 use crate::utils::error::AppError;
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 pub struct CreateMeta {
     pub name: String,
@@ -19,6 +29,7 @@ pub struct CreateMeta {
     pub strategies: Option<Vec<StrategyMeta>>,
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 pub struct UpdateMeta {
     pub name: Option<String>,
@@ -34,6 +45,7 @@ pub struct UpdateMeta {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 pub struct StrategyMeta {
     pub channel: serde_json::Value,
@@ -41,6 +53,7 @@ pub struct StrategyMeta {
     pub strategy: String,
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<RecommendedGame, AppError> {
     let res = sqlx::query(
         "INSERT INTO recommended_games (name, reply, reason, tag, game_category, game_image, sort_value, game_id, game_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -72,6 +85,7 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<RecommendedGam
     fetch_by_id(pool, game_id).await
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<RecommendedGame, AppError> {
     sqlx::query_as::<_, RecommendedGame>("SELECT * FROM recommended_games WHERE id = ?")
         .bind(id)
@@ -81,6 +95,7 @@ pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<RecommendedGame, A
         .ok_or_else(|| AppError::NotFound(format!("recommended_game id={id} not found")))
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn fetch_by_game_id(
     pool: &MySqlPool,
     game_id: &str,
@@ -93,6 +108,7 @@ pub async fn fetch_by_game_id(
         .ok_or_else(|| AppError::NotFound(format!("recommended_game game_id={game_id} not found")))
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn list(
     pool: &MySqlPool,
     q: Option<&str>,
@@ -176,6 +192,7 @@ pub async fn list(
     Ok((items, total.0))
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn update(
     pool: &MySqlPool,
     id: i64,
@@ -216,6 +233,7 @@ pub async fn update(
     fetch_by_id(pool, id).await
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
     let res = sqlx::query("DELETE FROM recommended_games WHERE id = ?")
         .bind(id)
@@ -231,6 +249,7 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
 }
 
 /// Fetch all existing game_id values from recommended_games.
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn fetch_all_game_ids(pool: &MySqlPool) -> Result<Vec<String>, AppError> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT game_id FROM recommended_games")
         .fetch_all(pool)
@@ -239,6 +258,7 @@ pub async fn fetch_all_game_ids(pool: &MySqlPool) -> Result<Vec<String>, AppErro
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame>, AppError> {
     sqlx::query_as::<_, RecommendedGame>(
         "SELECT * FROM recommended_games ORDER BY sort_value DESC, created_at DESC LIMIT ?",
@@ -251,6 +271,7 @@ pub async fn fetch_top_n(pool: &MySqlPool, n: i64) -> Result<Vec<RecommendedGame
 
 /// Query recommended games for a single tag, filtered by client_type and channel
 /// via external game tables (cc_logic_game_wide, cc_promotion_channel, cc_computer_info, etc).
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 async fn fetch_by_tag(
     pool: &MySqlPool,
     tag: &str,
@@ -312,6 +333,7 @@ LIMIT ?"#,
 /// Fetches 10 candidates per tag, then randomly selects the required number.
 /// - 运营推荐: 4, 新游上线: 3, 本周热玩: 3
 /// - If total < 10 after per-tag selection, fills up from remaining candidates of other tags.
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn fetch_top_filtered(
     pool: &MySqlPool,
     channel: &str,
@@ -375,6 +397,7 @@ pub async fn fetch_top_filtered(
 
 // --- strategy helpers ---
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 async fn insert_strategies(
     pool: &MySqlPool,
     game_id: i64,
@@ -395,6 +418,7 @@ async fn insert_strategies(
     Ok(())
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 async fn delete_strategies(pool: &MySqlPool, game_id: i64) -> Result<(), AppError> {
     sqlx::query("DELETE FROM recommended_games_strategy WHERE recommended_game_id = ?")
         .bind(game_id)
@@ -404,6 +428,7 @@ async fn delete_strategies(pool: &MySqlPool, game_id: i64) -> Result<(), AppErro
     Ok(())
 }
 
+#[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
 pub async fn fetch_strategies(
     pool: &MySqlPool,
     game_id: i64,

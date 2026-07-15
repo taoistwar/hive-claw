@@ -20,6 +20,9 @@ interface GameTableProps {
   onDelete: (id: number) => void
 }
 
+/**
+ * @deprecated 游戏别名管理已废弃，仅为历史数据维护保留。
+ */
 const GameTable: React.FC<GameTableProps> = ({
   games,
   loading,

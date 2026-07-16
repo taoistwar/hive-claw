@@ -132,7 +132,7 @@ const AppLayout: React.FC = () => {
                 {
                   key: '/login-records',
                   icon: <KeyOutlined />,
-                  label: '登录日志',
+                  label: '管理认证日志',
                 },
                 {
                   key: '/admin-audit-logs',

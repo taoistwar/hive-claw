@@ -1,12 +1,10 @@
 use serde::Serialize;
 use sqlx::MySqlPool;
 
-use crate::models::agent_hook::{
-    AgentHook, CreateHookRequest, HookExecution, HookExecutionQuery, UpdateHookRequest,
-};
+use crate::models::agent_hook::{AgentHook, CreateHookRequest, UpdateHookRequest};
 use crate::services::agent::MAIN_AGENT_IDENTIFIER;
 use crate::services::optimistic_lock;
-use crate::utils::error::{AppError, codes};
+use crate::utils::error::AppError;
 
 /// Enriched Hook response with resolved reference names for call_function/call_workflow.
 #[derive(Debug, Clone, Serialize)]
@@ -303,72 +301,6 @@ pub async fn load_hooks_for_agent(
     Ok(map)
 }
 
-/// List hook executions with filtering and pagination.
-pub async fn list_executions(
-    pool: &MySqlPool,
-    query: HookExecutionQuery,
-) -> Result<(Vec<HookExecution>, u64), AppError> {
-    let mut where_clauses: Vec<String> = Vec::new();
-    let mut params: Vec<String> = Vec::new();
-
-    if let Some(aid) = query.agent_id {
-        where_clauses.push("agent_id = ?".into());
-        params.push(aid.to_string());
-    }
-    if let Some(ref tp) = query.trigger_point {
-        where_clauses.push("trigger_point = ?".into());
-        params.push(tp.clone());
-    }
-    if let Some(ref o) = query.outcome {
-        where_clauses.push("outcome = ?".into());
-        params.push(o.clone());
-    }
-    if let Some(ref from) = query.from {
-        where_clauses.push("created_at >= ?".into());
-        params.push(from.clone());
-    }
-    if let Some(ref to) = query.to {
-        where_clauses.push("created_at <= ?".into());
-        params.push(to.clone());
-    }
-
-    let where_sql = if where_clauses.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_clauses.join(" AND "))
-    };
-
-    // Count
-    let count_sql = format!("SELECT COUNT(*) FROM hook_executions {where_sql}");
-    let mut count_query = sqlx::query_scalar(&count_sql);
-    for p in &params {
-        count_query = count_query.bind(p);
-    }
-    let total: i64 = count_query
-        .fetch_one(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("count executions: {e}")))?;
-
-    // Data
-    let offset = ((query.page.saturating_sub(1)) * query.page_size) as i64;
-    let limit = query.page_size as i64;
-    let data_sql = format!(
-        "SELECT * FROM hook_executions {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
-    );
-    let mut data_query = sqlx::query_as::<_, HookExecution>(&data_sql);
-    for p in &params {
-        data_query = data_query.bind(p);
-    }
-    let items = data_query
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("list executions: {e}")))?;
-
-    Ok((items, total as u64))
-}
-
 // ── Helpers ──
 
 async fn check_hook_permission(
@@ -444,35 +376,6 @@ pub async fn list_hooks_enriched(
         });
     }
     Ok(enriched)
-}
-
-/// Cron cleanup: delete hook_executions older than retention days (T046).
-pub async fn cleanup_old_executions(pool: &MySqlPool) {
-    let retention_days: i64 = std::env::var("HOOK_EXECUTION_RETENTION_DAYS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(30);
-
-    let result = sqlx::query(
-        "DELETE FROM hook_executions WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY) LIMIT 1000",
-    )
-    .bind(retention_days)
-    .execute(pool)
-    .await;
-
-    match result {
-        Ok(r) if r.rows_affected() > 0 => {
-            tracing::info!(
-                rows = r.rows_affected(),
-                retention_days,
-                "Cleaned old hook execution records"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to clean old hook executions");
-        }
-        _ => {}
-    }
 }
 
 fn validate_webhook_url(url: &str) -> Result<(), AppError> {

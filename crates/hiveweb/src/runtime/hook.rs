@@ -1,7 +1,7 @@
 //! Hook execution engine — runs agent lifecycle hooks during orchestrator execution.
 //!
-//! Hooks are **read-only observers**: results are written only to `hook_executions`
-//! audit table and never injected into agent state (system_prompt, tools, etc.).
+//! Hooks are **read-only observers**: execution outcomes are emitted as structured
+//! tracing events and never persisted or injected into agent state.
 
 use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
@@ -78,8 +78,7 @@ pub async fn run_hooks(
 
     for hook in list {
         if !hook.enabled {
-            // Record skipped
-            audit_hook_exec(&pool, hook.id, ctx, point, "skipped", None, None).await;
+            trace_hook_exec(hook, ctx, point, "skipped", None, None);
             continue;
         }
 
@@ -96,19 +95,17 @@ pub async fn run_hooks(
 
         match result {
             Ok(Ok(())) => {
-                audit_hook_exec(&pool, hook.id, ctx, point, "success", None, Some(elapsed)).await;
+                trace_hook_exec(hook, ctx, point, "success", None, Some(elapsed));
             }
             Ok(Err(e)) => {
-                audit_hook_exec(
-                    &pool,
-                    hook.id,
+                trace_hook_exec(
+                    hook,
                     ctx,
                     point,
                     "error",
-                    Some(&e.to_string()),
+                    Some(hook_error_kind(&hook.action_type)),
                     Some(elapsed),
-                )
-                .await;
+                );
 
                 if hook.blocking_mode {
                     return Err(HookError::BlockingFailed(format!(
@@ -119,16 +116,7 @@ pub async fn run_hooks(
                 // Non-blocking: continue with next hook
             }
             Err(_timeout) => {
-                audit_hook_exec(
-                    &pool,
-                    hook.id,
-                    ctx,
-                    point,
-                    "timeout",
-                    Some(&format!("超时 {}ms", timeout_ms)),
-                    Some(elapsed),
-                )
-                .await;
+                trace_hook_exec(hook, ctx, point, "timeout", Some("timeout"), Some(elapsed));
 
                 if hook.blocking_mode {
                     return Err(HookError::Timeout(format!(
@@ -153,7 +141,7 @@ async fn execute_hook_action(
     match hook.action_type.as_str() {
         "call_function" => execute_call_function(hook, ctx, pool, deps).await,
         "call_workflow" => execute_call_workflow(hook, ctx, pool, deps).await,
-        "http_webhook" => execute_http_webhook(hook, ctx, pool).await,
+        "http_webhook" => execute_http_webhook(hook, ctx).await,
         other => Err(ActionError(format!("Unknown action type: {other}"))),
     }
 }
@@ -322,11 +310,7 @@ async fn execute_call_workflow(
     Ok(())
 }
 
-async fn execute_http_webhook(
-    hook: &AgentHook,
-    ctx: &HookContext,
-    pool: Arc<MySqlPool>,
-) -> Result<(), ActionError> {
+async fn execute_http_webhook(hook: &AgentHook, ctx: &HookContext) -> Result<(), ActionError> {
     let url = hook
         .action_params
         .get("webhook_url")
@@ -385,14 +369,14 @@ async fn execute_http_webhook(
     match req.send().await {
         Ok(resp) if resp.status().is_success() => Ok(()),
         Ok(resp) => {
-            spawn_webhook_retry(pool, hook, ctx, &payload);
+            spawn_webhook_retry(hook, ctx, &payload);
             Err(ActionError(format!(
                 "Webhook returned HTTP {}",
                 resp.status()
             )))
         }
         Err(_e) => {
-            spawn_webhook_retry(pool, hook, ctx, &payload);
+            spawn_webhook_retry(hook, ctx, &payload);
             Err(ActionError(
                 "Webhook connection failed — pending async retry".into(),
             ))
@@ -400,7 +384,7 @@ async fn execute_http_webhook(
     }
 }
 
-fn spawn_webhook_retry(pool: Arc<MySqlPool>, hook: &AgentHook, ctx: &HookContext, payload: &Value) {
+fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
     let url = hook
         .action_params
         .get("webhook_url")
@@ -408,11 +392,8 @@ fn spawn_webhook_retry(pool: Arc<MySqlPool>, hook: &AgentHook, ctx: &HookContext
         .unwrap_or("")
         .to_string();
     let payload = payload.clone();
-    let hook_id = hook.id;
-    let agent_id = ctx.agent_id;
-    let identifier = ctx.identifier.clone();
-    let session_id = ctx.session_id;
-    let trigger_point = ctx.trigger_point.clone();
+    let hook = hook.clone();
+    let ctx = ctx.clone();
     let max_retries = std::env::var("HOOK_WEBHOOK_RETRY_MAX")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -421,126 +402,146 @@ fn spawn_webhook_retry(pool: Arc<MySqlPool>, hook: &AgentHook, ctx: &HookContext
     tokio::spawn(async move {
         for attempt in 0..max_retries {
             tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
-            let client = match reqwest::Client::new()
+            let attempt_number = attempt + 1;
+            match reqwest::Client::new()
                 .post(&url)
                 .json(&payload)
                 .send()
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
-                    // Success on retry — write audit
-                    let _ = sqlx::query(
-                        r#"INSERT INTO hook_executions
-                           (agent_id, agent_identifier, hook_id, session_id, trigger_point,
-                            action_type, outcome, error_summary, elapsed_ms, request_id)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-                    )
-                    .bind(agent_id)
-                    .bind(&identifier)
-                    .bind(hook_id)
-                    .bind(session_id)
-                    .bind(&trigger_point)
-                    .bind("http_webhook")
-                    .bind("success")
-                    .bind::<Option<String>>(None)
-                    .bind::<Option<i32>>(None)
-                    .bind::<Option<String>>(None)
-                    .execute(pool.as_ref())
-                    .await;
+                    tracing::info!(
+                        event = "hook_webhook_retry",
+                        agent_id = ctx.agent_id,
+                        agent_identifier = %ctx.identifier,
+                        hook_id = hook.id,
+                        hook_name = %hook.name,
+                        session_id = ctx.session_id,
+                        trigger_point = %ctx.trigger_point,
+                        action_type = %hook.action_type,
+                        outcome = "success",
+                        attempt = attempt_number,
+                        max_retries,
+                        http_status = resp.status().as_u16(),
+                        request_id = %ctx.request_id,
+                        "Hook Webhook retry completed"
+                    );
                     return;
                 }
-                _ => {} // continue retry
-            };
-            let _ = client;
+                Ok(resp) => {
+                    tracing::warn!(
+                        event = "hook_webhook_retry",
+                        agent_id = ctx.agent_id,
+                        agent_identifier = %ctx.identifier,
+                        hook_id = hook.id,
+                        hook_name = %hook.name,
+                        session_id = ctx.session_id,
+                        trigger_point = %ctx.trigger_point,
+                        action_type = %hook.action_type,
+                        outcome = "error",
+                        attempt = attempt_number,
+                        max_retries,
+                        http_status = resp.status().as_u16(),
+                        request_id = %ctx.request_id,
+                        error_kind = "http_status",
+                        "Hook Webhook retry failed"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event = "hook_webhook_retry",
+                        agent_id = ctx.agent_id,
+                        agent_identifier = %ctx.identifier,
+                        hook_id = hook.id,
+                        hook_name = %hook.name,
+                        session_id = ctx.session_id,
+                        trigger_point = %ctx.trigger_point,
+                        action_type = %hook.action_type,
+                        outcome = "error",
+                        attempt = attempt_number,
+                        max_retries,
+                        request_id = %ctx.request_id,
+                        error_kind = webhook_error_kind(&error),
+                        "Hook Webhook retry failed"
+                    );
+                }
+            }
         }
-        // All retries failed
-        let _ = sqlx::query(
-            r#"INSERT INTO hook_executions
-               (agent_id, agent_identifier, hook_id, session_id, trigger_point,
-                action_type, outcome, error_summary, elapsed_ms, request_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(agent_id)
-        .bind(&identifier)
-        .bind(hook_id)
-        .bind(session_id)
-        .bind(&trigger_point)
-        .bind("http_webhook")
-        .bind("error")
-        .bind(Some(format!("Webhook failed after {max_retries} retries")))
-        .bind::<Option<i32>>(None)
-        .bind::<Option<String>>(None)
-        .execute(pool.as_ref())
-        .await;
+        tracing::warn!(
+            event = "hook_webhook_retry",
+            agent_id = ctx.agent_id,
+            agent_identifier = %ctx.identifier,
+            hook_id = hook.id,
+            hook_name = %hook.name,
+            session_id = ctx.session_id,
+            trigger_point = %ctx.trigger_point,
+            action_type = %hook.action_type,
+            outcome = "exhausted",
+            max_retries,
+            request_id = %ctx.request_id,
+            error_kind = "retries_exhausted",
+            "Hook Webhook retries exhausted"
+        );
     });
 }
 
-/// Write a hook execution audit record.
-async fn audit_hook_exec(
-    pool: &MySqlPool,
-    hook_id: i64,
+fn trace_hook_exec(
+    hook: &AgentHook,
     ctx: &HookContext,
     trigger_point: &str,
     outcome: &str,
-    error: Option<&str>,
+    error_kind: Option<&str>,
     elapsed_ms: Option<i32>,
 ) {
-    // Truncate and mask error summary (FR-016 — mask sensitive fields)
-    let error_summary = error.map(|e| {
-        let mut s = e.to_string();
-        // Basic sensitive field masking
-        for keyword in &["secret", "password", "token", "api_key", "authorization"] {
-            let lower = s.to_lowercase();
-            if lower.contains(keyword) {
-                s = "[REDACTED]".to_string();
-                break;
-            }
-        }
-        if s.len() > 1024 {
-            s.truncate(1020);
-            s.push_str("...");
-        }
-        s
-    });
+    let error_kind = error_kind.unwrap_or_default();
+    let elapsed_ms = elapsed_ms.unwrap_or_default();
 
-    // Build context snapshot (capped at ~4KB)
-    let snapshot = json!({
-        "agent_identifier": ctx.agent_id,
-        "session_id": ctx.session_id,
-        "trigger_point": trigger_point,
-        "message": ctx.message,
-        "channel": ctx.channel,
-        "client_type": ctx.client_type,
-        "client_version": ctx.client_version,
-    });
-    let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-    let snapshot_final: Option<Value> = if snapshot_str.len() > 4096 {
-        Some(json!({"truncated": true}))
+    macro_rules! emit {
+        ($level:ident) => {
+            tracing::$level!(
+                event = "hook_execution",
+                agent_id = ctx.agent_id,
+                agent_identifier = %ctx.identifier,
+                hook_id = hook.id,
+                hook_name = %hook.name,
+                session_id = ctx.session_id,
+                trigger_point,
+                action_type = %hook.action_type,
+                outcome,
+                elapsed_ms,
+                request_id = %ctx.request_id,
+                error_kind = %error_kind,
+                "Hook execution completed"
+            )
+        };
+    }
+
+    match outcome {
+        "error" | "timeout" => emit!(warn),
+        "skipped" => emit!(debug),
+        _ => emit!(info),
+    }
+}
+
+fn hook_error_kind(action_type: &str) -> &'static str {
+    match action_type {
+        "call_function" => "function_action_failed",
+        "call_workflow" => "workflow_action_failed",
+        "http_webhook" => "webhook_action_failed",
+        _ => "unknown_action_failed",
+    }
+}
+
+fn webhook_error_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_request() {
+        "request"
     } else {
-        Some(snapshot)
-    };
-
-    let action_type: &str = ""; // Not available at this level without extra lookup
-
-    let _ = sqlx::query(
-        r#"INSERT INTO hook_executions
-           (agent_id, agent_identifier, hook_id, session_id, trigger_point,
-            action_type, outcome, error_summary, elapsed_ms, context_snapshot, request_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-    )
-    .bind(ctx.agent_id)
-    .bind(&ctx.identifier)
-    .bind(hook_id)
-    .bind(ctx.session_id)
-    .bind(trigger_point)
-    .bind(action_type)
-    .bind(outcome)
-    .bind(&error_summary)
-    .bind(elapsed_ms)
-    .bind(&snapshot_final)
-    .bind(&ctx.request_id)
-    .execute(pool)
-    .await;
+        "unknown"
+    }
 }
 
 // ── AgentContext helpers for function/workflow integration ──

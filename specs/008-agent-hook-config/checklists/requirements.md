@@ -34,3 +34,4 @@
 - All items pass. Spec is ready for `/speckit.plan`.
 - Zero [NEEDS CLARIFICATION] markers — all design decisions made with reasonable defaults documented in Assumptions.
 - Hook trigger points and action types are clearly enumerated with well-defined scope boundaries.
+- 2026-07-16 revalidation passed: execution observability is tracing-only; database persistence, history APIs, and history UI are explicitly out of scope, while existing historical data remains untouched.

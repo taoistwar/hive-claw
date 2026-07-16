@@ -1,6 +1,4 @@
-use gpui::{
-    div, prelude::*, px, rgb, CursorStyle, Entity, MouseButton, Window, Context,
-};
+use gpui::{Context, CursorStyle, Entity, MouseButton, Window, div, prelude::*, px, rgb};
 
 use crate::datasource::{DataSource, Store};
 use crate::ui::{
@@ -68,7 +66,16 @@ impl DataSourceView {
                             matches!(n, crate::ui::tree_nav::TreeNode::DataSource { id: ds_id, .. } if *ds_id == id)
                         })
                         .cloned();
-                    if let Some(crate::ui::tree_nav::TreeNode::DataSource { id, name, host, port, username, encrypted_password, .. }) = node {
+                    if let Some(crate::ui::tree_nav::TreeNode::DataSource {
+                        id,
+                        name,
+                        host,
+                        port,
+                        username,
+                        encrypted_password,
+                        ..
+                    }) = node
+                    {
                         use chrono::Utc;
                         let ds = DataSource {
                             id,
@@ -81,13 +88,18 @@ impl DataSourceView {
                             updated_at: Utc::now(),
                         };
                         self.form = Some(cx.new(|cx| {
-                            DataSourceForm::new(FormMode::Edit(id), self.store.clone(), Some(&ds), cx)
+                            DataSourceForm::new(
+                                FormMode::Edit(id),
+                                self.store.clone(),
+                                Some(&ds),
+                                cx,
+                            )
                         }));
                     }
                 }
                 PendingAction::Delete(id) => {
                     let store = self.store.read(cx).clone();
-                    let this = cx.weak_entity();
+                    let _this = cx.weak_entity();
                     cx.spawn(async move |this, cx| {
                         let _ = store.delete(id).await;
                         this.update(cx, |view, cx| {
@@ -97,8 +109,10 @@ impl DataSourceView {
                             view.viewer.update(cx, |v, cx| {
                                 v.clear(cx);
                             });
-                        }).ok();
-                    }).detach();
+                        })
+                        .ok();
+                    })
+                    .detach();
                 }
             }
             self.tree.update(cx, |t, cx| {
@@ -123,13 +137,26 @@ impl DataSourceView {
         if current_tree_sel != self.prev_tree_selection {
             if let Some(ref selection) = current_tree_sel {
                 match selection {
-                    TreeSelection::Table { source_id, database, table } => {
+                    TreeSelection::Table {
+                        source_id,
+                        database,
+                        table,
+                    } => {
                         let node = self.tree.read(cx).nodes.iter()
                             .find(|n| {
                                 matches!(n, crate::ui::tree_nav::TreeNode::DataSource { id: ds_id, .. } if *ds_id == *source_id)
                             })
                             .cloned();
-                        if let Some(crate::ui::tree_nav::TreeNode::DataSource { id, name, host, port, username, encrypted_password, .. }) = node {
+                        if let Some(crate::ui::tree_nav::TreeNode::DataSource {
+                            id,
+                            name,
+                            host,
+                            port,
+                            username,
+                            encrypted_password,
+                            ..
+                        }) = node
+                        {
                             use chrono::Utc;
                             let ds = DataSource {
                                 id,
@@ -143,7 +170,14 @@ impl DataSourceView {
                             };
                             let store = self.store.clone();
                             self.viewer.update(cx, |viewer, cx| {
-                                viewer.set_table(ds, store, *source_id, database.clone(), table.clone(), cx);
+                                viewer.set_table(
+                                    ds,
+                                    store,
+                                    *source_id,
+                                    database.clone(),
+                                    table.clone(),
+                                    cx,
+                                );
                             });
                         }
                     }
@@ -193,7 +227,9 @@ impl Render for DataSourceView {
             .on_mouse_move({
                 let this = this.clone();
                 move |event: &gpui::MouseMoveEvent, _window, cx| {
-                    if !cx.has_global::<SplitterDrag>() { return; }
+                    if !cx.has_global::<SplitterDrag>() {
+                        return;
+                    }
                     let drag = cx.global::<SplitterDrag>().clone();
                     let delta: f32 = (event.position.x - gpui::px(drag.start_x)).into();
                     match drag.splitter_index {
@@ -202,7 +238,8 @@ impl Render for DataSourceView {
                             this.update(cx, |v, cx| {
                                 v.left_width = new_left;
                                 cx.notify();
-                            }).ok();
+                            })
+                            .ok();
                         }
                         _ => {}
                     }
@@ -230,14 +267,11 @@ impl Render for DataSourceView {
             .child(splitter_0)
             .child(
                 div()
-                    .flex_grow()
                     .h_full()
-                    .child(self.viewer.clone()),
+                    .flex_1()
+                    .child(self.viewer.clone())
+                    .when_some(form, |this, form_entity| this.child(form_entity)),
             );
-
-        if let Some(form_entity) = form {
-            root = root.child(form_entity);
-        }
 
         if let Some(ref error_modal) = self.error_modal {
             let title = error_modal.title.clone();
@@ -256,10 +290,12 @@ impl Render for DataSourceView {
                     .on_mouse_down(MouseButton::Left, {
                         let this_for_bg = this.clone();
                         move |_, _, cx| {
-                            this_for_bg.update(cx, |v, cx| {
-                                v.error_modal = None;
-                                cx.notify();
-                            }).ok();
+                            this_for_bg
+                                .update(cx, |v, cx| {
+                                    v.error_modal = None;
+                                    cx.notify();
+                                })
+                                .ok();
                         }
                     })
                     .child(
@@ -284,38 +320,40 @@ impl Render for DataSourceView {
                                         div()
                                             .text_size(px(18.0))
                                             .text_color(rgb(0xcc0000))
-                                            .child(title)
+                                            .child(title),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(14.0))
                                             .text_color(rgb(0x333333))
-                                            .child(message)
+                                            .child(message),
                                     )
                                     .child(
-                                        div()
-                                            .flex()
-                                            .justify_end()
-                                            .child(
-                                                div()
-                                                    .id("close-error-modal")
-                                                    .px(px(16.0))
-                                                    .py(px(8.0))
-                                                    .rounded(px(6.0))
-                                                    .bg(rgb(0x4a90d9))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(13.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("关闭")
-                                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                                        this_for_modal.update(cx, |v, cx| {
-                                                            v.error_modal = None;
-                                                            cx.notify();
-                                                        }).ok();
-                                                    })
-                                            )
-                                    )
-                            )
+                                        div().flex().justify_end().child(
+                                            div()
+                                                .id("close-error-modal")
+                                                .px(px(16.0))
+                                                .py(px(8.0))
+                                                .rounded(px(6.0))
+                                                .bg(rgb(0x4a90d9))
+                                                .text_color(rgb(0xffffff))
+                                                .text_size(px(13.0))
+                                                .cursor(CursorStyle::PointingHand)
+                                                .child("关闭")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, cx| {
+                                                        this_for_modal
+                                                            .update(cx, |v, cx| {
+                                                                v.error_modal = None;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                    },
+                                                ),
+                                        ),
+                                    ),
+                            ),
                     ),
             );
         }

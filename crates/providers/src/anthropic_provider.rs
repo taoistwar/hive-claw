@@ -18,11 +18,11 @@ use async_trait::async_trait;
 use log::warn;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::base::{ChatRequest, LLMProvider};
 use crate::base::extract_retry_after_from_text;
 use crate::base::sanitize_empty_content;
+use crate::base::{ChatRequest, LLMProvider};
 use crate::base::{GenerationSettings, LLMResponse, ToolCallRequest, ToolChoice};
 
 const DEFAULT_API_VERSION: &str = "2023-06-01";
@@ -148,10 +148,7 @@ impl AnthropicProvider {
                             match last.get_mut("content").unwrap() {
                                 Value::Array(arr) => arr.push(block),
                                 other => {
-                                    let text = other
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string();
+                                    let text = other.as_str().unwrap_or("").to_string();
                                     *other = Value::Array(vec![
                                         json!({"type":"text","text":text}),
                                         block,
@@ -284,11 +281,7 @@ impl AnthropicProvider {
     }
 
     fn build_body(&self, req: &ChatRequest) -> Value {
-        let model = Self::strip_prefix(
-            req.model
-                .as_deref()
-                .unwrap_or(&self.cfg.default_model),
-        );
+        let model = Self::strip_prefix(req.model.as_deref().unwrap_or(&self.cfg.default_model));
 
         let sanitized = sanitize_empty_content(&req.messages);
         let (mut system, mut msgs) = Self::convert_messages(&sanitized);
@@ -344,7 +337,8 @@ impl AnthropicProvider {
         if let Some(tools) = tools {
             if !tools.is_empty() {
                 body.insert("tools".into(), Value::Array(tools));
-                if let Some(tc) = Self::convert_tool_choice(req.tool_choice.as_ref(), thinking_enabled)
+                if let Some(tc) =
+                    Self::convert_tool_choice(req.tool_choice.as_ref(), thinking_enabled)
                 {
                     body.insert("tool_choice".into(), tc);
                 }
@@ -424,9 +418,7 @@ fn assistant_blocks(msg: &Value) -> Vec<Value> {
             let func = tc.get("function").cloned().unwrap_or(json!({}));
             let args_raw = func.get("arguments").cloned().unwrap_or(json!({}));
             let args: Value = match args_raw {
-                Value::String(s) => {
-                    serde_json::from_str(&s).unwrap_or_else(|_| json!({}))
-                }
+                Value::String(s) => serde_json::from_str(&s).unwrap_or_else(|_| json!({})),
                 Value::Object(_) => args_raw,
                 _ => json!({}),
             };
@@ -505,9 +497,8 @@ fn has_tool_use(msg: &Value) -> bool {
     let Some(arr) = msg.get("content").and_then(|v| v.as_array()) else {
         return false;
     };
-    arr.iter().any(|b| {
-        b.get("type").and_then(|v| v.as_str()) == Some("tool_use")
-    })
+    arr.iter()
+        .any(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
 }
 
 fn merge_consecutive(msgs: Vec<Value>) -> Vec<Value> {
@@ -588,7 +579,12 @@ fn tool_cache_marker_indices(tools: &[Value]) -> Vec<usize> {
         let name = tools[i]
             .get("name")
             .and_then(|v| v.as_str())
-            .or_else(|| tools[i].get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+            .or_else(|| {
+                tools[i]
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("");
         if !name.starts_with("mcp_") {
             last_builtin = Some(i);
@@ -631,7 +627,10 @@ fn parse_response(body: &Value) -> LLMResponse {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let input = block.get("input").cloned().unwrap_or(Value::Object(Map::new()));
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(Value::Object(Map::new()));
                     let args = match input {
                         Value::Object(m) => m,
                         _ => Map::new(),
@@ -977,10 +976,18 @@ fn process_sse_event(
 
     match event_type {
         "content_block_start" => {
-            if let Some(block_type) = value.get("content_block").and_then(|v| v.get("type")).and_then(|v| v.as_str()) {
+            if let Some(block_type) = value
+                .get("content_block")
+                .and_then(|v| v.get("type"))
+                .and_then(|v| v.as_str())
+            {
                 match block_type {
                     "text" => {
-                        if let Some(text) = value.get("content_block").and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
+                        if let Some(text) = value
+                            .get("content_block")
+                            .and_then(|v| v.get("text"))
+                            .and_then(|v| v.as_str())
+                        {
                             if !text.is_empty() {
                                 content_parts.push(text.to_string());
                             }
@@ -988,9 +995,18 @@ fn process_sse_event(
                     }
                     "tool_use" => {
                         if let Some(block) = value.get("content_block") {
-                            let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                            let id = block
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = block
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let input =
+                                block.get("input").cloned().unwrap_or(serde_json::json!({}));
                             let args = match input {
                                 serde_json::Value::Object(m) => m,
                                 _ => serde_json::Map::new(),
@@ -1007,7 +1023,10 @@ fn process_sse_event(
                                 let mut delta = serde_json::Map::new();
                                 delta.insert("call_id".into(), serde_json::Value::String(id));
                                 delta.insert("name".into(), serde_json::Value::String(name));
-                                delta.insert("arguments_delta".into(), serde_json::Value::String(String::new()));
+                                delta.insert(
+                                    "arguments_delta".into(),
+                                    serde_json::Value::String(String::new()),
+                                );
                                 cb(delta);
                             }
                         }
@@ -1026,10 +1045,18 @@ fn process_sse_event(
             }
         }
         "content_block_delta" => {
-            if let Some(delta_type) = value.get("delta").and_then(|v| v.get("type")).and_then(|v| v.as_str()) {
+            if let Some(delta_type) = value
+                .get("delta")
+                .and_then(|v| v.get("type"))
+                .and_then(|v| v.as_str())
+            {
                 match delta_type {
                     "text_delta" => {
-                        if let Some(text) = value.get("delta").and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
+                        if let Some(text) = value
+                            .get("delta")
+                            .and_then(|v| v.get("text"))
+                            .and_then(|v| v.as_str())
+                        {
                             if !text.is_empty() {
                                 if let Some(ref cb) = on_delta {
                                     cb(text.to_string());
@@ -1038,21 +1065,40 @@ fn process_sse_event(
                         }
                     }
                     "input_json_delta" => {
-                        if let Some(partial_json) = value.get("delta").and_then(|v| v.get("partial_json")).and_then(|v| v.as_str()) {
+                        if let Some(partial_json) = value
+                            .get("delta")
+                            .and_then(|v| v.get("partial_json"))
+                            .and_then(|v| v.as_str())
+                        {
                             if let Some(ref cb) = on_tool_call_delta {
                                 let mut delta = serde_json::Map::new();
-                                delta.insert("arguments_delta".into(), serde_json::Value::String(partial_json.to_string()));
+                                delta.insert(
+                                    "arguments_delta".into(),
+                                    serde_json::Value::String(partial_json.to_string()),
+                                );
                                 cb(delta);
                             }
                         }
                     }
                     "thinking_delta" => {
-                        if let Some(thinking) = value.get("delta").and_then(|v| v.get("thinking")).and_then(|v| v.as_str()) {
+                        if let Some(thinking) = value
+                            .get("delta")
+                            .and_then(|v| v.get("thinking"))
+                            .and_then(|v| v.as_str())
+                        {
                             if !thinking_blocks.is_empty() {
                                 if let Some(last_thinking) = thinking_blocks.last_mut() {
                                     if let Some(obj) = last_thinking.as_object_mut() {
-                                        let existing = obj.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
-                                        obj.insert("thinking".into(), serde_json::Value::String(format!("{existing}{thinking}")));
+                                        let existing = obj
+                                            .get("thinking")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        obj.insert(
+                                            "thinking".into(),
+                                            serde_json::Value::String(format!(
+                                                "{existing}{thinking}"
+                                            )),
+                                        );
                                     }
                                 }
                             }
@@ -1063,7 +1109,11 @@ fn process_sse_event(
             }
         }
         "message_delta" => {
-            if let Some(stop_reason) = value.get("delta").and_then(|v| v.get("stop_reason")).and_then(|v| v.as_str()) {
+            if let Some(stop_reason) = value
+                .get("delta")
+                .and_then(|v| v.get("stop_reason"))
+                .and_then(|v| v.as_str())
+            {
                 *finish_reason = match stop_reason {
                     "tool_use" => "tool_calls".to_string(),
                     "end_turn" => "stop".to_string(),
@@ -1080,8 +1130,14 @@ fn process_sse_event(
         "message_start" => {
             if let Some(u) = value.get("message").and_then(|v| v.get("usage")) {
                 let input_tokens = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                let cache_creation = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                let cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let cache_creation = u
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let cache_read = u
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let total_prompt = input_tokens + cache_creation + cache_read;
                 usage.insert("prompt_tokens".into(), total_prompt);
                 usage.insert("total_tokens".into(), total_prompt);
@@ -1137,7 +1193,11 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[1]["role"], "assistant");
         let blocks = out[1]["content"].as_array().unwrap();
-        assert!(blocks.iter().any(|b| b["type"] == "tool_use" && b["name"] == "x"));
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b["type"] == "tool_use" && b["name"] == "x")
+        );
         let last = &out[2]["content"];
         // Last user turn has [tool_result, text:thanks]
         assert!(last.is_array());
@@ -1234,7 +1294,10 @@ mod tests {
 
     #[test]
     fn strip_prefix_removes_gateway_prefix() {
-        assert_eq!(AnthropicProvider::strip_prefix("anthropic/claude-x"), "claude-x");
+        assert_eq!(
+            AnthropicProvider::strip_prefix("anthropic/claude-x"),
+            "claude-x"
+        );
         assert_eq!(AnthropicProvider::strip_prefix("claude-x"), "claude-x");
     }
 }

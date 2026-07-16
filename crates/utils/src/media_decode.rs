@@ -73,7 +73,11 @@ mod tests {
     #[test]
     fn bad_shape_returns_none() {
         let d = tempdir();
-        assert!(save_base64_data_url("not-a-data-url", &d, None).unwrap().is_none());
+        assert!(
+            save_base64_data_url("not-a-data-url", &d, None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -88,10 +92,8 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "nanobot-media-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let p =
+            std::env::temp_dir().join(format!("nanobot-media-{}", uuid::Uuid::new_v4().simple()));
         fs::create_dir_all(&p).unwrap();
         p
     }

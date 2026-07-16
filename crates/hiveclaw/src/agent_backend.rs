@@ -55,10 +55,12 @@ impl AgentBackend {
             // Expand tilde if present.
             let ws_str = ws.to_string_lossy();
             let expanded = if ws_str.starts_with('~') {
-                dirs::home_dir().map(|h| {
-                    let rest = ws_str.trim_start_matches('~').trim_start_matches('/');
-                    h.join(rest).to_string_lossy().into_owned()
-                }).unwrap_or_else(|| ws_str.into_owned())
+                dirs::home_dir()
+                    .map(|h| {
+                        let rest = ws_str.trim_start_matches('~').trim_start_matches('/');
+                        h.join(rest).to_string_lossy().into_owned()
+                    })
+                    .unwrap_or_else(|| ws_str.into_owned())
             } else {
                 ws_str.into_owned()
             };
@@ -72,10 +74,7 @@ impl AgentBackend {
         Ok(AgentBackend::new(Arc::new(bundle.agent)))
     }
 
-    async fn run_inner(
-        &self,
-        req: &ValidatedRequest,
-    ) -> String {
+    async fn run_inner(&self, req: &ValidatedRequest) -> String {
         match &self.agent {
             Some(agent) => {
                 let inbound = build_inbound(&req.input_text, "inner");
@@ -87,9 +86,7 @@ impl AgentBackend {
                     }
                 }
             }
-            None => {
-                openresponses::stub::build_text(&req.attachments)
-            }
+            None => openresponses::stub::build_text(&req.attachments),
         }
     }
 
@@ -108,7 +105,13 @@ impl AgentBackend {
         let duration_ms = started.elapsed().as_millis() as u64;
         log_sync(request_id, duration_ms, req);
 
-        build_open_response(&response_id, &req.model, created, &content, &req.attachments)
+        build_open_response(
+            &response_id,
+            &req.model,
+            created,
+            &content,
+            &req.attachments,
+        )
     }
 }
 
@@ -214,10 +217,7 @@ pub struct StreamState {
     pub final_response: OpenResponse,
 }
 
-pub fn prepare_stream_state(
-    req: &ValidatedRequest,
-    chunks: Vec<String>,
-) -> StreamState {
+pub fn prepare_stream_state(req: &ValidatedRequest, chunks: Vec<String>) -> StreamState {
     let response_id = format!("resp_{}", Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
     let final_response = build_open_response(
@@ -266,7 +266,14 @@ pub fn build_event_stream(
     frames.push(Frame::Done);
 
     stream::unfold(
-        (frames.into_iter(), response_id, model, created, final_response, false),
+        (
+            frames.into_iter(),
+            response_id,
+            model,
+            created,
+            final_response,
+            false,
+        ),
         move |(mut iter, response_id, model, created, final_response, sent_first)| async move {
             let next = iter.next()?;
             if sent_first {
@@ -302,7 +309,10 @@ pub fn build_event_stream(
                     .expect("completed payload serializable"),
                 Frame::Done => Event::default().data("[DONE]"),
             };
-            Some((Ok(event), (iter, response_id, model, created, final_response, true)))
+            Some((
+                Ok(event),
+                (iter, response_id, model, created, final_response, true),
+            ))
         },
     )
 }

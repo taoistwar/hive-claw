@@ -10,15 +10,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use log::warn;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::base::{ChatRequest, LLMProvider};
-use crate::responses::{
-    consume_sse, convert_messages, convert_tools, parse_response_output,
-};
 use crate::base::extract_retry_after_from_text;
-use crate::base::{enforce_role_alternation, sanitize_empty_content};
+use crate::base::{ChatRequest, LLMProvider};
 use crate::base::{GenerationSettings, LLMResponse, ToolChoice};
+use crate::base::{enforce_role_alternation, sanitize_empty_content};
+use crate::responses::{consume_sse, convert_messages, convert_tools, parse_response_output};
 
 const DEFAULT_API_VERSION: &str = "2024-10-21";
 
@@ -144,10 +142,7 @@ impl AzureOpenAIProvider {
 
         if let Some(r) = reasoning {
             if !r.is_empty() && r.to_lowercase() != "none" {
-                body.insert(
-                    "reasoning".into(),
-                    json!({"effort": r}),
-                );
+                body.insert("reasoning".into(), json!({"effort": r}));
                 body.insert(
                     "include".into(),
                     Value::Array(vec![Value::String("reasoning.encrypted_content".into())]),
@@ -301,11 +296,8 @@ impl LLMProvider for AzureOpenAIProvider {
             Err(e) => return LLMResponse::error(format!("Error reading stream: {e}")),
         };
 
-        let (content, tool_calls, finish_reason) = consume_sse(
-            &body_text,
-            on_delta.clone(),
-            on_tool_call_delta.clone(),
-        ).await;
+        let (content, tool_calls, finish_reason) =
+            consume_sse(&body_text, on_delta.clone(), on_tool_call_delta.clone()).await;
 
         LLMResponse {
             content: (!content.is_empty()).then_some(content),
@@ -322,11 +314,7 @@ mod tests {
 
     #[test]
     fn responses_url_formats_correctly() {
-        let cfg = AzureOpenAIConfig::new(
-            "https://my-resource.openai.azure.com/",
-            "key",
-            "gpt-4o",
-        );
+        let cfg = AzureOpenAIConfig::new("https://my-resource.openai.azure.com/", "key", "gpt-4o");
         let p = AzureOpenAIProvider::new(cfg).unwrap();
         let url = p.responses_url();
         assert!(url.contains("/openai/v1/responses"));

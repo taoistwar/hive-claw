@@ -28,22 +28,22 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use futures_util::future::FutureExt;
 use futures_util::StreamExt;
+use futures_util::future::FutureExt;
 use log::{debug, error, info, warn};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::time::sleep;
 
 use bus::{MessageBus, OutboundMessage};
 use config::paths::get_media_dir;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
-use crate::qq_gateway::{self, GatewayAuth, GatewayEvent, DEFAULT_INTENTS};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::qq_gateway::{self, DEFAULT_INTENTS, GatewayAuth, GatewayEvent};
 use crate::registry::ChannelEntry;
 
 // QQ rich media file_type
@@ -51,7 +51,9 @@ const QQ_FILE_TYPE_IMAGE: u32 = 1;
 const QQ_FILE_TYPE_FILE: u32 = 4;
 
 fn image_exts() -> &'static [&'static str] {
-    &[".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".ico", ".svg"]
+    &[
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".ico", ".svg",
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -394,10 +396,7 @@ impl QQChannel {
         Ok(value)
     }
 
-    async fn read_media_bytes(
-        &self,
-        media_ref: &str,
-    ) -> Result<(Vec<u8>, String), ChannelError> {
+    async fn read_media_bytes(&self, media_ref: &str) -> Result<(Vec<u8>, String), ChannelError> {
         let media_ref = media_ref.trim();
         if media_ref.is_empty() {
             return Err(ChannelError::Other("empty media reference".into()));
@@ -439,11 +438,7 @@ impl QQChannel {
             )));
         }
         let client = self.ensure_http().await?;
-        let resp = client
-            .get(media_ref)
-            .send()
-            .await?
-            .error_for_status()?;
+        let resp = client.get(media_ref).send().await?.error_for_status()?;
         let bytes = resp.bytes().await?.to_vec();
         let parsed = url::Url::parse(media_ref).ok();
         let name = parsed
@@ -626,7 +621,10 @@ impl QQChannel {
 
     async fn handle_gateway_event(self: Arc<Self>, event: GatewayEvent) {
         match event {
-            GatewayEvent::Ready { session_id, bot_name } => {
+            GatewayEvent::Ready {
+                session_id,
+                bot_name,
+            } => {
                 info!("QQ bot ready: name={bot_name} session={session_id}");
             }
             GatewayEvent::C2cMessage(d) => {
@@ -721,10 +719,14 @@ impl QQChannel {
         let (media_paths, recv_lines, att_meta) = self.handle_attachments(&attachments).await;
 
         if !recv_lines.is_empty() {
-            let tag = if media_paths
-                .iter()
-                .any(|p| is_image_name(Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("")))
-            {
+            let tag = if media_paths.iter().any(|p| {
+                is_image_name(
+                    Path::new(p)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(""),
+                )
+            }) {
                 "[Image]"
             } else {
                 "[File]"
@@ -784,7 +786,11 @@ impl QQChannel {
         let mut att_meta: Vec<Map<String, Value>> = Vec::new();
 
         for att in attachments {
-            let url = att.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let url = att
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let filename = att
                 .get("filename")
                 .and_then(|v| v.as_str())
@@ -796,7 +802,14 @@ impl QQChannel {
                 .unwrap_or("")
                 .to_string();
 
-            info!("Downloading file from QQ: {}", if !filename.is_empty() { &filename } else { &url });
+            info!(
+                "Downloading file from QQ: {}",
+                if !filename.is_empty() {
+                    &filename
+                } else {
+                    &url
+                }
+            );
             let local = self
                 .download_to_media_dir_chunked(&url, &filename, &ctype)
                 .await;
@@ -966,9 +979,7 @@ impl QQChannel {
             for piece in bytes.chunks(chunk_size) {
                 downloaded += piece.len();
                 if downloaded > max_bytes {
-                    warn!(
-                        "QQ download exceeded max_bytes={max_bytes} url={url} -> abort"
-                    );
+                    warn!("QQ download exceeded max_bytes={max_bytes} url={url} -> abort");
                     bailed = true;
                     break;
                 }

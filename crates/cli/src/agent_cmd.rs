@@ -15,7 +15,7 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::LoopBundle;
-use crate::runtime::{Runtime};
+use crate::runtime::Runtime;
 
 /// Args for `nanobot agent`.
 #[derive(Debug, Default, Clone)]

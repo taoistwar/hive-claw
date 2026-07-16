@@ -240,7 +240,11 @@ pub async fn dispatch() -> Result<(), String> {
             )
             .await
         }
-        Command::Gateway { host, port, verbose } => {
+        Command::Gateway {
+            host,
+            port,
+            verbose,
+        } => {
             gateway::run(GatewayArgs {
                 workspace: ws_path,
                 config: cfg_path,

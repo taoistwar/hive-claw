@@ -85,14 +85,12 @@ pub async fn fetch_by_game_id(
     pool: &MySqlPool,
     game_id: &str,
 ) -> Result<RecommendedGame, AppError> {
-    sqlx::query_as::<_, RecommendedGame>(
-        "SELECT * FROM recommended_games WHERE game_id = ?",
-    )
-    .bind(game_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("recommended_game fetch by game_id: {e}")))?
-    .ok_or_else(|| AppError::NotFound(format!("recommended_game game_id={game_id} not found")))
+    sqlx::query_as::<_, RecommendedGame>("SELECT * FROM recommended_games WHERE game_id = ?")
+        .bind(game_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("recommended_game fetch by game_id: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("recommended_game game_id={game_id} not found")))
 }
 
 pub async fn list(
@@ -120,10 +118,13 @@ pub async fn list(
     if has_ch || has_ct {
         let mut strat_parts: Vec<String> = Vec::new();
         if has_ch {
-            strat_parts.push("(JSON_CONTAINS(s.channel, '\"*\"') OR JSON_CONTAINS(s.channel, ?))".into());
+            strat_parts
+                .push("(JSON_CONTAINS(s.channel, '\"*\"') OR JSON_CONTAINS(s.channel, ?))".into());
         }
         if has_ct {
-            strat_parts.push("(JSON_CONTAINS(s.client_type, '\"*\"') OR JSON_CONTAINS(s.client_type, ?))".into());
+            strat_parts.push(
+                "(JSON_CONTAINS(s.client_type, '\"*\"') OR JSON_CONTAINS(s.client_type, ?))".into(),
+            );
         }
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM recommended_games_strategy s WHERE s.recommended_game_id = rg.id AND s.strategy = 'INCLUDE' AND {})",
@@ -149,7 +150,9 @@ pub async fn list(
     if let Some(ref v) = ct_json {
         count_query = count_query.bind(v);
     }
-    let total: (i64,) = count_query.fetch_one(pool).await
+    let total: (i64,) = count_query
+        .fetch_one(pool)
+        .await
         .map_err(|e| AppError::Internal(format!("recommended_game count: {e}")))?;
 
     // Data query
@@ -168,7 +171,9 @@ pub async fn list(
         data_query = data_query.bind(v);
     }
     data_query = data_query.bind(page_size).bind(offset);
-    let items: Vec<RecommendedGame> = data_query.fetch_all(pool).await
+    let items: Vec<RecommendedGame> = data_query
+        .fetch_all(pool)
+        .await
         .map_err(|e| AppError::Internal(format!("recommended_game list: {e}")))?;
 
     Ok((items, total.0))
@@ -246,11 +251,7 @@ pub async fn fetch_top_filtered(
     channel: &str,
     client_type: &str,
 ) -> Result<Vec<RecommendedGame>, AppError> {
-    let tags = [
-        ("运营推荐", 4i64),
-        ("新游上线", 3i64),
-        ("本周热玩", 3i64),
-    ];
+    let tags = [("运营推荐", 4i64), ("新游上线", 3i64), ("本周热玩", 3i64)];
 
     let mut result: Vec<RecommendedGame> = Vec::new();
     let ch = format!("\"{}\"", channel);
@@ -259,8 +260,10 @@ pub async fn fetch_top_filtered(
     for (tag, limit) in &tags {
         let rows = sqlx::query_as::<_, RecommendedGame>(FILTERED_SQL)
             .bind(tag)
-            .bind(&ch).bind(&ct)
-            .bind(&ch).bind(&ct)
+            .bind(&ch)
+            .bind(&ct)
+            .bind(&ch)
+            .bind(&ct)
             .bind(limit)
             .fetch_all(pool)
             .await

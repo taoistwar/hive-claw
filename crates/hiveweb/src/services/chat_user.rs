@@ -18,11 +18,12 @@ pub async fn create_user_session(
     user_id: i64,
     title: Option<String>,
 ) -> Result<ChatSessionUser, AppError> {
-    let user: Option<(String,)> = sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
+    let user: Option<(String,)> =
+        sqlx::query_as("SELECT COALESCE(uid, '') FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("user lookup: {e}")))?;
     let uid = user.map(|u| u.0).unwrap_or_default();
 
     let res = sqlx::query(

@@ -12,7 +12,7 @@
 //! `BuiltinContext::agent_ctx`. Mirrors the structure of `query_balance`'s
 //! return value (`extensions` array + `metadata.agent_loop_break`).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::runtime::builtins::{BuiltinContext, BuiltinError, BuiltinResult};
 

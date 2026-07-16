@@ -25,11 +25,9 @@ const MAX_TEXT_LENGTH: usize = 200_000;
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         // Document formats
-        ".pdf", ".docx", ".xlsx", ".pptx",
-        // Text formats
-        ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".log",
-        ".yaml", ".yml", ".toml", ".ini", ".cfg",
-        // Image formats
+        ".pdf", ".docx", ".xlsx", ".pptx", // Text formats
+        ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".log", ".yaml", ".yml", ".toml",
+        ".ini", ".cfg", // Image formats
         ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ]
 }
@@ -63,11 +61,10 @@ pub fn extract_text(
             None => Some(format!("[error: {} extractor not installed]", &ext[1..])),
         },
         e if is_text_extension(e) => extract_text_file(path),
-        ".png" | ".jpg" | ".jpeg" | ".gif" | ".webp" => {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| format!("[image: {n}]"))
-        }
+        ".png" | ".jpg" | ".jpeg" | ".gif" | ".webp" => path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| format!("[image: {n}]")),
         _ => None,
     }
 }

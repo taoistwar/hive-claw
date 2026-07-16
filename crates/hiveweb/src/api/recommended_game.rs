@@ -8,8 +8,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::chat_common;
 use crate::api::AppState;
+use crate::api::chat_common;
 use crate::models::Role;
 use crate::models::chat_user::ChatMessageUser;
 use crate::models::recommended_game_strategy::RecommendedGameStrategy;
@@ -277,17 +277,20 @@ async fn top_recommended_games(
     let req: TopRequest = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
 
-    if req.user_id.is_empty() || req.channel.is_empty() || req.client_type.is_empty() || req.client_version.is_empty() {
-        return Err(AppError::BadRequest("user_id, channel, client_type, client_version 不能为空".into()).into_response());
+    if req.user_id.is_empty()
+        || req.channel.is_empty()
+        || req.client_type.is_empty()
+        || req.client_version.is_empty()
+    {
+        return Err(AppError::BadRequest(
+            "user_id, channel, client_type, client_version 不能为空".into(),
+        )
+        .into_response());
     }
 
-    let games = svc::fetch_top_filtered(
-        &state.pool,
-        &req.channel,
-        &req.client_type,
-    )
-    .await
-    .map_err(|e| e.into_response())?;
+    let games = svc::fetch_top_filtered(&state.pool, &req.channel, &req.client_type)
+        .await
+        .map_err(|e| e.into_response())?;
     let result: Vec<TopRecommendedGame> = games
         .into_iter()
         .map(|game| TopRecommendedGame {
@@ -333,12 +336,8 @@ async fn execute_recommendation(
     let req: ExecuteRequest = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")).into_response())?;
 
-    if req.user_id.trim().is_empty()
-        || req.game_id.trim().is_empty()
-    {
-        return Err(
-            AppError::BadRequest("user_id, game_id 不能为空".into()).into_response(),
-        );
+    if req.user_id.trim().is_empty() || req.game_id.trim().is_empty() {
+        return Err(AppError::BadRequest("user_id, game_id 不能为空".into()).into_response());
     }
 
     let user_id: i64 = req.user_id.trim().parse().map_err(|_| {

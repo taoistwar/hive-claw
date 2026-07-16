@@ -1,7 +1,6 @@
 /// Microsoft Teams channel MVP using a built-in HTTP webhook server.
 ///
 /// DM-focused MVP with text inbound/outbound and conversation reference persistence.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,7 +13,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// Microsoft Teams channel configuration.
@@ -52,12 +51,24 @@ pub struct MSTeamsConfig {
     pub ref_touch_interval_s: u64,
 }
 
-fn default_host() -> String { "0.0.0.0".to_string() }
-fn default_port() -> u16 { 3978 }
-fn default_path() -> String { "/api/messages".to_string() }
-fn default_true() -> bool { true }
-fn default_ttl_days() -> u64 { 30 }
-fn default_touch_interval() -> u64 { 300 }
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_port() -> u16 {
+    3978
+}
+fn default_path() -> String {
+    "/api/messages".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_ttl_days() -> u64 {
+    30
+}
+fn default_touch_interval() -> u64 {
+    300
+}
 
 impl Default for MSTeamsConfig {
     fn default() -> Self {
@@ -95,8 +106,8 @@ impl MSTeamsChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: MSTeamsConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid msteams config: {}", e))?;
+        let config: MSTeamsConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid msteams config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -108,15 +119,25 @@ impl MSTeamsChannel {
 
 #[async_trait]
 impl Channel for MSTeamsChannel {
-    fn name() -> &'static str { "msteams" }
-    fn display_name() -> &'static str { "Microsoft Teams" }
-    fn bus(&self) -> &MessageBus { &self.bus }
-    fn is_running(&self) -> bool { self.running.load(Ordering::SeqCst) }
+    fn name() -> &'static str {
+        "msteams"
+    }
+    fn display_name() -> &'static str {
+        "Microsoft Teams"
+    }
+    fn bus(&self) -> &MessageBus {
+        &self.bus
+    }
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
 
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.app_id.is_empty() || self.config.app_password.is_empty() {
             error!("MSTeams app_id/app_password not configured");
-            return Err(ChannelError::Config("app_id and app_password required".into()));
+            return Err(ChannelError::Config(
+                "app_id and app_password required".into(),
+            ));
         }
         self.running.store(true, Ordering::SeqCst);
         info!("MSTeams channel started (webhook listener)");
@@ -147,12 +168,17 @@ impl Channel for MSTeamsChannel {
         Ok(())
     }
 
-    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> { Ok(true) }
+    async fn login(self: Arc<Self>, _force: bool) -> ChannelResult<bool> {
+        Ok(true)
+    }
 
     fn default_config() -> Map<String, serde_json::Value> {
         let config = MSTeamsConfig::default();
         let value = serde_json::to_value(&config).unwrap_or(serde_json::Value::Object(Map::new()));
-        match value { serde_json::Value::Object(map) => map, _ => Map::new() }
+        match value {
+            serde_json::Value::Object(map) => map,
+            _ => Map::new(),
+        }
     }
 }
 

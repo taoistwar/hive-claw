@@ -23,16 +23,16 @@ pub mod qq_gateway;
 pub mod registry;
 pub mod slack;
 pub mod telegram;
-pub mod wecom;
 pub mod websocket;
-pub mod whatsapp;
+pub mod wecom;
 pub mod weixin;
+pub mod whatsapp;
 
 pub use base::{
-    handle_inbound, is_allowed, transcribe_audio, Channel, ChannelError, ChannelResult,
-    ChannelInfo, TranscriptionSettings,
+    Channel, ChannelError, ChannelInfo, ChannelResult, TranscriptionSettings, handle_inbound,
+    is_allowed, transcribe_audio,
 };
 pub use manager::{ChannelManager, ChannelStatus};
-pub use registry::{build_enabled_channels, build_one, known_channel_names, ChannelEntry};
 pub use qq::{QQChannel, QQConfig};
+pub use registry::{ChannelEntry, build_enabled_channels, build_one, known_channel_names};
 pub use weixin::{WeixinChannel, WeixinConfig};

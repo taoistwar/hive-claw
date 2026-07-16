@@ -136,16 +136,9 @@ pub struct OpenAITranscriptionProvider {
 }
 
 impl OpenAITranscriptionProvider {
-    pub fn new(
-        api_key: Option<&str>,
-        api_base: Option<&str>,
-        language: Option<&str>,
-    ) -> Self {
-        let api_url = env_or(
-            api_base,
-            &["OPENAI_TRANSCRIPTION_BASE_URL"],
-        )
-        .unwrap_or_else(|| "https://api.openai.com/v1/audio/transcriptions".into());
+    pub fn new(api_key: Option<&str>, api_base: Option<&str>, language: Option<&str>) -> Self {
+        let api_url = env_or(api_base, &["OPENAI_TRANSCRIPTION_BASE_URL"])
+            .unwrap_or_else(|| "https://api.openai.com/v1/audio/transcriptions".into());
         let api_key = env_or(api_key, &["OPENAI_API_KEY"]);
         let mut cfg = TranscriptionConfig::new(api_url, "whisper-1");
         cfg.api_key = api_key;
@@ -171,11 +164,7 @@ pub struct GroqTranscriptionProvider {
 }
 
 impl GroqTranscriptionProvider {
-    pub fn new(
-        api_key: Option<&str>,
-        api_base: Option<&str>,
-        language: Option<&str>,
-    ) -> Self {
+    pub fn new(api_key: Option<&str>, api_base: Option<&str>, language: Option<&str>) -> Self {
         let api_url = env_or(api_base, &["GROQ_BASE_URL"])
             .unwrap_or_else(|| "https://api.groq.com/openai/v1/audio/transcriptions".into());
         let api_key = env_or(api_key, &["GROQ_API_KEY"]);

@@ -41,9 +41,10 @@ async fn game_list_async_impl(
         .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 
     // 2. Primary: cc_logic_game from external DB, filtered by channel & client_type
-    let external = crate::services::game_service::list_external_games(ext_pool, channel, client_type)
-        .await
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
+    let external =
+        crate::services::game_service::list_external_games(ext_pool, channel, client_type)
+            .await
+            .map_err(|e| BuiltinError::Exec(format!("{e}")))?;
 
     // 3. Merge: for each external game, collect all aliases (its own + internal supplements)
     let mut entries: Vec<(i64, String, Vec<String>)> = Vec::new();

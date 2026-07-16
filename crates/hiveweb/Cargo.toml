@@ -126,3 +126,6 @@ path = "src/bin/seed_bench.rs"
 [[bin]]
 name = "chat-retention"
 path = "src/bin/chat_retention.rs"
+
+[features]
+standalone = []

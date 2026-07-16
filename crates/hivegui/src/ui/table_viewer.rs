@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use gpui::{
-    div, prelude::*, px, rgb, CursorStyle, Entity, MouseButton, ScrollHandle, SharedString,
-    Window, Context,
+    Context, CursorStyle, Entity, MouseButton, ScrollHandle, SharedString, Window, div, prelude::*,
+    px, rgb,
 };
+use gpui_component::ActiveTheme as _;
 use tracing::info;
 
 use crate::datasource::{ColumnInfo, DataSource, MysqlClient, Store, TableData, TableDataRequest};
@@ -183,14 +184,15 @@ impl TableViewer {
         self.data_source = Some(ds);
         self.store = Some(store);
         let new_idx = self.open_tables.len();
-        self.open_tables.push(OpenTable::new(table.clone(), database.clone()));
+        self.open_tables
+            .push(OpenTable::new(table.clone(), database.clone()));
         self.active_table_index = new_idx;
         cx.notify();
 
         self.open_tables[new_idx].loading = true;
         cx.notify();
 
-        let this = cx.weak_entity();
+        let _this = cx.weak_entity();
 
         cx.spawn(async move |this, cx| {
             let password = match store_clone.decrypt_password(&ds_clone.encrypted_password) {
@@ -283,7 +285,8 @@ impl TableViewer {
         if self.open_tables.is_empty() {
             self.active_table_index = 0;
         } else if idx <= self.active_table_index {
-            self.active_table_index = self.active_table_index
+            self.active_table_index = self
+                .active_table_index
                 .saturating_sub(1)
                 .min(self.open_tables.len() - 1);
         }
@@ -486,8 +489,7 @@ impl OpenTable {
             };
 
             let result =
-                MysqlClient::query_ddl(&ds.host, ds.port, &ds.username, &password, &db, &tbl)
-                    .await;
+                MysqlClient::query_ddl(&ds.host, ds.port, &ds.username, &password, &db, &tbl).await;
             match result {
                 Ok(ddl) => {
                     this.update(cx, |v, cx| {
@@ -634,20 +636,26 @@ impl Render for TableViewer {
                 .flex()
                 .flex_col()
                 .size_full()
-                .bg(rgb(0xffffff))
+                .bg(cx.theme().background)
+                .text_color(cx.theme().foreground)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .flex_grow()
                         .text_size(px(13.0))
                         .text_color(rgb(0x888888))
                         .child("请选择一个表"),
                 );
         }
 
-        let mut col = div().flex().flex_col().size_full().bg(rgb(0xffffff)).relative();
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .relative();
 
         col = col.child(self.render_table_tabs(cx));
 
@@ -657,7 +665,6 @@ impl Render for TableViewer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .flex_grow()
                     .text_size(px(13.0))
                     .text_color(rgb(0x888888))
                     .child("请选择一个表"),
@@ -737,7 +744,8 @@ impl Render for TableViewer {
                                     move |_, _, cx| {
                                         this.update(cx, |v, cx| {
                                             v.open_value_panel_from_context_menu(cx);
-                                        }).ok();
+                                        })
+                                        .ok();
                                     }
                                 }),
                         ),
@@ -764,12 +772,14 @@ impl Render for TableViewer {
                     .on_mouse_down(MouseButton::Left, {
                         let this_for_bg = this.clone();
                         move |_, _, cx| {
-                            this_for_bg.update(cx, |v, cx| {
-                                if let Some(t) = v.open_tables.get_mut(table_idx) {
-                                    t.dismiss_error();
-                                }
-                                cx.notify();
-                            }).ok();
+                            this_for_bg
+                                .update(cx, |v, cx| {
+                                    if let Some(t) = v.open_tables.get_mut(table_idx) {
+                                        t.dismiss_error();
+                                    }
+                                    cx.notify();
+                                })
+                                .ok();
                         }
                     })
                     .child(
@@ -794,40 +804,44 @@ impl Render for TableViewer {
                                         div()
                                             .text_size(px(18.0))
                                             .text_color(rgb(0xcc0000))
-                                            .child(title)
+                                            .child(title),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(14.0))
                                             .text_color(rgb(0x333333))
-                                            .child(message)
+                                            .child(message),
                                     )
                                     .child(
-                                        div()
-                                            .flex()
-                                            .justify_end()
-                                            .child(
-                                                div()
-                                                    .id("close-error-modal")
-                                                    .px(px(16.0))
-                                                    .py(px(8.0))
-                                                    .rounded(px(6.0))
-                                                    .bg(rgb(0x4a90d9))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(13.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("关闭")
-                                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                                        this_for_modal.update(cx, |v, cx| {
-                                                            if let Some(t) = v.open_tables.get_mut(table_idx) {
-                                                                t.dismiss_error();
-                                                            }
-                                                            cx.notify();
-                                                        }).ok();
-                                                    })
-                                            )
-                                    )
-                            )
+                                        div().flex().justify_end().child(
+                                            div()
+                                                .id("close-error-modal")
+                                                .px(px(16.0))
+                                                .py(px(8.0))
+                                                .rounded(px(6.0))
+                                                .bg(rgb(0x4a90d9))
+                                                .text_color(rgb(0xffffff))
+                                                .text_size(px(13.0))
+                                                .cursor(CursorStyle::PointingHand)
+                                                .child("关闭")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, cx| {
+                                                        this_for_modal
+                                                            .update(cx, |v, cx| {
+                                                                if let Some(t) =
+                                                                    v.open_tables.get_mut(table_idx)
+                                                                {
+                                                                    t.dismiss_error();
+                                                                }
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                    },
+                                                ),
+                                        ),
+                                    ),
+                            ),
                     ),
             );
         }
@@ -918,9 +932,27 @@ impl TableViewer {
             .py(px(4.0))
             .border_b_1()
             .border_color(rgb(0xe0e0e0))
-            .child(self.render_sub_tab(SharedString::from("columns-tab"), SharedString::from("列"), active_tab == &TableTab::Columns, TableTab::Columns, this.clone()))
-            .child(self.render_sub_tab(SharedString::from("ddl-tab"), SharedString::from("DDL"), active_tab == &TableTab::Ddl, TableTab::Ddl, this.clone()))
-            .child(self.render_sub_tab(SharedString::from("data-tab"), SharedString::from("数据"), active_tab == &TableTab::Data, TableTab::Data, this))
+            .child(self.render_sub_tab(
+                SharedString::from("columns-tab"),
+                SharedString::from("列"),
+                active_tab == &TableTab::Columns,
+                TableTab::Columns,
+                this.clone(),
+            ))
+            .child(self.render_sub_tab(
+                SharedString::from("ddl-tab"),
+                SharedString::from("DDL"),
+                active_tab == &TableTab::Ddl,
+                TableTab::Ddl,
+                this.clone(),
+            ))
+            .child(self.render_sub_tab(
+                SharedString::from("data-tab"),
+                SharedString::from("数据"),
+                active_tab == &TableTab::Data,
+                TableTab::Data,
+                this,
+            ))
     }
 
     fn render_sub_tab(
@@ -970,9 +1002,7 @@ impl TableViewer {
             })
             .collect();
 
-        let num_cols = column_labels
-            .len()
-            .max(t.columns.len().max(1));
+        let num_cols = column_labels.len().max(t.columns.len().max(1));
         let widths: Vec<f32> = (0..num_cols)
             .map(|i| t.column_widths.get(i).copied().unwrap_or(200.0))
             .collect();
@@ -981,7 +1011,6 @@ impl TableViewer {
             .id("columns-scroll")
             .flex()
             .flex_col()
-            .flex_grow()
             .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&t.scroll_handle);
@@ -1005,21 +1034,24 @@ impl TableViewer {
                 .text_size(px(12.0))
                 .text_color(rgb(0x333333));
 
-            let header = column_labels.iter().enumerate().fold(header, |acc, (i, label)| {
-                let w = widths[i];
-                let col_div = div()
-                    .id(format!("col-header-{i}"))
-                    .relative()
-                    .w(px(w))
-                    .flex_shrink_0()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .child(label.to_string());
+            let header = column_labels
+                .iter()
+                .enumerate()
+                .fold(header, |acc, (i, label)| {
+                    let w = widths[i];
+                    let col_div = div()
+                        .id(format!("col-header-{i}"))
+                        .relative()
+                        .w(px(w))
+                        .flex_shrink_0()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .child(label.to_string());
 
-                let resize_handle = self.render_resize_handle(i, w, this.clone());
+                    let resize_handle = self.render_resize_handle(i, w, this.clone());
 
-                acc.child(col_div.child(resize_handle))
-            });
+                    acc.child(col_div.child(resize_handle))
+                });
 
             scroll = scroll.child(header);
 
@@ -1030,17 +1062,20 @@ impl TableViewer {
                     .border_color(rgb(0xf5f5f5))
                     .text_size(px(12.0));
 
-                let row = row_data.into_iter().enumerate().fold(row, |acc, (i, text)| {
-                    let w = widths.get(i).copied().unwrap_or(200.0);
-                    acc.child(
-                        div()
-                            .w(px(w))
-                            .flex_shrink_0()
-                            .px(px(12.0))
-                            .py(px(5.0))
-                            .child(text),
-                    )
-                });
+                let row = row_data
+                    .into_iter()
+                    .enumerate()
+                    .fold(row, |acc, (i, text)| {
+                        let w = widths.get(i).copied().unwrap_or(200.0);
+                        acc.child(
+                            div()
+                                .w(px(w))
+                                .flex_shrink_0()
+                                .px(px(12.0))
+                                .py(px(5.0))
+                                .child(text),
+                        )
+                    });
 
                 scroll = scroll.child(row);
             }
@@ -1054,7 +1089,6 @@ impl TableViewer {
         div()
             .id("ddl-scroll")
             .flex()
-            .flex_grow()
             .overflow_y_scroll()
             .track_scroll(&t.scroll_handle)
             .child(
@@ -1093,15 +1127,16 @@ impl TableViewer {
                 .collect()
         });
 
-        info!("[DataTab] columns count: {:?}, rows count: {:?}",
+        info!(
+            "[DataTab] columns count: {:?}, rows count: {:?}",
             columns.as_ref().map(|c| c.len()),
-            rows.as_ref().map(|r| r.len()));
+            rows.as_ref().map(|r| r.len())
+        );
 
         let mut container = div()
             .id("data-tab-container")
             .flex()
             .flex_col()
-            .flex_grow()
             .size_full()
             .overflow_hidden();
 
@@ -1126,7 +1161,6 @@ impl TableViewer {
                     let grid_div = div()
                         .flex()
                         .flex_col()
-                        .flex_grow()
                         .overflow_hidden()
                         .child(self.render_data_grid(cols, row_data, t, this.clone()));
 
@@ -1135,7 +1169,6 @@ impl TableViewer {
                         .relative()
                         .flex()
                         .flex_row()
-                        .flex_grow()
                         .size_full()
                         .overflow_hidden()
                         .child(grid_div)
@@ -1189,28 +1222,31 @@ impl TableViewer {
             .collect();
 
         let row_number_width = 50.0;
-        let total_width: f32 = widths.iter().sum::<f32>() + row_number_width + (num_cols as f32 * 16.0);
+        let total_width: f32 =
+            widths.iter().sum::<f32>() + row_number_width + (num_cols as f32 * 16.0);
 
-        info!("[DataGrid] creating scroll container, rows: {}, cols: {}, total_width: {:.1}",
-            row_data.len(), num_cols, total_width);
+        info!(
+            "[DataGrid] creating scroll container, rows: {}, cols: {}, total_width: {:.1}",
+            row_data.len(),
+            num_cols,
+            total_width
+        );
 
         let mut scroll = div()
             .id("data-scroll")
             .relative()
             .flex()
             .flex_col()
-            .flex_grow()
             .size_full()
             .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&t.scroll_handle);
 
-        info!("[DataGrid] scroll container created with flex_grow, w(total_width), overflow_x_scroll, overflow_y_scroll");
+        info!(
+            "[DataGrid] scroll container created with flex_grow, w(total_width), overflow_x_scroll, overflow_y_scroll"
+        );
 
-        let mut content = div()
-            .flex()
-            .flex_col()
-            .w(px(total_width));
+        let mut content = div().flex().flex_col().w(px(total_width));
 
         let mut header = div()
             .flex()
@@ -1260,36 +1296,48 @@ impl TableViewer {
                 .border_b_1()
                 .border_color(rgb(0xf0f0f0))
                 .text_size(px(11.0))
-                .bg(if is_selected { rgb(0xd0e0f0) } else if is_hovered { rgb(0xf5f8fc) } else { rgb(0xffffff) })
+                .bg(if is_selected {
+                    rgb(0xd0e0f0)
+                } else if is_hovered {
+                    rgb(0xf5f8fc)
+                } else {
+                    rgb(0xffffff)
+                })
                 .cursor(CursorStyle::PointingHand)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    this_for_row.update(cx, |v, cx| {
-                        if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
-                            t.selected_row = Some(row_idx);
-                        }
-                        cx.notify();
-                    }).ok();
+                    this_for_row
+                        .update(cx, |v, cx| {
+                            if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
+                                t.selected_row = Some(row_idx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
                 })
                 .on_mouse_move({
                     let this_for_cell = this_for_cell.clone();
                     move |_, _, cx| {
-                        this_for_cell.update(cx, |v, cx| {
-                            if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
-                                t.hovered_row = Some(row_idx);
-                            }
-                            cx.notify();
-                        }).ok();
+                        this_for_cell
+                            .update(cx, |v, cx| {
+                                if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
+                                    t.hovered_row = Some(row_idx);
+                                }
+                                cx.notify();
+                            })
+                            .ok();
                     }
                 })
                 .on_mouse_up(MouseButton::Left, {
                     let this_for_cell = this_for_cell.clone();
                     move |_, _, cx| {
-                        this_for_cell.update(cx, |v, cx| {
-                            if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
-                                t.hovered_row = None;
-                            }
-                            cx.notify();
-                        }).ok();
+                        this_for_cell
+                            .update(cx, |v, cx| {
+                                if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
+                                    t.hovered_row = None;
+                                }
+                                cx.notify();
+                            })
+                            .ok();
                     }
                 });
 
@@ -1319,14 +1367,17 @@ impl TableViewer {
                         .on_mouse_down(MouseButton::Left, {
                             let this_for_cell = this_for_cell.clone();
                             move |_, _, cx| {
-                                this_for_cell.update(cx, |v, cx| {
-                                    if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
-                                        t.selected_row = Some(row_idx);
-                                        t.selected_cell_col = Some(i);
-                                        t.show_value_panel = true;
-                                    }
-                                    cx.notify();
-                                }).ok();
+                                this_for_cell
+                                    .update(cx, |v, cx| {
+                                        if let Some(t) = v.open_tables.get_mut(v.active_table_index)
+                                        {
+                                            t.selected_row = Some(row_idx);
+                                            t.selected_cell_col = Some(i);
+                                            t.show_value_panel = true;
+                                        }
+                                        cx.notify();
+                                    })
+                                    .ok();
                             }
                         })
                         .on_mouse_down(MouseButton::Right, {
@@ -1334,28 +1385,29 @@ impl TableViewer {
                             move |event, _, cx| {
                                 let x: f32 = event.position.x.into();
                                 let y: f32 = event.position.y.into();
-                                this_for_cell.update(cx, |v, cx| {
-                                    if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
-                                        t.selected_row = Some(row_idx);
-                                        t.selected_cell_col = Some(i);
-                                        t.context_menu_visible = true;
-                                        t.context_menu_row = Some(row_idx);
-                                        t.context_menu_col = Some(i);
-                                        t.context_menu_x = x;
-                                        t.context_menu_y = y;
-                                    }
-                                    cx.notify();
-                                }).ok();
+                                this_for_cell
+                                    .update(cx, |v, cx| {
+                                        if let Some(t) = v.open_tables.get_mut(v.active_table_index)
+                                        {
+                                            t.selected_row = Some(row_idx);
+                                            t.selected_cell_col = Some(i);
+                                            t.context_menu_visible = true;
+                                            t.context_menu_row = Some(row_idx);
+                                            t.context_menu_col = Some(i);
+                                            t.context_menu_x = x;
+                                            t.context_menu_y = y;
+                                        }
+                                        cx.notify();
+                                    })
+                                    .ok();
                             }
                         })
                         .child(
-                            div()
-                                .truncate()
-                                .child(
-                                    val.as_ref()
-                                        .map(|v| v.clone())
-                                        .unwrap_or(SharedString::from("NULL")),
-                                ),
+                            div().truncate().child(
+                                val.as_ref()
+                                    .map(|v| v.clone())
+                                    .unwrap_or(SharedString::from("NULL")),
+                            ),
                         ),
                 )
             });
@@ -1367,11 +1419,7 @@ impl TableViewer {
         scroll
     }
 
-    fn render_value_viewer(
-        &self,
-        t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
-    ) -> impl IntoElement {
+    fn render_value_viewer(&self, t: &OpenTable, this: gpui::WeakEntity<Self>) -> impl IntoElement {
         let Some(ref data) = t.table_data else {
             return div();
         };
@@ -1385,7 +1433,9 @@ impl TableViewer {
             return div();
         };
 
-        let col_name = data.columns.get(col_idx)
+        let col_name = data
+            .columns
+            .get(col_idx)
             .map(|c| SharedString::from(c.clone()))
             .unwrap_or(SharedString::from("-"));
         let type_name = t
@@ -1437,12 +1487,14 @@ impl TableViewer {
                                 let this = this.clone();
                                 move |_, _, cx| {
                                     this.update(cx, |v, cx| {
-                                        if let Some(t) = v.open_tables.get_mut(v.active_table_index) {
+                                        if let Some(t) = v.open_tables.get_mut(v.active_table_index)
+                                        {
                                             t.show_value_panel = false;
                                             t.selected_cell_col = None;
                                         }
                                         cx.notify();
-                                    }).ok();
+                                    })
+                                    .ok();
                                 }
                             }),
                     ),
@@ -1475,7 +1527,6 @@ impl TableViewer {
                 div()
                     .id("value-viewer-scroll")
                     .flex()
-                    .flex_grow()
                     .px(px(12.0))
                     .py(px(8.0))
                     .text_size(px(11.0))
@@ -1486,11 +1537,7 @@ impl TableViewer {
             )
     }
 
-    fn render_pagination(
-        &self,
-        t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
-    ) -> impl IntoElement {
+    fn render_pagination(&self, t: &OpenTable, this: gpui::WeakEntity<Self>) -> impl IntoElement {
         let current_page = t.current_page();
         let total_pages = t.total_pages();
         let page_size = t.page_size;
@@ -1540,7 +1587,11 @@ impl TableViewer {
                 .px(px(8.0))
                 .py(px(2.0))
                 .rounded(px(3.0))
-                .bg(if has_prev { rgb(0xe0e0e0) } else { rgb(0xf5f5f5) })
+                .bg(if has_prev {
+                    rgb(0xe0e0e0)
+                } else {
+                    rgb(0xf5f5f5)
+                })
                 .text_size(px(11.0))
                 .cursor(if has_prev {
                     CursorStyle::PointingHand
@@ -1568,8 +1619,16 @@ impl TableViewer {
                     .px(px(6.0))
                     .py(px(2.0))
                     .rounded(px(3.0))
-                    .bg(if is_current { rgb(0x4a90d9) } else { rgb(0xf0f0f0) })
-                    .text_color(if is_current { rgb(0xffffff) } else { rgb(0x333333) })
+                    .bg(if is_current {
+                        rgb(0x4a90d9)
+                    } else {
+                        rgb(0xf0f0f0)
+                    })
+                    .text_color(if is_current {
+                        rgb(0xffffff)
+                    } else {
+                        rgb(0x333333)
+                    })
                     .text_size(px(11.0))
                     .cursor(if is_current {
                         CursorStyle::Arrow
@@ -1595,7 +1654,11 @@ impl TableViewer {
                 .px(px(8.0))
                 .py(px(2.0))
                 .rounded(px(3.0))
-                .bg(if has_next { rgb(0xe0e0e0) } else { rgb(0xf5f5f5) })
+                .bg(if has_next {
+                    rgb(0xe0e0e0)
+                } else {
+                    rgb(0xf5f5f5)
+                })
                 .text_size(px(11.0))
                 .cursor(if has_next {
                     CursorStyle::PointingHand
@@ -1652,8 +1715,16 @@ impl TableViewer {
             .px(px(6.0))
             .py(px(2.0))
             .rounded(px(3.0))
-            .bg(if is_selected { rgb(0x4a90d9) } else { rgb(0xf0f0f0) })
-            .text_color(if is_selected { rgb(0xffffff) } else { rgb(0x333333) })
+            .bg(if is_selected {
+                rgb(0x4a90d9)
+            } else {
+                rgb(0xf0f0f0)
+            })
+            .text_color(if is_selected {
+                rgb(0xffffff)
+            } else {
+                rgb(0x333333)
+            })
             .text_size(px(11.0))
             .cursor(CursorStyle::PointingHand)
             .child(format!("{}", size))
@@ -1667,7 +1738,13 @@ impl TableViewer {
                                 t.current_offset = 0;
                                 t.page_cache.clear();
                                 t.selected_row = None;
-                                t.load_data_async(&v.data_source.clone().unwrap(), &v.store.as_ref().unwrap().read(cx).clone(), v.active_table_index, cx, true);
+                                t.load_data_async(
+                                    &v.data_source.clone().unwrap(),
+                                    &v.store.as_ref().unwrap().read(cx).clone(),
+                                    v.active_table_index,
+                                    cx,
+                                    true,
+                                );
                             }
                         })
                         .ok();

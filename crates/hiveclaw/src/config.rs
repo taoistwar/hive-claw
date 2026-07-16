@@ -9,7 +9,9 @@ use thiserror::Error;
 pub enum ConfigError {
     #[error("HIVECLAW_BIND_ADDR is not a valid socket address: {0}")]
     InvalidBindAddr(String),
-    #[error("HIVECLAW_LOG_LEVEL is not a valid level (expected one of trace, debug, info, warn, error): {0}")]
+    #[error(
+        "HIVECLAW_LOG_LEVEL is not a valid level (expected one of trace, debug, info, warn, error): {0}"
+    )]
     InvalidLogLevel(String),
 }
 
@@ -34,9 +36,7 @@ impl Config {
         let log_level = tracing::Level::from_str(&log_level_str)
             .map_err(|_| ConfigError::InvalidLogLevel(log_level_str))?;
 
-        let nanobot_config = env::var("HIVECLAW_NANOBOT_CONFIG")
-            .ok()
-            .map(PathBuf::from);
+        let nanobot_config = env::var("HIVECLAW_NANOBOT_CONFIG").ok().map(PathBuf::from);
         let nanobot_workspace = env::var("HIVECLAW_NANOBOT_WORKSPACE")
             .ok()
             .map(PathBuf::from);

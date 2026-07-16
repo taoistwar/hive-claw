@@ -490,10 +490,7 @@ impl AgentContext {
 
     /// Get a metadata value by key.
     pub fn get_metadata(&self, key: &str) -> Option<String> {
-        self.metadata
-            .read()
-            .ok()
-            .and_then(|m| m.get(key).cloned())
+        self.metadata.read().ok().and_then(|m| m.get(key).cloned())
     }
 
     // --- Messages Operations ---

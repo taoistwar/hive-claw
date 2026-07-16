@@ -62,8 +62,12 @@ struct PresetRaw {
     temperature: f32,
 }
 
-fn default_max_tokens() -> u32 { 2048 }
-fn default_temperature() -> f32 { 0.7 }
+fn default_max_tokens() -> u32 {
+    2048
+}
+fn default_temperature() -> f32 {
+    0.7
+}
 
 #[derive(Debug, Deserialize)]
 struct PresetsFile {

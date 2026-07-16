@@ -1,5 +1,7 @@
 //! User auth API (phone-based auth removed — users synced from cloud_user)
-use axum::Router;
 use crate::api::AppState;
+use axum::Router;
 
-pub fn router() -> Router<AppState> { Router::new() }
+pub fn router() -> Router<AppState> {
+    Router::new()
+}

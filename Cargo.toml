@@ -63,11 +63,13 @@ reqwest = { version = "0.12", default-features = false, features = [
 eventsource-stream = "0.2"
 
 # Desktop UI (HiveGUI). Pulled from Zed's main branch — gpui is not on crates.io.
+# Version pinned to match the `zed` submodule commit.
 # `gpui_platform` provides the `application()` constructor that picks the right
 # platform backend (macOS / Linux / web) without #[cfg] gating at the callsite.
-gpui = { git = "https://github.com/zed-industries/zed.git", branch = "main" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", branch = "main" }
-
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = ["font-kit"] , rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 # Serde / JSON
 base64 = "0.22"
 mime_guess = { version = "2", features = ["rev-mappings"] }

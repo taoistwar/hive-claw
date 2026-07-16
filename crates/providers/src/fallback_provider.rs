@@ -2,8 +2,8 @@
 //!
 //! Port of `nanobot.providers.fallback_provider`.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -171,7 +171,11 @@ impl FallbackProvider {
             .any(|v| FALLBACK_ERROR_TOKENS.iter().any(|t| v.contains(t)))
     }
 
-    async fn try_with_fallback_chat(&self, mut req: ChatRequest, has_streamed: Option<&AtomicBool>) -> LLMResponse {
+    async fn try_with_fallback_chat(
+        &self,
+        mut req: ChatRequest,
+        has_streamed: Option<&AtomicBool>,
+    ) -> LLMResponse {
         let primary_model = req
             .model
             .clone()
@@ -190,9 +194,7 @@ impl FallbackProvider {
 
             if let Some(flag) = has_streamed {
                 if flag.load(Ordering::SeqCst) {
-                    warn!(
-                        "Primary model error but content already streamed; skipping failover"
-                    );
+                    warn!("Primary model error but content already streamed; skipping failover");
                     return response;
                 }
             }
@@ -201,7 +203,13 @@ impl FallbackProvider {
                 warn!(
                     "Primary model '{}' returned non-fallbackable error: {}",
                     primary_model,
-                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>(),
+                    response
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(120)
+                        .collect::<String>(),
                 );
                 return response;
             }
@@ -244,7 +252,8 @@ impl FallbackProvider {
             } else {
                 info!(
                     "Fallback '{}' also failed, trying next fallback '{}'",
-                    self.fallback_presets[idx - 1].model, fallback_model,
+                    self.fallback_presets[idx - 1].model,
+                    fallback_model,
                 );
             }
 
@@ -290,8 +299,7 @@ impl FallbackProvider {
             last_response = Some(fallback_response);
             warn!(
                 "Fallback '{}' also failed: {}",
-                fallback_model,
-                fallback_content_preview,
+                fallback_model, fallback_content_preview,
             );
         }
 
@@ -329,7 +337,14 @@ impl FallbackProvider {
         let primary_is_available = self.primary_available().await;
 
         if primary_is_available {
-            let response = self.primary.chat_stream(req.clone(), Some(Arc::clone(&tracking_delta)), tracking_tool_call_delta.clone()).await;
+            let response = self
+                .primary
+                .chat_stream(
+                    req.clone(),
+                    Some(Arc::clone(&tracking_delta)),
+                    tracking_tool_call_delta.clone(),
+                )
+                .await;
             if response.finish_reason != "error" {
                 self.state.primary_failures.store(0, Ordering::SeqCst);
                 let mut tripped = self.state.primary_tripped_at.lock().await;
@@ -338,9 +353,7 @@ impl FallbackProvider {
             }
 
             if has_streamed.load(Ordering::SeqCst) {
-                warn!(
-                    "Primary model error but content already streamed; skipping failover"
-                );
+                warn!("Primary model error but content already streamed; skipping failover");
                 return response;
             }
 
@@ -348,7 +361,13 @@ impl FallbackProvider {
                 warn!(
                     "Primary model '{}' returned non-fallbackable error: {}",
                     primary_model,
-                    response.content.as_deref().unwrap_or("").chars().take(120).collect::<String>(),
+                    response
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(120)
+                        .collect::<String>(),
                 );
                 return response;
             }
@@ -389,7 +408,8 @@ impl FallbackProvider {
             } else {
                 info!(
                     "Fallback '{}' also failed, trying next fallback '{}'",
-                    self.fallback_presets[idx - 1].model, fallback_model,
+                    self.fallback_presets[idx - 1].model,
+                    fallback_model,
                 );
             }
 
@@ -409,7 +429,13 @@ impl FallbackProvider {
                 req.reasoning_effort = fallback.reasoning_effort.clone();
             }
 
-            let fallback_response = provider.chat_stream(req.clone(), Some(Arc::clone(&tracking_delta)), tracking_tool_call_delta.clone()).await;
+            let fallback_response = provider
+                .chat_stream(
+                    req.clone(),
+                    Some(Arc::clone(&tracking_delta)),
+                    tracking_tool_call_delta.clone(),
+                )
+                .await;
 
             req.model = original_model;
             req.max_tokens = original_max_tokens;
@@ -435,8 +461,7 @@ impl FallbackProvider {
             last_response = Some(fallback_response);
             warn!(
                 "Fallback '{}' also failed: {}",
-                fallback_model,
-                fallback_content_preview,
+                fallback_model, fallback_content_preview,
             );
         }
 
@@ -488,7 +513,10 @@ impl LLMProvider for FallbackProvider {
         on_tool_call_delta: Option<ToolCallDeltaCallback>,
     ) -> LLMResponse {
         if !self.has_fallbacks {
-            return self.primary.chat_stream(req, on_delta, on_tool_call_delta).await;
+            return self
+                .primary
+                .chat_stream(req, on_delta, on_tool_call_delta)
+                .await;
         }
 
         let has_streamed = Arc::new(AtomicBool::new(false));
@@ -517,6 +545,12 @@ impl LLMProvider for FallbackProvider {
             })
         };
 
-        self.try_with_fallback_stream(req, tracking_delta, Some(tracking_tool_call_delta), &has_streamed).await
+        self.try_with_fallback_stream(
+            req,
+            tracking_delta,
+            Some(tracking_tool_call_delta),
+            &has_streamed,
+        )
+        .await
     }
 }

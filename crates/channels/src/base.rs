@@ -233,7 +233,8 @@ pub async fn handle_inbound(
         meta.insert(WANTS_STREAM_KEY.into(), Value::Bool(true));
     }
 
-    let mut metadata_map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    let mut metadata_map: std::collections::HashMap<String, Value> =
+        std::collections::HashMap::new();
     for (k, v) in meta {
         metadata_map.insert(k, v);
     }

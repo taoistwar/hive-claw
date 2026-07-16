@@ -236,18 +236,13 @@ async fn get_external_games(
             return Err(AppError::Internal("External DB unavailable".to_string()).into_response());
         }
     };
-    let rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT id, name FROM cc_logic_game ORDER BY id",
-    )
-    .fetch_all(ext_pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("external game list: {}", e)).into_response())?;
+    let rows = sqlx::query_as::<_, (i64, String)>("SELECT id, name FROM cc_logic_game ORDER BY id")
+        .fetch_all(ext_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("external game list: {}", e)).into_response())?;
     let options: Vec<ExternalGameOption> = rows
         .into_iter()
-        .map(|(id, name)| ExternalGameOption {
-            id,
-            name,
-        })
+        .map(|(id, name)| ExternalGameOption { id, name })
         .collect();
 
     // 3. 写入缓存（best-effort，失败不阻塞响应）
@@ -270,7 +265,16 @@ async fn get_external_game_detail(
         }
     };
 
-    let row = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<serde_json::Value>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<serde_json::Value>,
+        ),
+    >(
         "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
          FROM cc_logic_game g
          LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id

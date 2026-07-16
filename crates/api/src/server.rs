@@ -16,8 +16,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use futures::stream::{self, Stream, StreamExt};
 use log::{error, info, warn};
 use regex::Regex;
@@ -957,7 +957,14 @@ mod tests {
         let url = format!("data:image/png;base64,{payload}");
         let saved = save_base64_data_url(&url, &dir).unwrap();
         assert!(saved.exists());
-        assert!(saved.extension().unwrap().to_str().unwrap().eq_ignore_ascii_case("png"));
+        assert!(
+            saved
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .eq_ignore_ascii_case("png")
+        );
         let bytes = fs::read(&saved).unwrap();
         assert!(bytes.len() > 10);
     }

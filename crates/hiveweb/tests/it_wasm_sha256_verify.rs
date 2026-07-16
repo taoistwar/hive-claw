@@ -227,25 +227,23 @@ async fn t167_tampered_wasm_detected_via_sha256_mismatch() -> anyhow::Result<()>
 #[tokio::test]
 async fn t167_sha256_mismatch_triggers_audit_log() -> anyhow::Result<()> {
     // Verify that the audit logging path works for sha256 mismatch errors
-    hiveweb::services::runtime_audit::record(
-        hiveweb::services::runtime_audit::AuditRecord {
-            request_id: Some("test-t167"),
-            session_id: None,
-            agent_id: Some(1),
-            plugin_id: Some(99999),
-            function_id: None,
-            capability: Some("sha256_verify"),
-            event_type: "plugin_invoke",
-            outcome: "error",
-            elapsed_ms: Some(10),
-            error_message: Some("WASM sha256 mismatch: S3 content tampered"),
-            payload_summary: Some(serde_json::json!({
-                "expected_sha256": "abc123...",
-                "actual_sha256": "def456...",
-                "s3_key": "plugins/test/1.0.0.wasm"
-            })),
-        },
-    );
+    hiveweb::services::runtime_audit::record(hiveweb::services::runtime_audit::AuditRecord {
+        request_id: Some("test-t167"),
+        session_id: None,
+        agent_id: Some(1),
+        plugin_id: Some(99999),
+        function_id: None,
+        capability: Some("sha256_verify"),
+        event_type: "plugin_invoke",
+        outcome: "error",
+        elapsed_ms: Some(10),
+        error_message: Some("WASM sha256 mismatch: S3 content tampered"),
+        payload_summary: Some(serde_json::json!({
+            "expected_sha256": "abc123...",
+            "actual_sha256": "def456...",
+            "s3_key": "plugins/test/1.0.0.wasm"
+        })),
+    });
 
     Ok(())
 }

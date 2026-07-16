@@ -435,12 +435,11 @@ pub async fn get_game_client_types(
     ext_pool: &MySqlPool,
     logic_game_id: i64,
 ) -> Result<Option<serde_json::Value>, AppError> {
-    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
-        "SELECT client_type FROM cc_logic_game_wide WHERE logic_game_id = ?",
-    )
-    .bind(logic_game_id)
-    .fetch_optional(ext_pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("game_client_types query: {e}")))?;
+    let row: Option<(Option<serde_json::Value>,)> =
+        sqlx::query_as("SELECT client_type FROM cc_logic_game_wide WHERE logic_game_id = ?")
+            .bind(logic_game_id)
+            .fetch_optional(ext_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("game_client_types query: {e}")))?;
     Ok(row.and_then(|r| r.0))
 }

@@ -21,6 +21,7 @@ release/
 Thumbs.db
 *.tmp
 /nanobot/
+/zed/
 
 llm_presets.toml
 

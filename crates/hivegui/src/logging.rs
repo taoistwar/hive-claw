@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Initialise structured logging to both a rotating JSON-lines file under
 /// `log_dir` and stderr when a TTY is attached. The returned `WorkerGuard`

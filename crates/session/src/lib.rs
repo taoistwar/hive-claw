@@ -10,7 +10,7 @@ pub use goal_state::{
 };
 pub use manager::{Session, SessionManager};
 pub use webui_turns::{
-    build_webui_goal_state, clean_generated_title, is_webui_session, mark_webui_session,
-    maybe_generate_webui_title, record_turn_start, clear_turn_start, title_inputs,
+    build_webui_goal_state, clean_generated_title, clear_turn_start, is_webui_session,
+    mark_webui_session, maybe_generate_webui_title, record_turn_start, title_inputs,
     websocket_turn_wall_started_at,
 };

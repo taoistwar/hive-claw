@@ -1,12 +1,11 @@
 /// DingTalk (钉钉) channel using Stream Mode.
 ///
 /// Stream Mode connects via WebSocket to receive events and uses HTTP API to send messages.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use log::{error, info, warn, debug};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
@@ -14,7 +13,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{handle_inbound, Channel, ChannelError, ChannelResult, TranscriptionSettings};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
 use crate::registry::ChannelEntry;
 
 /// DingTalk channel configuration.
@@ -56,8 +55,8 @@ impl DingTalkChannel {
         bus: MessageBus,
         transcription: TranscriptionSettings,
     ) -> Result<Self, String> {
-        let config: DingTalkConfig = serde_json::from_value(value)
-            .map_err(|e| format!("invalid dingtalk config: {}", e))?;
+        let config: DingTalkConfig =
+            serde_json::from_value(value).map_err(|e| format!("invalid dingtalk config: {}", e))?;
         Ok(Self {
             config,
             bus,
@@ -105,7 +104,9 @@ impl Channel for DingTalkChannel {
     async fn start(self: Arc<Self>) -> ChannelResult<()> {
         if self.config.client_id.is_empty() || self.config.client_secret.is_empty() {
             error!("DingTalk client_id/client_secret not configured");
-            return Err(ChannelError::Config("client_id and client_secret required".into()));
+            return Err(ChannelError::Config(
+                "client_id and client_secret required".into(),
+            ));
         }
 
         self.running.store(true, Ordering::SeqCst);

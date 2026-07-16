@@ -4,8 +4,8 @@
 
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use hiveclaw::http;

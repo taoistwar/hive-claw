@@ -10,10 +10,10 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 
-use crate::router::{handler, CommandContext, CommandRouter};
+use crate::router::{CommandContext, CommandRouter, handler};
 use crate::types::{DreamCommit, Loop, OutboundMessage, Session};
 
 // ---------------------------------------------------------------------------
@@ -90,9 +90,8 @@ pub fn format_dream_log_content(
         lines.push("```".to_string());
     } else {
         lines.push(String::new());
-        lines.push(
-            "Dream recorded this version, but there is no file diff to display.".to_string(),
-        );
+        lines
+            .push("Dream recorded this version, but there is no file diff to display.".to_string());
     }
     lines.join("\n")
 }
@@ -382,9 +381,11 @@ fn cmd_dream_log<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<Outbou
 
         if !git.is_initialized() {
             let msg = if store.get_last_dream_cursor() == 0 {
-                "Dream has not run yet. Run `/dream`, or wait for the next scheduled Dream cycle.".to_string()
+                "Dream has not run yet. Run `/dream`, or wait for the next scheduled Dream cycle."
+                    .to_string()
             } else {
-                "Dream history is not available because memory versioning is not initialized.".to_string()
+                "Dream history is not available because memory versioning is not initialized."
+                    .to_string()
             };
             return Some(reply_text(ctx, msg));
         }
@@ -398,9 +399,7 @@ fn cmd_dream_log<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<Outbou
                      Use `/dream-restore` to list recent versions, or \
                      `/dream-log` to inspect the latest one."
                 ),
-                Some((commit, diff)) => {
-                    format_dream_log_content(&commit, &diff, Some(sha))
-                }
+                Some((commit, diff)) => format_dream_log_content(&commit, &diff, Some(sha)),
             }
         } else {
             let commits = git.log(1);
@@ -414,9 +413,7 @@ fn cmd_dream_log<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<Outbou
     })
 }
 
-fn cmd_dream_restore<'a>(
-    ctx: &'a mut CommandContext,
-) -> BoxFuture<'a, Option<OutboundMessage>> {
+fn cmd_dream_restore<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMessage>> {
     Box::pin(async move {
         let loop_ = ctx.loop_.clone()?;
         let git = loop_.consolidator().store().git();
@@ -510,10 +507,7 @@ fn cmd_model<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<OutboundMe
 
         let parts: Vec<&str> = args.split_whitespace().collect();
         if parts.len() != 1 {
-            return Some(reply_text(
-                ctx,
-                "Usage: `/model [preset]`".to_string(),
-            ));
+            return Some(reply_text(ctx, "Usage: `/model [preset]`".to_string()));
         }
 
         let name = parts[0];
@@ -577,7 +571,11 @@ fn format_history_message(msg: &serde_json::Value) -> Option<String> {
     } else {
         content.to_string()
     };
-    let label = if role == "user" { "👤 You" } else { "🤖 Bot" };
+    let label = if role == "user" {
+        "👤 You"
+    } else {
+        "🤖 Bot"
+    };
     Some(format!("{}: {}", label, content))
 }
 
@@ -769,10 +767,7 @@ diff --git a/foo.md b/foo.md
 
     #[test]
     fn format_changed_files_empty_and_nonempty() {
-        assert_eq!(
-            format_changed_files(""),
-            "No tracked memory files changed."
-        );
+        assert_eq!(format_changed_files(""), "No tracked memory files changed.");
         let diff = "diff --git a/x.md b/x.md\n";
         assert_eq!(format_changed_files(diff), "`x.md`");
     }
@@ -808,8 +803,18 @@ diff --git a/foo.md b/foo.md
     fn help_text_has_all_commands() {
         let h = build_help_text();
         for cmd in [
-            "/new", "/stop", "/restart", "/status", "/model", "/history",
-            "/goal", "/dream", "/dream-log", "/dream-restore", "/pairing", "/help",
+            "/new",
+            "/stop",
+            "/restart",
+            "/status",
+            "/model",
+            "/history",
+            "/goal",
+            "/dream",
+            "/dream-log",
+            "/dream-restore",
+            "/pairing",
+            "/help",
         ] {
             assert!(h.contains(cmd), "help missing {cmd}");
         }

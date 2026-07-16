@@ -115,3 +115,13 @@ Workflow nodes resolve input via `input_mapping` (stored in `node_config.input_m
 - Branch naming: `NNN-feature-name` (e.g., `004-agent-runtime`)
 - Feature specs live in `specs/<NNN-feature-name>/` with spec.md, plan.md, tasks.md
 - Constitution at `.specify/memory/constitution.md` (v1.3.0) — authoritative governance
+
+<!-- SPECKIT START -->
+## Current Feature
+
+**HiveGUI Standalone Mode** (011-hivegui-standalone-mode)
+- Spec: `specs/011-hivegui-standalone-mode/spec.md`
+- Plan: `specs/011-hivegui-standalone-mode/plan.md`
+- Tasks: `specs/011-hivegui-standalone-mode/tasks.md` (pending)
+- Branch: `260517-hivegui-standalone-mode`
+<!-- SPECKIT END -->

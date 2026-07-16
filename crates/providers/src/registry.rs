@@ -681,8 +681,6 @@ pub fn find_by_model(model_name: &str) -> Option<&'static ProviderSpec> {
     })
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

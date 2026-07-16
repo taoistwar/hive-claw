@@ -1,1 +1,3 @@
-{"feature_directory":"specs/010-sensitive-word-filter"}
+{
+  "feature_directory": "specs/011-hivegui-standalone-mode"
+}

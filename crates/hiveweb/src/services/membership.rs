@@ -42,12 +42,10 @@ pub async fn get_cloud_user_info(
     pool: &MySqlPool,
     user_id: i64,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT uid, nickname FROM cloud_user WHERE ID = ?",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as::<_, (String, String)>("SELECT uid, nickname FROM cloud_user WHERE ID = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
 /// Small helpers for passing the active LLM provider/model together.
-
 use std::sync::Arc;
 
 /// A bundled LLM provider and model reference.
@@ -23,7 +22,10 @@ impl LLMRuntime {
 pub type LLMRuntimeResolver = Arc<dyn Fn() -> LLMRuntime + Send + Sync>;
 
 /// Create a static LLMRuntime resolver.
-pub fn static_llm_runtime(provider: impl Into<String>, model: impl Into<String>) -> LLMRuntimeResolver {
+pub fn static_llm_runtime(
+    provider: impl Into<String>,
+    model: impl Into<String>,
+) -> LLMRuntimeResolver {
     let runtime = LLMRuntime::new(provider, model);
     Arc::new(move || runtime.clone())
 }

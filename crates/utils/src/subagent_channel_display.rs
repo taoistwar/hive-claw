@@ -22,7 +22,9 @@ pub fn scrub_subagent_announce_body(content: &str) -> String {
 
     let lower = stripped.to_lowercase();
 
-    let ri = lower.find("\nresult:\n").or_else(|| lower.find("\nresult:"));
+    let ri = lower
+        .find("\nresult:\n")
+        .or_else(|| lower.find("\nresult:"));
 
     if ri.is_none() {
         if !header.is_empty() {

@@ -2,7 +2,6 @@
 ///
 /// AgentLoop uses these without importing a concrete channel plugin; only
 /// `channel == "websocket"` messages are affected.
-
 use std::collections::HashMap;
 
 use regex::Regex;
@@ -50,7 +49,10 @@ pub fn clean_generated_title(raw: Option<&str>) -> String {
     static RE: once_cell::sync::Lazy<Regex> =
         once_cell::sync::Lazy::new(|| Regex::new(r"(?i)^\s*(title|标题)\s*[:：]\s*").unwrap());
     let mut text = RE.replace(text, "").to_string();
-    text = text.trim().trim_matches(|c: char| matches!(c, '"' | '\'' | '`')).to_string();
+    text = text
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`'))
+        .to_string();
 
     // Collapse whitespace.
     static WS_RE: once_cell::sync::Lazy<Regex> =
@@ -60,7 +62,8 @@ pub fn clean_generated_title(raw: Option<&str>) -> String {
     // Strip trailing punctuation.
     let text = text.trim_end_matches(|c: char| {
         matches!(
-            c, '。' | '.' | '!' | '！' | '?' | '？' | ',' | '，' | ';' | '；' | ':'
+            c,
+            '。' | '.' | '!' | '！' | '?' | '？' | ',' | '，' | ';' | '；' | ':'
         )
     });
 
@@ -167,9 +170,5 @@ pub async fn clear_turn_start(chat_id: &str) {
 /// Build goal state blob for websocket session metadata.
 pub fn build_webui_goal_state(session: &Session) -> Option<Value> {
     let blob = goal_state_ws_blob(Some(&session.metadata));
-    if blob.is_null() {
-        None
-    } else {
-        Some(blob)
-    }
+    if blob.is_null() { None } else { Some(blob) }
 }

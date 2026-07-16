@@ -550,7 +550,9 @@ pub struct ChildAgent {
 // 任何修改 agent / agent_tools / agent_skills / agent_permissions 的写路径
 // 都要调 `invalidate_content_cache` 同步失效。
 
-fn agent_content_key(agent_id: i64) -> String { format!("agent:content:{agent_id}") }
+fn agent_content_key(agent_id: i64) -> String {
+    format!("agent:content:{agent_id}")
+}
 
 fn agent_content_ttl_secs() -> u64 {
     std::env::var("AGENT_CACHE_TTL_SECS")
@@ -568,7 +570,9 @@ pub async fn invalidate_content_cache(redis: &redis::Client, agent_id: i64) {
                 tracing::warn!(error=%e, agent_id, "agent content cache invalidate failed");
             }
         }
-        Err(e) => tracing::warn!(error=%e, agent_id, "agent content cache invalidate (connect) failed"),
+        Err(e) => {
+            tracing::warn!(error=%e, agent_id, "agent content cache invalidate (connect) failed")
+        }
     }
 }
 
@@ -600,8 +604,8 @@ pub async fn fetch_content(
             .fetch_optional(pool)
             .await
             .map_err(|e| AppError::Internal(format!("agent fetch: {e}")))?;
-    let (identifier, mut system_prompt, model_preset) = row
-        .ok_or_else(|| AppError::NotFound(format!("agent id={agent_id} not found")))?;
+    let (identifier, mut system_prompt, model_preset) =
+        row.ok_or_else(|| AppError::NotFound(format!("agent id={agent_id} not found")))?;
 
     // Skill markdown 拼到 system prompt
     let skills: Vec<(String,)> = sqlx::query_as(
@@ -758,23 +762,42 @@ async fn read_content_cache(redis: &redis::Client, key: &str) -> Option<AgentCon
     };
     let cached: Option<String> = match redis::AsyncCommands::get(&mut conn, key).await {
         Ok(v) => v,
-        Err(e) => { tracing::warn!(error=%e, key, "agent content cache get failed"); return None; }
+        Err(e) => {
+            tracing::warn!(error=%e, key, "agent content cache get failed");
+            return None;
+        }
     };
-    let Some(json) = cached else { return None; };
+    let Some(json) = cached else {
+        return None;
+    };
     match serde_json::from_str::<AgentContent>(&json) {
         Ok(c) => Some(c),
-        Err(e) => { tracing::warn!(error=%e, key, "agent content cache deserialize failed"); None }
+        Err(e) => {
+            tracing::warn!(error=%e, key, "agent content cache deserialize failed");
+            None
+        }
     }
 }
 
-async fn write_content_cache(redis: &redis::Client, key: &str, content: &AgentContent, agent_id: i64) {
+async fn write_content_cache(
+    redis: &redis::Client,
+    key: &str,
+    content: &AgentContent,
+    agent_id: i64,
+) {
     let json = match serde_json::to_string(content) {
         Ok(j) => j,
-        Err(e) => { tracing::warn!(error=%e, agent_id, "agent content cache serialize failed"); return; }
+        Err(e) => {
+            tracing::warn!(error=%e, agent_id, "agent content cache serialize failed");
+            return;
+        }
     };
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
-        Err(e) => { tracing::warn!(error=%e, agent_id, "agent content cache connect (write) failed"); return; }
+        Err(e) => {
+            tracing::warn!(error=%e, agent_id, "agent content cache connect (write) failed");
+            return;
+        }
     };
     let ttl = agent_content_ttl_secs();
     let res: redis::RedisResult<()> = redis::AsyncCommands::set_ex(&mut conn, key, json, ttl).await;

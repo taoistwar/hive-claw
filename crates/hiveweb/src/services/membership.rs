@@ -157,7 +157,7 @@ pub async fn query_disk_balance(
         r#"SELECT user_id, sum(size/1024/1024/1024) as disk_total_size, MAX(end_time) as disk_end_time, status as disk_status
 from cc_user_disk
 where user_id=? and end_time > UNIX_TIMESTAMP()*1000 and start_time < UNIX_TIMESTAMP()*1000 AND status != 'EXPIRED'
-group by user_id"#,
+group by user_id, status"#,
     )
     .bind(user_id)
     .fetch_optional(ext_pool)

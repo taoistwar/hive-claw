@@ -8,7 +8,7 @@
 //!   cargo run -p hiveweb --bin api-test -- GET /api/quota '{"user_id":448}' https://cca.haimacloud.com/
 //!   cargo run -p hiveweb --bin api-test -- POST /api/newsession '{"user_id":448}'
 //!   cargo run -p hiveweb --bin api-test -- POST /api/messages '{"user_id":448,"channel":"app","client_type":"android"}'
-//!   cargo run -p hiveweb --bin api-test -- POST /api/assistant '{"user_id":448,"message":"你好","channel":"app","client_type":"android","client_version":"1.0.0"}'
+//!   cargo run -p hiveweb --bin api-test -- POST /api/assistant '{"user_id":448,"message":"你好","channel":"app","client_type":"android","client_version":"1.0.0"}' https://cca.haimacloud.com/
 //!   cargo run -p hiveweb --bin api-test -- POST /api/recommended-games/top '{"user_id":"448","channel":"app","client_type":"android","client_version":"1.0.0"}'
 //!   cargo run -p hiveweb --bin api-test -- POST /api/recommended-games/execute '{"user_id":"448","game_id":"1001","channel":"app","client_type":"android","client_version":"1.0.0"}'
 //!
@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
 
     let port = env::var("HIVEWEB_PORT").unwrap_or_else(|_| "3000".into());
     let secret = env::var("ASSISTANT_SECRET").unwrap_or_default();
+    println!("secret='{}'", secret);
     let base_url = resolve_base_url(&host, &port)?;
 
     let method_upper = method.to_uppercase();
@@ -78,6 +79,9 @@ async fn main() -> anyhow::Result<()> {
 
     let client = reqwest::Client::new();
     tracing::info!(method = %method_upper, %path, %base_url, %sign_body, "sending request");
+
+
+    println!("url:{}\nbody:{}", &url, &body);
 
     let resp = match method_upper.as_str() {
         "GET" => client.get(&url).send().await?,
@@ -139,7 +143,10 @@ fn make_sign(secret: &str, path: &str, body: &str) -> String {
         return String::new();
     }
     let sign_string = format!("{}{}?body={}", secret, path, body);
-    format!("{:x}", md5::compute(sign_string.as_bytes()))
+    let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
+    println!("sign data='{}'", sign_string);
+    println!("sign hash='{}'", sign);
+    return sign
 }
 
 #[cfg(test)]
@@ -148,6 +155,14 @@ mod tests {
 
     #[test]
     fn resolve_base_url_preserves_https_origin() {
+        assert_eq!(
+            resolve_base_url("https://cca.haimacloud.com/", "3000").unwrap(),
+            "https://cca.haimacloud.com"
+        );
+    }
+
+    #[test]
+    fn test_get_quota() {
         assert_eq!(
             resolve_base_url("https://cca.haimacloud.com/", "3000").unwrap(),
             "https://cca.haimacloud.com"

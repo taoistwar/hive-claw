@@ -1,4 +1,13 @@
-use crate::datasource::{Store, entity_store::Plugin};
+use std::path::PathBuf;
+
+use sha2::{Digest, Sha256};
+
+use crate::datasource::{Store, entity_store::Plugin, wasm_exports::extract_wasm_exports};
+use crate::ui::management_style::{
+    ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
+    list_container, list_header, list_header_cell, list_row, management_modal_layer,
+    management_modal_panel, management_modal_scroll,
+};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
@@ -14,23 +23,22 @@ pub struct PluginView {
     page_size: i64,
     total_count: i64,
     show_form: bool,
+    form_scroll: ScrollHandle,
     editing_id: Option<i64>,
     form_identifier: String,
     form_name: String,
     form_description: String,
-    form_runtime: String,
     form_version: String,
-    form_s3_key: String,
     form_sha256: String,
     form_size_bytes: String,
+    form_wasm_path: Option<PathBuf>,
+    form_manifest: Option<String>,
     error_message: Option<String>,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
     description_input: Option<Entity<InputState>>,
-    runtime_input: Option<Entity<InputState>>,
     version_input: Option<Entity<InputState>>,
-    s3_key_input: Option<Entity<InputState>>,
     sha256_input: Option<Entity<InputState>>,
     size_bytes_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
@@ -47,29 +55,103 @@ impl PluginView {
             page_size: 20,
             total_count: 0,
             show_form: false,
+            form_scroll: ScrollHandle::default(),
             editing_id: None,
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
-            form_runtime: String::new(),
             form_version: String::new(),
-            form_s3_key: String::new(),
             form_sha256: String::new(),
             form_size_bytes: String::new(),
+            form_wasm_path: None,
+            form_manifest: None,
             error_message: None,
             confirm_delete_id: None,
             identifier_input: None,
             name_input: None,
             description_input: None,
-            runtime_input: None,
             version_input: None,
-            s3_key_input: None,
             sha256_input: None,
             size_bytes_input: None,
             search_input: None,
         };
         v.load(cx);
         v
+    }
+
+    fn inspect_wasm(path: &PathBuf) -> anyhow::Result<(String, i64, String)> {
+        let data = std::fs::read(path)?;
+        let size = data.len() as i64;
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let hash = hasher.finalize();
+        let hex = hash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        let exports = extract_wasm_exports(&data)?;
+        let manifest = serde_json::json!({ "exports": exports }).to_string();
+        Ok((hex, size, manifest))
+    }
+
+    fn pick_wasm_file(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择 WASM 文件".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = receiver.await;
+            match result {
+                Ok(Ok(Some(mut paths))) => {
+                    if let Some(path) = paths.pop() {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if ext.to_lowercase() != "wasm" {
+                            this.update(cx, |v, cx| {
+                                v.error_message = Some("请选择 .wasm 文件".into());
+                                cx.notify();
+                            })
+                            .ok();
+                            return;
+                        }
+                        match Self::inspect_wasm(&path) {
+                            Ok((sha256, size, manifest)) => {
+                                this.update(cx, |v, cx| {
+                                    v.form_wasm_path = Some(path.clone());
+                                    v.form_sha256 = sha256;
+                                    v.form_size_bytes = size.to_string();
+                                    v.form_manifest = Some(manifest);
+                                    // Null out inputs so render re-inits them with new values
+                                    v.sha256_input = None;
+                                    v.size_bytes_input = None;
+                                    v.error_message = None;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                            Err(e) => {
+                                this.update(cx, |v, cx| {
+                                    v.error_message = Some(format!("读取文件失败: {}", e));
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                        }
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    this.update(cx, |v, cx| {
+                        v.error_message = Some(format!("文件选择失败: {}", e));
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(_) => {}
+            }
+        })
+        .detach();
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -110,20 +192,10 @@ impl PluginView {
                 .placeholder("输入描述（可选）")
                 .default_value(&self.form_description)
         }));
-        self.runtime_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("如 python, nodejs")
-                .default_value(&self.form_runtime)
-        }));
         self.version_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("如 1.0.0")
                 .default_value(&self.form_version)
-        }));
-        self.s3_key_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("S3 存储键")
-                .default_value(&self.form_s3_key)
         }));
         self.sha256_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -143,11 +215,11 @@ impl PluginView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_runtime.clear();
         self.form_version.clear();
-        self.form_s3_key.clear();
         self.form_sha256.clear();
         self.form_size_bytes.clear();
+        self.form_wasm_path = None;
+        self.form_manifest = None;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
@@ -158,25 +230,24 @@ impl PluginView {
         self.form_identifier = item.identifier.clone();
         self.form_name = item.name.clone();
         self.form_description = item.description.clone().unwrap_or_default();
-        self.form_runtime = item.runtime.clone();
         self.form_version = item.version.clone();
-        self.form_s3_key = item.s3_key.clone();
         self.form_sha256 = item.sha256.clone();
         self.form_size_bytes = item.size_bytes.to_string();
+        self.form_wasm_path = None;
+        self.form_manifest = item.manifest.clone();
         self.error_message = None;
         self.init_inputs(window, cx);
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
         self.error_message = None;
         self.identifier_input = None;
         self.name_input = None;
         self.description_input = None;
-        self.runtime_input = None;
         self.version_input = None;
-        self.s3_key_input = None;
         self.sha256_input = None;
         self.size_bytes_input = None;
         cx.notify();
@@ -192,32 +263,29 @@ impl PluginView {
         if let Some(ref inp) = self.description_input {
             self.form_description = inp.read(cx).value().to_string();
         }
-        if let Some(ref inp) = self.runtime_input {
-            self.form_runtime = inp.read(cx).value().to_string();
-        }
         if let Some(ref inp) = self.version_input {
             self.form_version = inp.read(cx).value().to_string();
         }
-        if let Some(ref inp) = self.s3_key_input {
-            self.form_s3_key = inp.read(cx).value().to_string();
-        }
-        if let Some(ref inp) = self.sha256_input {
-            self.form_sha256 = inp.read(cx).value().to_string();
-        }
-        if let Some(ref inp) = self.size_bytes_input {
-            self.form_size_bytes = inp.read(cx).value().to_string();
-        }
         if self.form_identifier.trim().is_empty()
             || self.form_name.trim().is_empty()
-            || self.form_runtime.trim().is_empty()
             || self.form_version.trim().is_empty()
-            || self.form_s3_key.trim().is_empty()
             || self.form_sha256.trim().is_empty()
         {
             self.error_message = Some("必填字段不能为空".into());
             cx.notify();
             return;
         }
+        // For new plugins, require WASM file selection
+        if self.editing_id.is_none() && self.form_wasm_path.is_none() {
+            self.error_message = Some("请先选择 WASM 文件".into());
+            cx.notify();
+            return;
+        }
+        // Auto-generate S3 key from identifier + version
+        let s3k = format!(
+            "plugins/{}/{}.wasm",
+            self.form_identifier, self.form_version
+        );
         let size_bytes: i64 = self.form_size_bytes.parse().unwrap_or(0);
         let store = self.store.read(cx).clone();
         let idf = self.form_identifier.clone();
@@ -227,10 +295,10 @@ impl PluginView {
         } else {
             Some(self.form_description.clone())
         };
-        let rt = self.form_runtime.clone();
+        let rt = "extism".to_string();
         let ver = self.form_version.clone();
-        let s3k = self.form_s3_key.clone();
         let sha = self.form_sha256.clone();
+        let manifest = self.form_manifest.clone();
 
         if let Some(eid) = self.editing_id {
             cx.spawn(async move |this, cx| {
@@ -240,7 +308,7 @@ impl PluginView {
                     idf,
                     name,
                     desc,
-                    None,
+                    manifest,
                     rt,
                     ver,
                     None,
@@ -270,13 +338,14 @@ impl PluginView {
             })
             .detach();
         } else {
+            let manifest = self.form_manifest.clone();
             cx.spawn(async move |this, cx| {
                 match Plugin::create(
                     store.pool(),
                     idf,
                     name,
                     desc,
-                    None,
+                    manifest,
                     rt,
                     ver,
                     None,
@@ -368,12 +437,15 @@ impl Render for PluginView {
                 .detach();
             }
         }
+        let style = ManagementStyle::current(cx);
+        let theme = cx.theme();
+
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(theme.background)
+            .text_color(theme.foreground)
             .child(
                 div()
                     .flex()
@@ -381,7 +453,7 @@ impl Render for PluginView {
                     .justify_between()
                     .p(px(16.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(theme.border)
                     .child(
                         div()
                             .text_size(px(18.0))
@@ -389,22 +461,19 @@ impl Render for PluginView {
                             .child("插件管理"),
                     )
                     .child(
-                        div()
-                            .id("add-btn")
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(0x4a90d9))
-                            .text_color(rgb(0xffffff))
-                            .text_size(px(13.0))
-                            .cursor(CursorStyle::PointingHand)
-                            .child("+ 添加插件")
-                            .on_mouse_down(MouseButton::Left, {
-                                let t = cx.weak_entity();
-                                move |_, window, cx| {
-                                    t.update(cx, |v, cx| v.show_add_form(window, cx)).ok();
-                                }
-                            }),
+                        action_button(
+                            "add-btn",
+                            "+ 添加插件",
+                            ActionRole::Main,
+                            ActionSize::Page,
+                            style,
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let t = cx.weak_entity();
+                            move |_, window, cx| {
+                                t.update(cx, |v, cx| v.show_add_form(window, cx)).ok();
+                            }
+                        }),
                     ),
             )
             .child(
@@ -413,7 +482,7 @@ impl Render for PluginView {
                     .items_center()
                     .p(px(12.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(theme.border)
                     .child(
                         div()
                             .flex()
@@ -432,6 +501,7 @@ impl Render for PluginView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scrollbar()
                     .p(px(16.0))
                     .child(if self.items.is_empty() {
@@ -440,173 +510,88 @@ impl Render for PluginView {
                             .items_center()
                             .justify_center()
                             .h_full()
-                            .text_color(rgb(0x999999))
+                            .text_color(style.list.muted_foreground)
                             .text_size(px(14.0))
                             .child("暂无数据")
                     } else {
                         let col_widths = [px(60.0), px(120.0), px(100.0), px(120.0), px(120.0)];
-                        div()
-                            .flex()
-                            .flex_col()
-                            .border_1()
-                            .border_color(rgb(0xe0e0e0))
-                            .rounded(px(4.0))
-                            .overflow_hidden()
+                        list_container(style)
                             .child(
-                                div()
-                                    .flex()
-                                    .bg(rgb(0xf5f5f5))
-                                    .border_b_1()
-                                    .border_color(rgb(0xe0e0e0))
+                                list_header(style)
+                                    .child(list_header_cell(Some(col_widths[0]), style).child("ID"))
                                     .child(
-                                        div()
-                                            .w(col_widths[0])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("ID"),
+                                        list_header_cell(Some(col_widths[1]), style).child("名称"),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[1])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("名称"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[2])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
+                                        list_header_cell(Some(col_widths[2]), style)
                                             .child("Identifier"),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[3])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
+                                        list_header_cell(Some(col_widths[3]), style)
                                             .child("Runtime/Version"),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[4])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("操作"),
+                                        list_header_cell(Some(col_widths[4]), style).child("操作"),
                                     ),
                             )
                             .children(self.items.iter().map(|item| {
                                 let id = item.id;
                                 let ic = item.clone();
-                                div()
-                                    .flex()
-                                    .border_b_1()
-                                    .border_color(rgb(0xf0f0f0))
-                                    .bg(rgb(0xffffff))
+                                list_row(style)
                                     .child(
-                                        div()
-                                            .w(col_widths[0])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
+                                        list_cell(Some(col_widths[0]), style)
                                             .child(format!("{}", item.id)),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[1])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
+                                        list_cell(Some(col_widths[1]), style)
                                             .child(item.name.clone()),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[2])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
-                                            .truncate()
+                                        list_cell(Some(col_widths[2]), style)
                                             .child(item.identifier.clone()),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[3])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
+                                        list_cell(Some(col_widths[3]), style)
                                             .child(format!("{} v{}", item.runtime, item.version)),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[4])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .flex()
-                                            .gap(px(4.0))
+                                        list_actions(None, style)
                                             .child(
-                                                div()
-                                                    .id(("edit", id as u64))
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0x5cb85c))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("编辑")
-                                                    .on_mouse_down(MouseButton::Left, {
-                                                        let t = cx.weak_entity();
-                                                        move |_, window, cx| {
-                                                            t.update(cx, |v, cx| {
-                                                                v.show_edit_form(
-                                                                    window,
-                                                                    ic.clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    }),
+                                                action_button(
+                                                    ("edit", id as u64),
+                                                    "编辑",
+                                                    ActionRole::Edit,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.show_edit_form(window, ic.clone(), cx)
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             )
                                             .child(
-                                                div()
-                                                    .id(("del", id as u64))
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0xd9534f))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("删除")
-                                                    .on_mouse_down(MouseButton::Left, {
-                                                        let t = cx.weak_entity();
-                                                        move |_, _, cx| {
-                                                            t.update(cx, |v, cx| {
-                                                                v.confirm_delete_id = Some(id);
-                                                                cx.notify();
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    }),
+                                                action_button(
+                                                    ("del", id as u64),
+                                                    "删除",
+                                                    ActionRole::Delete,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.confirm_delete_id = Some(id);
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             ),
                                     )
                             }))
@@ -620,81 +605,71 @@ impl Render for PluginView {
                     .justify_between()
                     .p(px(12.0))
                     .border_t_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(theme.border)
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x666666))
+                            .text_color(style.list.muted_foreground)
                             .child(format!("共 {} 条", self.total_count)),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(px(8.0))
+                            .items_center()
                             .child(
-                                div()
-                                    .id("prev")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(if self.current_page > 0 {
-                                        rgb(0x4a90d9)
+                                action_button(
+                                    "prev",
+                                    "上一页",
+                                    if self.current_page > 0 {
+                                        ActionRole::Neutral
                                     } else {
-                                        rgb(0xcccccc)
-                                    })
-                                    .text_color(rgb(0xffffff))
-                                    .text_size(px(13.0))
-                                    .cursor(if self.current_page > 0 {
-                                        CursorStyle::PointingHand
-                                    } else {
-                                        CursorStyle::Arrow
-                                    })
-                                    .child("上一页")
-                                    .on_mouse_down(MouseButton::Left, {
+                                        ActionRole::Disabled
+                                    },
+                                    ActionSize::Page,
+                                    style,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
                                         let t = cx.weak_entity();
                                         move |_, _, cx| {
                                             t.update(cx, |v, cx| v.prev_page(cx)).ok();
                                         }
-                                    }),
+                                    },
+                                ),
                             )
-                            .child(div().text_size(px(13.0)).child(format!(
-                                "第 {} / {} 页",
-                                self.current_page + 1,
-                                tp.max(1)
-                            )))
                             .child(
                                 div()
-                                    .id("next")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            rgb(0x4a90d9)
-                                        } else {
-                                            rgb(0xcccccc)
-                                        },
-                                    )
-                                    .text_color(rgb(0xffffff))
                                     .text_size(px(13.0))
-                                    .cursor(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            CursorStyle::PointingHand
-                                        } else {
-                                            CursorStyle::Arrow
-                                        },
-                                    )
-                                    .child("下一页")
-                                    .on_mouse_down(MouseButton::Left, {
+                                    .text_color(style.list.muted_foreground)
+                                    .child(format!(
+                                        "第 {} / {} 页",
+                                        self.current_page + 1,
+                                        tp.max(1)
+                                    )),
+                            )
+                            .child(
+                                action_button(
+                                    "next",
+                                    "下一页",
+                                    if (self.current_page + 1) * self.page_size < self.total_count {
+                                        ActionRole::Neutral
+                                    } else {
+                                        ActionRole::Disabled
+                                    },
+                                    ActionSize::Page,
+                                    style,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
                                         let t = cx.weak_entity();
                                         move |_, _, cx| {
                                             t.update(cx, |v, cx| v.next_page(cx)).ok();
                                         }
-                                    }),
+                                    },
+                                ),
                             ),
                     ),
             )
@@ -702,11 +677,7 @@ impl Render for PluginView {
                 let identifier_input = self.identifier_input.clone().unwrap();
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
-                let runtime_input = self.runtime_input.clone().unwrap();
                 let version_input = self.version_input.clone().unwrap();
-                let s3_key_input = self.s3_key_input.clone().unwrap();
-                let sha256_input = self.sha256_input.clone().unwrap();
-                let size_bytes_input = self.size_bytes_input.clone().unwrap();
                 this.child(
                     div()
                         .absolute()
@@ -714,7 +685,7 @@ impl Render for PluginView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgb(0x000000))
+                        .bg(theme.overlay)
                         .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
@@ -725,103 +696,243 @@ impl Render for PluginView {
                         }),
                 )
                 .child(
-                    div()
-                        .absolute()
-                        .top(px(80.0))
-                        .left(px(50.0))
-                        .right(px(50.0))
-                        .max_w(px(550.0))
-                        .max_h(px(600.0))
-                        .bg(rgb(0xffffff))
-                        .rounded(px(12.0))
-                        .shadow_lg()
-                        .border_1()
-                        .border_color(rgb(0xdddddd))
-                        .p(px(24.0))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(12.0))
-                                .overflow_y_scrollbar()
-                                .child(
-                                    div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(if self.editing_id.is_some() {
-                                            "编辑插件"
-                                        } else {
-                                            "添加插件"
-                                        }),
-                                )
-                                .child(form_field("Identifier *", identifier_input))
-                                .child(form_field("名称 *", name_input))
-                                .child(form_field("描述", description_input))
-                                .child(form_field("Runtime *", runtime_input))
-                                .child(form_field("Version *", version_input))
-                                .child(form_field("S3 Key *", s3_key_input))
-                                .child(form_field("SHA256 *", sha256_input))
-                                .child(form_field("Size (bytes) *", size_bytes_input))
-                                .when_some(self.error_message.as_ref(), |this, err| {
-                                    this.child(
+                    management_modal_panel(
+                        management_modal_layer(px(550.0)),
+                        theme.popover,
+                        theme.foreground,
+                        theme.border,
+                    )
+                    .debug_selector(|| "PLUGIN_MODAL".to_owned())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        management_modal_scroll("plugin-form-scroll", &self.form_scroll)
+                            .gap(px(10.0))
+                            .debug_selector(|| "PLUGIN_FORM_SCROLL".to_owned())
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_id.is_some() {
+                                        "编辑插件"
+                                    } else {
+                                        "添加插件"
+                                    }),
+                            )
+                            .child(form_field("Identifier *", identifier_input, theme))
+                            .child(form_field("名称 *", name_input, theme))
+                            .child(form_field("描述", description_input, theme))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(
                                         div()
-                                            .p(px(8.0))
-                                            .bg(rgb(0xfff3cd))
-                                            .rounded(px(4.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x856404))
-                                            .child(err.clone()),
+                                            .text_size(px(13.0))
+                                            .text_color(theme.foreground)
+                                            .child("Runtime *"),
                                     )
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .justify_end()
-                                        .gap(px(8.0))
-                                        .child(
-                                            div()
-                                                .id("cancel")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x6c757d))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("取消")
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .h(px(32.0))
+                                            .px(px(8.0))
+                                            .border_1()
+                                            .border_color(theme.border)
+                                            .rounded(px(4.0))
+                                            .bg(theme.background.opacity(0.3))
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .text_color(theme.foreground.opacity(0.6))
+                                                    .child("extism"),
+                                            ),
+                                    ),
+                            )
+                            .child(form_field("Version *", version_input, theme))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .text_color(theme.foreground)
+                                            .child("WASM 文件 *"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                action_button(
+                                                    "pick-wasm",
+                                                    "选择 WASM 文件",
+                                                    ActionRole::Main,
+                                                    ActionSize::Page,
+                                                    style,
+                                                )
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let t = cx.weak_entity();
                                                     move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                        t.update(cx, |v, cx| v.pick_wasm_file(cx))
+                                                            .ok();
                                                     }
                                                 }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .text_size(px(12.0))
+                                                    .text_color(theme.foreground.opacity(0.6))
+                                                    .child(
+                                                        self.form_wasm_path
+                                                            .as_ref()
+                                                            .map(|p| {
+                                                                p.file_name()
+                                                                    .and_then(|n| n.to_str())
+                                                                    .unwrap_or("")
+                                                                    .to_string()
+                                                            })
+                                                            .unwrap_or_else(|| {
+                                                                "未选择文件".to_string()
+                                                            }),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                            .when(!self.form_sha256.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .text_color(theme.foreground)
+                                                .child("SHA256"),
                                         )
                                         .child(
                                             div()
-                                                .id("save")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x4a90d9))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("保存")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.save(cx)).ok();
-                                                    }
-                                                }),
+                                                .w_full()
+                                                .h(px(32.0))
+                                                .px(px(8.0))
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .rounded(px(4.0))
+                                                .bg(theme.background.opacity(0.3))
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .text_color(theme.foreground.opacity(0.6))
+                                                        .child(self.form_sha256.clone()),
+                                                ),
                                         ),
-                                ),
-                        ),
+                                )
+                            })
+                            .when(!self.form_size_bytes.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .text_color(theme.foreground)
+                                                .child("文件大小"),
+                                        )
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .h(px(32.0))
+                                                .px(px(8.0))
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .rounded(px(4.0))
+                                                .bg(theme.background.opacity(0.3))
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .text_color(theme.foreground.opacity(0.6))
+                                                        .child(format!(
+                                                            "{} bytes",
+                                                            self.form_size_bytes
+                                                        )),
+                                                ),
+                                        ),
+                                )
+                            })
+                            .when_some(self.error_message.as_ref(), |this, err| {
+                                this.child(
+                                    div()
+                                        .p(px(8.0))
+                                        .bg(theme.warning.opacity(0.1))
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme.warning)
+                                        .child(err.clone()),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .debug_selector(|| "PLUGIN_FORM_ACTIONS".to_owned())
+                                    .child(
+                                        action_button(
+                                            "cancel",
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            ActionSize::Page,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                }
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "save",
+                                            "保存",
+                                            ActionRole::Main,
+                                            ActionSize::Page,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.save(cx)).ok();
+                                                }
+                                            },
+                                        ),
+                                    ),
+                            ),
+                    ),
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
+                let id = self.confirm_delete_id.unwrap();
                 this.child(
                     div()
                         .absolute()
@@ -829,7 +940,7 @@ impl Render for PluginView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgb(0x000000))
+                        .bg(theme.overlay)
                         .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
@@ -855,11 +966,11 @@ impl Render for PluginView {
                         .child(
                             div()
                                 .w(px(400.0))
-                                .bg(rgb(0xffffff))
+                                .bg(theme.popover)
                                 .rounded(px(8.0))
                                 .shadow_lg()
                                 .border_1()
-                                .border_color(rgb(0xdddddd))
+                                .border_color(theme.border)
                                 .p(px(24.0))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
@@ -873,13 +984,13 @@ impl Render for PluginView {
                                             div()
                                                 .text_size(px(18.0))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0x333333))
+                                                .text_color(theme.foreground)
                                                 .child("确认删除"),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(14.0))
-                                                .text_color(rgb(0x666666))
+                                                .text_color(style.list.muted_foreground)
                                                 .child("确定要删除这个插件吗？此操作不可恢复。"),
                                         )
                                         .child(
@@ -888,52 +999,46 @@ impl Render for PluginView {
                                                 .justify_end()
                                                 .gap(px(8.0))
                                                 .child(
-                                                    div()
-                                                        .id("cancel-delete")
-                                                        .px(px(16.0))
-                                                        .py(px(8.0))
-                                                        .rounded(px(6.0))
-                                                        .bg(rgb(0x6c757d))
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_size(px(13.0))
-                                                        .cursor(CursorStyle::PointingHand)
-                                                        .child("取消")
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    v.confirm_delete_id = None;
-                                                                    cx.notify();
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
+                                                    action_button(
+                                                        "cancel-delete",
+                                                        "取消",
+                                                        ActionRole::Neutral,
+                                                        ActionSize::Page,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                v.confirm_delete_id = None;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 )
                                                 .child(
-                                                    div()
-                                                        .id("confirm-delete")
-                                                        .px(px(16.0))
-                                                        .py(px(8.0))
-                                                        .rounded(px(6.0))
-                                                        .bg(rgb(0xd9534f))
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_size(px(13.0))
-                                                        .cursor(CursorStyle::PointingHand)
-                                                        .child("确认删除")
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    if let Some(did) =
-                                                                        v.confirm_delete_id
-                                                                    {
-                                                                        v.delete(did, cx);
-                                                                        v.confirm_delete_id = None;
-                                                                    }
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
+                                                    action_button(
+                                                        "confirm-delete",
+                                                        "确认删除",
+                                                        ActionRole::Delete,
+                                                        ActionSize::Page,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                if let Some(did) =
+                                                                    v.confirm_delete_id
+                                                                {
+                                                                    v.delete(did, cx);
+                                                                    v.confirm_delete_id = None;
+                                                                }
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 ),
                                         ),
                                 ),
@@ -943,19 +1048,127 @@ impl Render for PluginView {
     }
 }
 
-fn form_field(label: &'static str, input: Entity<InputState>) -> impl IntoElement {
+fn form_field(
+    label: &'static str,
+    input: Entity<InputState>,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .child(div().text_size(px(13.0)).child(label))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme.foreground)
+                .child(label),
+        )
         .child(
             Input::new(&input)
                 .w_full()
                 .h(px(32.0))
                 .px(px(8.0))
                 .border_1()
-                .border_color(rgb(0xcccccc))
+                .border_color(theme.border)
                 .rounded(px(4.0)),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        AppContext, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext,
+        point, px, size,
+    };
+
+    use super::PluginView;
+    use crate::datasource::Store;
+
+    #[gpui::test]
+    fn plugin_form_stays_inside_the_viewport_and_scrolls(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(800.0), px(500.0)), move |window, cx| {
+            let mut view = PluginView {
+                store: store.clone(),
+                items: Vec::new(),
+                loading: false,
+                search_text: String::new(),
+                current_page: 0,
+                page_size: 20,
+                total_count: 0,
+                show_form: true,
+                form_scroll: gpui::ScrollHandle::default(),
+                editing_id: None,
+                form_identifier: String::new(),
+                form_name: String::new(),
+                form_description: String::new(),
+                form_version: String::new(),
+                form_sha256: String::new(),
+                form_size_bytes: String::new(),
+                form_wasm_path: None,
+                form_manifest: None,
+                error_message: None,
+                confirm_delete_id: None,
+                identifier_input: None,
+                name_input: None,
+                description_input: None,
+                version_input: None,
+                sha256_input: None,
+                size_bytes_input: None,
+                search_input: None,
+            };
+            view.init_inputs(window, cx);
+            view
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let modal = cx
+            .debug_bounds("PLUGIN_MODAL")
+            .expect("plugin modal bounds");
+        let scroll = cx
+            .debug_bounds("PLUGIN_FORM_SCROLL")
+            .expect("plugin form scroll bounds");
+        let actions_before = cx
+            .debug_bounds("PLUGIN_FORM_ACTIONS")
+            .expect("plugin form action bounds");
+
+        assert!(modal.top() >= px(0.0));
+        assert!(modal.bottom() <= px(500.0));
+        assert_eq!(modal.left(), px(125.0));
+        assert_eq!(modal.right(), px(675.0));
+        assert!(scroll.bottom() <= modal.bottom());
+        assert!(
+            actions_before.right() <= scroll.right() - px(16.0),
+            "plugin form content overlaps the scrollbar gutter: scroll={scroll:?}, actions={actions_before:?}"
+        );
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(32.0), scroll.top() + px(32.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-1000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+
+        let actions_after = cx
+            .debug_bounds("PLUGIN_FORM_ACTIONS")
+            .expect("plugin form action bounds after scrolling");
+        assert!(
+            actions_after.top() < actions_before.top(),
+            "plugin form did not scroll: before={actions_before:?}, after={actions_after:?}"
+        );
+        assert!(actions_after.bottom() <= modal.bottom());
+    }
 }

@@ -12,6 +12,7 @@ pub mod home;
 pub mod llm_config;
 pub mod management_style;
 pub mod plugin_view;
+pub mod prompt_debugger;
 pub mod settings_view;
 pub mod sidebar_nav;
 pub mod skill_view;

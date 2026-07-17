@@ -1,4 +1,9 @@
 use crate::datasource::{Store, entity_store::Capability};
+use crate::ui::management_style::{
+    ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
+    list_container, list_header, list_header_cell, list_row, management_modal_layer,
+    management_modal_panel, management_modal_scroll,
+};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
@@ -14,6 +19,7 @@ pub struct CapabilityView {
     page_size: i64,
     total_count: i64,
     show_form: bool,
+    form_scroll: ScrollHandle,
     editing_name: Option<String>,
     form_name: String,
     form_description: String,
@@ -36,6 +42,7 @@ impl CapabilityView {
             page_size: 20,
             total_count: 0,
             show_form: false,
+            form_scroll: ScrollHandle::default(),
             editing_name: None,
             form_name: String::new(),
             form_description: String::new(),
@@ -134,6 +141,8 @@ impl CapabilityView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
+        self.form_scroll
+            .set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_name = None;
         self.form_name.clear();
@@ -245,6 +254,41 @@ impl CapabilityView {
 
 impl Render for CapabilityView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let style = ManagementStyle::current(cx);
+        let add_role = ActionRole::Main;
+        let edit_role = ActionRole::Edit;
+        let delete_role = ActionRole::Delete;
+        let cancel_role = ActionRole::Neutral;
+        let save_role = ActionRole::Main;
+        let disabled_page_role = ActionRole::Disabled;
+        let (
+            background,
+            overlay,
+            popover,
+            popover_foreground,
+            border,
+            input,
+            warning,
+            danger,
+            danger_foreground,
+            foreground,
+            muted_foreground,
+        ) = {
+            let theme = cx.theme();
+            (
+                theme.background,
+                theme.overlay,
+                theme.popover,
+                theme.popover_foreground,
+                theme.border,
+                theme.input,
+                theme.warning,
+                theme.danger,
+                theme.danger_foreground,
+                theme.foreground,
+                theme.muted_foreground,
+            )
+        };
         let total_pages = (self.total_count + self.page_size - 1) / self.page_size;
 
         // 如果表单显示但输入框未初始化，则初始化
@@ -283,8 +327,8 @@ impl Render for CapabilityView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(background)
+            .text_color(foreground)
             .child(
                 div()
                     .flex()
@@ -292,7 +336,7 @@ impl Render for CapabilityView {
                     .justify_between()
                     .p(px(16.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(border)
                     .child(
                         div()
                             .text_size(px(18.0))
@@ -300,16 +344,7 @@ impl Render for CapabilityView {
                             .child("能力管理"),
                     )
                     .child(
-                        div()
-                            .id("add-btn")
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(0x4a90d9))
-                            .text_color(rgb(0xffffff))
-                            .text_size(px(13.0))
-                            .cursor(CursorStyle::PointingHand)
-                            .child("+ 添加能力")
+                        action_button("add-btn", "+ 添加能力", add_role, ActionSize::Page, style)
                             .on_mouse_down(MouseButton::Left, {
                                 let t = cx.weak_entity();
                                 move |_, window, cx| {
@@ -324,7 +359,7 @@ impl Render for CapabilityView {
                     .items_center()
                     .p(px(12.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(border)
                     .child(
                         div()
                             .flex()
@@ -343,6 +378,7 @@ impl Render for CapabilityView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scrollbar()
                     .p(px(16.0))
                     .child(if self.items.is_empty() {
@@ -351,167 +387,101 @@ impl Render for CapabilityView {
                             .items_center()
                             .justify_center()
                             .h_full()
-                            .text_color(rgb(0x999999))
+                            .text_color(muted_foreground)
                             .text_size(px(14.0))
                             .child("暂无数据")
                     } else {
                         let col_widths = [px(150.0), px(200.0), px(80.0), px(120.0)];
-                        div()
-                            .flex()
-                            .flex_col()
-                            .border_1()
-                            .border_color(rgb(0xe0e0e0))
-                            .rounded(px(4.0))
-                            .overflow_hidden()
+                        list_container(style)
                             .child(
-                                div()
-                                    .flex()
-                                    .bg(rgb(0xf5f5f5))
-                                    .border_b_1()
-                                    .border_color(rgb(0xe0e0e0))
+                                list_header(style)
                                     .child(
-                                        div()
-                                            .w(col_widths[0])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("名称"),
+                                        list_header_cell(Some(col_widths[0]), style).child("名称"),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[1])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("描述"),
+                                        list_header_cell(Some(col_widths[1]), style).child("描述"),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[2])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("危险"),
+                                        list_header_cell(Some(col_widths[2]), style).child("危险"),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[3])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("操作"),
+                                        list_header_cell(Some(col_widths[3]), style).child("操作"),
                                     ),
                             )
                             .children(self.items.iter().map(|item| {
-                                let item_clone = item.clone();
                                 let del_name = item.name.clone();
-                                div()
-                                    .flex()
-                                    .border_b_1()
-                                    .border_color(rgb(0xf0f0f0))
-                                    .bg(rgb(0xffffff))
+                                list_row(style)
                                     .child(
-                                        div()
-                                            .w(col_widths[0])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
+                                        list_cell(Some(col_widths[0]), style)
                                             .text_size(px(13.0))
                                             .font_weight(FontWeight::MEDIUM)
+                                            .text_color(foreground)
                                             .child(item.name.clone()),
                                     )
                                     .child(
-                                        div()
-                                            .w(col_widths[1])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
+                                        list_cell(Some(col_widths[1]), style)
                                             .truncate()
                                             .child(item.description.clone()),
                                     )
+                                    .child(list_cell(Some(col_widths[2]), style).child(
+                                        if item.is_dangerous {
+                                            div()
+                                                .px(px(6.0))
+                                                .py(px(2.0))
+                                                .rounded(px(3.0))
+                                                .bg(warning.opacity(0.15))
+                                                .text_color(warning)
+                                                .text_size(px(11.0))
+                                                .child("危险")
+                                        } else {
+                                            div().child("否").text_color(muted_foreground)
+                                        },
+                                    ))
                                     .child(
-                                        div()
-                                            .w(col_widths[2])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .child(if item.is_dangerous {
-                                                div()
-                                                    .px(px(6.0))
-                                                    .py(px(2.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0xd9534f))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .child("危险")
-                                            } else {
-                                                div().child("否").text_color(rgb(0x666666))
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[3])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .flex()
-                                            .gap(px(4.0))
+                                        list_actions(Some(col_widths[3]), style)
                                             .child(
-                                                div()
-                                                    .id(format!("edit-{}", item.name))
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0x5cb85c))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("编辑")
-                                                    .on_mouse_down(MouseButton::Left, {
-                                                        let t = cx.weak_entity();
-                                                        let item_clone = item.clone();
-                                                        move |_, window, cx| {
-                                                            t.update(cx, |v, cx| {
-                                                                v.show_edit_form(
-                                                                    window,
-                                                                    item_clone.clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    }),
+                                                action_button(
+                                                    format!("edit-{}", item.name),
+                                                    "编辑",
+                                                    edit_role,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    let item_clone = item.clone();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.show_edit_form(
+                                                                window,
+                                                                item_clone.clone(),
+                                                                cx,
+                                                            )
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             )
                                             .child(
-                                                div()
-                                                    .id(format!("del-{}", del_name))
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0xd9534f))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("删除")
-                                                    .on_mouse_down(MouseButton::Left, {
-                                                        let t = cx.weak_entity();
-                                                        let name = del_name.clone();
-                                                        move |_, _, cx| {
-                                                            t.update(cx, |v, cx| {
-                                                                v.confirm_delete_name =
-                                                                    Some(name.clone());
-                                                                cx.notify();
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    }),
+                                                action_button(
+                                                    format!("del-{}", del_name),
+                                                    "删除",
+                                                    delete_role,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    let name = del_name.clone();
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.confirm_delete_name =
+                                                                Some(name.clone());
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             ),
                                     )
                             }))
@@ -525,82 +495,74 @@ impl Render for CapabilityView {
                     .justify_between()
                     .p(px(12.0))
                     .border_t_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(border)
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x666666))
+                            .text_color(muted_foreground)
                             .child(format!("共 {} 条", self.total_count)),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(px(8.0))
-                            .child(
-                                div()
-                                    .id("prev")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(if self.current_page > 0 {
-                                        rgb(0x4a90d9)
+                            .child({
+                                let has_prev = self.current_page > 0;
+                                action_button(
+                                    "prev",
+                                    "上一页",
+                                    if has_prev {
+                                        add_role
                                     } else {
-                                        rgb(0xcccccc)
-                                    })
-                                    .text_color(rgb(0xffffff))
-                                    .text_size(px(13.0))
-                                    .cursor(if self.current_page > 0 {
-                                        CursorStyle::PointingHand
-                                    } else {
-                                        CursorStyle::Arrow
-                                    })
-                                    .child("上一页")
-                                    .on_mouse_down(MouseButton::Left, {
+                                        disabled_page_role
+                                    },
+                                    ActionSize::Page,
+                                    style,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
                                         let t = cx.weak_entity();
                                         move |_, _, cx| {
                                             t.update(cx, |v, cx| v.prev_page(cx)).ok();
                                         }
-                                    }),
-                            )
-                            .child(div().text_size(px(13.0)).child(format!(
-                                "第 {} / {} 页",
-                                self.current_page + 1,
-                                total_pages.max(1)
-                            )))
+                                    },
+                                )
+                            })
                             .child(
                                 div()
-                                    .id("next")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            rgb(0x4a90d9)
-                                        } else {
-                                            rgb(0xcccccc)
-                                        },
-                                    )
-                                    .text_color(rgb(0xffffff))
                                     .text_size(px(13.0))
-                                    .cursor(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            CursorStyle::PointingHand
-                                        } else {
-                                            CursorStyle::Arrow
-                                        },
-                                    )
-                                    .child("下一页")
-                                    .on_mouse_down(MouseButton::Left, {
+                                    .text_color(muted_foreground)
+                                    .child(format!(
+                                        "第 {} / {} 页",
+                                        self.current_page + 1,
+                                        total_pages.max(1)
+                                    )),
+                            )
+                            .child({
+                                let has_next =
+                                    (self.current_page + 1) * self.page_size < self.total_count;
+                                action_button(
+                                    "next",
+                                    "下一页",
+                                    if has_next {
+                                        add_role
+                                    } else {
+                                        disabled_page_role
+                                    },
+                                    ActionSize::Page,
+                                    style,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
                                         let t = cx.weak_entity();
                                         move |_, _, cx| {
                                             t.update(cx, |v, cx| v.next_page(cx)).ok();
                                         }
-                                    }),
-                            ),
+                                    },
+                                )
+                            }),
                     ),
             )
             .when(self.show_form, |this| {
@@ -611,8 +573,7 @@ impl Render for CapabilityView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgb(0x000000))
-                        .opacity(0.3)
+                        .bg(overlay)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
@@ -622,28 +583,18 @@ impl Render for CapabilityView {
                         }),
                 )
                 .child(
-                    div()
-                        .absolute()
-                        .top(px(100.0))
-                        .left(px(50.0))
-                        .right(px(50.0))
-                        .max_w(px(500.0))
-                        .max_h(px(600.0))
-                        .bg(rgb(0xffffff))
-                        .rounded(px(12.0))
-                        .shadow_lg()
-                        .border_1()
-                        .border_color(rgb(0xdddddd))
-                        .p(px(24.0))
+                    management_modal_panel(
+                        management_modal_layer(px(500.0)),
+                        popover,
+                        popover_foreground,
+                        border,
+                    )
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
                         })
                         .child(
-                            div()
-                                .flex()
-                                .flex_col()
+                            management_modal_scroll("capability-form-scroll", &self.form_scroll)
                                 .gap(px(16.0))
-                                .overflow_y_scrollbar()
                                 .child(
                                     div()
                                         .text_size(px(18.0))
@@ -666,7 +617,7 @@ impl Render for CapabilityView {
                                                 .h(px(32.0))
                                                 .px(px(8.0))
                                                 .border_1()
-                                                .border_color(rgb(0xcccccc))
+                                                .border_color(input)
                                                 .rounded(px(4.0)),
                                         ),
                                 )
@@ -683,7 +634,7 @@ impl Render for CapabilityView {
                                                 .px(px(8.0))
                                                 .py(px(4.0))
                                                 .border_1()
-                                                .border_color(rgb(0xcccccc))
+                                                .border_color(input)
                                                 .rounded(px(4.0)),
                                         ),
                                 )
@@ -694,58 +645,53 @@ impl Render for CapabilityView {
                                         .gap(px(8.0))
                                         .child(div().text_size(px(13.0)).child("危险能力"))
                                         .child(if self.form_is_dangerous {
-                                            div()
-                                                .id("toggle-danger")
-                                                .px(px(8.0))
-                                                .py(px(4.0))
-                                                .rounded(px(3.0))
-                                                .bg(rgb(0xd9534f))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(12.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("是")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| {
-                                                            v.form_is_dangerous = false;
-                                                            cx.notify();
-                                                        })
-                                                        .ok();
-                                                    }
-                                                })
+                                            action_button(
+                                                "toggle-danger",
+                                                "是",
+                                                delete_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| {
+                                                        v.form_is_dangerous = false;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            })
                                         } else {
-                                            div()
-                                                .id("toggle-danger")
-                                                .px(px(8.0))
-                                                .py(px(4.0))
-                                                .rounded(px(3.0))
-                                                .bg(rgb(0xcccccc))
-                                                .text_size(px(12.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("否")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| {
-                                                            v.form_is_dangerous = true;
-                                                            cx.notify();
-                                                        })
-                                                        .ok();
-                                                    }
-                                                })
+                                            action_button(
+                                                "toggle-danger",
+                                                "否",
+                                                cancel_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| {
+                                                        v.form_is_dangerous = true;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            })
                                         }),
                                 )
                                 .when_some(self.error_message.as_ref(), |this, err| {
                                     this.child(
                                         div()
                                             .p(px(8.0))
-                                            .bg(rgb(0xfff3cd))
+                                            .bg(danger)
                                             .border_1()
-                                            .border_color(rgb(0xffeaa7))
+                                            .border_color(danger)
                                             .rounded(px(4.0))
                                             .text_size(px(12.0))
-                                            .text_color(rgb(0x856404))
+                                            .text_color(danger_foreground)
                                             .child(err.clone()),
                                     )
                                 })
@@ -755,40 +701,34 @@ impl Render for CapabilityView {
                                         .justify_end()
                                         .gap(px(8.0))
                                         .child(
-                                            div()
-                                                .id("cancel")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x6c757d))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("取消")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.hide_form(cx)).ok();
-                                                    }
-                                                }),
+                                            action_button(
+                                                "cancel",
+                                                "取消",
+                                                cancel_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                }
+                                            }),
                                         )
                                         .child(
-                                            div()
-                                                .id("save")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x4a90d9))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("保存")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.save(cx)).ok();
-                                                    }
-                                                }),
+                                            action_button(
+                                                "save",
+                                                "保存",
+                                                save_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.save(cx)).ok();
+                                                }
+                                            }),
                                         ),
                                 ),
                         ),
@@ -804,8 +744,7 @@ impl Render for CapabilityView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgb(0x000000))
-                        .opacity(0.3)
+                        .bg(overlay)
                         .on_mouse_down(MouseButton::Left, {
                             let this = cx.weak_entity();
                             move |_, _, cx| {
@@ -830,11 +769,12 @@ impl Render for CapabilityView {
                         .child(
                             div()
                                 .w(px(400.0))
-                                .bg(rgb(0xffffff))
+                                .bg(popover)
+                                .text_color(popover_foreground)
                                 .rounded(px(8.0))
                                 .shadow_lg()
                                 .border_1()
-                                .border_color(rgb(0xdddddd))
+                                .border_color(border)
                                 .p(px(24.0))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
@@ -848,13 +788,13 @@ impl Render for CapabilityView {
                                             div()
                                                 .text_size(px(18.0))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0x333333))
+                                                .text_color(foreground)
                                                 .child("确认删除"),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(14.0))
-                                                .text_color(rgb(0x666666))
+                                                .text_color(muted_foreground)
                                                 .child(format!(
                                                     "确定要删除能力 '{}' 吗？此操作不可恢复。",
                                                     name_clone
@@ -866,50 +806,44 @@ impl Render for CapabilityView {
                                                 .justify_end()
                                                 .gap(px(8.0))
                                                 .child(
-                                                    div()
-                                                        .id("cancel-delete")
-                                                        .px(px(16.0))
-                                                        .py(px(8.0))
-                                                        .rounded(px(6.0))
-                                                        .bg(rgb(0x6c757d))
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_size(px(13.0))
-                                                        .cursor(CursorStyle::PointingHand)
-                                                        .child("取消")
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    v.confirm_delete_name = None;
-                                                                    cx.notify();
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
+                                                    action_button(
+                                                        "cancel-delete",
+                                                        "取消",
+                                                        cancel_role,
+                                                        ActionSize::Dialog,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                v.confirm_delete_name = None;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 )
                                                 .child(
-                                                    div()
-                                                        .id("confirm-delete")
-                                                        .px(px(16.0))
-                                                        .py(px(8.0))
-                                                        .rounded(px(6.0))
-                                                        .bg(rgb(0xd9534f))
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_size(px(13.0))
-                                                        .cursor(CursorStyle::PointingHand)
-                                                        .child("确认删除")
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            let name = name.clone();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    let name = name.clone();
-                                                                    v.delete(name, cx);
-                                                                    v.confirm_delete_name = None;
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
+                                                    action_button(
+                                                        "confirm-delete",
+                                                        "确认删除",
+                                                        delete_role,
+                                                        ActionSize::Dialog,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        let name = name.clone();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                let name = name.clone();
+                                                                v.delete(name, cx);
+                                                                v.confirm_delete_name = None;
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 ),
                                         ),
                                 ),

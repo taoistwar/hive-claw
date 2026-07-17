@@ -152,7 +152,7 @@ impl RootView {
             cx.new(|cx| SystemSettingsView::new(cx, store.clone(), llm_store.clone()));
         let extension = cx.new(|cx| ExtensionView::new(cx, store.clone()));
         let ai = cx.new(|cx| AiView::new(cx, store.clone()));
-        let tools = cx.new(|cx| UtilityView::new(cx, store.clone()));
+        let tools = cx.new(|cx| UtilityView::new(cx, store.clone(), llm_store.clone()));
         RootView {
             sidebar,
             home,

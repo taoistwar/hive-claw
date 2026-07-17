@@ -2,13 +2,61 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use gpui::{
-    Context, CursorStyle, Entity, MouseButton, ScrollHandle, SharedString, Window, div, prelude::*,
-    px, rgb,
+    Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString, Window, div,
+    prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
 use tracing::info;
 
 use crate::datasource::{ColumnInfo, DataSource, MysqlClient, Store, TableData, TableDataRequest};
+
+#[derive(Clone, Copy)]
+struct ViewerPalette {
+    background: Hsla,
+    foreground: Hsla,
+    muted: Hsla,
+    muted_foreground: Hsla,
+    border: Hsla,
+    list_head: Hsla,
+    list_row: Hsla,
+    list_even: Hsla,
+    list_hover: Hsla,
+    list_active: Hsla,
+    overlay: Hsla,
+    popover: Hsla,
+    popover_foreground: Hsla,
+    danger: Hsla,
+    primary: Hsla,
+    primary_foreground: Hsla,
+    secondary: Hsla,
+    secondary_foreground: Hsla,
+}
+
+impl ViewerPalette {
+    fn current(cx: &gpui::App) -> Self {
+        let theme = cx.theme();
+        Self {
+            background: theme.background,
+            foreground: theme.foreground,
+            muted: theme.muted,
+            muted_foreground: theme.muted_foreground,
+            border: theme.border,
+            list_head: theme.list_head,
+            list_row: theme.colors.list,
+            list_even: theme.list_even,
+            list_hover: theme.list_hover,
+            list_active: theme.list_active,
+            overlay: theme.overlay,
+            popover: theme.popover,
+            popover_foreground: theme.popover_foreground,
+            danger: theme.danger,
+            primary: theme.button_info,
+            primary_foreground: theme.button_info_foreground,
+            secondary: theme.button_secondary,
+            secondary_foreground: theme.button_secondary_foreground,
+        }
+    }
+}
 
 struct ErrorModal {
     title: String,
@@ -630,21 +678,22 @@ impl OpenTable {
 impl Render for TableViewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.weak_entity();
+        let palette = ViewerPalette::current(cx);
 
         if self.open_tables.is_empty() {
             return div()
                 .flex()
                 .flex_col()
                 .size_full()
-                .bg(cx.theme().background)
-                .text_color(cx.theme().foreground)
+                .bg(palette.background)
+                .text_color(palette.foreground)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
                         .text_size(px(13.0))
-                        .text_color(rgb(0x888888))
+                        .text_color(palette.muted_foreground)
                         .child("请选择一个表"),
                 );
         }
@@ -653,11 +702,11 @@ impl Render for TableViewer {
             .flex()
             .flex_col()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(palette.background)
+            .text_color(palette.foreground)
             .relative();
 
-        col = col.child(self.render_table_tabs(cx));
+        col = col.child(self.render_table_tabs(cx, palette));
 
         let Some(t) = self.open_tables.get(self.active_table_index) else {
             return col.child(
@@ -666,14 +715,14 @@ impl Render for TableViewer {
                     .items_center()
                     .justify_center()
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("请选择一个表"),
             );
         };
 
         let active_tab = t.active_tab.clone();
 
-        col = col.child(self.render_sub_tabs(&active_tab, this.clone()));
+        col = col.child(self.render_sub_tabs(&active_tab, this.clone(), palette));
 
         if t.loading {
             col = col.child(
@@ -683,19 +732,19 @@ impl Render for TableViewer {
                     .justify_center()
                     .h(px(60.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("加载中..."),
             );
         } else {
             match t.active_tab {
                 TableTab::Columns => {
-                    col = col.child(self.render_columns(t, this.clone(), cx));
+                    col = col.child(self.render_columns(t, this.clone(), palette));
                 }
                 TableTab::Ddl => {
-                    col = col.child(self.render_ddl(t));
+                    col = col.child(self.render_ddl(t, palette));
                 }
                 TableTab::Data => {
-                    col = col.child(self.render_data_tab(t, this.clone(), cx));
+                    col = col.child(self.render_data_tab(t, this.clone(), palette));
                 }
             }
         }
@@ -723,9 +772,9 @@ impl Render for TableViewer {
                         .left(px(menu_x))
                         .top(px(menu_y))
                         .w(px(160.0))
-                        .bg(rgb(0xffffff))
+                        .bg(palette.popover)
                         .border_1()
-                        .border_color(rgb(0xcccccc))
+                        .border_color(palette.border)
                         .rounded(px(4.0))
                         .shadow_lg()
                         .cursor(CursorStyle::PointingHand)
@@ -735,8 +784,8 @@ impl Render for TableViewer {
                                 .px(px(12.0))
                                 .py(px(6.0))
                                 .text_size(px(12.0))
-                                .text_color(rgb(0x333333))
-                                .hover(|s| s.bg(rgb(0xe8f0fe)))
+                                .text_color(palette.popover_foreground)
+                                .hover(move |s| s.bg(palette.list_hover))
                                 .cursor(CursorStyle::PointingHand)
                                 .child("查看完整值")
                                 .on_mouse_down(MouseButton::Left, {
@@ -766,8 +815,7 @@ impl Render for TableViewer {
                     .left(px(0.0))
                     .right(px(0.0))
                     .bottom(px(0.0))
-                    .bg(rgb(0x000000))
-                    .opacity(0.3)
+                    .bg(palette.overlay)
                     .cursor(CursorStyle::PointingHand)
                     .on_mouse_down(MouseButton::Left, {
                         let this_for_bg = this.clone();
@@ -789,11 +837,12 @@ impl Render for TableViewer {
                             .left(px(50.0))
                             .right(px(50.0))
                             .max_w(px(500.0))
-                            .bg(rgb(0xffffff))
+                            .bg(palette.popover)
+                            .text_color(palette.popover_foreground)
                             .rounded(px(12.0))
                             .shadow_lg()
                             .border_1()
-                            .border_color(rgb(0xdddddd))
+                            .border_color(palette.border)
                             .p(px(24.0))
                             .child(
                                 div()
@@ -803,13 +852,13 @@ impl Render for TableViewer {
                                     .child(
                                         div()
                                             .text_size(px(18.0))
-                                            .text_color(rgb(0xcc0000))
+                                            .text_color(palette.danger)
                                             .child(title),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(14.0))
-                                            .text_color(rgb(0x333333))
+                                            .text_color(palette.popover_foreground)
                                             .child(message),
                                     )
                                     .child(
@@ -819,8 +868,8 @@ impl Render for TableViewer {
                                                 .px(px(16.0))
                                                 .py(px(8.0))
                                                 .rounded(px(6.0))
-                                                .bg(rgb(0x4a90d9))
-                                                .text_color(rgb(0xffffff))
+                                                .bg(palette.primary)
+                                                .text_color(palette.primary_foreground)
                                                 .text_size(px(13.0))
                                                 .cursor(CursorStyle::PointingHand)
                                                 .child("关闭")
@@ -851,7 +900,11 @@ impl Render for TableViewer {
 }
 
 impl TableViewer {
-    fn render_table_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_table_tabs(
+        &self,
+        cx: &mut Context<Self>,
+        palette: ViewerPalette,
+    ) -> impl IntoElement {
         let mut row = div()
             .flex()
             .items_center()
@@ -859,7 +912,7 @@ impl TableViewer {
             .px(px(12.0))
             .py(px(4.0))
             .border_b_1()
-            .border_color(rgb(0xe0e0e0));
+            .border_color(palette.border);
 
         for (idx, tab) in self.open_tables.iter().enumerate() {
             let active = self.active_table_index == idx;
@@ -874,11 +927,23 @@ impl TableViewer {
                 .px(px(12.0))
                 .py(px(4.0))
                 .rounded_t(px(4.0))
-                .bg(if active { rgb(0xffffff) } else { rgb(0xf0f0f0) })
+                .bg(if active {
+                    palette.background
+                } else {
+                    palette.muted
+                })
                 .border_b_1()
-                .border_color(if active { rgb(0xffffff) } else { rgb(0xe0e0e0) })
+                .border_color(if active {
+                    palette.background
+                } else {
+                    palette.border
+                })
                 .text_size(px(12.0))
-                .text_color(if active { rgb(0x333333) } else { rgb(0x666666) })
+                .text_color(if active {
+                    palette.foreground
+                } else {
+                    palette.muted_foreground
+                })
                 .cursor(CursorStyle::PointingHand)
                 .on_mouse_down(MouseButton::Left, {
                     let this = this.clone();
@@ -901,8 +966,8 @@ impl TableViewer {
                 .justify_center()
                 .rounded(px(2.0))
                 .text_size(px(10.0))
-                .text_color(rgb(0x999999))
-                .hover(|s| s.bg(rgb(0xe0e0e0)))
+                .text_color(palette.muted_foreground)
+                .hover(move |s| s.bg(palette.list_hover))
                 .cursor(CursorStyle::PointingHand)
                 .child("x")
                 .on_mouse_down(MouseButton::Left, {
@@ -924,6 +989,7 @@ impl TableViewer {
         &self,
         active_tab: &TableTab,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         div()
             .flex()
@@ -931,13 +997,14 @@ impl TableViewer {
             .px(px(16.0))
             .py(px(4.0))
             .border_b_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(palette.border)
             .child(self.render_sub_tab(
                 SharedString::from("columns-tab"),
                 SharedString::from("列"),
                 active_tab == &TableTab::Columns,
                 TableTab::Columns,
                 this.clone(),
+                palette,
             ))
             .child(self.render_sub_tab(
                 SharedString::from("ddl-tab"),
@@ -945,6 +1012,7 @@ impl TableViewer {
                 active_tab == &TableTab::Ddl,
                 TableTab::Ddl,
                 this.clone(),
+                palette,
             ))
             .child(self.render_sub_tab(
                 SharedString::from("data-tab"),
@@ -952,6 +1020,7 @@ impl TableViewer {
                 active_tab == &TableTab::Data,
                 TableTab::Data,
                 this,
+                palette,
             ))
     }
 
@@ -962,15 +1031,24 @@ impl TableViewer {
         active: bool,
         tab: TableTab,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         div()
             .id(id)
             .px(px(12.0))
             .py(px(4.0))
             .rounded(px(4.0))
-            .bg(if active { rgb(0x4a90d9) } else { rgb(0xf5f5f5) })
+            .bg(if active {
+                palette.primary
+            } else {
+                palette.secondary
+            })
             .text_size(px(12.0))
-            .text_color(if active { rgb(0xffffff) } else { rgb(0x666666) })
+            .text_color(if active {
+                palette.primary_foreground
+            } else {
+                palette.secondary_foreground
+            })
             .cursor(CursorStyle::PointingHand)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |v, cx| {
@@ -985,7 +1063,7 @@ impl TableViewer {
         &self,
         t: &OpenTable,
         this: gpui::WeakEntity<Self>,
-        _cx: &mut Context<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         let column_labels = vec!["列名", "类型", "可空", "主键", "注释"];
         let column_data: Vec<_> = t
@@ -1023,16 +1101,17 @@ impl TableViewer {
                     .justify_center()
                     .h(px(60.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("该表暂无列信息"),
             );
         } else {
             let header = div()
                 .flex()
                 .border_b_1()
-                .border_color(rgb(0xe0e0e0))
+                .border_color(palette.border)
                 .text_size(px(12.0))
-                .text_color(rgb(0x333333));
+                .text_color(palette.foreground)
+                .bg(palette.list_head);
 
             let header = column_labels
                 .iter()
@@ -1059,7 +1138,8 @@ impl TableViewer {
                 let row = div()
                     .flex()
                     .border_b_1()
-                    .border_color(rgb(0xf5f5f5))
+                    .border_color(palette.border)
+                    .bg(palette.list_row)
                     .text_size(px(12.0));
 
                 let row = row_data
@@ -1084,7 +1164,7 @@ impl TableViewer {
         scroll
     }
 
-    fn render_ddl(&self, t: &OpenTable) -> impl IntoElement {
+    fn render_ddl(&self, t: &OpenTable, palette: ViewerPalette) -> impl IntoElement {
         let ddl = t.ddl.clone();
         div()
             .id("ddl-scroll")
@@ -1096,8 +1176,8 @@ impl TableViewer {
                     .p(px(16.0))
                     .text_size(px(12.0))
                     .font_family("monospace")
-                    .bg(rgb(0xf9f9f9))
-                    .text_color(rgb(0x333333))
+                    .bg(palette.list_row)
+                    .text_color(palette.foreground)
                     .child(ddl),
             )
     }
@@ -1106,7 +1186,7 @@ impl TableViewer {
         &self,
         t: &OpenTable,
         this: gpui::WeakEntity<Self>,
-        _cx: &mut Context<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         info!("[DataTab] render_data_tab called, table: {}", t.name);
 
@@ -1152,7 +1232,7 @@ impl TableViewer {
                             .justify_center()
                             .h(px(60.0))
                             .text_size(px(13.0))
-                            .text_color(rgb(0x888888))
+                            .text_color(palette.muted_foreground)
                             .child("该表暂无数据"),
                     );
                 } else {
@@ -1162,7 +1242,7 @@ impl TableViewer {
                         .flex()
                         .flex_col()
                         .overflow_hidden()
-                        .child(self.render_data_grid(cols, row_data, t, this.clone()));
+                        .child(self.render_data_grid(cols, row_data, t, this.clone(), palette));
 
                     let data_area = div()
                         .id("data-area")
@@ -1173,11 +1253,11 @@ impl TableViewer {
                         .overflow_hidden()
                         .child(grid_div)
                         .when(t.show_value_panel, |el| {
-                            el.child(self.render_value_viewer(t, this.clone()))
+                            el.child(self.render_value_viewer(t, this.clone(), palette))
                         });
 
                     container = container.child(data_area);
-                    container = container.child(self.render_pagination(t, this));
+                    container = container.child(self.render_pagination(t, this, palette));
 
                     info!("[DataTab] data_area and pagination added to container");
                 }
@@ -1189,7 +1269,7 @@ impl TableViewer {
                         .justify_center()
                         .h(px(60.0))
                         .text_size(px(13.0))
-                        .text_color(rgb(0x888888))
+                        .text_color(palette.muted_foreground)
                         .child("该表暂无数据"),
                 );
             }
@@ -1201,7 +1281,7 @@ impl TableViewer {
                     .justify_center()
                     .h(px(60.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("请选择一个表"),
             );
         }
@@ -1215,6 +1295,7 @@ impl TableViewer {
         row_data: &[Vec<Option<SharedString>>],
         t: &OpenTable,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         let num_cols = cols.len();
         let widths: Vec<f32> = (0..num_cols)
@@ -1252,9 +1333,10 @@ impl TableViewer {
             .flex()
             .flex_nowrap()
             .border_b_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(palette.border)
             .text_size(px(11.0))
-            .bg(rgb(0xf8f8f8));
+            .bg(palette.list_head)
+            .text_color(palette.foreground);
 
         header = header.child(
             div()
@@ -1294,14 +1376,18 @@ impl TableViewer {
                 .flex()
                 .flex_nowrap()
                 .border_b_1()
-                .border_color(rgb(0xf0f0f0))
+                .border_color(palette.border)
                 .text_size(px(11.0))
                 .bg(if is_selected {
-                    rgb(0xd0e0f0)
+                    palette.list_active
                 } else if is_hovered {
-                    rgb(0xf5f8fc)
+                    palette.list_hover
                 } else {
-                    rgb(0xffffff)
+                    if row_idx % 2 == 0 {
+                        palette.list_row
+                    } else {
+                        palette.list_even
+                    }
                 })
                 .cursor(CursorStyle::PointingHand)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -1347,7 +1433,7 @@ impl TableViewer {
                     .flex_shrink_0()
                     .px(px(6.0))
                     .py(px(2.0))
-                    .text_color(rgb(0x999999))
+                    .text_color(palette.muted_foreground)
                     .text_size(px(11.0))
                     .child(format!("{}", row_idx + 1)),
             );
@@ -1362,7 +1448,7 @@ impl TableViewer {
                         .flex_shrink_0()
                         .px(px(8.0))
                         .py(px(2.0))
-                        .text_color(rgb(0x333333))
+                        .text_color(palette.foreground)
                         .cursor(CursorStyle::IBeam)
                         .on_mouse_down(MouseButton::Left, {
                             let this_for_cell = this_for_cell.clone();
@@ -1419,7 +1505,12 @@ impl TableViewer {
         scroll
     }
 
-    fn render_value_viewer(&self, t: &OpenTable, this: gpui::WeakEntity<Self>) -> impl IntoElement {
+    fn render_value_viewer(
+        &self,
+        t: &OpenTable,
+        this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
+    ) -> impl IntoElement {
         let Some(ref data) = t.table_data else {
             return div();
         };
@@ -1456,8 +1547,8 @@ impl TableViewer {
             .flex()
             .flex_col()
             .border_l_1()
-            .border_color(rgb(0xe0e0e0))
-            .bg(rgb(0xfafafa))
+            .border_color(palette.border)
+            .bg(palette.list_row)
             .child(
                 div()
                     .flex()
@@ -1466,9 +1557,9 @@ impl TableViewer {
                     .px(px(12.0))
                     .py(px(6.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(palette.border)
                     .text_size(px(12.0))
-                    .text_color(rgb(0x333333))
+                    .text_color(palette.foreground)
                     .child("数值查看器")
                     .child(
                         div()
@@ -1479,8 +1570,8 @@ impl TableViewer {
                             .justify_center()
                             .rounded(px(2.0))
                             .text_size(px(10.0))
-                            .text_color(rgb(0x999999))
-                            .hover(|s| s.bg(rgb(0xe0e0e0)))
+                            .text_color(palette.muted_foreground)
+                            .hover(move |s| s.bg(palette.list_hover))
                             .cursor(CursorStyle::PointingHand)
                             .child("x")
                             .on_mouse_down(MouseButton::Left, {
@@ -1506,21 +1597,21 @@ impl TableViewer {
                     .px(px(12.0))
                     .py(px(6.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(palette.border)
                     .text_size(px(11.0))
                     .child(
                         div()
                             .flex()
                             .gap(px(4.0))
-                            .child(div().text_color(rgb(0x999999)).child("字段:"))
-                            .child(div().text_color(rgb(0x333333)).child(col_name)),
+                            .child(div().text_color(palette.muted_foreground).child("字段:"))
+                            .child(div().text_color(palette.foreground).child(col_name)),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(px(4.0))
-                            .child(div().text_color(rgb(0x999999)).child("类型:"))
-                            .child(div().text_color(rgb(0x333333)).child(type_name)),
+                            .child(div().text_color(palette.muted_foreground).child("类型:"))
+                            .child(div().text_color(palette.foreground).child(type_name)),
                     ),
             )
             .child(
@@ -1531,13 +1622,18 @@ impl TableViewer {
                     .py(px(8.0))
                     .text_size(px(11.0))
                     .font_family("monospace")
-                    .text_color(rgb(0x333333))
+                    .text_color(palette.foreground)
                     .overflow_y_scroll()
                     .child(value),
             )
     }
 
-    fn render_pagination(&self, t: &OpenTable, this: gpui::WeakEntity<Self>) -> impl IntoElement {
+    fn render_pagination(
+        &self,
+        t: &OpenTable,
+        this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
+    ) -> impl IntoElement {
         let current_page = t.current_page();
         let total_pages = t.total_pages();
         let page_size = t.page_size;
@@ -1558,9 +1654,9 @@ impl TableViewer {
             .px(px(12.0))
             .py(px(6.0))
             .border_t_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(palette.border)
             .text_size(px(11.0))
-            .text_color(rgb(0x666666));
+            .text_color(palette.muted_foreground);
 
         pager = pager.child(
             div()
@@ -1572,10 +1668,10 @@ impl TableViewer {
                     div()
                         .flex()
                         .gap(px(2.0))
-                        .child(self.render_page_size_option(50, page_size, this.clone()))
-                        .child(self.render_page_size_option(100, page_size, this.clone()))
-                        .child(self.render_page_size_option(200, page_size, this.clone()))
-                        .child(self.render_page_size_option(500, page_size, this.clone())),
+                        .child(self.render_page_size_option(50, page_size, this.clone(), palette))
+                        .child(self.render_page_size_option(100, page_size, this.clone(), palette))
+                        .child(self.render_page_size_option(200, page_size, this.clone(), palette))
+                        .child(self.render_page_size_option(500, page_size, this.clone(), palette)),
                 ),
         );
 
@@ -1588,9 +1684,9 @@ impl TableViewer {
                 .py(px(2.0))
                 .rounded(px(3.0))
                 .bg(if has_prev {
-                    rgb(0xe0e0e0)
+                    palette.secondary
                 } else {
-                    rgb(0xf5f5f5)
+                    palette.muted
                 })
                 .text_size(px(11.0))
                 .cursor(if has_prev {
@@ -1620,14 +1716,14 @@ impl TableViewer {
                     .py(px(2.0))
                     .rounded(px(3.0))
                     .bg(if is_current {
-                        rgb(0x4a90d9)
+                        palette.primary
                     } else {
-                        rgb(0xf0f0f0)
+                        palette.secondary
                     })
                     .text_color(if is_current {
-                        rgb(0xffffff)
+                        palette.primary_foreground
                     } else {
-                        rgb(0x333333)
+                        palette.secondary_foreground
                     })
                     .text_size(px(11.0))
                     .cursor(if is_current {
@@ -1655,9 +1751,9 @@ impl TableViewer {
                 .py(px(2.0))
                 .rounded(px(3.0))
                 .bg(if has_next {
-                    rgb(0xe0e0e0)
+                    palette.secondary
                 } else {
-                    rgb(0xf5f5f5)
+                    palette.muted
                 })
                 .text_size(px(11.0))
                 .cursor(if has_next {
@@ -1684,7 +1780,8 @@ impl TableViewer {
                 .px(px(8.0))
                 .py(px(2.0))
                 .rounded(px(3.0))
-                .bg(rgb(0xe0e0e0))
+                .bg(palette.secondary)
+                .text_color(palette.secondary_foreground)
                 .text_size(px(11.0))
                 .cursor(CursorStyle::PointingHand)
                 .child("刷新")
@@ -1708,6 +1805,7 @@ impl TableViewer {
         size: i64,
         current_size: i64,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         let is_selected = size == current_size;
         div()
@@ -1716,14 +1814,14 @@ impl TableViewer {
             .py(px(2.0))
             .rounded(px(3.0))
             .bg(if is_selected {
-                rgb(0x4a90d9)
+                palette.primary
             } else {
-                rgb(0xf0f0f0)
+                palette.secondary
             })
             .text_color(if is_selected {
-                rgb(0xffffff)
+                palette.primary_foreground
             } else {
-                rgb(0x333333)
+                palette.secondary_foreground
             })
             .text_size(px(11.0))
             .cursor(CursorStyle::PointingHand)

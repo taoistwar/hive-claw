@@ -1,10 +1,15 @@
 use gpui::{
-    App, Context, CursorStyle, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
-    SharedString, Window, div, prelude::*, px, rgb, rgba,
+    App, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle,
+    SharedString, Window, div, prelude::*, px,
 };
-use gpui_component::input::InputState;
+use gpui_component::ActiveTheme as _;
+use gpui_component::input::{Input, InputState};
 
 use crate::datasource::{DataSource, MysqlClient, Store};
+use crate::ui::management_style::{
+    ActionRole, ActionSize, ManagementStyle, action_button as management_action_button,
+    management_modal_layer, management_modal_panel, management_modal_scroll,
+};
 
 #[derive(Clone)]
 pub enum FormMode {
@@ -15,7 +20,7 @@ pub enum FormMode {
 pub struct DataSourceForm {
     mode: FormMode,
     store: Entity<Store>,
-    // Cached content synced to InputState in render
+    // Initial values used when the editable InputState entities are created.
     name: SharedString,
     host: SharedString,
     port: SharedString,
@@ -28,6 +33,7 @@ pub struct DataSourceForm {
     username_input: Option<Entity<InputState>>,
     password_input: Option<Entity<InputState>>,
     focus_handle: FocusHandle,
+    form_scroll: ScrollHandle,
     status: FormStatus,
 }
 
@@ -82,6 +88,7 @@ impl DataSourceForm {
             username_input: None,
             password_input: None,
             focus_handle: cx.focus_handle(),
+            form_scroll: ScrollHandle::default(),
             status: FormStatus::Idle,
         }
     }
@@ -124,10 +131,10 @@ impl DataSourceForm {
     }
 
     fn test_connection(&mut self, cx: &mut Context<Self>) {
-        let host = self.host.to_string();
-        let port_str = self.port.to_string();
-        let username = self.username.to_string();
-        let password = self.password.to_string();
+        let host = input_value(&self.host_input, &self.host, cx);
+        let port_str = input_value(&self.port_input, &self.port, cx);
+        let username = input_value(&self.username_input, &self.username, cx);
+        let password = input_value(&self.password_input, &self.password, cx);
         let port: u16 = match port_str.parse() {
             Ok(p) => p,
             Err(_) => {
@@ -157,12 +164,13 @@ impl DataSourceForm {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        let name = self.name.to_string();
-        let host = self.host.to_string();
-        let port_str = self.port.to_string();
-        let username = self.username.to_string();
-        let password = self.password.to_string();
-        if name.is_empty() || host.is_empty() || username.is_empty() || password.is_empty() {
+        let name = input_value(&self.name_input, &self.name, cx);
+        let host = input_value(&self.host_input, &self.host, cx);
+        let port_str = input_value(&self.port_input, &self.port, cx);
+        let username = input_value(&self.username_input, &self.username, cx);
+        let password = input_value(&self.password_input, &self.password, cx);
+        let password_missing = matches!(self.mode, FormMode::Add) && password.is_empty();
+        if name.is_empty() || host.is_empty() || username.is_empty() || password_missing {
             self.status = FormStatus::TestingFailed(SharedString::from("请填写所有必填字段"));
             cx.notify();
             return;
@@ -234,20 +242,29 @@ impl Focusable for DataSourceForm {
 impl Render for DataSourceForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_inputs(window, cx);
-
-        // Sync content from InputState back to strings
-        let sync = |opt: &Option<Entity<InputState>>,
-                    target: &mut SharedString,
-                    cx: &mut Context<Self>| {
-            if let Some(s) = opt {
-                *target = SharedString::from(s.read(cx).value());
-            }
+        let style = ManagementStyle::current(cx);
+        let (
+            overlay,
+            popover,
+            popover_foreground,
+            border,
+            muted,
+            muted_foreground,
+            danger,
+            success,
+        ) = {
+            let theme = cx.theme();
+            (
+                theme.overlay,
+                theme.popover,
+                theme.popover_foreground,
+                theme.border,
+                theme.muted,
+                theme.muted_foreground,
+                theme.danger,
+                theme.success,
+            )
         };
-        sync(&self.name_input, &mut self.name, cx);
-        sync(&self.host_input, &mut self.host, cx);
-        sync(&self.port_input, &mut self.port, cx);
-        sync(&self.username_input, &mut self.username, cx);
-        sync(&self.password_input, &mut self.password, cx);
 
         let name = self.name_input.clone().unwrap();
         let host = self.host_input.clone().unwrap();
@@ -259,15 +276,13 @@ impl Render for DataSourceForm {
             FormMode::Add => "添加数据源",
             FormMode::Edit(_) => "编辑数据源",
         };
-        let status_text: Option<(SharedString, gpui::Rgba)> = match &self.status {
+        let status_text: Option<(SharedString, Hsla)> = match &self.status {
             FormStatus::Idle => None,
-            FormStatus::Testing => Some((SharedString::from("测试连接中..."), rgba(0x888888ff))),
-            FormStatus::TestingFailed(msg) => Some((msg.clone(), rgba(0xcc0000ff))),
-            FormStatus::TestingSuccess => {
-                Some((SharedString::from("连接成功！"), rgba(0x008800ff)))
-            }
-            FormStatus::Saving => Some((SharedString::from("保存中..."), rgba(0x888888ff))),
-            FormStatus::Saved => Some((SharedString::from("保存成功！"), rgba(0x008800ff))),
+            FormStatus::Testing => Some((SharedString::from("测试连接中..."), muted_foreground)),
+            FormStatus::TestingFailed(msg) => Some((msg.clone(), danger)),
+            FormStatus::TestingSuccess => Some((SharedString::from("连接成功！"), success)),
+            FormStatus::Saving => Some((SharedString::from("保存中..."), muted_foreground)),
+            FormStatus::Saved => Some((SharedString::from("保存成功！"), success)),
             FormStatus::Cancelled => None,
         };
 
@@ -278,22 +293,20 @@ impl Render for DataSourceForm {
             .left(px(0.0))
             .right(px(0.0))
             .bottom(px(0.0))
-            .bg(rgba(0x00000080))
+            .bg(overlay)
             .flex()
             .items_center()
             .justify_center()
             .child(
-                div()
+                management_modal_panel(
+                    management_modal_layer(px(480.0)),
+                    popover,
+                    popover_foreground,
+                    border,
+                )
                     .id("form-modal")
-                    .w(px(480.0))
-                    .bg(rgb(0xffffff))
-                    .rounded(px(8.0))
-                    .shadow_lg()
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .p(px(24.0))
+                            management_modal_scroll("datasource-form-scroll", &self.form_scroll)
                             .gap(px(16.0))
                             .child(
                                 div()
@@ -301,22 +314,41 @@ impl Render for DataSourceForm {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(title),
                             )
-                            .child(form_field("名称", name.clone()))
-                            .child(form_row(
-                                form_field("主机", host.clone()),
-                                form_field("端口", port.clone()),
+                            .child(form_field(
+                                "名称",
+                                name.clone(),
+                                border,
+                                muted,
+                                muted_foreground,
                             ))
-                            .child(form_field("用户名", username.clone()))
-                            .child(form_field("密码", password.clone()))
+                            .child(form_row(
+                                form_field("主机", host.clone(), border, muted, muted_foreground),
+                                form_field("端口", port.clone(), border, muted, muted_foreground),
+                            ))
+                            .child(form_field(
+                                "用户名",
+                                username.clone(),
+                                border,
+                                muted,
+                                muted_foreground,
+                            ))
+                            .child(form_field(
+                                "密码",
+                                password.clone(),
+                                border,
+                                muted,
+                                muted_foreground,
+                            ))
                             .child(
                                 div()
                                     .flex()
                                     .justify_between()
                                     .items_center()
-                                    .child(div().flex().gap(px(8.0)).child(action_button(
+                                    .child(div().flex().gap(px(8.0)).child(form_action_button(
                                         "连接测试",
-                                        rgba(0x4a90d9ff),
+                                        ActionRole::Main,
                                         matches!(self.status, FormStatus::Testing),
+                                        style,
                                         {
                                             let this = cx.weak_entity();
                                             move |_event, _window, cx| {
@@ -331,10 +363,11 @@ impl Render for DataSourceForm {
                                         div()
                                             .flex()
                                             .gap(px(8.0))
-                                            .child(action_button(
+                                            .child(form_action_button(
                                                 "取消",
-                                                rgba(0xccccccff),
+                                                ActionRole::Neutral,
                                                 false,
+                                                style,
                                                 {
                                                     let this = cx.weak_entity();
                                                     move |_event, _window, cx| {
@@ -346,10 +379,11 @@ impl Render for DataSourceForm {
                                                     }
                                                 },
                                             ))
-                                            .child(action_button(
+                                            .child(form_action_button(
                                                 "保存",
-                                                rgba(0x2d8a4eff),
+                                                ActionRole::Edit,
                                                 matches!(self.status, FormStatus::Saving),
+                                                style,
                                                 {
                                                     let this = cx.weak_entity();
                                                     move |_event, _window, cx| {
@@ -374,7 +408,24 @@ impl Render for DataSourceForm {
     }
 }
 
-fn form_field(label: &'static str, input: Entity<InputState>) -> impl IntoElement {
+fn input_value(
+    input: &Option<Entity<InputState>>,
+    fallback: &SharedString,
+    cx: &Context<DataSourceForm>,
+) -> String {
+    input
+        .as_ref()
+        .map(|state| state.read(cx).value().to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn form_field(
+    label: &'static str,
+    input: Entity<InputState>,
+    border: Hsla,
+    background: Hsla,
+    label_color: Hsla,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -382,7 +433,7 @@ fn form_field(label: &'static str, input: Entity<InputState>) -> impl IntoElemen
         .child(
             div()
                 .text_size(px(12.0))
-                .text_color(rgb(0x666666))
+                .text_color(label_color)
                 .child(label),
         )
         .child(
@@ -390,41 +441,34 @@ fn form_field(label: &'static str, input: Entity<InputState>) -> impl IntoElemen
                 .id(SharedString::from(format!("field-{}", label)))
                 .h(px(32.0))
                 .border_1()
-                .border_color(rgb(0xd0d0d0))
+                .border_color(border)
                 .rounded(px(4.0))
-                .px(px(8.0))
-                .bg(rgb(0xfafafa))
-                .child(input),
+                .bg(background)
+                .child(Input::new(&input).w_full().h_full().px(px(8.0))),
         )
 }
 fn form_row(left: impl IntoElement, right: impl IntoElement) -> impl IntoElement {
     div()
         .flex()
         .gap(px(12.0))
-        .child(div().child(left))
+        .child(div().flex_1().child(left))
         .child(div().w(px(120.0)).child(right))
 }
-fn action_button(
+fn form_action_button(
     label: &'static str,
-    bg: gpui::Rgba,
+    role: ActionRole,
     disabled: bool,
+    style: ManagementStyle,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let opacity = if disabled { 0.5 } else { 1.0 };
-    div()
-        .id(SharedString::from(label))
-        .px(px(16.0))
-        .py(px(8.0))
-        .rounded(px(4.0))
-        .bg(bg)
-        .text_size(px(13.0))
-        .text_color(rgb(0xffffff))
-        .cursor(CursorStyle::PointingHand)
-        .opacity(opacity)
-        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            if !disabled {
-                on_click(event, window, cx);
-            }
-        })
-        .child(label)
+    management_action_button(
+        SharedString::from(label),
+        label,
+        if disabled { ActionRole::Disabled } else { role },
+        ActionSize::Dialog,
+        style,
+    )
+    .when(!disabled, |button| {
+        button.on_mouse_down(MouseButton::Left, on_click)
+    })
 }

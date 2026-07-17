@@ -919,7 +919,7 @@ impl Category {
 
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
-        let id = sqlx::query_scalar::<_, i64>(
+        let result = sqlx::query_scalar::<_, i64>(
             "INSERT INTO categories (parent_id, name, slug, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id"
         )
         .bind(parent_id)
@@ -929,7 +929,12 @@ impl Category {
         .bind(&now)
         .bind(&now)
         .fetch_one(pool)
-        .await?;
+        .await;
+
+        let id = result.map_err(|e| handle_unique_constraint_error(e, "slug", &slug))?;
+
+        // 创建后检测循环引用
+        Self::detect_cycle(pool, id, parent_id).await?;
 
         let duration = start.elapsed().as_millis();
         tracing::info!(entity = "category", op = "create", id = id, name = %name, slug = %slug, duration_ms = duration, "Category created");
@@ -953,9 +958,12 @@ impl Category {
             validate_description(desc)?;
         }
 
+        // 更新前检测循环引用
+        Self::detect_cycle(pool, id, parent_id).await?;
+
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE categories SET parent_id = ?, name = ?, slug = ?, description = ?, updated_at = ? WHERE id = ?"
         )
         .bind(parent_id)
@@ -965,7 +973,9 @@ impl Category {
         .bind(&now)
         .bind(id)
         .execute(pool)
-        .await?;
+        .await;
+
+        result.map_err(|e| handle_unique_constraint_error(e, "slug", &slug))?;
 
         let duration = start.elapsed().as_millis();
         tracing::info!(entity = "category", op = "update", id = id, name = %name, slug = %slug, duration_ms = duration, "Category updated");
@@ -975,28 +985,58 @@ impl Category {
             .ok_or_else(|| anyhow::anyhow!("Category not found"))
     }
 
+    /// 获取所有分类（不分页，用于构建树形结构）
+    pub async fn list_all(pool: &Pool<Sqlite>) -> Result<Vec<Category>> {
+        let categories = sqlx::query_as::<_, Category>(
+            "SELECT id, parent_id, name, slug, description, created_at, updated_at FROM categories ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(categories)
+    }
+
+    /// 检测循环引用：从 parent_id 向上遍历，若遇到 current_id 则存在循环
+    async fn detect_cycle(
+        pool: &Pool<Sqlite>,
+        current_id: i64,
+        parent_id: Option<i64>,
+    ) -> Result<()> {
+        if let Some(pid) = parent_id {
+            if current_id == pid {
+                return Err(anyhow::anyhow!("不允许形成循环引用：分类不能以自身为父级"));
+            }
+
+            let mut check_id: Option<i64> = Some(pid);
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(current_id);
+
+            while let Some(parent) = check_id {
+                if visited.contains(&parent) {
+                    return Err(anyhow::anyhow!("不允许形成循环引用：检测到分类层级循环"));
+                }
+                visited.insert(parent);
+
+                let next: Option<i64> =
+                    sqlx::query_scalar("SELECT parent_id FROM categories WHERE id = ?")
+                        .bind(parent)
+                        .fetch_optional(pool)
+                        .await?
+                        .flatten();
+
+                check_id = next;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
         let start = Instant::now();
-        // 检查是否有子分类
-        let child_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM categories WHERE parent_id = ?")
-                .bind(id)
-                .fetch_one(pool)
-                .await?;
 
-        if child_count > 0 {
-            tracing::warn!(
-                entity = "category",
-                op = "delete",
-                id = id,
-                child_count = child_count,
-                "Cannot delete category with children"
-            );
-            return Err(anyhow::anyhow!(
-                "该分类下有 {} 个子分类，请先删除子分类",
-                child_count
-            ));
-        }
+        // 将子分类的 parent_id 置为 NULL（级联解绑）
+        sqlx::query("UPDATE categories SET parent_id = NULL WHERE parent_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
 
         sqlx::query("DELETE FROM categories WHERE id = ?")
             .bind(id)
@@ -2744,6 +2784,67 @@ pub async fn get_current_version(pool: &Pool<Sqlite>) -> Result<i64> {
     Ok(version.unwrap_or(0))
 }
 
+/// 检测旧版 plugins 表并升级为新版 schema
+/// 旧表列: id, name, version, description, wasm_file_path, is_active, created_at, updated_at
+/// 新表列: id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, created_at, updated_at, deleted_at
+async fn migrate_old_plugins_table(pool: &Pool<Sqlite>) -> Result<()> {
+    // 检查 plugins 表是否存在
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='plugins'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !table_exists {
+        return Ok(());
+    }
+
+    // 检查是否缺少新列（旧表没有 identifier 列）
+    let has_identifier: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('plugins') WHERE name='identifier'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if has_identifier {
+        // 表已经是新版 schema，无需迁移
+        return Ok(());
+    }
+
+    tracing::info!("检测到旧版 plugins 表，正在升级到新版 schema");
+
+    // 旧表没有 deleted_at，用 DROP + CREATE 重建
+    sqlx::query("DROP TABLE plugins").execute(pool).await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE plugins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identifier TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT,
+            manifest TEXT,
+            runtime TEXT NOT NULL,
+            version TEXT NOT NULL,
+            author TEXT,
+            repository_url TEXT,
+            s3_key TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    tracing::info!("旧版 plugins 表已升级为新版 schema");
+    Ok(())
+}
+
 /// 运行数据库迁移
 pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
     let current_version = get_current_version(pool).await?;
@@ -2771,6 +2872,9 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // 检测并升级旧版 plugins 表（在 init_tables 之前执行）
+    migrate_old_plugins_table(pool).await?;
 
     // 执行迁移脚本
     if current_version < 1 {

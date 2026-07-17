@@ -1,4 +1,9 @@
 use crate::datasource::{Store, entity_store::Agent};
+use crate::ui::management_style::{
+    ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
+    list_container, list_header, list_header_cell, list_row, management_modal_layer,
+    management_modal_panel, management_modal_scroll,
+};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
@@ -14,6 +19,7 @@ pub struct AgentView {
     page_size: i64,
     total_count: i64,
     show_form: bool,
+    form_scroll: ScrollHandle,
     editing_id: Option<i64>,
     form_identifier: String,
     form_name: String,
@@ -43,6 +49,7 @@ impl AgentView {
             page_size: 20,
             total_count: 0,
             show_form: false,
+            form_scroll: ScrollHandle::default(),
             editing_id: None,
             form_identifier: String::new(),
             form_name: String::new(),
@@ -146,6 +153,8 @@ impl AgentView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
+        self.form_scroll
+            .set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
         self.error_message = None;
@@ -300,12 +309,15 @@ impl Render for AgentView {
                 .detach();
             }
         }
+        let style = ManagementStyle::current(cx);
+        let theme = cx.theme();
+
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(theme.background)
+            .text_color(theme.foreground)
             .child(
                 div()
                     .flex()
@@ -313,7 +325,7 @@ impl Render for AgentView {
                     .justify_between()
                     .p(px(16.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(theme.border)
                     .child(
                         div()
                             .text_size(px(18.0))
@@ -321,22 +333,19 @@ impl Render for AgentView {
                             .child("Agent 管理"),
                     )
                     .child(
-                        div()
-                            .id("add-btn")
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(0x4a90d9))
-                            .text_color(rgb(0xffffff))
-                            .text_size(px(13.0))
-                            .cursor(CursorStyle::PointingHand)
-                            .child("+ 添加 Agent")
-                            .on_mouse_down(MouseButton::Left, {
-                                let t = cx.weak_entity();
-                                move |_, window, cx| {
-                                    t.update(cx, |v, cx| v.show_add_form(window, cx)).ok();
-                                }
-                            }),
+                        action_button(
+                            "add-btn",
+                            "+ 添加 Agent",
+                            ActionRole::Main,
+                            ActionSize::Page,
+                            style,
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let t = cx.weak_entity();
+                            move |_, window, cx| {
+                                t.update(cx, |v, cx| v.show_add_form(window, cx)).ok();
+                            }
+                        }),
                     ),
             )
             .child(
@@ -345,7 +354,7 @@ impl Render for AgentView {
                     .items_center()
                     .p(px(12.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(theme.border)
                     .child(
                         div()
                             .flex()
@@ -364,6 +373,7 @@ impl Render for AgentView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scrollbar()
                     .p(px(16.0))
                     .child(if self.items.is_empty() {
@@ -372,7 +382,7 @@ impl Render for AgentView {
                             .items_center()
                             .justify_center()
                             .h_full()
-                            .text_color(rgb(0x999999))
+                            .text_color(style.list.muted_foreground)
                             .text_size(px(14.0))
                             .child("暂无数据")
                     } else {
@@ -384,192 +394,67 @@ impl Render for AgentView {
                             px(150.0),
                             px(120.0),
                         ];
-                        div()
-                            .flex()
-                            .flex_col()
-                            .border_1()
-                            .border_color(rgb(0xe0e0e0))
-                            .rounded(px(4.0))
-                            .overflow_hidden()
+                        list_container(style)
                             .child(
-                                div()
-                                    .flex()
-                                    .bg(rgb(0xf5f5f5))
-                                    .border_b_1()
-                                    .border_color(rgb(0xe0e0e0))
-                                    .child(
-                                        div()
-                                            .w(col_widths[0])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("ID"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[1])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("名称"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[2])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("Identifier"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[3])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("Depth"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[4])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("描述"),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[5])
-                                            .px(px(8.0))
-                                            .py(px(8.0))
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x333333))
-                                            .child("操作"),
-                                    ),
+                                list_header(style)
+                                    .child(list_header_cell(Some(col_widths[0]), style).child("ID"))
+                                    .child(list_header_cell(Some(col_widths[1]), style).child("名称"))
+                                    .child(list_header_cell(Some(col_widths[2]), style).child("Identifier"))
+                                    .child(list_header_cell(Some(col_widths[3]), style).child("Depth"))
+                                    .child(list_header_cell(Some(col_widths[4]), style).child("描述"))
+                                    .child(list_header_cell(Some(col_widths[5]), style).child("操作")),
                             )
                             .children(self.items.iter().map(|item| {
                                 let id = item.id;
                                 let ic = item.clone();
-                                div()
-                                    .flex()
-                                    .border_b_1()
-                                    .border_color(rgb(0xf0f0f0))
-                                    .bg(rgb(0xffffff))
+                                list_row(style)
+                                    .child(list_cell(Some(col_widths[0]), style).child(format!("{}", item.id)))
+                                    .child(list_cell(Some(col_widths[1]), style).child(item.name.clone()))
+                                    .child(list_cell(Some(col_widths[2]), style).child(item.identifier.clone()))
+                                    .child(list_cell(Some(col_widths[3]), style).child(format!("{}", item.depth)))
+                                    .child(list_cell(Some(col_widths[4]), style).child(if let Some(ref d) = item.description {
+                                        d.clone()
+                                    } else {
+                                        String::new()
+                                    }))
                                     .child(
-                                        div()
-                                            .w(col_widths[0])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
-                                            .child(format!("{}", item.id)),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[1])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(item.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[2])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
-                                            .truncate()
-                                            .child(item.identifier.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[3])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
-                                            .child(format!("{}", item.depth)),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[4])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x666666))
-                                            .truncate()
-                                            .child(if let Some(ref d) = item.description {
-                                                d.clone()
-                                            } else {
-                                                String::new()
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(col_widths[5])
-                                            .px(px(8.0))
-                                            .py(px(6.0))
-                                            .flex()
-                                            .gap(px(4.0))
+                                        list_actions(None, style)
                                             .child(
-                                                div()
-                                                    .id(("edit", id as u64))
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0x5cb85c))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("编辑")
-                                                    .on_mouse_down(MouseButton::Left, {
-                                                        let t = cx.weak_entity();
-                                                        move |_, window, cx| {
-                                                            t.update(cx, |v, cx| {
-                                                                v.show_edit_form(
-                                                                    window,
-                                                                    ic.clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    }),
+                                                action_button(
+                                                    ("edit", id as u64),
+                                                    "编辑",
+                                                    ActionRole::Edit,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.show_edit_form(window, ic.clone(), cx)
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             )
                                             .child(
-                                                div()
-                                                    .id(("del", id as u64))
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(0xd9534f))
-                                                    .text_color(rgb(0xffffff))
-                                                    .text_size(px(11.0))
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .child("删除")
-                                                    .on_mouse_down(MouseButton::Left, {
-                                                        let t = cx.weak_entity();
-                                                        move |_, _, cx| {
-                                                            t.update(cx, |v, cx| {
-                                                                v.confirm_delete_id = Some(id);
-                                                                cx.notify();
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    }),
+                                                action_button(
+                                                    ("del", id as u64),
+                                                    "删除",
+                                                    ActionRole::Delete,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.confirm_delete_id = Some(id);
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             ),
                                     )
                             }))
@@ -583,81 +468,65 @@ impl Render for AgentView {
                     .justify_between()
                     .p(px(12.0))
                     .border_t_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(theme.border)
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x666666))
+                            .text_color(style.list.muted_foreground)
                             .child(format!("共 {} 条", self.total_count)),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(px(8.0))
+                            .items_center()
                             .child(
-                                div()
-                                    .id("prev")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(if self.current_page > 0 {
-                                        rgb(0x4a90d9)
+                                action_button(
+                                    "prev",
+                                    "上一页",
+                                    if self.current_page > 0 {
+                                        ActionRole::Neutral
                                     } else {
-                                        rgb(0xcccccc)
-                                    })
-                                    .text_color(rgb(0xffffff))
-                                    .text_size(px(13.0))
-                                    .cursor(if self.current_page > 0 {
-                                        CursorStyle::PointingHand
-                                    } else {
-                                        CursorStyle::Arrow
-                                    })
-                                    .child("上一页")
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let t = cx.weak_entity();
-                                        move |_, _, cx| {
-                                            t.update(cx, |v, cx| v.prev_page(cx)).ok();
-                                        }
-                                    }),
+                                        ActionRole::Disabled
+                                    },
+                                    ActionSize::Page,
+                                    style,
+                                )
+                                .on_mouse_down(MouseButton::Left, {
+                                    let t = cx.weak_entity();
+                                    move |_, _, cx| {
+                                        t.update(cx, |v, cx| v.prev_page(cx)).ok();
+                                    }
+                                }),
                             )
-                            .child(div().text_size(px(13.0)).child(format!(
-                                "第 {} / {} 页",
-                                self.current_page + 1,
-                                tp.max(1)
-                            )))
                             .child(
                                 div()
-                                    .id("next")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            rgb(0x4a90d9)
-                                        } else {
-                                            rgb(0xcccccc)
-                                        },
-                                    )
-                                    .text_color(rgb(0xffffff))
                                     .text_size(px(13.0))
-                                    .cursor(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            CursorStyle::PointingHand
-                                        } else {
-                                            CursorStyle::Arrow
-                                        },
-                                    )
-                                    .child("下一页")
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let t = cx.weak_entity();
-                                        move |_, _, cx| {
-                                            t.update(cx, |v, cx| v.next_page(cx)).ok();
-                                        }
-                                    }),
+                                    .text_color(style.list.muted_foreground)
+                                    .child(format!(
+                                        "第 {} / {} 页",
+                                        self.current_page + 1,
+                                        tp.max(1)
+                                    )),
+                            )
+                            .child(
+                                action_button(
+                                    "next",
+                                    "下一页",
+                                    if (self.current_page + 1) * self.page_size < self.total_count {
+                                        ActionRole::Neutral
+                                    } else {
+                                        ActionRole::Disabled
+                                    },
+                                    ActionSize::Page,
+                                    style,
+                                )
+                                .on_mouse_down(MouseButton::Left, {
+                                    let t = cx.weak_entity();
+                                    move |_, _, cx| {
+                                        t.update(cx, |v, cx| v.next_page(cx)).ok();
+                                    }
+                                }),
                             ),
                     ),
             )
@@ -675,7 +544,7 @@ impl Render for AgentView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgb(0x000000))
+                        .bg(theme.overlay)
                         .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
@@ -686,28 +555,18 @@ impl Render for AgentView {
                         }),
                 )
                 .child(
-                    div()
-                        .absolute()
-                        .top(px(80.0))
-                        .left(px(50.0))
-                        .right(px(50.0))
-                        .max_w(px(550.0))
-                        .max_h(px(600.0))
-                        .bg(rgb(0xffffff))
-                        .rounded(px(12.0))
-                        .shadow_lg()
-                        .border_1()
-                        .border_color(rgb(0xdddddd))
-                        .p(px(24.0))
+                    management_modal_panel(
+                        management_modal_layer(px(550.0)),
+                        theme.popover,
+                        theme.foreground,
+                        theme.border,
+                    )
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
                         })
                         .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(12.0))
-                                .overflow_y_scrollbar()
+                            management_modal_scroll("agent-form-scroll", &self.form_scroll)
+                                .gap(px(10.0))
                                 .child(
                                     div()
                                         .text_size(px(18.0))
@@ -718,20 +577,20 @@ impl Render for AgentView {
                                             "添加 Agent"
                                         }),
                                 )
-                                .child(form_field("Identifier *", identifier_input))
-                                .child(form_field("名称 *", name_input))
-                                .child(form_field("描述", description_input))
-                                .child(form_field("System Prompt", system_prompt_input))
-                                .child(form_field("Depth", depth_input))
-                                .child(form_field("Model Preset", model_preset_input))
+                                .child(form_field("Identifier *", identifier_input, theme))
+                                .child(form_field("名称 *", name_input, theme))
+                                .child(form_field("描述", description_input, theme))
+                                .child(form_field("System Prompt", system_prompt_input, theme))
+                                .child(form_field("Depth", depth_input, theme))
+                                .child(form_field("Model Preset", model_preset_input, theme))
                                 .when_some(self.error_message.as_ref(), |this, err| {
                                     this.child(
                                         div()
                                             .p(px(8.0))
-                                            .bg(rgb(0xfff3cd))
+                                            .bg(theme.warning.opacity(0.1))
                                             .rounded(px(4.0))
                                             .text_size(px(12.0))
-                                            .text_color(rgb(0x856404))
+                                            .text_color(theme.warning)
                                             .child(err.clone()),
                                     )
                                 })
@@ -741,40 +600,34 @@ impl Render for AgentView {
                                         .justify_end()
                                         .gap(px(8.0))
                                         .child(
-                                            div()
-                                                .id("cancel")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x6c757d))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("取消")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.hide_form(cx)).ok();
-                                                    }
-                                                }),
+                                            action_button(
+                                                "cancel",
+                                                "取消",
+                                                ActionRole::Neutral,
+                                                ActionSize::Page,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                }
+                                            }),
                                         )
                                         .child(
-                                            div()
-                                                .id("save")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x4a90d9))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("保存")
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.save(cx)).ok();
-                                                    }
-                                                }),
+                                            action_button(
+                                                "save",
+                                                "保存",
+                                                ActionRole::Main,
+                                                ActionSize::Page,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.save(cx)).ok();
+                                                }
+                                            }),
                                         ),
                                 ),
                         ),
@@ -788,7 +641,7 @@ impl Render for AgentView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgb(0x000000))
+                        .bg(theme.overlay)
                         .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
@@ -814,11 +667,11 @@ impl Render for AgentView {
                         .child(
                             div()
                                 .w(px(400.0))
-                                .bg(rgb(0xffffff))
+                                .bg(theme.popover)
                                 .rounded(px(8.0))
                                 .shadow_lg()
                                 .border_1()
-                                .border_color(rgb(0xdddddd))
+                                .border_color(theme.border)
                                 .p(px(24.0))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
@@ -832,13 +685,13 @@ impl Render for AgentView {
                                             div()
                                                 .text_size(px(18.0))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0x333333))
+                                                .text_color(theme.foreground)
                                                 .child("确认删除"),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(14.0))
-                                                .text_color(rgb(0x666666))
+                                                .text_color(style.list.muted_foreground)
                                                 .child("确定要删除这个 Agent 吗？此操作不可恢复。"),
                                         )
                                         .child(
@@ -847,52 +700,46 @@ impl Render for AgentView {
                                                 .justify_end()
                                                 .gap(px(8.0))
                                                 .child(
-                                                    div()
-                                                        .id("cancel-delete")
-                                                        .px(px(16.0))
-                                                        .py(px(8.0))
-                                                        .rounded(px(6.0))
-                                                        .bg(rgb(0x6c757d))
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_size(px(13.0))
-                                                        .cursor(CursorStyle::PointingHand)
-                                                        .child("取消")
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    v.confirm_delete_id = None;
-                                                                    cx.notify();
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
+                                                    action_button(
+                                                        "cancel-delete",
+                                                        "取消",
+                                                        ActionRole::Neutral,
+                                                        ActionSize::Page,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                v.confirm_delete_id = None;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 )
                                                 .child(
-                                                    div()
-                                                        .id("confirm-delete")
-                                                        .px(px(16.0))
-                                                        .py(px(8.0))
-                                                        .rounded(px(6.0))
-                                                        .bg(rgb(0xd9534f))
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_size(px(13.0))
-                                                        .cursor(CursorStyle::PointingHand)
-                                                        .child("确认删除")
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    if let Some(did) =
-                                                                        v.confirm_delete_id
-                                                                    {
-                                                                        v.delete(did, cx);
-                                                                        v.confirm_delete_id = None;
-                                                                    }
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
+                                                    action_button(
+                                                        "confirm-delete",
+                                                        "确认删除",
+                                                        ActionRole::Delete,
+                                                        ActionSize::Page,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                if let Some(did) =
+                                                                    v.confirm_delete_id
+                                                                {
+                                                                    v.delete(did, cx);
+                                                                    v.confirm_delete_id = None;
+                                                                }
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 ),
                                         ),
                                 ),
@@ -902,19 +749,19 @@ impl Render for AgentView {
     }
 }
 
-fn form_field(label: &'static str, input: Entity<InputState>) -> impl IntoElement {
+fn form_field(label: &'static str, input: Entity<InputState>, theme: &gpui_component::theme::Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .child(div().text_size(px(13.0)).child(label))
+        .child(div().text_size(px(13.0)).text_color(theme.foreground).child(label))
         .child(
             Input::new(&input)
                 .w_full()
                 .h(px(32.0))
                 .px(px(8.0))
                 .border_1()
-                .border_color(rgb(0xcccccc))
+                .border_color(theme.border)
                 .rounded(px(4.0)),
         )
 }

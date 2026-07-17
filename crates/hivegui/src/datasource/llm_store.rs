@@ -31,6 +31,7 @@ pub struct LlmPreset {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct LlmProvider {
     pub id: i64,
+    pub name: String,
     pub category: String,
     pub base_url: String,
     pub token_encrypted: Option<Vec<u8>>,
@@ -48,6 +49,10 @@ pub struct LlmStore {
 impl LlmStore {
     pub fn new(pool: SqlitePool, crypto: Crypto) -> Self {
         LlmStore { pool, crypto }
+    }
+
+    pub fn crypto(&self) -> &Crypto {
+        &self.crypto
     }
 
     pub async fn migrate(&self) -> Result<()> {
@@ -73,6 +78,7 @@ impl LlmStore {
         let providers_exist = self.table_exists("llm_providers").await?;
         if providers_exist {
             self.ensure_legacy_provider_columns().await?;
+            self.ensure_provider_name_column().await?;
         }
         if !models_exist && !providers_exist {
             self.create_current_tables().await?;
@@ -114,6 +120,7 @@ impl LlmStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS llm_providers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
                 category TEXT NOT NULL DEFAULT 'openai',
                 base_url TEXT NOT NULL DEFAULT '',
                 token_encrypted BLOB,
@@ -183,6 +190,23 @@ impl LlmStore {
         Ok(())
     }
 
+    /// 为已有 llm_providers 表添加 name 列（UNIQUE），并用 category 填充默认值。
+    async fn ensure_provider_name_column(&self) -> Result<()> {
+        if !self.table_has_column("llm_providers", "name").await? {
+            sqlx::query("ALTER TABLE llm_providers ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+                .execute(&self.pool)
+                .await?;
+            // 用 category + id 生成唯一 name，避免冲突
+            sqlx::query(
+                "UPDATE llm_providers SET name = category || '_' || CAST(id AS TEXT)
+                 WHERE name = ''",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn migrate_legacy_relationships(&self) -> Result<()> {
         tracing::info!("migrating LLM relationships from Provider-owned to Model-owned");
 
@@ -190,6 +214,7 @@ impl LlmStore {
         sqlx::query(
             "CREATE TABLE llm_providers_v2 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
                 category TEXT NOT NULL DEFAULT 'openai',
                 base_url TEXT NOT NULL DEFAULT '',
                 token_encrypted BLOB,
@@ -202,8 +227,8 @@ impl LlmStore {
         .await?;
         sqlx::query(
             "INSERT INTO llm_providers_v2
-                (id, category, base_url, token_encrypted, token_env, created_at, updated_at)
-             SELECT id, category, base_url, token_encrypted, token_env, created_at, updated_at
+                (id, name, category, base_url, token_encrypted, token_env, created_at, updated_at)
+             SELECT id, category || '_' || CAST(id AS TEXT), category, base_url, token_encrypted, token_env, created_at, updated_at
              FROM llm_providers",
         )
         .execute(&mut *tx)
@@ -462,6 +487,7 @@ impl LlmStore {
     // ── Provider ──
     pub async fn create_provider(
         &self,
+        name: &str,
         category: &str,
         base_url: &str,
         token: &str,
@@ -475,9 +501,10 @@ impl LlmStore {
         };
         let result = sqlx::query(
             "INSERT INTO llm_providers
-                (category, base_url, token_encrypted, token_env, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+                (name, category, base_url, token_encrypted, token_env, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
+        .bind(name)
         .bind(category)
         .bind(base_url)
         .bind(&encrypted)
@@ -505,6 +532,7 @@ impl LlmStore {
     pub async fn update_provider(
         &self,
         id: i64,
+        name: &str,
         category: &str,
         base_url: &str,
         token: &str,
@@ -514,9 +542,10 @@ impl LlmStore {
         let result = if token.is_empty() {
             sqlx::query(
                 "UPDATE llm_providers
-                 SET category=?, base_url=?, token_env=?, updated_at=?
+                 SET name=?, category=?, base_url=?, token_env=?, updated_at=?
                  WHERE id=?",
             )
+            .bind(name)
             .bind(category)
             .bind(base_url)
             .bind(token_env)
@@ -528,9 +557,10 @@ impl LlmStore {
             let encrypted = self.crypto.encrypt(token.as_bytes())?;
             sqlx::query(
                 "UPDATE llm_providers
-                 SET category=?, base_url=?, token_encrypted=?, token_env=?, updated_at=?
+                 SET name=?, category=?, base_url=?, token_encrypted=?, token_env=?, updated_at=?
                  WHERE id=?",
             )
+            .bind(name)
             .bind(category)
             .bind(base_url)
             .bind(encrypted)
@@ -582,7 +612,13 @@ mod tests {
         let store = test_store().await;
         let preset = store.list_presets().await.unwrap().remove(0);
         let provider = store
-            .create_provider("deepseek", "https://api.deepseek.com", "secret", "")
+            .create_provider(
+                "deepseek-1",
+                "deepseek",
+                "https://api.deepseek.com",
+                "secret",
+                "",
+            )
             .await
             .unwrap();
         let model = store
@@ -601,7 +637,13 @@ mod tests {
         let store = test_store().await;
         let preset = store.list_presets().await.unwrap().remove(0);
         let provider = store
-            .create_provider("openai", "https://api.openai.com/v1", "", "OPENAI_API_KEY")
+            .create_provider(
+                "openai-1",
+                "openai",
+                "https://api.openai.com/v1",
+                "",
+                "OPENAI_API_KEY",
+            )
             .await
             .unwrap();
         store

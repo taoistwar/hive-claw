@@ -3,7 +3,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName,
+    ActiveTheme as _, Icon, IconName, Sizable,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
     theme::{Theme, ThemeRegistry},
@@ -225,7 +225,11 @@ impl SidebarNav {
                 background
             })
             .hover(move |style| style.bg(active_background))
-            .child(Icon::new(icon_name).text_color(foreground))
+            .child(
+                Icon::new(icon_name)
+                    .large()
+                    .text_color(foreground),
+            )
             .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 cx.update_global::<HiveGuiAppState, _>(|app, _| app.route = route);
@@ -243,7 +247,7 @@ impl SidebarNav {
 
         Button::new("user_config")
             .ghost()
-            .icon(IconName::User)
+            .icon(Icon::new(IconName::User).large())
             .tooltip("用户配置")
             .w(px(40.0))
             .h(px(40.0))

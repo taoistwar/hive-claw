@@ -3,7 +3,6 @@ use crate::datasource::Store;
 use crate::ui::{agent_view::AgentView, skill_view::SkillView, tool_view::ToolView};
 use gpui::*;
 use gpui_component::ActiveTheme as _;
-use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 
 pub struct AiView {
@@ -49,7 +48,7 @@ impl Render for AiView {
                     .child(Tab::new().label("技能")),
             )
             // Content
-            .child(div().flex_1().child(match self.active_tab {
+            .child(div().flex_1().min_h_0().child(match self.active_tab {
                 0 => self.agent_view.clone().into_any_element(),
                 1 => self.tool_view.clone().into_any_element(),
                 2 => self.skill_view.clone().into_any_element(),

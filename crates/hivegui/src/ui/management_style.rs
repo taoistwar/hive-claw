@@ -1,5 +1,6 @@
 use gpui::*;
 use gpui_component::{ActiveTheme as _, theme::Theme};
+use gpui_component::scroll::ScrollableElement;
 
 /// Semantic purpose of an action in a management surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +248,56 @@ pub fn list_actions(width: Option<Pixels>, style: ManagementStyle) -> Div {
     list_cell(width, style).flex().items_center().gap(px(4.0))
 }
 
+/// Builds a viewport-constrained, horizontally centered modal layer.
+pub fn management_modal_layer(max_width: Pixels) -> Div {
+    div()
+        .absolute()
+        .top(px(24.0))
+        .bottom(px(24.0))
+        .left(px(0.0))
+        .right(px(0.0))
+        .mx_auto()
+        .w_full()
+        .max_w(max_width)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+}
+
+/// Applies the shared visual treatment to a management modal.
+pub fn management_modal_panel(
+    modal: Div,
+    background: Hsla,
+    foreground: Hsla,
+    border: Hsla,
+) -> Div {
+    modal
+        .bg(background)
+        .text_color(foreground)
+        .rounded(px(12.0))
+        .shadow_lg()
+        .border_1()
+        .border_color(border)
+        .p(px(24.0))
+}
+
+/// Builds a shrinking modal body with a reserved vertical-scrollbar gutter.
+pub fn management_modal_scroll(
+    id: impl Into<ElementId>,
+    scroll_handle: &ScrollHandle,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .pr(px(16.0))
+        .overflow_y_scroll()
+        .track_scroll(scroll_handle)
+        .vertical_scrollbar(scroll_handle)
+}
+
 fn sized_cell(cell: Div, width: Option<Pixels>) -> Div {
     match width {
         Some(width) => cell.w(width).flex_shrink_0(),
@@ -286,6 +337,137 @@ mod tests {
     #[test]
     fn category_view_uses_shared_management_style() {
         assert_management_source_migrated("category_view", include_str!("category_view.rs"));
+    }
+
+    #[test]
+    fn tag_and_capability_views_use_shared_management_style() {
+        assert_management_source_migrated("tag_view", include_str!("tag_view.rs"));
+        assert_management_source_migrated("capability_view", include_str!("capability_view.rs"));
+    }
+
+    #[test]
+    fn function_and_skill_views_use_shared_management_style() {
+        assert_management_source_migrated("function_view", include_str!("function_view.rs"));
+        assert_management_source_migrated("skill_view", include_str!("skill_view.rs"));
+    }
+
+    #[test]
+    fn tool_and_workflow_views_use_shared_management_style() {
+        assert_management_source_migrated("tool_view", include_str!("tool_view.rs"));
+        assert_management_source_migrated("workflow_view", include_str!("workflow_view.rs"));
+    }
+
+    #[test]
+    fn plugin_and_agent_views_use_shared_management_style() {
+        assert_management_source_migrated("plugin_view", include_str!("plugin_view.rs"));
+        assert_management_source_migrated("agent_view", include_str!("agent_view.rs"));
+    }
+
+    #[test]
+    fn global_config_view_uses_shared_management_style() {
+        assert_management_source_migrated(
+            "global_config",
+            include_str!("global_config.rs"),
+        );
+    }
+
+    #[test]
+    fn llm_config_uses_shared_management_style() {
+        assert_management_source_migrated("llm_config", include_str!("llm_config.rs"));
+    }
+
+    #[test]
+    fn management_forms_use_viewport_safe_modal_primitives() {
+        let sources = [
+            ("plugin_view", include_str!("plugin_view.rs")),
+            ("function_view", include_str!("function_view.rs")),
+            ("workflow_view", include_str!("workflow_view.rs")),
+            ("agent_view", include_str!("agent_view.rs")),
+            ("tool_view", include_str!("tool_view.rs")),
+            ("skill_view", include_str!("skill_view.rs")),
+            ("capability_view", include_str!("capability_view.rs")),
+            ("category_view", include_str!("category_view.rs")),
+            ("tag_view", include_str!("tag_view.rs")),
+            ("global_config", include_str!("global_config.rs")),
+            ("llm_config", include_str!("llm_config.rs")),
+            ("datasource_form", include_str!("datasource_form.rs")),
+            ("datasource_view", include_str!("datasource_view.rs")),
+        ];
+
+        for (name, source) in sources {
+            assert!(
+                source.contains("management_modal_layer("),
+                "{name} does not use the viewport-safe modal layer"
+            );
+            assert!(
+                source.contains("management_modal_panel("),
+                "{name} does not use the centered modal panel"
+            );
+        }
+
+        for (name, source) in sources.into_iter().filter(|(name, _)| {
+            !matches!(*name, "datasource_view")
+        }) {
+            assert!(
+                source.contains("management_modal_scroll("),
+                "{name} does not reserve a scrollable modal body"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_hosts_allow_scrollable_contents_to_shrink() {
+        for (name, source) in [
+            ("extension_view", include_str!("extension_view.rs")),
+            ("ai_view", include_str!("ai_view.rs")),
+            ("utility_view", include_str!("utility_view.rs")),
+            ("system_settings_view", include_str!("system_settings_view.rs")),
+        ] {
+            assert!(
+                source.contains(".flex_1().min_h_0()"),
+                "{name} does not constrain its tab content height"
+            );
+        }
+    }
+
+    fn category_error_style_uses_danger(source: &str) -> bool {
+        let required = [
+            "theme.danger",
+            "theme.danger_foreground",
+            ".bg(danger)",
+            ".border_color(danger)",
+            ".text_color(danger_foreground)",
+        ];
+        let forbidden = [
+            ".bg(warning)",
+            ".border_color(warning)",
+            ".text_color(warning_foreground)",
+        ];
+
+        required.iter().all(|fragment| source.contains(fragment))
+            && forbidden.iter().all(|fragment| !source.contains(fragment))
+    }
+
+    #[test]
+    fn category_errors_use_danger_theme_tokens() {
+        assert!(
+            category_error_style_uses_danger(include_str!("category_view.rs")),
+            "category_view error styling does not use the danger theme tokens"
+        );
+    }
+
+    #[test]
+    fn category_error_contract_rejects_non_danger_styling() {
+        let source = r#"
+            let danger = theme.danger;
+            let danger_foreground = theme.danger_foreground;
+            div()
+                .bg(success)
+                .border_color(success)
+                .text_color(success_foreground)
+        "#;
+
+        assert!(!category_error_style_uses_danger(source));
     }
 
     #[test]

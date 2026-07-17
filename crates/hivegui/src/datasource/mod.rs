@@ -3,6 +3,7 @@ pub mod entity_store;
 pub mod models;
 pub mod mysql_client;
 pub mod store;
+pub mod wasm_exports;
 
 pub use crypto::Crypto;
 pub use models::*;

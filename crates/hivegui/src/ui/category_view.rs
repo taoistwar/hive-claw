@@ -1,23 +1,33 @@
 use crate::datasource::{Store, entity_store::Category};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
-    list_container, list_header, list_header_cell, list_row,
+    list_container, list_header, list_header_cell, list_row, management_modal_layer,
+    management_modal_panel, management_modal_scroll,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
+use std::collections::HashSet;
+
+/// 树形视图中的行数据
+#[derive(Debug, Clone)]
+struct TreeRow {
+    category: Category,
+    depth: usize,
+    has_children: bool,
+}
 
 pub struct CategoryView {
     store: Entity<Store>,
-    categories: Vec<Category>,
+    all_categories: Vec<Category>,
+    tree_rows: Vec<TreeRow>,
+    expanded_ids: HashSet<i64>,
     loading: bool,
     search_text: String,
-    current_page: i64,
-    page_size: i64,
-    total_count: i64,
     show_form: bool,
+    form_scroll: ScrollHandle,
     editing_category: Option<Category>,
     form_name: String,
     form_slug: String,
@@ -29,19 +39,20 @@ pub struct CategoryView {
     slug_input: Option<Entity<InputState>>,
     description_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
+    parent_select_open: bool,
 }
 
 impl CategoryView {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             store: store.clone(),
-            categories: Vec::new(),
+            all_categories: Vec::new(),
+            tree_rows: Vec::new(),
+            expanded_ids: HashSet::new(),
             loading: false,
             search_text: String::new(),
-            current_page: 0,
-            page_size: 20,
-            total_count: 0,
             show_form: false,
+            form_scroll: ScrollHandle::default(),
             editing_category: None,
             form_name: String::new(),
             form_slug: String::new(),
@@ -53,6 +64,7 @@ impl CategoryView {
             slug_input: None,
             description_input: None,
             search_input: None,
+            parent_select_open: false,
         };
         view.load_categories(cx);
         view
@@ -66,15 +78,17 @@ impl CategoryView {
         } else {
             Some(self.search_text.clone())
         };
-        let offset = self.current_page * self.page_size;
 
         cx.spawn(async move |this, cx| {
-            let categories = Category::list(store.pool(), search.clone(), 20, offset).await?;
-            let count = Category::count(store.pool(), search).await?;
+            let categories = if let Some(ref s) = search {
+                Category::list(store.pool(), Some(s.clone()), 1000, 0).await?
+            } else {
+                Category::list_all(store.pool()).await?
+            };
 
             this.update(cx, |view, cx| {
-                view.categories = categories;
-                view.total_count = count;
+                view.all_categories = categories;
+                view.build_tree();
                 view.loading = false;
                 cx.notify();
             })
@@ -82,17 +96,80 @@ impl CategoryView {
         .detach();
     }
 
-    fn next_page(&mut self, cx: &mut Context<Self>) {
-        if (self.current_page + 1) * self.page_size < self.total_count {
-            self.current_page += 1;
-            self.load_categories(cx);
+    /// 根据 all_categories 构建扁平化的树形行列表
+    fn build_tree(&mut self) {
+        let cat_map: std::collections::HashMap<i64, Category> = self
+            .all_categories
+            .iter()
+            .map(|c| (c.id, c.clone()))
+            .collect();
+
+        // 收集每个父分类的子分类 ID
+        let mut children_map: std::collections::HashMap<Option<i64>, Vec<Category>> =
+            std::collections::HashMap::new();
+        for cat in &self.all_categories {
+            children_map
+                .entry(cat.parent_id)
+                .or_default()
+                .push(cat.clone());
+        }
+
+        // 按名称排序
+        for children in children_map.values_mut() {
+            children.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+
+        let expanded_ids = self.expanded_ids.clone();
+        self.tree_rows.clear();
+        Self::build_tree_recursive(
+            &mut self.tree_rows,
+            None,
+            0,
+            &children_map,
+            &cat_map,
+            &expanded_ids,
+        );
+    }
+
+    fn build_tree_recursive(
+        tree_rows: &mut Vec<TreeRow>,
+        parent_id: Option<i64>,
+        depth: usize,
+        children_map: &std::collections::HashMap<Option<i64>, Vec<Category>>,
+        cat_map: &std::collections::HashMap<i64, Category>,
+        expanded_ids: &HashSet<i64>,
+    ) {
+        if let Some(children) = children_map.get(&parent_id) {
+            for child in children {
+                let has_children = children_map.contains_key(&Some(child.id));
+                tree_rows.push(TreeRow {
+                    category: child.clone(),
+                    depth,
+                    has_children,
+                });
+
+                // 如果该分类已展开，递归渲染子分类
+                if has_children && expanded_ids.contains(&child.id) {
+                    Self::build_tree_recursive(
+                        tree_rows,
+                        Some(child.id),
+                        depth + 1,
+                        children_map,
+                        cat_map,
+                        expanded_ids,
+                    );
+                }
+            }
         }
     }
-    fn prev_page(&mut self, cx: &mut Context<Self>) {
-        if self.current_page > 0 {
-            self.current_page -= 1;
-            self.load_categories(cx);
+
+    fn toggle_expand(&mut self, id: i64) {
+        if self.expanded_ids.contains(&id) {
+            self.expanded_ids.remove(&id);
+        } else {
+            self.expanded_ids.insert(id);
         }
+        self.build_tree();
     }
 
     fn show_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -103,6 +180,7 @@ impl CategoryView {
         self.form_description = String::new();
         self.form_parent_id = None;
         self.error_message = None;
+        self.parent_select_open = false;
 
         self.name_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -131,6 +209,7 @@ impl CategoryView {
         self.form_description = category.description.clone().unwrap_or_default();
         self.form_parent_id = category.parent_id;
         self.error_message = None;
+        self.parent_select_open = false;
 
         self.name_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -152,6 +231,8 @@ impl CategoryView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
+        self.form_scroll
+            .set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_category = None;
         self.form_name = String::new();
@@ -159,15 +240,16 @@ impl CategoryView {
         self.form_description = String::new();
         self.form_parent_id = None;
         self.error_message = None;
+        self.parent_select_open = false;
         self.name_input = None;
         self.slug_input = None;
         self.description_input = None;
         cx.notify();
     }
 
-    fn render_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let style = ManagementStyle::current(cx);
-        let col_widths = [px(60.0), px(150.0), px(120.0), px(200.0), px(120.0)];
+        let col_widths = [px(60.0), px(200.0), px(120.0), px(200.0), px(120.0)];
 
         list_container(style)
             // Header row
@@ -179,18 +261,56 @@ impl CategoryView {
                     .child(list_header_cell(Some(col_widths[3]), style).child("描述"))
                     .child(list_header_cell(Some(col_widths[4]), style).child("操作")),
             )
-            // Data rows
-            .children(self.categories.iter().map(|category| {
+            // Tree rows
+            .children(self.tree_rows.iter().map(|row| {
+                let category = &row.category;
                 let category_id = category.id;
                 let category_clone = category.clone();
+                let indent_px = px(row.depth as f32 * 24.0);
+
                 list_row(style)
                     .child(list_cell(Some(col_widths[0]), style).child(format!("{}", category.id)))
                     .child(
                         list_cell(Some(col_widths[1]), style)
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(style.list.foreground)
-                            .child(category.name.clone()),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(div().w(indent_px)) // indentation
+                                    .when(row.has_children, |this| {
+                                        let is_expanded = self.expanded_ids.contains(&category_id);
+                                        let weak = cx.weak_entity();
+                                        this.child(
+                                            div()
+                                                .w(px(16.0))
+                                                .flex_shrink_0()
+                                                .cursor(CursorStyle::PointingHand)
+                                                .text_size(px(12.0))
+                                                .text_color(style.list.muted_foreground)
+                                                .child(if is_expanded { "▼" } else { "▶" })
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, cx| {
+                                                        weak.update(cx, |view, cx| {
+                                                            view.toggle_expand(category_id);
+                                                        })
+                                                        .ok();
+                                                    },
+                                                ),
+                                        )
+                                    })
+                                    .when(!row.has_children, |this| {
+                                        this.child(div().w(px(16.0)))
+                                    })
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(style.list.foreground)
+                                            .child(category.name.clone()),
+                                    ),
+                            ),
                     )
                     .child(list_cell(Some(col_widths[2]), style).child(category.slug.clone()))
                     .child(
@@ -344,6 +464,95 @@ impl CategoryView {
         )
         .detach();
     }
+
+    /// 获取父分类的显示路径（如 "网络 > 子分类"）
+    fn parent_display_name(&self, parent_id: Option<i64>) -> String {
+        match parent_id {
+            None => "无（顶级分类）".to_string(),
+            Some(pid) => {
+                if let Some(cat) = self.all_categories.iter().find(|c| c.id == pid) {
+                    // 构建完整路径
+                    let mut path = cat.name.clone();
+                    let mut current_parent = cat.parent_id;
+                    let mut visited = HashSet::new();
+                    visited.insert(cat.id);
+
+                    while let Some(pid) = current_parent {
+                        if visited.contains(&pid) {
+                            break;
+                        }
+                        visited.insert(pid);
+                        if let Some(parent) = self.all_categories.iter().find(|c| c.id == pid) {
+                            path = format!("{} > {}", parent.name, path);
+                            current_parent = parent.parent_id;
+                        } else {
+                            break;
+                        }
+                    }
+                    path
+                } else {
+                    "未知父分类".to_string()
+                }
+            }
+        }
+    }
+
+    /// 获取可选的父分类列表（排除自身及其子分类，防止循环引用）
+    fn available_parent_categories(&self, exclude_id: Option<i64>) -> Vec<(i64, String)> {
+        let mut result = Vec::new();
+
+        // 收集需要排除的 ID（自身 + 所有子孙分类）
+        let mut exclude_ids = HashSet::new();
+        if let Some(eid) = exclude_id {
+            exclude_ids.insert(eid);
+            // 递归收集所有子孙
+            let mut queue = vec![eid];
+            while let Some(id) = queue.pop() {
+                for cat in &self.all_categories {
+                    if cat.parent_id == Some(id) {
+                        exclude_ids.insert(cat.id);
+                        queue.push(cat.id);
+                    }
+                }
+            }
+        }
+
+        // 构建树形路径显示
+        for cat in &self.all_categories {
+            if exclude_ids.contains(&cat.id) {
+                continue;
+            }
+            let mut display = String::new();
+            let mut current_parent = cat.parent_id;
+            let mut ancestors = Vec::new();
+            let mut visited = HashSet::new();
+            visited.insert(cat.id);
+
+            while let Some(pid) = current_parent {
+                if visited.contains(&pid) || exclude_ids.contains(&pid) {
+                    break;
+                }
+                visited.insert(pid);
+                if let Some(parent) = self.all_categories.iter().find(|c| c.id == pid) {
+                    ancestors.push(parent.name.clone());
+                    current_parent = parent.parent_id;
+                } else {
+                    break;
+                }
+            }
+
+            ancestors.reverse();
+            for a in &ancestors {
+                display.push_str(a);
+                display.push_str(" > ");
+            }
+            display.push_str(&cat.name);
+
+            result.push((cat.id, display));
+        }
+
+        result
+    }
 }
 
 impl Render for CategoryView {
@@ -356,8 +565,8 @@ impl Render for CategoryView {
             popover_foreground,
             border,
             input,
-            warning,
-            warning_foreground,
+            danger,
+            danger_foreground,
             foreground,
             muted_foreground,
         ) = {
@@ -369,13 +578,12 @@ impl Render for CategoryView {
                 theme.popover_foreground,
                 theme.border,
                 theme.input,
-                theme.warning,
-                theme.warning_foreground,
+                theme.danger,
+                theme.danger_foreground,
                 theme.foreground,
                 theme.muted_foreground,
             )
         };
-        let total_pages = (self.total_count + self.page_size - 1) / self.page_size;
 
         // Initialize inputs if form is shown but inputs are None
         if self.show_form && self.name_input.is_none() {
@@ -407,7 +615,6 @@ impl Render for CategoryView {
                 cx.subscribe_in(input, window, |this, state, event, window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
-                        this.current_page = 0;
                         this.load_categories(cx);
                     }
                 })
@@ -479,9 +686,10 @@ impl Render for CategoryView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scrollbar()
                     .p(px(16.0))
-                    .child(if self.categories.is_empty() {
+                    .child(if self.tree_rows.is_empty() && !self.loading {
                         div()
                             .flex()
                             .items_center()
@@ -491,8 +699,18 @@ impl Render for CategoryView {
                             .text_size(px(14.0))
                             .child("暂无数据")
                             .into_any_element()
+                    } else if self.loading {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .h_full()
+                            .text_color(muted_foreground)
+                            .text_size(px(14.0))
+                            .child("加载中...")
+                            .into_any_element()
                     } else {
-                        self.render_table(cx).into_any_element()
+                        self.render_tree(cx).into_any_element()
                     }),
             )
             .child(
@@ -508,78 +726,16 @@ impl Render for CategoryView {
                         div()
                             .text_size(px(13.0))
                             .text_color(muted_foreground)
-                            .child(format!("共 {} 条", self.total_count)),
+                            .child(format!("共 {} 条", self.all_categories.len())),
                     )
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child({
-                                let has_prev = self.current_page > 0;
-                                action_button(
-                                    "prev-page",
-                                    "上一页",
-                                    if has_prev {
-                                        ActionRole::Main
-                                    } else {
-                                        ActionRole::Disabled
-                                    },
-                                    ActionSize::Compact,
-                                    style,
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    {
-                                        let this = cx.weak_entity();
-                                        move |_, _, cx| {
-                                            this.update(cx, |view, cx| {
-                                                view.prev_page(cx);
-                                            })
-                                            .ok();
-                                        }
-                                    },
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(muted_foreground)
-                                    .child(format!(
-                                        "第 {} / {} 页",
-                                        self.current_page + 1,
-                                        total_pages.max(1)
-                                    )),
-                            )
-                            .child({
-                                let has_next =
-                                    (self.current_page + 1) * self.page_size < self.total_count;
-                                action_button(
-                                    "next-page",
-                                    "下一页",
-                                    if has_next {
-                                        ActionRole::Main
-                                    } else {
-                                        ActionRole::Disabled
-                                    },
-                                    ActionSize::Compact,
-                                    style,
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    {
-                                        let this = cx.weak_entity();
-                                        move |_, _, cx| {
-                                            this.update(cx, |view, cx| {
-                                                view.next_page(cx);
-                                            })
-                                            .ok();
-                                        }
-                                    },
-                                )
-                            }),
+                            .text_size(px(13.0))
+                            .text_color(muted_foreground)
+                            .child("树形结构，无分页"),
                     ),
             )
+            // Form overlay
             .when(self.show_form, |this| {
                 this.child(
                     div()
@@ -601,29 +757,18 @@ impl Render for CategoryView {
                         }),
                 )
                 .child(
-                    div()
-                        .absolute()
-                        .top(px(100.0))
-                        .left(px(50.0))
-                        .right(px(50.0))
-                        .max_w(px(500.0))
-                        .max_h(px(600.0))
-                        .bg(popover)
-                        .text_color(popover_foreground)
-                        .rounded(px(12.0))
-                        .shadow_lg()
-                        .border_1()
-                        .border_color(border)
-                        .p(px(24.0))
+                    management_modal_panel(
+                        management_modal_layer(px(500.0)),
+                        popover,
+                        popover_foreground,
+                        border,
+                    )
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
                         })
                         .child(
-                            div()
-                                .flex()
-                                .flex_col()
+                            management_modal_scroll("category-form-scroll", &self.form_scroll)
                                 .gap(px(16.0))
-                                .overflow_y_scrollbar()
                                 .child(
                                     div()
                                         .text_size(px(18.0))
@@ -633,6 +778,143 @@ impl Render for CategoryView {
                                         } else {
                                             "添加分类"
                                         }),
+                                )
+                                // 父分类选择器（含下拉列表）
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(8.0))
+                                        .child(div().text_size(px(13.0)).child("父分类"))
+                                        .child(
+                                            div()
+                                                .relative()
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .w_full()
+                                                        .h(px(32.0))
+                                                        .px(px(8.0))
+                                                        .border_1()
+                                                        .border_color(input)
+                                                        .rounded(px(4.0))
+                                                        .cursor(CursorStyle::PointingHand)
+                                                        .on_mouse_down(MouseButton::Left, {
+                                                            let this = cx.weak_entity();
+                                                            move |_, _, cx| {
+                                                                this.update(cx, |view, cx| {
+                                                                    view.parent_select_open = !view.parent_select_open;
+                                                                    cx.notify();
+                                                                })
+                                                                .ok();
+                                                            }
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .child(
+                                                                    self.parent_display_name(self.form_parent_id),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.0))
+                                                                .text_color(muted_foreground)
+                                                                .child(if self.parent_select_open { "▲" } else { "▼" }),
+                                                        ),
+                                                )
+                                                .when(self.parent_select_open, |this| {
+                                                    this.child(
+                                                        div()
+                                                            .absolute()
+                                                            .top(px(34.0))
+                                                            .left(px(0.0))
+                                                            .w_full()
+                                                            .max_h(px(200.0))
+                                                            .bg(popover)
+                                                            .border_1()
+                                                            .border_color(border)
+                                                            .rounded(px(4.0))
+                                                            .shadow_md()
+                                                            .overflow_y_scrollbar()
+                                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                                cx.stop_propagation();
+                                                            })
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .child(
+                                                                        div()
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .px(px(8.0))
+                                                                            .py(px(6.0))
+                                                                            .cursor(CursorStyle::PointingHand)
+                                                                            .border_b_1()
+                                                                            .border_color(border)
+                                                                            .when(self.form_parent_id.is_none(), |this| {
+                                                                                this.bg(style.list.active)
+                                                                            })
+                                                                            .on_mouse_down(MouseButton::Left, {
+                                                                                let this = cx.weak_entity();
+                                                                                move |_, _, cx| {
+                                                                                    this.update(cx, |view, cx| {
+                                                                                        view.form_parent_id = None;
+                                                                                        view.parent_select_open = false;
+                                                                                        cx.notify();
+                                                                                    })
+                                                                                    .ok();
+                                                                                }
+                                                                            })
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_size(px(13.0))
+                                                                                    .child("无（顶级分类）"),
+                                                                            ),
+                                                                    )
+                                                                    .children(
+                                                                        self.available_parent_categories(
+                                                                            self.editing_category.as_ref().map(|c| c.id),
+                                                                        )
+                                                                        .into_iter()
+                                                                        .map(|(id, display)| {
+                                                                            let is_selected = self.form_parent_id == Some(id);
+                                                                            div()
+                                                                                .flex()
+                                                                                .items_center()
+                                                                                .px(px(8.0))
+                                                                                .py(px(6.0))
+                                                                                .cursor(CursorStyle::PointingHand)
+                                                                                .border_b_1()
+                                                                                .border_color(border)
+                                                                                .when(is_selected, |this| {
+                                                                                    this.bg(style.list.active)
+                                                                                })
+                                                                                .on_mouse_down(MouseButton::Left, {
+                                                                                    let this = cx.weak_entity();
+                                                                                    move |_, _, cx| {
+                                                                                        this.update(cx, |view, cx| {
+                                                                                            view.form_parent_id = Some(id);
+                                                                                            view.parent_select_open = false;
+                                                                                            cx.notify();
+                                                                                        })
+                                                                                        .ok();
+                                                                                    }
+                                                                                })
+                                                                                .child(
+                                                                                    div()
+                                                                                        .text_size(px(13.0))
+                                                                                        .child(display),
+                                                                                )
+                                                                        }),
+                                                                    ),
+                                                            ),
+                                                    )
+                                                }),
+                                        ),
                                 )
                                 .child(
                                     div()
@@ -687,12 +969,12 @@ impl Render for CategoryView {
                                     this.child(
                                         div()
                                             .p(px(8.0))
-                                            .bg(warning)
+                                            .bg(danger)
                                             .border_1()
-                                            .border_color(warning)
+                                            .border_color(danger)
                                             .rounded(px(4.0))
                                             .text_size(px(12.0))
-                                            .text_color(warning_foreground)
+                                            .text_color(danger_foreground)
                                             .child(err.clone()),
                                     )
                                 })
@@ -741,6 +1023,7 @@ impl Render for CategoryView {
                         ),
                 )
             })
+            // Delete confirmation
             .when_some(self.confirm_delete_id, |this, id| {
                 this.child(
                     div()
@@ -800,7 +1083,7 @@ impl Render for CategoryView {
                                             div()
                                                 .text_size(px(14.0))
                                                 .text_color(muted_foreground)
-                                                .child("确定要删除这个分类吗？此操作不可恢复。"),
+                                                .child("确定要删除这个分类吗？子分类将被解除关联（不会删除）。此操作不可恢复。"),
                                         )
                                         .child(
                                             div()

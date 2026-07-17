@@ -1,5 +1,10 @@
 //! LLM config panel — Model/Preset/Provider CRUD.
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
+use crate::ui::management_style::{
+    ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
+    list_container, list_header, list_header_cell, list_row, management_modal_layer,
+    management_modal_panel, management_modal_scroll,
+};
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
@@ -194,10 +199,12 @@ impl LLMConfigView {
         self.edit_id = Some(p.id);
         self.show_form = true;
         self.error = None;
+        self.form_name = p.name.clone().into();
         self.form_category = p.category.clone().into();
         self.form_base_url = p.base_url.clone().into();
         self.form_token = "".into();
         self.form_token_env = p.token_env.clone().into();
+        self.name_input = None;
         self.base_url_input = None;
         self.token_input = None;
         self.token_env_input = None;
@@ -308,6 +315,12 @@ impl LLMConfigView {
     }
 
     fn do_save_provider(&mut self, cx: &mut Context<Self>) {
+        let name = self.form_name.to_string();
+        if name.is_empty() {
+            self.error = Some("名称不能为空".into());
+            cx.notify();
+            return;
+        }
         let category = self.form_category.to_string();
         if category.is_empty() {
             self.error = Some("请选择Category".into());
@@ -324,11 +337,11 @@ impl LLMConfigView {
             let edit_id = self.edit_id;
             cx.spawn(async move |_t, cx| {
                 let r: anyhow::Result<()> = if let Some(id) = edit_id {
-                    s.update_provider(id, &category, &base_url, &token, &token_env)
+                    s.update_provider(id, &name, &category, &base_url, &token, &token_env)
                         .await
                         .map(|_| ())
                 } else {
-                    s.create_provider(&category, &base_url, &token, &token_env)
+                    s.create_provider(&name, &category, &base_url, &token, &token_env)
                         .await
                         .map(|_| ())
                 };
@@ -351,6 +364,8 @@ impl LLMConfigView {
 
 impl Render for LLMConfigView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let style = ManagementStyle::current(cx);
+
         if !self.loaded {
             if let Some(ref store) = self.llm_store {
                 self.loaded = true;
@@ -489,6 +504,7 @@ impl Render for LLMConfigView {
                                 self.preset_open,
                                 ModelRelation::Preset,
                                 cx.entity(),
+                                style,
                             ))
                             .child(relation_selector(
                                 "Provider",
@@ -497,9 +513,9 @@ impl Render for LLMConfigView {
                                     .iter()
                                     .map(|p| {
                                         let label = if p.base_url.is_empty() {
-                                            p.category.clone()
+                                            p.name.clone()
                                         } else {
-                                            format!("{} @ {}", p.category, p.base_url)
+                                            format!("{} @ {}", p.name, p.base_url)
                                         };
                                         (p.id, label)
                                     })
@@ -507,8 +523,9 @@ impl Render for LLMConfigView {
                                 self.provider_open,
                                 ModelRelation::Provider,
                                 cx.entity(),
+                                style,
                             ))
-                            .child(labeled_field("优先级", pi))
+                            .child(labeled_field("优先级", pi, style))
                             .into_any_element()
                     } else {
                         div().into_any_element()
@@ -520,24 +537,25 @@ impl Render for LLMConfigView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .bg(rgba(0x00000055))
+                        .bg(Hsla { a: 0.33, ..style.list.muted_foreground })
                         .flex()
                         .items_center()
                         .justify_center()
                         .child(
-                            div()
-                                .flex()
-                                .flex_col()
+                            management_modal_panel(
+                                management_modal_layer(px(420.0)),
+                                style.list.row,
+                                style.list.foreground,
+                                style.list.border,
+                            )
+                                .child(
+                            management_modal_scroll("llm-model-form-scroll", &self.provider_form_scroll)
                                 .gap(px(12.0))
-                                .p(px(24.0))
-                                .w(px(420.0))
-                                .bg(rgb(0xffffff))
-                                .rounded(px(12.0))
-                                .shadow_md()
                                 .child(
                                     div()
                                         .text_size(px(18.0))
                                         .font_weight(FontWeight::BOLD)
+                                        .text_color(style.list.foreground)
                                         .child(title),
                                 )
                                 .child(field(ni))
@@ -558,7 +576,7 @@ impl Render for LLMConfigView {
                                     div().into_any_element()
                                 })
                                 .child(if is_preset {
-                                    toggle("默认", self.form_is_default, cx.entity())
+                                    toggle("默认", self.form_is_default, cx.entity(), style)
                                         .into_any_element()
                                 } else {
                                     div().into_any_element()
@@ -566,7 +584,7 @@ impl Render for LLMConfigView {
                                 .child(if let Some(ref e) = self.error {
                                     div()
                                         .text_size(px(13.0))
-                                        .text_color(rgb(0xff4444))
+                                        .text_color(style.action(ActionRole::Delete).background)
                                         .child(e.clone())
                                         .into_any_element()
                                 } else {
@@ -578,22 +596,44 @@ impl Render for LLMConfigView {
                                         .flex_row()
                                         .gap(px(8.0))
                                         .justify_end()
-                                        .child(btn(
-                                            "取消",
-                                            rgb(0xe8e8f0),
-                                            rgb(0x666666),
-                                            cx.listener(|this, _, _, cx| this.close_form(cx)),
-                                        ))
-                                        .child(btn(
-                                            "保存",
-                                            rgb(0x6f5699),
-                                            rgb(0xffffff),
-                                            cx.listener(|this, _, _, cx| this.do_save(cx)),
-                                        )),
+                                        .child(
+                                            action_button(
+                                                "model-form-cancel",
+                                                "取消",
+                                                ActionRole::Neutral,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| this.close_form(cx)),
+                                            ),
+                                        )
+                                        .child(
+                                            action_button(
+                                                "model-form-save",
+                                                "保存",
+                                                ActionRole::Main,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| this.do_save(cx)),
+                                            ),
+                                        ),
                                 ),
+                            ),
                         )
                         .into_any_element()
                 } else {
+                    if self.name_input.is_none() {
+                        self.name_input = Some(cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder("名称")
+                                .default_value(&self.form_name.to_string())
+                        }));
+                    }
                     if self.base_url_input.is_none() {
                         let token_ph = if self.edit_id.is_some() {
                             "Token/API Key (留空则不修改)"
@@ -616,10 +656,12 @@ impl Render for LLMConfigView {
                                 .default_value(&self.form_token_env.to_string())
                         }));
                     }
+                    sync(&self.name_input, &mut self.form_name, cx);
                     sync(&self.base_url_input, &mut self.form_base_url, cx);
                     sync(&self.token_input, &mut self.form_token, cx);
                     sync(&self.token_env_input, &mut self.form_token_env, cx);
 
+                    let name_in = self.name_input.clone().unwrap();
                     let bu_in = self.base_url_input.clone().unwrap();
                     let tk_in = self.token_input.clone().unwrap();
                     let tke_in = self.token_env_input.clone().unwrap();
@@ -633,9 +675,9 @@ impl Render for LLMConfigView {
                         .flex_col()
                         .gap(px(2.0))
                         .p(px(4.0))
-                        .bg(rgb(0xffffff))
+                        .bg(style.list.row)
                         .border_1()
-                        .border_color(rgb(0xd8d8e8))
+                        .border_color(style.list.border)
                         .rounded(px(4.0))
                         .max_h(px(240.0))
                         .debug_selector(|| "CATEGORY_MENU".to_owned())
@@ -656,7 +698,7 @@ impl Render for LLMConfigView {
                                 .when(index + 1 == category_option_count, |item| {
                                     item.debug_selector(|| "CATEGORY_LAST_OPTION".to_owned())
                                 })
-                                .hover(|s| s.bg(rgb(0xf0f0f5)))
+                                .hover(|s| s.bg(style.list.hover))
                                 .child(l)
                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                     _ = e.update(cx, |t, cx| {
@@ -697,7 +739,7 @@ impl Render for LLMConfigView {
                     .left(px(0.0))
                     .right(px(0.0))
                     .bottom(px(0.0))
-                    .bg(rgba(0x00000055))
+                    .bg(Hsla { a: 0.33, ..style.list.muted_foreground })
                     .flex()
                     .items_center()
                     .justify_center()
@@ -710,7 +752,7 @@ impl Render for LLMConfigView {
                             .flex_col()
                             .overflow_hidden()
                             .debug_selector(|| "PROVIDER_MODAL".to_owned())
-                            .bg(rgb(0xffffff))
+                            .bg(style.list.row)
                             .rounded(px(12.0))
                             .shadow_md()
                             .child(
@@ -736,6 +778,7 @@ impl Render for LLMConfigView {
                                                 div()
                                                     .text_size(px(18.0))
                                                     .font_weight(FontWeight::BOLD)
+                                                    .text_color(style.list.foreground)
                                                     .child(title),
                                             )
                                             .child(
@@ -746,15 +789,28 @@ impl Render for LLMConfigView {
                                                     .child(
                                                         div()
                                                             .text_size(px(12.0))
-                                                            .text_color(rgb(0x666666))
+                                                            .text_color(style.list.muted_foreground)
+                                                            .child("名称"),
+                                                    )
+                                                    .child(field(name_in)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.0))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.0))
+                                                            .text_color(style.list.muted_foreground)
                                                             .child("Category"),
                                                     )
                                                     .child(
                                                         div()
-                                                            .bg(rgb(0xf5f5fa))
+                                                            .bg(style.list.muted)
                                                             .rounded(px(6.0))
                                                             .border_1()
-                                                            .border_color(rgb(0xd8d8e8))
+                                                            .border_color(style.list.border)
                                                             .px(px(8.0))
                                                             .py(px(6.0))
                                                             .text_size(px(13.0))
@@ -787,7 +843,7 @@ impl Render for LLMConfigView {
                                             .child(
                                                 div()
                                                     .text_size(px(12.0))
-                                                    .text_color(rgb(0x666666))
+                                                    .text_color(style.list.muted_foreground)
                                                     .child("Base URL"),
                                             )
                                             .child(field(bu_in)),
@@ -800,7 +856,7 @@ impl Render for LLMConfigView {
                                             .child(
                                                 div()
                                                     .text_size(px(12.0))
-                                                    .text_color(rgb(0x666666))
+                                                    .text_color(style.list.muted_foreground)
                                                     .child("Token / API Key"),
                                             )
                                             .child(field(tk_in)),
@@ -813,7 +869,7 @@ impl Render for LLMConfigView {
                                             .child(
                                                 div()
                                                     .text_size(px(12.0))
-                                                    .text_color(rgb(0x666666))
+                                                    .text_color(style.list.muted_foreground)
                                                     .child("Token环境变量"),
                                             )
                                             .child(field(tke_in)),
@@ -821,7 +877,7 @@ impl Render for LLMConfigView {
                                     .child(if let Some(ref e) = self.error {
                                         div()
                                             .text_size(px(13.0))
-                                            .text_color(rgb(0xff4444))
+                                            .text_color(style.action(ActionRole::Delete).background)
                                             .child(e.clone())
                                             .into_any_element()
                                     } else {
@@ -834,18 +890,32 @@ impl Render for LLMConfigView {
                                             .gap(px(8.0))
                                             .justify_end()
                                             .debug_selector(|| "PROVIDER_ACTIONS".to_owned())
-                                            .child(btn(
-                                                "取消",
-                                                rgb(0xe8e8f0),
-                                                rgb(0x666666),
-                                                cx.listener(|this, _, _, cx| this.close_form(cx)),
-                                            ))
-                                            .child(btn(
-                                                "保存",
-                                                rgb(0x6f5699),
-                                                rgb(0xffffff),
-                                                cx.listener(|this, _, _, cx| this.do_save(cx)),
-                                            )),
+                                            .child(
+                                                action_button(
+                                                    "provider-form-cancel",
+                                                    "取消",
+                                                    ActionRole::Neutral,
+                                                    ActionSize::Dialog,
+                                                    style,
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| this.close_form(cx)),
+                                                ),
+                                            )
+                                            .child(
+                                                action_button(
+                                                    "provider-form-save",
+                                                    "保存",
+                                                    ActionRole::Main,
+                                                    ActionSize::Dialog,
+                                                    style,
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| this.do_save(cx)),
+                                                ),
+                                            ),
                                             ),
                                     ),
                             ),
@@ -868,7 +938,7 @@ impl Render for LLMConfigView {
                 .left(px(0.0))
                 .right(px(0.0))
                 .bottom(px(0.0))
-                .bg(rgba(0x00000055))
+                .bg(Hsla { a: 0.33, ..style.list.muted_foreground })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -879,18 +949,20 @@ impl Render for LLMConfigView {
                         .gap(px(12.0))
                         .p(px(24.0))
                         .w(px(360.0))
-                        .bg(rgb(0xffffff))
+                        .bg(style.list.row)
                         .rounded(px(12.0))
                         .shadow_md()
                         .child(
                             div()
                                 .text_size(px(16.0))
                                 .font_weight(FontWeight::BOLD)
+                                .text_color(style.list.foreground)
                                 .child("确认删除"),
                         )
                         .child(
                             div()
                                 .text_size(px(14.0))
+                                .text_color(style.list.foreground)
                                 .child(format!("确定要删除 \"{}\" 吗？", name)),
                         )
                         .child(
@@ -899,58 +971,72 @@ impl Render for LLMConfigView {
                                 .flex_row()
                                 .gap(px(8.0))
                                 .justify_end()
-                                .child(btn(
-                                    "取消",
-                                    rgb(0xe8e8f0),
-                                    rgb(0x666666),
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.confirm_delete = None;
-                                        cx.notify();
-                                    }),
-                                ))
-                                .child(btn(
-                                    "确认删除",
-                                    rgb(0xff4444),
-                                    rgb(0xffffff),
-                                    move |_, _, cx| {
-                                        if let Some(ref s) = s {
-                                            let s = s.clone();
-                                            let e = e.clone();
-                                            match tab {
-                                                0 => {
-                                                    cx.spawn(async move |cx| {
-                                                        _ = s.delete_model(id).await;
-                                                        _ = e.update(cx, |t, cx| {
-                                                            t.confirm_delete = None;
-                                                            t.reload(cx);
-                                                        });
-                                                    })
-                                                    .detach();
-                                                }
-                                                1 => {
-                                                    cx.spawn(async move |cx| {
-                                                        _ = s.delete_preset(id).await;
-                                                        _ = e.update(cx, |t, cx| {
-                                                            t.confirm_delete = None;
-                                                            t.reload(cx);
-                                                        });
-                                                    })
-                                                    .detach();
-                                                }
-                                                _ => {
-                                                    cx.spawn(async move |cx| {
-                                                        _ = s.delete_provider(id).await;
-                                                        _ = e.update(cx, |t, cx| {
-                                                            t.confirm_delete = None;
-                                                            t.reload(cx);
-                                                        });
-                                                    })
-                                                    .detach();
+                                .child(
+                                    action_button(
+                                        "confirm-cancel",
+                                        "取消",
+                                        ActionRole::Neutral,
+                                        ActionSize::Dialog,
+                                        style,
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.confirm_delete = None;
+                                            cx.notify();
+                                        }),
+                                    ),
+                                )
+                                .child(
+                                    action_button(
+                                        "confirm-delete",
+                                        "确认删除",
+                                        ActionRole::Delete,
+                                        ActionSize::Dialog,
+                                        style,
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        move |_, _, cx| {
+                                            if let Some(ref s) = s {
+                                                let s = s.clone();
+                                                let e = e.clone();
+                                                match tab {
+                                                    0 => {
+                                                        cx.spawn(async move |cx| {
+                                                            _ = s.delete_model(id).await;
+                                                            _ = e.update(cx, |t, cx| {
+                                                                t.confirm_delete = None;
+                                                                t.reload(cx);
+                                                            });
+                                                        })
+                                                        .detach();
+                                                    }
+                                                    1 => {
+                                                        cx.spawn(async move |cx| {
+                                                            _ = s.delete_preset(id).await;
+                                                            _ = e.update(cx, |t, cx| {
+                                                                t.confirm_delete = None;
+                                                                t.reload(cx);
+                                                            });
+                                                        })
+                                                        .detach();
+                                                    }
+                                                    _ => {
+                                                        cx.spawn(async move |cx| {
+                                                            _ = s.delete_provider(id).await;
+                                                            _ = e.update(cx, |t, cx| {
+                                                                t.confirm_delete = None;
+                                                                t.reload(cx);
+                                                            });
+                                                        })
+                                                        .detach();
+                                                    }
                                                 }
                                             }
-                                        }
-                                    },
-                                )),
+                                        },
+                                    ),
+                                ),
                         ),
                 )
                 .into_any_element()
@@ -978,6 +1064,7 @@ impl Render for LLMConfigView {
             .iter()
             .filter(|provider| {
                 search_term.is_empty()
+                    || provider.name.to_lowercase().contains(&search_term)
                     || provider.category.to_lowercase().contains(&search_term)
                     || provider.base_url.to_lowercase().contains(&search_term)
             })
@@ -1006,27 +1093,26 @@ impl Render for LLMConfigView {
 
         let list: AnyElement = match self.tab {
             0 => {
+                let main_colors = style.action(ActionRole::Main);
+                let neutral_colors = style.action(ActionRole::Neutral);
                 let mut preset_filter =
                     div().flex().flex_row().gap(px(4.0)).mb(px(8.0)).flex_wrap();
                 for preset in &self.presets {
                     let selected = self.selected_preset_id == Some(preset.id);
                     let preset_id = preset.id;
                     let entity = cx.entity();
+                    let (chip_bg, chip_fg) = if selected {
+                        (main_colors.background, main_colors.foreground)
+                    } else {
+                        (neutral_colors.background, neutral_colors.foreground)
+                    };
                     preset_filter = preset_filter.child(
                         div()
                             .px(px(12.0))
                             .py(px(4.0))
                             .rounded(px(4.0))
-                            .bg(if selected {
-                                rgb(0x6f5699)
-                            } else {
-                                rgb(0xe8e8f0)
-                            })
-                            .text_color(if selected {
-                                rgb(0xffffff)
-                            } else {
-                                rgb(0x666666)
-                            })
+                            .bg(chip_bg)
+                            .text_color(chip_fg)
                             .text_size(px(12.0))
                             .cursor(CursorStyle::PointingHand)
                             .child(preset.name.clone())
@@ -1048,11 +1134,12 @@ impl Render for LLMConfigView {
                         &self.presets,
                         &self.providers,
                         cx,
+                        style,
                     ))
                     .into_any_element()
             }
-            1 => preset_table(&paginated_presets, self.llm_store.clone(), cx),
-            _ => provider_table(&paginated_providers, self.llm_store.clone(), cx),
+            1 => preset_table(&paginated_presets, self.llm_store.clone(), cx, style),
+            _ => provider_table(&paginated_providers, self.llm_store.clone(), cx, style),
         };
 
         let count = match self.tab {
@@ -1081,19 +1168,27 @@ impl Render for LLMConfigView {
                     .justify_between()
                     .p(px(16.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(style.list.border)
                     .child(
                         div()
                             .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
+                            .text_color(style.list.foreground)
                             .child("LLM 配置"),
                     )
-                    .child(btn(
-                        "+ 添加",
-                        rgb(0x6f5699),
-                        rgb(0xffffff),
-                        cx.listener(|this, _, _, cx| this.open_add(cx)),
-                    )),
+                    .child(
+                        action_button(
+                            "add-llm-btn",
+                            "+ 添加",
+                            ActionRole::Main,
+                            ActionSize::Page,
+                            style,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.open_add(cx)),
+                        ),
+                    ),
             )
             .child(
                 div()
@@ -1101,13 +1196,18 @@ impl Render for LLMConfigView {
                     .items_center()
                     .p(px(12.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(style.list.border)
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(div().text_size(px(13.0)).child("搜索:"))
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .text_color(style.list.foreground)
+                                    .child("搜索:"),
+                            )
                             .child(
                                 div()
                                     .w(px(200.0))
@@ -1120,12 +1220,13 @@ impl Render for LLMConfigView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h_0()
                     .p(px(16.0))
                     .child(tr)
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x666666))
+                            .text_color(style.list.muted_foreground)
                             .mb(px(8.0))
                             .child(format!("{} 个 {}", count, label)),
                     )
@@ -1139,11 +1240,11 @@ impl Render for LLMConfigView {
                     .justify_between()
                     .p(px(12.0))
                     .border_t_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(style.list.border)
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x666666))
+                            .text_color(style.list.muted_foreground)
                             .child(format!("共 {} 条", self.total_count)),
                     )
                     .child(
@@ -1151,69 +1252,49 @@ impl Render for LLMConfigView {
                             .flex()
                             .gap(px(8.0))
                             .child(
-                                div()
-                                    .id("prev")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(if self.current_page > 0 {
-                                        rgb(0x6f5699)
+                                {
+                                    let has_prev = self.current_page > 0;
+                                    let role = if has_prev {
+                                        ActionRole::Main
                                     } else {
-                                        rgb(0xcccccc)
-                                    })
-                                    .text_color(rgb(0xffffff))
-                                    .text_size(px(13.0))
-                                    .cursor(if self.current_page > 0 {
-                                        CursorStyle::PointingHand
-                                    } else {
-                                        CursorStyle::Arrow
-                                    })
-                                    .child("上一页")
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let t = cx.weak_entity();
-                                        move |_, _, cx| {
-                                            t.update(cx, |v, cx| v.prev_page(cx)).ok();
-                                        }
-                                    }),
+                                        ActionRole::Disabled
+                                    };
+                                    action_button("prev", "上一页", role, ActionSize::Compact, style)
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let t = cx.weak_entity();
+                                            move |_, _, cx| {
+                                                t.update(cx, |v, cx| v.prev_page(cx)).ok();
+                                            }
+                                        })
+                                },
                             )
-                            .child(div().text_size(px(13.0)).child(format!(
-                                "第 {} / {} 页",
-                                self.current_page + 1,
-                                tp.max(1)
-                            )))
                             .child(
                                 div()
-                                    .id("next")
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(4.0))
-                                    .bg(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            rgb(0x6f5699)
-                                        } else {
-                                            rgb(0xcccccc)
-                                        },
-                                    )
-                                    .text_color(rgb(0xffffff))
                                     .text_size(px(13.0))
-                                    .cursor(
-                                        if (self.current_page + 1) * self.page_size
-                                            < self.total_count
-                                        {
-                                            CursorStyle::PointingHand
-                                        } else {
-                                            CursorStyle::Arrow
-                                        },
-                                    )
-                                    .child("下一页")
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let t = cx.weak_entity();
-                                        move |_, _, cx| {
-                                            t.update(cx, |v, cx| v.next_page(cx)).ok();
-                                        }
-                                    }),
+                                    .text_color(style.list.muted_foreground)
+                                    .child(format!(
+                                        "第 {} / {} 页",
+                                        self.current_page + 1,
+                                        tp.max(1)
+                                    )),
+                            )
+                            .child(
+                                {
+                                    let has_next = (self.current_page + 1) * self.page_size
+                                        < self.total_count;
+                                    let role = if has_next {
+                                        ActionRole::Main
+                                    } else {
+                                        ActionRole::Disabled
+                                    };
+                                    action_button("next", "下一页", role, ActionSize::Compact, style)
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let t = cx.weak_entity();
+                                            move |_, _, cx| {
+                                                t.update(cx, |v, cx| v.next_page(cx)).ok();
+                                            }
+                                        })
+                                },
                             ),
                     ),
             )
@@ -1348,6 +1429,7 @@ mod tests {
             }];
             view.providers = vec![LlmProvider {
                 id: 9,
+                name: "openai-provider".to_string(),
                 category: "openai".to_string(),
                 base_url: "https://api.example.com".to_string(),
                 token_encrypted: None,
@@ -1384,6 +1466,64 @@ mod tests {
         assert!(cx.debug_bounds("PROVIDER_ID_HEADER").is_some());
         assert!(cx.debug_bounds("PROVIDER_ID_9").is_some());
     }
+
+    #[gpui::test]
+    fn model_list_matches_reference_geometry(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+        let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
+            let mut view = LLMConfigView::new(cx);
+            view.loaded = true;
+            view.selected_preset_id = Some(7);
+            view.presets = vec![LlmPreset {
+                id: 7,
+                name: "默认".to_string(),
+                description: String::new(),
+                is_default: 1,
+                max_tokens: 2048,
+                temperature: 0.7,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }];
+            view.providers = vec![LlmProvider {
+                id: 9,
+                name: "openai-provider".to_string(),
+                category: "openai".to_string(),
+                base_url: "https://api.example.com".to_string(),
+                token_encrypted: None,
+                token_env: "OPENAI_API_KEY".to_string(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }];
+            view.models = vec![LlmModel {
+                id: 42,
+                name: "chat-model".to_string(),
+                preset_id: Some(7),
+                provider_id: Some(9),
+                priority: 10,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }];
+            view
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let list = cx.debug_bounds("MODEL_LIST").expect("list bounds");
+        let header = cx.debug_bounds("MODEL_LIST_HEADER").expect("header bounds");
+        let row = cx.debug_bounds("MODEL_LIST_ROW_42").expect("row bounds");
+        let actions = cx
+            .debug_bounds("MODEL_LIST_ACTIONS_42")
+            .expect("action bounds");
+        assert_eq!(header.left(), row.left());
+        assert_eq!(header.right(), row.right());
+        assert_eq!(header.bottom(), row.top());
+        assert!(row.bottom() <= list.bottom());
+        assert!(actions.left() >= row.left());
+        assert!(actions.right() <= row.right());
+    }
 }
 
 fn model_table(
@@ -1391,22 +1531,24 @@ fn model_table(
     presets: &[LlmPreset],
     providers: &[LlmProvider],
     cx: &mut Context<LLMConfigView>,
+    style: ManagementStyle,
 ) -> AnyElement {
-    let header = div()
-        .flex()
-        .flex_row()
-        .bg(rgb(0xe8e8f0))
-        .rounded(px(6.0))
+    let header = list_header(style)
+        .debug_selector(|| "MODEL_LIST_HEADER".to_owned())
         .child(
-            table_header_cell("ID", Some(px(60.0))).debug_selector(|| "MODEL_ID_HEADER".to_owned()),
+            list_header_cell(Some(px(60.0)), style)
+                .debug_selector(|| "MODEL_ID_HEADER".to_owned())
+                .child("ID"),
         )
-        .child(table_header_cell("名称", Some(px(180.0))))
-        .child(table_header_cell("Preset", Some(px(160.0))))
-        .child(table_header_cell("Provider", None))
-        .child(table_header_cell("优先级", Some(px(80.0))))
-        .child(table_header_cell("操作", Some(px(100.0))));
+        .child(list_header_cell(Some(px(180.0)), style).child("名称"))
+        .child(list_header_cell(Some(px(160.0)), style).child("Preset"))
+        .child(list_header_cell(None, style).child("Provider"))
+        .child(list_header_cell(Some(px(80.0)), style).child("优先级"))
+        .child(list_header_cell(Some(px(120.0)), style).child("操作"));
 
-    let mut table = div().flex().flex_col().gap(px(2.0)).child(header);
+    let mut table = list_container(style)
+        .debug_selector(|| "MODEL_LIST".to_owned())
+        .child(header);
     for model in models {
         let id = model.id;
         let name = model.name.clone();
@@ -1418,47 +1560,67 @@ fn model_table(
         let provider = model
             .provider_id
             .and_then(|provider_id| providers.iter().find(|p| p.id == provider_id))
-            .map(|provider| provider.category.clone())
+            .map(|provider| provider.name.clone())
             .unwrap_or_else(|| "未关联 Provider".to_string());
         let priority = model.priority.to_string();
         let delete_entity = cx.entity();
         let edit_entity = cx.entity();
 
         table = table.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .bg(rgb(0xf5f5fa))
-                .rounded(px(4.0))
+            list_row(style)
+                .debug_selector(move || format!("MODEL_LIST_ROW_{id}"))
                 .child(
-                    table_cell(id.to_string(), Some(px(60.0)))
+                    list_cell(Some(px(60.0)), style)
+                        .child(id.to_string())
                         .debug_selector(move || format!("MODEL_ID_{id}")),
                 )
-                .child(table_cell(name.clone(), Some(px(180.0))))
-                .child(table_cell(preset, Some(px(160.0))))
-                .child(table_cell(provider, None))
-                .child(table_cell(priority, Some(px(80.0))))
-                .child(table_action_cell(
-                    move |_, _, cx| {
-                        _ = edit_entity.update(cx, |view, cx| {
-                            if let Some(model) =
-                                view.models.iter().find(|model| model.id == id).cloned()
-                            {
-                                view.open_edit_model(&model, cx);
-                            }
-                        });
-                    },
-                    {
-                        let name = name.clone();
-                        move |_, _, cx| {
-                            _ = delete_entity.update(cx, |view, cx| {
-                                view.confirm_delete = Some((0, id, name.clone()));
-                                cx.notify();
-                            });
-                        }
-                    },
-                )),
+                .child(list_cell(Some(px(180.0)), style).child(name.clone()))
+                .child(list_cell(Some(px(160.0)), style).child(preset))
+                .child(list_cell(None, style).child(provider))
+                .child(list_cell(Some(px(80.0)), style).child(priority))
+                .child(
+                    list_actions(Some(px(120.0)), style)
+                        .debug_selector(move || format!("MODEL_LIST_ACTIONS_{id}"))
+                        .child(
+                            action_button(
+                                ("edit", id as u64),
+                                "编辑",
+                                ActionRole::Edit,
+                                ActionSize::Row,
+                                style,
+                            )
+                            .on_mouse_down(MouseButton::Left, {
+                                let edit_entity = edit_entity.clone();
+                                move |_, _, cx| {
+                                    _ = edit_entity.update(cx, |view, cx| {
+                                        if let Some(model) =
+                                            view.models.iter().find(|model| model.id == id).cloned()
+                                        {
+                                            view.open_edit_model(&model, cx);
+                                        }
+                                    });
+                                }
+                            }),
+                        )
+                        .child(
+                            action_button(
+                                ("delete", id as u64),
+                                "删除",
+                                ActionRole::Delete,
+                                ActionSize::Row,
+                                style,
+                            )
+                            .on_mouse_down(MouseButton::Left, {
+                                let name = name.clone();
+                                move |_, _, cx| {
+                                    _ = delete_entity.update(cx, |view, cx| {
+                                        view.confirm_delete = Some((0, id, name.clone()));
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                        ),
+                ),
         );
     }
 
@@ -1469,24 +1631,26 @@ fn provider_table(
     providers: &[&LlmProvider],
     store: Option<LlmStore>,
     cx: &mut Context<LLMConfigView>,
+    style: ManagementStyle,
 ) -> AnyElement {
-    let header = div()
-        .flex()
-        .flex_row()
-        .bg(rgb(0xe8e8f0))
-        .rounded(px(6.0))
+    let header = list_header(style)
         .child(
-            table_header_cell("ID", Some(px(60.0)))
-                .debug_selector(|| "PROVIDER_ID_HEADER".to_owned()),
+            list_header_cell(Some(px(60.0)), style)
+                .debug_selector(|| "PROVIDER_ID_HEADER".to_owned())
+                .child("ID"),
         )
-        .child(table_header_cell("Category", Some(px(180.0))))
-        .child(table_header_cell("Base URL", None))
-        .child(table_header_cell("Token 环境变量", Some(px(220.0))))
-        .child(table_header_cell("操作", Some(px(100.0))));
+        .child(list_header_cell(Some(px(140.0)), style).child("名称"))
+        .child(list_header_cell(Some(px(140.0)), style).child("Category"))
+        .child(list_header_cell(None, style).child("Base URL"))
+        .child(
+            list_header_cell(Some(px(180.0)), style).child("Token 环境变量"),
+        )
+        .child(list_header_cell(Some(px(120.0)), style).child("操作"));
 
-    let mut table = div().flex().flex_col().gap(px(2.0)).child(header);
+    let mut table = list_container(style).child(header);
     for provider in providers {
         let id = provider.id;
+        let name = provider.name.clone();
         let category = provider.category.clone();
         let base_url = non_empty_or_dash(&provider.base_url);
         let token_env = non_empty_or_dash(&provider.token_env);
@@ -1495,111 +1659,69 @@ fn provider_table(
         let edit_entity = cx.entity();
 
         table = table.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .bg(rgb(0xf5f5fa))
-                .rounded(px(4.0))
+            list_row(style)
+                .debug_selector(move || format!("PROVIDER_LIST_ROW_{id}"))
                 .child(
-                    table_cell(id.to_string(), Some(px(60.0)))
+                    list_cell(Some(px(60.0)), style)
+                        .child(id.to_string())
                         .debug_selector(move || format!("PROVIDER_ID_{id}")),
                 )
-                .child(table_cell(category, Some(px(180.0))))
-                .child(table_cell(base_url, None))
-                .child(table_cell(token_env, Some(px(220.0))))
-                .child(table_action_cell(
-                    move |_, _, cx| {
-                        _ = edit_entity.update(cx, |view, cx| {
-                            if let Some(provider) = view
-                                .providers
-                                .iter()
-                                .find(|provider| provider.id == id)
-                                .cloned()
-                            {
-                                view.open_edit_provider(&provider, cx);
-                            }
-                        });
-                    },
-                    move |_, _, cx| {
-                        if let Some(store) = delete_store.clone() {
-                            let delete_entity = delete_entity.clone();
-                            cx.spawn(async move |cx| {
-                                _ = store.delete_provider(id).await;
-                                _ = delete_entity.update(cx, |view, cx| {
-                                    view.reload(cx);
-                                });
-                            })
-                            .detach();
-                        }
-                    },
-                )),
+                .child(list_cell(Some(px(140.0)), style).child(name))
+                .child(list_cell(Some(px(140.0)), style).child(category))
+                .child(list_cell(None, style).child(base_url))
+                .child(list_cell(Some(px(180.0)), style).child(token_env))
+                .child(
+                    list_actions(Some(px(120.0)), style)
+                        .child(
+                            action_button(
+                                ("edit", id as u64),
+                                "编辑",
+                                ActionRole::Edit,
+                                ActionSize::Row,
+                                style,
+                            )
+                            .on_mouse_down(MouseButton::Left, {
+                                let edit_entity = edit_entity.clone();
+                                move |_, _, cx| {
+                                    _ = edit_entity.update(cx, |view, cx| {
+                                        if let Some(provider) = view
+                                            .providers
+                                            .iter()
+                                            .find(|provider| provider.id == id)
+                                            .cloned()
+                                        {
+                                            view.open_edit_provider(&provider, cx);
+                                        }
+                                    });
+                                }
+                            }),
+                        )
+                        .child(
+                            action_button(
+                                ("delete", id as u64),
+                                "删除",
+                                ActionRole::Delete,
+                                ActionSize::Row,
+                                style,
+                            )
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                if let Some(store) = delete_store.clone() {
+                                    let delete_entity = delete_entity.clone();
+                                    cx.spawn(async move |cx| {
+                                        _ = store.delete_provider(id).await;
+                                        _ = delete_entity.update(cx, |view, cx| {
+                                            view.reload(cx);
+                                        });
+                                    })
+                                    .detach();
+                                }
+                            }),
+                        ),
+                ),
         );
     }
 
     table.into_any_element()
-}
-
-fn table_header_cell(label: &'static str, width: Option<Pixels>) -> Div {
-    table_sized_cell(
-        div()
-            .px(px(8.0))
-            .py(px(8.0))
-            .text_size(px(12.0))
-            .font_weight(FontWeight::BOLD)
-            .text_color(rgb(0x666666))
-            .child(label),
-        width,
-    )
-}
-
-fn table_cell(value: String, width: Option<Pixels>) -> Div {
-    table_sized_cell(
-        div()
-            .px(px(8.0))
-            .py(px(8.0))
-            .text_size(px(12.0))
-            .child(value),
-        width,
-    )
-}
-
-fn table_sized_cell(cell: Div, width: Option<Pixels>) -> Div {
-    match width {
-        Some(width) => cell.w(width).flex_shrink_0(),
-        None => cell.flex_1(),
-    }
-}
-
-fn table_action_cell<T, U>(on_edit: T, on_delete: U) -> Div
-where
-    T: Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    U: Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-{
-    div()
-        .w(px(100.0))
-        .flex_shrink_0()
-        .px(px(8.0))
-        .py(px(8.0))
-        .flex()
-        .flex_row()
-        .gap(px(6.0))
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(rgb(0x4a90d9))
-                .cursor(CursorStyle::PointingHand)
-                .on_mouse_down(MouseButton::Left, on_edit)
-                .child("编辑"),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(rgb(0xff4444))
-                .cursor(CursorStyle::PointingHand)
-                .on_mouse_down(MouseButton::Left, on_delete)
-                .child("删除"),
-        )
 }
 
 fn non_empty_or_dash(value: &str) -> String {
@@ -1614,85 +1736,18 @@ fn preset_table(
     items: &[&LlmPreset],
     _store: Option<LlmStore>,
     cx: &mut Context<LLMConfigView>,
+    style: ManagementStyle,
 ) -> AnyElement {
-    let header = div()
-        .flex()
-        .flex_row()
-        .bg(rgb(0xe8e8f0))
-        .rounded_l(px(6.0))
-        .rounded_r(px(6.0))
-        .child(
-            div()
-                .w(px(60.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("ID"),
-        )
-        .child(
-            div()
-                .w(px(140.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("名称"),
-        )
-        .child(
-            div()
-                .flex_1()
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("描述"),
-        )
-        .child(
-            div()
-                .w(px(90.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("max_tokens"),
-        )
-        .child(
-            div()
-                .w(px(80.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("temp"),
-        )
-        .child(
-            div()
-                .w(px(50.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("默认"),
-        )
-        .child(
-            div()
-                .w(px(100.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x666666))
-                .child("操作"),
-        );
+    let header = list_header(style)
+        .child(list_header_cell(Some(px(60.0)), style).child("ID"))
+        .child(list_header_cell(Some(px(140.0)), style).child("名称"))
+        .child(list_header_cell(None, style).child("描述"))
+        .child(list_header_cell(Some(px(90.0)), style).child("max_tokens"))
+        .child(list_header_cell(Some(px(80.0)), style).child("temp"))
+        .child(list_header_cell(Some(px(50.0)), style).child("默认"))
+        .child(list_header_cell(Some(px(120.0)), style).child("操作"));
 
-    let mut rows: Vec<AnyElement> = vec![];
+    let mut table = list_container(style).child(header);
     for p in items {
         let id = p.id;
         let name = p.name.clone();
@@ -1704,114 +1759,69 @@ fn preset_table(
         let e1 = cx.entity();
         let e2 = cx.entity();
         let n2 = name.clone();
-        let row = div()
-            .flex()
-            .flex_row()
-            .bg(rgb(0xf5f5fa))
-            .rounded(px(4.0))
+
+        let row = list_row(style)
+            .debug_selector(move || format!("PRESET_LIST_ROW_{id}"))
+            .child(list_cell(Some(px(60.0)), style).child(id.to_string()))
+            .child(list_cell(Some(px(140.0)), style).child(name.clone()))
             .child(
-                div()
-                    .w(px(60.0))
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .child(id.to_string()),
-            )
-            .child(
-                div()
-                    .w(px(140.0))
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .child(name.clone()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .text_color(rgb(0x999999))
+                list_cell(None, style)
+                    .text_color(style.list.muted_foreground)
                     .child(if desc.is_empty() {
                         "-".into()
                     } else {
                         desc.clone()
                     }),
             )
+            .child(list_cell(Some(px(90.0)), style).child(mt.clone()))
+            .child(list_cell(Some(px(80.0)), style).child(temp.clone()))
             .child(
-                div()
-                    .w(px(90.0))
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .child(mt.clone()),
-            )
-            .child(
-                div()
-                    .w(px(80.0))
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .child(temp.clone()),
-            )
-            .child(
-                div()
-                    .w(px(50.0))
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .text_size(px(12.0))
+                list_cell(Some(px(50.0)), style)
                     .child(if is_def { "是" } else { "否" }),
             )
             .child(
-                div()
-                    .w(px(100.0))
-                    .px(px(8.0))
-                    .py(px(8.0))
-                    .flex()
-                    .flex_row()
-                    .gap(px(4.0))
+                list_actions(Some(px(120.0)), style)
                     .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0x4a90d9))
-                            .cursor(CursorStyle::PointingHand)
-                            .on_mouse_down(MouseButton::Left, {
-                                let e1 = e1.clone();
-                                move |_, _, cx| {
-                                    _ = e1.update(cx, |t, cx| {
-                                        t.open_edit_preset(&preset_to_edit, cx);
-                                    });
-                                }
-                            })
-                            .child("编辑"),
+                        action_button(
+                            ("edit", id as u64),
+                            "编辑",
+                            ActionRole::Edit,
+                            ActionSize::Row,
+                            style,
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let e1 = e1.clone();
+                            move |_, _, cx| {
+                                _ = e1.update(cx, |t, cx| {
+                                    t.open_edit_preset(&preset_to_edit, cx);
+                                });
+                            }
+                        }),
                     )
                     .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0xff4444))
-                            .cursor(CursorStyle::PointingHand)
-                            .on_mouse_down(MouseButton::Left, {
-                                let e2 = e2.clone();
-                                let n2 = n2.clone();
-                                move |_, _, cx| {
-                                    _ = e2.update(cx, |t, cx| {
-                                        t.confirm_delete = Some((1, id, n2.clone()));
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                            .child("删除"),
+                        action_button(
+                            ("delete", id as u64),
+                            "删除",
+                            ActionRole::Delete,
+                            ActionSize::Row,
+                            style,
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let e2 = e2.clone();
+                            let n2 = n2.clone();
+                            move |_, _, cx| {
+                                _ = e2.update(cx, |t, cx| {
+                                    t.confirm_delete = Some((1, id, n2.clone()));
+                                    cx.notify();
+                                });
+                            }
+                        }),
                     ),
             );
-        rows.push(row.into_any_element());
+        table = table.child(row);
     }
 
-    let mut col = div().flex().flex_col().gap(px(2.0));
-    col = col.child(header);
-    for r in rows {
-        col = col.child(r);
-    }
-    col.into_any_element()
+    table.into_any_element()
 }
 
 fn sync(
@@ -1824,7 +1834,19 @@ fn sync(
     }
 }
 
-fn toggle(label: &str, value: bool, entity: Entity<LLMConfigView>) -> impl IntoElement {
+fn toggle(
+    label: &str,
+    value: bool,
+    entity: Entity<LLMConfigView>,
+    style: ManagementStyle,
+) -> impl IntoElement {
+    let main_colors = style.action(ActionRole::Main);
+    let neutral_colors = style.action(ActionRole::Neutral);
+    let (toggle_bg, toggle_fg) = if value {
+        (main_colors.background, main_colors.foreground)
+    } else {
+        (neutral_colors.background, neutral_colors.foreground)
+    };
     div()
         .flex()
         .flex_row()
@@ -1833,7 +1855,7 @@ fn toggle(label: &str, value: bool, entity: Entity<LLMConfigView>) -> impl IntoE
         .child(
             div()
                 .text_size(px(12.0))
-                .text_color(rgb(0x666666))
+                .text_color(style.list.muted_foreground)
                 .child(label.to_string()),
         )
         .child(
@@ -1841,8 +1863,8 @@ fn toggle(label: &str, value: bool, entity: Entity<LLMConfigView>) -> impl IntoE
                 .px(px(12.0))
                 .py(px(4.0))
                 .rounded(px(4.0))
-                .bg(if value { rgb(0x6f5699) } else { rgb(0xe8e8f0) })
-                .text_color(if value { rgb(0xffffff) } else { rgb(0x666666) })
+                .bg(toggle_bg)
+                .text_color(toggle_fg)
                 .text_size(px(12.0))
                 .cursor(CursorStyle::PointingHand)
                 .child(if value { "是" } else { "否" })
@@ -1868,6 +1890,7 @@ fn relation_selector(
     open: bool,
     relation: ModelRelation,
     entity: Entity<LLMConfigView>,
+    style: ManagementStyle,
 ) -> AnyElement {
     let selected_label = selected_id
         .and_then(|id| options.iter().find(|(option_id, _)| *option_id == id))
@@ -1878,9 +1901,9 @@ fn relation_selector(
         .flex_col()
         .gap(px(2.0))
         .p(px(4.0))
-        .bg(rgb(0xffffff))
+        .bg(style.list.row)
         .border_1()
-        .border_color(rgb(0xd8d8e8))
+        .border_color(style.list.border)
         .rounded(px(4.0))
         .max_h(px(200.0))
         .shadow_lg();
@@ -1893,7 +1916,7 @@ fn relation_selector(
                 .rounded(px(4.0))
                 .text_size(px(13.0))
                 .cursor(CursorStyle::PointingHand)
-                .hover(|style| style.bg(rgb(0xf0f0f5)))
+                .hover(|s| s.bg(style.list.hover))
                 .child(option_label)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     _ = option_entity.update(cx, |view, cx| {
@@ -1916,15 +1939,15 @@ fn relation_selector(
         .child(
             div()
                 .text_size(px(12.0))
-                .text_color(rgb(0x666666))
+                .text_color(style.list.muted_foreground)
                 .child(label),
         )
         .child(
             div()
-                .bg(rgb(0xf5f5fa))
+                .bg(style.list.muted)
                 .rounded(px(6.0))
                 .border_1()
-                .border_color(rgb(0xd8d8e8))
+                .border_color(style.list.border)
                 .px(px(8.0))
                 .py(px(6.0))
                 .text_size(px(13.0))
@@ -1955,7 +1978,11 @@ fn relation_selector(
         .into_any_element()
 }
 
-fn labeled_field(label: &'static str, input: Entity<InputState>) -> impl IntoElement {
+fn labeled_field(
+    label: &'static str,
+    input: Entity<InputState>,
+    style: ManagementStyle,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -1963,7 +1990,7 @@ fn labeled_field(label: &'static str, input: Entity<InputState>) -> impl IntoEle
         .child(
             div()
                 .text_size(px(12.0))
-                .text_color(rgb(0x666666))
+                .text_color(style.list.muted_foreground)
                 .child(label),
         )
         .child(Input::new(&input))
@@ -1971,30 +1998,4 @@ fn labeled_field(label: &'static str, input: Entity<InputState>) -> impl IntoEle
 
 fn field(input: Entity<InputState>) -> impl IntoElement {
     Input::new(&input)
-}
-
-fn btn(
-    label: &'static str,
-    bg: gpui::Rgba,
-    fg: gpui::Rgba,
-    h: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .px(px(16.0))
-        .py(px(8.0))
-        .bg(bg)
-        .rounded(px(6.0))
-        .text_size(px(13.0))
-        .text_color(fg)
-        .cursor(CursorStyle::PointingHand)
-        .hover(|s| {
-            s.bg(gpui::Rgba {
-                r: bg.r * 0.85,
-                g: bg.g * 0.85,
-                b: bg.b * 0.85,
-                a: bg.a,
-            })
-        })
-        .on_mouse_down(MouseButton::Left, h)
-        .child(label)
 }

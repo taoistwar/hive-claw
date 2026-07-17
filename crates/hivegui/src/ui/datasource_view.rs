@@ -1,8 +1,13 @@
-use gpui::{Context, CursorStyle, Entity, MouseButton, Window, div, prelude::*, px, rgb};
+use gpui::{Context, CursorStyle, Entity, MouseButton, Window, div, prelude::*, px};
+use gpui_component::ActiveTheme as _;
 
 use crate::datasource::{DataSource, Store};
 use crate::ui::{
     datasource_form::{DataSourceForm, FormMode},
+    management_style::{
+        ActionRole, ActionSize, ManagementStyle, action_button, management_modal_layer,
+        management_modal_panel,
+    },
     table_viewer::TableViewer,
     tree_nav::{ErrorModal, PendingAction, TreeNav, TreeSelection},
 };
@@ -196,6 +201,18 @@ impl DataSourceView {
 impl Render for DataSourceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(cx);
+        let style = ManagementStyle::current(cx);
+        let (overlay, popover, popover_foreground, border, danger, splitter_hover) = {
+            let theme = cx.theme();
+            (
+                theme.overlay,
+                theme.popover,
+                theme.popover_foreground,
+                theme.border,
+                theme.danger,
+                theme.list_hover,
+            )
+        };
 
         let form = self.form.clone();
 
@@ -207,7 +224,7 @@ impl Render for DataSourceView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor(CursorStyle::ResizeColumn)
-            .hover(|el| el.bg(rgb(0xc0c0c0)))
+            .hover(move |el| el.bg(splitter_hover))
             .on_mouse_down(MouseButton::Left, {
                 let current_left = left_width;
                 move |event: &gpui::MouseDownEvent, _window, cx| {
@@ -261,7 +278,7 @@ impl Render for DataSourceView {
                     .flex_col()
                     .overflow_hidden()
                     .border_r_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(border)
                     .child(self.tree.clone()),
             )
             .child(splitter_0)
@@ -269,6 +286,7 @@ impl Render for DataSourceView {
                 div()
                     .h_full()
                     .flex_1()
+                    .min_h_0()
                     .child(self.viewer.clone())
                     .when_some(form, |this, form_entity| this.child(form_entity)),
             );
@@ -284,8 +302,7 @@ impl Render for DataSourceView {
                     .left(px(0.0))
                     .right(px(0.0))
                     .bottom(px(0.0))
-                    .bg(rgb(0x000000))
-                    .opacity(0.3)
+                    .bg(overlay)
                     .cursor(CursorStyle::PointingHand)
                     .on_mouse_down(MouseButton::Left, {
                         let this_for_bg = this.clone();
@@ -299,58 +316,50 @@ impl Render for DataSourceView {
                         }
                     })
                     .child(
-                        div()
-                            .absolute()
-                            .top(px(100.0))
-                            .left(px(50.0))
-                            .right(px(50.0))
-                            .max_w(px(500.0))
-                            .bg(rgb(0xffffff))
-                            .rounded(px(12.0))
-                            .shadow_lg()
-                            .border_1()
-                            .border_color(rgb(0xdddddd))
-                            .p(px(24.0))
+                        management_modal_panel(
+                            div()
+                                .absolute()
+                                .top(px(24.0))
+                                .left(px(0.0))
+                                .right(px(0.0))
+                                .mx_auto()
+                                .w_full()
+                                .max_w(px(500.0)),
+                            popover,
+                            popover_foreground,
+                            border,
+                        )
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .gap(px(16.0))
                                     .child(
-                                        div()
-                                            .text_size(px(18.0))
-                                            .text_color(rgb(0xcc0000))
-                                            .child(title),
+                                        div().text_size(px(18.0)).text_color(danger).child(title),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(14.0))
-                                            .text_color(rgb(0x333333))
+                                            .text_color(popover_foreground)
                                             .child(message),
                                     )
                                     .child(
                                         div().flex().justify_end().child(
-                                            div()
-                                                .id("close-error-modal")
-                                                .px(px(16.0))
-                                                .py(px(8.0))
-                                                .rounded(px(6.0))
-                                                .bg(rgb(0x4a90d9))
-                                                .text_color(rgb(0xffffff))
-                                                .text_size(px(13.0))
-                                                .cursor(CursorStyle::PointingHand)
-                                                .child("关闭")
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    move |_, _, cx| {
-                                                        this_for_modal
-                                                            .update(cx, |v, cx| {
-                                                                v.error_modal = None;
-                                                                cx.notify();
-                                                            })
-                                                            .ok();
-                                                    },
-                                                ),
+                                            action_button(
+                                                "close-error-modal",
+                                                "关闭",
+                                                ActionRole::Main,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                this_for_modal
+                                                    .update(cx, |v, cx| {
+                                                        v.error_modal = None;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                            }),
                                         ),
                                     ),
                             ),

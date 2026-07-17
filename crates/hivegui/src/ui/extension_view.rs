@@ -3,10 +3,8 @@ use crate::datasource::Store;
 use crate::ui::{
     function_view::FunctionView, plugin_view::PluginView, workflow_view::WorkflowView,
 };
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
-use gpui_component::scroll::ScrollableElement;
 use gpui_component::tab::{Tab, TabBar};
 
 pub struct ExtensionView {
@@ -52,7 +50,7 @@ impl Render for ExtensionView {
                     .child(Tab::new().label("流程")),
             )
             // Content
-            .child(div().flex_1().child(match self.active_tab {
+            .child(div().flex_1().min_h_0().child(match self.active_tab {
                 0 => self.plugin_view.clone().into_any_element(),
                 1 => self.function_view.clone().into_any_element(),
                 2 => self.workflow_view.clone().into_any_element(),

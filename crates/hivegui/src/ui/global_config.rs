@@ -1,12 +1,36 @@
 //! Global config panel — CRUD with pagination and search.
 use crate::datasource::{GlobalConfig, Store};
+use crate::ui::management_style::{
+    ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
+    list_container, list_header, list_header_cell, list_row, management_modal_layer,
+    management_modal_panel, management_modal_scroll,
+};
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputState, NumberInput};
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::select::{Select, SelectState, SearchableVec};
 
 const PAGE_SIZE: i64 = 20;
 const CONFIG_TYPES: &[&str] = &["text", "number", "json", "boolean"];
+
+#[derive(Debug, Clone)]
+struct TypeSelectItem {
+    idx: usize,
+    label: String,
+}
+
+impl gpui_component::searchable_list::SearchableListItem for TypeSelectItem {
+    type Value = usize;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.label.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.idx
+    }
+}
 
 fn single_line_preview(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -44,6 +68,7 @@ pub struct GlobalConfigView {
     search: SharedString,
     loaded: bool,
     show_form: bool,
+    form_scroll: ScrollHandle,
     edit_id: Option<i64>,
     form_name: SharedString,
     form_key: SharedString,
@@ -54,6 +79,7 @@ pub struct GlobalConfigView {
     name_input: Option<Entity<InputState>>,
     key_input: Option<Entity<InputState>>,
     data_input: Option<Entity<InputState>>,
+    type_select_state: Option<Entity<SelectState<SearchableVec<TypeSelectItem>>>>,
 }
 
 impl GlobalConfigView {
@@ -66,6 +92,7 @@ impl GlobalConfigView {
             search: "".into(),
             loaded: false,
             show_form: false,
+            form_scroll: ScrollHandle::default(),
             edit_id: None,
             form_name: "".into(),
             form_key: "".into(),
@@ -76,6 +103,7 @@ impl GlobalConfigView {
             name_input: None,
             key_input: None,
             data_input: None,
+            type_select_state: None,
         }
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -113,6 +141,7 @@ impl GlobalConfigView {
         self.name_input = None;
         self.key_input = None;
         self.data_input = None;
+        self.type_select_state = None;
         cx.notify();
     }
     fn open_edit(&mut self, item: &GlobalConfig, cx: &mut Context<Self>) {
@@ -129,9 +158,12 @@ impl GlobalConfigView {
         self.name_input = None;
         self.key_input = None;
         self.data_input = None;
+        self.type_select_state = None;
         cx.notify();
     }
     fn close_form(&mut self, cx: &mut Context<Self>) {
+        self.form_scroll
+            .set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         cx.notify();
     }
@@ -222,7 +254,59 @@ impl GlobalConfigView {
         (name, key)
     }
 
-    fn render_data_field(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// 懒初始化类型下拉列表（需要 &mut Window）
+    fn ensure_type_select_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.type_select_state.is_some() {
+            return;
+        }
+        let items: SearchableVec<TypeSelectItem> = SearchableVec::new(
+            CONFIG_TYPES
+                .iter()
+                .enumerate()
+                .map(|(idx, t)| TypeSelectItem {
+                    idx,
+                    label: t.to_string(),
+                })
+                .collect::<Vec<_>>(),
+        );
+        let initial_index = Some(gpui_component::IndexPath::default().row(self.form_type_idx));
+        let select_state = cx.new(|cx| {
+            SelectState::new(items, initial_index, window, cx).searchable(false)
+        });
+
+        // 订阅 SelectEvent，当用户选择类型时更新 form_type_idx
+        cx.subscribe_in(&select_state, window, Self::on_type_select)
+            .detach();
+
+        self.type_select_state = Some(select_state);
+    }
+
+    /// 类型选择事件处理
+    fn on_type_select(
+        &mut self,
+        _: &Entity<SelectState<SearchableVec<TypeSelectItem>>>,
+        event: &gpui_component::select::SelectEvent<SearchableVec<TypeSelectItem>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let gpui_component::select::SelectEvent::Confirm(Some(idx)) = event {
+            let source_type = CONFIG_TYPES[self.form_type_idx];
+            let target_type = CONFIG_TYPES[*idx];
+            self.form_data =
+                convert_config_value(self.form_data.as_ref(), source_type, target_type)
+                    .into();
+            self.form_type_idx = *idx;
+            self.data_input = None;
+            cx.notify();
+        }
+    }
+
+    fn render_data_field(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        style: ManagementStyle,
+    ) -> AnyElement {
         if self.form_type_idx == 3 {
             let is_true = self.form_data.as_ref() == "true";
             let entity = cx.entity();
@@ -230,8 +314,8 @@ impl GlobalConfigView {
                 .flex()
                 .flex_row()
                 .gap(px(8.0))
-                .child(bool_radio("true", is_true, entity.clone()))
-                .child(bool_radio("false", !is_true, entity))
+                .child(bool_radio("true", is_true, entity.clone(), style))
+                .child(bool_radio("false", !is_true, entity, style))
                 .into_any_element();
         }
 
@@ -270,17 +354,20 @@ impl GlobalConfigView {
             return div().into_any_element();
         }
 
+        let style = ManagementStyle::current(cx);
         let editing = self.edit_id.is_some();
         let (name, key) = self.ensure_form_inputs(window, cx);
-        let data_field = self.render_data_field(window, cx);
-        let type_selector = type_row(self.form_type_idx, cx);
+        let data_field = self.render_data_field(window, cx, style);
+        self.ensure_type_select_state(window, cx);
+        let type_select_state = self.type_select_state.clone().expect("type select state initialized");
+        let type_sel = type_selector(&type_select_state, &style);
         let error = self
             .error
             .as_ref()
             .map(|error| {
                 div()
                     .text_size(px(13.0))
-                    .text_color(rgb(0xff4444))
+                    .text_color(style.action(ActionRole::Delete).background)
                     .child(error.clone())
                     .into_any_element()
             })
@@ -292,33 +379,37 @@ impl GlobalConfigView {
             .left_0()
             .right_0()
             .bottom_0()
-            .bg(rgba(0x00000055))
+            .bg(Hsla {
+                a: 0.33,
+                ..style.list.muted_foreground
+            })
             .flex()
             .items_center()
             .justify_center()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
+                management_modal_panel(
+                    management_modal_layer(px(460.0)),
+                    style.list.row,
+                    style.list.foreground,
+                    style.list.border,
+                )
+                    .child(
+                            management_modal_scroll("global-config-form-scroll", &self.form_scroll)
                     .gap(px(12.0))
-                    .p(px(24.0))
-                    .w(px(460.0))
-                    .bg(rgb(0xffffff))
-                    .rounded(px(12.0))
-                    .shadow_md()
                     .child(
                         div()
                             .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
+                            .text_color(style.list.foreground)
                             .child(if editing {
                                 "编辑配置"
                             } else {
                                 "添加配置"
                             }),
                     )
-                    .child(field_with_input("名称", name))
-                    .child(field_with_input("Key", key))
-                    .child(type_selector)
+                    .child(field_with_input("名称", name, style))
+                    .child(field_with_input("Key", key, style))
+                    .child(type_sel)
                     .child(
                         div()
                             .flex()
@@ -327,7 +418,7 @@ impl GlobalConfigView {
                             .child(
                                 div()
                                     .text_size(px(12.0))
-                                    .text_color(rgb(0x666666))
+                                    .text_color(style.list.muted_foreground)
                                     .child("数据值"),
                             )
                             .child(data_field),
@@ -339,48 +430,56 @@ impl GlobalConfigView {
                             .flex_row()
                             .gap(px(8.0))
                             .justify_end()
-                            .child(btn(
-                                "取消",
-                                rgb(0xe8e8f0),
-                                rgb(0x666666),
-                                cx.listener(|this, _, _, cx| this.close_form(cx)),
-                            ))
-                            .child(btn(
-                                if editing { "更新" } else { "保存" },
-                                rgb(0x6f5699),
-                                rgb(0xffffff),
-                                cx.listener(|this, _, _, cx| this.save_config(cx)),
-                            )),
+                            .child(
+                                action_button(
+                                    "cancel-btn",
+                                    "取消",
+                                    ActionRole::Neutral,
+                                    ActionSize::Dialog,
+                                    style,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.close_form(cx)),
+                                ),
+                            )
+                            .child(
+                                action_button(
+                                    "save-btn",
+                                    if editing { "更新" } else { "保存" },
+                                    ActionRole::Main,
+                                    ActionSize::Dialog,
+                                    style,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.save_config(cx)),
+                                ),
+                            ),
                     ),
+                ),
             )
             .into_any_element()
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let style = ManagementStyle::current(cx);
         div()
             .flex()
             .items_center()
             .justify_between()
             .p(px(16.0))
             .border_b_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(style.list.border)
             .child(
                 div()
                     .text_size(px(18.0))
                     .font_weight(FontWeight::BOLD)
+                    .text_color(style.list.foreground)
                     .child("全局配置"),
             )
             .child(
-                div()
-                    .id("add-config-btn")
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(4.0))
-                    .bg(rgb(0x6f5699))
-                    .text_color(rgb(0xffffff))
-                    .text_size(px(13.0))
-                    .cursor(CursorStyle::PointingHand)
-                    .child("+ 添加配置")
+                action_button("add-config-btn", "+ 添加配置", ActionRole::Main, ActionSize::Page, style)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.open_add(cx)),
@@ -395,31 +494,23 @@ impl GlobalConfigView {
                 Some(cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称或 Key")));
         }
         let search_input = self.search_input.clone().expect("search input initialized");
+        let style = ManagementStyle::current(cx);
 
         div()
             .flex()
             .items_center()
             .p(px(12.0))
             .border_b_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(style.list.border)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(div().text_size(px(13.0)).child("搜索:"))
+                    .child(div().text_size(px(13.0)).text_color(style.list.foreground).child("搜索:"))
                     .child(div().w(px(200.0)).child(Input::new(&search_input)))
                     .child(
-                        div()
-                            .id("search-btn")
-                            .px(px(12.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(0x6f5699))
-                            .text_color(rgb(0xffffff))
-                            .text_size(px(12.0))
-                            .cursor(CursorStyle::PointingHand)
-                            .child("搜索")
+                        action_button("search-btn", "搜索", ActionRole::Main, ActionSize::Compact, style)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| this.do_search(cx)),
@@ -439,54 +530,60 @@ impl GlobalConfigView {
         let item_to_edit = item.clone();
         let store = self.store.clone();
         let entity = cx.entity();
+        let style = ManagementStyle::current(cx);
 
-        div()
-            .flex()
-            .border_b_1()
-            .border_color(rgb(0xf0f0f0))
-            .bg(rgb(0xffffff))
-            .child(table_cell(column_widths[0]).child(item.id.to_string()))
+        list_row(style)
+            .debug_selector(move || format!("GLOBAL_CONFIG_ROW_{}", id))
+            .child(list_cell(Some(column_widths[0]), style).child(item.id.to_string()))
             .child(
-                table_cell(column_widths[1])
+                list_cell(Some(column_widths[1]), style)
                     .text_size(px(13.0))
                     .font_weight(FontWeight::MEDIUM)
                     .child(item.name.clone()),
             )
-            .child(table_cell(column_widths[2]).child(item.key.clone()))
+            .child(list_cell(Some(column_widths[2]), style).child(item.key.clone()))
             .child(
-                table_cell(column_widths[3])
+                list_cell(Some(column_widths[3]), style)
                     .text_size(px(11.0))
-                    .text_color(rgb(0x999999))
-                    .bg(rgb(0xe8e8f0))
+                    .text_color(style.list.muted_foreground)
+                    .bg(style.list.muted)
                     .px(px(6.0))
                     .py(px(1.0))
                     .rounded(px(3.0))
                     .child(item.config_type.clone()),
             )
             .child(
-                table_cell(column_widths[4])
+                list_cell(Some(column_widths[4]), style)
                     .truncate()
                     .child(single_line_preview(&item.data)),
             )
             .child(
-                div()
-                    .w(column_widths[5])
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .flex()
-                    .gap(px(4.0))
-                    .child(row_action("edit", id, "编辑", rgb(0x5cb85c), {
-                        let entity = entity.clone();
-                        move |_, _, cx| {
-                            _ = entity.update(cx, |this, cx| this.open_edit(&item_to_edit, cx));
-                        }
-                    }))
-                    .child(row_action(
-                        "delete",
-                        id,
-                        "删除",
-                        rgb(0xd9534f),
-                        move |_, _, cx| {
+                list_actions(Some(column_widths[5]), style)
+                    .debug_selector(move || format!("GLOBAL_CONFIG_ACTIONS_{}", id))
+                    .child(
+                        action_button(
+                            ("edit", id as u64),
+                            "编辑",
+                            ActionRole::Edit,
+                            ActionSize::Row,
+                            style,
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let entity = entity.clone();
+                            move |_, _, cx| {
+                                _ = entity.update(cx, |this, cx| this.open_edit(&item_to_edit, cx));
+                            }
+                        }),
+                    )
+                    .child(
+                        action_button(
+                            ("delete", id as u64),
+                            "删除",
+                            ActionRole::Delete,
+                            ActionSize::Row,
+                            style,
+                        )
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             if let Some(store) = store.clone() {
                                 let entity = entity.clone();
                                 cx.spawn(async move |cx| {
@@ -495,8 +592,8 @@ impl GlobalConfigView {
                                 })
                                 .detach();
                             }
-                        },
-                    )),
+                        }),
+                    ),
             )
             .into_any_element()
     }
@@ -508,26 +605,26 @@ impl GlobalConfigView {
             rows.push(self.render_config_row(item, &column_widths, cx));
         }
 
-        div()
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(rgb(0xe0e0e0))
-            .rounded(px(4.0))
-            .overflow_hidden()
-            .child(render_table_header(&column_widths))
+        let style = ManagementStyle::current(cx);
+        list_container(style)
+            .debug_selector(|| "GLOBAL_CONFIG_LIST".to_owned())
+            .child(
+                render_table_header(&column_widths, style)
+                    .debug_selector(|| "GLOBAL_CONFIG_HEADER".to_owned()),
+            )
             .children(rows)
             .into_any_element()
     }
 
     fn render_list_area(&self, cx: &mut Context<Self>) -> AnyElement {
+        let style = ManagementStyle::current(cx);
         let content = if self.items.is_empty() {
             div()
                 .flex()
                 .items_center()
                 .justify_center()
                 .h_full()
-                .text_color(rgb(0x999999))
+                .text_color(style.list.muted_foreground)
                 .text_size(px(14.0))
                 .child("暂无数据")
                 .into_any_element()
@@ -536,10 +633,11 @@ impl GlobalConfigView {
         };
 
         div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .overflow_y_scrollbar()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
             .p(px(16.0))
             .child(content)
             .into_any_element()
@@ -549,6 +647,7 @@ impl GlobalConfigView {
         let total_pages = ((self.total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
         let has_previous = self.page > 1;
         let has_next = self.page < total_pages;
+        let style = ManagementStyle::current(cx);
 
         div()
             .flex_shrink_0()
@@ -557,11 +656,11 @@ impl GlobalConfigView {
             .justify_between()
             .p(px(12.0))
             .border_t_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(style.list.border)
             .child(
                 div()
                     .text_size(px(13.0))
-                    .text_color(rgb(0x666666))
+                    .text_color(style.list.muted_foreground)
                     .child(format!("共 {} 条", self.total)),
             )
             .child(
@@ -573,18 +672,20 @@ impl GlobalConfigView {
                         "prev-page",
                         "上一页",
                         has_previous,
+                        style,
                         cx.listener(|this, _, _, cx| this.prev_page(cx)),
                     ))
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x666666))
+                            .text_color(style.list.muted_foreground)
                             .child(format!("第 {} / {} 页", self.page, total_pages)),
                     )
                     .child(page_button(
                         "next-page",
                         "下一页",
                         has_next,
+                        style,
                         cx.listener(|this, _, _, cx| this.next_page(cx)),
                     )),
             )
@@ -627,88 +728,38 @@ fn config_column_widths() -> [Pixels; 6] {
     ]
 }
 
-fn render_table_header(column_widths: &[Pixels; 6]) -> impl IntoElement {
+fn render_table_header(column_widths: &[Pixels; 6], style: ManagementStyle) -> Div {
     const LABELS: [&str; 6] = ["ID", "名称", "Key", "类型", "数据值", "操作"];
 
-    div()
-        .flex()
-        .bg(rgb(0xf5f5f5))
-        .border_b_1()
-        .border_color(rgb(0xe0e0e0))
-        .children(
-            LABELS
-                .into_iter()
-                .zip(column_widths.iter().copied())
-                .map(|(label, width)| {
-                    div()
-                        .w(width)
-                        .px(px(8.0))
-                        .py(px(8.0))
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0x333333))
-                        .child(label)
-                }),
-        )
-}
-
-fn table_cell(width: Pixels) -> Div {
-    div()
-        .w(width)
-        .px(px(8.0))
-        .py(px(6.0))
-        .text_size(px(12.0))
-        .text_color(rgb(0x666666))
-}
-
-fn row_action(
-    id_prefix: &'static str,
-    id: i64,
-    label: &'static str,
-    background: Rgba,
-    handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id((id_prefix, id as u64))
-        .px(px(8.0))
-        .py(px(3.0))
-        .rounded(px(3.0))
-        .bg(background)
-        .text_color(rgb(0xffffff))
-        .text_size(px(11.0))
-        .cursor(CursorStyle::PointingHand)
-        .child(label)
-        .on_mouse_down(MouseButton::Left, handler)
+    list_header(style).children(
+        LABELS
+            .into_iter()
+            .zip(column_widths.iter().copied())
+            .map(|(label, width)| list_header_cell(Some(width), style).child(label)),
+    )
 }
 
 fn page_button(
     id: &'static str,
     label: &'static str,
     enabled: bool,
+    style: ManagementStyle,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .px(px(12.0))
-        .py(px(4.0))
-        .rounded(px(4.0))
-        .bg(if enabled {
-            rgb(0x6f5699)
-        } else {
-            rgb(0xcccccc)
-        })
-        .text_color(rgb(0xffffff))
-        .text_size(px(12.0))
-        .cursor(if enabled {
-            CursorStyle::PointingHand
-        } else {
-            CursorStyle::Arrow
-        })
-        .child(label)
+    let role = if enabled {
+        ActionRole::Main
+    } else {
+        ActionRole::Disabled
+    };
+    action_button(id, label, role, ActionSize::Compact, style)
         .on_mouse_down(MouseButton::Left, handler)
 }
 
-fn field_with_input(label: &'static str, input: Entity<InputState>) -> impl IntoElement {
+fn field_with_input(
+    label: &'static str,
+    input: Entity<InputState>,
+    style: ManagementStyle,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -716,49 +767,16 @@ fn field_with_input(label: &'static str, input: Entity<InputState>) -> impl Into
         .child(
             div()
                 .text_size(px(12.0))
-                .text_color(rgb(0x666666))
+                .text_color(style.list.muted_foreground)
                 .child(label),
         )
         .child(Input::new(&input))
 }
 
-fn type_row(selected: usize, cx: &mut Context<GlobalConfigView>) -> impl IntoElement {
-    let mut btns = div().flex().flex_row().gap(px(4.0));
-    for (i, t) in CONFIG_TYPES.iter().enumerate() {
-        let is_active = i == selected;
-        let entity = cx.entity();
-        btns = btns.child(
-            div()
-                .px(px(12.0))
-                .py(px(4.0))
-                .rounded(px(4.0))
-                .bg(if is_active {
-                    rgb(0x6f5699)
-                } else {
-                    rgb(0xe8e8f0)
-                })
-                .text_color(if is_active {
-                    rgb(0xffffff)
-                } else {
-                    rgb(0x666666)
-                })
-                .text_size(px(12.0))
-                .cursor(CursorStyle::PointingHand)
-                .child(*t)
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    _ = entity.update(cx, |this, cx| {
-                        let source_type = CONFIG_TYPES[this.form_type_idx];
-                        let target_type = CONFIG_TYPES[i];
-                        this.form_data =
-                            convert_config_value(this.form_data.as_ref(), source_type, target_type)
-                                .into();
-                        this.form_type_idx = i;
-                        this.data_input = None;
-                        cx.notify();
-                    });
-                }),
-        );
-    }
+fn type_selector(
+    select_state: &Entity<SelectState<SearchableVec<TypeSelectItem>>>,
+    style: &ManagementStyle,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -766,46 +784,35 @@ fn type_row(selected: usize, cx: &mut Context<GlobalConfigView>) -> impl IntoEle
         .child(
             div()
                 .text_size(px(12.0))
-                .text_color(rgb(0x666666))
+                .text_color(style.list.muted_foreground)
                 .child("类型"),
         )
-        .child(btns)
-}
-
-fn btn(
-    label: &'static str,
-    bg: gpui::Rgba,
-    fg: gpui::Rgba,
-    handler: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .px(px(16.0))
-        .py(px(8.0))
-        .bg(bg)
-        .rounded(px(6.0))
-        .text_size(px(13.0))
-        .text_color(fg)
-        .cursor(CursorStyle::PointingHand)
-        .hover(|s| {
-            s.bg(gpui::Rgba {
-                r: bg.r * 0.85,
-                g: bg.g * 0.85,
-                b: bg.b * 0.85,
-                a: bg.a,
-            })
-        })
-        .on_mouse_down(MouseButton::Left, handler)
-        .child(label)
+        .child(
+            div()
+                .w_full()
+                .child(Select::new(select_state).placeholder("请选择类型")),
+        )
 }
 
 fn bool_radio(
     label: &'static str,
     active: bool,
     entity: Entity<GlobalConfigView>,
+    style: ManagementStyle,
 ) -> impl IntoElement {
     let val = label.to_string();
-    let dot_color = if active { rgb(0x6f5699) } else { rgb(0xffffff) };
-    let border = if active { rgb(0x6f5699) } else { rgb(0xcccccc) };
+    let main_colors = style.action(ActionRole::Main);
+    let neutral_colors = style.action(ActionRole::Neutral);
+    let dot_color = if active {
+        main_colors.background
+    } else {
+        style.list.row
+    };
+    let border = if active {
+        main_colors.background
+    } else {
+        neutral_colors.background
+    };
     div()
         .flex()
         .flex_row()
@@ -824,7 +831,7 @@ fn bool_radio(
                 .justify_center()
                 .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(dot_color)),
         )
-        .child(div().text_size(px(13.0)).child(label))
+        .child(div().text_size(px(13.0)).text_color(style.list.foreground).child(label))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             _ = entity.update(cx, |this, cx| {
                 this.form_data = val.clone().into();
@@ -874,5 +881,46 @@ mod tests {
         assert_eq!(convert_config_value("", "text", "number"), "");
         assert_eq!(convert_config_value("   ", "json", "boolean"), "   ");
         assert_eq!(convert_config_value("001", "number", "number"), "001");
+    }
+
+    #[gpui::test]
+    fn global_config_list_matches_reference_geometry(cx: &mut gpui::TestAppContext) {
+        use crate::datasource::GlobalConfig;
+        use gpui::{VisualTestContext, px, size};
+
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+        let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
+            let mut view = super::GlobalConfigView::new(cx);
+            view.loaded = true;
+            view.total = 1;
+            view.items = vec![GlobalConfig {
+                id: 1,
+                name: "测试配置".to_string(),
+                key: "test.key".to_string(),
+                config_type: "text".to_string(),
+                data: "value".to_string(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }];
+            view
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let list = cx.debug_bounds("GLOBAL_CONFIG_LIST").expect("list bounds");
+        let header = cx.debug_bounds("GLOBAL_CONFIG_HEADER").expect("header bounds");
+        let row = cx.debug_bounds("GLOBAL_CONFIG_ROW_1").expect("row bounds");
+        let actions = cx
+            .debug_bounds("GLOBAL_CONFIG_ACTIONS_1")
+            .expect("action bounds");
+        assert_eq!(header.left(), row.left());
+        assert_eq!(header.right(), row.right());
+        assert_eq!(header.bottom(), row.top());
+        assert!(row.bottom() <= list.bottom());
+        assert!(actions.left() >= row.left());
+        assert!(actions.right() <= row.right());
     }
 }

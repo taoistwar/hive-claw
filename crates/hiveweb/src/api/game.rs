@@ -1,3 +1,9 @@
+//! Game HTTP APIs.
+//!
+//! `/game-aliases*` implements the deprecated game-alias management feature
+//! and remains registered only for compatibility. `/external-games*` queries
+//! active external-game data and is not part of that deprecation.
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -7,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::models::Role;
+#[allow(deprecated)]
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, GameListResponse, UpdateGameRequest,
 };
@@ -38,6 +45,7 @@ pub struct ExternalGameDetail {
     pub channels: Vec<String>,
 }
 
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default = "default_page")]
@@ -74,6 +82,8 @@ fn check_write_permission(claims: &Claims) -> Result<(), ApiResponse<()>> {
     Ok(())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn audit_event(
     pool: &sqlx::MySqlPool,
     claims: &Claims,
@@ -107,6 +117,8 @@ async fn audit_event(
     }
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn list_games(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
@@ -118,6 +130,8 @@ async fn list_games(
         .map_err(|e| e.into_response())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn get_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -130,6 +144,8 @@ async fn get_game(
         .map_err(|e| e.into_response())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn create_game(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
@@ -153,6 +169,8 @@ async fn create_game(
     Ok(ApiResponse::success(game))
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn update_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -177,6 +195,8 @@ async fn update_game(
     Ok(ApiResponse::success(game))
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn delete_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -287,13 +307,20 @@ async fn get_external_game_detail(
     }
 }
 
+/// Builds game-alias management and external-game lookup routes.
+///
+/// Only `/game-aliases*` is legacy and retained for compatibility.
+/// `/external-games*` remains an active external-game lookup API.
+#[allow(deprecated)]
 pub fn router() -> Router<AppState> {
     Router::new()
+        // Legacy game-alias management API retained for compatibility.
         .route("/game-aliases", get(list_games).post(create_game))
         .route(
             "/game-aliases/:id",
             get(get_game).put(update_game).delete(delete_game),
         )
+        // Active external-game lookups; not part of the alias deprecation.
         .route("/external-games", get(get_external_games))
         .route("/external-games/:id", get(get_external_game_detail))
 }

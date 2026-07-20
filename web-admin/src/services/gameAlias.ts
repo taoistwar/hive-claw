@@ -1,5 +1,6 @@
 import apiClient from './api'
 
+/** @deprecated 游戏别名管理已废弃，此类型仅用于历史兼容。 */
 export interface Game {
   id: number
   name: string
@@ -8,22 +9,26 @@ export interface Game {
   updated_at: string
 }
 
+/** @deprecated 游戏别名管理已废弃，此类型仅用于历史兼容。 */
 export interface GameListResponse {
   total: number
   games: Game[]
 }
 
+/** @deprecated 游戏别名管理已废弃，此类型仅用于历史兼容。 */
 export interface GameListParams {
   page?: number
   page_size?: number
   q?: string
 }
 
+/** @deprecated 游戏别名管理已废弃，此类型仅用于历史兼容。 */
 export interface CreateGameRequest {
   name: string
   aliases: string[]
 }
 
+/** @deprecated 游戏别名管理已废弃，此类型仅用于历史兼容。 */
 export interface UpdateGameRequest {
   name?: string
   aliases?: string[]
@@ -88,6 +93,7 @@ export const getExternalGameDetail = async (id: number): Promise<ExternalGameDet
   return data
 }
 
+/** @deprecated 游戏别名管理已废弃，仅为历史管理页保留。 */
 export const getGames = async (params: GameListParams = {}): Promise<GameListResponse> => {
   const { page = 1, page_size = 10, q } = params
   const searchParams = new URLSearchParams()
@@ -98,21 +104,25 @@ export const getGames = async (params: GameListParams = {}): Promise<GameListRes
   return data
 }
 
+/** @deprecated 游戏别名管理已废弃，仅为历史管理页保留。 */
 export const getGameById = async (id: number): Promise<Game> => {
   const { data } = await apiClient.get(`/game-aliases/${id}`)
   return data
 }
 
+/** @deprecated 游戏别名管理已废弃，仅为历史数据维护保留。 */
 export const createGame = async (req: CreateGameRequest): Promise<Game> => {
   const { data } = await apiClient.post('/game-aliases', req)
   return data
 }
 
+/** @deprecated 游戏别名管理已废弃，仅为历史数据维护保留。 */
 export const updateGame = async (id: number, req: UpdateGameRequest): Promise<Game> => {
   const { data } = await apiClient.put(`/game-aliases/${id}`, req)
   return data
 }
 
+/** @deprecated 游戏别名管理已废弃，仅为历史数据维护保留。 */
 export const deleteGame = async (id: number): Promise<void> => {
   await apiClient.delete(`/game-aliases/${id}`)
 }

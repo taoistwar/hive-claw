@@ -2,6 +2,7 @@
 
 **Purpose**: Validate that Hook REST API endpoint requirements are complete, clear, consistent, and implementable by both frontend and backend teams
 **Created**: 2026-06-02
+**Revalidated**: 2026-07-16（执行结果改为 tracing-only，执行历史 API 合同已撤销）
 **Feature**: [spec.md](../spec.md)
 
 **Note**: This checklist tests the quality of the API CONTRACT REQUIREMENTS — not whether the endpoints work correctly.
@@ -14,7 +15,7 @@
 - [ ] CHK002 — Are request body schemas (JSON shapes) specified for POST and PUT endpoints, distinguishing required vs optional fields? [Completeness, Spec §FR-004]
 - [ ] CHK003 — Are response body schemas specified for all success (200/201) and error responses? [Completeness, Gap]
 - [ ] CHK004 — Is the `POST /api/agents/:id/hooks` endpoint's behavior for `action_params` specified per action type — what fields are mandatory for `call_function` vs `call_workflow` vs `http_webhook`? [Clarity, Spec §FR-004]
-- [ ] CHK005 — Are the `GET /api/agents/:id/hooks/executions` query parameters (agent_id, trigger_point, outcome, from, to, page, page_size) fully enumerated with types and defaults? [Completeness, Spec §FR-015]
+- [x] CHK005 — Does the contract明确排除 `GET /api/agents/:id/hooks/executions` 及任何全局执行历史查询 API? [Completeness, Spec §FR-015] → **已验证**: contract 仅保留 Hook 配置 CRUD
 
 ## Response Format Consistency
 
@@ -30,23 +31,23 @@
 - [ ] CHK012 — Is the error response format consistent between validation errors (400-level, e.g., 6002/6003) and server errors (500-level, e.g., 6005)? [Consistency]
 - [ ] CHK013 — Are the HTTP status codes for Hook-specific errors (6001=422, 6003=400, 6004=408) correctly mapped and consistent with the existing `http_status_for_code()` convention? [Consistency, Plan §Error Codes]
 
-## Pagination & Query Contract
+## Removed Execution-History Contract
 
-- [ ] CHK014 — Is the pagination format for Hook execution history (`GET /api/agents/:id/hooks/executions`) specified — `page`, `page_size`, `total` in response? [Completeness, Spec §FR-015 / Tasks T041]
-- [ ] CHK015 — Is the default page size and maximum page size documented for execution history? Missing these could cause unbounded queries. [Clarity, Gap]
-- [ ] CHK016 — Are the `from` and `to` time range parameters' format (ISO 8601? Unix timestamp?) and timezone handling specified? [Clarity, Spec §FR-015]
+- [x] CHK014 — Is execution-history pagination absent because no execution-history query endpoint exists? [Consistency, Spec §FR-015] → **已验证**
+- [x] CHK015 — Are obsolete execution-history page-size defaults removed from the model and API contract? [Consistency, Spec §FR-015] → **已验证**
+- [x] CHK016 — Are obsolete execution-history time-range filters removed from the API contract? [Consistency, Spec §FR-015] → **已验证**
 
 ## Authentication & Authorization Contract
 
 - [ ] CHK017 — Is the JWT authentication requirement documented for all Hook CRUD endpoints — which middleware is applied and what claims are extracted? [Completeness, Tasks T023]
-- [ ] CHK018 — Are the RBAC rules for Hook execution history (FR-019: non-Super limited to own sessions) specified in terms of how the session-ownership check is performed — by matching `admin_id` from JWT to `chat_sessions.admin_id`? [Clarity, Spec §FR-019]
+- [x] CHK018 — Is execution-history access unavailable to every role because the API is removed? [Clarity, Spec §FR-015] → **已验证**
 - [ ] CHK019 — Is the behavior documented for the main Agent Hook UI (FR-017: "不渲染") — does the API also reject non-Super requests to main Agent Hook endpoints, or only hide the UI? [Clarity, Spec §FR-017 vs Tasks T032]
 
 ## Data Model ↔ API Alignment
 
 - [ ] CHK020 — Does the `AgentHook` response schema in the API contract include `blocking_mode` and `timeout_ms` fields, or are these documented separately? [Completeness, Spec §FR-010/FR-011 vs Tasks T007]
 - [ ] CHK021 — Is the `action_params` JSON structure documented for each action type in the API contract, or left as an opaque blob for the client to discover? [Clarity, Gap]
-- [ ] CHK022 — Does the `HookExecution` response schema include `agent_identifier` (audit snapshot from T004), and is the behavior when agent is deleted documented ("已删除的 Agent {identifier}")? [Completeness, Spec US4 Acceptance Scenario 3]
+- [x] CHK022 — Is the obsolete `HookExecution` response schema absent from the contract? [Completeness, Spec §FR-015] → **已验证**
 
 ## API Change & Versioning
 
@@ -60,6 +61,6 @@
 - Items CHK001–CHK005 focus on endpoint specification completeness
 - Items CHK006–CHK009 focus on response format consistency with existing conventions
 - Items CHK010–CHK013 focus on error handling contract quality
-- Items CHK014–CHK016 focus on pagination and query parameter specification
+- Items CHK014–CHK016 verify removal of the execution-history query contract
 - Items CHK017–CHK019 focus on auth/RBAC contract clarity
 - Items CHK020–CHK024 focus on data model alignment and versioning

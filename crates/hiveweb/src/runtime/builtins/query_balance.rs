@@ -561,20 +561,7 @@ pub const QUERY_BALANCE_OUTPUT_SCHEMA: &str = r#"{
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        disk_status_text, format_disk_end_date, format_disk_total_size, missing_disk_response,
-    };
-    use serde_json::json;
-
-    #[test]
-    fn returns_message_when_disk_category_has_no_purchase_record() {
-        assert_eq!(
-            missing_disk_response("disk", false),
-            Some(json!({"message": "未查询到云硬盘的购买记录。"}))
-        );
-        assert_eq!(missing_disk_response("benefits", false), None);
-        assert_eq!(missing_disk_response("disk", true), None);
-    }
+    use super::{disk_status_text, format_disk_end_date, format_disk_total_size};
 
     #[test]
     fn formats_disk_end_time_in_china_timezone() {

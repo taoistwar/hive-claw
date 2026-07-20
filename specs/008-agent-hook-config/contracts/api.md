@@ -39,22 +39,9 @@
 **Response**: `{ code: 0, message: "success" }`
 **Errors**: 6006 (not found)
 
-### Hook Execution History
+### 无执行历史接口
 
-#### `GET /api/agents/:id/hooks/executions`
-查询 Hook 执行历史。
-
-**Auth**: Admin JWT (non-Super limited to own sessions)
-**Query Params**: `agent_id`, `trigger_point`, `outcome`, `from` (ISO 8601), `to` (ISO 8601), `page`, `page_size`
-**Response**: `{ code: 0, data: { items: [HookExecution, ...], total: N, page: P, page_size: S } }`
-
-#### `GET /api/hooks/executions`
-全局查询 Hook 执行历史（Super only, cross-agent）。
-
-**Auth**: Admin JWT (Super only)
-**Query Params**: Same as above (agent_id optional for filtering)
-
----
+`GET /api/agents/:id/hooks/executions` 以及全局 Hook 执行历史查询均不属于当前 API 合同。Hook 执行结果仅通过结构化 tracing 提供，不返回可分页的历史数据。
 
 ## Data Schemas
 
@@ -75,26 +62,6 @@
   "timeout_ms": "int",
   "created_at": "datetime",
   "updated_at": "datetime"
-}
-```
-
-### HookExecution
-
-```json
-{
-  "id": "bigint",
-  "agent_id": "bigint",
-  "agent_identifier": "string",
-  "hook_id": "bigint | null",
-  "session_id": "bigint | null",
-  "trigger_point": "string",
-  "action_type": "string",
-  "outcome": "success | error | timeout | skipped",
-  "error_summary": "string | null",
-  "elapsed_ms": "int",
-  "context_snapshot": "object | null",
-  "request_id": "string",
-  "created_at": "datetime"
 }
 ```
 

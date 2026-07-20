@@ -43,7 +43,7 @@ pub async fn test_app() -> Result<Router> {
     Ok(hiveweb::api::create_router(
         pool,
         redis,
-        s3,
+        Some(s3),
         None,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),
     ))

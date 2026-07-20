@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Drawer, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Table, Tag, message } from 'antd'
+import { Alert, Button, Drawer, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Table, Tag, message } from 'antd'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -34,6 +34,7 @@ const TAG_COLOR_MAP: Record<string, string> = {
   '本周热玩': '#ecc94b',
 }
 
+/** @deprecated 推荐游戏管理已废弃，仅为历史管理页保留。 */
 function PreviewPanel({ values }: { values: PreviewValues }) {
   const s = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
   const tag = s(values.tag)
@@ -88,6 +89,9 @@ function PreviewPanel({ values }: { values: PreviewValues }) {
   )
 }
 
+/**
+ * @deprecated 推荐游戏管理已废弃，仅为查看和维护历史数据保留。
+ */
 export default function RecommendedGamePage() {
   const [items, setItems] = useState<RecommendedGame[]>([])
   const [loading, setLoading] = useState(false)
@@ -504,6 +508,13 @@ export default function RecommendedGamePage() {
 
   return (
     <div>
+      <Alert
+        type="warning"
+        showIcon
+        message="推荐游戏管理已废弃"
+        description="该功能仅为兼容历史数据保留，请勿用于新的业务配置。"
+        style={{ marginBottom: 16 }}
+      />
       <Space style={{ marginBottom: 16 }}>
         <Button type="primary" onClick={() => { createForm.resetFields(); setCreateOpen(true) }}>
           新建推荐游戏

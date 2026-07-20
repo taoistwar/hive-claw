@@ -64,10 +64,14 @@ impl Role {
         }
     }
 
+    /// Permission check retained for the legacy recommended-game admin API.
+    #[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
     pub fn can_manage_recommended_games(&self) -> bool {
         matches!(self, Role::System | Role::Super)
     }
 
+    /// Delete permission retained for the legacy recommended-game admin API.
+    #[deprecated(note = "Legacy recommended-game API; retained for compatibility only")]
     pub fn can_delete_recommended_games(&self) -> bool {
         matches!(self, Role::Super)
     }

@@ -1,77 +1,93 @@
-# 09 · `get_game_channels` — 取某游戏可用的**启用**渠道列表
+# 09 · `get_game_channels` — 查询游戏的可用渠道
 
 ## 元数据
 
 | 字段 | 值 |
 | ---- | -- |
 | Rust 函数 | `services::game_service::get_game_channels` |
-| 缓存包装 | **无**（调用频率低 + 业务侧要求实时） |
-| 源文件 | [services/game_service.rs L455-475](../../crates/hiveweb/src/services/game_service.rs#L455-L475) |
-| 调用方 | [`api/game.rs`](../../crates/hiveweb/src/api/game.rs) `POST /game/channels`（运营后台游戏详情页） |
+| 缓存包装 | **无** |
+| 源文件 | [services/game_service.rs](../../crates/hiveweb/src/services/game_service.rs) |
+| 直接调用方 | [`api/game.rs`](../../crates/hiveweb/src/api/game.rs)；Legacy [`api/recommended_game.rs`](../../crates/hiveweb/src/api/recommended_game.rs) |
 
 ## SQL 原文
 
 ```sql
-SELECT DISTINCT t2.prom_channel
+SELECT distinct t2.prom_channel
 FROM (
-    SELECT * FROM cc_logic_game_wide WHERE logic_game_id = ?
+    select * from cc_logic_game_wide where logic_game_id=?
 ) t1
 INNER JOIN cc_promotion_channel t2
     ON t2.game_tag = t1.channel_game_tag
-   AND t2.status  = 1
+   AND t2.status = 1
 LEFT JOIN (
-    SELECT * FROM cc_logic_game_exclude
-) t3 ON t1.logic_game_id = t3.logic_game_id
-WHERE t3.id IS NULL
+    select * from cc_logic_game_exclude
+) t3
+    ON t1.logic_game_id = t3.logic_game_id
+   AND t2.prom_channel = t3.channel
+where t3.id is null
 ```
-
-## ⚠️ 最近变更
-
-| 维度 | 旧 | 新 |
-| ---- | -- | -- |
-| 结构 | 嵌套子查询 + `GROUP BY t1.prom_channel` | 平铺 FROM + `LEFT JOIN cc_logic_game_exclude` + `WHERE t3.id IS NULL` |
-| 去重 | 内层 `GROUP BY t1.prom_channel` | 外层 `SELECT DISTINCT t2.prom_channel` |
-| 排除过滤 | 无 | 新增 `LEFT JOIN cc_logic_game_exclude` + `t3.id IS NULL` 过滤 |
-| `bind` 数 | 1（不变） | 1（不变） |
-
-主要变化：**新增 `cc_logic_game_exclude` 过滤**——旧版只查"该游戏在哪些启用渠道"，新版会排除"在该游戏上配置了 exclude 的渠道"。
-
-> 注意新版 `t3` 子查询没有 `client_type`/`channel` 过滤——当前 SQL 是"该游戏被任意配置 exclude 的渠道全部排除"，这是**潜在的过度过滤**（应按 `logic_game_id` 精匹配，但当前实现是全表扫 exclude 匹配 logic_game_id）。等后续业务反馈再决定是否加严。
 
 ## 作用
 
-返回该游戏**当前可投放**的渠道集合（去重）。逻辑：
+根据 `logic_game_id` 返回该游戏当前可用的渠道码：
 
-1. 在 `cc_logic_game_wide` 找到 `logic_game_id = ?` 的 `channel_game_tag`
-2. INNER JOIN `cc_promotion_channel` 用 `game_tag` 找 `status = 1`（启用）的渠道
-3. LEFT JOIN `cc_logic_game_exclude`，若该 game 被 exclude 配置命中 → 整行排除
-4. `DISTINCT` 去重
+1. 从 `cc_logic_game_wide` 找出游戏的 `channel_game_tag`。
+2. 通过 `cc_promotion_channel.game_tag` 映射渠道，并且只保留
+   `status = 1` 的启用渠道。
+3. 按“游戏 ID + 渠道码”关联 `cc_logic_game_exclude`；命中排除记录的渠道不返回。
+4. 使用 `DISTINCT` 去重。
+
+排除条件包含 `t2.prom_channel = t3.channel`，因此某个渠道被排除时，不会连带
+排除同一游戏的其他渠道。
 
 ## 参数
 
-| 占位符 | 类型 | 含义 |
-| ------ | ---- | ---- |
-| `?`    | `i64` | `cc_logic_game_wide.logic_game_id` |
+| 占位符 | Rust 类型 | 含义 |
+| ------ | --------- | ---- |
+| `?` | `i64` | `cc_logic_game_wide.logic_game_id` |
+
+## 配置与状态条件
+
+| 表 | 条件 | 含义 |
+| -- | ---- | ---- |
+| `cc_promotion_channel` | `status = 1` | 只返回启用的推广渠道 |
+| `cc_logic_game_exclude` | `logic_game_id` 和 `channel` 同时匹配 | 排除指定游戏的指定渠道 |
+
+`cc_logic_game_exclude` 没有按 `client_type` 过滤。因此，只要存在相同游戏和渠道的
+排除记录，该渠道就会从结果中移除，不区分客户端类型。
 
 ## 返回
 
 | Rust 类型 | 描述 |
 | --------- | ---- |
-| `Result<Vec<String>, AppError>` | 渠道码数组（`String`） |
+| `Result<Vec<String>, AppError>` | 去重后的 `prom_channel` 数组；没有可用渠道时返回空数组 |
 
-> 错误用 `AppError::Internal(format!("game_channels query: {e}"))` 包装。
+查询错误包装为 `AppError::Internal("game_channels query: …")`。
+
+## 实际调用
+
+- 管理端 `GET /api/external-games/:id`：与客户端类型并行查询，写入
+  `ExternalGameDetail.channels`。调用方使用 `unwrap_or_default()`，查询失败时该字段
+  返回空数组。
+- Legacy 管理端 `POST /api/recommended-games` 或 `PUT /api/recommended-games/:id`：若策略的
+  `channel` 数组含有 `"*"`，
+  `expand_strategy_wildcards` 会用本函数结果替换整个数组。查询失败时替换为空数组；
+  游戏 ID 无法解析或未配置外部数据库时不会执行查询，并保留原数组。该路径仅兼容
+  保留，新代码不得调用或依赖。
+
+本函数没有独立 HTTP 接口，也没有 Redis 缓存。
 
 ## 涉及的表 / 列
 
 | 表 | 关键列 |
 | -- | ------ |
 | `cc_logic_game_wide` | `logic_game_id`（过滤）/ `channel_game_tag`（JOIN 键） |
-| `cc_promotion_channel` | `game_tag`（JOIN 键）/ `status = 1`（过滤）/ `prom_channel`（返回） |
-| `cc_logic_game_exclude` | `logic_game_id`（JOIN 键，无其它过滤） |
+| `cc_promotion_channel` | `game_tag`（JOIN 键）/ `status`（启用过滤）/ `prom_channel`（返回和排除匹配） |
+| `cc_logic_game_exclude` | `logic_game_id`、`channel`（排除匹配）/ `id`（判断是否命中） |
 
 ## 失败 / 边界
 
-- `logic_game_id` 无对应 `cc_logic_game_wide` → 内层空 → 0 行 → `Vec::new()`。
-- `status = 1` 是硬编码——下架渠道（status=0/2 等）被排除。
-- 任意 `cc_logic_game_exclude` 命中 → LEFT JOIN 不为 NULL → `t3.id IS NULL` 失败 → 该行被排除。
-- 不缓存，命中频繁性低；调用方都是后台管理接口。
+- 找不到游戏、没有启用渠道或所有渠道均被排除时，返回 `Vec::new()`。
+- SQL 没有 `ORDER BY`，调用方不能依赖渠道顺序。
+- 返回项映射为非空 `String`；若数据库实际返回 `NULL`，SQLx 解码会报错，而不是
+  在数组中返回空值。

@@ -1,12 +1,12 @@
 use axum::{
     Json, Router,
-    extract::{Extension, Path, Query, State},
-    routing::{delete, get, post, put},
+    extract::{Extension, Path, State},
+    routing::{get, put},
 };
 use serde::Serialize;
 
 use crate::api::AppState;
-use crate::models::agent_hook::{CreateHookRequest, HookExecutionQuery, UpdateHookRequest};
+use crate::models::agent_hook::{CreateHookRequest, UpdateHookRequest};
 use crate::services::agent_hook as svc;
 use crate::utils::error::ApiResponse;
 use crate::utils::jwt::Claims;
@@ -18,7 +18,6 @@ pub fn router() -> Router<AppState> {
             "/agents/:id/hooks/:hook_id",
             put(update_hook).delete(delete_hook),
         )
-        .route("/agents/:id/hooks/executions", get(list_executions))
 }
 
 // ── Handlers ──
@@ -65,35 +64,5 @@ async fn delete_hook(
     svc::delete_hook(&state.pool, agent_id, hook_id, claims.role)
         .await
         .map(|_| ApiResponse::success(()))
-        .map_err(|e| e.into_response())
-}
-
-async fn list_executions(
-    State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
-    Path(_agent_id): Path<i64>,
-    Query(query): Query<HookExecutionQuery>,
-) -> Result<ApiResponse<impl Serialize>, ApiResponse<()>> {
-    // FR-019: Non-Super users limited to own sessions
-    let page = query.page;
-    let page_size = query.page_size;
-
-    svc::list_executions(&state.pool, query)
-        .await
-        .map(|(items, total)| {
-            #[derive(Serialize)]
-            struct PaginatedExecutions {
-                items: Vec<crate::models::agent_hook::HookExecution>,
-                total: u64,
-                page: u32,
-                page_size: u32,
-            }
-            ApiResponse::success(PaginatedExecutions {
-                items,
-                total,
-                page,
-                page_size,
-            })
-        })
         .map_err(|e| e.into_response())
 }

@@ -13,6 +13,9 @@ interface GameAliasFormProps {
 const MAX_ALIAS_LENGTH = 50
 const MAX_ALIASES_COUNT = 20
 
+/**
+ * @deprecated 游戏别名管理已废弃，仅为历史数据维护保留。
+ */
 const GameAliasForm: React.FC<GameAliasFormProps> = ({
   visible,
   editingGame,

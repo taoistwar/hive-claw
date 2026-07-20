@@ -20,24 +20,6 @@ pub struct AgentHook {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Hook execution audit record (maps to `hook_executions` table).
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct HookExecution {
-    pub id: i64,
-    pub agent_id: i64,
-    pub agent_identifier: String,
-    pub hook_id: Option<i64>,
-    pub session_id: Option<i64>,
-    pub trigger_point: String,
-    pub action_type: String,
-    pub outcome: String,
-    pub error_summary: Option<String>,
-    pub elapsed_ms: Option<i32>,
-    pub context_snapshot: Option<serde_json::Value>,
-    pub request_id: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
 /// Request DTO for creating a new Hook.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateHookRequest {
@@ -79,25 +61,4 @@ pub struct UpdateHookRequest {
     pub timeout_ms: Option<i32>,
     /// Optimistic lock: must match the `updated_at` from GET response.
     pub updated_at: DateTime<Utc>,
-}
-
-/// Query parameters for listing Hook executions.
-#[derive(Debug, Clone, Deserialize)]
-pub struct HookExecutionQuery {
-    pub agent_id: Option<i64>,
-    pub trigger_point: Option<String>,
-    pub outcome: Option<String>,
-    pub from: Option<String>,
-    pub to: Option<String>,
-    #[serde(default = "default_page")]
-    pub page: u32,
-    #[serde(default = "default_page_size")]
-    pub page_size: u32,
-}
-
-fn default_page() -> u32 {
-    1
-}
-fn default_page_size() -> u32 {
-    20
 }

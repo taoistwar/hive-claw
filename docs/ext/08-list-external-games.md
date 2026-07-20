@@ -1,15 +1,21 @@
-# 08 · `list_external_games` — 按 client_type + channel 列出可玩游戏
+# 08 · `list_external_games` — 按客户端和渠道列出可用游戏
 
 ## 元数据
 
 | 字段 | 值 |
 | ---- | -- |
 | Rust 函数 | `services::game_service::list_external_games` |
-| 缓存包装 | `list_external_games_cached`（`cached_or_fetch`） |
-| 缓存键 | `game_list:{channel}:{client_type}` |
-| 缓存 TTL | 600 s（10 min） |
-| 源文件 | [services/game_service.rs L423-452](../../crates/hiveweb/src/services/game_service.rs#L423-L452) |
-| 调用方 | builtin [`game_list`](../../crates/hiveweb/src/runtime/builtins/game_list.rs)（Agent 列出可玩游戏）；[`api/game.rs`](../../crates/hiveweb/src/api/game.rs) `POST /game/list`（运营后台） |
+| 返回类型 | `Result<Vec<(i64, String, String)>, AppError>` |
+| 源文件 | [`services/game_service.rs`](../../crates/hiveweb/src/services/game_service.rs) |
+| 生产调用方 | builtin [`game_list`](../../crates/hiveweb/src/runtime/builtins/game_list.rs) |
+| 缓存包装 | `list_external_games_cached`，已定义但当前生产代码**没有调用** |
+| 缓存键 / TTL | 包装函数被调用时使用 `game_list:{channel}:{client_type}` / 600 秒，并会缓存空数组 |
+
+> 当前 `game_list` builtin 直接查询外部数据库。此 SQL 不使用 `cc_promotion_channel`，也不执行 `channel → game_tag` 映射；`channel` 只参与排除表过滤。
+
+> 本文中的 `cc_logic_game.alias` 是外部游戏数据，仍供 `game_list` builtin 使用；它与
+> 已废弃的管理中心“游戏别名管理”（本地 `games` / `game_alias_entries` 及
+> `/api/game-aliases*`）不是同一功能。
 
 ## SQL 原文
 
@@ -25,73 +31,74 @@ FROM (
     SELECT * FROM cc_logic_game_exclude
     WHERE client_type = ? AND channel = ?
   ) t2 ON t1.logic_game_id = t2.logic_game_id
-  INNER JOIN cc_logic_game_version t3 ON t1.version = t3.version
-  LEFT JOIN cc_logic_game_blacklist t4 ON t1.logic_game_id = t4.logic_game_id
+  INNER JOIN cc_logic_game_version t3
+    ON t1.version = t3.version
+  LEFT JOIN cc_logic_game_blacklist t4
+    ON t1.logic_game_id = t4.logic_game_id
   WHERE t2.id IS NULL AND t4.id IS NULL
   GROUP BY t1.logic_game_id, t1.name
 ) z1
-INNER JOIN cc_logic_game z2 ON z1.logic_game_id = z2.id
+INNER JOIN (
+  SELECT * FROM cc_logic_game WHERE status = 1
+) z2 ON z1.logic_game_id = z2.id
 ```
 
-## ⚠️ 最近变更
+## 作用与过滤链
 
-| 维度 | 旧 | 新 |
-| ---- | -- | --- |
-| 主入口 | `FROM cc_logic_game g INNER JOIN cc_logic_game_wide w ...` | `FROM (子查询 z1) INNER JOIN cc_logic_game z2 ...` |
-| `client_type` 过滤 | 在 `w.client_type = ?` 主 WHERE | 在 `cc_logic_game_wide` 子查询内 `WHERE client_type = ?` |
-| `channel_game_tag` 映射 | 用 `cc_promotion_channel` 子查询解析 `channel → game_tag` | **不再解析**（直接按 `client_type` 过滤，不再绑定到特定 channel 的 tag） |
-| `channel` 过滤 | `e.channel = ?`（exclude 表）+ `COALESCE(... 'UNKNOWN')` | `e.channel = ?`（exclude 表） |
-| 排除逻辑 | LEFT JOIN exclude + LEFT JOIN blacklist + WHERE id IS NULL | LEFT JOIN exclude + INNER JOIN version + LEFT JOIN blacklist + WHERE id IS NULL |
-| 去重 | `SELECT DISTINCT` | `GROUP BY t1.logic_game_id, t1.name` |
-| `bind` 顺序 | `channel, client_type, channel` | `client_type, client_type, channel` |
-| 排序 | `ORDER BY ga.id` | **无 ORDER BY** |
-| `cc_logic_game_version` | INNER JOIN | **保留** INNER JOIN（确保 version 有效） |
+1. 按 `client_type` 从 `cc_logic_game_wide` 取候选行；这里是直接比较，没有 `lower(...)`。
+2. 按同一 `client_type + channel` 关联 `cc_logic_game_exclude`。
+3. 通过 `cc_logic_game_version` INNER JOIN 校验版本存在。
+4. 关联全局 `cc_logic_game_blacklist`。
+5. 仅保留未命中 exclude 和 blacklist 的行。
+6. 按 `logic_game_id + wide.name` 分组去重。
+7. INNER JOIN `status = 1` 的 `cc_logic_game`，最终返回主表中的 ID、名称和别名。
 
-主要变化：**新 SQL 摆脱了 `channel → game_tag` 的间接映射**——旧版要先解析 channel 才能知道哪些 `cc_logic_game_wide` 命中，新版直接按 `client_type` 过滤 `cc_logic_game_wide`，再用 `cc_logic_game_exclude.channel = ?` 处理渠道级排除。
+SQL 不含 `ORDER BY`，因此结果顺序未定义。
 
-`bind` 顺序变更：旧为 `channel, client_type, channel`，新为 `client_type, client_type, channel`——所有调用方 `list_external_games_cached` 必须按新顺序传参。
+## 参数与 bind 顺序
 
-## 作用
+函数签名顺序是：
 
-按 **`client_type` + `channel`** 列出**当前可玩**的逻辑游戏，过滤链：
+```rust
+list_external_games(ext_pool, channel, client_type)
+```
 
-1. 用 `client_type` 从 `cc_logic_game_wide` 拿全部宽表行
-2. LEFT JOIN `cc_logic_game_exclude`（按 `client_type` + `channel` 排除）
-3. INNER JOIN `cc_logic_game_version`（确保 version 有效）
-4. LEFT JOIN `cc_logic_game_blacklist`（全局黑名单）
-5. `WHERE t2.id IS NULL AND t4.id IS NULL` 保留未排除的
-6. `GROUP BY` 去重
-7. 外层 `INNER JOIN cc_logic_game` 取 `name` / `alias` 展示字段
+SQL bind 顺序与函数参数顺序不同：
 
-## 参数
+| 次序 | 值 | 过滤位置 |
+| ---- | -- | -------- |
+| 1 | `client_type` | `cc_logic_game_wide.client_type` |
+| 2 | `client_type` | `cc_logic_game_exclude.client_type` |
+| 3 | `channel` | `cc_logic_game_exclude.channel` |
 
-| 占位符 | 类型 | 出现 | 含义 |
-| ------ | ---- | ---- | ---- |
-| `?`    | `&str` | 1 | `cc_logic_game_wide.client_type` |
-| `?`    | `&str` | 2 | `cc_logic_game_exclude.client_type` |
-| `?`    | `&str` | 3 | `cc_logic_game_exclude.channel` |
+代码对应 `.bind(client_type).bind(client_type).bind(channel)`。
 
-代码里顺序为 `.bind(client_type).bind(client_type).bind(channel)`。
+## 返回与 builtin 输出
 
-## 返回
+服务函数返回：
 
-| Rust 类型 | 描述 |
-| --------- | ---- |
-| `Result<Vec<(u32, String, String)>, AppError>` | `(cc_logic_game.id, name, alias)`，**无序** |
+```text
+Vec<(i64, String, String)>
+     id   name    alias
+```
 
-## 涉及的表 / 列
+`alias` 为 NULL 时由 SQL 转成空字符串。`game_list` builtin 随后：
 
-| 表 | 角色 | 关键列 |
-| -- | ---- | ------ |
-| `cc_logic_game_wide` | 过滤源（client_type 子查询） | `client_type`（过滤）/ `logic_game_id` / `name` / `version` |
-| `cc_logic_game_exclude` | 渠道级排除 | `logic_game_id`（JOIN 键）/ `client_type`（过滤）/ `channel`（过滤） |
-| `cc_logic_game_version` | 版本校验 | `version`（JOIN 键） |
-| `cc_logic_game_blacklist` | 全局黑名单 | `logic_game_id`（JOIN 键） |
-| `cc_logic_game` | 外层主表 | `id`（返回）/ `name`（返回）/ `alias`（返回） |
+- 按逗号拆分 `alias`；
+- 去除首尾空白、跳过空值并在单个游戏内去重；
+- 生成结构化 `games: [{ id, name, aliases }]`；
+- 同时生成适合模型展示的 `data` 文本；
+- 把本次 `client_type` 写入 AgentContext 的 `target_client_type`。
 
-## 失败 / 边界
+## 空结果与错误
 
-- `cc_logic_game_wide` 在该 `client_type` 下无任何记录 → 内层 0 行 → 外层 0 行 → 空 `Vec`。
-- `cc_logic_game_version` 缺失 → INNER JOIN 失败 → 0 行。
-- 全部命中 exclude 或 blacklist → 0 行。
-- `cc_logic_game` 与 `cc_logic_game_wide` 失联（孤儿 wide 行）→ 0 行。
+- 指定客户端没有宽表行：返回空 `Vec`。
+- 版本缺失、命中 exclude / blacklist、或主表游戏不是 `status = 1`：相应游戏不返回。
+- 全部被过滤：服务函数返回空 `Vec`；builtin 返回 `games: []` 和空字符串 `data`，没有专用“未找到”错误。
+- SQL 失败：包装为 `AppError::Internal("game_list external query: ...")`，builtin 再转为执行错误。
+
+## 缓存现状
+
+`list_external_games_cached` 使用标准 cache-aside：Redis 读取失败或 miss 时查询 DB，查询成功后以 600 秒 TTL 写回，Redis 写失败不影响结果。它也会缓存空列表。
+
+但是当前唯一生产调用方 `game_list` 使用的是 `list_external_games`，所以该 Redis wrapper 目前没有生产消费者。

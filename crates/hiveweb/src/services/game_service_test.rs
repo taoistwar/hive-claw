@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
+
     use crate::models::game::{CreateGameRequest, UpdateGameRequest};
     use crate::services::game_service::{
         create_game, delete_game, get_game_by_id, list_games, update_game,

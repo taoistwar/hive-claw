@@ -1,8 +1,8 @@
 //! Integration & contract tests: Agent Hook 配置管理 (008-agent-hook-config)
 //!
-//! Covers: T008-T019, T052-T053 (Phase 2.5 红灯测试)
+//! Covers: T008-T017, T052-T054, T056-T058 (Phase 2.5 红灯测试)
 //!
-//! Contract tests (REST API): T008-T011, T013-T014, T016, T052, T018-T019
+//! Contract tests (REST API): T008-T011, T013-T014, T016, T052, T056
 //! Integration tests (chat session): T012, T015, T017, T053 (require full chat infra)
 
 mod common;
@@ -15,11 +15,34 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[derive(Clone, Default)]
+struct TraceWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+struct TraceWriterGuard(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for TraceWriterGuard {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("trace buffer poisoned").extend(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceWriter {
+    type Writer = TraceWriterGuard;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        TraceWriterGuard(std::sync::Arc::clone(&self.0))
+    }
+}
+
 // ── Agent seed helper (RAII cleanup on drop) ──
 
 struct SeededAgent {
     pub id: i64,
-    pub identifier: String,
     pool: sqlx::MySqlPool,
 }
 
@@ -45,7 +68,6 @@ impl SeededAgent {
         .await?;
         Ok(Self {
             id: result.last_insert_id() as i64,
-            identifier: identifier.clone(),
             pool: pool.clone(),
         })
     }
@@ -57,7 +79,7 @@ impl Drop for SeededAgent {
             let pool = self.pool.clone();
             let id = self.id;
             handle.spawn(async move {
-                // FK CASCADE will clean up agent_hooks; hook_executions has no FK
+                // FK CASCADE cleans up the Agent's Hook configuration.
                 let _ = sqlx::query("DELETE FROM agents WHERE id = ?")
                     .bind(id)
                     .execute(&pool)
@@ -460,9 +482,9 @@ async fn t052_header_injection_rejected_with_6003() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// T015 — 不可达 Webhook → hook_executions 有 error 记录
+/// T015 — 不可达 Webhook 仅输出 tracing，不写执行历史。
 #[tokio::test]
-async fn t015_unreachable_webhook_produces_error_audit() -> anyhow::Result<()> {
+async fn t015_unreachable_webhook_does_not_persist_execution() -> anyhow::Result<()> {
     let app = common::test_app().await?;
     let pool = common::test_pool().await?;
     let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
@@ -510,14 +532,12 @@ async fn t015_unreachable_webhook_produces_error_audit() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT outcome FROM hook_executions WHERE hook_id = ? ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(hook_id)
-    .fetch_all(&pool)
-    .await?;
-    assert!(!rows.is_empty(), "T015: no exec record for hook {hook_id}");
-    eprintln!("T015: outcome={}", rows[0].0);
+    let persisted: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hook_executions WHERE hook_id = ?")
+            .bind(hook_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(persisted, 0, "T015: Hook execution must not be persisted");
     Ok(())
 }
 
@@ -560,130 +580,8 @@ async fn t017_workflow_hook_executes_on_after_agent_end() -> anyhow::Result<()> 
     // Plantform admin must create a Workflow before running this test.
     // Steps:
     // 1. Create hook (call_workflow) on agent 1 → trigger chat
-    // 2. Verify hook_executions has record
+    // 2. Verify the Workflow side effect; Hook observability is tracing-only.
     eprintln!("T017: skipped — requires pre-existing Workflow");
-    Ok(())
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// US4 — Hook 执行历史查询 (T018, T019)
-// ═══════════════════════════════════════════════════════════════════
-
-/// T018 — GET executions → 分页返回 + 按 created_at DESC 排序
-#[tokio::test]
-async fn t018_list_executions_returns_paginated_sorted_desc() -> anyhow::Result<()> {
-    let app = common::test_app().await?;
-    let pool = common::test_pool().await?;
-    let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
-    let agent = SeededAgent::new(&pool, "t018").await?;
-    let token = admin.token()?;
-
-    // Seed some hook_executions directly (simulating past executions)
-    for i in 0..5 {
-        sqlx::query(
-            r#"INSERT INTO hook_executions
-               (agent_id, agent_identifier, trigger_point, action_type, outcome, elapsed_ms, request_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(agent.id)
-        .bind(&agent.identifier)
-        .bind("before_agent_start")
-        .bind("http_webhook")
-        .bind(if i == 3 { "error" } else { "success" })
-        .bind(100 + i * 10)
-        .bind(format!("req-t018-{i}"))
-        .execute(&pool)
-        .await?;
-    }
-
-    // Query with default pagination
-    let (status, body) = common::get(
-        &app,
-        &format!(
-            "/api/agents/{}/hooks/executions?page=1&page_size=20",
-            agent.id
-        ),
-        Some(&token),
-    )
-    .await?;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["code"], 0);
-    let data = &body["data"];
-    assert!(data["items"].is_array());
-    assert_eq!(data["page"], 1);
-    assert_eq!(data["page_size"], 20);
-    assert!(data["total"].as_u64().unwrap_or(0) >= 5);
-
-    // Must be sorted by created_at DESC
-    let items = data["items"].as_array().unwrap();
-    if items.len() >= 2 {
-        let t0 = items[0]["created_at"].as_str().unwrap();
-        let t1 = items[1]["created_at"].as_str().unwrap();
-        assert!(t0 >= t1, "executions must be sorted by created_at DESC");
-    }
-    Ok(())
-}
-
-/// T019 — 删除 Agent → Hook 执行历史仍可查询（Agent 字段显示已删除标记）
-#[tokio::test]
-async fn t019_deleted_agent_executions_remain_queryable() -> anyhow::Result<()> {
-    let app = common::test_app().await?;
-    let pool = common::test_pool().await?;
-    let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
-
-    // Create a separate scope so we can control agent deletion
-    let agent_id: i64;
-    let agent_ident: String;
-    {
-        let agent = SeededAgent::new(&pool, "t019").await?;
-        agent_id = agent.id;
-        agent_ident = agent.identifier.clone();
-
-        // Seed executions for this agent
-        for i in 0..3 {
-            sqlx::query(
-                r#"INSERT INTO hook_executions
-                   (agent_id, agent_identifier, trigger_point, action_type, outcome, elapsed_ms, request_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)"#,
-            )
-            .bind(agent_id)
-            .bind(&agent_ident)
-            .bind("after_agent_end")
-            .bind("http_webhook")
-            .bind("success")
-            .bind(50)
-            .bind(format!("req-t019-{i}"))
-            .execute(&pool)
-            .await?;
-        }
-        // agent goes out of scope here → Drop deletes the agent row
-    }
-
-    // Now query executions — should still return records
-    let (status, body) = common::get(
-        &app,
-        &format!(
-            "/api/agents/{}/hooks/executions?page=1&page_size=20",
-            agent_id
-        ),
-        Some(&admin.token()?),
-    )
-    .await?;
-
-    assert_eq!(status, StatusCode::OK);
-    let items = body["data"]["items"].as_array().unwrap();
-    assert!(
-        !items.is_empty(),
-        "executions must persist after agent deletion"
-    );
-
-    // agent_identifier snapshot should still contain the original identifier
-    let ident = items[0]["agent_identifier"].as_str().unwrap();
-    assert_eq!(
-        ident, agent_ident,
-        "agent_identifier snapshot must be preserved"
-    );
     Ok(())
 }
 
@@ -692,9 +590,9 @@ async fn t019_deleted_agent_executions_remain_queryable() -> anyhow::Result<()> 
 // ═══════════════════════════════════════════════════════════════════
 
 /// T012 — 配置 before_agent_start Hook (http_webhook) →
-/// 触发 Agent 对话 → hook_executions 有 success 记录
+/// 触发 Agent 对话 → 仅输出 tracing，不写执行历史。
 #[tokio::test]
-async fn t012_hook_execution_produces_audit_record() -> anyhow::Result<()> {
+async fn t012_hook_execution_does_not_persist_history() -> anyhow::Result<()> {
     let app = common::test_app().await?;
     let pool = common::test_pool().await?;
     let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
@@ -761,16 +659,12 @@ async fn t012_hook_execution_produces_audit_record() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM hook_executions WHERE hook_id = ? ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(hook_id)
-    .fetch_all(&pool)
-    .await?;
-    assert!(
-        !rows.is_empty(),
-        "T012: no hook_executions for hook {hook_id}"
-    );
+    let persisted: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hook_executions WHERE hook_id = ?")
+            .bind(hook_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(persisted, 0, "T012: Hook execution must not be persisted");
     Ok(())
 }
 
@@ -805,7 +699,6 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "T053: create failed: {create_body}");
-    let hook_id = create_body["data"]["id"].as_i64().unwrap();
 
     let (_, sb) = common::post_json_auth(
         &app,
@@ -877,7 +770,7 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
         agent::context::ContextConfig::default(),
     ));
     let deps = HookDeps {
-        s3: s3_client,
+        s3: Some(s3_client),
         llm: Arc::new(LlmRegistry::new()),
         registry: Arc::new(CapabilityRegistry::new()),
         invoker: Arc::new(Invoker::new(instance_pool)),
@@ -936,78 +829,167 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// T055 — Hook 执行历史查询 benchmark: 10K+ rows, p95 ≤ 2s (SC-006).
-///
-/// Pre-fills 10K hook_executions rows, then queries with paging and measures latency.
+// ═══════════════════════════════════════════════════════════════════
+// Hook execution observability without database persistence
+// ═══════════════════════════════════════════════════════════════════
+
+/// Hook execution history is no longer exposed through an HTTP API.
 #[tokio::test]
-async fn t055_execution_history_query_benchmark() -> anyhow::Result<()> {
+async fn t056_execution_history_endpoint_is_removed() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
     let pool = common::test_pool().await?;
     let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
-    let app = common::test_app().await?;
 
-    // Seed temp agent
-    let agent = SeededAgent::new(&pool, "t055-bench").await?;
-
-    // Bulk-insert 10K hook_executions
-    let batch_size = 1000;
-    let total = 10000;
-    for batch in 0..(total / batch_size) {
-        let mut values = Vec::new();
-        for i in 0..batch_size {
-            let idx = batch * batch_size + i;
-            values.push(format!(
-                "({}, '{}', 'before_agent_start', 'http_webhook', '{}', {}, 'req-bench-{}')",
-                agent.id,
-                agent.identifier,
-                if idx % 10 == 0 { "error" } else { "success" },
-                idx % 100 + 1,
-                idx,
-            ));
-        }
-        let sql = format!(
-            r#"INSERT INTO hook_executions
-               (agent_id, agent_identifier, trigger_point, action_type, outcome, elapsed_ms, request_id)
-               VALUES {}"#,
-            values.join(", ")
-        );
-        sqlx::query(&sql).execute(&pool).await?;
-    }
-
-    // Run benchmark queries
-    use std::time::Instant;
-    const QUERY_ITERATIONS: usize = 100;
-    let mut durations = Vec::with_capacity(QUERY_ITERATIONS);
-
-    for _ in 0..QUERY_ITERATIONS {
-        let start = Instant::now();
-        let (status, _body) = common::get(
-            &app,
-            &format!(
-                "/api/agents/{}/hooks/executions?page=1&page_size=20",
-                agent.id
-            ),
-            Some(&admin.token()?),
-        )
-        .await?;
-        assert_eq!(status, StatusCode::OK);
-        durations.push(start.elapsed().as_micros() as f64 / 1000.0); // ms
-    }
-
-    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p50 = durations[QUERY_ITERATIONS / 2];
-    let p95 = durations[(QUERY_ITERATIONS as f64 * 0.95) as usize];
-    let p99 = durations[(QUERY_ITERATIONS as f64 * 0.99) as usize];
-    let avg = durations.iter().sum::<f64>() / QUERY_ITERATIONS as f64;
-
-    eprintln!(
-        "T055 Execution history query benchmark ({} iterations, {} rows): avg={:.3}ms, p50={:.3}ms, p95={:.3}ms, p99={:.3}ms",
-        QUERY_ITERATIONS, total, avg, p50, p95, p99
-    );
+    let (status, _) = common::get(
+        &app,
+        "/api/agents/1/hooks/executions?page=1&page_size=20",
+        Some(&admin.token()?),
+    )
+    .await?;
 
     assert!(
-        p95 <= 2000.0,
-        "SC-006 FAIL: Exec history query p95 {:.3}ms exceeds 2000ms budget",
-        p95
+        matches!(
+            status,
+            StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+        ),
+        "removed history endpoint must not accept GET requests, got {status}"
     );
     Ok(())
+}
+
+/// Skipped and failed Hook executions must be observable only through tracing
+/// and must not append rows to `hook_executions`.
+#[tokio::test(flavor = "current_thread")]
+async fn t057_hook_execution_does_not_persist_history() -> anyhow::Result<()> {
+    use hiveweb::runtime::capability::CapabilityRegistry;
+    use hiveweb::runtime::hook::{HookContext, HookDeps, run_hooks};
+    use hiveweb::runtime::invoker::Invoker;
+    use hiveweb::runtime::llm::LlmRegistry;
+    use hiveweb::runtime::pool::{InstancePool, PoolConfig};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let pool = Arc::new(common::test_pool().await?);
+    let request_id = format!("req-t057-{}", uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    let skipped_hook = hiveweb::models::agent_hook::AgentHook {
+        id: -57,
+        agent_id: 1,
+        name: "trace-only-hook".into(),
+        description: None,
+        trigger_point: "before_agent_start".into(),
+        action_type: "http_webhook".into(),
+        action_params: json!({}),
+        enabled: false,
+        sort_order: 0,
+        blocking_mode: false,
+        timeout_ms: 1_000,
+        created_at: now,
+        updated_at: now,
+    };
+    let failed_hook = hiveweb::models::agent_hook::AgentHook {
+        id: -58,
+        agent_id: 1,
+        name: "trace-only-failed-hook".into(),
+        description: None,
+        trigger_point: "before_agent_start".into(),
+        action_type: "http_webhook".into(),
+        action_params: json!({}),
+        enabled: true,
+        sort_order: 1,
+        blocking_mode: false,
+        timeout_ms: 1_000,
+        created_at: now,
+        updated_at: now,
+    };
+    let hooks = HashMap::from([(
+        "before_agent_start".to_string(),
+        vec![skipped_hook, failed_hook],
+    )]);
+
+    let agent_ctx = Arc::new(agent::context::AgentContext::new(
+        "trace-only-test".to_string(),
+        agent::context::UserInput {
+            raw_text: String::new(),
+            session_id: Some("57".into()),
+            message_id: None,
+            timestamp: now,
+            metadata: HashMap::new(),
+        },
+        agent::context::ContextConfig::default(),
+    ));
+    let deps = HookDeps {
+        s3: Some(hiveweb::storage::s3::create_client().await?),
+        llm: Arc::new(LlmRegistry::new()),
+        registry: Arc::new(CapabilityRegistry::new()),
+        invoker: Arc::new(Invoker::new(InstancePool::new(PoolConfig::from_env()))),
+        ext_pool: None,
+        redis: None,
+        agent_ctx,
+    };
+    let ctx = HookContext {
+        agent_id: 1,
+        identifier: "trace-only-agent".into(),
+        session_id: 57,
+        actor_id: 1,
+        request_id: request_id.clone(),
+        trigger_point: "before_agent_start".into(),
+        message: "must-not-be-persisted".into(),
+        channel: "test".into(),
+        client_type: "test".into(),
+        client_version: "test".into(),
+    };
+
+    let trace_writer = TraceWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(trace_writer.clone())
+        .finish();
+    let _trace_guard = tracing::subscriber::set_default(subscriber);
+
+    run_hooks(Arc::clone(&pool), &hooks, "before_agent_start", &ctx, &deps)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    let trace_output = String::from_utf8(
+        trace_writer
+            .0
+            .lock()
+            .expect("trace buffer poisoned")
+            .clone(),
+    )?;
+    assert!(trace_output.contains("hook_execution"));
+    assert!(trace_output.contains("webhook_action_failed"));
+    assert!(trace_output.contains(&request_id));
+    assert!(!trace_output.contains("must-not-be-persisted"));
+
+    let persisted: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hook_executions WHERE request_id = ?")
+            .bind(&request_id)
+            .fetch_one(pool.as_ref())
+            .await?;
+    assert_eq!(persisted, 0, "Hook execution must not be persisted");
+
+    Ok(())
+}
+
+/// All Hook runtime paths, including asynchronous Webhook retries, must remain
+/// free of writes to the legacy execution-history table.
+#[test]
+fn t058_hook_runtime_has_no_execution_history_insert() {
+    let source = include_str!("../src/runtime/hook.rs");
+    assert!(
+        !source.contains("INSERT INTO hook_executions"),
+        "Hook runtime must use tracing instead of execution-history INSERTs"
+    );
+    assert!(
+        source.contains("error_kind = %error_kind"),
+        "Hook tracing must emit only a bounded error category"
+    );
+    assert!(
+        !source.contains("Some(&e.to_string())"),
+        "Hook tracing must not emit arbitrary downstream error text"
+    );
 }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{FromRow, MySqlPool};
 
@@ -56,7 +56,9 @@ pub struct RecentLoginRow {
     pub id: i64,
     pub admin_id: Option<i64>,
     pub admin_nickname: String,
-    pub login_at: NaiveDateTime,
+    /// UTC timestamp. `DateTime<Utc>` serializes with an explicit `Z` suffix so
+    /// browser clients can reliably convert it to the user's local timezone.
+    pub login_at: DateTime<Utc>,
     pub ip_address: String,
     pub success: bool,
 }

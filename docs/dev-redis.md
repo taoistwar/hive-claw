@@ -154,7 +154,7 @@ Redis 连接或命令失败后不会自动重放命令，避免 `INCR`、`DECR` 
 | 目的 | Key / 值 | TTL 与命令 | 主要代码位置 | 故障行为 |
 |------|----------|------------|--------------|----------|
 | 管理员登录防爆破 | `login_failed:{phone}` / 失败次数 | `INCR`；第 5 次失败时 `EXPIRE 900`；成功后 `DEL` | `services/auth.rs`、`api/auth.rs` | 登录或改密开始时无法检查锁定状态会返回服务不可用；部分清理和辅助计数路径为 best-effort |
-| AI 助手每日配额 | `assistant:daily:{user_id}` / 当日已用次数 | `INCR`；首次计数设置到下一次 UTC 重置时刻的 TTL；超限或后续业务失败时 `DECR` | `api/chat_assistant.rs`；`api/recommended_game.rs` 只读 | `/api/assistant` 无法连接或 `INCR` 失败时拒绝请求；quota/usage 展示读取失败时按 0 处理 |
+| AI 助手每日配额 | `assistant:daily:{user_id}` / 当日已用次数 | `INCR`；首次计数设置到下一次 UTC 重置时刻的 TTL；超限或后续业务失败时 `DECR` | `api/chat_assistant.rs`；Legacy `api/recommended_game.rs` 只读 | `/api/assistant` 无法连接或 `INCR` 失败时拒绝请求；quota/usage 展示读取失败时按 0 处理 |
 
 管理员登录计数不足 5 次时当前没有 TTL；第 5 次失败后才进入 15 分钟锁定期。
 AI 助手配额的重置小时来自外部 `cc_config`，默认是 UTC 0 点，计算出的 TTL 最低
@@ -177,7 +177,7 @@ Redis 读写失败不会单独阻断这些查询；数据库仍是事实源。�
 
 | 目的 | Key | TTL | 当前调用位置 |
 |------|-----|-----|--------------|
-| 外部 cloud_user 信息及用户存在校验 | `cloud_user:info:{user_id}` | 900 秒 | `services/membership.rs`；assistant、quota、newsession、recommended-game API |
+| 外部 cloud_user 信息及用户存在校验 | `cloud_user:info:{user_id}` | 900 秒 | `services/membership.rs`；assistant、quota、newsession；Legacy recommended-game API |
 | Agent 运行时完整内容，减少每个 hop 的多条 SQL | `agent:content:{agent_id}` | 默认 300 秒；`AGENT_CACHE_TTL_SECS` 可覆盖 | `services/agent.rs`、`runtime/orchestrator.rs` |
 | 管理端外部游戏选项列表 | `external_games:list` | 1800 秒 | `api/game.rs` 的受保护外部游戏列表接口 |
 | game_info 分类所需的游戏标签 | `game_tags:cc_game_tag_type1` | 600 秒 | `runtime/builtins/game_info.rs` 的 LLM 分类路径 |

@@ -2,6 +2,7 @@
 
 **Purpose**: Validate requirement completeness, clarity, consistency, and measurability across security, reliability, audit, and UX dimensions
 **Created**: 2026-06-02
+**Revalidated**: 2026-07-16（Hook 执行结果改为 tracing-only）
 **Feature**: [spec.md](../spec.md)
 
 **Note**: This checklist tests the quality of the REQUIREMENTS themselves — not whether the implementation works correctly. Each item asks whether a requirement aspect is properly specified, clear, consistent, or measurable.
@@ -13,7 +14,7 @@
 - [ ] CHK001 — Are the SSRF protection rules for `http_webhook` explicitly aligned with existing 004-agent-runtime FR-001 SSRF rules (same IP ranges, same metadata endpoints)? [Consistency, Spec §FR-007 / 004 Spec §FR-001]
 - [ ] CHK002 — Is the scope of `https://` enforcement clearly defined — does it also reject `https://` URLs that resolve to internal IPs via DNS rebinding? [Clarity, Spec §FR-007]
 - [ ] CHK003 — Are the `action_params` for `http_webhook` hooks subject to the same SSRF check at save-time (URL validation) AND at execution-time (DNS resolution check), or only one boundary? [Completeness, Spec §FR-007 / Spec §FR-007a]
-- [ ] CHK004 — Are RBAC requirements consistent for Hook CRUD vs Hook execution history viewing? Spec §FR-017/018 define CRUD roles (Super/System+), but §FR-019 adds session-ownership rules for history — are both checks required on the same handler? [Consistency, Spec §FR-017–FR-019]
+- [x] CHK004 — Are RBAC requirements limited to Hook configuration CRUD, with no execution-history viewing permission or handler remaining? [Consistency, Spec §FR-015/FR-017–FR-018] → **已验证**
 - [ ] CHK005 — Does the spec define what happens when a Super user demotes themselves mid-session while hook execution is in flight (TOCTOU for permission changes)? [Coverage, Edge Case Gap]
 - [x] CHK006 — Are the `action_params.headers` for webhook hooks subject to injection validation — could a System+ admin inject `\r\n` to perform HTTP header injection? [Completeness, Gap] → **已解决**: FR-007b 新增 header name/value 校验规则
 - [ ] CHK007 — Is the `chat_respond` Function exclusion for Hook calls clearly justified in the spec, and are there any other builtin Functions that should similarly be excluded? [Clarity, Spec Assumptions]
@@ -36,12 +37,12 @@
 ## Audit & Observability Requirements Quality
 
 - [ ] CHK016 — Are all four outcome states (success / error / timeout / skipped) defined in the spec with clear trigger conditions for each? For example, when exactly is `skipped` used vs `error`? [Completeness, Spec §FR-014 / Key Entities]
-- [ ] CHK017 — Is the `error_summary` masking rule (FR-016) consistent with the existing 004-agent-runtime `payload_summary` masking rules? Are the same field blacklists (password/secret/token/api_key/authorization) applied? [Consistency, Spec §FR-016 vs 004 Spec]
-- [ ] CHK018 — Does the spec define whether webhook response bodies are stored in `error_summary` or `context_snapshot`? If stored, are they subject to masking? [Completeness, Gap]
-- [x] CHK019 — Is the `hook_executions` retention policy (30 days, T046) explicitly documented in the spec's Success Criteria or Assumptions, or only in tasks? [Completeness, Gap in Spec] → **已解决**: Assumptions 新增保留策略说明
-- [x] CHK020 — Does the `context_snapshot` JSON field have a defined schema in the spec, or is it left as an opaque blob? If opaque, is its max size bounded? [Clarity, Key Entities] → **已解决**: Key Entities 中 context_snapshot 标注 ≤ 4KB 上限
-- [ ] CHK021 — Is the `request_id` propagation requirement (FR-014, T024) consistent with existing 003/004 tracing — using the same middleware-generated request_id that flows through audit logs? [Consistency, Spec §FR-014 vs Plan]
-- [ ] CHK022 — Are requirements defined for what happens when the `hook_executions` INSERT itself fails (e.g., DB connection lost)? Does this block the hook, or is it fire-and-forget? [Completeness, Gap]
+- [x] CHK017 — Does FR-016 require a bounded `error_kind` instead of arbitrary downstream error text? [Security, Spec §FR-016] → **已验证**
+- [x] CHK018 — Does the spec forbid recording Webhook URL, request/response body and full user messages in tracing? [Completeness, Spec §FR-016] → **已验证**
+- [x] CHK019 — Is retention configuration explicitly unnecessary because Hook execution history is never written? [Consistency, Spec §FR-015] → **已验证**
+- [x] CHK020 — Is persistence of `context_snapshot` explicitly forbidden? [Clarity, Spec §FR-015] → **已验证**
+- [x] CHK021 — Is `request_id` propagated in structured tracing consistently with existing runtime events? [Consistency, Spec §FR-014] → **已验证**
+- [x] CHK022 — Is the database INSERT failure case eliminated by forbidding all Hook execution-history INSERTs? [Completeness, Spec §FR-015] → **已验证**
 
 ---
 
@@ -49,7 +50,7 @@
 
 - [ ] CHK023 — Are all 6 error codes (6001-6006) mapped to user-facing Chinese messages, and are those messages actionable (identifying cause + suggesting next step) per Constitution Principle III? [Completeness, Plan §Error Codes]
 - [ ] CHK024 — Is the optimistic lock semantics for Hook updates clearly specified — does the client receive `updated_at` on GET and must send it back on PUT, returning 4094 on conflict? [Clarity, Spec §FR-004 vs Tasks T010]
-- [ ] CHK025 — Are pagination requirements specified for Hook execution history (FR-015 / SC-006)? Is there a default page size and a max page size? [Completeness, Spec §FR-015]
+- [x] CHK025 — Are execution-history pagination requirements absent because the history API is removed? [Consistency, Spec §FR-015] → **已验证**
 - [ ] CHK026 — Are the Hook sort_order uniqueness semantics clearly defined — can two hooks share the same sort_order within a trigger_point, or must they be unique? [Clarity, Tasks T003 Unique Index]
 - [ ] CHK027 — Does the spec define what the frontend should display when a Hook's referenced Function/Workflow has been deleted but the Hook config still exists (Edge Case "Hook 动作引用失效")? [Completeness, Spec Edge Cases]
 - [ ] CHK028 — Are accessibility requirements (keyboard navigation, ARIA labels, focus management) specified for the AgentHookEditor and HookFormModal components? [Gap, Accessibility]
@@ -62,8 +63,8 @@
 
 - [ ] CHK031 — Do the 9 edge cases in the spec all have corresponding coverage in the tasks? Specifically, "Hook 配置更新时机" (snapshot at session start) — which task implements this? [Traceability, Spec Edge Cases → Tasks]
 - [ ] CHK032 — Is the "Hook 为只读观察者" assumption (clarify Q4) consistently reflected across ALL relevant spec sections — US3, FR-002, FR-008, Assumptions? [Consistency, Spec §US3 / FR-002 / FR-008 / Assumptions]
-- [ ] CHK033 — Are the performance targets (SC-003: ≤50ms scheduling; SC-006: ≤2s history query) consistent with Constitution IV's p95 < 200ms constraint? The SC-003 target is stricter — is this intentional and justified? [Consistency, Spec SC vs Constitution IV]
-- [x] CHK034 — Does the `agent_hooks.agent_id ON DELETE CASCADE` (T003) conflict with the HookExecution agent_id "no FK, audit retention" strategy (T004)? Is the intent that Hook configs cascade-delete with Agent but execution history persists? [Consistency, Tasks T003 vs T004] → **已验证**: 设计意图明确 — 配置级联删除，执行历史审计保留。Assumptions 已文档化此策略
+- [x] CHK033 — Is the obsolete execution-history query latency target removed while the Hook scheduling target remains measurable? [Consistency, Spec SC-003/SC-006] → **已验证**
+- [x] CHK034 — Is the V023 history table documented as legacy-only, with no new reads/writes and no destructive migration of existing data? [Consistency, Spec §FR-015 / Assumptions] → **已验证**
 - [ ] CHK035 — Are the Hook `action_params` JSON schema requirements defined for each action type — what are the mandatory vs optional fields within `action_params` for `call_function`, `call_workflow`, and `http_webhook`? [Completeness, Spec §FR-004 / Key Entities]
 
 ---
@@ -72,6 +73,6 @@
 
 - Items CHK001–CHK008 focus on security boundary requirements quality
 - Items CHK009–CHK015 focus on reliability and failure mode coverage
-- Items CHK016–CHK022 focus on audit completeness and consistency
+- Items CHK016–CHK022 focus on tracing completeness, privacy and consistency
 - Items CHK023–CHK030 focus on UX contract and API design quality
 - Items CHK031–CHK035 cross-check spec/tasks/plan alignment and constitutional compliance

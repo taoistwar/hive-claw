@@ -1,5 +1,9 @@
 # 执行推荐游戏
 
+> **已废弃（Legacy）：** 推荐游戏管理前端、后台 CRUD 及本接口已经停止业务使用，
+> 仅为兼容历史调用保留。新客户端和新代码不得调用、依赖或扩展
+> `/api/recommended-games/*`；下文只记录遗留协议，不能视为新的集成契约。
+
 ```
 POST /api/recommended-games/execute?sign={md5}
 ```

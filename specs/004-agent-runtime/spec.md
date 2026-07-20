@@ -1,5 +1,7 @@
 # Feature Specification: Agent Runtime（基于 Capability 的 WASM 插件 Agent 运行时）
 
+> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+
 **Feature Branch**: `004-agent-runtime`
 **Created**: 2026-05-26
 **Last Updated**: 2026-05-29

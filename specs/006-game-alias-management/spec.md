@@ -1,8 +1,10 @@
 # Feature Specification: 游戏别名管理
 
+> **已废弃（Legacy，2026-07-14）：** 本规格描述的游戏别名管理前后端已停止业务使用，仅为兼容历史数据、接口和审计记录保留。不得以本文档为依据新增调用、部署或功能扩展；下文仅作为历史设计档案。
+
 **Feature Branch**: `006-game-alias-management`  
 **Created**: 2026-06-01  
-**Status**: Draft  
+**Status**: Deprecated (Legacy; compatibility only)
 **Input**: User description: 在管理中心中，添加一个游戏别名管理功能。其中包括字段：ID、名称、别名（字符串数组）、 创建日期、修改时间。System和Super管理员拥有全部权限，Normal管理员只读权限。
 
 ## Clarifications

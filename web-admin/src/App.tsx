@@ -160,6 +160,7 @@ function AppRoutes() {
           <Route path="tags" element={<TagPage />} />
           <Route path="agents" element={<AgentPage />} />
           <Route path="workflows" element={<WorkflowPage />} />
+          {/* @deprecated 推荐游戏管理已废弃，仅为兼容历史链接保留路由。 */}
           <Route path="recommended-games" element={<RecommendedGamePage />} />
           <Route path="users" element={<UserManagementPage />} />
           <Route path="admin-audit-logs" element={<AdminAuditLogPage />} />
@@ -167,6 +168,7 @@ function AppRoutes() {
           <Route path="login-records" element={<LoginRecordPage />} />
           <Route path="settings/change-password" element={<ChangePasswordPage />} />
           <Route path="global-configs" element={<GlobalConfigPage />} />
+          {/* @deprecated 游戏别名管理已废弃，仅为兼容历史链接保留路由。 */}
           <Route path="game-aliases" element={<GameAliasPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

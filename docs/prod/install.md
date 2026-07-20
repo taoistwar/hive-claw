@@ -1,11 +1,12 @@
 # 生产环境安装与上线
 
-本文描述 `hiveweb` 后端和 `web-admin` 管理端的生产部署流程。构建方式另见
-[deployment.md](../deployment.md)。
+本文描述 CCA（Cloud Computer Assistant）服务和 `web-admin` 管理端的生产部署流程。
+CCA 的 systemd 服务名为 `cca`；当前 Rust package、构建目标和二进制文件名仍为
+`hiveweb`。构建方式另见 [deployment.md](../deployment.md)。
 
 ## 1. 部署拓扑
 
-- `hiveweb`：HTTP API 服务并托管 `web-admin` 静态页面，仅监听 `127.0.0.1:3300`，
+- CCA：HTTP API 服务并托管 `web-admin` 静态页面，仅监听 `127.0.0.1:3300`，
   由 Nginx 反向代理。
 - `web-admin`：构建产物放在 `hiveweb` 二进制同级的 `dist/`，仅允许公司网络访问。
 - MySQL 8.0+：业务元数据和管理端数据。
@@ -13,7 +14,7 @@
 - Rustfs/S3：插件系统已关闭不需要。插件系统启用时必需；不使用插件时可关闭。
 - 外部只读 MySQL：Assistant API 查询云电脑用户、会员和资产数据时必需。
 
-不要将 MySQL、Redis、Rustfs/S3 或 `hiveweb:3300` 直接暴露到公网。
+不要将 MySQL、Redis、Rustfs/S3 或 CCA 的 `3300` 端口直接暴露到公网。
 
 ## 2. 上线前检查
 
@@ -134,12 +135,12 @@ Sentinel 返回的数据主节点；Sentinel 自身的认证信息使用
 `REDIS_SENTINEL_USERNAME` 和 `REDIS_SENTINEL_PASSWORD`。建议列出所有
 Sentinel 节点，避免单个 Sentinel 不可用导致启动失败。
 
-hiveweb 启动时会发现当前 master、建立连接并执行 `PING`；运行期间缓存当前
+CCA 启动时会发现当前 master、建立连接并执行 `PING`；运行期间缓存当前
 master，并按 `REDIS_SENTINEL_REFRESH_MS` 定期刷新。刷新期间其他请求继续使用
 最近一次成功发现的 master，不会排队等待 Sentinel。单次运行期刷新最多等待
 `REDIS_CONNECT_TIMEOUT_MS` 的一半，且上限为 1 秒；如果部署环境中 Sentinel
 发现与 Redis `ROLE` 校验通常超过 1 秒，应先排查网络延迟。请确认 Sentinel
-返回的 master 地址能从 hiveweb 所在主机或容器解析并访问。若 Redis 位于容器
+返回的 master 地址能从 CCA 所在主机或容器解析并访问。若 Redis 位于容器
 或 NAT 后，应同时检查 Redis/Sentinel 的 announce 地址和端口配置。
 当前 Sentinel 模式仅支持普通 TCP，不接受 `rediss://` 地址。
 
@@ -196,8 +197,9 @@ sudo editor /opt/hive-claw/config/llm_presets.toml
 
 ## 7. 数据库迁移
 
-`hiveweb` 主进程不会自动建表或执行 migration。生产上线必须先备份数据库，再运行
-随同当前版本构建的 `migrate` 二进制。不要以手工导入单个 `db.sql` 替代 migration。
+CCA 主进程（`hiveweb` 二进制）不会自动建表或执行 migration。生产上线必须先备份
+数据库，再运行随同当前版本构建的 `migrate` 二进制。不要以手工导入单个 `db.sql`
+替代 migration。
 
 `docs/prod/hiveweb.sql` 是环境导出文件，可能包含管理员密码哈希、业务配置和已有
 migration 记录，不是生产建库的权威来源。含真实数据的导出文件不得提交到 Git；如需
@@ -229,11 +231,11 @@ sudo -u hiveclaw ./bin/create-super-admin \
 
 ## 9. systemd 服务
 
-创建 `/etc/systemd/system/hiveweb.service`：
+创建 `/etc/systemd/system/cca.service`：
 
 ```ini
 [Unit]
-Description=HiveClaw Web API
+Description=Cloud Computer Assistant
 After=network-online.target
 Wants=network-online.target
 
@@ -260,11 +262,14 @@ systemd 与 dotenv 对引号、转义及行内注释的解析差异。
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now hiveweb
-sudo systemctl status hiveweb --no-pager
-sudo journalctl -u hiveweb -n 200 --no-pager
+sudo systemctl enable --now cca
+sudo systemctl status cca --no-pager
+sudo journalctl -u cca -n 200 --no-pager
 sudo tail -n 200 /opt/hive-claw/logs/hiveweb.log.*
 ```
+
+systemd unit 使用服务名 `cca`，但 `ExecStart` 仍执行构建产物 `hiveweb`。当前程序写入的
+滚动日志文件前缀同样是 `hiveweb.log`，因此日志路径不随 unit 名称变化。
 
 服务启动失败时优先检查数据库、Redis、LLM 配置文件、S3 配置和日志目录权限。
 
@@ -321,7 +326,7 @@ curl --fail --max-time 3 https://hive-admin.example.internal/health/live
 curl --fail --max-time 5 https://hive-admin.example.internal/health/ready
 
 # 检查最近错误
-sudo journalctl -u hiveweb --since '10 minutes ago' --no-pager
+sudo journalctl -u cca --since '10 minutes ago' --no-pager
 grep -iE 'error|panic' /opt/hive-claw/logs/hiveweb.log.* | tail -n 100
 ```
 
@@ -342,7 +347,7 @@ grep -iE 'error|panic' /opt/hive-claw/logs/hiveweb.log.* | tail -n 100
 1. 备份数据库和当前二进制、配置文件。
 2. 上传新二进制和前端静态文件。
 3. 运行新版本 `migrate`。
-4. 重启 `hiveweb`，再原子切换前端目录或 Nginx 配置。
+4. 重启 `cca` 服务，再原子切换前端目录或 Nginx 配置。
 5. 完成上线验收后再清理旧产物。
 
 应用回滚可以恢复旧二进制和静态文件；数据库 migration 默认按前向兼容处理，不要在

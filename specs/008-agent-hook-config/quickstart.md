@@ -7,7 +7,7 @@
 ## 前提条件
 
 - 项目 `crates/hiveweb` 已启动并运行（`cargo run` 或 `restart-hiveweb.sh`）
-- MySQL 数据库 migration 已执行（V049-V050）
+- MySQL 数据库 migration 已执行
 - 管理后台 `web-admin` 已启动（`npm run dev`）
 - 已存在至少一个 Agent（非 main）用于测试
 
@@ -20,7 +20,6 @@
 ```env
 HOOK_TIMEOUT_MS=10000
 HOOK_WEBHOOK_RETRY_MAX=3
-HOOK_EXECUTION_RETENTION_DAYS=30
 ```
 
 ---
@@ -44,16 +43,14 @@ HOOK_EXECUTION_RETENTION_DAYS=30
 ### Step 2: 触发 Hook 执行（US1 验证）
 
 1. 通过用户端或 API 触发该 Agent 的一次对话
-2. 等待对话完成后，检查 `hook_executions` 表：
+2. 等待对话完成后，在服务日志中按 `event=hook_execution`、Agent ID 或 request ID 检索结构化事件
+3. 如环境中仍有遗留 `hook_executions` 表，可在触发前后分别执行以下查询：
 
 ```sql
-SELECT * FROM hook_executions
-WHERE agent_id = <agent_id>
-ORDER BY created_at DESC
-LIMIT 5;
+SELECT COUNT(*) FROM hook_executions;
 ```
 
-**预期**: 至少有一条 `outcome=success` 的记录，`trigger_point=before_agent_start`。
+**预期**: 日志中出现 `outcome=success`、`trigger_point=before_agent_start` 的结构化事件；触发前后的数据库行数相同。
 
 ### Step 3: 验证触发点上限（FR-001 边界）
 
@@ -92,24 +89,9 @@ LIMIT 5;
    - 动作类型: `call_workflow`
    - 选择目标 Workflow
 2. 触发 Agent 对话
-3. 检查 `hook_executions` 表
+3. 检查 `event=hook_execution` 的结构化日志
 
-**预期**: 有 `outcome=success` 的执行记录。
-
-### Step 8: 查看执行历史（US4）
-
-1. 进入 **Hook 执行历史** 页面
-2. 筛选对应 Agent + 时间范围
-3. 验证列表中展示执行记录
-
-**预期**: 可看到之前各步骤触发的所有 Hook 执行记录，支持按结果筛选。
-
-### Step 9: Agent 删除后历史保留（Edge Case）
-
-1. 删除测试 Agent
-2. 进入 Hook 执行历史页面（全局查询，Super 角色）
-
-**预期**: 该 Agent 的 Hook 执行历史仍可见，Agent 字段显示为"已删除"。
+**预期**: 有 `outcome=success` 的结构化事件，数据库没有新增 Hook 执行记录。
 
 ---
 
@@ -117,7 +99,8 @@ LIMIT 5;
 
 | 症状 | 可能原因 | 检查 |
 |------|---------|------|
-| Hook 保存后列表为空 | V049 migration 未执行 | `SHOW TABLES LIKE 'agent_hooks'` |
-| 对话后无 hook_executions 记录 | Hook disabled 或 orchestrator 未集成 | 检查 Agent 的 hooks 是否 enabled=true |
+| Hook 保存后列表为空 | V022 migration 未执行 | `SHOW TABLES LIKE 'agent_hooks'` |
+| 对话后数据库没有执行记录 | 正常行为 | Hook 执行结果只输出 tracing，不写数据库 |
+| 日志中没有 `hook_execution` | Hook disabled、日志级别过滤或 orchestrator 未集成 | 检查 Hook enabled 状态和 `RUST_LOG` 配置 |
 | Webhook POST 未到达 | 防火墙/SSRF 拦截或 URL 不可达 | 检查 server 日志中的 SSRF rejection 记录 |
 | 6001 在 5 个内触发 | sort_order 冲突 | 检查 `idx_agent_hooks_seq` unique 约束 |

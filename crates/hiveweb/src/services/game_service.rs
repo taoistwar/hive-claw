@@ -392,7 +392,7 @@ FROM (
   select * from cc_logic_game_wide where logic_game_id=? and lower(client_type)=lower(?)
 ) t1
 INNER JOIN (
-  select * from cc_game where logic_game_id=?
+  select * from cc_game where logic_game_id=? and available = 1
 ) t2 ON t1.logic_game_id = t2.logic_game_id
 INNER JOIN cc_game_platform t3 on t2.game_platform_id = t3.id
 INNER JOIN (
@@ -770,4 +770,103 @@ pub async fn get_external_game_detail(
     .fetch_optional(ext_pool)
     .await
     .map_err(|e| AppError::Internal(format!("external game detail: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_external_game_by_id;
+    use crate::utils::error::AppError;
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+
+    #[tokio::test]
+    async fn get_external_game_by_id_wraps_database_errors() {
+        let pool = MySqlPoolOptions::new().connect_lazy_with(MySqlConnectOptions::new());
+        pool.close().await;
+
+        let error = get_external_game_by_id(&pool, 42, "pc", "official")
+            .await
+            .expect_err("a closed pool must fail the external game query");
+
+        assert!(
+            matches!(error, AppError::Internal(message) if message.starts_with("game_info external query:")),
+            "get_external_game_by_id must preserve its database error context"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires crates/hiveweb/.env EXTERNAL_DB_URL and eligible external game data"]
+    async fn get_external_game_by_id_returns_normal_query_results() {
+        dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
+        let database_url = std::env::var("EXTERNAL_DB_URL")
+            .expect("EXTERNAL_DB_URL must be configured in crates/hiveweb/.env");
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("external database connection must succeed");
+
+        // 自动寻找一条符合过滤条件的可用游戏，无需写死游戏 ID。
+        let (game_id, client_type, channel): (i64, String, String) = sqlx::query_as(
+            r#"SELECT DISTINCT t1.logic_game_id, t1.client_type, t5.prom_channel
+FROM cc_logic_game_wide t1
+INNER JOIN cc_game t2
+    ON t1.logic_game_id = t2.logic_game_id AND t2.available = 1
+INNER JOIN cc_game_platform t3 ON t2.game_platform_id = t3.id
+INNER JOIN cc_computer_info ci ON t2.computer_id = ci.id AND ci.status = 1
+INNER JOIN cc_logic_game_version t4 ON t1.version = t4.version
+INNER JOIN cc_promotion_channel t5 ON t1.channel_game_tag = t5.game_tag
+LEFT JOIN cc_logic_game_exclude t6
+    ON t1.logic_game_id = t6.logic_game_id
+    AND t1.client_type = t6.client_type
+    AND t5.prom_channel = t6.channel
+LEFT JOIN cc_logic_game_blacklist t7 ON t1.logic_game_id = t7.logic_game_id
+WHERE t6.id IS NULL AND t7.id IS NULL
+LIMIT 1"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("external database must contain at least one eligible game fixture");
+
+        let games = get_external_game_by_id(&pool, game_id, &client_type, &channel)
+            .await
+            .expect("get_external_game_by_id must query the configured external database");
+
+        assert!(!games.is_empty(), "the discovered game must be returned");
+        assert!(games.iter().all(|game| game.logic_game_id == game_id));
+        assert!(games.iter().all(|game| {
+            game.client_type
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(&client_type))
+        }));
+        assert!(
+            games
+                .iter()
+                .all(|game| game.channel.as_deref() == Some(&channel))
+        );
+        assert!(games.iter().all(|game| game.computer_id.is_some()));
+        assert!(games.iter().all(|game| game.platform_name.is_some()));
+    }
+
+    #[test]
+    fn external_game_query_only_joins_available_game_instances() {
+        let source = include_str!("game_service.rs");
+        let function_source = source
+            .split_once("pub async fn get_external_game_by_id(")
+            .expect("get_external_game_by_id must exist")
+            .1
+            .split_once("/// Query cc_logic_game from external database")
+            .expect("the next external-game query must exist")
+            .0;
+        let normalized_source = function_source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(
+            normalized_source
+                .contains("select * from cc_game where logic_game_id=? and available = 1"),
+            "get_external_game_by_id must exclude unavailable cc_game rows"
+        );
+    }
 }

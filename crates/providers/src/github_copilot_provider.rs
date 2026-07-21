@@ -191,7 +191,9 @@ impl DeviceFlow {
                 "expired_token" => {
                     return Err("GitHub device code expired. Please run login again.".into());
                 }
-                "access_denied" => return Err("GitHub device flow was denied.".into()),
+                "access_denied" => {
+                    return Err("GitHub device flow was denied.".into());
+                }
                 "" => {}
                 other => {
                     let desc = body

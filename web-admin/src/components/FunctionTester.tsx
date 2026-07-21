@@ -181,13 +181,13 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
       // 提取 UserInput 上下文字段
       const user_input =
         values._ctx_raw_text || values._ctx_actor_id || values._ctx_channel ||
-        values._ctx_platform || values._ctx_app_version
+        values._ctx_client_type || values._ctx_client_version
           ? {
               raw_text: values._ctx_raw_text || undefined,
               actor_id: values._ctx_actor_id || undefined,
               channel: values._ctx_channel || undefined,
-              platform: values._ctx_platform || undefined,
-              app_version: values._ctx_app_version || undefined,
+              client_type: values._ctx_client_type || undefined,
+              client_version: values._ctx_client_version || undefined,
             }
           : undefined;
 
@@ -342,10 +342,10 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
                   <Input placeholder="例如：weixin / qq" />
                 </Form.Item>
                 <Form.Item
-                  name="_ctx_platform"
+                  name="_ctx_client_type"
                   label={
                     <span>
-                      platform
+                      client_type
                       <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
                         平台
                       </Text>
@@ -355,10 +355,10 @@ export default function FunctionTester({ functionItem, open, onClose }: Function
                   <Input placeholder="例如：ios / android" />
                 </Form.Item>
                 <Form.Item
-                  name="_ctx_app_version"
+                  name="_ctx_client_version"
                   label={
                     <span>
-                      app_version
+                      client_version
                       <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
                         应用版本
                       </Text>

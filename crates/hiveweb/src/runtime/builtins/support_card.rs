@@ -14,22 +14,23 @@
 
 use serde_json::{Value, json};
 
-use crate::runtime::builtins::{BuiltinContext, BuiltinError, BuiltinResult};
+use crate::runtime::builtins::{BuiltinContext, BuiltinResult};
 
 /// support_card handler — does not take LLM args; all state is read from
 /// `ctx.agent_ctx.user_input()`.
-pub fn support_card(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
-    let agent_ctx = ctx
-        .agent_ctx
-        .as_ref()
-        .ok_or_else(|| BuiltinError::Exec("AgentContext 未配置".into()))?;
+pub fn support_card(args: Value, _ctx: &BuiltinContext) -> BuiltinResult {
+    let category = args
+        .get("category")
+        .and_then(|v| v.as_str())
+        .unwrap_or("other");
 
     Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
                 "content_type": "card",
                 "payload": {
-                    "type": "support"
+                    "type": "support",
+                    "category": category,
                 },
             }],
             "metadata": {
@@ -41,7 +42,12 @@ pub fn support_card(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 
 pub const SUPPORT_CARD_INPUT_SCHEMA: &str = r#"{
   "type": "object",
-  "properties": {}
+  "properties": {
+    "category": {
+      "type": "string",
+      "description": "客服问题类别, 可选值: cannot_play, lag, update, quality, account, save_data, money, other"
+    }
+  }
 }"#;
 
 pub const SUPPORT_CARD_OUTPUT_SCHEMA: &str = r#"{

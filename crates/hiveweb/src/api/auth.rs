@@ -87,19 +87,9 @@ pub async fn login(
         return AppError::AccountDisabled("Account has been disabled".to_string()).into_response();
     }
 
-    let role = match Role::try_from(admin.role) {
-        Ok(role) => role,
-        Err(e) => {
-            tracing::error!("Invalid role: {}", e);
-            return AppError::Internal("Invalid role configuration".to_string()).into_response();
-        }
-    };
-
-    if !matches!(role, Role::System | Role::Super) {
-        return AppError::NotAdministrator(
-            "Only System and Super administrators can log in to the admin center".to_string(),
-        )
-        .into_response();
+    if let Err(e) = Role::try_from(admin.role) {
+        tracing::error!("Invalid role: {}", e);
+        return AppError::Internal("Invalid role configuration".to_string()).into_response();
     }
 
     let password_valid = match verify_password(&req.password, &admin.password_hash) {
@@ -211,11 +201,15 @@ pub async fn get_current_user(
 ) -> ApiResponse<AdminPublic> {
     let admin_id = match claims.admin_id {
         Some(id) => id,
-        None => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        None => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
     };
     let admin = match admin::get_admin_by_id(&state.pool, admin_id).await {
         Ok(Some(admin)) => admin,
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -232,7 +226,9 @@ pub async fn change_password(
 ) -> ApiResponse<()> {
     let admin_id = match claims.admin_id {
         Some(id) => id,
-        None => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        None => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
     };
 
     let is_locked = match admin::get_admin_by_id(&state.pool, admin_id).await {
@@ -246,7 +242,9 @@ pub async fn change_password(
             };
             locked
         }
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();
@@ -262,7 +260,9 @@ pub async fn change_password(
 
     let admin = match admin::get_admin_by_id(&state.pool, admin_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return AppError::AdminNotFound("Admin not found".to_string()).into_response(),
+        Ok(None) => {
+            return AppError::AdminNotFound("Admin not found".to_string()).into_response();
+        }
         Err(e) => {
             tracing::error!("Database error: {}", e);
             return AppError::Internal("Service unavailable".to_string()).into_response();

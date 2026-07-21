@@ -5,7 +5,6 @@ import { Button, Drawer, Modal, Space, Tabs, Tag, Typography, message } from 'an
 
 import { AgentEditor, type AgentFormPayload } from '../components/AgentEditor';
 import AgentHookEditor from '../components/AgentHookEditor/AgentHookEditor';
-import HookExecutionLog from '../components/AgentHookEditor/HookExecutionLog';
 import { AgentTree } from '../components/AgentTree';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -254,11 +253,6 @@ export default function AgentPage() {
                     currentRole={admin?.role ?? 0}
                   />
                 ),
-              },
-              {
-                key: 'executions',
-                label: '执行历史',
-                children: <HookExecutionLog agentId={editing.id} />,
               },
             ]}
           />

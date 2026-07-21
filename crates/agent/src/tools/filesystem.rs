@@ -274,7 +274,9 @@ impl Tool for ReadFileTool {
         }
         let raw = match fs::read(&fp) {
             Ok(r) => r,
-            Err(e) => return Ok(Value::String(format!("Error reading file: {e}"))),
+            Err(e) => {
+                return Ok(Value::String(format!("Error reading file: {e}")));
+            }
         };
         if raw.is_empty() {
             return Ok(Value::String(format!("(Empty file: {path})")));
@@ -1069,7 +1071,9 @@ impl Tool for EditFileTool {
         let warning = file_states.check_read(&fp);
         let raw = match fs::read(&fp) {
             Ok(r) => r,
-            Err(e) => return Ok(Value::String(format!("Error editing file: {e}"))),
+            Err(e) => {
+                return Ok(Value::String(format!("Error editing file: {e}")));
+            }
         };
         let uses_crlf = raw.windows(2).any(|w| w == b"\r\n");
         let content = match String::from_utf8(raw) {

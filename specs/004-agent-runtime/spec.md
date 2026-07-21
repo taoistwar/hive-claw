@@ -1,5 +1,7 @@
 # Feature Specification: Agent Runtime（基于 Capability 的 WASM 插件 Agent 运行时）
 
+> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+
 **Feature Branch**: `004-agent-runtime`
 **Created**: 2026-05-26
 **Last Updated**: 2026-05-29
@@ -28,7 +30,7 @@
 - Q: LLM 客户端/供应商抽象如何选？ → A: 复用 workspace 已有的 `crates/providers`（提供 `LLMProvider` trait + Anthropic/Azure-OpenAI/Bedrock/OpenAI-Compat/Codex/GitHub-Copilot/Fallback 多 backend + ProviderRegistry + ToolCallRequest）。Agent Runtime 不引入 async-openai，新增的 `runtime/llm.rs` 仅作 thin adapter：通过 `providers::make_provider(&cfg)` 拿到 `Arc<dyn LLMProvider>` 后转发 chat / tool-calling。
 - Q: LLM 调用失败时的回退策略？ → A: 强制使用 `providers::FallbackProvider` 链；启动期按 preset（`primary` + `fallback: [...]`）构造一次，runtime 不感知具体 backend；链全部失败才作为 SSE `error` 事件抛出。
 - Q: Agent CRUD 权限矩阵？ → A: `main` 任何字段修改限 Super；非 main Agent CRUD = System+；不论哪个 Agent，permissions 含 `is_dangerous=1` 的 capability（`network.http` / `db.execute` / `secret.get`）必须 Super 提交。
-- Q: MVP 内置 function 初始集合？ → A: 启动期注册 5 个胶水函数：`format.template`（模板填充）/ `json.parse` / `json.stringify` / `text.regex_match` / `chat.respond`（生成用户可见回复）。这些不依赖 WASM、不可删除、可被禁用。
+- Q: MVP 内置 function 初始集合？ → A: 启动期注册 5 个胶水函数：`format_template`（模板填充）/ `json_parse` / `json_stringify` / `text_regex_match` / `chat_respond`（生成用户可见回复）。这些不依赖 WASM、不可删除、可被禁用。
 - Q: 路由到子 Agent 后 host_call 鉴权看哪个 permission 集合？ → A: 当前执行中的 Agent 自己的 permissions；不继承父 Agent，也不取交集。Capability 始终按"最近的 Agent 框架"判断，符合最小权限 / zero-trust。
 - Q: Instance Pool 中的 Plugin 实例是否允许跨会话 / 跨 Agent 复用？ → A: 是。Plugin 实例在归还前强制 reset linear memory，可跨 Agent / Session 自由复用。Plugin 作者**不得**依赖 mut global 跨调用持久化状态；PDK 文档进一步声明该约束。
 - Q: Skill 与 Tool 在 LLM 看到的工具列表中如何区分？ → A: 沿用已有 `crates/agent` 模式。Tool 注册到 `agent::ToolRegistry`，LLM 通过 OpenAI tool-calling 看到（含 JSON Schema 入参/出参）；Skill 是 markdown 内容，调用 = `SkillsLoader` 把内容拼进当前 Agent 的 system prompt，**不**出现在 LLM tools 列表。Workflow 在 runtime 内被包装成一个 Tool 注册（Workflow Wrapper）。
@@ -184,7 +186,7 @@
 - **FR-009**: 系统必须支持"分类 + 标签 + 关键词" 三维组合检索，关键词需覆盖名称/标识符/描述。
 
 **Function 管理**
-- **FR-010**: Function 分为"内置（builtin）"与"定制（custom）"两类；内置由系统代码注册，不可删除，可被禁用。MVP 内置集合：`format.template`、`json.parse`、`json.stringify`、`text.regex_match`、`chat.respond`（前 4 个是 Workflow 胶水，最后一个用于生成用户可见的最终回复）。
+- **FR-010**: Function 分为"内置（builtin）"与"定制（custom）"两类；内置由系统代码注册，不可删除，可被禁用。MVP 内置集合：`format_template`、`json_parse`、`json_stringify`、`text_regex_match`、`chat_respond`（前 4 个是 Workflow 胶水，最后一个用于生成用户可见的最终回复）。
 - **FR-011**: 定制 Function 必须强引用一个未删除的 Plugin 与其某个 export 名。
 - **FR-012**: Function 字段：id、type、name、identifier（唯一）、description、input_schema（JSON Schema）、output_schema（JSON Schema）、关联 plugin_id、plugin_export、created_at、updated_at。
 - **FR-013**: 系统必须在保存 Function 时校验 input/output schema 为合法 JSON Schema（draft 2020-12 或同等）。
@@ -627,4 +629,4 @@
 | 14 | Per-Agent LLM 选型 | `model_preset` 字段，NULL → 全局默认 |
 | 15 | LLM 失败回退 | 强制 FallbackProvider 链 |
 | 16 | Agent CRUD 权限 | main 编辑限 Super；危险 capability 赋予限 Super |
-| 17 | 内置 function 集合 | `format.template` / `json.parse` / `json.stringify` / `text.regex_match` / `chat.respond` |
+| 17 | 内置 function 集合 | `format_template` / `json_parse` / `json_stringify` / `text_regex_match` / `chat_respond` |

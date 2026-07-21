@@ -12,10 +12,13 @@ use sqlx::MySqlPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::cache::redis::RedisClient;
 use crate::models::Agent;
 use crate::runtime::capability::CapabilityRegistry;
 use crate::runtime::llm::LlmRegistry;
 use crate::utils::error::AppError;
+
+use super::cache_helper;
 
 pub const MAX_DEPTH: i8 = 10;
 pub const MAIN_AGENT_IDENTIFIER: &str = "main";
@@ -117,7 +120,7 @@ fn check_dangerous_permissions(
 
 pub async fn create(
     pool: &MySqlPool,
-    redis: &redis::Client,
+    redis: &RedisClient,
     registry: &CapabilityRegistry,
     llm: &LlmRegistry,
     actor_role: i8,
@@ -286,7 +289,7 @@ pub async fn list_tree(pool: &MySqlPool) -> Result<Vec<AgentTreeNode>, AppError>
 
 pub async fn update(
     pool: &MySqlPool,
-    redis: &redis::Client,
+    redis: &RedisClient,
     registry: &CapabilityRegistry,
     llm: &LlmRegistry,
     actor_role: i8,
@@ -433,7 +436,7 @@ pub async fn update(
     fetch_detail(pool, id).await
 }
 
-pub async fn delete(pool: &MySqlPool, redis: &redis::Client, id: i64) -> Result<(), AppError> {
+pub async fn delete(pool: &MySqlPool, redis: &RedisClient, id: i64) -> Result<(), AppError> {
     let row: Option<(String, Option<i64>)> =
         sqlx::query_as("SELECT identifier, parent_agent_id FROM agents WHERE id = ?")
             .bind(id)
@@ -551,28 +554,13 @@ pub struct ChildAgent {
 // 都要调 `invalidate_content_cache` 同步失效。
 
 fn agent_content_key(agent_id: i64) -> String {
-    format!("agent:content:{agent_id}")
+    format!("{}:{}", cache_helper::KEY_AGENT_CONTENT_PREFIX, agent_id)
 }
 
-fn agent_content_ttl_secs() -> u64 {
-    std::env::var("AGENT_CACHE_TTL_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300)
-}
-
-pub async fn invalidate_content_cache(redis: &redis::Client, agent_id: i64) {
+pub async fn invalidate_content_cache(redis: &RedisClient, agent_id: i64) {
     let key = agent_content_key(agent_id);
-    match redis.get_multiplexed_async_connection().await {
-        Ok(mut conn) => {
-            let res: redis::RedisResult<i64> = redis::AsyncCommands::del(&mut conn, &key).await;
-            if let Err(e) = res {
-                tracing::warn!(error=%e, agent_id, "agent content cache invalidate failed");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error=%e, agent_id, "agent content cache invalidate (connect) failed")
-        }
+    if let Err(e) = cache_helper::cached_del(redis, &key).await {
+        tracing::warn!(error=%e, agent_id, "agent content cache invalidate failed");
     }
 }
 
@@ -584,20 +572,26 @@ pub async fn invalidate_content_cache(redis: &redis::Client, agent_id: i64) {
 ///
 /// 走 Redis 缓存：每次先查 `agent:content:{id}`，命中即返回；未命中查 DB 后
 /// 回写缓存（默认 TTL = `AGENT_CACHE_TTL_SECS`，默认 300s）。Redis 不可用时
-/// 仅 `warn!` 并降级走 DB，不影响业务正确性。
+/// 降级走 DB，不影响业务正确性。
 pub async fn fetch_content(
     pool: &MySqlPool,
-    redis: &redis::Client,
+    redis: &RedisClient,
     agent_id: i64,
 ) -> Result<AgentContent, AppError> {
     let cache_key = agent_content_key(agent_id);
+    let ttl = cache_helper::agent_content_ttl_secs();
 
-    // 1) 尝试命中缓存
-    if let Some(cached) = read_content_cache(redis, &cache_key).await {
-        return Ok(cached);
-    }
+    cache_helper::cached_or_fetch(redis, &cache_key, ttl, || async {
+        fetch_content_from_db(pool, agent_id)
+            .await
+            .map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|s| AppError::Internal(s))
+}
 
-    // 2) 缓存未命中或 Redis 不可用：走 DB（沿用原逻辑）
+/// DB-only path for fetching agent content (used as the fetch closure in cached_or_fetch).
+async fn fetch_content_from_db(pool: &MySqlPool, agent_id: i64) -> Result<AgentContent, AppError> {
     let row: Option<(String, String, Option<String>)> =
         sqlx::query_as("SELECT identifier, system_prompt, model_preset FROM agents WHERE id = ?")
             .bind(agent_id)
@@ -746,62 +740,5 @@ pub async fn fetch_content(
         hooks,
     };
 
-    // 3) 写回缓存（失败仅 warn，不影响本次返回）
-    write_content_cache(redis, &cache_key, &content, agent_id).await;
-
     Ok(content)
-}
-
-async fn read_content_cache(redis: &redis::Client, key: &str) -> Option<AgentContent> {
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error=%e, key, "agent content cache connect failed");
-            return None;
-        }
-    };
-    let cached: Option<String> = match redis::AsyncCommands::get(&mut conn, key).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error=%e, key, "agent content cache get failed");
-            return None;
-        }
-    };
-    let Some(json) = cached else {
-        return None;
-    };
-    match serde_json::from_str::<AgentContent>(&json) {
-        Ok(c) => Some(c),
-        Err(e) => {
-            tracing::warn!(error=%e, key, "agent content cache deserialize failed");
-            None
-        }
-    }
-}
-
-async fn write_content_cache(
-    redis: &redis::Client,
-    key: &str,
-    content: &AgentContent,
-    agent_id: i64,
-) {
-    let json = match serde_json::to_string(content) {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::warn!(error=%e, agent_id, "agent content cache serialize failed");
-            return;
-        }
-    };
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error=%e, agent_id, "agent content cache connect (write) failed");
-            return;
-        }
-    };
-    let ttl = agent_content_ttl_secs();
-    let res: redis::RedisResult<()> = redis::AsyncCommands::set_ex(&mut conn, key, json, ttl).await;
-    if let Err(e) = res {
-        tracing::warn!(error=%e, agent_id, "agent content cache setex failed");
-    }
 }

@@ -178,8 +178,8 @@ export interface WorkflowUserInput {
   raw_text?: string;
   actor_id?: string;
   channel?: string;
-  platform?: string;
-  app_version?: string;
+  client_type?: string;
+  client_version?: string;
 }
 
 export interface WorkflowExecuteRequest {
@@ -190,6 +190,8 @@ export interface WorkflowExecuteRequest {
 export interface WorkflowExecuteResult {
   workflow_id: number;
   node_results: Record<string, unknown>;
+  node_inputs: Record<string, unknown>;
+  node_agent_contexts: Record<string, unknown>;
   elapsed_ms: number;
   agent_context?: unknown;
 }

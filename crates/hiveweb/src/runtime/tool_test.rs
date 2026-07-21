@@ -58,10 +58,7 @@ impl DebugLogger {
 
     pub fn log(&self, msg: &str) {
         let line = format!("[tool_test] {}", msg);
-        let is_dev = std::env::var("APP_ENV")
-            .map(|v| v == "development" || v == "dev")
-            .unwrap_or(true);
-        if is_dev {
+        if !crate::app_mode::get().is_production() {
             if let Some(ref tid) = self.trace_id {
                 let _ = std::fs::create_dir_all("/tmp/tool_test_logs");
                 let path = format!("/tmp/tool_test_logs/{}.log", tid);

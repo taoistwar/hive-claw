@@ -26,3 +26,10 @@ Thumbs.db
 llm_presets.toml
 
 BUG_REPORT.md
+.vite
+*.tar.gz
+WEEK.md
+logs/
+hiveweb.log.*
+TEST.md
+tmp/

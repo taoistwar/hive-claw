@@ -54,29 +54,6 @@ export interface UpdateHookRequest {
   updated_at: string;
 }
 
-export interface HookExecution {
-  id: number;
-  agent_id: number;
-  agent_identifier: string;
-  hook_id: number | null;
-  session_id: number | null;
-  trigger_point: string;
-  action_type: string;
-  outcome: 'success' | 'error' | 'timeout' | 'skipped';
-  error_summary: string | null;
-  elapsed_ms: number | null;
-  context_snapshot: Record<string, unknown> | null;
-  request_id: string | null;
-  created_at: string;
-}
-
-export interface HookExecutionList {
-  items: HookExecution[];
-  total: number;
-  page: number;
-  page_size: number;
-}
-
 // ---- API Functions ----
 
 export async function listHooks(agentId: number): Promise<AgentHook[]> {
@@ -100,23 +77,6 @@ export async function updateHook(
 
 export async function deleteHook(agentId: number, hookId: number): Promise<void> {
   await apiClient.delete(`/agents/${agentId}/hooks/${hookId}`);
-}
-
-export async function listExecutions(
-  agentId: number,
-  params?: {
-    trigger_point?: string;
-    outcome?: string;
-    from?: string;
-    to?: string;
-    page?: number;
-    page_size?: number;
-  },
-): Promise<HookExecutionList> {
-  const resp = await apiClient.get<HookExecutionList>(`/agents/${agentId}/hooks/executions`, {
-    params,
-  });
-  return resp.data;
 }
 
 // ---- Constants ----

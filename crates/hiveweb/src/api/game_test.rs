@@ -36,7 +36,9 @@ fn app_state() -> AppState {
     let pool = sqlx::MySqlPool::connect_lazy(&database_url).expect("Failed to create pool");
     AppState {
         pool,
-        redis: redis::Client::open("redis://localhost:6379").expect("Failed to create redis client"),
+        redis: redis::Client::open("redis://localhost:6379")
+            .expect("Failed to create redis client")
+            .into(),
         s3: aws_sdk_s3::Client::new(&aws_config::from_env().load_sync()),
         runtime_state: Default::default(),
         ext_pool: None,

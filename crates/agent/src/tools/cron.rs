@@ -65,8 +65,12 @@ impl CronTool {
                 format!("cron: {expr}{tz}")
             }
             ScheduleKind::Every => match schedule.every_ms {
-                Some(ms) if ms % 3_600_000 == 0 => format!("every {}h", ms / 3_600_000),
-                Some(ms) if ms % 60_000 == 0 => format!("every {}m", ms / 60_000),
+                Some(ms) if ms % 3_600_000 == 0 => {
+                    format!("every {}h", ms / 3_600_000)
+                }
+                Some(ms) if ms % 60_000 == 0 => {
+                    format!("every {}m", ms / 60_000)
+                }
                 Some(ms) if ms % 1000 == 0 => format!("every {}s", ms / 1000),
                 Some(ms) => format!("every {ms}ms"),
                 None => "every ?".into(),

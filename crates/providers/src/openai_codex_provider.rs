@@ -199,7 +199,9 @@ impl LLMProvider for OpenAICodexProvider {
         };
         let headers = match self.build_headers(&token) {
             Ok(h) => h,
-            Err(e) => return LLMResponse::error(format!("Invalid Codex headers: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Invalid Codex headers: {e}"));
+            }
         };
         let body = self.build_body(&req);
 
@@ -247,7 +249,9 @@ impl LLMProvider for OpenAICodexProvider {
         // true streaming here (the caller doesn't receive deltas).
         let body_text = match response.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading Codex stream: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading Codex stream: {e}"));
+            }
         };
         let events = parse_sse_events(&body_text);
         match consume_events(&events) {

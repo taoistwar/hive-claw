@@ -25,18 +25,19 @@ use axum::{
     Router,
     extract::{Query, State},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
-use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
 use crate::api::AppState;
 use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
+use crate::cache::redis::RedisClient;
 use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
@@ -52,7 +53,9 @@ fn get_secret() -> &'static str {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/assistant", post(assistant_chat))
+    Router::new()
+        .route("/assistant", post(assistant_chat))
+        .route("/quota", get(assistant_quota))
 }
 
 // ── 请求 / 响应 ──
@@ -67,14 +70,13 @@ pub struct AssistantRequest {
     pub client_type: String,
     /// 客户端版本号
     pub client_version: String,
-    /// 是否创建新会话（`true` 时强制创建新 session，`false`/省略时复用最新 session）
+    /// 是否创建新会话（保留字段，由 /api/newsession 接口处理新会话创建逻辑）
     #[serde(default)]
+    #[allow(dead_code)]
     pub new_session: bool,
 }
 
-// 响应：直接返回 chat_messages_user 中保存的 ChatMessageUser 记录（与 /api/messages 单条形态一致）
-
-// ── Handler ──
+// ── 日访问次数限流（Redis） ──
 
 async fn assistant_chat(
     State(state): State<AppState>,
@@ -123,9 +125,14 @@ async fn assistant_chat(
             .into_response();
     }
 
-    // 4. message 非空校验
+    // 4. message 非空 + 长度校验
     if req.message.trim().is_empty() {
         return AppError::BadRequest("message must not be empty".into())
+            .into_response::<()>()
+            .into_response();
+    }
+    if req.message.chars().count() > 500 {
+        return AppError::BadRequest("message must not exceed 500 characters".into())
             .into_response::<()>()
             .into_response();
     }
@@ -137,10 +144,10 @@ async fn assistant_chat(
             triggered_word = %hit.word(),
             "Assistant input blocked by sensitive filter"
         );
-        return crate::utils::error::ApiResponse::success(serde_json::json!({
-            "reply": "内容安全警告：输入的文本数据可能包含不适当的内容！",
-            "filtered": true,
-        }))
+        return AppError::SensitiveWordBlocked(
+            "内容安全警告：输入的文本数据可能包含不适当的内容！".into(),
+        )
+        .into_response::<()>()
         .into_response();
     }
 
@@ -153,21 +160,27 @@ async fn assistant_chat(
         }
     };
 
-    // 5. 校验 user_id 是否存在于外部 cloud_user 表
-    match membership::user_exists_in_cloud(ext_pool, req.user_id).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // 5. 获取 cloud_user 信息并校验用户是否存在（缓存优先）
+    let cloud_info = match membership::get_cloud_user_info_cached(
+        &state.redis,
+        ext_pool,
+        req.user_id,
+    )
+    .await
+    {
+        Ok(Some(info)) => info,
+        Ok(None) => {
             return AppError::BadRequest("User not found".into())
                 .into_response::<()>()
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::user_exists_in_cloud 查询失败");
+            tracing::error!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached 查询失败");
             return AppError::Internal("用户数据查询失败，请稍后重试".into())
                 .into_response::<()>()
                 .into_response();
         }
-    }
+    };
 
     // 6. 获取会员等级 & 判断是否 VIP
     let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
@@ -176,20 +189,43 @@ async fn assistant_chat(
             tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
             false
         });
+    tracing::debug!(user_id = req.user_id, is_vip, "用户 VIP 状态");
+    // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
+            None
+        })
+        .unwrap_or_default();
 
-    // 7. 日访问次数限流
-    let limit_key = format!("assistant:daily:{}", req.user_id);
     let max_times = if is_vip {
-        get_config_number_cached(&state.redis, &state.pool, "vip_ask_times", 50).await
+        limit_config.vip_ask_times
     } else {
-        get_config_number_cached(&state.redis, &state.pool, "normal_ask_times", 5).await
+        limit_config.normal_ask_times
     };
 
-    if let Err(msg) = check_and_incr_daily_limit(&state.redis, &limit_key, max_times).await {
-        return AppError::BadRequest(msg)
-            .into_response::<()>()
-            .into_response();
-    }
+    let limit_key = format!("assistant:daily:{}", req.user_id);
+    let current_count = match check_and_incr_daily_limit(
+        &state.redis,
+        &limit_key,
+        max_times,
+        limit_config.limit_reset_hour,
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(Some(msg)) => {
+            return AppError::DailyLimitReached(msg)
+                .into_response::<()>()
+                .into_response();
+        }
+        Err(None) => {
+            return AppError::Internal("Redis unavailable".into())
+                .into_response::<()>()
+                .into_response();
+        }
+    };
     // 8. SSE concurrency guard
     if !try_acquire_slot(req.user_id, SseSlotConfig::USER).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -199,20 +235,10 @@ async fn assistant_chat(
     }
     let _guard = SseConcurrencyGuard {
         actor_id: req.user_id,
-        is_admin: false,
     };
 
-    // 8. 内部 users 表同步（不存在则创建，同时同步 uid/nickname）
-    let cloud_info = membership::get_cloud_user_info(ext_pool, req.user_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(user_id = req.user_id, error = %e, "get_cloud_user_info failed");
-            None
-        });
-    let (uid, nickname) = cloud_info
-        .as_ref()
-        .map(|(u, n)| (Some(u.as_str()), Some(n.as_str())))
-        .unwrap_or((None, None));
+    // 8. 内部 users 表同步（不存在则创建）
+    let (uid, nickname) = (Some(cloud_info.0.as_str()), Some(cloud_info.1.as_str()));
 
     if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
         let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -221,22 +247,12 @@ async fn assistant_chat(
             .into_response();
     }
 
-    // 10. 获取 session：new_session=true 时强制创建新 session，否则复用最新
-    let session = if req.new_session {
-        match svc::create_user_session(&state.pool, req.user_id, None).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = decr_daily_limit(&state.redis, &limit_key).await;
-                return e.into_response::<()>().into_response();
-            }
-        }
-    } else {
-        match svc::get_or_create_session_user(&state.pool, req.user_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = decr_daily_limit(&state.redis, &limit_key).await;
-                return e.into_response::<()>().into_response();
-            }
+    // 10. 获取或创建 session
+    let session = match svc::get_or_create_session_user(&state.pool, req.user_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            return e.into_response::<()>().into_response();
         }
     };
     let session_id = session.id;
@@ -249,25 +265,17 @@ async fn assistant_chat(
         return e.into_response::<()>().into_response();
     }
 
-    // 12. Auto-generate title from first message (first 30 chars)
-    if session.title.is_none() || session.title.as_ref().map_or(true, |t| t.is_empty()) {
-        let title = req.message.chars().take(30).collect::<String>();
-        let _ = svc::update_session_title(&state.pool, session_id, &title).await;
-    }
-
     // 13. Build OrchestratorDeps + run session (collect full response, return JSON)
     let pool = state.pool.clone();
     let user_content = req.message.clone();
 
-    let history: Vec<crate::models::ChatMessageUser> = if req.new_session {
-        Vec::new()
-    } else {
+    let history: Vec<crate::models::ChatMessageUser> =
         svc::list_messages_user(&state.pool, session_id)
             .await
-            .unwrap_or_default()
-    };
+            .unwrap_or_default();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
         pool: pool.clone(),
@@ -282,6 +290,7 @@ async fn assistant_chat(
         client_type: req.client_type.clone(),
         client_version: req.client_version.clone(),
         sensitive_filter: state.sensitive_filter.clone(),
+        cancel: Arc::clone(&cancel),
     };
     let handle = tokio::spawn(async move {
         crate::runtime::orchestrator::run_session_user(
@@ -295,6 +304,15 @@ async fn assistant_chat(
         )
         .await
     });
+
+    // 客户端断开时取消 orchestrator
+    struct CancelGuard(Arc<AtomicBool>);
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _guard = CancelGuard(cancel);
 
     // Drain SSE events; the orchestrator already saved the assistant message and returns
     // the persisted record via the JoinHandle, so we only need to detect early errors here.
@@ -334,7 +352,7 @@ async fn assistant_chat(
         }
     };
 
-    let saved = match saved {
+    let mut saved = match saved {
         Some(m) => m,
         None => {
             let _ = decr_daily_limit(&state.redis, &limit_key).await;
@@ -343,6 +361,28 @@ async fn assistant_chat(
                 .into_response();
         }
     };
+
+    // 如果已用次数刚好到达 "剩余提醒阈值"，追加 usage extension
+    let remaining = max_times - current_count;
+    if limit_config.remain_ask_time > 0 && remaining <= limit_config.remain_ask_time {
+        let usage_ext = serde_json::json!({
+            "content_type": "usage",
+            "payload": {
+                "used_times": current_count,
+                "total_times": max_times,
+                "membership_max_times": limit_config.vip_ask_times,
+                "remain_ask_time": limit_config.remain_ask_time,
+            }
+        });
+        let mut exts: Vec<serde_json::Value> = saved
+            .extensions
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(|a| a.clone())
+            .unwrap_or_default();
+        exts.push(usage_ext);
+        saved.extensions = Some(serde_json::Value::Array(exts));
+    }
 
     axum::Json(saved).into_response()
 }
@@ -421,16 +461,22 @@ fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
 
 // ── 日访问次数限流（Redis） ──
 
+/// Check and increment the daily access counter.
+///
+/// Returns the current count (after INCR) on success.
+/// Returns `Err(Some(msg))` when the daily limit is reached,
+/// or `Err(None)` for Redis/infra errors.
 async fn check_and_incr_daily_limit(
-    redis: &redis::Client,
+    redis: &RedisClient,
     key: &str,
     max_times: i64,
-) -> Result<(), String> {
+    reset_hour: u32,
+) -> Result<i64, Option<String>> {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Redis connection failed: {e}");
-            return Err("Redis unavailable".to_string());
+            return Err(None);
         }
     };
 
@@ -438,24 +484,30 @@ async fn check_and_incr_daily_limit(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("Redis INCR failed: {e}");
-            return Err("Redis error".to_string());
+            return Err(None);
         }
     };
 
     if current == 1 {
-        let secs = seconds_until_midnight();
+        let secs = seconds_until_reset_hour(reset_hour);
         let _: Result<(), _> = conn.expire(key, secs as i64).await;
     }
 
     if current > max_times {
-        return Err(format!("Daily limit reached ({}/{})", max_times, max_times));
+        // rollback: 超限不计入
+        let _: Result<(), _> = conn.decr(key, 1).await;
+        let max_times = max_times - 1;
+        return Err(Some(format!(
+            "Daily limit reached ({}/{})",
+            max_times, max_times
+        )));
     }
 
-    Ok(())
+    Ok(current)
 }
 
 /// 配额回滚：LLM 调用失败或内部错误时 DECR 计数器
-async fn decr_daily_limit(redis: &redis::Client, key: &str) -> Result<(), ()> {
+async fn decr_daily_limit(redis: &RedisClient, key: &str) -> Result<(), ()> {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
@@ -467,86 +519,133 @@ async fn decr_daily_limit(redis: &redis::Client, key: &str) -> Result<(), ()> {
     Ok(())
 }
 
-/// 计算到当天 23:59:59 剩余的秒数
-fn seconds_until_midnight() -> u64 {
+/// 计算到指定重置时间点剩余的秒数（UTC）。
+///
+/// `reset_hour` 取值 0-23，表示每天在该小时（UTC）重置计数器。
+/// 如果当前时间已经过了今天的重置点，则计算到明天的重置点。
+fn seconds_until_reset_hour(reset_hour: u32) -> u64 {
     let now = chrono::Utc::now();
-    let today_midnight = now.date_naive().and_hms_opt(23, 59, 59).unwrap();
-    let dur = today_midnight - now.naive_utc();
-    (dur.num_seconds() + 1).max(60) as u64
+    let naive_now = now.naive_utc();
+    let today_reset = naive_now
+        .date()
+        .and_hms_opt(reset_hour, 0, 0)
+        .unwrap_or_else(|| {
+            // Fallback: midnight if hour is out of range
+            naive_now.date().and_hms_opt(0, 0, 0).unwrap()
+        });
+    let target = if naive_now >= today_reset {
+        // Already past today's reset → next reset is tomorrow
+        today_reset + chrono::Duration::days(1)
+    } else {
+        today_reset
+    };
+    let dur = target - naive_now;
+    dur.num_seconds().max(60) as u64
 }
 
-// ── 全局配置读取（Redis 优先，回退 DB） ──
+/// 查询用户当日配额使用情况（只读，不消耗配额）。
+///
+/// GET /api/quota?sign={md5}&user_id={uid}
+///
+/// 返回 `used_times`、`total_times`、`membership_max_times`。
+async fn assistant_quota(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    // 1. MD5 签名校验
+    let secret = get_secret();
+    if !secret.is_empty() {
+        let sign = params.get("sign").map(|s| s.as_str()).unwrap_or("");
+        let raw_body = format!("user_id={}", params.get("user_id").unwrap_or(&"".into()));
+        if !chat_common::verify_sign(secret, "/api/quota", &raw_body, sign) {
+            return AppError::BadRequest("Invalid signature".into())
+                .into_response::<()>()
+                .into_response();
+        }
+    }
 
-/// 从 Redis 读取配置值，如果不存在则从 DB 加载并写入 Redis。
-async fn get_config_number_cached(
-    redis: &redis::Client,
-    pool: &MySqlPool,
-    key: &str,
-    default: i64,
-) -> i64 {
-    let cache_key = format!("config:{}", key);
-
-    // 1. 尝试从 Redis 读取
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("Redis connection failed, falling back to DB for config '{key}': {e}");
-            return get_config_number(pool, key, default).await;
+    // 2. 解析 user_id
+    let user_id: i64 = match params.get("user_id").and_then(|v| v.parse().ok()) {
+        Some(uid) if uid > 0 => uid,
+        _ => {
+            return AppError::BadRequest("user_id must be positive".into())
+                .into_response::<()>()
+                .into_response();
         }
     };
 
-    let cached: Option<String> = conn.get(&cache_key).await.unwrap_or(None);
-    if let Some(val) = cached {
-        if let Ok(n) = val.parse::<i64>() {
-            return n;
+    // 3. 获取外部 DB 连接
+    let ext_pool = match &state.ext_pool {
+        Some(p) => p,
+        None => {
+            return AppError::Internal("Service unavailable".into())
+                .into_response::<()>()
+                .into_response();
+        }
+    };
+
+    // 4. 校验 user_id 是否存在于外部 cloud_user 表
+    match membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return AppError::BadRequest("User not found".into())
+                .into_response::<()>()
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(user_id, error = %e, "quota: get_cloud_user_info_cached failed");
+            return AppError::Internal("Query failed".into())
+                .into_response::<()>()
+                .into_response();
         }
     }
 
-    // 2. Redis 没有，从 DB 读取
-    let value = get_config_number(pool, key, default).await;
+    // 5. 获取会员等级 & 限流配置
+    let is_vip = membership::check_vip_membership(ext_pool, user_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(user_id, error = %e, "quota: check_vip_membership failed");
+            false
+        });
+    tracing::debug!(user_id, is_vip, "quota: user VIP status");
+    let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "quota: limit config failed, using default");
+            None
+        })
+        .unwrap_or_default();
 
-    // 3. 写入 Redis，TTL 1 小时
-    let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
+    let total_times = if is_vip {
+        limit_config.vip_ask_times
+    } else {
+        limit_config.normal_ask_times
+    };
 
-    value
+    // 6. 读取当前 Redis 计数器（只读，不 INCR）
+    let limit_key = format!("assistant:daily:{}", user_id);
+    let used_times = read_daily_limit(&state.redis, &limit_key).await;
+
+    crate::utils::error::ApiResponse::success(serde_json::json!({
+        "used_times": used_times,
+        "total_times": total_times,
+        "membership_max_times": limit_config.vip_ask_times,
+        "remain_ask_time": limit_config.remain_ask_time,
+    }))
+    .into_response()
 }
 
-/// 直接从 DB 读取配置值（fallback）
-async fn get_config_number(pool: &MySqlPool, key: &str, default: i64) -> i64 {
-    match crate::services::global_config::fetch_by_key(pool, key).await {
-        Ok(cfg) => cfg.data["value"].as_i64().unwrap_or(default),
-        Err(_) => default,
-    }
-}
-
-/// 需要缓存的配置 key 列表（用于 admin 修改后刷新 Redis 缓存）
-pub const CACHED_CONFIG_KEYS: &[&str] = &["vip_ask_times", "normal_ask_times"];
-
-/// 将指定 key 的配置值同步到 Redis（用于 admin 修改配置后主动刷新缓存）。
-pub async fn sync_config_to_redis(redis: &redis::Client, pool: &MySqlPool, key: &str) {
-    let cache_key = format!("config:{}", key);
-    let value = get_config_number(pool, key, -1).await;
-    if value < 0 {
-        // 配置不存在，删除 Redis 缓存
-        let mut conn = match redis.get_multiplexed_async_connection().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Redis connection failed during config cache delete '{key}': {e}");
-                return;
-            }
-        };
-        let _: Result<(), _> = conn.del(&cache_key).await;
-        return;
-    }
+/// 读取 Redis 当日计数器（GET，不增加）。
+async fn read_daily_limit(redis: &RedisClient, key: &str) -> i64 {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!("Redis connection failed during config cache sync '{key}': {e}");
-            return;
+            tracing::error!("Redis GET connection failed: {e}");
+            return 0;
         }
     };
-    let _: Result<(), _> = conn.set_ex(&cache_key, value.to_string(), 3600).await;
-    tracing::info!(key, value, "config cache synced to Redis");
+    let ret: Result<i64, _> = conn.get(key).await;
+    ret.unwrap_or(0)
 }
 
 // ── 测试 ──
@@ -627,14 +726,14 @@ mod tests {
     // ── T033: 日限流 TTL 计算 ──
 
     #[test]
-    fn seconds_until_midnight_is_positive() {
-        let secs = seconds_until_midnight();
+    fn seconds_until_reset_hour_is_positive() {
+        let secs = seconds_until_reset_hour(0);
         assert!(secs > 0, "TTL must be positive, got {}", secs);
     }
 
     #[test]
-    fn seconds_until_midnight_does_not_exceed_24h() {
-        let secs = seconds_until_midnight();
+    fn seconds_until_reset_hour_does_not_exceed_24h() {
+        let secs = seconds_until_reset_hour(23);
         assert!(
             secs <= 86400,
             "TTL must not exceed 24h (86400s), got {}",
@@ -707,7 +806,7 @@ mod tests {
     #[ignore = "requires MySQL + Redis + external DB + LLM"]
     async fn integration_successful_request() {
         // T024: 合法用户成功请求
-        // 需要：DATABASE_URL, REDIS_URL, EXTERNAL_DB_URL, ASSISTANT_SECRET
+        // 需要：DATABASE_URL、Redis 直连或 Sentinel 配置、EXTERNAL_DB_URL、ASSISTANT_SECRET
         // 以及 agents 表中 id=1 的 Main Agent
     }
 

@@ -15,6 +15,8 @@ pub mod chat_messages;
 pub mod function;
 pub mod game;
 pub mod global_config;
+pub mod health;
+pub mod newsession;
 pub mod plugin;
 pub mod recommended_game;
 pub mod runtime;
@@ -27,8 +29,7 @@ pub mod users;
 pub mod workflow;
 
 use aws_sdk_s3::Client;
-use axum::{Router, http::HeaderValue, middleware};
-use redis::Client as RedisClient;
+use axum::{Router, http::HeaderValue, http::StatusCode, middleware};
 use sqlx::MySqlPool;
 use tower_http::{
     cors::CorsLayer,
@@ -36,6 +37,7 @@ use tower_http::{
 };
 use tracing::Level;
 
+use crate::cache::redis::RedisClient;
 use crate::middleware::auth::admin_auth_middleware;
 use crate::middleware::rate_limit::{RateLimitState, rate_limit_middleware};
 use crate::middleware::request_body_log::log_request_body_middleware;
@@ -44,14 +46,28 @@ use crate::runtime::{
     CapabilityRegistry, InstancePool, Invoker, LlmRegistry, PoolConfig, RuntimeState,
     WorkflowExecutor,
 };
+use crate::utils::error::{ApiResponse, AppError};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// 插件系统已关闭时返回 `PluginSystemDisabled` 响应。
+/// 供 Plugin 上传/下载/调用等入口统一使用，避免散落 503 文案。
+pub fn require_s3(state: &AppState) -> Result<&aws_sdk_s3::Client, ApiResponse<()>> {
+    state.s3.as_ref().ok_or_else(|| {
+        AppError::PluginSystemDisabled(
+            "插件系统已关闭 (PLUGIN_SYSTEM_ENABLED=false)，此功能不可用".into(),
+        )
+        .into_response()
+    })
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
     pub redis: RedisClient,
-    pub s3: Client,
+    /// S3 客户端。仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
+    /// 所有 Plugin 上传/下载/调用入口及 `s3.*` capability 都应检查 `s3.is_some()`。
+    pub s3: Option<Client>,
     /// 004 Agent Runtime — capability registry / instance pool / invoker / workflow / llm
     pub runtime_state: RuntimeState,
     /// 外部只读数据库连接（assistant API 用户校验等）
@@ -60,29 +76,32 @@ pub struct AppState {
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 }
 
-/// 启动期严格 12 步顺序（plan §Startup Initialization Order）：
-///   1. env / dotenv —— 由 main.rs 完成（DATABASE_URL/JWT_SECRET 等 fail-fast）
-///   2. DB migrations —— `cargo run --bin migrate`
-///   3. capability registry upsert —— 启动期 INSERT ... ON DUPLICATE KEY UPDATE
-///   4. builtin function upsert —— FR-010 v5 的 5 个 builtin（kind=1）
-///   5. custom function 索引 —— 拉 DB 全部 kind=2，构 Arc<HashMap<identifier, FunctionDef>>
-///   6. llm_presets.toml 加载 —— LlmRegistry::load_from_path()
-///   7. ToolRegistry 装配 —— builtin + custom + workflow-wrap，注册到 agent::ToolRegistry
-///   8. SubagentManager / MemoryStore 初始化
-///   9. Instance Pool 空池
-///  10. HTTP Router 装配（middleware → API group）
-///  11. 后台任务启动（retention cron / pool idle reaper）
-///  12. HTTP server listen
+/// DB migration 是服务启动外的前置步骤：生产环境由部署流程预建表，开发/测试环境
+/// 必须先运行 `cargo run -p hiveweb --bin migrate`。主服务不会自动建表或迁移。
 ///
-/// 当前 create_router 完成 9 + 10；3..8 + 11 在 main.rs 的 setup 阶段调用具体
+/// 启动期严格 11 步顺序（plan §Startup Initialization Order）：
+///   1. env / dotenv —— 由 main.rs 完成（DATABASE_URL/JWT_SECRET 等 fail-fast）
+///   2. capability registry upsert —— 启动期 INSERT ... ON DUPLICATE KEY UPDATE
+///   3. builtin function upsert —— FR-010 v5 的 5 个 builtin（kind=1）
+///   4. custom function 索引 —— 拉 DB 全部 kind=2，构 Arc<HashMap<identifier, FunctionDef>>
+///   5. llm_presets.toml 加载 —— LlmRegistry::load_from_path()
+///   6. ToolRegistry 装配 —— builtin + custom + workflow-wrap，注册到 agent::ToolRegistry
+///   7. SubagentManager / MemoryStore 初始化
+///   8. Instance Pool 空池
+///   9. HTTP Router 装配（middleware → API group）
+///  10. 后台任务启动（retention cron / pool idle reaper）
+///  11. HTTP server listen
+///
+/// 当前 create_router 完成 8 + 9；2..7 + 10 在 main.rs 的 setup 阶段调用具体
 /// services（Phase 3..7 实现后接入）。
 pub fn create_router(
     pool: MySqlPool,
     redis: RedisClient,
-    s3: Client,
+    s3: Option<Client>,
     ext_pool: Option<MySqlPool>,
     sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 ) -> Router {
+    let health_routes = health::router(pool.clone(), redis.clone());
     let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
 
     let cors = if allowed_origins == "*" {
@@ -123,7 +142,7 @@ pub fn create_router(
     let state = AppState {
         pool,
         redis,
-        s3,
+        s3: s3.clone(),
         runtime_state,
         ext_pool,
         sensitive_filter,
@@ -146,11 +165,18 @@ pub fn create_router(
         .on_request(DefaultOnRequest::new().level(Level::INFO))
         .on_response(DefaultOnResponse::new().level(Level::INFO));
 
+    #[allow(deprecated)]
+    let legacy_recommended_public_routes = recommended_game::router_public();
+    #[allow(deprecated)]
+    let legacy_recommended_admin_routes = recommended_game::router();
+
     let public_routes = Router::new()
         .merge(auth::router_public())
-        .merge(recommended_game::router_public())
+        // Legacy public recommendation endpoints retained for compatibility.
+        .merge(legacy_recommended_public_routes)
         .merge(chat_assistant::router())
-        .merge(chat_messages::router());
+        .merge(chat_messages::router())
+        .merge(newsession::router());
 
     let admin_protected_routes = Router::new()
         .merge(auth::router_protected())
@@ -170,8 +196,10 @@ pub fn create_router(
         .merge(agent_hook::router())
         .merge(workflow::router())
         .merge(user::router())
-        .merge(recommended_game::router())
+        // Legacy recommended-game admin CRUD retained for compatibility.
+        .merge(legacy_recommended_admin_routes)
         .merge(global_config::router())
+        // Mixed module: legacy /game-aliases plus active /external-games.
         .merge(game::router())
         .merge(sensitive_word::router())
         .layer(middleware::from_fn(admin_auth_middleware))
@@ -183,9 +211,11 @@ pub fn create_router(
     let api_routes = Router::new()
         .merge(public_routes)
         .merge(admin_protected_routes)
+        .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state);
 
     Router::new()
+        .merge(health_routes)
         .nest("/api", api_routes)
         .layer(cors)
         .layer(tracing_layer)

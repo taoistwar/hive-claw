@@ -21,6 +21,8 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 
+use crate::cache::redis::RedisClient;
+use crate::runtime::llm::LlmRegistry;
 use agent::context::AgentContext;
 
 // Re-export handlers for the registry
@@ -59,9 +61,17 @@ pub type BuiltinResult = Result<Value, BuiltinError>;
 pub struct BuiltinContext<'a> {
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
+    /// Redis client for cache-aside operations. `None` when Redis is unavailable.
+    pub redis: Option<&'a RedisClient>,
     /// AgentContext for reading/writing runtime state during hook/tool execution.
     /// `None` when called from contexts without AgentContext (e.g., workflow executor).
     pub agent_ctx: Option<Arc<AgentContext>>,
+    /// LLM registry for builtins that need classification/summarization.
+    /// `None` when called from contexts without LLM access (e.g., workflow executor, test).
+    pub llm: Option<&'a Arc<LlmRegistry>>,
+    /// Current agent ID for resolving model preset when calling LLM from builtins.
+    /// `None` when agent_id is unavailable.
+    pub agent_id: Option<i64>,
 }
 
 // ---------- Registry ----------
@@ -79,7 +89,7 @@ pub struct BuiltinDef {
 
 pub const BUILTINS: &[BuiltinDef] = &[
     BuiltinDef {
-        identifier: "format.template",
+        identifier: "format_template",
         name: "Format Template",
         description: "Render a template string with named {var} placeholders.",
         input_schema: FORMAT_TEMPLATE_INPUT_SCHEMA,
@@ -88,7 +98,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: format_template,
     },
     BuiltinDef {
-        identifier: "json.parse",
+        identifier: "json_parse",
         name: "JSON Parse",
         description: "Parse a JSON string into a structured value.",
         input_schema: JSON_PARSE_INPUT_SCHEMA,
@@ -97,7 +107,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: json_parse,
     },
     BuiltinDef {
-        identifier: "json.stringify",
+        identifier: "json_stringify",
         name: "JSON Stringify",
         description: "Serialize a value to a JSON string (optionally pretty-printed).",
         input_schema: JSON_STRINGIFY_INPUT_SCHEMA,
@@ -106,7 +116,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: json_stringify,
     },
     BuiltinDef {
-        identifier: "text.regex_match",
+        identifier: "text_regex_match",
         name: "Regex Match",
         description: "Apply a Rust-syntax regex against text and return matches with capture groups.",
         input_schema: TEXT_REGEX_MATCH_INPUT_SCHEMA,
@@ -115,7 +125,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: text_regex_match,
     },
     BuiltinDef {
-        identifier: "chat.respond",
+        identifier: "chat_respond",
         name: "Chat Respond",
         description: "Submit the final user-visible reply (signals orchestrator to end the turn).",
         input_schema: CHAT_RESPOND_INPUT_SCHEMA,
@@ -124,7 +134,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: chat_respond,
     },
     BuiltinDef {
-        identifier: "game.list",
+        identifier: "game_list",
         name: "Game List",
         description: "Get merged game list with aliases from internal and external databases.",
         input_schema: GAME_LIST_INPUT_SCHEMA,
@@ -133,7 +143,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: game_list,
     },
     BuiltinDef {
-        identifier: "game.info",
+        identifier: "game_info",
         name: "Game Info",
         description: "根据游戏 ID查询游戏信息，生成游戏卡片。",
         input_schema: GAME_INFO_INPUT_SCHEMA,
@@ -151,7 +161,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
         handler: query_balance,
     },
     BuiltinDef {
-        identifier: "support.card",
+        identifier: "support_card",
         name: "Support Card",
         description: "为客服内容生成支持卡片。",
         input_schema: SUPPORT_CARD_INPUT_SCHEMA,
@@ -302,7 +312,10 @@ mod tests {
         BuiltinContext {
             pool,
             ext_pool: None,
+            redis: None,
             agent_ctx: None,
+            llm: None,
+            agent_id: None,
         }
     }
 

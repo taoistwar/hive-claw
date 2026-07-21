@@ -19,7 +19,6 @@ use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
 use chrono::Utc;
 use providers::{ChatRequest, RetryMode, ToolCallRequest};
-use redis::Client as RedisClient;
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::convert::Infallible;
@@ -27,6 +26,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::cache::redis::RedisClient;
 use crate::models::ChatMessageUser;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
 use crate::runtime::hook::{
@@ -50,27 +50,241 @@ fn max_hops() -> usize {
         .unwrap_or(5)
 }
 
+/// Build LLM-side messages from chat history, with content trimming for old messages.
+///
+/// When history count >= 5, old assistant messages (all but the last one) have their
+/// content replaced with a placeholder to reduce context size, while the last assistant
+/// message retains its original content.
+fn build_chat_messages<T: HasRoleContent>(history: &[T], user_content: &str) -> Vec<Value> {
+    let mut messages: Vec<Value> = Vec::new();
+    let mut last_user_content: Option<String> = None;
+
+    // Find the index of the last assistant message
+    let last_assistant_idx = history
+        .iter()
+        .enumerate()
+        .rfind(|(_, m)| m.role_ref() == "assistant")
+        .map(|(i, _)| i);
+
+    let should_trim = history.len() >= 5;
+    tracing::debug!(
+        history_len = history.len(),
+        should_trim,
+        last_assistant_idx,
+        "build_chat_messages: start"
+    );
+
+    for (idx, m) in history.iter().enumerate() {
+        tracing::debug!(
+            idx,
+            role = m.role_ref(),
+            "build_chat_messages: processing message"
+        );
+        let c = m.content_ref();
+        let extensions = m.extensions_ref();
+        let has_content = c.is_some_and(|s| !s.trim().is_empty());
+
+        let is_assistant = m.role_ref() == "assistant";
+        let mut has_extensions = false;
+        let mut filtered_ext: Option<Value> = None;
+        if is_assistant {
+            // Filter out usage/card extensions, keep only non-card/non-usage types
+            filtered_ext = extensions.and_then(|v| {
+                v.as_array()
+                    .map(|arr| {
+                        let filtered: Vec<Value> = arr
+                            .iter()
+                            .filter(|e| {
+                                let ct =
+                                    e.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                                ct != "usage" && ct != "card"
+                            })
+                            .cloned()
+                            .collect();
+                        if filtered.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Array(filtered))
+                        }
+                    })
+                    .flatten()
+            });
+            has_extensions = filtered_ext.is_some();
+
+            if !has_content && !has_extensions {
+                tracing::debug!(
+                    idx,
+                    role = m.role_ref(),
+                    "build_chat_messages: skipping empty message"
+                );
+                messages.push(json!({"role": "assistant", "content": "[已省略]"}));
+                continue;
+            }
+        }
+        let is_last_assistant = last_assistant_idx == Some(idx);
+
+        // Old assistant messages: replace entire content with placeholder
+        if should_trim && is_assistant && !is_last_assistant {
+            tracing::debug!(idx, "build_chat_messages: trimming old assistant message");
+            messages.push(json!({"role": "assistant", "content": "[已省略]"}));
+            continue;
+        }
+
+        let msg = if has_extensions {
+            let mut obj = serde_json::Map::new();
+            obj.insert("content".into(), json!(c.unwrap_or("")));
+            obj.insert("extensions".into(), filtered_ext.unwrap().clone());
+            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
+            json!({"role": m.role_ref(), "content": content})
+        } else {
+            json!({"role": m.role_ref(), "content": c.unwrap_or("")})
+        };
+        messages.push(msg);
+
+        if m.role_ref() == "user" {
+            if let Some(text) = c {
+                last_user_content = Some(text.to_string());
+            }
+        }
+    }
+
+    // Only append user_content if it's not already the last user message in history
+    if last_user_content.as_deref() != Some(user_content) {
+        tracing::debug!("build_chat_messages: appending current user message");
+        messages.push(json!({"role": "user", "content": user_content}));
+    } else {
+        tracing::debug!("build_chat_messages: user content already at end, skipping append");
+    }
+
+    tracing::debug!(message_count = messages.len(), "build_chat_messages: done");
+    messages
+}
+
 /// 将 ExtensionContent 扁平化为 { content_type, ...data_fields } 格式，
 /// 去掉 id / reply / render_hints / data 等包装层。
 fn flatten_extension(e: &ExtensionContent) -> Value {
     let mut flat = serde_json::Map::new();
+    tracing::debug!(content_type = %e.content_type, "flatten_extension: start");
     flat.insert(
         "content_type".to_string(),
         json!(e.content_type.to_string()),
     );
+    tracing::debug!("flatten_extension: inserted content_type");
     if let Value::Object(data_obj) = &e.data {
+        tracing::debug!(key_count = data_obj.len(), "flatten_extension: data keys");
         for (k, v) in data_obj {
+            tracing::debug!(key = %k, value = %v, "flatten_extension: inserting data key");
             flat.insert(k.clone(), v.clone());
         }
+    } else {
+        tracing::debug!("flatten_extension: data is not an object, skipping");
     }
+    tracing::debug!(flat_key_count = flat.len(), "flatten_extension: done");
     Value::Object(flat)
+}
+
+/// 根据 extensions 中数据情况重置 content
+fn rewrite_content_for_empty_extensions(
+    content: Option<String>,
+    extensions_for_sse: &Option<Value>,
+) -> Option<String> {
+    let exts = match extensions_for_sse {
+        Some(Value::Array(arr)) => arr,
+        _ => return content,
+    };
+
+    for ext in exts {
+        let ct = ext.get("content_type").and_then(|v| v.as_str());
+        if ct != Some("card") {
+            continue;
+        }
+
+        let payload = ext.get("payload");
+        let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
+
+        // support 卡片：根据 category 生成 reply 作为 content
+        if payload_type == Some("support") {
+            let category = payload
+                .and_then(|p| p.get("category"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("other");
+            let reply = support_category_reply(category);
+            if !reply.is_empty() {
+                return Some(reply.to_string());
+            }
+        }
+
+        let category = ext.get("category").and_then(|v| v.as_str()).unwrap_or("");
+
+        // duration_card 为空
+        let dc_empty = payload
+            .and_then(|p| p.get("duration_card"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(true);
+
+        // disk_total_size == 0
+        let disk_empty = payload
+            .and_then(|p| p.get("info"))
+            .and_then(|i| i.get("disk_total_size"))
+            .and_then(|v| v.as_f64())
+            .map(|s| s == 0.0)
+            .unwrap_or(true);
+
+        if category == "duration_card" && dc_empty {
+            return Some(
+                "暂未查询到您的时长卡购买记录。如您需要更多游戏时长，推荐购买会员产品，通常会比单独购买时长卡更划算。"
+                    .into(),
+            );
+        }
+
+        if category == "disk" && disk_empty {
+            return Some(
+                "暂未查询到您的云硬盘购买记录。如您需要使用云硬盘，可前往「我的」页面点击「云硬盘」进行购买。您也可以购买会员产品，享受赠送的 5GB 会员专属云硬盘权益。"
+                    .into(),
+            );
+        }
+    }
+
+    content
+}
+
+/// 根据 support card 的 category 生成对应的回复文案
+fn support_category_reply(category: &str) -> &'static str {
+    match category {
+        "cannot_play" => {
+            "抱歉让你遇到无法正常进入游戏的问题。此类情况可能和游戏服务状态、云端环境、网络连接或游戏本身兼容性有关。我们会尽量保障游戏可正常启动，你可以通过下方「联系客服」继续反馈，我们会协助核实处理。"
+        }
+        "lag" => {
+            "抱歉影响了你的游戏体验。云游戏对网络稳定性和当前线路状态比较敏感，网络波动、服务器负载或画质设置都可能导致卡顿、延迟高或掉帧。你可以通过下方「联系客服」反馈，我们会进一步协助排查。"
+        }
+        "update" => {
+            "抱歉当前版本没有及时满足你的使用需求。云游戏内的游戏版本通常需要经过适配、测试和上线流程，可能会比官方版本略有延迟。我们会持续关注版本更新进度，你也可以通过下方「联系客服」反馈具体游戏。"
+        }
+        "quality" => {
+            "抱歉当前画质没有达到你的预期。云游戏画质会受到网络状态、画质设置、设备显示效果以及云端渲染策略影响。我们会持续优化画质体验，你可以通过下方「联系客服」继续反馈问题。"
+        }
+        "account" => {
+            "很抱歉遇到账号异常问题。账号封禁或异常通常由游戏官方规则判断，平台本身无法直接修改游戏官方的处理结果。但如果你怀疑和云游戏登录环境有关，可以通过下方「联系客服」反馈，我们会协助核实。"
+        }
+        "save_data" => {
+            "抱歉给你带来困扰。游戏存档通常和游戏账号、区服、云端同步或游戏自身机制有关，出现丢失时确实会很影响体验。你可以通过下方「联系客服」继续反馈，我们会协助核实是否存在同步异常。"
+        }
+        "money" => {
+            "抱歉影响了你的充值或会员权益。付费后到账可能受到支付状态、服务器端回调或订单同步延迟影响。请先不要重复支付，可以通过下方「联系客服」反馈，我们会优先协助核实订单处理情况。"
+        }
+        _ => {
+            "抱歉这次体验让你不满意，我们理解这种情况会很影响心情。你的反馈对我们很重要，我们会持续优化游戏体验和服务稳定性。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
+        }
+    }
 }
 
 /// 单次会话调用入口（spawned task）
 pub struct OrchestratorDeps {
     pub pool: MySqlPool,
     pub redis: RedisClient,
-    pub s3: S3Client,
+    /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
+    pub s3: Option<S3Client>,
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
@@ -81,6 +295,8 @@ pub struct OrchestratorDeps {
     pub client_version: String,
     /// 010 Sensitive Word Filter — for output content filtering
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
+    /// 客户端断开时设置为 true，orchestrator 应在安全点检查并退出
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub async fn run_session_user(
@@ -163,6 +379,7 @@ where
         registry: Arc::clone(&deps.registry),
         invoker: Arc::clone(&deps.invoker),
         ext_pool: deps.ext_pool.clone(),
+        redis: Some(deps.redis.clone()),
         agent_ctx: Arc::clone(&agent_ctx),
     };
     let mut current_agent_id = starting_agent_id;
@@ -178,48 +395,22 @@ where
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息；
     // 有 extensions 时合并 content + extensions 为一个 JSON 对象，空字段不显示。
-    let mut messages: Vec<Value> = Vec::new();
-    let mut last_user_content: Option<String> = None;
-    for m in history {
-        let c = m.content_ref();
-        let ext = m.extensions_ref();
-        let has_content = c.is_some_and(|s| !s.trim().is_empty());
-        let has_extensions = ext.is_some_and(|v| !v.is_null());
-
-        if !has_content && !has_extensions {
-            continue;
-        }
-
-        let msg = if has_extensions {
-            let mut obj = serde_json::Map::new();
-            if has_content {
-                obj.insert("content".into(), json!(c.unwrap()));
-            } else {
-                obj.insert("content".into(), json!(""));
-            }
-            obj.insert("extensions".into(), ext.unwrap().clone());
-            let content = serde_json::to_string(&Value::Object(obj)).unwrap_or_default();
-            json!({"role": m.role_ref(), "content": content})
-        } else {
-            json!({"role": m.role_ref(), "content": c.unwrap()})
-        };
-        messages.push(msg);
-
-        if m.role_ref() == "user" {
-            if let Some(text) = c {
-                last_user_content = Some(text.to_string());
-            }
-        }
-    }
-    // Only append user_content if it's not already the last user message in history
-    if last_user_content.as_deref() != Some(user_content) {
-        messages.push(json!({"role": "user", "content": user_content}));
-    }
+    let mut messages = build_chat_messages(&history, user_content);
 
     // ★ Store conversation history in AgentContext for function/workflow access
     let _ = agent_ctx.set_messages(messages.clone());
 
     for hop in 0..max_hops {
+        // 0. 检查客户端是否已断开
+        if deps.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(
+                hop,
+                session_id,
+                "orchestrator cancelled: client disconnected"
+            );
+            return None;
+        }
+
         // 1. 装配当前 agent 资源
         let agent_content =
             match crate::services::agent::fetch_content(&deps.pool, &deps.redis, current_agent_id)
@@ -276,9 +467,12 @@ where
             }
         };
 
-        // 3. 准备 system + tools
-        let mut hop_msgs: Vec<Value> =
-            vec![json!({"role": "system", "content": agent_content.system_prompt})];
+        // 3. 准备 system + tools（追加当前客户端信息）
+        let system_prompt = format!(
+            "{}\n\n[当前客户端]\n渠道：{}\n平台：{}\n版本：{}",
+            agent_content.system_prompt, deps.channel, deps.client_type, deps.client_version
+        );
+        let mut hop_msgs: Vec<Value> = vec![json!({"role": "system", "content": system_prompt})];
         hop_msgs.extend(messages.clone());
 
         let tools_schema = build_tools_schema(&agent_content);
@@ -400,17 +594,21 @@ where
         let assistant_content = resp.content.clone().unwrap_or_default();
         let tool_calls = resp.tool_calls.clone();
 
-        // 把 assistant 消息加入 history（含 tool_calls 序列化）
+        // 把 assistant 消息加入 history（含 tool_calls 序列化 + reasoning_content）
         if !tool_calls.is_empty() {
             let tc_json: Vec<Value> = tool_calls
                 .iter()
                 .map(|tc| tc.to_openai_tool_call())
                 .collect();
-            messages.push(json!({
+            let mut msg = json!({
                 "role": "assistant",
                 "content": if assistant_content.is_empty() { Value::Null } else { Value::String(assistant_content.clone()) },
                 "tool_calls": tc_json,
-            }));
+            });
+            if let Some(ref rc) = resp.reasoning_content {
+                msg["reasoning_content"] = Value::String(rc.clone());
+            }
+            messages.push(msg);
         } else {
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }
@@ -770,21 +968,36 @@ async fn finalize_with_variant(
     };
     let extensions_json = extensions_for_sse.clone();
 
-    let saved = if content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
-        None
-    } else {
-        let text = content.as_deref().unwrap_or("");
-        append_assistant_message_user(
-            pool,
-            session_id,
-            actor_id,
-            text,
-            Some(elapsed),
-            extensions_json,
-        )
-        .await
-        .ok()
+    // ★ 优先使用 response_content metadata，回退到 rewrite_content_for_empty_extensions
+    let final_content = match hook_deps
+        .agent_ctx
+        .get_metadata("response_content")
+        .filter(|rc| !rc.is_empty())
+    {
+        Some(rc) => {
+            tracing::debug!(response_content = %rc, "using response_content from metadata");
+            Some(rc)
+        }
+        _ => rewrite_content_for_empty_extensions(content, &extensions_for_sse),
     };
+
+    let saved =
+        if final_content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
+            None
+        } else {
+            let text = final_content.as_deref().unwrap_or("");
+            tracing::debug!("Saving assistant message: {:?}", text);
+            append_assistant_message_user(
+                pool,
+                session_id,
+                actor_id,
+                text,
+                Some(elapsed),
+                extensions_json,
+            )
+            .await
+            .ok()
+        };
 
     let done = json!({
         "elapsed_ms": elapsed,
@@ -982,7 +1195,9 @@ async fn handle_meta_tool(
             };
             let mut function_input = match tc.arguments.get("function_input") {
                 Some(v) => v.clone(),
-                None => return ToolOutcome::error("invoke_function: function_input 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_function: function_input 缺失".into());
+                }
             };
             // 查询 function 信息（包含 required_capabilities）
             let func_row: Option<(i64, i8, Option<i64>, Option<String>, Option<Value>)> = sqlx::query_as(
@@ -1038,7 +1253,10 @@ async fn handle_meta_tool(
                     let bctx = super::builtins::BuiltinContext {
                         pool: &deps.pool,
                         ext_pool: deps.ext_pool.as_ref(),
+                        redis: Some(&deps.redis),
                         agent_ctx: Some(Arc::clone(&agent_ctx)),
+                        llm: Some(&deps.llm),
+                        agent_id: Some(ctx.agent_id),
                     };
                     match (builtin.handler)(function_input, &bctx) {
                         Ok(result) => {
@@ -1046,7 +1264,14 @@ async fn handle_meta_tool(
                             apply_agent_context_updates(&agent_ctx, &result);
                             ToolOutcome::ok(result)
                         }
-                        Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                        Err(e) => {
+                            tracing::error!(
+                                func_ident = %func_ident,
+                                error = %e,
+                                "builtin function 执行失败"
+                            );
+                            ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                        }
                     }
                 }
                 1 | 2 => {
@@ -1059,7 +1284,9 @@ async fn handle_meta_tool(
                     };
                     let input_json = match serde_json::to_string(&function_input) {
                         Ok(s) => s,
-                        Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                        Err(e) => {
+                            return ToolOutcome::error(format!("args serialize: {e}"));
+                        }
                     };
                     let dispatch_ctx = DispatchCtx {
                         request_id: None,
@@ -1073,7 +1300,7 @@ async fn handle_meta_tool(
                         .invoker
                         .invoke(
                             &deps.pool,
-                            &deps.s3,
+                            deps.s3.as_ref(),
                             Arc::clone(&deps.registry),
                             Arc::clone(&deps.llm),
                             pid,
@@ -1090,7 +1317,14 @@ async fn handle_meta_tool(
                             apply_agent_context_updates(&agent_ctx, &parsed);
                             ToolOutcome::ok(parsed)
                         }
-                        Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                        Err(e) => {
+                            tracing::error!(
+                                func_ident = %func_ident,
+                                error = %e,
+                                "plugin invoke failed"
+                            );
+                            ToolOutcome::error(format!("plugin invoke failed: {e}"))
+                        }
                     }
                 }
                 _ => ToolOutcome::error(format!(
@@ -1111,7 +1345,9 @@ async fn handle_meta_tool(
             };
             let mut workflow_input = match tc.arguments.get("workflow_input") {
                 Some(v) => v.clone(),
-                None => return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into()),
+                None => {
+                    return ToolOutcome::error("invoke_workflow: workflow_input 缺失".into());
+                }
             };
 
             // ★ Inject AgentContext snapshot so workflow can read runtime state
@@ -1137,6 +1373,7 @@ async fn handle_meta_tool(
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
                 ext_pool: deps.ext_pool.clone(),
+                redis: Some(deps.redis.clone()),
                 permissions: ctx.permissions.clone(),
             };
             let executor = crate::runtime::workflow::WorkflowExecutor::new();
@@ -1155,7 +1392,15 @@ async fn handle_meta_tool(
                     apply_agent_context_updates(&agent_ctx, &outcome.end_value);
                     ToolOutcome::ok(outcome.end_value)
                 }
-                Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
+                Err(e) => {
+                    tracing::error!(
+                        workflow_id,
+                        wf_ident = %wf_ident,
+                        error = %e,
+                        "invoke_workflow execution failed"
+                    );
+                    ToolOutcome::error(format!("workflow execute: {e}"))
+                }
             }
         }
         _ => ToolOutcome::error(format!("未知元工具: {}", tool_ref.identifier)),
@@ -1214,14 +1459,24 @@ pub(crate) async fn handle_workspace_tool(
                 let bctx = super::builtins::BuiltinContext {
                     pool: &deps.pool,
                     ext_pool: deps.ext_pool.as_ref(),
+                    redis: Some(&deps.redis),
                     agent_ctx: Some(Arc::clone(&agent_ctx)),
+                    llm: Some(&deps.llm),
+                    agent_id: Some(ctx.agent_id),
                 };
                 match (builtin.handler)(args_value, &bctx) {
                     Ok(result) => {
                         apply_agent_context_updates(&agent_ctx, &result);
                         ToolOutcome::ok(result)
                     }
-                    Err(e) => ToolOutcome::error(format!("builtin function 执行失败: {e}")),
+                    Err(e) => {
+                        tracing::error!(
+                            lookup_id = %lookup_id,
+                            error = %e,
+                            "builtin function 执行失败"
+                        );
+                        ToolOutcome::error(format!("builtin function 执行失败: {e}"))
+                    }
                 }
             } else {
                 // function-wrap → invoker.invoke(plugin_id, plugin_export, args)
@@ -1234,7 +1489,9 @@ pub(crate) async fn handle_workspace_tool(
                 let args_value: Value = Value::Object(tc.arguments.clone());
                 let input_json = match serde_json::to_string(&args_value) {
                     Ok(s) => s,
-                    Err(e) => return ToolOutcome::error(format!("args serialize: {e}")),
+                    Err(e) => {
+                        return ToolOutcome::error(format!("args serialize: {e}"));
+                    }
                 };
                 let dispatch_ctx = DispatchCtx {
                     request_id: None,
@@ -1248,7 +1505,7 @@ pub(crate) async fn handle_workspace_tool(
                     .invoker
                     .invoke(
                         &deps.pool,
-                        &deps.s3,
+                        deps.s3.as_ref(),
                         Arc::clone(&deps.registry),
                         Arc::clone(&deps.llm),
                         plugin_id,
@@ -1264,7 +1521,14 @@ pub(crate) async fn handle_workspace_tool(
                             .unwrap_or_else(|_| Value::String(out_str));
                         ToolOutcome::ok(parsed)
                     }
-                    Err(e) => ToolOutcome::error(format!("plugin invoke failed: {e}")),
+                    Err(e) => {
+                        tracing::error!(
+                            tool = %tool_ref.identifier,
+                            error = %e,
+                            "plugin invoke failed"
+                        );
+                        ToolOutcome::error(format!("plugin invoke failed: {e}"))
+                    }
                 }
             }
         }
@@ -1283,6 +1547,7 @@ pub(crate) async fn handle_workspace_tool(
                 llm: Arc::clone(&deps.llm),
                 invoker: Arc::clone(&deps.invoker),
                 ext_pool: deps.ext_pool.clone(),
+                redis: Some(deps.redis.clone()),
                 permissions: ctx.permissions.clone(),
             };
             // 临时构造 executor — 直接用 sentinel；workflows 持有也行
@@ -1302,7 +1567,15 @@ pub(crate) async fn handle_workspace_tool(
                     apply_agent_context_updates(&agent_ctx, &outcome.end_value);
                     ToolOutcome::ok(outcome.end_value)
                 }
-                Err(e) => ToolOutcome::error(format!("workflow execute: {e}")),
+                Err(e) => {
+                    tracing::error!(
+                        workflow_id,
+                        tool = %tool_ref.identifier,
+                        error = %e,
+                        "handle_workspace_tool workflow execution failed"
+                    );
+                    ToolOutcome::error(format!("workflow execute: {e}"))
+                }
             }
         }
         _ => ToolOutcome::error(format!("未知 tool kind: {}", tool_ref.kind)),

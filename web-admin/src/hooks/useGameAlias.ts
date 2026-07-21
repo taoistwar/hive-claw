@@ -14,6 +14,9 @@ export interface UseGameAliasReturn {
   handlePageChange: (page: number, pageSize: number) => void
 }
 
+/**
+ * @deprecated 游戏别名管理已废弃，仅为历史管理页保留。
+ */
 export function useGameAlias(): UseGameAliasReturn {
   const [games, setGames] = useState<Game[]>([])
   const [loading, setLoading] = useState(false)

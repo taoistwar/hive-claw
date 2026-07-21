@@ -4,19 +4,24 @@ HTTP API service for the Hive-Claw admin center + agent runtime.
 
 ## Run
 
+The `hiveweb` server never creates tables or runs migrations during startup.
+In production, provision the schema before deploying the service. In development
+and test environments, run the migration binary explicitly before every startup
+when migrations may have changed.
+
 ```bash
 # 1. Bring up infra (MySQL + Redis + MinIO)
 ./scripts/dev-up.sh -d
 
 # 2. Apply schema migrations
-cargo run --bin migrate
+cargo run -p hiveweb --bin migrate
 
 # 3. Create a super admin (only once)
 cargo run --bin create-super-admin -- \
   --phone 13900000000 --nickname super --password adminpass
 
 # 4. Start the server
-cargo run --bin hiveweb
+cargo run -p hiveweb --bin hiveweb
 # → http://localhost:3300
 ```
 

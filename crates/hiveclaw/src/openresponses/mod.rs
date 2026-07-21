@@ -276,7 +276,9 @@ pub fn validate(req: OpenResponsesRequest) -> Result<ValidatedRequest, Validatio
     let stream = match req.stream {
         None | Some(serde_json::Value::Null) => false,
         Some(serde_json::Value::Bool(b)) => b,
-        Some(_) => return Err(BadRequest("field 'stream' must be a boolean".into())),
+        Some(_) => {
+            return Err(BadRequest("field 'stream' must be a boolean".into()));
+        }
     };
 
     if let Some(v) = req.max_output_tokens {
@@ -405,13 +407,15 @@ fn validate_content_item(
             });
             Ok(())
         }
-        RequestContentItem::Unknown => Err(BadRequest("unknown content item type 'X'".replace(
-            "X",
-            // We can't recover the original tag because serde already consumed it
-            // and routed to `Unknown`; the contract just requires the message
-            // contain "unknown content item type".
-            "<unrecognised>",
-        ))),
+        RequestContentItem::Unknown => {
+            Err(BadRequest("unknown content item type 'X'".replace(
+                "X",
+                // We can't recover the original tag because serde already consumed it
+                // and routed to `Unknown`; the contract just requires the message
+                // contain "unknown content item type".
+                "<unrecognised>",
+            )))
+        }
     }
 }
 

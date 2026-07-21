@@ -88,7 +88,9 @@ impl MessageTool {
                 match resolve_workspace_path(p, Some(&self.workspace), allowed_dir.as_deref(), None)
                 {
                     Ok(r) => resolved.push(r.to_string_lossy().to_string()),
-                    Err(e) => return Err(format!("media path is not allowed: {e}")),
+                    Err(e) => {
+                        return Err(format!("media path is not allowed: {e}"));
+                    }
                 }
             }
         }

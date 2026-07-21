@@ -1,24 +1,27 @@
+//! Game HTTP APIs.
+//!
+//! `/game-aliases*` implements the deprecated game-alias management feature
+//! and remains registered only for compatibility. `/external-games*` queries
+//! active external-game data and is not part of that deprecation.
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     routing::{get, post},
 };
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::models::Role;
+#[allow(deprecated)]
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, GameListResponse, UpdateGameRequest,
 };
+use crate::services::cache_helper;
 use crate::services::game_service::{self as svc};
 use crate::services::{admin, audit};
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
-
-/// 外部游戏列表缓存 Key + TTL（30 分钟）
-const EXTERNAL_GAMES_CACHE_KEY: &str = "external_games:list";
-const EXTERNAL_GAMES_CACHE_TTL: u64 = 1800;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalGameOption {
@@ -37,11 +40,12 @@ pub struct ExternalGameDetail {
     #[serde(default)]
     pub game_tags: Option<serde_json::Value>,
     #[serde(default)]
-    pub client_types: Option<serde_json::Value>,
+    pub client_types: Vec<String>,
     #[serde(default)]
     pub channels: Vec<String>,
 }
 
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default = "default_page")]
@@ -78,6 +82,8 @@ fn check_write_permission(claims: &Claims) -> Result<(), ApiResponse<()>> {
     Ok(())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn audit_event(
     pool: &sqlx::MySqlPool,
     claims: &Claims,
@@ -111,6 +117,8 @@ async fn audit_event(
     }
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn list_games(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
@@ -122,6 +130,8 @@ async fn list_games(
         .map_err(|e| e.into_response())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn get_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -134,6 +144,8 @@ async fn get_game(
         .map_err(|e| e.into_response())
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn create_game(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<Claims>,
@@ -157,6 +169,8 @@ async fn create_game(
     Ok(ApiResponse::success(game))
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn update_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -181,6 +195,8 @@ async fn update_game(
     Ok(ApiResponse::success(game))
 }
 
+#[allow(deprecated)]
+#[deprecated(note = "Legacy game-alias API; retained for compatibility only")]
 async fn delete_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -222,33 +238,31 @@ async fn delete_game(
 async fn get_external_games(
     State(state): State<AppState>,
 ) -> Result<ApiResponse<Vec<ExternalGameOption>>, ApiResponse<()>> {
-    // 1. 尝试从 Redis 缓存读取
-    match try_cache_read(&state.redis).await {
-        Ok(Some(options)) => return Ok(ApiResponse::success(options)),
-        Ok(None) => {} // cache miss, continue
-        Err(e) => tracing::warn!("external games cache read failed: {e}"),
-    }
-
-    // 2. 缓存未命中，从外部 DB 查询
     let ext_pool = match &state.ext_pool {
-        Some(p) => p,
+        Some(p) => p.clone(),
         None => {
             return Err(AppError::Internal("External DB unavailable".to_string()).into_response());
         }
     };
-    let rows = sqlx::query_as::<_, (i64, String)>("SELECT id, name FROM cc_logic_game ORDER BY id")
-        .fetch_all(ext_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("external game list: {}", e)).into_response())?;
-    let options: Vec<ExternalGameOption> = rows
-        .into_iter()
-        .map(|(id, name)| ExternalGameOption { id, name })
-        .collect();
-
-    // 3. 写入缓存（best-effort，失败不阻塞响应）
-    if let Err(e) = try_cache_write(&state.redis, &options).await {
-        tracing::warn!("external games cache write failed: {e}");
-    }
+    let options = cache_helper::cached_or_fetch(
+        &state.redis,
+        cache_helper::KEY_EXTERNAL_GAMES,
+        cache_helper::TTL_EXTERNAL_GAMES,
+        || async {
+            let rows = sqlx::query_as::<_, (i64, String)>(
+                "SELECT id, name FROM cc_logic_game ORDER BY id",
+            )
+            .fetch_all(&ext_pool)
+            .await
+            .map_err(|e| format!("external game list: {e}"))?;
+            Ok(rows
+                .into_iter()
+                .map(|(id, name)| ExternalGameOption { id, name })
+                .collect::<Vec<_>>())
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e).into_response())?;
 
     Ok(ApiResponse::success(options))
 }
@@ -265,25 +279,9 @@ async fn get_external_game_detail(
         }
     };
 
-    let row = sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<serde_json::Value>,
-        ),
-    >(
-        "SELECT g.id, g.name, w.description, w.cover_image, w.game_tags
-         FROM cc_logic_game g
-         LEFT JOIN cc_logic_game_wide w ON w.logic_game_id = g.id
-         WHERE g.id = ?",
-    )
-    .bind(id)
-    .fetch_optional(ext_pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("external game detail: {}", e)).into_response())?;
+    let row = crate::services::game_service::get_external_game_detail(ext_pool, id)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")).into_response())?;
 
     match row {
         Some((gid, name, description, cover_image, game_tags)) => {
@@ -308,50 +306,20 @@ async fn get_external_game_detail(
     }
 }
 
-/// 从 Redis 读取缓存的外部游戏列表
-async fn try_cache_read(redis: &redis::Client) -> Result<Option<Vec<ExternalGameOption>>, String> {
-    let mut conn = redis
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| format!("redis connect: {e}"))?;
-    let cached: Option<String> = conn
-        .get(EXTERNAL_GAMES_CACHE_KEY)
-        .await
-        .map_err(|e| format!("redis get: {e}"))?;
-    match cached {
-        Some(json) => {
-            let options: Vec<ExternalGameOption> =
-                serde_json::from_str(&json).map_err(|e| format!("deserialize: {e}"))?;
-            Ok(Some(options))
-        }
-        None => Ok(None),
-    }
-}
-
-/// 将外部游戏列表写入 Redis 缓存（30 分钟 TTL）
-async fn try_cache_write(
-    redis: &redis::Client,
-    options: &[ExternalGameOption],
-) -> Result<(), String> {
-    let mut conn = redis
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| format!("redis connect: {e}"))?;
-    let json = serde_json::to_string(options).map_err(|e| format!("serialize: {e}"))?;
-    let _: () = conn
-        .set_ex(EXTERNAL_GAMES_CACHE_KEY, json, EXTERNAL_GAMES_CACHE_TTL)
-        .await
-        .map_err(|e| format!("redis setex: {e}"))?;
-    Ok(())
-}
-
+/// Builds game-alias management and external-game lookup routes.
+///
+/// Only `/game-aliases*` is legacy and retained for compatibility.
+/// `/external-games*` remains an active external-game lookup API.
+#[allow(deprecated)]
 pub fn router() -> Router<AppState> {
     Router::new()
+        // Legacy game-alias management API retained for compatibility.
         .route("/game-aliases", get(list_games).post(create_game))
         .route(
             "/game-aliases/:id",
             get(get_game).put(update_game).delete(delete_game),
         )
+        // Active external-game lookups; not part of the alias deprecation.
         .route("/external-games", get(get_external_games))
         .route("/external-games/:id", get(get_external_game_detail))
 }

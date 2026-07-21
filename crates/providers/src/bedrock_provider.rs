@@ -1066,7 +1066,9 @@ impl LLMProvider for BedrockProvider {
 
         let body = match resp.json::<Value>().await {
             Ok(b) => b,
-            Err(e) => return LLMResponse::error(format!("Error parsing Bedrock response: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error parsing Bedrock response: {e}"));
+            }
         };
         parse_response(&body)
     }
@@ -1109,7 +1111,9 @@ impl LLMProvider for BedrockProvider {
 
         let body_text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading Bedrock stream: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading Bedrock stream: {e}"));
+            }
         };
 
         let events = crate::responses::parse_sse_events(&body_text);

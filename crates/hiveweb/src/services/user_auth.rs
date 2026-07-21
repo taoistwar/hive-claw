@@ -2,7 +2,7 @@
 
 use sqlx::MySqlPool;
 
-/// Ensure a user row exists and syncs uid/nickname from cloud_user.
+/// Ensure a user row exists.
 pub async fn ensure_user_exists(
     pool: &MySqlPool,
     user_id: i64,

@@ -113,7 +113,7 @@ impl AnthropicProvider {
 
     fn endpoint(&self) -> String {
         let base = self.effective_base.trim_end_matches('/');
-        format!("{base}/v1/messages")
+        format!("{base}/messages")
     }
 
     fn strip_prefix(model: &str) -> String {
@@ -803,7 +803,9 @@ impl LLMProvider for AnthropicProvider {
         }
         let text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading body: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading body: {e}"));
+            }
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             return LLMResponse::error(format!("Error: malformed JSON: {text}"));

@@ -17,7 +17,7 @@ INSERT IGNORE INTO capabilities (name, description, is_dangerous) VALUES
   ('secret.get',    'allowlist 内的密钥读取', 1),
   ('time.now',      '服务器当前时间', 0),
   ('log.emit',      '结构化日志写入（rate-limited）', 0),
-  ('chat.respond',  '提交 Agent 最终用户可见回复', 0),
+  ('chat_respond',  '提交 Agent 最终用户可见回复', 0),
   ('exec.run',      'Shell 命令执行（受 workspace 边界约束）', 1),
   ('agent.spawn',   '生成子 Agent 执行独立任务', 0),
   ('cron.manage',   '管理定时 Cron 任务', 0);

@@ -101,7 +101,7 @@ impl Invoker {
     pub async fn invoke(
         &self,
         db_pool: &MySqlPool,
-        s3: &S3Client,
+        s3: Option<&S3Client>,
         registry: Arc<CapabilityRegistry>,
         llm: Arc<crate::runtime::llm::LlmRegistry>,
         plugin_id: i64,
@@ -111,7 +111,7 @@ impl Invoker {
     ) -> Result<String, InvokerError> {
         let deps = DispatcherDeps {
             pool: db_pool.clone(),
-            s3: s3.clone(),
+            s3: s3.cloned(),
             registry,
             llm,
         };

@@ -222,7 +222,9 @@ fn fmt_mcp(tc: &ToolCallView) -> String {
             .find_map(|v| v.as_str().filter(|s| !s.is_empty()))
     });
     match first_str {
-        Some(v) => format!("{server}::{tool}(\"{}\")", abbreviate_path_with_len(v, 40)),
+        Some(v) => {
+            format!("{server}::{tool}(\"{}\")", abbreviate_path_with_len(v, 40))
+        }
         None => format!("{server}::{tool}"),
     }
 }

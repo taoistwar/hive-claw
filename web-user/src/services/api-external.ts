@@ -23,8 +23,85 @@ export interface ChatMessage {
   content: string | null;
   elapsed_ms: number | null;
   /** 扩展数据数组：cards、images、suggestions 等（flattened） */
-  extensions?: unknown[] | null;
+  extensions?: Extension[] | null;
   created_at: string;
+}
+
+// ── Extension / Card 类型 ──
+
+export interface Extension {
+  payload: GameCardPayload | SubscribeCardPayload | SupportCardPayload;
+  content_type: string;
+}
+
+export interface GameCardPayload {
+  info: GameInfo;
+  type: 'game';
+}
+
+export interface GameInfo {
+  id: string;
+  name: string;
+  reason: string;
+  channel: string;
+  game_tags: GameTag[];
+  client_type: string;
+  computer_id: number;
+  cover_image: string;
+  description: string;
+  platform_name: string;
+}
+
+export interface GameTag {
+  name: string;
+  type: number;
+}
+
+export interface SubscribeCardPayload {
+  info: SubscribeInfo;
+  type: 'subscribe';
+  membership: unknown[];
+  duration_card: DurationCard[];
+}
+
+export interface SubscribeInfo {
+  total_coins: number;
+  /** Unix timestamp in milliseconds; retained for card compatibility. */
+  disk_end_time: number;
+  /** Display-ready expiration date in Asia/Shanghai timezone. */
+  disk_end_date?: string | null;
+  /** Numeric capacity in GB; retained for card compatibility. */
+  disk_total_size: number;
+  disk_total_size_text?: string;
+  disk_status?: string;
+  disk_status_text?: string;
+  expire_coins_7d: number;
+}
+
+export interface DurationCard {
+  fps: unknown;
+  gpu: unknown;
+  extra: Record<string, unknown> | null;
+  order_id: number;
+  card_type: number;
+  create_time: string;
+  expire_time: number;
+  card_asset_id: number;
+  consume_label: ConsumeLabel;
+  card_type_name: string;
+  remain_duration: number;
+  computer_biz_type: unknown;
+}
+
+export interface ConsumeLabel {
+  weight: number;
+  channelList: string[];
+  gameLabelList: string[];
+  clientTypeList: string[];
+}
+
+export interface SupportCardPayload {
+  type: 'support';
 }
 
 export interface MessagesResponse {
@@ -88,8 +165,15 @@ export async function sendMessage(params: {
 export async function getMessages(params: {
   user_id: number;
   date: string; // YYYY-MM-DD HH:MM:SS
+  channel?: string;
+  client_type?: string;
 }): Promise<ChatMessage[]> {
-  const body = JSON.stringify({ user_id: params.user_id, date: params.date });
+  const body = JSON.stringify({
+    user_id: params.user_id,
+    date: params.date,
+    channel: params.channel,
+    client_type: params.client_type,
+  });
   const secret = getSecret();
 
   let url = `${API_BASE_URL}/messages`;
@@ -178,4 +262,30 @@ export async function executeRecommendation(params: {
 
   const result: { code: number; data: ChatMessage } = await resp.json();
   return result.data;
+}
+
+/** 创建新会话 (POST /api/newsession?sign={md5}) */
+export async function createNewSession(params: { user_id: number }): Promise<{ success: boolean }> {
+  const body = JSON.stringify(params);
+  const secret = getSecret();
+
+  let url = `${API_BASE_URL}/newsession`;
+  if (secret) {
+    const signStr = `/api/newsession?body=${body}`;
+    const sign = computeSign(secret, signStr);
+    url += `?sign=${encodeURIComponent(sign)}`;
+  }
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+    body,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+
+  return resp.json();
 }

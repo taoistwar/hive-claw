@@ -38,13 +38,11 @@ pub fn resolve_template_vars(template: &str, input: &Value) -> String {
 /// conversation history stored in AgentContext, formatted as role:content pairs.
 pub fn build_history_context(agent_ctx: &AgentContext, limit: usize) -> String {
     let messages: Vec<serde_json::Value> = match agent_ctx.get_messages() {
-        Ok(msgs) => msgs,
-        Err(_) => return String::new(),
+        Ok(msgs) if !msgs.is_empty() => msgs,
+        Ok(_) | Err(_) => {
+            return format!("用户A:{}", agent_ctx.user_input().raw_text);
+        }
     };
-
-    if messages.is_empty() {
-        return String::new();
-    }
 
     // Take the most recent `limit` messages when limit > 0
     let recent: Vec<&serde_json::Value> = if limit > 0 && messages.len() > limit {
@@ -138,7 +136,7 @@ pub async fn execute_answer_node(
     );
 
     // Try LLM invocation; fall back to direct response if no LLM available
-    let (max_tokens, temperature) = deps.llm.resolve_config(model_preset);
+    let (max_tokens, _temperature) = deps.llm.resolve_config(model_preset);
     let answer = match deps.llm.build_primary(model_preset) {
         Ok((provider, model)) => {
             use providers::ChatRequest;
@@ -146,7 +144,7 @@ pub async fn execute_answer_node(
                 messages: vec![serde_json::json!({"role": "system", "content": resolved_prompt})],
                 model: Some(model.clone()),
                 max_tokens,
-                temperature,
+                temperature: 0f32,
                 tools: None,
                 tool_choice: None,
                 reasoning_effort: None,

@@ -3,6 +3,7 @@ import { Button, Input, Typography, App, Spin } from 'antd';
 import {
   SendOutlined,
   ReloadOutlined,
+  PlusOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import {
@@ -10,8 +11,12 @@ import {
   getMessages,
   fetchTopRecommendedGames,
   executeRecommendation,
+  createNewSession,
   type ChatMessage,
   type TopRecommendedGame,
+  type GameInfo,
+  type SubscribeInfo,
+  type DurationCard,
 } from '../services/chat';
 const { Title, Text } = Typography;
 
@@ -49,6 +54,7 @@ export default function ChatPage() {
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
   const [games, setGames] = useState<TopRecommendedGame[]>([]);
   const [loadingGames, setLoadingGames] = useState(false);
   const historyEndRef = useRef<HTMLDivElement>(null);
@@ -63,7 +69,12 @@ export default function ChatPage() {
     if (userId <= 0) return;
     setLoadingHistory(true);
     try {
-      const msgs = await getMessages({ user_id: userId, date: nowStr() });
+      const msgs = await getMessages({
+        user_id: userId,
+        date: nowStr(),
+        channel,
+        client_type: clientType,
+      });
       // API 返回按时间倒序，前端渲染需要正序
       setHistory(msgs.reverse());
     } catch (e) {
@@ -71,7 +82,7 @@ export default function ChatPage() {
     } finally {
       setLoadingHistory(false);
     }
-  }, [userId]);
+  }, [userId, channel, clientType]);
 
   // userId 变化时重置并加载历史
   const prevUserId = useRef<number>(0);
@@ -81,6 +92,25 @@ export default function ChatPage() {
     setHistory([]);
     void loadHistory();
   }, [userId, loadHistory]);
+
+  // 创建新会话
+  const onNewSession = async () => {
+    if (userId <= 0 || creatingSession || pending) return;
+    setCreatingSession(true);
+    try {
+      const result = await createNewSession({ user_id: userId });
+      if (result.success) {
+        setHistory([]);
+        void appMessage.success('已创建新会话');
+      } else {
+        void appMessage.error('创建新会话失败');
+      }
+    } catch (e) {
+      void appMessage.error(`创建新会话失败：${(e as Error).message}`);
+    } finally {
+      setCreatingSession(false);
+    }
+  };
 
   // userId 持久化到 localStorage
   useEffect(() => {
@@ -312,7 +342,7 @@ export default function ChatPage() {
                       session_id: assistantMsg.session_id,
                       user_id: userId,
                       role: 'user',
-                      content: game.reply,
+                      content: game.name,
                       elapsed_ms: null,
                       created_at: new Date().toISOString(),
                     };
@@ -388,7 +418,7 @@ export default function ChatPage() {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {game.game_name}
+                  {game.name}
                 </Text>
               </div>
             ))
@@ -533,19 +563,32 @@ export default function ChatPage() {
             }}
           />
         </div>
-        <Button
-          size="small"
-          icon={<ReloadOutlined />}
-          onClick={() => void loadHistory()}
-          loading={loadingHistory}
-          disabled={userId <= 0}
-          style={{
-            borderRadius: 'var(--radius-sm)',
-            flexShrink: 0,
-          }}
-        >
-          刷新
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <Button
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={() => void onNewSession()}
+            loading={creatingSession}
+            disabled={userId <= 0 || pending}
+            style={{
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            新会话
+          </Button>
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            onClick={() => void loadHistory()}
+            loading={loadingHistory}
+            disabled={userId <= 0}
+            style={{
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            刷新
+          </Button>
+        </div>
       </div>
 
       {/* 消息区域 */}
@@ -693,13 +736,15 @@ export default function ChatPage() {
                   >
                     {m.content}
                   </pre>
-                  {m.role === 'assistant' && m.extensions && Array.isArray(m.extensions) && m.extensions.length > 0 ? (
+                  {m.role === 'assistant' && m.extensions && m.extensions.length > 0 ? (
                     <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      {(m.extensions as Array<Record<string, unknown>>).map((ext, ei) => {
+                      {m.extensions.map((ext, ei) => {
                         if (ext.content_type === 'card' && ext.payload) {
-                          const p = ext.payload as Record<string, unknown>;
-                          const info = p.info as Record<string, unknown> | undefined;
-                          if (p.type === 'game' && info) {
+                          const p = ext.payload;
+
+                          // ── 游戏推荐卡片 ──
+                          if (p.type === 'game' && p.info) {
+                            const info = p.info as GameInfo;
                             return (
                               <div
                                 key={ei}
@@ -711,44 +756,199 @@ export default function ChatPage() {
                                   boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
                                 }}
                               >
-                                {(info.game_image as string) && (
+                                {info.cover_image && (
                                   <div
                                     style={{
-                                      height: '100px',
-                                      background: `url(${info.game_image}) center/cover no-repeat`,
+                                      height: '120px',
+                                      background: `url(${info.cover_image}) center/cover no-repeat`,
+                                      backgroundColor: 'var(--bg-secondary)',
                                     }}
                                   />
                                 )}
                                 <div style={{ padding: '12px 14px' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px', flexWrap: 'wrap' }}>
                                     <Text strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>
-                                      {info.game_name as string}
+                                      {info.name}
                                     </Text>
-                                    {(info.tag as string) && (
+                                    {info.platform_name && (
                                       <span
                                         style={{
-                                          background: '#eff6ff',
-                                          color: '#3b82f6',
-                                          padding: '1px 8px',
+                                          background: 'var(--bg-secondary)',
+                                          color: 'var(--text-muted)',
+                                          padding: '1px 6px',
                                           borderRadius: '4px',
-                                          fontSize: '11px',
-                                          fontWeight: 600,
+                                          fontSize: '10px',
+                                          fontWeight: 500,
                                         }}
                                       >
-                                        {info.tag as string}
+                                        {info.platform_name}
                                       </span>
                                     )}
                                   </div>
-                                  {(info.reason as string) && (
+                                  {info.game_tags && info.game_tags.length > 0 && (
+                                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                                      {info.game_tags.map((tag, ti) => (
+                                        <span
+                                          key={ti}
+                                          style={{
+                                            background: '#eff6ff',
+                                            color: '#3b82f6',
+                                            padding: '1px 8px',
+                                            borderRadius: '4px',
+                                            fontSize: '11px',
+                                            fontWeight: 600,
+                                          }}
+                                        >
+                                          {tag.name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {info.reason && (
                                     <Text style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
-                                      {info.reason as string}
+                                      {info.reason}
                                     </Text>
                                   )}
                                 </div>
                               </div>
                             );
                           }
+
+                          // ── 订阅/时长卡信息 ──
+                          if (p.type === 'subscribe') {
+                            const info = p.info as SubscribeInfo;
+                            const cards = (p as { duration_card: DurationCard[] }).duration_card;
+                            return (
+                              <div
+                                key={ei}
+                                style={{
+                                  background: 'var(--bg-elevated)',
+                                  borderRadius: 'var(--radius-md)',
+                                  border: '1px solid var(--border-subtle)',
+                                  padding: '12px 14px',
+                                  boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                                }}
+                              >
+                                <Text strong style={{ fontSize: '14px', color: 'var(--text-primary)', display: 'block', marginBottom: '8px' }}>
+                                  📦 账户订阅
+                                </Text>
+                                {info && (
+                                  <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: cards?.length ? '10px' : '0' }}>
+                                    <div>
+                                      <Text style={{ fontSize: '11px', color: 'var(--text-muted)' }}>总金币</Text>
+                                      <Text strong style={{ fontSize: '18px', color: '#f59e0b', display: 'block', lineHeight: '1.3' }}>
+                                        {(info.total_coins ?? 0).toFixed(0)}
+                                      </Text>
+                                    </div>
+                                    {info.disk_total_size > 0 && (
+                                      <div>
+                                        <Text style={{ fontSize: '11px', color: 'var(--text-muted)' }}>云盘空间</Text>
+                                        <Text strong style={{ fontSize: '14px', color: 'var(--text-primary)', display: 'block', lineHeight: '1.3' }}>
+                                          {(info.disk_total_size / 1024 / 1024 / 1024).toFixed(1)} GB
+                                        </Text>
+                                      </div>
+                                    )}
+                                    {info.expire_coins_7d > 0 && (
+                                      <div>
+                                        <Text style={{ fontSize: '11px', color: 'var(--text-muted)' }}>7天后过期金币</Text>
+                                        <Text style={{ fontSize: '14px', color: '#ef4444', display: 'block', lineHeight: '1.3' }}>
+                                          {(info.expire_coins_7d ?? 0).toFixed(0)}
+                                        </Text>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {cards && cards.length > 0 && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {cards.map((card, ci) => {
+                                      const expireDate = new Date(card.expire_time);
+                                      const now = Date.now();
+                                      const isExpired = card.expire_time < now;
+                                      return (
+                                        <div
+                                          key={ci}
+                                          style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            padding: '8px 10px',
+                                            background: 'var(--bg-secondary)',
+                                            borderRadius: 'var(--radius-sm)',
+                                            opacity: isExpired ? 0.5 : 1,
+                                            border: isExpired ? '1px solid rgba(239,68,68,0.2)' : undefined,
+                                          }}
+                                        >
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span
+                                              style={{
+                                                width: '8px',
+                                                height: '8px',
+                                                borderRadius: '50%',
+                                                background: isExpired ? '#ef4444' : '#10b981',
+                                                flexShrink: 0,
+                                              }}
+                                            />
+                                            <Text style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                              {card.card_type_name}
+                                            </Text>
+                                            {card.consume_label?.gameLabelList?.length > 0 && card.consume_label.gameLabelList.filter(l => l !== 'ALL').slice(0, 2).map((label, li) => (
+                                              <span
+                                                key={li}
+                                                style={{
+                                                  background: '#fef3c7',
+                                                  color: '#b45309',
+                                                  padding: '0px 6px',
+                                                  borderRadius: '3px',
+                                                  fontSize: '10px',
+                                                  fontWeight: 500,
+                                                }}
+                                              >
+                                                {label}
+                                              </span>
+                                            ))}
+                                          </div>
+                                          <Text style={{ fontSize: '11px', color: isExpired ? '#ef4444' : 'var(--text-muted)' }}>
+                                            {isExpired ? '已过期' : `到期 ${expireDate.toLocaleDateString('zh-CN')}`}
+                                          </Text>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          // ── 支持卡片（客服/帮助） ──
+                          if (p.type === 'support') {
+                            return (
+                              <div
+                                key={ei}
+                                style={{
+                                  background: 'var(--bg-elevated)',
+                                  borderRadius: 'var(--radius-md)',
+                                  border: '1px solid var(--border-subtle)',
+                                  padding: '12px 14px',
+                                  boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                }}
+                              >
+                                <span style={{ fontSize: '20px' }}>🎧</span>
+                                <div>
+                                  <Text strong style={{ fontSize: '14px', color: 'var(--text-primary)', display: 'block' }}>
+                                    需要帮助？
+                                  </Text>
+                                  <Text style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    如有问题请联系在线客服获取支持
+                                  </Text>
+                                </div>
+                              </div>
+                            );
+                          }
                         }
+
                         // fallback: raw JSON
                         return (
                           <pre

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
-use crate::api::AppState;
+use crate::api::{AppState, require_s3};
 use crate::runtime::capability::DispatchCtx;
 use crate::runtime::pool::{PerPluginMetrics, PoolMetrics};
 use crate::utils::error::{ApiResponse, AppError};
@@ -147,7 +147,10 @@ async fn invoke_function(
         let bctx = crate::runtime::builtins::BuiltinContext {
             pool: &state.pool,
             ext_pool: state.ext_pool.as_ref(),
+            redis: Some(&state.redis),
             agent_ctx,
+            llm: None,
+            agent_id: None,
         };
         match (builtin.handler)(body.input, &bctx) {
             Ok(output) => {
@@ -157,6 +160,12 @@ async fn invoke_function(
                 }));
             }
             Err(e) => {
+                tracing::error!(
+                    function_id = id,
+                    identifier = %fn_row.identifier,
+                    error = %e,
+                    "builtin 函数执行失败"
+                );
                 return Err(AppError::Internal(format!(
                     "builtin「{}」执行失败: {}",
                     fn_row.identifier, e
@@ -168,12 +177,20 @@ async fn invoke_function(
 
     // 仅 kind=2 (custom function) 走 Plugin invoker；其他 kind 拒绝
     if fn_row.kind != 2 {
+        tracing::warn!(
+            function_id = id,
+            kind = fn_row.kind,
+            "unsupported function kind"
+        );
         return Err(AppError::BadRequest(format!(
             "unsupported function kind={} for id={}",
             fn_row.kind, id
         ))
         .into_response());
     }
+
+    // 插件系统已关闭时，custom function 无法执行
+    let _ = crate::api::require_s3(&state)?;
 
     let plugin_id = fn_row.plugin_id.ok_or_else(|| {
         AppError::Internal(format!(
@@ -231,7 +248,7 @@ async fn invoke_function(
         .invoker
         .invoke(
             &state.pool,
-            &state.s3,
+            state.s3.as_ref(),
             Arc::clone(&state.runtime_state.capabilities),
             Arc::clone(&state.runtime_state.llm),
             plugin_id,

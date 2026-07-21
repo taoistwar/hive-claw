@@ -187,6 +187,7 @@ async fn test_skill(
         client_type: String::new(),
         client_version: String::new(),
         sensitive_filter: state.sensitive_filter.clone(),
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     match test_svc::run_skill_test(&state.pool, &deps, id, req).await {
         Ok(result) => Ok(ApiResponse::success(result)),

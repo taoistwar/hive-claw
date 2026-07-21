@@ -27,6 +27,8 @@ pub enum ExtensionType {
     Chart,
     /// Reference to a business object
     ObjectRef,
+    /// Usage/quota information (rate limit warnings)
+    Usage,
 }
 
 impl std::fmt::Display for ExtensionType {
@@ -40,6 +42,7 @@ impl std::fmt::Display for ExtensionType {
             ExtensionType::Table => write!(f, "table"),
             ExtensionType::Chart => write!(f, "chart"),
             ExtensionType::ObjectRef => write!(f, "object_ref"),
+            ExtensionType::Usage => write!(f, "usage"),
         }
     }
 }

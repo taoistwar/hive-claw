@@ -196,6 +196,7 @@ async fn test_tool(
         client_type: String::new(),
         client_version: String::new(),
         sensitive_filter: state.sensitive_filter.clone(),
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let req_with_trace = test_svc::TestToolRequest {
         message: req.message,

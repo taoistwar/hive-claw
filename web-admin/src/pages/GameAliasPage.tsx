@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Button, message } from 'antd'
+import { Alert, Button, message } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import GameTable from '../components/GameTable'
 import GameAliasForm from '../components/GameAliasForm'
@@ -7,6 +7,9 @@ import { useGameAlias } from '../hooks/useGameAlias'
 import { deleteGame as apiDeleteGame, type Game } from '../services/gameAlias'
 import { useAuth } from '../hooks/useAuth'
 
+/**
+ * @deprecated 游戏别名管理已废弃，仅为查看和维护历史数据保留。
+ */
 const GameAliasPage: React.FC = () => {
   const { admin } = useAuth()
   const canWrite = admin?.role === 2 || admin?.role === 3
@@ -67,6 +70,13 @@ const GameAliasPage: React.FC = () => {
 
   return (
     <div>
+      <Alert
+        type="warning"
+        showIcon
+        message="游戏别名管理已废弃"
+        description="该功能仅为兼容历史数据保留，请勿用于新的业务配置。"
+        style={{ marginBottom: 16 }}
+      />
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'flex-end' }}>
         {canWrite && (
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>

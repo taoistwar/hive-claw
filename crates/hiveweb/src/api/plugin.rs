@@ -14,6 +14,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::AppState;
+use crate::api::require_s3;
 use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::plugin::{self as svc, ListFilter, UpdateMeta, UploadMeta};
 use crate::storage::s3::get_wasm;
@@ -158,7 +159,9 @@ async fn upload_plugin(
     let meta: UploadMeta = serde_json::from_str(&meta_str)
         .map_err(|e| AppError::BadRequest(format!("meta json: {e}")).into_response())?;
 
-    match svc::upload(&state.pool, &state.s3, meta, bytes).await {
+    let s3 = require_s3(&state)?;
+
+    match svc::upload(&state.pool, Some(s3), meta, bytes).await {
         Ok(plugin) => {
             if let Err(e) = audit_event(
                 &state.pool,
@@ -249,7 +252,7 @@ async fn download_plugin(
         return Err(AppError::NotFound("Plugin has been deleted".into()).into_response());
     }
 
-    let bytes = get_wasm(&state.s3, &plugin.s3_key)
+    let bytes = get_wasm(require_s3(&state)?, &plugin.s3_key)
         .await
         .map_err(|e| AppError::Internal(format!("S3 get WASM: {e}")).into_response())?;
 
@@ -284,7 +287,7 @@ async fn list_plugin_exports(
         return Err(AppError::NotFound("Plugin has been deleted".into()).into_response());
     }
 
-    let bytes = get_wasm(&state.s3, &plugin.s3_key)
+    let bytes = get_wasm(require_s3(&state)?, &plugin.s3_key)
         .await
         .map_err(|e| AppError::Internal(format!("S3 get WASM: {e}")).into_response())?;
 

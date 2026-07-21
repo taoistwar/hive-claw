@@ -185,7 +185,9 @@ pub fn validate_url_target(url: &str) -> (bool, String) {
 
     let infos = match resolve_host(&hostname) {
         Ok(v) => v,
-        Err(_) => return (false, format!("Cannot resolve hostname: {hostname}")),
+        Err(_) => {
+            return (false, format!("Cannot resolve hostname: {hostname}"));
+        }
     };
 
     for addr in infos {

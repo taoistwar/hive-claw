@@ -259,7 +259,9 @@ impl LLMProvider for AzureOpenAIProvider {
         }
         let text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading body: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading body: {e}"));
+            }
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             return LLMResponse::error(format!("Error: malformed JSON response from Azure OpenAI"));
@@ -293,7 +295,9 @@ impl LLMProvider for AzureOpenAIProvider {
         }
         let body_text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading stream: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading stream: {e}"));
+            }
         };
 
         let (content, tool_calls, finish_reason) =

@@ -16,9 +16,15 @@ tokio = { version = "1", features = ["full"] }
 clap = { workspace = true }
 
 # Database — 004 加 json feature 以便序列化 JSON 列
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "mysql", "chrono", "json", "rust_decimal"] }
+sqlx = { workspace = true, features = [
+  "runtime-tokio-rustls",
+  "mysql",
+  "chrono",
+  "json",
+  "rust_decimal",
+] }
 rust_decimal = { workspace = true }
-
+syntect = { workspace = true }
 # Redis
 redis = { workspace = true }
 
@@ -30,6 +36,7 @@ serde_json = { workspace = true }
 jsonwebtoken = { workspace = true }
 bcrypt = { workspace = true }
 md5 = "0.7"
+rand = "0.8"
 
 # Object storage (S3 compatible)
 aws-sdk-s3 = { workspace = true }
@@ -42,6 +49,7 @@ anyhow = { workspace = true }
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 
 # Utilities
 chrono = { workspace = true }
@@ -49,7 +57,7 @@ uuid = { workspace = true }
 dotenvy = { workspace = true }
 
 # CORS
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 
 # HTTP body utilities
 http-body-util = "0.1"
@@ -73,6 +81,7 @@ agent = { path = "../agent" }
 hive-builtins = { path = "../hive-builtins" }
 providers = { path = "../providers" }
 skills = { path = "../skills" }
+time = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -127,6 +136,10 @@ path = "src/bin/seed_bench.rs"
 [[bin]]
 name = "chat-retention"
 path = "src/bin/chat_retention.rs"
+
+[[bin]]
+name = "api-test"
+path = "src/bin/api_test.rs"
 
 [features]
 standalone = []

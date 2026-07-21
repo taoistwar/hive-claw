@@ -288,7 +288,11 @@ impl OpenAICompatProvider {
 
     fn endpoint(&self) -> String {
         let base = self.effective_base.trim_end_matches('/');
-        format!("{base}/chat/completions")
+        if base.ends_with("v1") || base.ends_with("v1/") {
+            format!("{base}/chat/completions")
+        } else {
+            format!("{base}/v1/chat/completions")
+        }
     }
 
     fn resolve_model(&self, req_model: Option<&str>) -> String {
@@ -756,7 +760,9 @@ impl LLMProvider for OpenAICompatProvider {
         }
         let body_text = match resp.text().await {
             Ok(t) => t,
-            Err(e) => return LLMResponse::error(format!("Error reading LLM body: {e}")),
+            Err(e) => {
+                return LLMResponse::error(format!("Error reading LLM body: {e}"));
+            }
         };
         let Ok(value) = serde_json::from_str::<Value>(&body_text) else {
             return LLMResponse::error(format!("Error: malformed JSON from provider: {body_text}"));

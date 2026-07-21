@@ -197,9 +197,13 @@ impl MyTool {
             obj = match &obj {
                 Value::Object(map) => match map.get(*part).cloned() {
                     Some(v) => v,
-                    None => return (None, Some(format!("'{}' is not accessible", part))),
+                    None => {
+                        return (None, Some(format!("'{}' is not accessible", part)));
+                    }
                 },
-                _ => return (None, Some(format!("'{}' is not accessible", part))),
+                _ => {
+                    return (None, Some(format!("'{}' is not accessible", part)));
+                }
             };
         }
 

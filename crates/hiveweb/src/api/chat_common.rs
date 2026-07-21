@@ -13,9 +13,30 @@ use futures::stream::Stream;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+// --- MD5 Sign Verification ---
+
+/// Verify MD5 signature: `MD5(SECRET + "{path}?body={body}")`
+pub fn verify_sign(secret: &str, path: &str, body: &str, expected_sign: &str) -> bool {
+    let sign_string = format!("{}{}?body={}", secret, path, body);
+    let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
+    digest == expected_sign
+}
+
+// --- Shared ASSISTANT_SECRET loader ---
+
+/// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
+static ASSISTANT_SECRET: OnceLock<String> = OnceLock::new();
+
+/// 懒加载 ASSISTANT_SECRET；返回 `&'static str`，未设置时为空串。
+pub fn get_assistant_secret() -> &'static str {
+    ASSISTANT_SECRET
+        .get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
+        .as_str()
+}
 
 // --- SSE Concurrency Control ---
 
@@ -25,58 +46,25 @@ pub struct SseSlotConfig {
 }
 
 impl SseSlotConfig {
-    pub const ADMIN: Self = Self {
-        env_var: "CHAT_SSE_MAX_CONCURRENT_PER_ADMIN",
-        default_cap: 2,
-    };
     pub const USER: Self = Self {
         env_var: "CHAT_SSE_MAX_CONCURRENT_PER_USER",
-        default_cap: 2,
+        default_cap: 1,
     };
 }
 
-/// Per-actor SSE counter registry.
-/// Key: actor_id (admin_id or user_id), Value: active SSE stream count.
-pub struct SseCounterRegistry {
-    pub admin: once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>>,
-    pub user: once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>>,
-}
-
-impl SseCounterRegistry {
-    pub const fn new() -> Self {
-        Self {
-            admin: once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new()))),
-            user: once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new()))),
-        }
-    }
-
-    pub fn admin_map(&self) -> &once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>> {
-        &self.admin
-    }
-
-    pub fn user_map(&self) -> &once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>> {
-        &self.user
-    }
-}
-
-pub static SSE_COUNTERS: SseCounterRegistry = SseCounterRegistry::new();
+/// Per-user SSE counter registry.
+static SSE_COUNTERS: once_cell::sync::Lazy<Arc<Mutex<HashMap<i64, usize>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 /// Guard that decrements the SSE counter on drop.
 pub struct SseConcurrencyGuard {
     pub(crate) actor_id: i64,
-    pub(crate) is_admin: bool,
 }
 
 impl Drop for SseConcurrencyGuard {
     fn drop(&mut self) {
         let actor_id = self.actor_id;
-        let is_admin = self.is_admin;
-        let map_ref = if is_admin {
-            &SSE_COUNTERS.admin
-        } else {
-            &SSE_COUNTERS.user
-        };
-        let counter = map_ref;
+        let counter = SSE_COUNTERS.clone();
         tokio::spawn(async move {
             let mut map = counter.lock().await;
             if let Some(c) = map.get_mut(&actor_id) {
@@ -89,14 +77,9 @@ impl Drop for SseConcurrencyGuard {
     }
 }
 
-/// Try to acquire an SSE slot for the given actor.
+/// Try to acquire an SSE slot for the given user.
 pub async fn try_acquire_slot(actor_id: i64, config: SseSlotConfig) -> bool {
-    let map_ref = if config.env_var == SseSlotConfig::ADMIN.env_var {
-        &SSE_COUNTERS.admin
-    } else {
-        &SSE_COUNTERS.user
-    };
-    let mut map = map_ref.lock().await;
+    let mut map = SSE_COUNTERS.lock().await;
     let cap: usize = std::env::var(config.env_var)
         .ok()
         .and_then(|v| v.parse().ok())
@@ -116,15 +99,6 @@ pub struct ListSessionsQuery {
     pub offset: Option<i64>,
     pub limit: Option<i64>,
     pub search: Option<String>,
-}
-
-// --- MD5 Sign Verification ---
-
-/// Verify MD5 signature: `MD5(SECRET + "{path}?body={body}")`
-pub fn verify_sign(secret: &str, path: &str, body: &str, expected_sign: &str) -> bool {
-    let sign_string = format!("{}{}?body={}", secret, path, body);
-    let digest = format!("{:x}", md5::compute(sign_string.as_bytes()));
-    digest == expected_sign
 }
 
 // --- SSE Response Builder ---

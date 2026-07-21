@@ -267,6 +267,7 @@ async fn execute_workflow(
         llm: std::sync::Arc::clone(&state.runtime_state.llm),
         invoker: std::sync::Arc::clone(&state.runtime_state.invoker),
         ext_pool: state.ext_pool.clone(),
+        redis: Some(state.redis.clone()),
         permissions: state
             .runtime_state
             .capabilities
@@ -316,6 +317,8 @@ async fn execute_workflow(
     Ok(ApiResponse::success(serde_json::json!({
         "workflow_id": id,
         "node_results": outcome.node_results,
+        "node_inputs": outcome.node_inputs,
+        "node_agent_contexts": outcome.node_agent_contexts,
         "elapsed_ms": elapsed_ms,
         "agent_context": agent_context_snapshot,
     })))

@@ -5,6 +5,8 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 # Tasks: Agent Runtime（Capability-based WASM Plugin Runtime）
 
+> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+
 **Input**: Design documents from `/specs/004-agent-runtime/`
 **Prerequisites**: plan.md (required), spec.md (required), research.md, data-model.md, contracts/
 
@@ -119,7 +121,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T035 在 `crates/hiveweb-admin/src/runtime/startup.rs` 新建 `pub async fn init_runtime_state(config: &Config) -> Result<Arc<RuntimeState>>` 函数，按 plan §Startup Initialization Order 的 12 步顺序执行；在 `crates/hiveweb-admin/src/bin/hiveweb.rs` 的 `main()` 中调用此函数初始化 `AppState.runtime_state`；任一前置失败 panic 退出码 1
 - [x] T189 [P] Orchestrator `crates/hiveweb-admin/src/runtime/orchestrator.rs`：完整实现 `run_session()` 多 hop loop + SSE 事件流 + tool calling 路由
 - [x] T190 [P] Builtin tools `crates/hiveweb-admin/src/runtime/builtin_tools.rs`：启动期注册 builtin tools 到 ToolRegistry
-- [x] T191 [P] Builtin function handlers `crates/hiveweb-admin/src/runtime/builtins.rs`：5 个 builtin function 实现（format.template / json.parse / json.stringify / text.regex_match / chat.respond）
+- [x] T191 [P] Builtin function handlers `crates/hiveweb-admin/src/runtime/builtins.rs`：5 个 builtin function 实现（format_template / json_parse / json_stringify / text_regex_match / chat_respond）
 - [x] T192 [P] WASM exports 工具 `crates/hiveweb-admin/src/runtime/wasm_exports.rs`：解析/校验 WASM imports 段
 
 ### Reactflow + Monaco 资源接入（前端）
@@ -256,7 +258,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端 — Builtin Function
 
-- [x] T079 [P] [US2] 5 个 builtin function 实现 `crates/hiveweb-admin/src/runtime/builtins.rs`：`format.template` / `json.parse` / `json.stringify` / `text.regex_match` / `chat.respond`，每个实现 `agent::Tool` trait
+- [x] T079 [P] [US2] 5 个 builtin function 实现 `crates/hiveweb-admin/src/runtime/builtins.rs`：`format_template` / `json_parse` / `json_stringify` / `text_regex_match` / `chat_respond`，每个实现 `agent::Tool` trait
 - [x] T080 [US2] 启动期把 builtins 注入 `agent::ToolRegistry` 与 DB `functions` 表（idempotent upsert by identifier，kind=1）
 
 ### 后端 — Function/Tool/Skill CRUD

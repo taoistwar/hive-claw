@@ -5,7 +5,7 @@ INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES
 ('彩票', 'exact'), ('赌球', 'exact'), ('六合彩', 'exact'), ('老虎机', 'exact'),
 ('百家乐', 'exact'), ('轮盘赌', 'exact'), ('时时彩', 'exact'),
 ('地下赌场', 'exact'), ('网赌', 'exact'), ('线上赌场', 'exact'),
-('色情', 'exact'), ('黄色', 'exact'), ('成人影片', 'exact'), ('成人网站', 'exact'),
+('色情', 'exact'), ('成人影片', 'exact'), ('成人网站', 'exact'),
 ('色情网站', 'exact'), ('裸聊', 'exact'), ('约炮', 'exact'), ('一夜情', 'exact'),
 ('卖淫', 'exact'), ('嫖娼', 'exact'),
 ('吸毒', 'exact'), ('毒品', 'exact'), ('白粉', 'exact'), ('冰毒', 'exact'),
@@ -20,4 +20,4 @@ INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES
 
 -- 正则匹配：手机号、身份证号、邮箱、URL、微信号、脏话变体
 INSERT IGNORE INTO sensitive_words (word, match_mode) VALUES
-('草.*泥.*马', 'regex'),
+('草.*泥.*马', 'regex');

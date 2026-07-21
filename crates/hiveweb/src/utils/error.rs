@@ -52,6 +52,12 @@ pub mod codes {
     pub const RESOURCE_IN_USE: u16 = 4093;
     pub const OPTIMISTIC_LOCK_CONFLICT: u16 = 4094;
     pub const SSE_CONCURRENCY_EXCEEDED: u16 = 4291;
+
+    /// AI 助手日访问次数超限
+    pub const DAILY_LIMIT_REACHED: u16 = 4290;
+
+    /// 敏感词过滤拦截
+    pub const SENSITIVE_WORD_BLOCKED: u16 = 4009;
     pub const CANNOT_DELETE_MAIN_AGENT: u16 = 5001;
     pub const SCHEMA_MISMATCH: u16 = 5002;
     pub const CAPABILITY_DENIED_CHAT: u16 = 5003;
@@ -62,6 +68,9 @@ pub mod codes {
     pub const BUILTIN_SKILL_PROTECTED: u16 = 5008;
     pub const POOL_BUSY: u16 = 5009;
     pub const BUILTIN_TOOL_PROTECTED: u16 = 5010;
+
+    /// 011 Plugin System Toggle — 插件系统已被环境变量 `PLUGIN_SYSTEM_ENABLED=false` 关闭
+    pub const PLUGIN_SYSTEM_DISABLED: u16 = 5031;
 
     // ----- 008 Agent Hook 配置管理（6001-6010） -----
     pub const HOOK_TRIGGER_LIMIT_EXCEEDED: u16 = 6001;
@@ -125,7 +134,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         }
         codes::NEW_PASSWORD_SAME_AS_OLD => StatusCode::BAD_REQUEST,
         // Generic
-        codes::BAD_REQUEST => StatusCode::BAD_REQUEST,
+        codes::BAD_REQUEST | codes::SENSITIVE_WORD_BLOCKED => StatusCode::BAD_REQUEST,
         codes::NOT_FOUND => StatusCode::NOT_FOUND,
         codes::CONFLICT => StatusCode::CONFLICT,
         codes::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR,
@@ -143,7 +152,9 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         | codes::DAG_CYCLE
         | codes::RESOURCE_IN_USE
         | codes::OPTIMISTIC_LOCK_CONFLICT => StatusCode::CONFLICT,
-        codes::SSE_CONCURRENCY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
+        codes::SSE_CONCURRENCY_EXCEEDED | codes::DAILY_LIMIT_REACHED => {
+            StatusCode::TOO_MANY_REQUESTS
+        }
         codes::CANNOT_DELETE_MAIN_AGENT
         | codes::CAPABILITY_DENIED_CHAT
         | codes::BUILTIN_SKILL_PROTECTED
@@ -153,7 +164,7 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         | codes::AGENT_DEPTH_EXCEEDED
         | codes::MODEL_PRESET_UNKNOWN => StatusCode::UNPROCESSABLE_ENTITY,
         codes::PLUGIN_INVOCATION_TIMEOUT => StatusCode::REQUEST_TIMEOUT,
-        codes::POOL_BUSY => StatusCode::SERVICE_UNAVAILABLE,
+        codes::POOL_BUSY | codes::PLUGIN_SYSTEM_DISABLED => StatusCode::SERVICE_UNAVAILABLE,
         // 008 — Agent Hook HTTP 映射
         codes::HOOK_TRIGGER_LIMIT_EXCEEDED | codes::HOOK_REFERENCE_INVALID => {
             StatusCode::UNPROCESSABLE_ENTITY
@@ -209,6 +220,8 @@ pub enum AppError {
     ResourceInUse(String),
     OptimisticLockConflict(String),
     SseConcurrencyExceeded(String),
+    DailyLimitReached(String),
+    SensitiveWordBlocked(String),
     CannotDeleteMainAgent(String),
     SchemaMismatch(String),
     CapabilityDeniedChat(String),
@@ -219,6 +232,7 @@ pub enum AppError {
     BuiltinSkillProtected(String),
     PoolBusy(String),
     BuiltinToolProtected(String),
+    PluginSystemDisabled(String),
 
     // ----- 008 Agent Hook（6001-6006） -----
     HookTriggerLimitExceeded(String),
@@ -264,6 +278,8 @@ impl AppError {
             AppError::ResourceInUse(_) => codes::RESOURCE_IN_USE,
             AppError::OptimisticLockConflict(_) => codes::OPTIMISTIC_LOCK_CONFLICT,
             AppError::SseConcurrencyExceeded(_) => codes::SSE_CONCURRENCY_EXCEEDED,
+            AppError::DailyLimitReached(_) => codes::DAILY_LIMIT_REACHED,
+            AppError::SensitiveWordBlocked(_) => codes::SENSITIVE_WORD_BLOCKED,
             AppError::CannotDeleteMainAgent(_) => codes::CANNOT_DELETE_MAIN_AGENT,
             AppError::SchemaMismatch(_) => codes::SCHEMA_MISMATCH,
             AppError::CapabilityDeniedChat(_) => codes::CAPABILITY_DENIED_CHAT,
@@ -274,6 +290,7 @@ impl AppError {
             AppError::BuiltinSkillProtected(_) => codes::BUILTIN_SKILL_PROTECTED,
             AppError::PoolBusy(_) => codes::POOL_BUSY,
             AppError::BuiltinToolProtected(_) => codes::BUILTIN_TOOL_PROTECTED,
+            AppError::PluginSystemDisabled(_) => codes::PLUGIN_SYSTEM_DISABLED,
             // 008 Agent Hook
             AppError::HookTriggerLimitExceeded(_) => codes::HOOK_TRIGGER_LIMIT_EXCEEDED,
             AppError::HookReferenceInvalid(_) => codes::HOOK_REFERENCE_INVALID,
@@ -307,6 +324,8 @@ impl AppError {
             | AppError::ResourceInUse(m)
             | AppError::OptimisticLockConflict(m)
             | AppError::SseConcurrencyExceeded(m)
+            | AppError::DailyLimitReached(m)
+            | AppError::SensitiveWordBlocked(m)
             | AppError::CannotDeleteMainAgent(m)
             | AppError::SchemaMismatch(m)
             | AppError::CapabilityDeniedChat(m)
@@ -317,6 +336,7 @@ impl AppError {
             | AppError::BuiltinSkillProtected(m)
             | AppError::PoolBusy(m)
             | AppError::BuiltinToolProtected(m)
+            | AppError::PluginSystemDisabled(m)
             | AppError::HookTriggerLimitExceeded(m)
             | AppError::HookReferenceInvalid(m)
             | AppError::HookWebhookUrlInvalid(m)

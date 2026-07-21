@@ -8,33 +8,32 @@
 ## Entity Relationship
 
 ```
-┌──────────┐       ┌───────────────┐       ┌──────────────────┐
-│  agents  │──1:N──│  agent_hooks  │──1:N──│ hook_executions  │
-│          │       │               │       │  (via hook_id    │
-│   id PK  │       │  id PK        │       │   SET NULL)      │
-│          │       │  agent_id FK  │       │                  │
-└──────────┘       │  name         │       │  id PK           │
-                   │  trigger_point│       │  agent_id (snap) │
-                   │  action_type  │       │  hook_id FK?     │
-                   │  action_params│       │  session_id      │
-                   │  enabled      │       │  outcome         │
-                   │  sort_order   │       │  ...             │
-                   │  blocking_mode│       └──────────────────┘
+┌──────────┐       ┌───────────────┐
+│  agents  │──1:N──│  agent_hooks  │
+│          │       │               │
+│   id PK  │       │  id PK        │
+│          │       │  agent_id FK  │
+└──────────┘       │  name         │
+                   │  trigger_point│
+                   │  action_type  │
+                   │  action_params│
+                   │  enabled      │
+                   │  sort_order   │
+                   │  blocking_mode│
                    │  timeout_ms   │
                    └───────────────┘
 ```
 
 **关键设计**:
 - `agent_hooks.agent_id → agents(id) ON DELETE CASCADE`: Agent 删除时 Hook 配置级联删除
-- `hook_executions.hook_id → agent_hooks(id) ON DELETE SET NULL`: Hook 删除后执行历史保留，hook_id 置 NULL
-- `hook_executions.agent_id` 无 FK: 审计保留快照，Agent 删除后执行记录不丢失
-- `hook_executions.agent_identifier` 快照列: 供追溯"已删除的 Agent {identifier}"场景
+- Hook 执行结果和重试结果不属于持久化实体，仅输出结构化 tracing
+- 已部署环境中的遗留执行历史表和数据保持不动，但应用不再读写
 
 ---
 
 ## DDL
 
-### V049: `agent_hooks` 表
+### V022: `agent_hooks` 表
 
 ```sql
 CREATE TABLE agent_hooks (
@@ -78,7 +77,9 @@ CREATE TABLE agent_hooks (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-### V050: `hook_executions` 表
+### V023: `hook_executions` 遗留表
+
+该迁移已经发布，按 forward-only 迁移约定保留原文，以免破坏既有环境的迁移历史。自 2026-07-16 起，运行时、API 和管理界面均不再读写该表；本次变更也不删除其中已有数据。
 
 ```sql
 CREATE TABLE hook_executions (
@@ -153,18 +154,15 @@ CREATE TABLE hook_executions (
 |---|------|------|
 | `agent_hooks` | `idx_agent_hooks_agent (agent_id)` | `load_hooks_for_agent` 按 agent_id 加载 |
 | `agent_hooks` | `UNIQUE idx_agent_hooks_seq (agent_id, trigger_point, sort_order)` | 防止同触发点同序号重复 + 排序查询 |
-| `hook_executions` | `idx_hook_exec_agent (agent_id, created_at DESC)` | 历史查询主索引（按 Agent + 时间） |
-| `hook_executions` | `idx_hook_exec_hook (hook_id)` | 按 Hook 查询执行记录 |
-| `hook_executions` | `idx_hook_exec_session (session_id)` | 按会话关联查询 |
-| `hook_executions` | `idx_hook_exec_request (request_id)` | 按请求 ID 追踪全链路 |
 
 ---
 
-## 数据保留策略
+## 执行可观测性策略
 
-- `hook_executions` 数据默认保留 **30 天**（可配 `HOOK_EXECUTION_RETENTION_DAYS` env）
-- 每日凌晨 cron 执行 `DELETE FROM hook_executions WHERE created_at < NOW() - INTERVAL N DAY`
-- 清理逻辑以 batch 执行（每次 ≤ 1000 行），避免长事务锁表
+- 每次 Hook 执行输出结构化 tracing，包含关联 ID、动作类型、结果和耗时
+- 失败事件仅输出白名单 `error_kind`，不输出任意下游错误文本、完整用户消息、Webhook URL、payload 或响应体
+- Hook 执行不会新增数据库记录，因此不存在应用侧执行历史保留或清理任务
+- 遗留表中的已有数据不在本次变更范围内，由运维另行决定归档或删除
 
 ---
 
@@ -176,5 +174,5 @@ CREATE TABLE hook_executions (
 | 每 Agent 最大 Hook 数 | 35 (7 触发点 × 5) |
 | `agent_hooks` 最大行数 | 17,500 |
 | 每会话 Hook 执行次数 | ~10-20 (取决 LLM hop 数) |
-| `hook_executions` 月增量 | ~500 Agent × 100 会话/天 × 10 执行 × 30 天 ≈ 15M |
-| 30 天保留后稳态 | ~15M 行 |
+| Hook 执行历史月增量 | 0 行 |
+| 遗留执行历史数据 | 保持现状，不由应用继续增长 |

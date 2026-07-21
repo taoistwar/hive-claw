@@ -241,13 +241,23 @@ npm run lint
 | `HIVEWEB_HOST` | 服务器地址 | 127.0.0.1 |
 | `HIVEWEB_PORT` | 服务器端口 | 3300 |
 | `DATABASE_URL` | MySQL 连接字符串 | （必填） |
-| `REDIS_URL` | Redis 连接字符串 | redis://127.0.0.1:6379 |
+| `REDIS_MODE` | Redis 模式：`direct` 或 `sentinel` | direct |
+| `REDIS_URL` | 直连模式的 Redis 连接字符串 | redis://127.0.0.1:6379 |
+| `REDIS_SENTINEL_MASTER` | Sentinel master 名称 | Sentinel 模式必填 |
+| `REDIS_SENTINEL_NODES` | 逗号分隔的 Sentinel `host:port` 列表 | Sentinel 模式必填 |
+| `REDIS_DATABASE` | Sentinel 数据节点数据库索引 | 0 |
+| `REDIS_SENTINEL_REFRESH_MS` | Sentinel master 刷新间隔（毫秒） | 1000 |
+| `REDIS_USERNAME` / `REDIS_PASSWORD` | Sentinel 数据节点认证 | （可选） |
+| `REDIS_SENTINEL_USERNAME` / `REDIS_SENTINEL_PASSWORD` | Sentinel 服务自身认证 | （可选） |
+| `REDIS_CONNECT_TIMEOUT_MS` | Redis 发现和建连超时（毫秒） | 5000 |
 | `JWT_SECRET` | JWT 密钥 | （必填，至少 32 字符） |
 | `JWT_EXPIRATION_HOURS` | Token 有效期（小时） | 24 |
 | `S3_ENDPOINT` | S3 端点 | （可选） |
 | `S3_ACCESS_KEY_ID` | S3 访问密钥 | （可选） |
 | `S3_SECRET_ACCESS_KEY` | S3 密钥 | （可选） |
 | `S3_BUCKET` | S3 桶名 | （可选） |
+
+完整说明及 Sentinel 配置注意事项见 [环境变量](env-vars.md)。
 
 ### 前端环境变量
 

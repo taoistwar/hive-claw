@@ -5,8 +5,8 @@
 //!   - `mint_jwt(...)` — produces a Bearer token for a given admin id + role
 //!   - `SeededAdmin` — RAII-style admin row that deletes itself on drop
 //!
-//! All helpers require `DATABASE_URL` (and optionally `REDIS_URL`). If absent,
-//! the test fails with a clear "Phase 2.5 RED" message.
+//! All helpers require `DATABASE_URL` plus the Redis variables for either direct
+//! or Sentinel mode. If absent, the test fails with a clear "Phase 2.5 RED" message.
 
 #![allow(dead_code)]
 
@@ -36,17 +36,14 @@ pub async fn test_app() -> Result<Router> {
              Run `./scripts/dev-up.sh -d` and export DATABASE_URL."
         )
     })?;
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-
     let pool = hiveweb::db::connection::create_pool(&database_url).await?;
-    let redis = hiveweb::cache::redis::create_pool(&redis_url).await?;
+    let redis = hiveweb::cache::redis::create_from_env().await?;
     let s3 = hiveweb::storage::s3::create_client().await?;
 
     Ok(hiveweb::api::create_router(
         pool,
         redis,
-        s3,
+        Some(s3),
         None,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),
     ))

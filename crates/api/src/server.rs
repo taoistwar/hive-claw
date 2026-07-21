@@ -415,7 +415,9 @@ async fn parse_json(body: axum::body::Body) -> Result<ParsedRequest, ParseError>
         .map_err(|e| ParseError::BadRequest(format!("failed to read body: {e}")))?;
     let json: ChatCompletionRequest = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
-        Err(_) => return Err(ParseError::BadRequest("Invalid JSON body".into())),
+        Err(_) => {
+            return Err(ParseError::BadRequest("Invalid JSON body".into()));
+        }
     };
     let (text, media) = extract_json_content(&json)?;
     Ok(ParsedRequest {
@@ -483,7 +485,9 @@ fn extract_json_content(req: &ChatCompletionRequest) -> Result<(String, Vec<Path
             }
             chunks.join(" ")
         }
-        _ => return Err(ParseError::BadRequest("Invalid content format".into())),
+        _ => {
+            return Err(ParseError::BadRequest("Invalid content format".into()));
+        }
     };
     Ok((text, media_paths))
 }

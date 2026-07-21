@@ -27,6 +27,8 @@ pub struct DataSourceForm {
     username: SharedString,
     password: SharedString,
     placeholder_password: &'static str,
+    /// 编辑模式下保存的原始加密密码，用于连接测试时密码为空的情况
+    original_encrypted_password: Option<Vec<u8>>,
     name_input: Option<Entity<InputState>>,
     host_input: Option<Entity<InputState>>,
     port_input: Option<Entity<InputState>>,
@@ -55,7 +57,15 @@ impl DataSourceForm {
         existing: Option<&DataSource>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (name, host, port, username, password, placeholder_password) = match existing {
+        let (
+            name,
+            host,
+            port,
+            username,
+            password,
+            placeholder_password,
+            original_encrypted_password,
+        ) = match existing {
             Some(ds) => (
                 ds.name.clone(),
                 ds.host.clone(),
@@ -63,6 +73,7 @@ impl DataSourceForm {
                 ds.username.clone(),
                 String::new(),
                 "留空则不修改密码",
+                Some(ds.encrypted_password.clone()),
             ),
             None => (
                 String::new(),
@@ -71,6 +82,7 @@ impl DataSourceForm {
                 String::new(),
                 String::new(),
                 "密码",
+                None,
             ),
         };
         Self {
@@ -82,6 +94,7 @@ impl DataSourceForm {
             username: SharedString::from(username),
             password: SharedString::from(password),
             placeholder_password,
+            original_encrypted_password,
             name_input: None,
             host_input: None,
             port_input: None,
@@ -145,7 +158,28 @@ impl DataSourceForm {
         };
         self.status = FormStatus::Testing;
         cx.notify();
-        let password_bytes = password.into_bytes();
+
+        // 编辑模式下，如果密码为空则使用原始密码
+        let password_bytes: Vec<u8> = if password.is_empty() {
+            if let Some(ref encrypted) = self.original_encrypted_password {
+                match self.store.read(cx).decrypt_password(encrypted) {
+                    Ok(decrypted) => decrypted,
+                    Err(e) => {
+                        self.status = FormStatus::TestingFailed(SharedString::from(format!(
+                            "解密密码失败: {}",
+                            e
+                        )));
+                        cx.notify();
+                        return;
+                    }
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            password.into_bytes()
+        };
+
         cx.spawn(async move |this, cx| {
             let result =
                 MysqlClient::test_connection(&host, port, &username, &password_bytes).await;
@@ -304,106 +338,103 @@ impl Render for DataSourceForm {
                     popover_foreground,
                     border,
                 )
-                    .id("form-modal")
-                    .child(
-                            management_modal_scroll("datasource-form-scroll", &self.form_scroll)
-                            .gap(px(16.0))
-                            .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(title),
-                            )
-                            .child(form_field(
-                                "名称",
-                                name.clone(),
-                                border,
-                                muted,
-                                muted_foreground,
-                            ))
-                            .child(form_row(
-                                form_field("主机", host.clone(), border, muted, muted_foreground),
-                                form_field("端口", port.clone(), border, muted, muted_foreground),
-                            ))
-                            .child(form_field(
-                                "用户名",
-                                username.clone(),
-                                border,
-                                muted,
-                                muted_foreground,
-                            ))
-                            .child(form_field(
-                                "密码",
-                                password.clone(),
-                                border,
-                                muted,
-                                muted_foreground,
-                            ))
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(div().flex().gap(px(8.0)).child(form_action_button(
-                                        "连接测试",
-                                        ActionRole::Main,
-                                        matches!(self.status, FormStatus::Testing),
-                                        style,
-                                        {
-                                            let this = cx.weak_entity();
-                                            move |_event, _window, cx| {
-                                                this.update(cx, |form, cx| {
-                                                    form.test_connection(cx)
-                                                })
+                .id("form-modal")
+                .child(
+                    management_modal_scroll("datasource-form-scroll", &self.form_scroll)
+                        .gap(px(16.0))
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(form_field(
+                            "名称",
+                            name.clone(),
+                            border,
+                            muted,
+                            muted_foreground,
+                        ))
+                        .child(form_row(
+                            form_field("主机", host.clone(), border, muted, muted_foreground),
+                            form_field("端口", port.clone(), border, muted, muted_foreground),
+                        ))
+                        .child(form_field(
+                            "用户名",
+                            username.clone(),
+                            border,
+                            muted,
+                            muted_foreground,
+                        ))
+                        .child(form_field(
+                            "密码",
+                            password.clone(),
+                            border,
+                            muted,
+                            muted_foreground,
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .items_center()
+                                .child(div().flex().gap(px(8.0)).child(form_action_button(
+                                    "连接测试",
+                                    ActionRole::Main,
+                                    matches!(self.status, FormStatus::Testing),
+                                    style,
+                                    {
+                                        let this = cx.weak_entity();
+                                        move |_event, _window, cx| {
+                                            this.update(cx, |form, cx| form.test_connection(cx))
                                                 .ok();
-                                            }
-                                        },
-                                    )))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(8.0))
-                                            .child(form_action_button(
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                false,
-                                                style,
-                                                {
-                                                    let this = cx.weak_entity();
-                                                    move |_event, _window, cx| {
-                                                        this.update(cx, |form, cx| {
-                                                            form.status = FormStatus::Cancelled;
-                                                            cx.notify();
-                                                        })
-                                                        .ok();
-                                                    }
-                                                },
-                                            ))
-                                            .child(form_action_button(
-                                                "保存",
-                                                ActionRole::Edit,
-                                                matches!(self.status, FormStatus::Saving),
-                                                style,
-                                                {
-                                                    let this = cx.weak_entity();
-                                                    move |_event, _window, cx| {
-                                                        this.update(cx, |form, cx| form.save(cx))
-                                                            .ok();
-                                                    }
-                                                },
-                                            )),
-                                    ),
-                            )
-                            .child(if let Some((msg, color)) = status_text {
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(color)
-                                    .child(msg)
-                                    .into_any_element()
-                            } else {
-                                div().into_any_element()
-                            }),
-                    ),
+                                        }
+                                    },
+                                )))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(8.0))
+                                        .child(form_action_button(
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            false,
+                                            style,
+                                            {
+                                                let this = cx.weak_entity();
+                                                move |_event, _window, cx| {
+                                                    this.update(cx, |form, cx| {
+                                                        form.status = FormStatus::Cancelled;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            },
+                                        ))
+                                        .child(form_action_button(
+                                            "保存",
+                                            ActionRole::Edit,
+                                            matches!(self.status, FormStatus::Saving),
+                                            style,
+                                            {
+                                                let this = cx.weak_entity();
+                                                move |_event, _window, cx| {
+                                                    this.update(cx, |form, cx| form.save(cx)).ok();
+                                                }
+                                            },
+                                        )),
+                                ),
+                        )
+                        .child(if let Some((msg, color)) = status_text {
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(color)
+                                .child(msg)
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }),
+                ),
             )
     }
 }

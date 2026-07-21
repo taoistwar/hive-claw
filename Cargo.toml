@@ -16,6 +16,7 @@ members = [
     "crates/skills",
     "crates/templates",
     "crates/utils",
+    "crates/hive-builtins",
     "crates/hiveclaw",
     "crates/hivegui",
     "crates/hiveweb",

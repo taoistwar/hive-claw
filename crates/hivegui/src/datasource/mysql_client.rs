@@ -3,7 +3,10 @@ use anyhow::Result;
 use mysql_async::prelude::*;
 use mysql_async::{Conn, Opts, OptsBuilder, Row};
 
-use super::models::{ColumnInfo, DatabaseInfo, TableData, TableDataRequest, TableInfo};
+use super::models::{
+    ColumnInfo, ConstraintInfo, DatabaseInfo, ForeignKeyInfo, IndexInfo, ReferenceInfo, TableData,
+    TableDataRequest, TableInfo, TriggerInfo,
+};
 
 const _CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_QUERY_LIMIT: i64 = 100;
@@ -290,5 +293,254 @@ impl MysqlClient {
 
     fn escape(s: &str) -> String {
         s.replace('`', "``")
+    }
+
+    pub async fn query_indexes(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &[u8],
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<IndexInfo>> {
+        let mut conn = Self::connect(host, port, username, password).await?;
+
+        let query = format!(
+            "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, INDEX_TYPE, COMMENT
+             FROM INFORMATION_SCHEMA.STATISTICS
+             WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}'
+             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+            Self::escape(db_name),
+            Self::escape(table_name)
+        );
+
+        let rows: Vec<Row> = conn.query(&query).await?;
+
+        let mut index_map: std::collections::HashMap<String, IndexInfo> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let name: String = row.get(0).unwrap_or_default();
+            let column: String = row.get(1).unwrap_or_default();
+            let non_unique: bool = row.get(2).unwrap_or(true);
+            let index_type: String = row.get(3).unwrap_or_else(|| "BTREE".to_string());
+            let comment: Option<String> = row.get(4);
+
+            let entry = index_map.entry(name.clone()).or_insert_with(|| IndexInfo {
+                name: name.clone(),
+                columns: Vec::new(),
+                is_unique: !non_unique,
+                is_primary: name == "PRIMARY",
+                index_type,
+                comment,
+            });
+
+            entry.columns.push(column);
+        }
+
+        conn.disconnect().await?;
+        Ok(index_map.into_values().collect())
+    }
+
+    pub async fn query_constraints(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &[u8],
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<ConstraintInfo>> {
+        let mut conn = Self::connect(host, port, username, password).await?;
+
+        let query = format!(
+            "SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, kcu.COLUMN_NAME, cc.CHECK_CLAUSE
+             FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+             LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+               ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+             LEFT JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc
+               ON tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = cc.CONSTRAINT_SCHEMA
+             WHERE tc.TABLE_SCHEMA = '{}' AND tc.TABLE_NAME = '{}'
+             ORDER BY tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
+            Self::escape(db_name),
+            Self::escape(table_name)
+        );
+
+        let rows: Vec<Row> = conn.query(&query).await?;
+
+        let mut constraint_map: std::collections::HashMap<String, ConstraintInfo> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let name: String = row.get(0).unwrap_or_default();
+            let constraint_type: String = row.get(1).unwrap_or_default();
+            let column: String = row.get(2).unwrap_or_default();
+            let check_clause: Option<String> = row.get(3);
+
+            let entry = constraint_map
+                .entry(name.clone())
+                .or_insert_with(|| ConstraintInfo {
+                    name: name.clone(),
+                    constraint_type: constraint_type.clone(),
+                    columns: Vec::new(),
+                    check_clause: if constraint_type == "CHECK" {
+                        check_clause
+                    } else {
+                        None
+                    },
+                });
+
+            if !column.is_empty() {
+                entry.columns.push(column);
+            }
+        }
+
+        conn.disconnect().await?;
+        Ok(constraint_map.into_values().collect())
+    }
+
+    pub async fn query_foreign_keys(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &[u8],
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<ForeignKeyInfo>> {
+        let mut conn = Self::connect(host, port, username, password).await?;
+
+        let query = format!(
+            "SELECT kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME,
+                    kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME,
+                    rc.UPDATE_RULE, rc.DELETE_RULE
+             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+             JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+               ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME AND kcu.TABLE_SCHEMA = rc.CONSTRAINT_SCHEMA
+             WHERE kcu.TABLE_SCHEMA = '{}' AND kcu.TABLE_NAME = '{}'
+               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+             ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
+            Self::escape(db_name),
+            Self::escape(table_name)
+        );
+
+        let rows: Vec<Row> = conn.query(&query).await?;
+
+        let mut fk_map: std::collections::HashMap<String, ForeignKeyInfo> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let name: String = row.get(0).unwrap_or_default();
+            let column: String = row.get(1).unwrap_or_default();
+            let ref_table: String = row.get(2).unwrap_or_default();
+            let ref_column: String = row.get(3).unwrap_or_default();
+            let on_update: String = row.get(4).unwrap_or_else(|| "NO ACTION".to_string());
+            let on_delete: String = row.get(5).unwrap_or_else(|| "NO ACTION".to_string());
+
+            let entry = fk_map
+                .entry(name.clone())
+                .or_insert_with(|| ForeignKeyInfo {
+                    name: name.clone(),
+                    columns: Vec::new(),
+                    ref_table: ref_table.clone(),
+                    ref_columns: Vec::new(),
+                    on_update,
+                    on_delete,
+                });
+
+            entry.columns.push(column);
+            entry.ref_columns.push(ref_column);
+        }
+
+        conn.disconnect().await?;
+        Ok(fk_map.into_values().collect())
+    }
+
+    pub async fn query_references(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &[u8],
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<ReferenceInfo>> {
+        let mut conn = Self::connect(host, port, username, password).await?;
+
+        let query = format!(
+            "SELECT kcu.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
+                    kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME
+             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+             WHERE kcu.REFERENCED_TABLE_SCHEMA = '{}' AND kcu.REFERENCED_TABLE_NAME = '{}'
+             ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
+            Self::escape(db_name),
+            Self::escape(table_name)
+        );
+
+        let rows: Vec<Row> = conn.query(&query).await?;
+
+        let mut ref_map: std::collections::HashMap<String, ReferenceInfo> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let fk_name: String = row.get(0).unwrap_or_default();
+            let ref_table: String = row.get(1).unwrap_or_default();
+            let column: String = row.get(2).unwrap_or_default();
+            let ref_ref_table: String = row.get(3).unwrap_or_default();
+            let ref_column: String = row.get(4).unwrap_or_default();
+
+            let entry = ref_map
+                .entry(fk_name.clone())
+                .or_insert_with(|| ReferenceInfo {
+                    fk_name: fk_name.clone(),
+                    ref_table: ref_table.clone(),
+                    ref_columns: Vec::new(),
+                    columns: Vec::new(),
+                });
+
+            entry.columns.push(column);
+            entry.ref_columns.push(ref_column);
+        }
+
+        conn.disconnect().await?;
+        Ok(ref_map.into_values().collect())
+    }
+
+    pub async fn query_triggers(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &[u8],
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<TriggerInfo>> {
+        let mut conn = Self::connect(host, port, username, password).await?;
+
+        let query = format!(
+            "SELECT TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING, ACTION_STATEMENT
+             FROM INFORMATION_SCHEMA.TRIGGERS
+             WHERE TRIGGER_SCHEMA = '{}' AND EVENT_OBJECT_TABLE = '{}'
+             ORDER BY TRIGGER_NAME",
+            Self::escape(db_name),
+            Self::escape(table_name)
+        );
+
+        let rows: Vec<Row> = conn.query(&query).await?;
+
+        let mut triggers = Vec::new();
+
+        for row in rows {
+            let name: String = row.get(0).unwrap_or_default();
+            let event: String = row.get(1).unwrap_or_default();
+            let timing: String = row.get(2).unwrap_or_default();
+            let statement: String = row.get(3).unwrap_or_default();
+
+            triggers.push(TriggerInfo {
+                name,
+                event,
+                timing,
+                statement,
+            });
+        }
+
+        conn.disconnect().await?;
+        Ok(triggers)
     }
 }

@@ -12,7 +12,7 @@ use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::{Scrollable, ScrollableElement};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Parsed schema field for test input form
 #[derive(Debug, Clone)]
@@ -73,17 +73,16 @@ pub struct FunctionView {
     test_function: Option<Function>,
     test_scroll: ScrollHandle,
     test_state: TestState,
-    show_user_input: bool,
     test_inputs: HashMap<String, String>,
-    test_user_raw_text: String,
-    test_user_actor_id: String,
-    test_user_channel: String,
-    test_user_platform: String,
-    test_user_app_version: String,
+    test_capabilities: HashSet<String>,
+    test_available_capabilities: Vec<Capability>,
+    test_capability_select_open: bool,
+    test_capability_scroll: ScrollHandle,
+    test_capability_filter: String,
+    test_capability_filter_input: Option<Entity<InputState>>,
     parsed_schema_fields: Vec<SchemaField>,
     is_primitive_schema: bool,
     test_input_states: Vec<(String, Entity<InputState>)>,
-    test_user_input_states: HashMap<String, Entity<InputState>>,
 }
 
 impl FunctionView {
@@ -127,17 +126,16 @@ impl FunctionView {
             test_function: None,
             test_scroll: ScrollHandle::default(),
             test_state: TestState::Idle,
-            show_user_input: false,
             test_inputs: HashMap::new(),
-            test_user_raw_text: String::new(),
-            test_user_actor_id: String::new(),
-            test_user_channel: String::new(),
-            test_user_platform: String::new(),
-            test_user_app_version: String::new(),
+            test_capabilities: HashSet::new(),
+            test_available_capabilities: Vec::new(),
+            test_capability_select_open: false,
+            test_capability_scroll: ScrollHandle::default(),
+            test_capability_filter: String::new(),
+            test_capability_filter_input: None,
             parsed_schema_fields: Vec::new(),
             is_primitive_schema: false,
             test_input_states: Vec::new(),
-            test_user_input_states: HashMap::new(),
         };
         v.load(cx);
         v.load_options(cx);
@@ -470,20 +468,72 @@ impl FunctionView {
         }
     }
 
-    fn show_test_dialog(&mut self, window: &mut Window, function: Function, cx: &mut Context<Self>) {
+    fn refresh_test_capabilities(&mut self, cx: &mut Context<Self>) {
+        let Some(function) = self.test_function.as_ref() else {
+            return;
+        };
+        let function_id = function.id;
+        let required_capabilities = function.required_capabilities.clone();
+        let store = self.store.read(cx).clone();
+
+        self.test_available_capabilities.clear();
+        self.test_capabilities.clear();
+        cx.spawn(async move |this, cx| {
+            let capabilities = Capability::list(store.pool(), None, 1_000, 0).await?;
+            this.update(cx, |view, cx| {
+                if !view.show_test
+                    || view.test_function.as_ref().map(|function| function.id) != Some(function_id)
+                {
+                    return;
+                }
+                let available = capabilities
+                    .iter()
+                    .map(|capability| capability.name.clone())
+                    .collect::<Vec<_>>();
+                view.test_capabilities = crate::runtime::resolve_test_capabilities(
+                    required_capabilities.as_deref(),
+                    &available,
+                );
+                view.test_available_capabilities = capabilities;
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
+    fn show_test_dialog(
+        &mut self,
+        window: &mut Window,
+        function: Function,
+        cx: &mut Context<Self>,
+    ) {
         self.show_test = true;
         self.test_function = Some(function.clone());
         self.test_state = TestState::Idle;
-        self.show_user_input = false;
         self.test_inputs.clear();
-        self.test_user_raw_text.clear();
-        self.test_user_actor_id.clear();
-        self.test_user_channel.clear();
-        self.test_user_platform.clear();
-        self.test_user_app_version.clear();
+        self.test_capabilities.clear();
+        self.test_capability_select_open = false;
+        self.test_capability_scroll
+            .set_offset(point(px(0.0), px(0.0)));
+        self.test_capability_filter.clear();
+        let capability_filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("过滤 Capability..."));
+        cx.subscribe_in(
+            &capability_filter_input,
+            window,
+            |view, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    view.test_capability_filter = state.read(cx).value().to_string();
+                    view.test_capability_scroll
+                        .set_offset(point(px(0.0), px(0.0)));
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        self.test_capability_filter_input = Some(capability_filter_input);
         self.test_scroll.set_offset(point(px(0.0), px(0.0)));
         self.test_input_states.clear();
-        self.test_user_input_states.clear();
 
         // Parse input_schema to generate form fields
         self.parsed_schema_fields.clear();
@@ -499,9 +549,14 @@ impl FunctionView {
                     let field = SchemaField {
                         key: "__value__".to_string(),
                         field_type: schema_type.to_string(),
-                        description: obj.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()),
+                        description: obj
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string()),
                         enum_values: obj.get("enum").and_then(|e| e.as_array()).map(|arr| {
-                            arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
                         }),
                         default_value: obj.get("default").cloned(),
                     };
@@ -523,7 +578,9 @@ impl FunctionView {
                             .and_then(|p| p.get("enum"))
                             .and_then(|e| e.as_array())
                             .map(|arr| {
-                                arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
                             });
                         let default_value = prop_obj.and_then(|p| p.get("default")).cloned();
 
@@ -543,29 +600,21 @@ impl FunctionView {
         for field in &self.parsed_schema_fields {
             let input_state = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(format!("输入 {}", if field.key == "__value__" { "值" } else { &field.key }))
+                    .placeholder(format!(
+                        "输入 {}",
+                        if field.key == "__value__" {
+                            "值"
+                        } else {
+                            &field.key
+                        }
+                    ))
                     .default_value("")
             });
-            self.test_input_states.push((field.key.clone(), input_state));
+            self.test_input_states
+                .push((field.key.clone(), input_state));
         }
 
-        // Pre-create InputState for user context fields
-        let user_fields = vec![
-            ("raw_text", "用户原始输入文本"),
-            ("actor_id", "用户/玩家 ID"),
-            ("channel", "来源渠道"),
-            ("platform", "平台"),
-            ("app_version", "应用版本"),
-        ];
-        for (key, label) in user_fields {
-            let input_state = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(label.to_string())
-                    .default_value("")
-            });
-            self.test_user_input_states.insert(key.to_string(), input_state);
-        }
-
+        self.refresh_test_capabilities(cx);
         cx.notify();
     }
 
@@ -574,6 +623,13 @@ impl FunctionView {
         self.test_function = None;
         self.test_state = TestState::Idle;
         self.test_inputs.clear();
+        self.test_capabilities.clear();
+        self.test_available_capabilities.clear();
+        self.test_capability_select_open = false;
+        self.test_capability_filter.clear();
+        self.test_capability_filter_input = None;
+        self.test_capability_scroll
+            .set_offset(point(px(0.0), px(0.0)));
         cx.notify();
     }
 
@@ -583,10 +639,15 @@ impl FunctionView {
             None => return,
         };
 
+        for (key, state) in &self.test_input_states {
+            self.test_inputs
+                .insert(key.clone(), state.read(cx).value().to_string());
+        }
+
         self.test_state = TestState::Running;
         cx.notify();
 
-        // Build input JSON
+        // Build input JSON from test_inputs
         let input = if self.is_primitive_schema {
             // For primitive types, get the value directly
             if let Some(val) = self.test_inputs.get("__value__") {
@@ -609,101 +670,37 @@ impl FunctionView {
             serde_json::Value::Object(map)
         };
 
-        // Build user_input if provided
-        let user_input = if self.show_user_input
-            && (!self.test_user_raw_text.is_empty()
-                || !self.test_user_actor_id.is_empty()
-                || !self.test_user_channel.is_empty()
-                || !self.test_user_platform.is_empty()
-                || !self.test_user_app_version.is_empty())
-        {
-            let mut ui = serde_json::Map::new();
-            if !self.test_user_raw_text.is_empty() {
-                ui.insert("raw_text".to_string(), serde_json::Value::String(self.test_user_raw_text.clone()));
-            }
-            if !self.test_user_actor_id.is_empty() {
-                ui.insert("actor_id".to_string(), serde_json::Value::String(self.test_user_actor_id.clone()));
-            }
-            if !self.test_user_channel.is_empty() {
-                ui.insert("channel".to_string(), serde_json::Value::String(self.test_user_channel.clone()));
-            }
-            if !self.test_user_platform.is_empty() {
-                ui.insert("client_type".to_string(), serde_json::Value::String(self.test_user_platform.clone()));
-            }
-            if !self.test_user_app_version.is_empty() {
-                ui.insert("client_version".to_string(), serde_json::Value::String(self.test_user_app_version.clone()));
-            }
-            Some(serde_json::Value::Object(ui))
-        } else {
-            None
-        };
+        let base_dir = Store::default_db_path();
+        let mut allowed_capabilities = self.test_capabilities.iter().cloned().collect::<Vec<_>>();
+        allowed_capabilities.sort();
 
-        let function_id = function.id;
         cx.spawn(async move |this, cx| {
             let start = std::time::Instant::now();
-            let client = reqwest::Client::new();
-            let url = format!("http://localhost:3300/api/functions/{}/invoke", function_id);
-
-            let mut body = serde_json::json!({
-                "input": input,
-                "agent_id": 1
-            });
-            if let Some(ui) = user_input {
-                body["user_input"] = ui;
-            }
-
-            let result = client
-                .post(&url)
-                .json(&body)
-                .send()
-                .await;
+            let result = crate::runtime::FunctionTestExecutor::execute_with_capabilities(
+                &function,
+                input,
+                &base_dir,
+                allowed_capabilities,
+            )
+            .await;
 
             let elapsed_ms = start.elapsed().as_millis() as i64;
 
-            match result {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(json) => {
-                                let output = json.get("output")
-                                    .map(|o| {
-                                        if o.is_string() {
-                                            o.as_str().unwrap_or("").to_string()
-                                        } else {
-                                            serde_json::to_string_pretty(o).unwrap_or_else(|_| o.to_string())
-                                        }
-                                    })
-                                    .unwrap_or_else(|| json.to_string());
-
-                                this.update(cx, |v, cx| {
-                                    v.test_state = TestState::Success { output, elapsed_ms };
-                                    cx.notify();
-                                }).ok();
-                            }
-                            Err(e) => {
-                                this.update(cx, |v, cx| {
-                                    v.test_state = TestState::Error { message: format!("解析响应失败: {}", e) };
-                                    cx.notify();
-                                }).ok();
-                            }
-                        }
-                    } else {
-                        let status = resp.status();
-                        let text = resp.text().await.unwrap_or_else(|_| "未知错误".to_string());
-                        this.update(cx, |v, cx| {
-                            v.test_state = TestState::Error { message: format!("HTTP {}: {}", status, text) };
-                            cx.notify();
-                        }).ok();
-                    }
-                }
-                Err(e) => {
-                    this.update(cx, |v, cx| {
-                        v.test_state = TestState::Error { message: format!("请求失败: {}", e) };
-                        cx.notify();
-                    }).ok();
-                }
-            }
-        }).detach();
+            let _ = match result {
+                Ok(output) => this.update(cx, |v, cx| {
+                    v.test_state = TestState::Success {
+                        output: crate::runtime::format_test_output(&output),
+                        elapsed_ms,
+                    };
+                    cx.notify();
+                }),
+                Err(message) => this.update(cx, |v, cx| {
+                    v.test_state = TestState::Error { message };
+                    cx.notify();
+                }),
+            };
+        })
+        .detach();
     }
 }
 
@@ -1468,6 +1465,21 @@ impl Render for FunctionView {
                 };
 
                 let kind_label = if function.kind == 1 { "内置函数" } else { "自定义函数" };
+                let mut selected_capabilities = self
+                    .test_capabilities
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                selected_capabilities.sort();
+                let capability_summary = if selected_capabilities.is_empty() {
+                    if self.test_available_capabilities.is_empty() {
+                        "暂无可用 Capability".to_string()
+                    } else {
+                        "请选择 Capability".to_string()
+                    }
+                } else {
+                    selected_capabilities.join(", ")
+                };
 
                 this.child(
                     div()
@@ -1629,96 +1641,124 @@ impl Render for FunctionView {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(8.0))
+                                    .gap(px(4.0))
+                                    .child(
+                                        selector_field(
+                                            "允许的 Capabilities",
+                                            capability_summary,
+                                            "test-capability-selector",
+                                            theme,
+                                            {
+                                                let view = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    view.update(cx, |view, cx| {
+                                                        view.test_capability_select_open =
+                                                            !view.test_capability_select_open;
+                                                        view.test_capability_scroll
+                                                            .set_offset(point(px(0.0), px(0.0)));
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            },
+                                        )
+                                        .when(self.test_capability_select_open, |field| {
+                                            field.child(
+                                                div()
+                                                    .id("test-capability-options")
+                                                    .flex()
+                                                    .flex_col()
+                                                    .max_h(px(200.0))
+                                                    .pr(px(12.0))
+                                                    .overflow_y_scroll()
+                                                    .track_scroll(&self.test_capability_scroll)
+                                                    .vertical_scrollbar(
+                                                        &self.test_capability_scroll,
+                                                    )
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                                    .rounded(px(4.0))
+                                                    .bg(theme.popover)
+                                                    .text_color(theme.popover_foreground)
+                                                    .when_some(
+                                                        self.test_capability_filter_input.as_ref(),
+                                                        |menu, input| {
+                                                            menu.child(
+                                                                div().p(px(4.0)).child(
+                                                                    Input::new(input)
+                                                                        .w_full()
+                                                                        .h(px(32.0))
+                                                                        .px(px(8.0))
+                                                                        .border_1()
+                                                                        .border_color(theme.border)
+                                                                        .rounded(px(4.0)),
+                                                                ),
+                                                            )
+                                                        },
+                                                    )
+                                                    .children(
+                                                        self.test_available_capabilities
+                                                            .iter()
+                                                            .filter(|capability| {
+                                                                crate::runtime::capability_matches_filter(
+                                                                    &capability.name,
+                                                                    &capability.description,
+                                                                    &self.test_capability_filter,
+                                                                )
+                                                            })
+                                                            .map(|capability| {
+                                                    let name = capability.name.clone();
+                                                    let selected =
+                                                        self.test_capabilities.contains(&name);
+                                                    let label = format!(
+                                                        "{}{}{}",
+                                                        if selected { "✓ " } else { "" },
+                                                        capability.name,
+                                                        if capability.is_dangerous {
+                                                            "（危险）"
+                                                        } else {
+                                                            ""
+                                                        }
+                                                    );
+
+                                                    selector_option(
+                                                        format!(
+                                                            "test-capability-option-{}",
+                                                            capability.name
+                                                        ),
+                                                        label,
+                                                        selected,
+                                                        theme,
+                                                        {
+                                                            let view = cx.weak_entity();
+                                                            move |_, _, cx| {
+                                                                view.update(cx, |view, cx| {
+                                                                    if !view
+                                                                        .test_capabilities
+                                                                        .remove(&name)
+                                                                    {
+                                                                        view.test_capabilities
+                                                                            .insert(name.clone());
+                                                                    }
+                                                                    view.test_state =
+                                                                        TestState::Idle;
+                                                                    cx.notify();
+                                                                })
+                                                                .ok();
+                                                            }
+                                                        },
+                                                    )
+                                                }),
+                                                    ),
+                                            )
+                                        }),
+                                    )
                                     .child(
                                         div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(8.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .child("UserInput 上下文（可选）："),
-                                            )
-                                            .child(
-                                                action_button(
-                                                    "toggle-user-input",
-                                                    if self.show_user_input { "收起 ▲" } else { "展开 ▼" },
-                                                    ActionRole::Neutral,
-                                                    ActionSize::Row,
-                                                    style,
-                                                )
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| {
-                                                            v.show_user_input = !v.show_user_input;
-                                                            cx.notify();
-                                                        }).ok();
-                                                    }
-                                                }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(theme.muted_foreground)
-                                                    .child("用于依赖用户上下文的函数（如 query_balance 需要 actor_id）"),
-                                            ),
-                                    )
-                                    .when(self.show_user_input, |this| {
-                                        this.child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .gap(px(8.0))
-                                                .p(px(12.0))
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded(px(6.0))
-                                                .bg(theme.background.opacity(0.5))
-                                                .child(
-                                                    test_input_field(
-                                                        "raw_text",
-                                                        "用户原始输入文本",
-                                                        &self.test_user_input_states,
-                                                        theme,
-                                                    )
-                                                )
-                                                .child(
-                                                    test_input_field(
-                                                        "actor_id",
-                                                        "用户/玩家 ID",
-                                                        &self.test_user_input_states,
-                                                        theme,
-                                                    )
-                                                )
-                                                .child(
-                                                    test_input_field(
-                                                        "channel",
-                                                        "来源渠道",
-                                                        &self.test_user_input_states,
-                                                        theme,
-                                                    )
-                                                )
-                                                .child(
-                                                    test_input_field(
-                                                        "platform",
-                                                        "平台",
-                                                        &self.test_user_input_states,
-                                                        theme,
-                                                    )
-                                                )
-                                                .child(
-                                                    test_input_field(
-                                                        "app_version",
-                                                        "应用版本",
-                                                        &self.test_user_input_states,
-                                                        theme,
-                                                    )
-                                                ),
-                                        )
-                                    }),
+                                            .text_size(px(12.0))
+                                            .text_color(theme.muted_foreground)
+                                            .child("仅用于本次测试，不会修改函数配置"),
+                                    ),
                             )
                             .child(
                                 match &self.test_state {
@@ -1768,6 +1808,7 @@ impl Render for FunctionView {
                                                     .border_color(theme.border)
                                                     .rounded(px(4.0))
                                                     .text_size(px(12.0))
+                                                    .font_family("monospace")
                                                     .child(output.clone()),
                                             )
                                     }
@@ -1815,11 +1856,25 @@ impl Render for FunctionView {
                                             move |_, _, cx| {
                                                 t.update(cx, |v, cx| {
                                                     v.test_inputs.clear();
-                                                    v.test_user_raw_text.clear();
-                                                    v.test_user_actor_id.clear();
-                                                    v.test_user_channel.clear();
-                                                    v.test_user_platform.clear();
-                                                    v.test_user_app_version.clear();
+                                                    let required_capabilities = v
+                                                        .test_function
+                                                        .as_ref()
+                                                        .and_then(|function| {
+                                                            function.required_capabilities.clone()
+                                                        });
+                                                    let available = v
+                                                        .test_available_capabilities
+                                                        .iter()
+                                                        .map(|capability| {
+                                                            capability.name.clone()
+                                                        })
+                                                        .collect::<Vec<_>>();
+                                                    v.test_capabilities =
+                                                        crate::runtime::resolve_test_capabilities(
+                                                            required_capabilities.as_deref(),
+                                                            &available,
+                                                        );
+                                                    v.test_capability_select_open = false;
                                                     v.test_state = TestState::Idle;
                                                     cx.notify();
                                                 }).ok();
@@ -1988,35 +2043,4 @@ fn selector_option(
         .cursor(CursorStyle::PointingHand)
         .child(label.into())
         .on_mouse_down(MouseButton::Left, on_select)
-}
-
-/// Helper function for test dialog user input fields
-fn test_input_field(
-    field_name: &str,
-    label: &str,
-    input_states: &HashMap<String, Entity<InputState>>,
-    theme: &gpui_component::theme::Theme,
-) -> impl IntoElement {
-    let input_state = input_states.get(field_name);
-
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .child(label.to_string()),
-        )
-        .when_some(input_state, |this, state| {
-            this.child(
-                Input::new(state)
-                    .w_full()
-                    .h(px(32.0))
-                    .px(px(8.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(px(4.0)),
-            )
-        })
 }

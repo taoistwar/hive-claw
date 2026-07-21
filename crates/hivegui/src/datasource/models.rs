@@ -72,3 +72,47 @@ pub struct TableDataRequest {
     pub where_clause: Option<String>,
     pub order_by: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub is_unique: bool,
+    pub is_primary: bool,
+    pub index_type: String,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstraintInfo {
+    pub name: String,
+    pub constraint_type: String,
+    pub columns: Vec<String>,
+    pub check_clause: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceInfo {
+    pub fk_name: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerInfo {
+    pub name: String,
+    pub event: String,
+    pub timing: String,
+    pub statement: String,
+}

@@ -1,4 +1,5 @@
 use crate::datasource::{Store, entity_store::Workflow};
+use crate::ui::dag_editor_view::DagEditorView;
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
@@ -32,6 +33,10 @@ pub struct WorkflowView {
     description_input: Option<Entity<InputState>>,
     timeout_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
+    // DAG 编辑器状态
+    show_dag_editor: bool,
+    dag_editor_workflow_id: Option<i64>,
+    dag_editor_view: Option<Entity<DagEditorView>>,
 }
 
 impl WorkflowView {
@@ -58,6 +63,9 @@ impl WorkflowView {
             description_input: None,
             timeout_input: None,
             search_input: None,
+            show_dag_editor: false,
+            dag_editor_workflow_id: None,
+            dag_editor_view: None,
         };
         v.load(cx);
         v
@@ -154,8 +162,7 @@ impl WorkflowView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll
-            .set_offset(point(px(0.0), px(0.0)));
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
         self.error_message = None;
@@ -296,6 +303,21 @@ impl WorkflowView {
             self.load(cx);
         }
     }
+
+    fn show_dag_editor(&mut self, workflow_id: i64, cx: &mut Context<Self>) {
+        self.show_dag_editor = true;
+        self.dag_editor_workflow_id = Some(workflow_id);
+        self.dag_editor_view =
+            Some(cx.new(|cx| DagEditorView::new(self.store.clone(), workflow_id, cx)));
+        cx.notify();
+    }
+
+    fn hide_dag_editor(&mut self, cx: &mut Context<Self>) {
+        self.show_dag_editor = false;
+        self.dag_editor_workflow_id = None;
+        self.dag_editor_view = None;
+        cx.notify();
+    }
 }
 
 impl Render for WorkflowView {
@@ -426,21 +448,61 @@ impl Render for WorkflowView {
                             .child(
                                 list_header(style)
                                     .child(list_header_cell(Some(col_widths[0]), style).child("ID"))
-                                    .child(list_header_cell(Some(col_widths[1]), style).child("名称"))
-                                    .child(list_header_cell(Some(col_widths[2]), style).child("Identifier"))
-                                    .child(list_header_cell(Some(col_widths[3]), style).child("Timeout"))
-                                    .child(list_header_cell(Some(col_widths[4]), style).child("操作")),
+                                    .child(
+                                        list_header_cell(Some(col_widths[1]), style).child("名称"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[2]), style)
+                                            .child("Identifier"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[3]), style)
+                                            .child("Timeout"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[4]), style).child("操作"),
+                                    ),
                             )
                             .children(self.items.iter().map(|item| {
                                 let id = item.id;
                                 let ic = item.clone();
                                 list_row(style)
-                                    .child(list_cell(Some(col_widths[0]), style).child(format!("{}", item.id)))
-                                    .child(list_cell(Some(col_widths[1]), style).child(item.name.clone()))
-                                    .child(list_cell(Some(col_widths[2]), style).child(item.identifier.clone()))
-                                    .child(list_cell(Some(col_widths[3]), style).child(format!("{}ms", item.timeout_ms)))
+                                    .child(
+                                        list_cell(Some(col_widths[0]), style)
+                                            .child(format!("{}", item.id)),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[1]), style)
+                                            .child(item.name.clone()),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[2]), style)
+                                            .child(item.identifier.clone()),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[3]), style)
+                                            .child(format!("{}ms", item.timeout_ms)),
+                                    )
                                     .child(
                                         list_actions(None, style)
+                                            .child(
+                                                action_button(
+                                                    ("dag", id as u64),
+                                                    "编辑DAG",
+                                                    ActionRole::Edit,
+                                                    ActionSize::Row,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.show_dag_editor(id, cx);
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
+                                            )
                                             .child(
                                                 action_button(
                                                     ("edit", id as u64),
@@ -514,12 +576,15 @@ impl Render for WorkflowView {
                                     ActionSize::Page,
                                     style,
                                 )
-                                .on_mouse_down(MouseButton::Left, {
-                                    let t = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        t.update(cx, |v, cx| v.prev_page(cx)).ok();
-                                    }
-                                }),
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.prev_page(cx)).ok();
+                                        }
+                                    },
+                                ),
                             )
                             .child(
                                 div()
@@ -543,12 +608,15 @@ impl Render for WorkflowView {
                                     ActionSize::Page,
                                     style,
                                 )
-                                .on_mouse_down(MouseButton::Left, {
-                                    let t = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        t.update(cx, |v, cx| v.next_page(cx)).ok();
-                                    }
-                                }),
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.next_page(cx)).ok();
+                                        }
+                                    },
+                                ),
                             ),
                     ),
             )
@@ -582,74 +650,80 @@ impl Render for WorkflowView {
                         theme.foreground,
                         theme.border,
                     )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            management_modal_scroll("workflow-form-scroll", &self.form_scroll)
-                                .gap(px(12.0))
-                                .child(
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        management_modal_scroll("workflow-form-scroll", &self.form_scroll)
+                            .gap(px(12.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_id.is_some() {
+                                        "编辑工作流"
+                                    } else {
+                                        "添加工作流"
+                                    }),
+                            )
+                            .child(form_field("Identifier *", identifier_input, theme))
+                            .child(form_field("名称 *", name_input, theme))
+                            .child(form_field("描述", description_input, theme))
+                            .child(form_field("Timeout (ms)", timeout_input, theme))
+                            .when_some(self.error_message.as_ref(), |this, err| {
+                                this.child(
                                     div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(if self.editing_id.is_some() {
-                                            "编辑工作流"
-                                        } else {
-                                            "添加工作流"
-                                        }),
+                                        .p(px(8.0))
+                                        .bg(theme.warning.opacity(0.1))
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme.warning)
+                                        .child(err.clone()),
                                 )
-                                .child(form_field("Identifier *", identifier_input, theme))
-                                .child(form_field("名称 *", name_input, theme))
-                                .child(form_field("描述", description_input, theme))
-                                .child(form_field("Timeout (ms)", timeout_input, theme))
-                                .when_some(self.error_message.as_ref(), |this, err| {
-                                    this.child(
-                                        div()
-                                            .p(px(8.0))
-                                            .bg(theme.warning.opacity(0.1))
-                                            .rounded(px(4.0))
-                                            .text_size(px(12.0))
-                                            .text_color(theme.warning)
-                                            .child(err.clone()),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .justify_end()
-                                        .gap(px(8.0))
-                                        .child(
-                                            action_button(
-                                                "cancel",
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                ActionSize::Page,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        action_button(
+                                            "cancel",
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            ActionSize::Page,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.hide_form(cx)).ok();
                                                 }
-                                            }),
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "save",
+                                            "保存",
+                                            ActionRole::Main,
+                                            ActionSize::Page,
+                                            style,
                                         )
-                                        .child(
-                                            action_button(
-                                                "save",
-                                                "保存",
-                                                ActionRole::Main,
-                                                ActionSize::Page,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.save(cx)).ok();
                                                 }
-                                            }),
+                                            },
                                         ),
-                                ),
-                        ),
+                                    ),
+                            ),
+                    ),
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
@@ -766,10 +840,95 @@ impl Render for WorkflowView {
                         ),
                 )
             })
+            .when(self.show_dag_editor, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(0.0))
+                        .bg(theme.overlay)
+                        .opacity(0.3)
+                        .on_mouse_down(MouseButton::Left, {
+                            let t = cx.weak_entity();
+                            move |_, _, cx| {
+                                t.update(cx, |v, cx| v.hide_dag_editor(cx)).ok();
+                            }
+                        }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(24.0))
+                        .bottom(px(24.0))
+                        .left(px(24.0))
+                        .right(px(24.0))
+                        .bg(theme.popover)
+                        .rounded(px(12.0))
+                        .shadow_lg()
+                        .border_1()
+                        .border_color(theme.border)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .size_full()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .p(px(16.0))
+                                        .border_b_1()
+                                        .border_color(theme.border)
+                                        .child(
+                                            div()
+                                                .text_size(px(18.0))
+                                                .font_weight(FontWeight::BOLD)
+                                                .child("编辑 DAG"),
+                                        )
+                                        .child(
+                                            action_button(
+                                                "close-dag",
+                                                "关闭",
+                                                ActionRole::Neutral,
+                                                ActionSize::Page,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| v.hide_dag_editor(cx))
+                                                        .ok();
+                                                }
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_hidden()
+                                        .when_some(self.dag_editor_view.clone(), |this, editor| {
+                                            this.child(editor)
+                                        }),
+                                ),
+                        ),
+                )
+            })
     }
 }
 
-fn form_field(label: &'static str, input: Entity<InputState>, theme: &gpui_component::theme::Theme) -> impl IntoElement {
+fn form_field(
+    label: &'static str,
+    input: Entity<InputState>,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()

@@ -2,13 +2,17 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use gpui::{
-    Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString, Window, div,
-    prelude::*, px,
+    ClipboardItem, Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString,
+    Window, div, prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::input::{Input, InputEvent, InputState};
 use tracing::info;
 
-use crate::datasource::{ColumnInfo, DataSource, MysqlClient, Store, TableData, TableDataRequest};
+use crate::datasource::{
+    ColumnInfo, ConstraintInfo, DataSource, ForeignKeyInfo, IndexInfo, MysqlClient, ReferenceInfo,
+    Store, TableData, TableDataRequest, TriggerInfo,
+};
 
 #[derive(Clone, Copy)]
 struct ViewerPalette {
@@ -68,6 +72,11 @@ pub enum TableTab {
     Columns,
     Ddl,
     Data,
+    Constraints,
+    Indexes,
+    ForeignKeys,
+    References,
+    Triggers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -121,6 +130,14 @@ struct OpenTable {
     hovered_row_col: Option<usize>,
     context_menu_row: Option<usize>,
     context_menu_col: Option<usize>,
+    last_sql: String,
+    query_time_ms: u64,
+    // New tab data
+    indexes: Vec<IndexInfo>,
+    constraints: Vec<ConstraintInfo>,
+    foreign_keys: Vec<ForeignKeyInfo>,
+    references: Vec<ReferenceInfo>,
+    triggers: Vec<TriggerInfo>,
 }
 
 const DEFAULT_COLUMN_WIDTHS: [f32; 5] = [120.0, 100.0, 60.0, 60.0, 200.0];
@@ -156,6 +173,13 @@ impl OpenTable {
             hovered_row_col: None,
             context_menu_row: None,
             context_menu_col: None,
+            last_sql: String::new(),
+            query_time_ms: 0,
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            references: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 
@@ -188,6 +212,11 @@ impl OpenTable {
     fn dismiss_error(&mut self) {
         self.error_modal = None;
     }
+
+    /// Escape backticks in SQL identifiers to prevent injection.
+    fn escape_identifier(name: &str) -> String {
+        name.replace('`', "``")
+    }
 }
 
 pub struct TableViewer {
@@ -195,6 +224,8 @@ pub struct TableViewer {
     store: Option<Entity<Store>>,
     open_tables: Vec<OpenTable>,
     active_table_index: usize,
+    ddl_search_input: Option<Entity<InputState>>,
+    ddl_search_text: String,
 }
 
 impl TableViewer {
@@ -204,6 +235,8 @@ impl TableViewer {
             store: None,
             open_tables: Vec::new(),
             active_table_index: 0,
+            ddl_search_input: None,
+            ddl_search_text: String::new(),
         }
     }
 
@@ -322,6 +355,7 @@ impl TableViewer {
             TableTab::Columns => t.load_columns_async(ds, &store_ref, idx, cx),
             TableTab::Ddl => t.load_ddl_async(ds, &store_ref, idx, cx),
             TableTab::Data => t.load_data_async(ds, &store_ref, idx, cx, false),
+            _ => {} // TODO: implement loading for Constraints, Indexes, ForeignKeys, References, Triggers
         }
     }
 
@@ -628,6 +662,29 @@ impl OpenTable {
                 limit,
             };
 
+            // Build SQL for display
+            let escaped_db = Self::escape_identifier(&db);
+            let escaped_table = Self::escape_identifier(&tbl);
+            let sql = if let Some(ref wc) = req.where_clause {
+                let mut s = format!(
+                    "SELECT * FROM `{}`.`{}` WHERE {}",
+                    escaped_db, escaped_table, wc
+                );
+                if let Some(ref ob) = req.order_by {
+                    s.push_str(&format!(" ORDER BY {}", ob));
+                }
+                s.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                s
+            } else {
+                let mut s = format!("SELECT * FROM `{}`.`{}`", escaped_db, escaped_table);
+                if let Some(ref ob) = req.order_by {
+                    s.push_str(&format!(" ORDER BY {}", ob));
+                }
+                s.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                s
+            };
+
+            let start = Instant::now();
             let result = MysqlClient::query_table_data(
                 &ds.host,
                 ds.port,
@@ -638,6 +695,7 @@ impl OpenTable {
                 &req,
             )
             .await;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
             match result {
                 Ok(data) => {
                     let total = data.total_count;
@@ -646,6 +704,8 @@ impl OpenTable {
                         if let Some(t) = v.open_tables.get_mut(table_idx) {
                             t.loading = false;
                             t.total_count = total;
+                            t.last_sql = sql;
+                            t.query_time_ms = elapsed_ms;
                             t.page_cache.insert(
                                 page,
                                 PageCache {
@@ -676,7 +736,7 @@ impl OpenTable {
 }
 
 impl Render for TableViewer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.weak_entity();
         let palette = ViewerPalette::current(cx);
 
@@ -741,11 +801,29 @@ impl Render for TableViewer {
                     col = col.child(self.render_columns(t, this.clone(), palette));
                 }
                 TableTab::Ddl => {
+                    if self.ddl_search_input.is_none() {
+                        self.ddl_search_input = Some(
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索 DDL...")),
+                        );
+                        let search_input = self.ddl_search_input.clone().unwrap();
+                        cx.subscribe_in(
+                            &search_input,
+                            window,
+                            |this, state, event, _window, cx| {
+                                if let InputEvent::Change = event {
+                                    this.ddl_search_text = state.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        )
+                        .detach();
+                    }
                     col = col.child(self.render_ddl(t, palette));
                 }
                 TableTab::Data => {
                     col = col.child(self.render_data_tab(t, this.clone(), palette));
                 }
+                _ => {} // TODO: implement rendering for Constraints, Indexes, ForeignKeys, References, Triggers
             }
         }
 
@@ -780,7 +858,7 @@ impl Render for TableViewer {
                         .cursor(CursorStyle::PointingHand)
                         .child(
                             div()
-                                .id("context-menu-item")
+                                .id("context-menu-item-view")
                                 .px(px(12.0))
                                 .py(px(6.0))
                                 .text_size(px(12.0))
@@ -793,6 +871,52 @@ impl Render for TableViewer {
                                     move |_, _, cx| {
                                         this.update(cx, |v, cx| {
                                             v.open_value_panel_from_context_menu(cx);
+                                        })
+                                        .ok();
+                                    }
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("context-menu-item-copy")
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .text_size(px(12.0))
+                                .text_color(palette.popover_foreground)
+                                .hover(move |s| s.bg(palette.list_hover))
+                                .cursor(CursorStyle::PointingHand)
+                                .child("复制")
+                                .on_mouse_down(MouseButton::Left, {
+                                    let this = this.clone();
+                                    move |_, _, cx| {
+                                        this.update(cx, |v, cx| {
+                                            let idx = v.active_table_index;
+                                            let row_col =
+                                                v.open_tables.get(idx).and_then(|t| {
+                                                    match (t.context_menu_row, t.context_menu_col) {
+                                                        (Some(r), Some(c)) => Some((r, c)),
+                                                        _ => None,
+                                                    }
+                                                });
+                                            if let Some((row, col)) = row_col {
+                                                if let Some(table) = v.open_tables.get(idx) {
+                                                    if let Some(data) = &table.table_data {
+                                                        if row < data.rows.len()
+                                                            && col < data.rows[row].len()
+                                                        {
+                                                            if let Some(text) = &data.rows[row][col]
+                                                            {
+                                                                cx.write_to_clipboard(
+                                                                    ClipboardItem::new_string(
+                                                                        text.clone(),
+                                                                    ),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            v.dismiss_context_menu(cx);
                                         })
                                         .ok();
                                     }
@@ -1147,14 +1271,45 @@ impl TableViewer {
                     .enumerate()
                     .fold(row, |acc, (i, text)| {
                         let w = widths.get(i).copied().unwrap_or(200.0);
-                        acc.child(
-                            div()
-                                .w(px(w))
-                                .flex_shrink_0()
-                                .px(px(12.0))
-                                .py(px(5.0))
-                                .child(text),
-                        )
+                        let text_str = text.to_string();
+                        let cell = div()
+                            .relative()
+                            .w(px(w))
+                            .flex_shrink_0()
+                            .px(px(12.0))
+                            .py(px(5.0))
+                            .child(text);
+
+                        // Add copy button for column name (i==0) and type (i==1)
+                        if i <= 1 && !text_str.is_empty() {
+                            let copy_text = text_str.clone();
+                            let cell = cell.child(
+                                div()
+                                    .id(format!("copy-col-{i}-{text_str}"))
+                                    .absolute()
+                                    .right(px(4.0))
+                                    .top(px(2.0))
+                                    .px(px(4.0))
+                                    .py(px(1.0))
+                                    .rounded(px(2.0))
+                                    .bg(palette.secondary)
+                                    .text_size(px(10.0))
+                                    .text_color(palette.secondary_foreground)
+                                    .cursor(CursorStyle::PointingHand)
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let copy_text = copy_text.clone();
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy_text.clone(),
+                                            ));
+                                        }
+                                    })
+                                    .child("复制"),
+                            );
+                            acc.child(cell)
+                        } else {
+                            acc.child(cell)
+                        }
                     });
 
                 scroll = scroll.child(row);
@@ -1166,19 +1321,84 @@ impl TableViewer {
 
     fn render_ddl(&self, t: &OpenTable, palette: ViewerPalette) -> impl IntoElement {
         let ddl = t.ddl.clone();
+        let search_text = self.ddl_search_text.clone();
+        let display_ddl = if search_text.is_empty() {
+            ddl.clone()
+        } else {
+            ddl.lines()
+                .filter(|line| line.to_lowercase().contains(&search_text.to_lowercase()))
+                .collect::<Vec<&str>>()
+                .join("\n")
+        };
+
         div()
             .id("ddl-scroll")
             .flex()
-            .overflow_y_scroll()
-            .track_scroll(&t.scroll_handle)
+            .flex_col()
+            .size_full()
             .child(
                 div()
-                    .p(px(16.0))
-                    .text_size(px(12.0))
-                    .font_family("monospace")
-                    .bg(palette.list_row)
-                    .text_color(palette.foreground)
-                    .child(ddl),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .p(px(8.0))
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(palette.muted_foreground)
+                                    .child("搜索:"),
+                            )
+                            .child(
+                                div()
+                                    .w(px(200.0))
+                                    .child(Input::new(&self.ddl_search_input.as_ref().unwrap())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .bg(palette.primary)
+                            .text_size(px(12.0))
+                            .text_color(palette.primary_foreground)
+                            .cursor(CursorStyle::PointingHand)
+                            .on_mouse_down(MouseButton::Left, {
+                                let ddl_text = ddl.clone();
+                                move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        ddl_text.clone(),
+                                    ));
+                                }
+                            })
+                            .child("复制"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("ddl-scroll-content")
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .track_scroll(&t.scroll_handle)
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .p(px(16.0))
+                            .text_size(px(12.0))
+                            .font_family("monospace")
+                            .bg(palette.list_row)
+                            .text_color(palette.foreground)
+                            .child(display_ddl),
+                    ),
             )
     }
 
@@ -1647,7 +1867,9 @@ impl TableViewer {
             visited_pages.sort();
         }
 
-        let mut pager = div()
+        let row_count = t.table_data.as_ref().map(|d| d.rows.len()).unwrap_or(0);
+
+        let pager = div()
             .flex()
             .items_center()
             .justify_between()
@@ -1656,147 +1878,196 @@ impl TableViewer {
             .border_t_1()
             .border_color(palette.border)
             .text_size(px(11.0))
-            .text_color(palette.muted_foreground);
-
-        pager = pager.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(format!("每页"))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(2.0))
-                        .child(self.render_page_size_option(50, page_size, this.clone(), palette))
-                        .child(self.render_page_size_option(100, page_size, this.clone(), palette))
-                        .child(self.render_page_size_option(200, page_size, this.clone(), palette))
-                        .child(self.render_page_size_option(500, page_size, this.clone(), palette)),
-                ),
-        );
-
-        let mut btn_row = div().flex().items_center().gap(px(4.0));
-
-        btn_row = btn_row.child(
-            div()
-                .id("prev-page")
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .bg(if has_prev {
-                    palette.secondary
-                } else {
-                    palette.muted
-                })
-                .text_size(px(11.0))
-                .cursor(if has_prev {
-                    CursorStyle::PointingHand
-                } else {
-                    CursorStyle::Arrow
-                })
-                .child("上一页")
-                .when(has_prev, |el| {
-                    let this = this.clone();
-                    el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        let page = current_page - 1;
-                        this.update(cx, |v, cx| {
-                            v.goto_page(page, cx);
-                        })
-                        .ok();
-                    })
-                }),
-        );
-
-        for &page_num in &visited_pages {
-            let is_current = page_num == current_page;
-            btn_row = btn_row.child(
+            .text_color(palette.muted_foreground)
+            // Left: row count + query time
+            .child(
                 div()
-                    .id(format!("page-{page_num}"))
-                    .px(px(6.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .bg(if is_current {
-                        palette.primary
-                    } else {
-                        palette.secondary
-                    })
-                    .text_color(if is_current {
-                        palette.primary_foreground
-                    } else {
-                        palette.secondary_foreground
-                    })
-                    .text_size(px(11.0))
-                    .cursor(if is_current {
-                        CursorStyle::Arrow
-                    } else {
-                        CursorStyle::PointingHand
-                    })
-                    .child(format!("{}", page_num + 1))
-                    .when(!is_current, |el| {
-                        let this = this.clone();
-                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |v, cx| {
-                                v.goto_page(page_num, cx);
-                            })
-                            .ok();
-                        })
-                    }),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(format!("共 {} 行", t.total_count))
+                    .child(format!("({} 行)", row_count))
+                    .child(format!("{}ms", t.query_time_ms)),
+            )
+            // Center: SQL
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_1()
+                    .mx(px(16.0))
+                    .overflow_x_hidden()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted_foreground)
+                            .whitespace_nowrap()
+                            .child(t.last_sql.clone()),
+                    ),
+            )
+            // Right: page size + navigation
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(format!("{} 行/页", page_size))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            // First page
+                            .child(
+                                div()
+                                    .id("first-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if current_page > 0 {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if current_page > 0 {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("«")
+                                    .when(current_page > 0, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| v.goto_page(0, cx)).ok();
+                                        })
+                                    }),
+                            )
+                            // Previous page
+                            .child(
+                                div()
+                                    .id("prev-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if has_prev {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if has_prev {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("‹")
+                                    .when(has_prev, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| {
+                                                v.goto_page(current_page - 1, cx)
+                                            })
+                                            .ok();
+                                        })
+                                    }),
+                            )
+                            // Page numbers
+                            .children(visited_pages.iter().map(|&page_num| {
+                                let is_current = page_num == current_page;
+                                div()
+                                    .id(format!("page-{page_num}"))
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if is_current {
+                                        palette.primary
+                                    } else {
+                                        palette.secondary
+                                    })
+                                    .text_color(if is_current {
+                                        palette.primary_foreground
+                                    } else {
+                                        palette.secondary_foreground
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if is_current {
+                                        CursorStyle::Arrow
+                                    } else {
+                                        CursorStyle::PointingHand
+                                    })
+                                    .child(format!("{}", page_num + 1))
+                                    .when(!is_current, {
+                                        let this = this.clone();
+                                        move |el| {
+                                            el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                this.update(cx, |v, cx| v.goto_page(page_num, cx))
+                                                    .ok();
+                                            })
+                                        }
+                                    })
+                            }))
+                            // Next page
+                            .child(
+                                div()
+                                    .id("next-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if has_next {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if has_next {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("›")
+                                    .when(has_next, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| {
+                                                v.goto_page(current_page + 1, cx)
+                                            })
+                                            .ok();
+                                        })
+                                    }),
+                            )
+                            // Last page
+                            .child(
+                                div()
+                                    .id("last-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if has_next {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if has_next {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("»")
+                                    .when(has_next, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| {
+                                                v.goto_page(total_pages - 1, cx)
+                                            })
+                                            .ok();
+                                        })
+                                    }),
+                            ),
+                    ),
             );
-        }
 
-        btn_row = btn_row.child(
-            div()
-                .id("next-page")
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .bg(if has_next {
-                    palette.secondary
-                } else {
-                    palette.muted
-                })
-                .text_size(px(11.0))
-                .cursor(if has_next {
-                    CursorStyle::PointingHand
-                } else {
-                    CursorStyle::Arrow
-                })
-                .child("下一页")
-                .when(has_next, |el| {
-                    let this = this.clone();
-                    el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        let page = current_page + 1;
-                        this.update(cx, |v, cx| {
-                            v.goto_page(page, cx);
-                        })
-                        .ok();
-                    })
-                }),
-        );
-
-        btn_row = btn_row.child(
-            div()
-                .id("force-refresh")
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .bg(palette.secondary)
-                .text_color(palette.secondary_foreground)
-                .text_size(px(11.0))
-                .cursor(CursorStyle::PointingHand)
-                .child("刷新")
-                .on_mouse_down(MouseButton::Left, {
-                    let this = this.clone();
-                    move |_, _, cx| {
-                        this.update(cx, |v, cx| {
-                            v.force_refresh(cx);
-                        })
-                        .ok();
-                    }
-                }),
-        );
-
-        pager = pager.child(btn_row);
         pager
     }
 

@@ -18,7 +18,7 @@ impl UtilityView {
     pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
         Self {
             active_tab: 0,
-            prompt_debugger: cx.new(|cx| PromptDebugger::new(cx, llm_store)),
+            prompt_debugger: cx.new(|cx| PromptDebugger::new(cx, store.clone(), llm_store)),
             datasource_view: cx.new(|cx| DataSourceView::new(store, cx)),
         }
     }

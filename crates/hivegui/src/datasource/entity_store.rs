@@ -667,6 +667,28 @@ pub struct Workflow {
 }
 
 #[derive(Debug, Clone)]
+pub struct WorkflowNode {
+    pub id: i64,
+    pub workflow_id: i64,
+    pub node_key: String,
+    pub node_type: String,
+    pub function_id: Option<i64>,
+    pub position_x: f64,
+    pub position_y: f64,
+    pub node_config: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowEdge {
+    pub id: i64,
+    pub workflow_id: i64,
+    pub src_node_key: String,
+    pub dst_node_key: String,
+    pub mapping: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Tool {
     pub id: i64,
     pub identifier: String,
@@ -1072,6 +1094,29 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Category {
 }
 
 // === Capability CRUD ===
+/// Registers the desktop runtime capability catalog without deleting custom entries.
+pub async fn register_runtime_capabilities(pool: &Pool<Sqlite>) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    for capability in crate::runtime::desktop_host::DESKTOP_CAPABILITY_CATALOG {
+        sqlx::query(
+            r#"
+            INSERT INTO capabilities (name, description, is_dangerous, category_id, created_at)
+            VALUES (?, ?, ?, NULL, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                description = excluded.description,
+                is_dangerous = excluded.is_dangerous
+            "#,
+        )
+        .bind(capability.name)
+        .bind(capability.description)
+        .bind(capability.is_dangerous as i64)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
 impl Capability {
     pub async fn list(
         pool: &Pool<Sqlite>,
@@ -1330,6 +1375,24 @@ impl Plugin {
         );
 
         Ok(())
+    }
+
+    /// Get the local WASM file path for this plugin
+    pub fn wasm_path(&self, base_dir: &std::path::Path) -> std::path::PathBuf {
+        base_dir
+            .join("plugins")
+            .join(self.id.to_string())
+            .join("plugin.wasm")
+    }
+
+    /// Ensure the plugin directory exists
+    pub fn ensure_plugin_dir(
+        base_dir: &std::path::Path,
+        plugin_id: i64,
+    ) -> Result<std::path::PathBuf> {
+        let plugin_dir = base_dir.join("plugins").join(plugin_id.to_string());
+        std::fs::create_dir_all(&plugin_dir)?;
+        Ok(plugin_dir)
     }
 }
 
@@ -1682,6 +1745,214 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Workflow {
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
+    }
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for WorkflowNode {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(WorkflowNode {
+            id: row.try_get("id")?,
+            workflow_id: row.try_get("workflow_id")?,
+            node_key: row.try_get("node_key")?,
+            node_type: row.try_get("node_type")?,
+            function_id: row.try_get("function_id")?,
+            position_x: row.try_get("position_x")?,
+            position_y: row.try_get("position_y")?,
+            node_config: row.try_get("node_config")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for WorkflowEdge {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(WorkflowEdge {
+            id: row.try_get("id")?,
+            workflow_id: row.try_get("workflow_id")?,
+            src_node_key: row.try_get("src_node_key")?,
+            dst_node_key: row.try_get("dst_node_key")?,
+            mapping: row.try_get("mapping")?,
+        })
+    }
+}
+
+// === WorkflowNode CRUD ===
+impl WorkflowNode {
+    pub async fn list_by_workflow(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+    ) -> Result<Vec<WorkflowNode>> {
+        let nodes = sqlx::query_as::<_, WorkflowNode>(
+            "SELECT id, workflow_id, node_key, node_type, function_id, position_x, position_y, node_config, created_at FROM workflow_nodes WHERE workflow_id = ? ORDER BY id",
+        )
+        .bind(workflow_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(nodes)
+    }
+
+    pub async fn upsert(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+        node_key: String,
+        node_type: String,
+        function_id: Option<i64>,
+        position_x: f64,
+        position_y: f64,
+        node_config: Option<String>,
+    ) -> Result<WorkflowNode> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"INSERT INTO workflow_nodes (workflow_id, node_key, node_type, function_id, position_x, position_y, node_config, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(workflow_id, node_key) DO UPDATE SET
+                   node_type=excluded.node_type, function_id=excluded.function_id,
+                   position_x=excluded.position_x, position_y=excluded.position_y,
+                   node_config=excluded.node_config"#,
+        )
+        .bind(workflow_id)
+        .bind(&node_key)
+        .bind(&node_type)
+        .bind(function_id)
+        .bind(position_x)
+        .bind(position_y)
+        .bind(&node_config)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+
+        let node = sqlx::query_as::<_, WorkflowNode>(
+            "SELECT id, workflow_id, node_key, node_type, function_id, position_x, position_y, node_config, created_at FROM workflow_nodes WHERE workflow_id = ? AND node_key = ?",
+        )
+        .bind(workflow_id)
+        .bind(&node_key)
+        .fetch_optional(pool)
+        .await?;
+        node.ok_or_else(|| anyhow::anyhow!("Failed to retrieve upserted node"))
+    }
+
+    pub async fn delete_by_workflow(pool: &Pool<Sqlite>, workflow_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM workflow_nodes WHERE workflow_id = ?")
+            .bind(workflow_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_node(pool: &Pool<Sqlite>, workflow_id: i64, node_key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM workflow_nodes WHERE workflow_id = ? AND node_key = ?")
+            .bind(workflow_id)
+            .bind(node_key)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_position(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+        node_key: &str,
+        position_x: f64,
+        position_y: f64,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE workflow_nodes SET position_x = ?, position_y = ? WHERE workflow_id = ? AND node_key = ?",
+        )
+        .bind(position_x)
+        .bind(position_y)
+        .bind(workflow_id)
+        .bind(node_key)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
+// === WorkflowEdge CRUD ===
+impl WorkflowEdge {
+    pub async fn list_by_workflow(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+    ) -> Result<Vec<WorkflowEdge>> {
+        let edges = sqlx::query_as::<_, WorkflowEdge>(
+            "SELECT id, workflow_id, src_node_key, dst_node_key, mapping FROM workflow_edges WHERE workflow_id = ? ORDER BY id",
+        )
+        .bind(workflow_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(edges)
+    }
+
+    pub async fn upsert(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+        src_node_key: String,
+        dst_node_key: String,
+        mapping: String,
+    ) -> Result<WorkflowEdge> {
+        sqlx::query(
+            r#"INSERT INTO workflow_edges (workflow_id, src_node_key, dst_node_key, mapping)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(workflow_id, src_node_key, dst_node_key) DO UPDATE SET
+                   mapping=excluded.mapping"#,
+        )
+        .bind(workflow_id)
+        .bind(&src_node_key)
+        .bind(&dst_node_key)
+        .bind(&mapping)
+        .execute(pool)
+        .await?;
+
+        let edge = sqlx::query_as::<_, WorkflowEdge>(
+            "SELECT id, workflow_id, src_node_key, dst_node_key, mapping FROM workflow_edges WHERE workflow_id = ? AND src_node_key = ? AND dst_node_key = ?",
+        )
+        .bind(workflow_id)
+        .bind(&src_node_key)
+        .bind(&dst_node_key)
+        .fetch_optional(pool)
+        .await?;
+        edge.ok_or_else(|| anyhow::anyhow!("Failed to retrieve upserted edge"))
+    }
+
+    pub async fn delete_by_workflow(pool: &Pool<Sqlite>, workflow_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM workflow_edges WHERE workflow_id = ?")
+            .bind(workflow_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_edge(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+        src_node_key: &str,
+        dst_node_key: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM workflow_edges WHERE workflow_id = ? AND src_node_key = ? AND dst_node_key = ?",
+        )
+        .bind(workflow_id)
+        .bind(src_node_key)
+        .bind(dst_node_key)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_edges_by_node(
+        pool: &Pool<Sqlite>,
+        workflow_id: i64,
+        node_key: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM workflow_edges WHERE workflow_id = ? AND (src_node_key = ? OR dst_node_key = ?)",
+        )
+        .bind(workflow_id)
+        .bind(node_key)
+        .bind(node_key)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -3095,6 +3366,42 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
             model_preset TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // workflow_nodes 表（DAG 节点）
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+            node_key TEXT NOT NULL,
+            node_type TEXT NOT NULL DEFAULT 'function_node',
+            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL,
+            position_x REAL NOT NULL DEFAULT 0,
+            position_y REAL NOT NULL DEFAULT 0,
+            node_config TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(workflow_id, node_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // workflow_edges 表（DAG 连线）
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+            src_node_key TEXT NOT NULL,
+            dst_node_key TEXT NOT NULL,
+            mapping TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(workflow_id, src_node_key, dst_node_key)
         )
         "#,
     )

@@ -68,6 +68,7 @@ impl Store {
 
         // FR-027: 运行数据库迁移（包括初始化实体表）
         super::entity_store::run_migrations(&pool).await?;
+        super::entity_store::register_runtime_capabilities(&pool).await?;
 
         // 执行数据库完整性检查
         let integrity_result = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")

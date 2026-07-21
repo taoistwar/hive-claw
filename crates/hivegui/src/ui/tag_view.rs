@@ -146,8 +146,7 @@ impl TagView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll
-            .set_offset(point(px(0.0), px(0.0)));
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_tag = None;
         self.form_name = String::new();
@@ -155,6 +154,18 @@ impl TagView {
         self.error_message = None;
         self.name_input = None;
         self.color_picker = None;
+        cx.notify();
+    }
+
+    fn set_color(&mut self, hex_color: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.form_color = hex_color.to_string();
+        if let Some(ref picker) = self.color_picker {
+            if let Ok(color) = Hsla::parse_hex(hex_color) {
+                picker.update(cx, |state, cx| {
+                    state.set_value(color, window, cx);
+                });
+            }
+        }
         cx.notify();
     }
 
@@ -448,10 +459,8 @@ impl Render for TagView {
                             .children(self.tags.iter().map(|tag| {
                                 let tag_id = tag.id;
                                 let tag_clone = tag.clone();
-                                let tag_color = tag
-                                    .color
-                                    .as_ref()
-                                    .and_then(|c| Hsla::parse_hex(c).ok());
+                                let tag_color =
+                                    tag.color.as_ref().and_then(|c| Hsla::parse_hex(c).ok());
                                 list_row(style)
                                     .child(
                                         list_cell(Some(col_widths[0]), style)
@@ -642,87 +651,247 @@ impl Render for TagView {
                 )
                 .child(
                     management_modal_panel(
-                        management_modal_layer(px(500.0)),
+                        div()
+                            .absolute()
+                            .top(px(24.0))
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            .mx_auto()
+                            .w_full()
+                            .max_w(px(500.0))
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden(),
                         popover,
                         popover_foreground,
                         border,
                     )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            management_modal_scroll("tag-form-scroll", &self.form_scroll)
-                                .gap(px(16.0))
-                                .child(
-                                    div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(if self.editing_tag.is_some() {
-                                            "编辑标签"
-                                        } else {
-                                            "添加标签"
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.0))
-                                        .child(div().text_size(px(13.0)).child("名称 *"))
-                                        .child(
-                                            Input::new(self.name_input.as_ref().unwrap())
-                                                .w_full()
-                                                .h(px(32.0))
-                                                .px(px(8.0))
-                                                .border_1()
-                                                .border_color(input)
-                                                .rounded(px(4.0)),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .child("颜色 (HEX，如 #FF5733)"),
-                                        )
-                                        .child(
-                                            ColorPicker::new(
-                                                self.color_picker.as_ref().unwrap(),
-                                            )
-                                            .small(),
-                                        ),
-                                )
-                                .when_some(self.error_message.as_ref(), |this, err| {
-                                    this.child(
-                                        div()
-                                            .p(px(8.0))
-                                            .bg(danger)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        management_modal_scroll("tag-form-scroll", &self.form_scroll)
+                            .gap(px(16.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_tag.is_some() {
+                                        "编辑标签"
+                                    } else {
+                                        "添加标签"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.0))
+                                    .child(div().text_size(px(13.0)).child("名称 *"))
+                                    .child(
+                                        Input::new(self.name_input.as_ref().unwrap())
+                                            .w_full()
+                                            .h(px(32.0))
+                                            .px(px(8.0))
                                             .border_1()
-                                            .border_color(danger)
-                                            .rounded(px(4.0))
-                                            .text_size(px(12.0))
-                                            .text_color(danger_foreground)
-                                            .child(err.clone()),
+                                            .border_color(input)
+                                            .rounded(px(4.0)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div().text_size(px(13.0)).child("颜色 (HEX，如 #FF5733)"),
                                     )
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .justify_end()
-                                        .gap(px(8.0))
-                                        .child(
-                                            action_button(
-                                                "cancel-form",
-                                                "取消",
-                                                cancel_role,
-                                                ActionSize::Dialog,
-                                                style,
+                                    .child(
+                                        ColorPicker::new(self.color_picker.as_ref().unwrap())
+                                            .small(),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(6.0))
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#EF4444").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#EF4444", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                             )
-                                            .on_mouse_down(MouseButton::Left, {
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#F97316").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#F97316", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#EAB308").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#EAB308", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#22C55E").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#22C55E", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#3B82F6").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#3B82F6", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#A855F7").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#A855F7", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(24.0))
+                                                    .h(px(24.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(Hsla::parse_hex("#6B7280").unwrap())
+                                                    .border_1()
+                                                    .border_color(border)
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.set_color(
+                                                                    "#6B7280", window, cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                            ),
+                                    ),
+                            )
+                            .when_some(self.error_message.as_ref(), |this, err| {
+                                this.child(
+                                    div()
+                                        .p(px(8.0))
+                                        .bg(danger)
+                                        .border_1()
+                                        .border_color(danger)
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(danger_foreground)
+                                        .child(err.clone()),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        action_button(
+                                            "cancel-form",
+                                            "取消",
+                                            cancel_role,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let this = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     this.update(cx, |view, cx| {
@@ -730,17 +899,20 @@ impl Render for TagView {
                                                     })
                                                     .ok();
                                                 }
-                                            }),
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "save-form",
+                                            "保存",
+                                            save_role,
+                                            ActionSize::Dialog,
+                                            style,
                                         )
-                                        .child(
-                                            action_button(
-                                                "save-form",
-                                                "保存",
-                                                save_role,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let this = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     this.update(cx, |view, cx| {
@@ -748,10 +920,11 @@ impl Render for TagView {
                                                     })
                                                     .ok();
                                                 }
-                                            }),
+                                            },
                                         ),
-                                ),
-                        ),
+                                    ),
+                            ),
+                    ),
                 )
             })
             .when_some(self.confirm_delete_id, |this, id| {

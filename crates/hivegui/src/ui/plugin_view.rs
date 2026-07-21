@@ -32,6 +32,7 @@ pub struct PluginView {
     form_sha256: String,
     form_size_bytes: String,
     form_wasm_path: Option<PathBuf>,
+    form_file_path: Option<PathBuf>,
     form_manifest: Option<String>,
     error_message: Option<String>,
     confirm_delete_id: Option<i64>,
@@ -64,6 +65,7 @@ impl PluginView {
             form_sha256: String::new(),
             form_size_bytes: String::new(),
             form_wasm_path: None,
+            form_file_path: None,
             form_manifest: None,
             error_message: None,
             confirm_delete_id: None,
@@ -92,6 +94,49 @@ impl PluginView {
         let exports = extract_wasm_exports(&data)?;
         let manifest = serde_json::json!({ "exports": exports }).to_string();
         Ok((hex, size, manifest))
+    }
+
+    fn manifest_exports(manifest: Option<&str>) -> Vec<String> {
+        manifest
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|value| {
+                value
+                    .get("exports")
+                    .and_then(|exports| exports.as_array())
+                    .cloned()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|export| export.as_str().map(str::to_owned))
+            .filter(|export| !export.is_empty())
+            .collect()
+    }
+
+    fn manifest_for_edit(item: &Plugin, base_dir: &std::path::Path) -> Option<String> {
+        if !Self::manifest_exports(item.manifest.as_deref()).is_empty() {
+            return item.manifest.clone();
+        }
+
+        Self::inspect_wasm(&item.wasm_path(base_dir))
+            .map(|(_, _, manifest)| manifest)
+            .ok()
+            .or_else(|| item.manifest.clone())
+    }
+
+    fn save_wasm_locally(
+        base_dir: &std::path::Path,
+        plugin_id: i64,
+        source_path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let plugin_dir = Plugin::ensure_plugin_dir(base_dir, plugin_id)?;
+        let dest_path = plugin_dir.join("plugin.wasm");
+        std::fs::copy(source_path, &dest_path)?;
+        tracing::info!(
+            plugin_id = plugin_id,
+            dest = %dest_path.display(),
+            "WASM file saved locally"
+        );
+        Ok(())
     }
 
     fn pick_wasm_file(&mut self, cx: &mut Context<Self>) {
@@ -219,12 +264,15 @@ impl PluginView {
         self.form_sha256.clear();
         self.form_size_bytes.clear();
         self.form_wasm_path = None;
+        self.form_file_path = None;
         self.form_manifest = None;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
 
     fn show_edit_form(&mut self, window: &mut Window, item: Plugin, cx: &mut Context<Self>) {
+        let base_dir = Store::default_db_path();
+        let manifest = Self::manifest_for_edit(&item, &base_dir);
         self.show_form = true;
         self.editing_id = Some(item.id);
         self.form_identifier = item.identifier.clone();
@@ -234,7 +282,8 @@ impl PluginView {
         self.form_sha256 = item.sha256.clone();
         self.form_size_bytes = item.size_bytes.to_string();
         self.form_wasm_path = None;
-        self.form_manifest = item.manifest.clone();
+        self.form_file_path = Some(item.wasm_path(&base_dir));
+        self.form_manifest = manifest;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
@@ -243,6 +292,7 @@ impl PluginView {
         self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
+        self.form_file_path = None;
         self.error_message = None;
         self.identifier_input = None;
         self.name_input = None;
@@ -299,6 +349,8 @@ impl PluginView {
         let ver = self.form_version.clone();
         let sha = self.form_sha256.clone();
         let manifest = self.form_manifest.clone();
+        let wasm_path = self.form_wasm_path.clone();
+        let base_dir = Store::default_db_path();
 
         if let Some(eid) = self.editing_id {
             cx.spawn(async move |this, cx| {
@@ -321,6 +373,12 @@ impl PluginView {
                 .await
                 {
                     Ok(_) => {
+                        // Copy WASM file locally if a new one was selected
+                        if let Some(ref src) = wasm_path {
+                            if let Err(e) = Self::save_wasm_locally(&base_dir, eid, src) {
+                                tracing::error!("Failed to save WASM locally: {}", e);
+                            }
+                        }
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
                             v.load(cx);
@@ -357,7 +415,13 @@ impl PluginView {
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(plugin) => {
+                        // Copy WASM file locally
+                        if let Some(ref src) = wasm_path {
+                            if let Err(e) = Self::save_wasm_locally(&base_dir, plugin.id, src) {
+                                tracing::error!("Failed to save WASM locally: {}", e);
+                            }
+                        }
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
                             v.load(cx);
@@ -379,9 +443,21 @@ impl PluginView {
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
+        let base_dir = Store::default_db_path();
         cx.spawn(
             async move |this, cx| match Plugin::delete(store.pool(), id).await {
                 Ok(_) => {
+                    // Clean up local WASM directory
+                    let wasm_dir = base_dir.join("plugins").join(id.to_string());
+                    if wasm_dir.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&wasm_dir) {
+                            tracing::warn!(
+                                plugin_id = id,
+                                error = %e,
+                                "Failed to cleanup plugin WASM directory"
+                            );
+                        }
+                    }
                     this.update(cx, |v, cx| {
                         v.load(cx);
                     })
@@ -439,6 +515,9 @@ impl Render for PluginView {
         }
         let style = ManagementStyle::current(cx);
         let theme = cx.theme();
+        let exports = Self::manifest_exports(self.form_manifest.as_deref());
+        let export_background = style.action(ActionRole::Main).background;
+        let export_foreground = style.action(ActionRole::Main).foreground;
 
         div()
             .flex()
@@ -801,12 +880,80 @@ impl Render for PluginView {
                                                                     .to_string()
                                                             })
                                                             .unwrap_or_else(|| {
-                                                                "未选择文件".to_string()
+                                                                if self.editing_id.is_some() {
+                                                                    "未选择新文件".to_string()
+                                                                } else {
+                                                                    "未选择文件".to_string()
+                                                                }
                                                             }),
                                                     ),
                                             ),
                                     ),
                             )
+                            .when_some(self.form_file_path.as_ref(), |this, path| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .text_color(theme.foreground)
+                                                .child("文件地址"),
+                                        )
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .min_h(px(32.0))
+                                                .px(px(8.0))
+                                                .py(px(6.0))
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .rounded(px(4.0))
+                                                .bg(theme.background.opacity(0.3))
+                                                .text_size(px(11.0))
+                                                .text_color(theme.foreground.opacity(0.7))
+                                                .debug_selector(|| "PLUGIN_FILE_ADDRESS".to_owned())
+                                                .child(path.display().to_string()),
+                                        ),
+                                )
+                            })
+                            .when(!exports.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .text_color(theme.foreground)
+                                                .child("exports"),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .gap(px(6.0))
+                                                .p(px(8.0))
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .rounded(px(4.0))
+                                                .debug_selector(|| "PLUGIN_EXPORTS".to_owned())
+                                                .children(exports.iter().cloned().map(|export| {
+                                                    div()
+                                                        .px(px(7.0))
+                                                        .py(px(3.0))
+                                                        .rounded(px(4.0))
+                                                        .bg(export_background)
+                                                        .text_color(export_foreground)
+                                                        .text_size(px(11.0))
+                                                        .child(export)
+                                                })),
+                                        ),
+                                )
+                            })
                             .when(!self.form_sha256.is_empty(), |this| {
                                 this.child(
                                     div()
@@ -1077,12 +1224,118 @@ fn form_field(
 #[cfg(test)]
 mod tests {
     use gpui::{
-        AppContext, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext,
-        point, px, size,
+        AppContext, Entity, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
+        VisualTestContext, point, px, size,
     };
 
     use super::PluginView;
-    use crate::datasource::Store;
+    use crate::datasource::{Store, entity_store::Plugin};
+
+    fn test_plugin(id: i64) -> Plugin {
+        Plugin {
+            id,
+            identifier: "weather".into(),
+            name: "Weather".into(),
+            description: Some("Weather plugin".into()),
+            manifest: Some(r#"{"exports":["run","health"]}"#.into()),
+            runtime: "extism".into(),
+            version: "1.0.0".into(),
+            author: None,
+            repository_url: None,
+            s3_key: "plugins/weather/1.0.0.wasm".into(),
+            sha256: "abc123".into(),
+            size_bytes: 1024,
+            category_id: None,
+            created_at: "2026-07-20T00:00:00Z".into(),
+            updated_at: "2026-07-20T00:00:00Z".into(),
+            deleted_at: None,
+        }
+    }
+
+    fn test_view(store: Entity<Store>) -> PluginView {
+        PluginView {
+            store,
+            items: Vec::new(),
+            loading: false,
+            search_text: String::new(),
+            current_page: 0,
+            page_size: 20,
+            total_count: 0,
+            show_form: false,
+            form_scroll: gpui::ScrollHandle::default(),
+            editing_id: None,
+            form_identifier: String::new(),
+            form_name: String::new(),
+            form_description: String::new(),
+            form_version: String::new(),
+            form_sha256: String::new(),
+            form_size_bytes: String::new(),
+            form_wasm_path: None,
+            form_file_path: None,
+            form_manifest: None,
+            error_message: None,
+            confirm_delete_id: None,
+            identifier_input: None,
+            name_input: None,
+            description_input: None,
+            version_input: None,
+            sha256_input: None,
+            size_bytes_input: None,
+            search_input: None,
+        }
+    }
+
+    #[test]
+    fn edit_manifest_is_rebuilt_from_the_persisted_wasm_when_missing() {
+        let temp_dir = tempfile::tempdir().expect("create temporary plugin directory");
+        let mut plugin = test_plugin(42);
+        plugin.manifest = None;
+        let plugin_dir =
+            Plugin::ensure_plugin_dir(temp_dir.path(), plugin.id).expect("create plugin directory");
+        let wasm = wat::parse_str(
+            r#"(module
+                (func (export "run"))
+                (func (export "health"))
+            )"#,
+        )
+        .expect("build wasm fixture");
+        std::fs::write(plugin_dir.join("plugin.wasm"), wasm).expect("write wasm fixture");
+
+        let manifest = PluginView::manifest_for_edit(&plugin, temp_dir.path());
+        assert_eq!(
+            PluginView::manifest_exports(manifest.as_deref()),
+            ["run", "health"]
+        );
+    }
+
+    #[gpui::test]
+    fn editing_plugin_records_the_local_wasm_address(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let store = cx.new(|_| store);
+        let plugin = test_plugin(42);
+        let expected = plugin.wasm_path(&Store::default_db_path());
+
+        let window = cx.open_window(size(px(800.0), px(500.0)), move |window, cx| {
+            let mut view = test_view(store.clone());
+            view.show_edit_form(window, plugin, cx);
+            assert_eq!(view.form_file_path.as_deref(), Some(expected.as_path()));
+            view
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        assert!(cx.debug_bounds("PLUGIN_FILE_ADDRESS").is_some());
+        assert!(cx.debug_bounds("PLUGIN_EXPORTS").is_some());
+    }
 
     #[gpui::test]
     fn plugin_form_stays_inside_the_viewport_and_scrolls(cx: &mut TestAppContext) {
@@ -1099,35 +1352,8 @@ mod tests {
         let store = cx.new(|_| store);
 
         let window = cx.open_window(size(px(800.0), px(500.0)), move |window, cx| {
-            let mut view = PluginView {
-                store: store.clone(),
-                items: Vec::new(),
-                loading: false,
-                search_text: String::new(),
-                current_page: 0,
-                page_size: 20,
-                total_count: 0,
-                show_form: true,
-                form_scroll: gpui::ScrollHandle::default(),
-                editing_id: None,
-                form_identifier: String::new(),
-                form_name: String::new(),
-                form_description: String::new(),
-                form_version: String::new(),
-                form_sha256: String::new(),
-                form_size_bytes: String::new(),
-                form_wasm_path: None,
-                form_manifest: None,
-                error_message: None,
-                confirm_delete_id: None,
-                identifier_input: None,
-                name_input: None,
-                description_input: None,
-                version_input: None,
-                sha256_input: None,
-                size_bytes_input: None,
-                search_input: None,
-            };
+            let mut view = test_view(store.clone());
+            view.show_form = true;
             view.init_inputs(window, cx);
             view
         });

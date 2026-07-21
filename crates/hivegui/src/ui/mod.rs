@@ -3,6 +3,7 @@ pub mod ai_view;
 pub mod app;
 pub mod capability_view;
 pub mod category_view;
+pub mod dag_editor_view;
 pub mod datasource_form;
 pub mod datasource_view;
 pub mod extension_view;

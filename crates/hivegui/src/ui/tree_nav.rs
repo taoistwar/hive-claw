@@ -296,7 +296,6 @@ impl TreeNav {
 
     fn load_data_sources(&mut self, store: Entity<Store>, cx: &mut Context<Self>) {
         let store_clone = store.read(cx).clone();
-        let this = cx.weak_entity();
 
         self.loading = true;
         self.nodes.clear();
@@ -371,7 +370,6 @@ impl TreeNav {
 
         let Some(ref store) = self.store else { return };
         let store = store.read(cx).clone();
-        let this = cx.weak_entity();
 
         self.loading = true;
         cx.notify();
@@ -465,7 +463,6 @@ impl TreeNav {
 
         let Some(ref store) = self.store else { return };
         let store = store.read(cx).clone();
-        let this = cx.weak_entity();
 
         self.loading = true;
         cx.notify();
@@ -740,7 +737,6 @@ impl Render for TreeNav {
                             )
                             .on_mouse_down(MouseButton::Left, {
                                 let this_for_ds = this.clone();
-                                let idx = idx;
                                 let id = *id;
                                 move |_, _, cx| {
                                     this_for_ds
@@ -795,7 +791,6 @@ impl Render for TreeNav {
                                     .on_mouse_down(MouseButton::Left, {
                                         let this_for_db = this.clone();
                                         let source_idx = idx;
-                                        let db_idx = db_idx;
                                         let source_id = *id;
                                         let db_name = db.name.clone();
                                         move |_, _, cx| {

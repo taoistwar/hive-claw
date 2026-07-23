@@ -5,6 +5,10 @@ use mysql_async::{Conn, Opts, OptsBuilder, Row};
 
 use super::models::{ColumnInfo, DatabaseInfo, TableData, TableDataRequest, TableInfo};
 
+#[expect(
+    dead_code,
+    reason = "reserved for the pending MySQL connection-timeout integration"
+)]
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_QUERY_LIMIT: i64 = 100;
 

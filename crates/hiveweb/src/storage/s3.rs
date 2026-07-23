@@ -10,7 +10,7 @@ pub async fn create_client() -> anyhow::Result<Client> {
         .map_err(|_| anyhow::anyhow!("AWS_SECRET_ACCESS_KEY env var missing"))?;
     let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
 
-    let config = aws_config::defaults(BehaviorVersion::v2025_08_07())
+    let config = aws_config::defaults(BehaviorVersion::v2026_01_12())
         .endpoint_url(endpoint_url)
         .credentials_provider(aws_sdk_s3::config::Credentials::new(
             access_key, secret_key, None, None, "env",

@@ -711,7 +711,7 @@ async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
 
     let req = Request::builder()
         .method("POST")
-        .uri(&format!("/api/admin-chat/sessions/{sid}/messages"))
+        .uri(format!("/api/admin-chat/sessions/{sid}/messages"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {}", token))
         .header("accept", "text/event-stream")

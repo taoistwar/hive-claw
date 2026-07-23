@@ -56,13 +56,13 @@ async fn expand_strategy_wildcards(
     for s in strategies {
         if s.channel
             .as_array()
-            .map_or(false, |a| a.iter().any(|v| v == "*"))
+            .is_some_and(|a| a.iter().any(|v| v == "*"))
         {
             s.channel = serde_json::to_value(&channels).unwrap_or_default();
         }
         if s.client_type
             .as_array()
-            .map_or(false, |a| a.iter().any(|v| v == "*"))
+            .is_some_and(|a| a.iter().any(|v| v == "*"))
         {
             s.client_type = serde_json::to_value(&client_types).unwrap_or_default();
         }
@@ -415,6 +415,10 @@ struct ExecuteRequest {
     game_id: String,
     channel: String,
     client_type: String,
+    #[expect(
+        dead_code,
+        reason = "accepted for legacy request compatibility but not used by recommendation logic"
+    )]
     client_version: String,
 }
 
@@ -543,7 +547,7 @@ async fn execute_recommendation(
 
     let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
         .await
-        .unwrap_or_else(|_| None)
+        .unwrap_or(None)
         .unwrap_or_default();
 
     let total_times = if is_vip {
@@ -575,7 +579,7 @@ async fn execute_recommendation(
             .extensions
             .as_ref()
             .and_then(|v| v.as_array())
-            .map(|a| a.clone())
+            .cloned()
             .unwrap_or_default();
         exts.push(usage_ext);
         saved.extensions = Some(serde_json::Value::Array(exts));

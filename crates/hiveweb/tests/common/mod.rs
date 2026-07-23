@@ -60,12 +60,12 @@ pub async fn test_pool() -> Result<MySqlPool> {
 
 /// Mint a Bearer-style JWT for the given admin and role.
 pub fn mint_jwt(admin_id: i64, role: i8) -> Result<String> {
-    Ok(create_admin_token(admin_id, role)?)
+    create_admin_token(admin_id, role)
 }
 
 /// Mint a user-style JWT for the given user id.
 pub fn mint_user_jwt(user_id: i64) -> Result<String> {
-    Ok(create_user_token(user_id)?)
+    create_user_token(user_id)
 }
 
 /// An admin row owned by a test. Deleted on drop (with a best-effort blocking

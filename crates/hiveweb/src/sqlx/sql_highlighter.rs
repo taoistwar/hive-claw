@@ -56,7 +56,7 @@ impl SqlHighlighter {
 }
 
 /// Formats the styled fragments using only foreground 24-bit color terminal escape codes.
-fn as_terminal_escaped_no_bg<'a>(ranges: &'a [(Style, &str)]) -> String {
+fn as_terminal_escaped_no_bg(ranges: &[(Style, &str)]) -> String {
     ranges
         .iter()
         .map(|(style, text)| {

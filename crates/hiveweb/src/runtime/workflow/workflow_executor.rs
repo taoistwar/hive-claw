@@ -18,6 +18,11 @@ use crate::runtime::llm::LlmRegistry;
 use crate::runtime::workflow::node_executor::execute_node;
 use agent::context::AgentContext;
 
+pub(super) type WorkflowNodeRow = (i64, String, Option<i64>, String, Option<Value>);
+type WorkflowEdgeRow = (i64, i64, Value);
+pub(super) type NodeValueMap = HashMap<String, Value>;
+pub(super) type LayerExecutionResult = (NodeValueMap, NodeValueMap, NodeValueMap);
+
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {
     #[error("workflow {0} not found")]
@@ -100,7 +105,7 @@ impl WorkflowExecutor {
             .ok_or(WorkflowError::NotFound(workflow_id))
             .map(|(t, os)| (t as u64, os))?;
 
-        let nodes: Vec<(i64, String, Option<i64>, String, Option<Value>)> = sqlx::query_as(
+        let nodes: Vec<WorkflowNodeRow> = sqlx::query_as(
             "SELECT id, node_key, function_id, COALESCE(node_type, 'function_node'), node_config FROM workflow_nodes WHERE workflow_id = ?",
         )
         .bind(workflow_id)
@@ -108,7 +113,7 @@ impl WorkflowExecutor {
         .await
         .map_err(|e| WorkflowError::LoadFailed(format!("{e}")))?;
 
-        let edges: Vec<(i64, i64, Value)> = sqlx::query_as(
+        let edges: Vec<WorkflowEdgeRow> = sqlx::query_as(
             "SELECT src_node_id, dst_node_id, mapping FROM workflow_edges WHERE workflow_id = ?",
         )
         .bind(workflow_id)
@@ -205,7 +210,7 @@ impl WorkflowExecutor {
 /// Path B (no output_schema): return the "end" key from outputs with
 /// `_agent_context_updates` stripped.
 fn build_end_output(
-    nodes: &[(i64, String, Option<i64>, String, Option<Value>)],
+    nodes: &[WorkflowNodeRow],
     succ: &HashMap<String, Vec<String>>,
     outputs: &HashMap<String, Value>,
     output_schema: Option<&Value>,
@@ -226,12 +231,12 @@ fn build_end_output(
 
             let mut end_output = serde_json::Map::new();
             for nk in &final_node_keys {
-                if let Some(result) = outputs.get(*nk) {
-                    if let Value::Object(obj) = result {
-                        for field in &schema_fields {
-                            if let Some(val) = obj.get(field) {
-                                end_output.insert(field.clone(), val.clone());
-                            }
+                if let Some(result) = outputs.get(*nk)
+                    && let Value::Object(obj) = result
+                {
+                    for field in &schema_fields {
+                        if let Some(val) = obj.get(field) {
+                            end_output.insert(field.clone(), val.clone());
                         }
                     }
                 }
@@ -251,10 +256,13 @@ fn build_end_output(
     Value::Object(serde_json::Map::new())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scheduler receives precomputed workflow topology and execution context"
+)]
 pub(super) async fn run_layers(
     deps: &ExecutorDeps,
-    nodes: &[(i64, String, Option<i64>, String, Option<Value>)],
+    nodes: &[WorkflowNodeRow],
     key_to_function: &HashMap<String, Option<i64>>,
     key_to_node_type: &HashMap<String, String>,
     key_to_node_config: &HashMap<String, Option<Value>>,
@@ -265,14 +273,7 @@ pub(super) async fn run_layers(
     workflow_id: i64,
     agent_perms: &[String],
     agent_ctx: Arc<AgentContext>,
-) -> Result<
-    (
-        HashMap<String, Value>,
-        HashMap<String, Value>,
-        HashMap<String, Value>,
-    ),
-    WorkflowError,
-> {
+) -> Result<LayerExecutionResult, WorkflowError> {
     let mut outputs: HashMap<String, Value> = HashMap::new();
     let mut node_inputs: HashMap<String, Value> = HashMap::new();
     let mut node_agent_contexts: HashMap<String, Value> = HashMap::new();
@@ -441,7 +442,7 @@ fn build_input_from_spec(
     spec: &crate::runtime::input_source::InputSpec,
     ctx: &InputBuildCtx<'_>,
 ) -> Result<Value, (String, String)> {
-    use crate::runtime::input_source::{AgentContextCategory, InputSource};
+    use crate::runtime::input_source::InputSource;
 
     let snapshot = crate::runtime::hook::agent_context_snapshot_value(ctx.agent_ctx);
     let mut input = Map::new();

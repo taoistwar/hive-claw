@@ -14,6 +14,20 @@ use crate::services::agent::{AgentContent, ToolRef};
 use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
+type ToolTestRow = (
+    i64,
+    String,
+    String,
+    String,
+    i8,
+    Option<i64>,
+    Option<i64>,
+    Value,
+    Option<i64>,
+    Option<String>,
+    Option<Value>,
+);
+
 #[derive(Debug, Deserialize)]
 pub struct TestToolRequest {
     pub message: String,
@@ -99,19 +113,7 @@ pub async fn run_tool_test(
         tool_id, req.message
     ));
     // 1. 查询目标 tool
-    let tool_row: Option<(
-        i64,
-        String,
-        String,
-        String,
-        i8,
-        Option<i64>,
-        Option<i64>,
-        Value,
-        Option<i64>,
-        Option<String>,
-        Option<Value>,
-    )> = sqlx::query_as(
+    let tool_row: Option<ToolTestRow> = sqlx::query_as(
         r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
                       f.plugin_id, f.plugin_export,
@@ -152,19 +154,7 @@ pub async fn run_tool_test(
         .unwrap_or_default();
 
     // 2. 加载 always tools（排除目标 tool 避免重复）
-    let always_tools: Vec<(
-        i64,
-        String,
-        String,
-        String,
-        i8,
-        Option<i64>,
-        Option<i64>,
-        Value,
-        Option<i64>,
-        Option<String>,
-        Option<Value>,
-    )> = sqlx::query_as(
+    let always_tools: Vec<ToolTestRow> = sqlx::query_as(
         r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
                       f.plugin_id, f.plugin_export,

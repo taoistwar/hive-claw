@@ -160,7 +160,7 @@ pub fn file_tracing() -> anyhow::Result<()> {
         .with_target(true)
         .with_level(true)
         .with_ansi(false)
-        .with_timer(fmt::time::SystemTime::default())
+        .with_timer(fmt::time::SystemTime)
         .with_writer(non_blocking_appender);
     // subscriber
     let env_filter = EnvFilter::try_from_default_env()
@@ -229,7 +229,7 @@ pub fn test_tracing() -> anyhow::Result<()> {
         .with_target(true)
         .with_level(true)
         .with_ansi(false)
-        .with_timer(fmt::time::SystemTime::default())
+        .with_timer(fmt::time::SystemTime)
         .with_writer(non_blocking_appender);
 
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap_or(UtcOffset::UTC);

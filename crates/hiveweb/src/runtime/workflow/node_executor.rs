@@ -7,6 +7,10 @@ use crate::runtime::workflow::generate_answer_node::execute_answer_node;
 use agent::context::AgentContext;
 
 /// Execute a single function_node.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the workflow scheduler passes explicit node execution context"
+)]
 pub async fn execute_node(
     deps: &ExecutorDeps,
     function_id: Option<i64>,

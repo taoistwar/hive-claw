@@ -6,7 +6,7 @@ mod tests {
     use crate::services::game_service::{
         create_game, delete_game, get_game_by_id, list_games, update_game,
     };
-    use crate::utils::error::AppError;
+
     use sqlx::MySqlPool;
 
     const TEST_PREFIX: &str = "svc_test_";

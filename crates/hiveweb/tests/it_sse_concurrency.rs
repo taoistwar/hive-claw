@@ -12,7 +12,7 @@ mod common;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{mint_jwt, seed_admin, test_app};
+use common::{seed_admin, test_app};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -21,7 +21,7 @@ use tower::ServiceExt;
 fn sse_request(_app: &Router, token: &str, session_id: i64) -> anyhow::Result<Request<Body>> {
     Ok(Request::builder()
         .method("POST")
-        .uri(&format!("/api/admin-chat/sessions/{session_id}/messages"))
+        .uri(format!("/api/admin-chat/sessions/{session_id}/messages"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .header("accept", "text/event-stream")
@@ -29,6 +29,10 @@ fn sse_request(_app: &Router, token: &str, session_id: i64) -> anyhow::Result<Re
 }
 
 /// Send a request and get just the status code quickly (without consuming the full SSE body).
+#[expect(
+    dead_code,
+    reason = "staged helper for the pending full SSE concurrency integration test"
+)]
 async fn send_sse_status(app: &Router, req: Request<Body>) -> anyhow::Result<StatusCode> {
     // For SSE responses, we need to consume the response to get the status.
     // We only need the first few bytes to check if it's a JSON error (429) or SSE stream.

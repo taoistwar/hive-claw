@@ -61,7 +61,7 @@ pub struct ListFilter {
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
-struct TagSummary {
+pub struct TagSummary {
     pub id: i64,
     pub name: String,
 }

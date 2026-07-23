@@ -20,7 +20,7 @@ async fn t046_unknown_capability_returns_4045() -> anyhow::Result<()> {
     let s3 = hiveweb::storage::s3::create_client().await?;
     let deps = DispatcherDeps {
         pool,
-        s3,
+        s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
     };
@@ -49,7 +49,7 @@ async fn t047_known_but_not_granted_returns_4030() -> anyhow::Result<()> {
     let s3 = hiveweb::storage::s3::create_client().await?;
     let deps = DispatcherDeps {
         pool: pool.clone(),
-        s3,
+        s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
     };
@@ -85,7 +85,7 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
     let s3 = hiveweb::storage::s3::create_client().await?;
     let deps = DispatcherDeps {
         pool: pool.clone(),
-        s3,
+        s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
     };
@@ -128,7 +128,7 @@ async fn t049_bad_envelope_returns_4000() -> anyhow::Result<()> {
     let s3 = hiveweb::storage::s3::create_client().await?;
     let deps = DispatcherDeps {
         pool,
-        s3,
+        s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
     };

@@ -345,19 +345,25 @@ impl WeixinChannel {
         );
         if auth {
             let token = self.inner.lock().await.state.token.clone();
-            if !token.is_empty() {
-                if let Ok(v) = format!("Bearer {token}").parse() {
-                    h.insert("Authorization", v);
-                }
+            let authorization = if token.is_empty() {
+                None
+            } else {
+                format!("Bearer {token}").parse().ok()
+            };
+            if let Some(v) = authorization {
+                h.insert("Authorization", v);
             }
         }
         let route_tag = self.config.read().await.route_tag.clone();
         if let Some(tag) = route_tag {
             let tag = tag.trim().to_string();
-            if !tag.is_empty() {
-                if let Ok(v) = tag.parse() {
-                    h.insert("SKRouteTag", v);
-                }
+            let route_header = if tag.is_empty() {
+                None
+            } else {
+                tag.parse().ok()
+            };
+            if let Some(v) = route_header {
+                h.insert("SKRouteTag", v);
             }
         }
         h
@@ -405,10 +411,9 @@ impl WeixinChannel {
     ) -> Result<Value, ChannelError> {
         let base = self.config.read().await.base_url.clone();
         let url = format!("{base}/{endpoint}");
-        if body.get("base_info").is_none() {
-            if let Some(obj) = body.as_object_mut() {
-                obj.insert("base_info".into(), base_info());
-            }
+        let needs_base_info = body.get("base_info").is_none();
+        if let Some(obj) = body.as_object_mut().filter(|_| needs_base_info) {
+            obj.insert("base_info".into(), base_info());
         }
         let client = self.ensure_http(60).await?;
         let resp = client
@@ -656,7 +661,7 @@ impl WeixinChannel {
             if errcode == ERRCODE_SESSION_EXPIRED || ret == ERRCODE_SESSION_EXPIRED {
                 self.pause_session(SESSION_PAUSE_DURATION_S).await;
                 let remaining = self.session_pause_remaining_s().await;
-                let mins = ((remaining + 59) / 60).max(1);
+                let mins = remaining.div_ceil(60).max(1);
                 warn!("WeChat session expired (errcode {errcode}). Pausing {mins} min.");
                 return Ok(());
             }
@@ -666,11 +671,12 @@ impl WeixinChannel {
             )));
         }
 
-        if let Some(server_timeout_ms) = data.get("longpolling_timeout_ms").and_then(|v| v.as_u64())
+        if let Some(server_timeout_ms) = data
+            .get("longpolling_timeout_ms")
+            .and_then(|v| v.as_u64())
+            .filter(|server_timeout_ms| *server_timeout_ms > 0)
         {
-            if server_timeout_ms > 0 {
-                self.inner.lock().await.next_poll_timeout_s = (server_timeout_ms / 1000).max(5);
-            }
+            self.inner.lock().await.next_poll_timeout_s = (server_timeout_ms / 1000).max(5);
         }
 
         let new_buf = data
@@ -794,10 +800,12 @@ impl WeixinChannel {
                             content_parts.push(text);
                         } else {
                             let mut parts: Vec<String> = Vec::new();
-                            if let Some(title) = refmsg.get("title").and_then(|v| v.as_str()) {
-                                if !title.is_empty() {
-                                    parts.push(title.to_string());
-                                }
+                            if let Some(title) = refmsg
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .filter(|title| !title.is_empty())
+                            {
+                                parts.push(title.to_string());
                             }
                             if let Some(ri) = ref_item {
                                 let ref_text = ri
@@ -1184,10 +1192,13 @@ impl WeixinChannel {
         let now = unix_secs_f();
         {
             let inner = self.inner.lock().await;
-            if let Some(entry) = inner.state.typing_tickets.get(user_id) {
-                if now < entry.next_fetch_at {
-                    return entry.ticket.clone();
-                }
+            if let Some(entry) = inner
+                .state
+                .typing_tickets
+                .get(user_id)
+                .filter(|entry| now < entry.next_fetch_at)
+            {
+                return entry.ticket.clone();
             }
         }
 
@@ -1410,7 +1421,7 @@ impl WeixinChannel {
         let aes_key_hex = hex::encode(aes_key_raw);
 
         // PKCS7 padding -> ceil((size+1)/16)*16
-        let padded_size = ((raw_size + 1 + 15) / 16) * 16;
+        let padded_size = (raw_size + 1).div_ceil(16) * 16;
 
         let mut file_key_raw = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut file_key_raw);
@@ -1547,7 +1558,7 @@ impl Channel for WeixinChannel {
     }
 
     fn default_config() -> serde_json::Map<String, Value> {
-        serde_json::to_value(&WeixinConfig::default())
+        serde_json::to_value(WeixinConfig::default())
             .ok()
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default()
@@ -1587,13 +1598,11 @@ impl Channel for WeixinChannel {
         let cfg_token = self.config.read().await.token.clone();
         if !cfg_token.is_empty() {
             self.inner.lock().await.state.token = cfg_token;
-        } else if !self.load_state().await {
-            if !self.qr_login().await {
-                error!("WeChat login failed. Run 'nanobot channels login weixin' to authenticate.");
-                self.running
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                return Ok(());
-            }
+        } else if !self.load_state().await && !self.qr_login().await {
+            error!("WeChat login failed. Run 'nanobot channels login weixin' to authenticate.");
+            self.running
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            return Ok(());
         }
 
         info!("WeChat channel starting with long-poll...");
@@ -1786,7 +1795,7 @@ fn encrypt_aes_ecb(data: &[u8], aes_key_b64: &str) -> Vec<u8> {
     let pad_len = 16 - data.len() % 16;
     let mut padded = Vec::with_capacity(data.len() + pad_len);
     padded.extend_from_slice(data);
-    padded.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+    padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
     let cipher = Aes128::new(GenericArray::from_slice(&key));
     for block in padded.chunks_mut(16) {
@@ -1801,7 +1810,7 @@ fn decrypt_aes_ecb(data: &[u8], aes_key_b64: &str) -> Vec<u8> {
         warn!("Failed to parse AES key, returning raw data");
         return data.to_vec();
     };
-    if data.len() % 16 != 0 {
+    if !data.chunks_exact(16).remainder().is_empty() {
         return data.to_vec();
     }
     let cipher = Aes128::new(GenericArray::from_slice(&key));
@@ -1814,7 +1823,7 @@ fn decrypt_aes_ecb(data: &[u8], aes_key_b64: &str) -> Vec<u8> {
 }
 
 fn pkcs7_unpad_safe(data: Vec<u8>) -> Vec<u8> {
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.chunks_exact(16).remainder().is_empty() {
         return data;
     }
     let pad_len = *data.last().unwrap() as usize;
@@ -1862,14 +1871,15 @@ fn stable_hash(s: &str) -> u64 {
 }
 
 fn expand_tilde(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
-    } else if p == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home.to_string_lossy().into_owned();
-        }
+    if let Some(expanded) = p.strip_prefix("~/").and_then(|rest| {
+        dirs::home_dir().map(|home| home.join(rest).to_string_lossy().into_owned())
+    }) {
+        return expanded;
+    }
+    if p == "~" {
+        return dirs::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.to_string());
     }
     p.to_string()
 }

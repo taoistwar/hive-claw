@@ -38,8 +38,27 @@ jobs:
             libssl-dev
           pkg-config --exists fontconfig xkbcommon xkbcommon-x11
 
-      - name: Show selected Rust toolchain
-        run: rustup show
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        run: |
+          set -euo pipefail
+          rustup show
+
+          expected_release="release: 1.97.1"
+          rustc_details="$(rustc --version --verbose)"
+          cargo_details="$(cargo --version --verbose)"
+
+          printf '%s\n' "$rustc_details"
+          printf '%s\n' "$cargo_details"
+
+          if ! grep -Fqx -- "$expected_release" <<<"$rustc_details"; then
+            echo "::error::expected rustc 1.97.1" >&2
+            exit 1
+          fi
+
+          if ! grep -Fqx -- "$expected_release" <<<"$cargo_details"; then
+            echo "::error::expected cargo 1.97.1" >&2
+            exit 1
+          fi
 
       - name: Cache cargo registry & sources
         uses: actions/cache@v4

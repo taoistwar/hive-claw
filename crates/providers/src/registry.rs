@@ -666,8 +666,28 @@ pub const PROVIDERS: &[ProviderSpec] = &[
 /// `snake_case` before comparison, mirroring Python's
 /// `pydantic.alias_generators.to_snake`.
 pub fn find_by_name(name: &str) -> Option<&'static ProviderSpec> {
-    let normalized = to_snake(&name.replace('-', "_"));
+    let normalized = normalize_provider_name(name);
     PROVIDERS.iter().find(|p| p.name == normalized)
+}
+
+fn normalize_provider_name(name: &str) -> String {
+    let snake = to_snake(&name.replace('-', "_"));
+    let mut normalized = String::with_capacity(snake.len());
+    let mut previous_was_separator = false;
+
+    for ch in snake.chars() {
+        if ch == '_' {
+            if !previous_was_separator {
+                normalized.push(ch);
+            }
+            previous_was_separator = true;
+        } else {
+            normalized.push(ch);
+            previous_was_separator = false;
+        }
+    }
+
+    normalized
 }
 
 /// Find the first provider whose `keywords` match *model_name*
@@ -695,7 +715,9 @@ mod tests {
     #[test]
     fn finds_by_name_normalised() {
         assert_eq!(find_by_name("azure-openai").unwrap().name, "azure_openai");
-        assert_eq!(find_by_name("LM-Studio").unwrap().name, "lm_studio");
+        for alias in ["LM-Studio", "LM--Studio", "LMStudio"] {
+            assert_eq!(find_by_name(alias).unwrap().name, "lm_studio");
+        }
     }
 
     #[test]

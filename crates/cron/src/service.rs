@@ -90,6 +90,10 @@ pub enum RemoveOutcome {
 }
 
 /// Outcome of [`CronService::update_job`].
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing CronJob would break the public UpdateOutcome API"
+)]
 pub enum UpdateOutcome {
     Updated(CronJob),
     Protected,
@@ -228,6 +232,10 @@ impl CronService {
         jobs
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserve the existing public API until an options-struct migration is planned"
+    )]
     pub async fn add_job(
         &self,
         name: &str,
@@ -377,11 +385,9 @@ impl CronService {
             return UpdateOutcome::Protected;
         }
 
-        if let Some(ref schedule) = opts.schedule {
-            if let Err(e) = validate_schedule_for_add(schedule) {
-                warn!("Cron: bad update schedule for {job_id}: {e}");
-                return UpdateOutcome::NotFound;
-            }
+        if let Some(Err(e)) = opts.schedule.as_ref().map(validate_schedule_for_add) {
+            warn!("Cron: bad update schedule for {job_id}: {e}");
+            return UpdateOutcome::NotFound;
         }
         let now = now_ms();
         {
@@ -448,10 +454,13 @@ impl CronService {
         execute_job(&mut job, handler.as_deref()).await;
 
         let mut inner = self.inner.lock().await;
-        if let Some(store) = inner.store.as_mut() {
-            if let Some(pos) = store.jobs.iter().position(|j| j.id == job.id) {
-                store.jobs[pos] = job;
-            }
+        if let Some(existing_job) = inner.store.as_mut().and_then(|store| {
+            store
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job.id)
+        }) {
+            *existing_job = job;
         }
         inner.save_store();
         inner.running = was_running;
@@ -539,7 +548,7 @@ impl Inner {
         };
         let reader = BufReader::new(file);
         let mut changed = false;
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -755,17 +764,18 @@ fn validate_schedule_for_add(schedule: &CronSchedule) -> Result<(), CronError> {
     if schedule.tz.is_some() && schedule.kind != ScheduleKind::Cron {
         return Err(CronError::TzOnNonCron);
     }
-    if schedule.kind == ScheduleKind::Cron {
-        if let Some(tz) = &schedule.tz {
-            if tz.parse::<Tz>().is_err() {
-                return Err(CronError::UnknownTimezone(tz.clone()));
-            }
-        }
-        if let Some(expr) = &schedule.expr {
-            if expr.parse::<CronExprSchedule>().is_err() {
-                return Err(CronError::BadCronExpr(expr.clone()));
-            }
-        }
+    if schedule.kind != ScheduleKind::Cron {
+        return Ok(());
+    }
+    if let Some(tz) = schedule.tz.as_ref().filter(|tz| tz.parse::<Tz>().is_err()) {
+        return Err(CronError::UnknownTimezone(tz.clone()));
+    }
+    if let Some(expr) = schedule
+        .expr
+        .as_ref()
+        .filter(|expr| expr.parse::<CronExprSchedule>().is_err())
+    {
+        return Err(CronError::BadCronExpr(expr.clone()));
     }
     Ok(())
 }
@@ -835,6 +845,7 @@ fn acquire_lock(lock_path: &Path) -> Option<File> {
     }
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .read(true)
         .open(lock_path)
@@ -897,7 +908,7 @@ mod tests {
     async fn add_and_list_round_trip() {
         let dir = tempdir();
         let svc = CronService::new(dir.join("cron.json"), None);
-        svc.start().await;
+        svc.start().await.unwrap();
         let sch = CronSchedule {
             kind: ScheduleKind::Every,
             every_ms: Some(60_000),

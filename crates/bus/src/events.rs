@@ -52,10 +52,12 @@ impl InboundMessage {
     /// Unique key for session identification (`{channel}:{chat_id}` unless
     /// overridden).
     pub fn session_key(&self) -> String {
-        if let Some(k) = &self.session_key_override {
-            if !k.is_empty() {
-                return k.clone();
-            }
+        if let Some(k) = self
+            .session_key_override
+            .as_ref()
+            .filter(|key| !key.is_empty())
+        {
+            return k.clone();
         }
         format!("{}:{}", self.channel, self.chat_id)
     }

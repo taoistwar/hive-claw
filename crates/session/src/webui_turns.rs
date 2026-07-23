@@ -12,10 +12,26 @@ use crate::goal_state::goal_state_ws_blob;
 use crate::manager::{Session, SessionManager};
 
 const WEBUI_SESSION_METADATA_KEY: &str = "webui";
+#[expect(
+    dead_code,
+    reason = "reserved for the intentionally disabled WebUI title-generation implementation"
+)]
 const WEBUI_TITLE_METADATA_KEY: &str = "title";
+#[expect(
+    dead_code,
+    reason = "reserved for the intentionally disabled WebUI title-generation implementation"
+)]
 const WEBUI_TITLE_USER_EDITED_METADATA_KEY: &str = "title_user_edited";
 const TITLE_MAX_CHARS: usize = 60;
+#[expect(
+    dead_code,
+    reason = "reserved for the intentionally disabled WebUI title-generation implementation"
+)]
 const TITLE_GENERATION_MAX_TOKENS: u32 = 96;
+#[expect(
+    dead_code,
+    reason = "reserved for the intentionally disabled WebUI title-generation implementation"
+)]
 const TITLE_GENERATION_REASONING_EFFORT: &str = "none";
 
 /// Wall-clock turn start per `chat_id` (websocket only). Survives browser refresh while the
@@ -112,6 +128,12 @@ pub fn title_inputs(session: &Session) -> (String, String) {
 /// Generate and persist a short title for WebUI-owned sessions only.
 ///
 /// Signature is generic over the LLM provider to avoid depending on the `providers` crate.
+#[expect(
+    unreachable_code,
+    unused_variables,
+    clippy::diverging_sub_expression,
+    reason = "preserve the intentionally disabled title-generation stub until it is implemented"
+)]
 pub async fn maybe_generate_webui_title<F, Fut>(
     sessions: &SessionManager,
     session_key: &str,

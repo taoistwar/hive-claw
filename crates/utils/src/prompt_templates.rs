@@ -255,9 +255,7 @@ fn process_if_chain(
             }
         };
 
-        let should_render = if i == 0 {
-            evaluate_condition(actual_cond, context)
-        } else if cond.is_some() {
+        let should_render = if i == 0 || cond.is_some() {
             evaluate_condition(actual_cond, context)
         } else {
             true
@@ -447,13 +445,11 @@ fn split_logical<'a>(s: &'a str, op: &str) -> Vec<&'a str> {
             depth += 1;
         } else if chars[i] == ')' {
             depth -= 1;
-        } else if depth == 0 && i + op_len <= len {
-            if &s[i..i + op_len] == op {
-                parts.push(&s[start..i]);
-                start = i + op_len;
-                i += op_len;
-                continue;
-            }
+        } else if depth == 0 && i + op_len <= len && &s[i..i + op_len] == op {
+            parts.push(&s[start..i]);
+            start = i + op_len;
+            i += op_len;
+            continue;
         }
         i += 1;
     }

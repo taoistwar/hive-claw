@@ -185,11 +185,9 @@ pub fn build_status_content(
             .collect();
         out.push_str(&format!("last usage: {}\n", parts.join(", ")));
     }
-    if let Some(s) = search_usage_text {
-        if !s.is_empty() {
-            out.push_str(s);
-            out.push('\n');
-        }
+    if let Some(s) = search_usage_text.filter(|s| !s.is_empty()) {
+        out.push_str(s);
+        out.push('\n');
     }
     out
 }
@@ -487,7 +485,7 @@ fn model_preset_names(loop_: &dyn Loop) -> Vec<String> {
 fn model_command_status(loop_: &dyn Loop) -> String {
     let names = model_preset_names(loop_);
     let active = loop_.model_preset();
-    let lines = vec![
+    let lines = [
         "## Model".to_string(),
         format!("- Current model: `{}`", loop_.model()),
         format!("- Current preset: `{}`", active),
@@ -602,10 +600,7 @@ fn cmd_history<'a>(ctx: &'a mut CommandContext) -> BoxFuture<'a, Option<Outbound
         };
 
         let history = session.get_history(0);
-        let visible: Vec<String> = history
-            .iter()
-            .filter_map(|m| format_history_message(m))
-            .collect();
+        let visible: Vec<String> = history.iter().filter_map(format_history_message).collect();
         let recent: Vec<&str> = visible
             .iter()
             .map(|s| s.as_str())

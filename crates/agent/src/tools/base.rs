@@ -46,7 +46,6 @@ pub trait Tool: Send + Sync {
     }
 
     /// --- Plugin metadata ---
-
     /// Config section key for this tool's settings.
     fn config_key(&self) -> &str {
         ""
@@ -90,10 +89,10 @@ pub trait Tool: Send + Sync {
             )];
         }
         let mut schema = self.parameters();
-        if schema.get("type").and_then(|v| v.as_str()) != Some("object") {
-            if let Some(obj) = schema.as_object_mut() {
-                obj.insert("type".into(), Value::String("object".into()));
-            }
+        if schema.get("type").and_then(|v| v.as_str()) != Some("object")
+            && let Some(obj) = schema.as_object_mut()
+        {
+            obj.insert("type".into(), Value::String("object".into()));
         }
         validate_json_schema_value(params, &schema, "")
     }
@@ -184,10 +183,10 @@ fn cast_value(val: &Value, schema: &Value) -> Value {
             if val.is_i64() || val.is_u64() {
                 return val.clone();
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.parse::<i64>() {
-                    return Value::from(n);
-                }
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.parse::<i64>()
+            {
+                return Value::from(n);
             }
             val.clone()
         }
@@ -197,12 +196,11 @@ fn cast_value(val: &Value, schema: &Value) -> Value {
                     .map(Value::Number)
                     .unwrap_or_else(|| val.clone());
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.parse::<f64>() {
-                    if let Some(num) = serde_json::Number::from_f64(n) {
-                        return Value::Number(num);
-                    }
-                }
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.parse::<f64>()
+                && let Some(num) = serde_json::Number::from_f64(n)
+            {
+                return Value::Number(num);
             }
             val.clone()
         }

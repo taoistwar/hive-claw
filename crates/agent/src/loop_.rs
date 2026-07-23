@@ -356,6 +356,15 @@ impl LoopConfig {
 pub type CommandPrefilter = Arc<
     dyn Fn(&InboundMessage) -> futures::future::BoxFuture<'static, Option<String>> + Send + Sync,
 >;
+type ModelSwitchCallback = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+type MessageKey<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a Value>,
+    Option<&'a Value>,
+);
 
 /// Snapshot of runtime info surfaced by `/status` / `/model`.
 #[derive(Clone, Debug)]
@@ -370,7 +379,7 @@ pub struct BuiltinPrefilter {
     sessions: Arc<Mutex<SessionManager>>,
     tools: ToolRegistry,
     info: Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
-    model_switch_callback: Option<Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>>,
+    model_switch_callback: Option<ModelSwitchCallback>,
 }
 
 impl BuiltinPrefilter {
@@ -388,10 +397,7 @@ impl BuiltinPrefilter {
     }
 
     /// Set a callback for model switching commands.
-    pub fn set_model_switch_callback(
-        &mut self,
-        callback: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
-    ) {
+    pub fn set_model_switch_callback(&mut self, callback: ModelSwitchCallback) {
         self.model_switch_callback = Some(callback);
     }
 
@@ -428,7 +434,7 @@ async fn dispatch_prefilter(
     sessions: &Arc<Mutex<SessionManager>>,
     tools: &ToolRegistry,
     info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
-    model_switch_callback: Option<&Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>>,
+    model_switch_callback: Option<&ModelSwitchCallback>,
 ) -> Option<String> {
     let text = msg.content.trim();
     if !text.starts_with('/') {
@@ -530,6 +536,10 @@ async fn model_cmd(info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>, args: &str
     format!("Model changed: {old} -> {}", snap.model)
 }
 
+#[expect(
+    dead_code,
+    reason = "retained for the runtime model hotswap command path"
+)]
 async fn model_cmd_with_hotswap(
     loop_: &AgentLoop,
     info: &Arc<tokio::sync::RwLock<AgentRuntimeInfo>>,
@@ -795,10 +805,14 @@ pub struct AgentLoop {
     preset_snapshot_loader: Option<PresetSnapshotLoaderFn>,
     runtime_model_publisher: Option<RuntimeModelPublisherFn>,
     provider_signature: tokio::sync::Mutex<Option<u64>>,
+    #[expect(dead_code, reason = "retained for provider selection change tracking")]
     default_selection_signature: Option<u64>,
+    #[expect(dead_code, reason = "retained for runtime channel configuration")]
     channels_config: Option<Value>,
     _image_generation_provider_configs: HashMap<String, Value>,
+    #[expect(dead_code, reason = "retains the injected cron service lifetime")]
     cron_service: Option<Arc<Mutex<dyn std::any::Any + Send + Sync>>>,
+    #[expect(dead_code, reason = "retained as the loop workspace policy state")]
     restrict_to_workspace: bool,
     _start_time: f64,
     _last_usage: std::sync::Mutex<HashMap<String, u64>>,
@@ -830,12 +844,20 @@ pub struct AgentLoop {
     _runtime_vars: std::sync::Mutex<HashMap<String, Value>>,
     _current_iteration: std::sync::atomic::AtomicU32,
     commands: Option<Arc<Mutex<CommandRouter>>>,
+    #[expect(dead_code, reason = "retained for runtime web tool configuration")]
     web_config: Option<Value>,
+    #[expect(dead_code, reason = "retained for runtime exec tool configuration")]
     exec_config: Option<Value>,
+    #[expect(
+        dead_code,
+        reason = "retained for aggregate runtime tool configuration"
+    )]
     tools_config: Option<Value>,
     context_window_tokens: std::sync::atomic::AtomicU32,
+    #[expect(dead_code, reason = "retained as configured context governance state")]
     context_block_limit: Option<u32>,
     provider_retry_mode: RetryMode,
+    #[expect(dead_code, reason = "retained for tool progress hint shaping")]
     tool_hint_max_length: usize,
 }
 
@@ -980,11 +1002,7 @@ impl AgentLoop {
         });
         self.preset_snapshot_loader = Some(preset_loader);
 
-        let info_clone = if let Some(ref prefilter) = self.command_prefilter {
-            Some(prefilter.clone())
-        } else {
-            None
-        };
+        let info_clone = self.command_prefilter.clone();
         let _ = info_clone;
         let publisher: RuntimeModelPublisherFn =
             Arc::new(move |model: &str, preset: Option<&str>| {
@@ -1007,10 +1025,14 @@ impl AgentLoop {
             .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
             .collect();
 
-        if cfg.agents.defaults.model_preset.is_some() {
-            if let Ok(snapshot) = ProviderSnapshot::from_config(&cfg) {
-                self.apply_provider_snapshot(snapshot, false).await;
-            }
+        if let Some(snapshot) = cfg
+            .agents
+            .defaults
+            .model_preset
+            .as_ref()
+            .and_then(|_| ProviderSnapshot::from_config(&cfg).ok())
+        {
+            self.apply_provider_snapshot(snapshot, false).await;
         }
 
         let initial_sig = compute_config_signature(&cfg);
@@ -1165,13 +1187,15 @@ impl AgentLoop {
             );
         }
 
-        if publish_update {
-            if let Some(ref publisher) = self.runtime_model_publisher {
-                publisher(
-                    &snapshot.model,
-                    self._active_preset.lock().unwrap().as_deref(),
-                );
-            }
+        if let Some(publisher) = self
+            .runtime_model_publisher
+            .as_ref()
+            .filter(|_| publish_update)
+        {
+            publisher(
+                &snapshot.model,
+                self._active_preset.lock().unwrap().as_deref(),
+            );
         }
         info!(
             "Runtime model switched for next turn: {:?} -> {}",
@@ -1526,17 +1550,19 @@ impl AgentLoop {
         _key: &str,
         _raw: &str,
     ) -> Option<OutboundMessage> {
-        if let Some(ref prefilter) = self.command_prefilter {
-            if let Some(reply) = (prefilter)(msg).await {
-                return Some(OutboundMessage {
-                    channel: msg.channel.clone(),
-                    chat_id: msg.chat_id.clone(),
-                    content: reply,
-                    reply_to: None,
-                    media: Vec::new(),
-                    metadata: msg.metadata.clone(),
-                });
-            }
+        let reply = match &self.command_prefilter {
+            Some(prefilter) => (prefilter)(msg).await,
+            None => None,
+        };
+        if let Some(reply) = reply {
+            return Some(OutboundMessage {
+                channel: msg.channel.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: reply,
+                reply_to: None,
+                media: Vec::new(),
+                metadata: msg.metadata.clone(),
+            });
         }
         // No prefilter installed — the command will fall through to the
         // normal agent pipeline where the LLM can respond to it.
@@ -1746,12 +1772,13 @@ impl AgentLoop {
         stop_reason: &str,
         turn_latency_ms: Option<u64>,
     ) -> Option<OutboundMessage> {
-        if let Some(mt) = &self.message_tool {
-            if mt.sent_in_turn() {
-                if !had_injections || stop_reason == "empty_final_response" {
-                    return None;
-                }
-            }
+        if self
+            .message_tool
+            .as_ref()
+            .is_some_and(|mt| mt.sent_in_turn())
+            && (!had_injections || stop_reason == "empty_final_response")
+        {
+            return None;
         }
 
         let preview = if final_content.len() > 120 {
@@ -1823,22 +1850,21 @@ impl AgentLoop {
     /// `ctx.pending_summary` so that [`state_build`] can inject it into the
     /// system prompt as `[Archived Context Summary]`.
     async fn state_compact(&self, ctx: &mut TurnContext) -> Result<String, String> {
-        if let Some(ref auto_compact) = self.auto_compact {
-            if let Some(ref session) = ctx.session {
-                let session = session.clone();
-                let ac = auto_compact.lock().await;
-                let summary = ac.prepare_session(session, &ctx.session_key).await;
-                drop(ac);
+        if let Some((auto_compact, session)) = self.auto_compact.as_ref().zip(ctx.session.as_ref())
+        {
+            let session = session.clone();
+            let ac = auto_compact.lock().await;
+            let summary = ac.prepare_session(session, &ctx.session_key).await;
+            drop(ac);
 
-                if let Some(summary_text) = summary.1 {
-                    info!(
-                        "[turn {}] Auto-compact: loaded summary for session {}",
-                        ctx.turn_id, ctx.session_key
-                    );
-                    ctx.pending_summary = Some(summary_text);
-                }
-                ctx.session = Some(summary.0);
+            if let Some(summary_text) = summary.1 {
+                info!(
+                    "[turn {}] Auto-compact: loaded summary for session {}",
+                    ctx.turn_id, ctx.session_key
+                );
+                ctx.pending_summary = Some(summary_text);
             }
+            ctx.session = Some(summary.0);
         }
         Ok("ok".to_string())
     }
@@ -2150,20 +2176,22 @@ impl AgentLoop {
         // Slash-command / priority command pre-filter. A `Some(content)`
         // response short-circuits the turn with that reply as the
         // outbound message.
-        if let Some(filter) = &self.command_prefilter {
-            if let Some(reply) = (filter)(&msg).await {
-                self.bus
-                    .publish_outbound(OutboundMessage {
-                        channel: msg.channel.clone(),
-                        chat_id: msg.chat_id.clone(),
-                        content: reply.clone(),
-                        reply_to: None,
-                        media: Vec::new(),
-                        metadata: Default::default(),
-                    })
-                    .await;
-                return Ok(AgentRunResult::short_circuit(reply));
-            }
+        let command_reply = match &self.command_prefilter {
+            Some(filter) => (filter)(&msg).await,
+            None => None,
+        };
+        if let Some(reply) = command_reply {
+            self.bus
+                .publish_outbound(OutboundMessage {
+                    channel: msg.channel.clone(),
+                    chat_id: msg.chat_id.clone(),
+                    content: reply.clone(),
+                    reply_to: None,
+                    media: Vec::new(),
+                    metadata: Default::default(),
+                })
+                .await;
+            return Ok(AgentRunResult::short_circuit(reply));
         }
 
         let session_key = msg.session_key();
@@ -2292,19 +2320,17 @@ impl AgentLoop {
             .as_ref()
             .map(|m| m.sent_in_turn())
             .unwrap_or(false);
-        if !delivered_via_tool {
-            if let Some(final_text) = result.final_content.clone() {
-                self.bus
-                    .publish_outbound(OutboundMessage {
-                        channel: msg.channel.clone(),
-                        chat_id: msg.chat_id.clone(),
-                        content: final_text,
-                        reply_to: None,
-                        media: Vec::new(),
-                        metadata: Default::default(),
-                    })
-                    .await;
-            }
+        if let Some(final_text) = result.final_content.clone().filter(|_| !delivered_via_tool) {
+            self.bus
+                .publish_outbound(OutboundMessage {
+                    channel: msg.channel.clone(),
+                    chat_id: msg.chat_id.clone(),
+                    content: final_text,
+                    reply_to: None,
+                    media: Vec::new(),
+                    metadata: Default::default(),
+                })
+                .await;
         }
 
         Ok(result)
@@ -2400,6 +2426,10 @@ impl AgentLoop {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "retained as the writer paired with runtime checkpoint restoration"
+    )]
     fn set_runtime_checkpoint(&self, session: &mut session::manager::Session, payload: Value) {
         if let Value::Object(ref map) = payload {
             for (k, v) in map {
@@ -2446,24 +2476,20 @@ impl AgentLoop {
 
         let mut restored: Vec<Value> = Vec::new();
         if let Some(mut msg) = assistant_message {
-            if let Value::Object(ref mut m) = msg {
-                if !m.contains_key("timestamp") {
-                    m.insert(
-                        "timestamp".into(),
-                        Value::String(chrono::Utc::now().to_rfc3339()),
-                    );
-                }
+            if let Some(m) = msg.as_object_mut().filter(|m| !m.contains_key("timestamp")) {
+                m.insert(
+                    "timestamp".into(),
+                    Value::String(chrono::Utc::now().to_rfc3339()),
+                );
             }
             restored.push(msg);
         }
         for mut msg in completed_tool_results {
-            if let Value::Object(ref mut m) = msg {
-                if !m.contains_key("timestamp") {
-                    m.insert(
-                        "timestamp".into(),
-                        Value::String(chrono::Utc::now().to_rfc3339()),
-                    );
-                }
+            if let Some(m) = msg.as_object_mut().filter(|m| !m.contains_key("timestamp")) {
+                m.insert(
+                    "timestamp".into(),
+                    Value::String(chrono::Utc::now().to_rfc3339()),
+                );
             }
             restored.push(msg);
         }
@@ -2524,10 +2550,7 @@ impl AgentLoop {
         should_truncate_text: bool,
         drop_runtime: bool,
     ) -> Option<Value> {
-        let blocks = match content.as_array() {
-            Some(arr) => arr,
-            None => return None,
-        };
+        let blocks = content.as_array()?;
         let mut filtered: Vec<Value> = Vec::new();
         for block in blocks {
             if !block.is_object() {
@@ -2564,21 +2587,22 @@ impl AgentLoop {
                     continue;
                 }
             }
-            if block_type == "text" {
-                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    let text =
-                        if should_truncate_text && text.len() > self.config.max_tool_result_chars {
-                            truncate_text_fn(text, self.config.max_tool_result_chars)
-                        } else {
-                            text.to_string()
-                        };
-                    let mut clone = block.clone();
-                    if let Value::Object(ref mut m) = clone {
-                        m.insert("text".into(), Value::String(text));
-                    }
-                    filtered.push(clone);
-                    continue;
+            if let Some(text) = (block_type == "text")
+                .then(|| block.get("text").and_then(|v| v.as_str()))
+                .flatten()
+            {
+                let text = if should_truncate_text && text.len() > self.config.max_tool_result_chars
+                {
+                    truncate_text_fn(text, self.config.max_tool_result_chars)
+                } else {
+                    text.to_string()
+                };
+                let mut clone = block.clone();
+                if let Value::Object(ref mut m) = clone {
+                    m.insert("text".into(), Value::String(text));
                 }
+                filtered.push(clone);
+                continue;
             }
             filtered.push(block.clone());
         }
@@ -2609,10 +2633,11 @@ impl AgentLoop {
                     continue;
                 }
                 let mut entry = m.clone();
-                if let Value::Object(ref mut obj) = entry {
-                    if !obj.contains_key("timestamp") {
-                        obj.insert("timestamp".into(), Value::String(now.clone()));
-                    }
+                if let Some(obj) = entry
+                    .as_object_mut()
+                    .filter(|obj| !obj.contains_key("timestamp"))
+                {
+                    obj.insert("timestamp".into(), Value::String(now.clone()));
                 }
                 if let Some(Value::Array(blocks)) = content {
                     let sanitized =
@@ -2620,10 +2645,8 @@ impl AgentLoop {
                     if sanitized.is_none() && !has_tool_calls {
                         continue;
                     }
-                    if let Some(s) = sanitized {
-                        if let Value::Object(ref mut obj) = entry {
-                            obj.insert("content".into(), s);
-                        }
+                    if let Some((s, obj)) = sanitized.zip(entry.as_object_mut()) {
+                        obj.insert("content".into(), s);
                     }
                 }
                 session.messages.push(entry);
@@ -2643,54 +2666,61 @@ impl AgentLoop {
                     if sanitized.is_none() {
                         continue;
                     }
-                    if let Some(s) = sanitized {
-                        if let Value::Object(ref mut obj) = entry {
-                            obj.insert("content".into(), s);
-                        }
+                    if let Some((s, obj)) = sanitized.zip(entry.as_object_mut()) {
+                        obj.insert("content".into(), s);
                     }
                 }
-                if let Value::Object(ref mut obj) = entry {
-                    if !obj.contains_key("timestamp") {
-                        obj.insert("timestamp".into(), Value::String(now.clone()));
-                    }
+                if let Some(obj) = entry
+                    .as_object_mut()
+                    .filter(|obj| !obj.contains_key("timestamp"))
+                {
+                    obj.insert("timestamp".into(), Value::String(now.clone()));
                 }
                 session.messages.push(entry);
             } else if role == "user" {
                 let mut entry = m.clone();
-                if let Some(Value::String(s)) = content {
-                    if s.contains(RUNTIME_CONTEXT_TAG) {
-                        let tag_pos = s.find(RUNTIME_CONTEXT_TAG).unwrap();
-                        let before = s[..tag_pos].trim_end();
-                        if before.is_empty() {
-                            continue;
-                        }
-                        if let Value::Object(ref mut obj) = entry {
-                            obj.insert("content".into(), Value::String(before.to_string()));
-                        }
+                if let Some(s) = content
+                    .and_then(|value| value.as_str())
+                    .filter(|s| s.contains(RUNTIME_CONTEXT_TAG))
+                {
+                    let tag_pos = s.find(RUNTIME_CONTEXT_TAG).unwrap();
+                    let before = s[..tag_pos].trim_end();
+                    if before.is_empty() {
+                        continue;
+                    }
+                    if let Value::Object(ref mut obj) = entry {
+                        obj.insert("content".into(), Value::String(before.to_string()));
                     }
                 }
-                if let Value::Object(ref mut obj) = entry {
-                    if !obj.contains_key("timestamp") {
-                        obj.insert("timestamp".into(), Value::String(now.clone()));
-                    }
+                if let Some(obj) = entry
+                    .as_object_mut()
+                    .filter(|obj| !obj.contains_key("timestamp"))
+                {
+                    obj.insert("timestamp".into(), Value::String(now.clone()));
                 }
                 session.messages.push(entry);
             } else {
                 let mut entry = m.clone();
-                if let Value::Object(ref mut obj) = entry {
-                    if !obj.contains_key("timestamp") {
-                        obj.insert("timestamp".into(), Value::String(now.clone()));
-                    }
+                if let Some(obj) = entry
+                    .as_object_mut()
+                    .filter(|obj| !obj.contains_key("timestamp"))
+                {
+                    obj.insert("timestamp".into(), Value::String(now.clone()));
                 }
                 session.messages.push(entry);
             }
         }
-        if let Some(ms) = turn_latency_ms {
-            if let Some(idx) = last_assistant_idx {
-                if let Some(Value::Object(msg)) = session.messages.get_mut(idx) {
-                    msg.insert("latency_ms".into(), serde_json::json!(ms));
-                }
-            }
+        if let Some((ms, msg)) = turn_latency_ms
+            .zip(last_assistant_idx)
+            .and_then(|(ms, idx)| {
+                session
+                    .messages
+                    .get_mut(idx)
+                    .and_then(|message| message.as_object_mut())
+                    .map(|message| (ms, message))
+            })
+        {
+            msg.insert("latency_ms".into(), serde_json::json!(ms));
         }
         session.updated_at = chrono::Local::now();
     }
@@ -2705,10 +2735,7 @@ impl AgentLoop {
         }
         let handles = {
             let mut stacks = self._mcp_stacks.lock().unwrap();
-            stacks
-                .drain()
-                .map(|(name, h)| (name, h))
-                .collect::<Vec<_>>()
+            stacks.drain().collect::<Vec<_>>()
         };
         for (name, handle) in handles {
             info!("Shutting down MCP server '{}'", name);
@@ -2872,16 +2899,7 @@ fn find_message_overlap(existing: &[Value], restored: &[Value]) -> usize {
     0
 }
 
-fn message_key(
-    msg: &Value,
-) -> (
-    Option<&str>,
-    Option<&str>,
-    Option<&str>,
-    Option<&str>,
-    Option<&Value>,
-    Option<&Value>,
-) {
+fn message_key(msg: &Value) -> MessageKey<'_> {
     (
         msg.get("role").and_then(|v| v.as_str()),
         msg.get("content").and_then(|v| v.as_str()),

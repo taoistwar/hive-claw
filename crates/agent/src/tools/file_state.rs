@@ -109,29 +109,27 @@ impl FileStates {
                 "Warning: file has not been read yet. Read it first to verify content before editing.".into(),
             );
         };
-        let Some(current_mtime) = Self::file_mtime(&p) else {
-            return None;
-        };
+        let current_mtime = Self::file_mtime(&p)?;
         if (current_mtime - entry.mtime).abs() > f64::EPSILON {
-            if let Some(h) = &entry.content_hash {
-                if Self::hash_file(&p).as_ref() == Some(h) {
-                    if let Some(e) = state.get_mut(&p) {
-                        e.mtime = current_mtime;
-                    }
-                    return None;
+            if let Some(h) = &entry.content_hash
+                && Self::hash_file(&p).as_ref() == Some(h)
+            {
+                if let Some(e) = state.get_mut(&p) {
+                    e.mtime = current_mtime;
                 }
+                return None;
             }
             return Some(
                 "Warning: file has been modified since last read. Re-read to verify content before editing.".into(),
             );
         }
         // mtime unchanged - still check content hash to detect quick modifications
-        if let Some(h) = &entry.content_hash {
-            if Self::hash_file(&p).as_ref() != Some(h) {
-                return Some(
+        if let Some(h) = &entry.content_hash
+            && Self::hash_file(&p).as_ref() != Some(h)
+        {
+            return Some(
                     "Warning: file has been modified since last read. Re-read to verify content before editing.".into(),
                 );
-            }
         }
         None
     }

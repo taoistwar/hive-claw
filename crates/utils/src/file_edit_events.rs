@@ -1078,4 +1078,75 @@ mod tests {
         };
         assert!(!snap.countable());
     }
+
+    #[tokio::test]
+    async fn error_unmatched_emits_error_event_and_waits_for_callback() {
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let error_ack = Arc::new(std::sync::Mutex::new(None));
+        let error_ready = Arc::new(tokio::sync::Notify::new());
+
+        let emit: EmitFn = {
+            let emitted = Arc::clone(&emitted);
+            let error_ack = Arc::clone(&error_ack);
+            let error_ready = Arc::clone(&error_ready);
+            Arc::new(move |events| {
+                let is_error = events.iter().any(|event| event["phase"] == "error");
+                emitted.lock().unwrap().extend(events);
+
+                let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+                if is_error {
+                    *error_ack.lock().unwrap() = Some(ack_tx);
+                    error_ready.notify_one();
+                } else {
+                    ack_tx.send(()).unwrap();
+                }
+                ack_rx
+            })
+        };
+
+        let tracker = Arc::new(StreamingFileEditTracker::new(None, emit));
+        tracker
+            .update(&json!({
+                "index": 0,
+                "call_id": "call-unmatched",
+                "name": "write_file",
+                "arguments": r#"{"path":"unmatched.txt","content":"hello"}"#,
+            }))
+            .await;
+
+        let error_task = {
+            let tracker = Arc::clone(&tracker);
+            tokio::spawn(async move {
+                tracker
+                    .error_unmatched(&[], "Tool call did not complete.")
+                    .await;
+            })
+        };
+
+        error_ready.notified().await;
+        assert!(
+            !error_task.is_finished(),
+            "error_unmatched must wait for the emit callback acknowledgement"
+        );
+
+        error_ack
+            .lock()
+            .unwrap()
+            .take()
+            .expect("error callback acknowledgement sender")
+            .send(())
+            .unwrap();
+        error_task.await.unwrap();
+
+        let emitted = emitted.lock().unwrap();
+        let event = emitted
+            .iter()
+            .find(|event| event["phase"] == "error")
+            .expect("unmatched edit error event");
+        assert_eq!(event["call_id"], "call-unmatched");
+        assert_eq!(event["tool"], "write_file");
+        assert_eq!(event["path"], "unmatched.txt");
+        assert_eq!(event["status"], "error");
+        assert_eq!(event["error"], "Tool call did not complete.");
+    }
 }

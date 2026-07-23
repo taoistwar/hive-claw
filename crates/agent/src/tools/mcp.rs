@@ -23,6 +23,7 @@ const TRANSIENT_EXC_NAMES: &[&str] = &[
     "ConnectionError",
 ];
 
+#[cfg(windows)]
 const WINDOWS_SHELL_LAUNCHERS: &[&str] = &["npx", "npm", "pnpm", "yarn", "bunx"];
 
 static SANITIZE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_+").unwrap());
@@ -170,6 +171,7 @@ pub async fn probe_http_url(url: &str, timeout_secs: f64) -> bool {
     }
 }
 
+#[cfg(windows)]
 fn windows_command_basename(command: &str) -> String {
     command
         .replace("\\", "/")
@@ -185,11 +187,11 @@ pub fn normalize_windows_stdio_command(
 ) -> (String, Vec<String>, Option<HashMap<String, String>>) {
     #[cfg(not(windows))]
     {
-        return (
+        (
             command.to_string(),
             args.unwrap_or(&[]).to_vec(),
             env.cloned(),
-        );
+        )
     }
 
     #[cfg(windows)]
@@ -235,19 +237,13 @@ pub fn normalize_windows_stdio_command(
 }
 
 fn extract_nullable_branch(options: &Value) -> Option<(Value, bool)> {
-    let arr = match options.as_array() {
-        Some(a) => a,
-        None => return None,
-    };
+    let arr = options.as_array()?;
 
     let mut non_null: Vec<Value> = Vec::new();
     let mut saw_null = false;
 
     for option in arr {
-        let obj = match option.as_object() {
-            Some(o) => o,
-            None => return None,
-        };
+        let obj = option.as_object()?;
         if obj.get("type").and_then(|v| v.as_str()) == Some("null") {
             saw_null = true;
             continue;
@@ -871,24 +867,24 @@ impl McpSessionImpl {
                             if trimmed.is_empty() {
                                 continue;
                             }
-                            if let Ok(response) = serde_json::from_str::<Value>(trimmed) {
-                                if let Some(id) = response.get("id").and_then(|v| v.as_u64()) {
-                                    let mut pending_map = pending.write().await;
-                                    if let Some(pending_req) = pending_map.remove(&id) {
-                                        if let Some(error) = response.get("error") {
-                                            let _code = error
-                                                .get("code")
-                                                .and_then(|c| c.as_i64())
-                                                .map(|c| c as i32);
-                                            let message = error
-                                                .get("message")
-                                                .and_then(|m| m.as_str())
-                                                .unwrap_or("Unknown error")
-                                                .to_string();
-                                            let _ = pending_req.tx.send(Err(message));
-                                        } else if let Some(result) = response.get("result") {
-                                            let _ = pending_req.tx.send(Ok(result.clone()));
-                                        }
+                            if let Ok(response) = serde_json::from_str::<Value>(trimmed)
+                                && let Some(id) = response.get("id").and_then(|v| v.as_u64())
+                            {
+                                let mut pending_map = pending.write().await;
+                                if let Some(pending_req) = pending_map.remove(&id) {
+                                    if let Some(error) = response.get("error") {
+                                        let _code = error
+                                            .get("code")
+                                            .and_then(|c| c.as_i64())
+                                            .map(|c| c as i32);
+                                        let message = error
+                                            .get("message")
+                                            .and_then(|m| m.as_str())
+                                            .unwrap_or("Unknown error")
+                                            .to_string();
+                                        let _ = pending_req.tx.send(Err(message));
+                                    } else if let Some(result) = response.get("result") {
+                                        let _ = pending_req.tx.send(Ok(result.clone()));
                                     }
                                 }
                             }
@@ -1155,7 +1151,7 @@ async fn connect_sse_transport(
     headers: Option<&HashMap<String, String>>,
 ) -> Result<(mpsc::Sender<String>, mpsc::Receiver<()>), String> {
     let client = build_http_client(headers);
-    let headers_owned = headers.map(|h| h.clone());
+    let headers_owned = headers.cloned();
 
     let pending: Arc<RwLock<HashMap<u64, PendingRequest>>> = Arc::new(RwLock::new(HashMap::new()));
     let (done_tx, done_rx) = mpsc::channel::<()>(1);
@@ -1252,22 +1248,21 @@ async fn connect_sse_transport(
 
                 match response {
                     Ok(resp) => {
-                        if let Ok(body) = resp.text().await {
-                            if let Ok(response_val) = serde_json::from_str::<Value>(&body) {
-                                if let Some(id) = response_val.get("id").and_then(|v| v.as_u64()) {
-                                    let mut pending_map = pending_clone2.write().await;
-                                    if let Some(pending_req) = pending_map.remove(&id) {
-                                        if let Some(error) = response_val.get("error") {
-                                            let message = error
-                                                .get("message")
-                                                .and_then(|m| m.as_str())
-                                                .unwrap_or("Unknown error")
-                                                .to_string();
-                                            let _ = pending_req.tx.send(Err(message));
-                                        } else if let Some(result) = response_val.get("result") {
-                                            let _ = pending_req.tx.send(Ok(result.clone()));
-                                        }
-                                    }
+                        if let Ok(body) = resp.text().await
+                            && let Ok(response_val) = serde_json::from_str::<Value>(&body)
+                            && let Some(id) = response_val.get("id").and_then(|v| v.as_u64())
+                        {
+                            let mut pending_map = pending_clone2.write().await;
+                            if let Some(pending_req) = pending_map.remove(&id) {
+                                if let Some(error) = response_val.get("error") {
+                                    let message = error
+                                        .get("message")
+                                        .and_then(|m| m.as_str())
+                                        .unwrap_or("Unknown error")
+                                        .to_string();
+                                    let _ = pending_req.tx.send(Err(message));
+                                } else if let Some(result) = response_val.get("result") {
+                                    let _ = pending_req.tx.send(Ok(result.clone()));
                                 }
                             }
                         }
@@ -1289,7 +1284,7 @@ async fn connect_streamable_http_transport(
     headers: Option<&HashMap<String, String>>,
 ) -> Result<(mpsc::Sender<String>, mpsc::Receiver<()>), String> {
     let client = build_http_client(headers);
-    let headers_owned = headers.map(|h| h.clone());
+    let headers_owned = headers.cloned();
     let pending: Arc<RwLock<HashMap<u64, PendingRequest>>> = Arc::new(RwLock::new(HashMap::new()));
     let (done_tx, done_rx) = mpsc::channel::<()>(1);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
@@ -1324,10 +1319,10 @@ async fn connect_streamable_http_transport(
                 }
             };
 
-            if let Some(sid) = response.headers().get("Mcp-Session-Id") {
-                if let Ok(sid_str) = sid.to_str() {
-                    session_id = Some(sid_str.to_string());
-                }
+            if let Some(sid) = response.headers().get("Mcp-Session-Id")
+                && let Ok(sid_str) = sid.to_str()
+            {
+                session_id = Some(sid_str.to_string());
             }
 
             let content_type = response
@@ -1392,20 +1387,20 @@ async fn connect_streamable_http_transport(
                     }
                 };
 
-                if let Ok(response_val) = serde_json::from_str::<Value>(&body) {
-                    if let Some(id) = response_val.get("id").and_then(|v| v.as_u64()) {
-                        let mut pending_map = pending_clone.write().await;
-                        if let Some(pending_req) = pending_map.remove(&id) {
-                            if let Some(error) = response_val.get("error") {
-                                let message = error
-                                    .get("message")
-                                    .and_then(|m| m.as_str())
-                                    .unwrap_or("Unknown error")
-                                    .to_string();
-                                let _ = pending_req.tx.send(Err(message));
-                            } else if let Some(result) = response_val.get("result") {
-                                let _ = pending_req.tx.send(Ok(result.clone()));
-                            }
+                if let Ok(response_val) = serde_json::from_str::<Value>(&body)
+                    && let Some(id) = response_val.get("id").and_then(|v| v.as_u64())
+                {
+                    let mut pending_map = pending_clone.write().await;
+                    if let Some(pending_req) = pending_map.remove(&id) {
+                        if let Some(error) = response_val.get("error") {
+                            let message = error
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("Unknown error")
+                                .to_string();
+                            let _ = pending_req.tx.send(Err(message));
+                        } else if let Some(result) = response_val.get("result") {
+                            let _ = pending_req.tx.send(Ok(result.clone()));
                         }
                     }
                 }
@@ -1432,10 +1427,10 @@ fn build_http_client(headers: Option<&HashMap<String, String>>) -> reqwest::Clie
     if let Some(h) = headers {
         let mut default_headers = reqwest::header::HeaderMap::new();
         for (k, v) in h {
-            if let Ok(key) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
-                if let Ok(val) = reqwest::header::HeaderValue::from_str(v) {
-                    default_headers.insert(key, val);
-                }
+            if let Ok(key) = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                && let Ok(val) = reqwest::header::HeaderValue::from_str(v)
+            {
+                default_headers.insert(key, val);
             }
         }
         builder = builder.default_headers(default_headers);
@@ -1454,20 +1449,20 @@ async fn process_sse_event(
         return;
     }
 
-    if let Ok(response) = serde_json::from_str::<Value>(event_data) {
-        if let Some(id) = response.get("id").and_then(|v| v.as_u64()) {
-            let mut pending_map = pending.write().await;
-            if let Some(pending_req) = pending_map.remove(&id) {
-                if let Some(error) = response.get("error") {
-                    let message = error
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown error")
-                        .to_string();
-                    let _ = pending_req.tx.send(Err(message));
-                } else if let Some(result) = response.get("result") {
-                    let _ = pending_req.tx.send(Ok(result.clone()));
-                }
+    if let Ok(response) = serde_json::from_str::<Value>(event_data)
+        && let Some(id) = response.get("id").and_then(|v| v.as_u64())
+    {
+        let mut pending_map = pending.write().await;
+        if let Some(pending_req) = pending_map.remove(&id) {
+            if let Some(error) = response.get("error") {
+                let message = error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown error")
+                    .to_string();
+                let _ = pending_req.tx.send(Err(message));
+            } else if let Some(result) = response.get("result") {
+                let _ = pending_req.tx.send(Ok(result.clone()));
             }
         }
     }
@@ -1492,14 +1487,17 @@ async fn connect_single_server(
         }
     });
 
-    if transport_type != "stdio" && transport_type != "sse" && transport_type != "streamableHttp" {
-        if cfg.command.is_none() && cfg.url.is_none() {
-            warn!(
-                "MCP server '{}': no command or url configured, skipping",
-                name
-            );
-            return Err("No command or url configured".to_string());
-        }
+    if transport_type != "stdio"
+        && transport_type != "sse"
+        && transport_type != "streamableHttp"
+        && cfg.command.is_none()
+        && cfg.url.is_none()
+    {
+        warn!(
+            "MCP server '{}': no command or url configured, skipping",
+            name
+        );
+        return Err("No command or url configured".to_string());
     }
 
     let (cmd_tx, _done_rx, session) = match transport_type.as_str() {
@@ -1745,6 +1743,8 @@ async fn connect_single_server(
             .filter(|t| !matched.contains(*t))
             .collect();
         if !unmatched.is_empty() {
+            let raw_names = available_raw_names.join(", ");
+            let wrapped_names = available_wrapped_names.join(", ");
             warn!(
                 "MCP server '{}': enabledTools entries not found: {}. Available raw names: {}. Available wrapped names: {}",
                 name,
@@ -1753,16 +1753,16 @@ async fn connect_single_server(
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
-                available_raw_names
-                    .join(", ")
-                    .is_empty()
-                    .then(|| "(none)")
-                    .unwrap_or(&available_raw_names.join(", ")),
-                available_wrapped_names
-                    .join(", ")
-                    .is_empty()
-                    .then(|| "(none)")
-                    .unwrap_or(&available_wrapped_names.join(", ")),
+                if raw_names.is_empty() {
+                    "(none)"
+                } else {
+                    &raw_names
+                },
+                if wrapped_names.is_empty() {
+                    "(none)"
+                } else {
+                    &wrapped_names
+                },
             );
         }
     }

@@ -47,7 +47,7 @@ pub fn configured_model_presets(
 /// snapshots using the provided `base_provider` reference. Callers should
 /// provide a real loader for production use with per-preset providers.
 pub fn make_preset_snapshot_loader(
-    provider_snapshot_loader: Option<Arc<dyn Fn(&str) -> ProviderSnapshot + Send + Sync>>,
+    provider_snapshot_loader: Option<PresetSnapshotLoader>,
     base_provider: Arc<dyn LLMProvider>,
 ) -> PresetSnapshotLoader {
     match provider_snapshot_loader {

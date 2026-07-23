@@ -1503,8 +1503,9 @@ impl FeishuChannel {
             if *ch == ',' && depth == 0 {
                 let next_char = chars.get(i + 1).copied().unwrap_or('\0');
                 if next_char == ' ' {
+                    buf.pop();
                     let s: String = buf.iter().collect();
-                    parts.push(s.trim_end().to_string());
+                    parts.push(s.trim().to_string());
                     buf.clear();
                 }
             }
@@ -2579,7 +2580,7 @@ mod tests {
         let json = serde_json::json!({
             "title": "Hello",
             "content": [[
-                [{"tag": "text", "text": "Hello "}, {"tag": "text", "text": "World"}]
+                {"tag": "text", "text": "Hello "}, {"tag": "text", "text": "World"}
             ]]
         });
         let (text, imgs) = _extract_post_content(&json);
@@ -2594,7 +2595,7 @@ mod tests {
                 "zh_cn": {
                     "title": "Test",
                     "content": [[
-                        [{"tag": "text", "text": "Content"}]
+                        {"tag": "text", "text": "Content"}
                     ]]
                 }
             }
@@ -2722,6 +2723,20 @@ mod tests {
     }
 
     #[test]
+    fn test_format_tool_hint_lines_quoted() {
+        let input = r#"tool1 "a, b", tool2 'c, d'"#;
+        let result = FeishuChannel::_format_tool_hint_lines(input);
+        assert_eq!(result, "tool1 \"a, b\"\ntool2 'c, d'");
+    }
+
+    #[test]
+    fn test_format_tool_hint_lines_multiple_tools_have_no_leading_spaces() {
+        let input = "tool1(arg1), tool2(arg2), tool3(arg3)";
+        let result = FeishuChannel::_format_tool_hint_lines(input);
+        assert_eq!(result, "tool1(arg1)\ntool2(arg2)\ntool3(arg3)");
+    }
+
+    #[test]
     fn test_feishu_config_defaults() {
         let config = FeishuConfig::default();
         assert!(!config.enabled);
@@ -2749,7 +2764,14 @@ mod tests {
         );
         assert_eq!(
             FeishuChannel::_safe_media_filename(Some("../../../etc/passwd"), "safe.txt"),
-            "safe.txt"
+            "passwd"
+        );
+        assert_eq!(
+            FeishuChannel::_safe_media_filename(
+                Some(r"C:\Users\alice\Pictures\photo.png"),
+                "safe.png"
+            ),
+            "photo.png"
         );
     }
 

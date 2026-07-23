@@ -40,6 +40,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_extract_exports_from_embedded_lookup_fixture() {
+        // Valid WASM module containing one empty function exported as `lookup`.
+        const WASM_WITH_LOOKUP_EXPORT: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+            0x03, 0x02, 0x01, 0x00, 0x07, 0x0a, 0x01, 0x06, b'l', b'o', b'o', b'k', b'u', b'p',
+            0x00, 0x00, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+        ];
+
+        let exports = extract_wasm_exports(WASM_WITH_LOOKUP_EXPORT).unwrap();
+
+        assert_eq!(exports, vec!["lookup"]);
+    }
+
+    #[test]
+    #[ignore = "requires a prebuilt examples/plugins/weather WASM artifact"]
     fn test_extract_exports_from_weather_plugin() {
         // Read the compiled weather plugin WASM
         let wasm_bytes = std::fs::read(

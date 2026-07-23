@@ -91,10 +91,8 @@ pub fn consume_events(events: &[Value]) -> Result<(String, Vec<ToolCallRequest>,
             "response.function_call_arguments.delta" => {
                 let call_id = event.get("call_id").and_then(|v| v.as_str());
                 let delta = event.get("delta").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(id) = call_id {
-                    if let Some(buf) = tool_call_buffers.get_mut(id) {
-                        buf.2.push_str(delta);
-                    }
+                if let Some(buf) = call_id.and_then(|id| tool_call_buffers.get_mut(id)) {
+                    buf.2.push_str(delta);
                 }
             }
             "response.function_call_arguments.done" => {
@@ -104,10 +102,8 @@ pub fn consume_events(events: &[Value]) -> Result<(String, Vec<ToolCallRequest>,
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if let Some(id) = call_id {
-                    if let Some(buf) = tool_call_buffers.get_mut(id) {
-                        buf.2 = args;
-                    }
+                if let Some(buf) = call_id.and_then(|id| tool_call_buffers.get_mut(id)) {
+                    buf.2 = args;
                 }
             }
             "response.output_item.done" => {
@@ -207,10 +203,11 @@ pub fn parse_response_output(response: &Value) -> LLMResponse {
             Some("message") => {
                 if let Some(blocks) = obj.get("content").and_then(|v| v.as_array()) {
                     for block in blocks {
-                        if block.get("type").and_then(|v| v.as_str()) == Some("output_text") {
-                            if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                                content_parts.push(t.to_string());
-                            }
+                        if block.get("type").and_then(|v| v.as_str()) != Some("output_text") {
+                            continue;
+                        }
+                        if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                            content_parts.push(t.to_string());
                         }
                     }
                 }
@@ -218,11 +215,12 @@ pub fn parse_response_output(response: &Value) -> LLMResponse {
             Some("reasoning") => {
                 if let Some(summary) = obj.get("summary").and_then(|v| v.as_array()) {
                     for s in summary {
-                        if s.get("type").and_then(|v| v.as_str()) == Some("summary_text") {
-                            if let Some(text) = s.get("text").and_then(|v| v.as_str()) {
-                                let entry = reasoning_content.get_or_insert_with(String::new);
-                                entry.push_str(text);
-                            }
+                        if s.get("type").and_then(|v| v.as_str()) != Some("summary_text") {
+                            continue;
+                        }
+                        if let Some(text) = s.get("text").and_then(|v| v.as_str()) {
+                            let entry = reasoning_content.get_or_insert_with(String::new);
+                            entry.push_str(text);
                         }
                     }
                 }
@@ -365,26 +363,24 @@ pub async fn consume_sse(
                     .unwrap_or("")
                     .to_string();
                 content.push_str(&delta_text);
-                if let Some(cb) = &on_content_delta {
-                    if !delta_text.is_empty() {
-                        cb(delta_text);
-                    }
+                if let Some(cb) = on_content_delta.as_ref().filter(|_| !delta_text.is_empty()) {
+                    cb(delta_text);
                 }
             }
             "response.function_call_arguments.delta" => {
                 let call_id = event.get("call_id").and_then(|v| v.as_str());
                 let delta = event.get("delta").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(id) = call_id {
-                    if let Some(buf) = tool_call_buffers.get_mut(id) {
-                        buf.2.push_str(delta);
-                        if let Some(cb) = &on_tool_call_delta {
-                            let mut map_delta = serde_json::Map::new();
-                            map_delta.insert("call_id".into(), Value::String(id.to_string()));
-                            map_delta.insert("name".into(), Value::String(buf.1.clone()));
-                            map_delta
-                                .insert("arguments_delta".into(), Value::String(delta.to_string()));
-                            cb(map_delta);
-                        }
+                if let Some((id, buf)) =
+                    call_id.and_then(|id| tool_call_buffers.get_mut(id).map(|buf| (id, buf)))
+                {
+                    buf.2.push_str(delta);
+                    if let Some(cb) = &on_tool_call_delta {
+                        let mut map_delta = serde_json::Map::new();
+                        map_delta.insert("call_id".into(), Value::String(id.to_string()));
+                        map_delta.insert("name".into(), Value::String(buf.1.clone()));
+                        map_delta
+                            .insert("arguments_delta".into(), Value::String(delta.to_string()));
+                        cb(map_delta);
                     }
                 }
             }
@@ -395,10 +391,8 @@ pub async fn consume_sse(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if let Some(id) = call_id {
-                    if let Some(buf) = tool_call_buffers.get_mut(id) {
-                        buf.2 = args;
-                    }
+                if let Some(buf) = call_id.and_then(|id| tool_call_buffers.get_mut(id)) {
+                    buf.2 = args;
                 }
             }
             "response.output_item.done" => {
@@ -556,26 +550,24 @@ pub async fn consume_sdk_stream(
                     .unwrap_or("")
                     .to_string();
                 content.push_str(&delta_text);
-                if let Some(cb) = &on_content_delta {
-                    if !delta_text.is_empty() {
-                        cb(delta_text);
-                    }
+                if let Some(cb) = on_content_delta.as_ref().filter(|_| !delta_text.is_empty()) {
+                    cb(delta_text);
                 }
             }
             "response.function_call_arguments.delta" => {
                 let call_id = event.get("call_id").and_then(|v| v.as_str());
                 let delta = event.get("delta").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(id) = call_id {
-                    if let Some(buf) = tool_call_buffers.get_mut(id) {
-                        buf.2.push_str(delta);
-                        if let Some(cb) = &on_tool_call_delta {
-                            let mut map_delta = serde_json::Map::new();
-                            map_delta.insert("call_id".into(), Value::String(id.to_string()));
-                            map_delta.insert("name".into(), Value::String(buf.1.clone()));
-                            map_delta
-                                .insert("arguments_delta".into(), Value::String(delta.to_string()));
-                            cb(map_delta);
-                        }
+                if let Some((id, buf)) =
+                    call_id.and_then(|id| tool_call_buffers.get_mut(id).map(|buf| (id, buf)))
+                {
+                    buf.2.push_str(delta);
+                    if let Some(cb) = &on_tool_call_delta {
+                        let mut map_delta = serde_json::Map::new();
+                        map_delta.insert("call_id".into(), Value::String(id.to_string()));
+                        map_delta.insert("name".into(), Value::String(buf.1.clone()));
+                        map_delta
+                            .insert("arguments_delta".into(), Value::String(delta.to_string()));
+                        cb(map_delta);
                     }
                 }
             }
@@ -586,10 +578,8 @@ pub async fn consume_sdk_stream(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if let Some(id) = call_id {
-                    if let Some(buf) = tool_call_buffers.get_mut(id) {
-                        buf.2 = args;
-                    }
+                if let Some(buf) = call_id.and_then(|id| tool_call_buffers.get_mut(id)) {
+                    buf.2 = args;
                 }
             }
             "response.output_item.done" => {
@@ -662,23 +652,20 @@ pub async fn consume_sdk_stream(
 
                     if let Some(output_arr) = resp_obj.get("output").and_then(|v| v.as_array()) {
                         for out_item in output_arr {
-                            if out_item.get("type").and_then(|v| v.as_str()) == Some("reasoning") {
-                                if let Some(summary) =
-                                    out_item.get("summary").and_then(|v| v.as_array())
-                                {
-                                    for s in summary {
-                                        if s.get("type").and_then(|v| v.as_str())
-                                            == Some("summary_text")
-                                        {
-                                            if let Some(text) =
-                                                s.get("text").and_then(|v| v.as_str())
-                                            {
-                                                let entry = reasoning_content
-                                                    .get_or_insert_with(String::new);
-                                                entry.push_str(text);
-                                            }
-                                        }
-                                    }
+                            if out_item.get("type").and_then(|v| v.as_str()) != Some("reasoning") {
+                                continue;
+                            }
+                            let Some(summary) = out_item.get("summary").and_then(|v| v.as_array())
+                            else {
+                                continue;
+                            };
+                            for s in summary {
+                                if s.get("type").and_then(|v| v.as_str()) != Some("summary_text") {
+                                    continue;
+                                }
+                                if let Some(text) = s.get("text").and_then(|v| v.as_str()) {
+                                    let entry = reasoning_content.get_or_insert_with(String::new);
+                                    entry.push_str(text);
                                 }
                             }
                         }

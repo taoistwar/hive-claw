@@ -10,6 +10,28 @@ fn workspace_file(relative_path: &str) -> String {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
+fn workflow_job<'a>(workflow: &'a str, job_name: &str, next_job: Option<&str>) -> &'a str {
+    let marker = format!("  {job_name}:\n");
+    let job_and_tail = workflow
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("CI workflow must define the `{job_name}` job"))
+        .1;
+
+    next_job
+        .and_then(|next_job| {
+            job_and_tail
+                .split_once(&format!("\n  {next_job}:\n"))
+                .map(|(job, _)| job)
+        })
+        .unwrap_or(job_and_tail)
+}
+
+fn workflow_step_containing<'a>(job: &'a str, needle: &str) -> &'a str {
+    job.split("\n      - ")
+        .find(|step| step.contains(needle))
+        .unwrap_or_else(|| panic!("CI job must contain a step with `{needle}`"))
+}
+
 #[test]
 fn accepts_only_loopback_disposable_test_databases() {
     for url in [
@@ -180,4 +202,109 @@ fn integration_images_are_version_pinned() {
         !workflow.contains("minio/minio:latest") && !workflow.contains("minio/mc:latest"),
         "quality CI must not depend on mutable MinIO image tags"
     );
+}
+
+#[test]
+fn quality_job_installs_required_linux_packages_before_clippy() {
+    let workflow = workspace_file(".github/workflows/ci.yml");
+    let quality_job = workflow_job(&workflow, "quality", Some("hiveweb-integration"));
+    let install = workflow_step_containing(quality_job, "sudo apt-get install -y");
+    let install_position = quality_job
+        .find("sudo apt-get install -y")
+        .expect("quality CI must install GPUI system dependencies");
+    let clippy = quality_job
+        .find("cargo clippy --locked --workspace --all-targets -- -D warnings")
+        .expect("quality CI must preserve strict Clippy");
+
+    for package in ["libfontconfig-dev", "libxkbcommon-x11-dev"] {
+        assert!(
+            install
+                .split_ascii_whitespace()
+                .any(|token| token == package),
+            "quality CI system dependency installation must include `{package}`"
+        );
+    }
+    assert!(
+        install.contains("pkg-config --exists fontconfig xkbcommon xkbcommon-x11"),
+        "quality CI must verify the GPUI pkg-config modules after installation"
+    );
+    assert!(
+        install_position < clippy,
+        "GPUI system dependencies must be installed before cargo clippy"
+    );
+}
+
+#[test]
+fn rust_jobs_limit_runner_disk_usage_before_compilation() {
+    let workflow = workspace_file(".github/workflows/ci.yml");
+    let jobs = workflow
+        .find("\njobs:\n")
+        .expect("CI workflow must define jobs");
+    let global_configuration = &workflow[..jobs];
+
+    for setting in [
+        "CARGO_INCREMENTAL: \"0\"",
+        "CARGO_PROFILE_DEV_DEBUG: \"0\"",
+        "CARGO_PROFILE_TEST_DEBUG: \"0\"",
+    ] {
+        assert!(
+            global_configuration
+                .lines()
+                .any(|line| line.trim() == setting),
+            "`{setting}` must apply to every Rust CI job"
+        );
+    }
+
+    for (job_name, next_job, first_compilation_command) in [
+        (
+            "quality",
+            Some("hiveweb-integration"),
+            "cargo clippy --locked --workspace --all-targets -- -D warnings",
+        ),
+        (
+            "hiveweb-integration",
+            None,
+            "cargo build --locked -p hiveweb --bin migrate",
+        ),
+    ] {
+        let job = workflow_job(&workflow, job_name, next_job);
+        let compilation = job.find(first_compilation_command).unwrap_or_else(|| {
+            panic!("CI job `{job_name}` must preserve `{first_compilation_command}`")
+        });
+        let before_compilation = &job[..compilation];
+        let cleanup = workflow_step_containing(before_compilation, "sudo rm -rf");
+        for path in [
+            "/usr/local/lib/android",
+            "/usr/share/dotnet",
+            "/opt/ghc",
+            "/opt/hostedtoolcache/CodeQL",
+        ] {
+            assert!(
+                cleanup.contains(path),
+                "CI job `{job_name}` must reclaim `{path}` before compilation"
+            );
+        }
+        assert!(
+            cleanup.contains("docker image prune --all --force"),
+            "CI job `{job_name}` must prune unused Docker images before compilation"
+        );
+
+        let cache = workflow_step_containing(job, "uses: actions/cache@");
+        for source_cache in ["~/.cargo/registry", "~/.cargo/git"] {
+            assert!(
+                cache.lines().any(|line| line.trim() == source_cache),
+                "CI job `{job_name}` must retain the `{source_cache}` source cache"
+            );
+        }
+        assert!(
+            !cache.lines().any(|line| line.trim() == "target"),
+            "CI job `{job_name}` must not cache target artifacts on hosted runners"
+        );
+        if job_name == "hiveweb-integration" {
+            assert!(
+                !cache.contains("restore-keys:"),
+                "HiveWeb integration must not use the former broad Cargo cache fallback"
+            );
+        }
+    }
 }

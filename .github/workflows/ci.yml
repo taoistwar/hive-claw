@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   quality:
     name: fmt + clippy + test
@@ -14,25 +19,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force
+          df -h /
+          docker system df
+
       - name: Install system dependencies for gpui (Linux)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config build-essential \
-            libxkbcommon-dev libwayland-dev libvulkan-dev \
+            libfontconfig-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
+          pkg-config --exists fontconfig xkbcommon xkbcommon-x11
 
       - name: Show selected Rust toolchain
         run: rustup show
 
-      - name: Cache cargo registry & target
+      - name: Cache cargo registry & sources
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
 
       - name: cargo fmt
@@ -106,6 +120,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force
+          df -h /
+          docker system df
+
       - name: Install HiveWeb system dependencies
         run: |
           sudo apt-get update
@@ -114,16 +137,13 @@ jobs:
       - name: Show selected Rust toolchain
         run: rustup show
 
-      - name: Cache cargo registry & target
+      - name: Cache cargo registry & sources
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-hiveweb-integration-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
 
       - name: Start MinIO and create test bucket
         shell: bash

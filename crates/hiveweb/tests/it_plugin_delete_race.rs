@@ -10,12 +10,13 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Barrier;
 
-use axum::Router;
+use axum::{Router, http::StatusCode};
 use common::{delete_auth, get, post_json_auth, seed_admin};
 use serde_json::{Value, json};
+use sqlx::Acquire;
 
 /// Helper: upload a minimal valid WASM plugin and return plugin id.
 async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::Result<i64> {
@@ -78,14 +79,15 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
     Ok(resp_body["data"]["id"].as_i64().expect("missing plugin id"))
 }
 
-/// Helper: create a function referencing a plugin, return function id.
-async fn create_function(
+/// Helper: create a function referencing a plugin without assuming which
+/// concurrent operation wins.
+async fn create_function_response(
     app: &Router,
     token: &str,
     plugin_id: i64,
     identifier: &str,
-) -> anyhow::Result<i64> {
-    let (status, body) = post_json_auth(
+) -> anyhow::Result<(StatusCode, Value)> {
+    post_json_auth(
         app,
         "/api/functions",
         token,
@@ -99,8 +101,22 @@ async fn create_function(
             "output_schema": {"type": "object", "properties": {}}
         }),
     )
-    .await?;
-    assert_eq!(status, 200, "create function failed: {status} {body}");
+    .await
+}
+
+/// Helper: create a function when success is the only valid outcome.
+async fn create_function(
+    app: &Router,
+    token: &str,
+    plugin_id: i64,
+    identifier: &str,
+) -> anyhow::Result<i64> {
+    let (status, body) = create_function_response(app, token, plugin_id, identifier).await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create function failed: {status} {body}"
+    );
     Ok(body["data"]["id"].as_i64().expect("missing function id"))
 }
 
@@ -111,6 +127,22 @@ async fn delete_plugin(
     plugin_id: i64,
 ) -> anyhow::Result<(axum::http::StatusCode, Value)> {
     delete_auth(app, &format!("/api/plugins/{plugin_id}"), token).await
+}
+
+async fn deleted_plugin_reference_count(
+    pool: &sqlx::MySqlPool,
+    plugin_id: i64,
+) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM functions f
+           JOIN plugins p ON p.id = f.plugin_id
+           WHERE f.plugin_id = ?
+             AND p.deleted_at IS NOT NULL"#,
+    )
+    .bind(plugin_id)
+    .fetch_one(pool)
+    .await?)
 }
 
 #[tokio::test]
@@ -179,50 +211,153 @@ async fn t165_concurrent_delete_and_create_no_race() -> anyhow::Result<()> {
         let token = token.clone();
         async move {
             barrier.wait().await;
-            create_function(&app, &token, plugin_id, "concurrent-race-func").await
+            create_function_response(&app, &token, plugin_id, "concurrent-race-func").await
         }
     });
 
     let (delete_result, create_result) = tokio::join!(delete_handle, create_handle);
     let (delete_status, delete_body) = delete_result??;
-    let create_result = create_result?;
+    let (create_status, create_body) = create_result??;
 
-    // At least one of the two operations must succeed deterministically.
-    // The FOR UPDATE lock serializes them, so no partial state.
-    // Either:
-    //   - Delete succeeds (no functions yet), then create may succeed or fail based on timing
-    //   - Create succeeds first, then delete is blocked (4093)
-    //
-    // Critical invariant: if delete succeeded AND create succeeded, the plugin
-    // must still exist (delete was soft-delete, not physical).
-
-    let plugin_deleted = delete_status == 200;
-    let func_created = create_result.is_ok();
-
-    if plugin_deleted && func_created {
-        // Both succeeded: verify the function's plugin_id is still valid
-        // (soft-delete doesn't remove the plugin row, just marks it)
-        let (status, body) = get(&app, &format!("/api/plugins/{plugin_id}"), Some(&token)).await?;
-        assert_eq!(status, 200);
-        assert!(
-            body["data"]["deleted_at"].as_str().is_some(),
-            "plugin should be soft-deleted; got {body}"
-        );
+    match (delete_status, create_status) {
+        (StatusCode::OK, StatusCode::CONFLICT) => {
+            assert_eq!(
+                create_body["code"].as_i64(),
+                Some(4093),
+                "delete winner must make create fail with ResourceInUse; got {create_body}"
+            );
+        }
+        (StatusCode::CONFLICT, StatusCode::OK) => {
+            assert_eq!(
+                delete_body["code"].as_i64(),
+                Some(4093),
+                "create winner must make delete fail with ResourceInUse; got {delete_body}"
+            );
+        }
+        _ => {
+            panic!(
+                "exactly one operation must succeed: \
+                 delete={delete_status} {delete_body}, \
+                 create={create_status} {create_body}"
+            );
+        }
     }
 
-    // If create happened first, delete must be blocked
-    if func_created && !plugin_deleted {
-        let code = delete_body["code"].as_i64();
-        assert_eq!(
-            code,
-            Some(4093),
-            "delete must be blocked when function was created first; got {delete_body}"
-        );
-    }
-
-    tracing::info!(
-        "t165 race test result: plugin_deleted={plugin_deleted}, func_created={func_created}"
+    assert_eq!(
+        deleted_plugin_reference_count(&pool, plugin_id).await?,
+        0,
+        "a Function must never reference a soft-deleted Plugin"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn t165_create_waits_for_delete_and_rejects_deleted_plugin() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+    let pool = common::test_pool().await?;
+    let admin = seed_admin(&pool, 3, 1, "test123").await?;
+    let token = admin.token()?;
+    let plugin_id = upload_plugin(&app, &token, "controlled-delete-wins-plugin").await?;
+
+    // Reproduce the critical section of Plugin soft-delete while retaining the
+    // row lock. Function creation must wait for this transaction to settle.
+    let mut delete_tx = pool.begin().await?;
+    let locked_plugin_id: i64 =
+        sqlx::query_scalar("SELECT id FROM plugins WHERE id = ? FOR UPDATE")
+            .bind(plugin_id)
+            .fetch_one(&mut *delete_tx)
+            .await?;
+    assert_eq!(locked_plugin_id, plugin_id);
+
+    let existing_references: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM functions WHERE plugin_id = ?")
+            .bind(plugin_id)
+            .fetch_one(&mut *delete_tx)
+            .await?;
+    assert_eq!(existing_references, 0);
+
+    sqlx::query("UPDATE plugins SET deleted_at = NOW() WHERE id = ?")
+        .bind(plugin_id)
+        .execute(&mut *delete_tx)
+        .await?;
+
+    let mut create_handle = tokio::spawn({
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            create_function_response(&app, &token, plugin_id, "controlled-delete-wins-function")
+                .await
+        }
+    });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), &mut create_handle)
+            .await
+            .is_err(),
+        "Function creation must wait while Plugin deletion owns the row lock"
+    );
+
+    delete_tx.commit().await?;
+
+    let (create_status, create_body) = create_handle.await??;
+    assert_eq!(
+        create_status,
+        StatusCode::CONFLICT,
+        "create must lose after Plugin deletion commits; got {create_status} {create_body}"
+    );
+    assert_eq!(
+        create_body["code"].as_i64(),
+        Some(4093),
+        "deleted Plugin must be rejected as ResourceInUse; got {create_body}"
+    );
+    assert_eq!(
+        deleted_plugin_reference_count(&pool, plugin_id).await?,
+        0,
+        "delete winner must not leave a Function referencing the deleted Plugin"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn t165_create_service_reports_resource_in_use_for_deleted_plugin() -> anyhow::Result<()> {
+    let app = common::test_app().await?;
+    let pool = common::test_pool().await?;
+    let admin = seed_admin(&pool, 3, 1, "test123").await?;
+    let token = admin.token()?;
+    let plugin_id = upload_plugin(&app, &token, "deleted-plugin-service-check").await?;
+
+    let (delete_status, delete_body) = delete_plugin(&app, &token, plugin_id).await?;
+    assert_eq!(
+        delete_status,
+        StatusCode::OK,
+        "fixture delete failed: {delete_status} {delete_body}"
+    );
+
+    let error = hiveweb::services::function::create_custom(
+        &pool,
+        hiveweb::services::function::CreateMeta {
+            identifier: "deleted-plugin-service-function".to_string(),
+            name: "Deleted Plugin Service Function".to_string(),
+            description: Some("SC-009 direct service regression".to_string()),
+            plugin_id,
+            plugin_export: "test_export".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            output_schema: json!({"type": "object", "properties": {}}),
+            category_id: None,
+            required_capabilities: None,
+            tag_ids: Vec::new(),
+        },
+    )
+    .await
+    .expect_err("soft-deleted Plugin must reject Function creation");
+
+    assert!(
+        matches!(&error, hiveweb::utils::error::AppError::ResourceInUse(_)),
+        "expected ResourceInUse, got {error}"
+    );
+    assert_eq!(error.code(), 4093);
 
     Ok(())
 }

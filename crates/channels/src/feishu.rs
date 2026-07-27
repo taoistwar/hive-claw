@@ -27,10 +27,6 @@ use utils::helpers::safe_filename;
 const FEISHU_AVAILABLE: bool = false;
 
 /// Message type display mapping.
-#[expect(
-    dead_code,
-    reason = "reserved for inbound events once the Lark SDK placeholder is connected"
-)]
 const MSG_TYPE_MAP: &[(&str, &str)] = &[
     ("image", "[image]"),
     ("audio", "[audio]"),

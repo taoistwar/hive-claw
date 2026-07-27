@@ -39,10 +39,6 @@ pub struct DingTalkChannel {
         reason = "reserved for staged inbound media transcription integration"
     )]
     transcription: TranscriptionSettings,
-    #[expect(
-        dead_code,
-        reason = "reserved for staged DingTalk authentication integration"
-    )]
     access_token: tokio::sync::Mutex<Option<(String, f64)>>,
 }
 

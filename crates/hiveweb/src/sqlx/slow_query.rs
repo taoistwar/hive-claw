@@ -27,7 +27,7 @@ use super::sqlx_event::{SqlxQueryFields, SqlxQueryVisitor};
 /// ## Example
 ///
 /// ```rust
-/// use sqlx_demo::slow_query::SlowQueryLayer;
+/// use hiveweb::sqlx::slow_query::SlowQueryLayer;
 /// use std::time::Duration;
 ///
 /// // Warn about queries taking 100ms or more, and log all query timings at DEBUG.
@@ -55,7 +55,7 @@ impl SlowQueryLayer {
     /// Convenience constructor: create with a threshold in milliseconds.
     ///
     /// ```rust
-    /// use sqlx_demo::slow_query::SlowQueryLayer;
+    /// use hiveweb::sqlx::slow_query::SlowQueryLayer;
     /// let layer = SlowQueryLayer::from_millis(500); // 500ms threshold
     /// ```
     pub fn from_millis(ms: u64) -> Self {

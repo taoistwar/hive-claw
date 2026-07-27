@@ -416,7 +416,7 @@ pub async fn run_tool_test(
         ));
 
         let (success, content, error) = match outcome {
-            o if matches!(o.payload, Value::Object(_)) && !o.payload.get("error").is_some() => {
+            o if matches!(o.payload, Value::Object(_)) && o.payload.get("error").is_none() => {
                 (true, o.payload, None)
             }
             o => {

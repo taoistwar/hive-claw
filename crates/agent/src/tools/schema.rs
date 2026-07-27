@@ -52,30 +52,20 @@ pub fn validate_json_schema_value(val: &Value, schema: &Value, path: &str) -> Ve
     let mut errors: Vec<String> = Vec::new();
 
     match t.as_deref() {
-        Some("integer") => {
-            if !is_integer(val) {
-                return vec![format!("{label} should be integer")];
-            }
+        Some("integer") if !is_integer(val) => {
+            return vec![format!("{label} should be integer")];
         }
-        Some("number") => {
-            if !is_number_non_bool(val) {
-                return vec![format!("{label} should be number")];
-            }
+        Some("number") if !is_number_non_bool(val) => {
+            return vec![format!("{label} should be number")];
         }
-        Some("string") => {
-            if !val.is_string() {
-                return vec![format!("{label} should be string")];
-            }
+        Some("string") if !val.is_string() => {
+            return vec![format!("{label} should be string")];
         }
-        Some("boolean") => {
-            if !val.is_boolean() {
-                return vec![format!("{label} should be boolean")];
-            }
+        Some("boolean") if !val.is_boolean() => {
+            return vec![format!("{label} should be boolean")];
         }
-        Some("array") => {
-            if !val.is_array() {
-                return vec![format!("{label} should be array")];
-            }
+        Some("array") if !val.is_array() => {
+            return vec![format!("{label} should be array")];
         }
         Some("object") if !val.is_object() => {
             return vec![format!("{label} should be object")];

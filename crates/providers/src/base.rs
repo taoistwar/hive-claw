@@ -442,7 +442,7 @@ pub fn strip_image_content_inplace(messages: &mut Vec<Value>) -> bool {
 }
 
 /// Extract tool name from either OpenAI or Anthropic-style tool schemas.
-#[expect(
+#[allow(
     dead_code,
     reason = "retained as the provider-neutral companion to cache marker selection"
 )]

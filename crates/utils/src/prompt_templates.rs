@@ -112,10 +112,7 @@ fn tokenize(src: &str) -> Vec<Token> {
         } else {
             let mut text = String::new();
             while i < len {
-                if i + 1 < len
-                    && ((chars[i] == '{' && chars[i + 1] == '%')
-                        || (chars[i] == '{' && chars[i + 1] == '{'))
-                {
+                if i + 1 < len && chars[i] == '{' && matches!(chars[i + 1], '%' | '{') {
                     break;
                 }
                 text.push(chars[i]);

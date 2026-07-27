@@ -1168,18 +1168,10 @@ fn pause() {
 // Model helpers (mirrors Python models.py)
 // ---------------------------------------------------------------------------
 
-#[expect(
-    dead_code,
-    reason = "retained for the staged model context-window onboarding flow"
-)]
 fn get_model_context_limit(_model: &str, _provider: &str) -> Option<u32> {
     None
 }
 
-#[expect(
-    dead_code,
-    reason = "retained for the staged model context-window onboarding flow"
-)]
 fn format_token_count(tokens: u32) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)

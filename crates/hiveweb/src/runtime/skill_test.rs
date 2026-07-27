@@ -266,7 +266,7 @@ pub async fn run_skill_test(
         let outcome = handle_workspace_tool(deps, &ctx, tool_ref, &tc, 0, agent_ctx).await;
 
         let (success, content, error) = match outcome {
-            o if matches!(o.payload, Value::Object(_)) && !o.payload.get("error").is_some() => {
+            o if matches!(o.payload, Value::Object(_)) && o.payload.get("error").is_none() => {
                 (true, o.payload, None)
             }
             o => {

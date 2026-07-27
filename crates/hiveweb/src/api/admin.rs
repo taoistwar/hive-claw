@@ -344,6 +344,10 @@ pub async fn delete_admin(
         let admin_role = Role::try_from(admin.role)
             .map_err(|_| anyhow::anyhow!("Invalid role"))
             .unwrap();
+        if admin_role == Role::Super {
+            return AppError::CannotDeleteSuperAdmin("Cannot delete super admin".to_string())
+                .into_response();
+        }
         if !caller_role.can_delete_target_admin(&admin_role) {
             return AppError::InsufficientPermission("Cannot delete this admin".to_string())
                 .into_response();

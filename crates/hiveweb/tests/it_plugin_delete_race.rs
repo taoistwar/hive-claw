@@ -94,7 +94,7 @@ async fn create_function(
             "name": format!("Test Function {identifier}"),
             "description": "Test function",
             "plugin_id": plugin_id,
-            "export": "test_export",
+            "plugin_export": "test_export",
             "input_schema": {"type": "object", "properties": {}},
             "output_schema": {"type": "object", "properties": {}}
         }),

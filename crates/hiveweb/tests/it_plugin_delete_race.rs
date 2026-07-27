@@ -16,7 +16,6 @@ use tokio::sync::Barrier;
 use axum::{Router, http::StatusCode};
 use common::{delete_auth, get, post_json_auth, seed_admin};
 use serde_json::{Value, json};
-use sqlx::Acquire;
 
 /// Helper: upload a minimal valid WASM plugin and return plugin id.
 async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::Result<i64> {

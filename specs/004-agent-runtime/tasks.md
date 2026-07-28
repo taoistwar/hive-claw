@@ -204,7 +204,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 ### 🚨 分析 v5 补漏 — FR-031 / SC-009 / FR-027 / FR-029 缺失测试
 
 - [x] T164 [P] [US6] Integration test `crates/hiveweb/tests/it_chat_session_ownership.rs`：① admin-A 创建 session → admin-B 尝试 POST messages → 403；② admin-A 可正常读写；③ Super 可读其它 admin 的 session 消息；④ 非 Super 读其它 admin 的 session → 403（FR-027 v7 会话所有权与隔离）
-- [x] T165 [P] [US1] Integration test `crates/hiveweb/tests/it_plugin_delete_race.rs`：连续验证 100 个独立并发场景 — Thread A 软删除当前无引用的 Plugin，同时 Thread B 新建 Function 引用该 Plugin；两条路径分别使用 `FOR UPDATE` / `FOR SHARE` 锁住同一 Plugin 行。严格验证仅允许两种结果：删除 200 + 创建 4093，或创建 200 + 删除 4093；两边同时 200 必须失败，且每个场景最终不得存在引用已软删除 Plugin 的 Function（SC-009 race window）
+- [x] T165 [P] [US1] Integration test `crates/hiveweb/tests/it_plugin_delete_race.rs`：连续验证 100 个独立 service 并发场景 — Thread A 软删除当前无引用的 Plugin，同时 Thread B 新建 Function 引用该 Plugin；两条路径分别使用 `FOR UPDATE` / `FOR SHARE` 锁住同一 Plugin 行。严格验证仅允许两种结果：删除成功 + 创建 4093，或创建成功 + 删除 4093；两边同时成功必须失败，且每个场景最终不得存在引用已软删除 Plugin 的 Function。配套 HTTP 场景验证成功状态与 409/4093 映射（SC-009 race window）
 - [x] T166 [P] [US4] Integration test `crates/hiveweb/tests/it_plugin_memory_limit.rs`：构造 Plugin 分配 > 128 MB（`PLUGIN_CALL_MAX_MEMORY_MB`），验证被强制中止 + 5004 + 审计写入 + 实例不入池（FR-031）
 - [x] T167 [P] [US4] Integration test `crates/hiveweb/tests/it_wasm_sha256_verify.rs`：① 上传正常 Plugin → 记录 DB sha256；② 手动篡改对象存储中的 WASM 文件（翻转 1 byte）；③ 调用该 Plugin → 宿主 GET 后重算 sha256 ≠ DB 值 → 拒绝实例化 + 写 audit `outcome=error` + 通知运维（FR-029 v7 加载前校验）
 

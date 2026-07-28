@@ -80,6 +80,25 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
     Ok(resp_body["data"]["id"].as_i64().expect("missing plugin id"))
 }
 
+/// Seed only the Plugin row needed by the 100-round service race. Repeating the
+/// upload API would test the unrelated per-IP rate limiter instead of SC-009.
+async fn insert_plugin_fixture(pool: &sqlx::MySqlPool, identifier: &str) -> anyhow::Result<i64> {
+    let s3_key = format!("plugins/{identifier}/1.0.0.wasm");
+    let sha256 = "0".repeat(64);
+    let result = sqlx::query(
+        r#"INSERT INTO plugins
+           (identifier, name, version, s3_key, sha256, size_bytes)
+           VALUES (?, ?, '1.0.0', ?, ?, 8)"#,
+    )
+    .bind(identifier)
+    .bind(identifier)
+    .bind(s3_key)
+    .bind(sha256)
+    .execute(pool)
+    .await?;
+    Ok(result.last_insert_id() as i64)
+}
+
 /// Helper: create a function referencing a plugin without assuming which
 /// concurrent operation wins.
 async fn create_function_response(
@@ -181,36 +200,47 @@ async fn t165_delete_blocked_when_function_exists() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn t165_concurrent_delete_and_create_no_race() -> anyhow::Result<()> {
-    let app = common::test_app().await?;
     let pool = common::test_pool().await?;
-    let admin = seed_admin(&pool, 3, 1, "test123").await?;
-    let token = admin.token()?;
     let run_id = uuid::Uuid::new_v4().simple().to_string();
 
     for scenario in 1..=T165_RACE_SCENARIOS {
         let plugin_identifier = format!("concurrent-race-plugin-{run_id}-{scenario:03}");
         let function_identifier = format!("concurrent-race-function-{run_id}-{scenario:03}");
-        let plugin_id = upload_plugin(&app, &token, &plugin_identifier).await?;
+        let function_name = format!("Test Function {function_identifier}");
+        let plugin_id = insert_plugin_fixture(&pool, &plugin_identifier).await?;
 
         let barrier = Arc::new(Barrier::new(2));
 
         let mut delete_handle = tokio::spawn({
             let barrier = barrier.clone();
-            let app = app.clone();
-            let token = token.clone();
+            let pool = pool.clone();
             async move {
                 barrier.wait().await;
-                delete_plugin(&app, &token, plugin_id).await
+                hiveweb::services::plugin::soft_delete(&pool, plugin_id).await
             }
         });
 
         let mut create_handle = tokio::spawn({
             let barrier = barrier.clone();
-            let app = app.clone();
-            let token = token.clone();
+            let pool = pool.clone();
             async move {
                 barrier.wait().await;
-                create_function_response(&app, &token, plugin_id, &function_identifier).await
+                hiveweb::services::function::create_custom(
+                    &pool,
+                    hiveweb::services::function::CreateMeta {
+                        identifier: function_identifier,
+                        name: function_name,
+                        description: Some("T165 free-running race".to_string()),
+                        plugin_id,
+                        plugin_export: "test_export".to_string(),
+                        input_schema: json!({"type": "object", "properties": {}}),
+                        output_schema: json!({"type": "object", "properties": {}}),
+                        category_id: None,
+                        required_capabilities: None,
+                        tag_ids: Vec::new(),
+                    },
+                )
+                .await
             }
         });
 
@@ -227,31 +257,30 @@ async fn t165_concurrent_delete_and_create_no_race() -> anyhow::Result<()> {
                     anyhow::bail!("scenario {scenario}: delete/create race timed out after 30s");
                 }
             };
-        let (delete_status, delete_body) = delete_result??;
-        let (create_status, create_body) = create_result??;
+        let delete_result = delete_result?;
+        let create_result = create_result?;
 
-        match (delete_status, create_status) {
-            (StatusCode::OK, StatusCode::CONFLICT) => {
+        match (&delete_result, &create_result) {
+            (Ok(()), Err(error)) => {
                 assert_eq!(
-                    create_body["code"].as_i64(),
-                    Some(4093),
+                    error.code(),
+                    4093,
                     "scenario {scenario}: delete winner must make create fail with \
-                     ResourceInUse; got {create_body}"
+                     ResourceInUse; got {error}"
                 );
             }
-            (StatusCode::CONFLICT, StatusCode::OK) => {
+            (Err(error), Ok(_)) => {
                 assert_eq!(
-                    delete_body["code"].as_i64(),
-                    Some(4093),
+                    error.code(),
+                    4093,
                     "scenario {scenario}: create winner must make delete fail with \
-                     ResourceInUse; got {delete_body}"
+                     ResourceInUse; got {error}"
                 );
             }
             _ => {
                 panic!(
                     "scenario {scenario}: exactly one operation must succeed: \
-                     delete={delete_status} {delete_body}, \
-                     create={create_status} {create_body}"
+                     delete={delete_result:?}, create={create_result:?}"
                 );
             }
         }

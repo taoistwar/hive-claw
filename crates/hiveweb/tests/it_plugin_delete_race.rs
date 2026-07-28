@@ -1,12 +1,12 @@
 //! Plugin delete race condition integration test (T165 / SC-009)
 //!
-//! Verifies the two-layer defense against the race window:
-//!   1. Soft delete transaction uses `SELECT ... FOR UPDATE` + `COUNT(*) FROM functions`
-//!   2. New Function INSERT does a secondary check on `deleted_at`
+//! Verifies the two row-locking paths that close the race window:
+//!   1. Soft delete uses `SELECT ... FOR UPDATE` before checking Function references
+//!   2. Function creation uses `SELECT ... FOR SHARE` and inserts in the same transaction
 //!
-//! Scenario: Thread A tries to soft-delete a Plugin (referenced by a Function)
-//! while Thread B concurrently creates a new Function referencing the same Plugin.
-//! Must verify 100% consistency — no leaked references or partial deletes.
+//! Scenario: Thread A tries to soft-delete an active, unreferenced Plugin while
+//! Thread B concurrently creates a new Function referencing that Plugin. Exactly
+//! one operation may succeed, with no Function referencing a soft-deleted Plugin.
 
 mod common;
 
@@ -16,6 +16,8 @@ use tokio::sync::Barrier;
 use axum::{Router, http::StatusCode};
 use common::{delete_auth, get, post_json_auth, seed_admin};
 use serde_json::{Value, json};
+
+const T165_RACE_SCENARIOS: usize = 100;
 
 /// Helper: upload a minimal valid WASM plugin and return plugin id.
 async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::Result<i64> {
@@ -183,70 +185,92 @@ async fn t165_concurrent_delete_and_create_no_race() -> anyhow::Result<()> {
     let pool = common::test_pool().await?;
     let admin = seed_admin(&pool, 3, 1, "test123").await?;
     let token = admin.token()?;
+    let run_id = uuid::Uuid::new_v4().simple().to_string();
 
-    // Upload a plugin (no existing functions yet)
-    let plugin_id = upload_plugin(&app, &token, "concurrent-race-plugin").await?;
+    for scenario in 1..=T165_RACE_SCENARIOS {
+        let plugin_identifier = format!("concurrent-race-plugin-{run_id}-{scenario:03}");
+        let function_identifier = format!("concurrent-race-function-{run_id}-{scenario:03}");
+        let plugin_id = upload_plugin(&app, &token, &plugin_identifier).await?;
 
-    // Use a barrier to synchronize two concurrent tasks
-    let barrier = Arc::new(Barrier::new(2));
-    let app_clone = app.clone();
-    let token_clone = token.clone();
+        let barrier = Arc::new(Barrier::new(2));
 
-    // Task A: Try to delete the plugin (should succeed since no functions yet)
-    let delete_handle = tokio::spawn({
-        let barrier = barrier.clone();
-        let app = app_clone.clone();
-        let token = token_clone.clone();
-        async move {
-            barrier.wait().await;
-            delete_plugin(&app, &token, plugin_id).await
+        let mut delete_handle = tokio::spawn({
+            let barrier = barrier.clone();
+            let app = app.clone();
+            let token = token.clone();
+            async move {
+                barrier.wait().await;
+                delete_plugin(&app, &token, plugin_id).await
+            }
+        });
+
+        let mut create_handle = tokio::spawn({
+            let barrier = barrier.clone();
+            let app = app.clone();
+            let token = token.clone();
+            async move {
+                barrier.wait().await;
+                create_function_response(&app, &token, plugin_id, &function_identifier).await
+            }
+        });
+
+        let (delete_result, create_result) =
+            match tokio::time::timeout(Duration::from_secs(30), async {
+                tokio::join!(&mut delete_handle, &mut create_handle)
+            })
+            .await
+            {
+                Ok(results) => results,
+                Err(_) => {
+                    delete_handle.abort();
+                    create_handle.abort();
+                    anyhow::bail!("scenario {scenario}: delete/create race timed out after 30s");
+                }
+            };
+        let (delete_status, delete_body) = delete_result??;
+        let (create_status, create_body) = create_result??;
+
+        match (delete_status, create_status) {
+            (StatusCode::OK, StatusCode::CONFLICT) => {
+                assert_eq!(
+                    create_body["code"].as_i64(),
+                    Some(4093),
+                    "scenario {scenario}: delete winner must make create fail with \
+                     ResourceInUse; got {create_body}"
+                );
+            }
+            (StatusCode::CONFLICT, StatusCode::OK) => {
+                assert_eq!(
+                    delete_body["code"].as_i64(),
+                    Some(4093),
+                    "scenario {scenario}: create winner must make delete fail with \
+                     ResourceInUse; got {delete_body}"
+                );
+            }
+            _ => {
+                panic!(
+                    "scenario {scenario}: exactly one operation must succeed: \
+                     delete={delete_status} {delete_body}, \
+                     create={create_status} {create_body}"
+                );
+            }
         }
-    });
 
-    // Task B: Try to create a function referencing the plugin
-    let create_handle = tokio::spawn({
-        let barrier = barrier.clone();
-        let app = app.clone();
-        let token = token.clone();
-        async move {
-            barrier.wait().await;
-            create_function_response(&app, &token, plugin_id, "concurrent-race-func").await
-        }
-    });
+        assert_eq!(
+            deleted_plugin_reference_count(&pool, plugin_id).await?,
+            0,
+            "scenario {scenario}: a Function must never reference a soft-deleted Plugin"
+        );
 
-    let (delete_result, create_result) = tokio::join!(delete_handle, create_handle);
-    let (delete_status, delete_body) = delete_result??;
-    let (create_status, create_body) = create_result??;
-
-    match (delete_status, create_status) {
-        (StatusCode::OK, StatusCode::CONFLICT) => {
-            assert_eq!(
-                create_body["code"].as_i64(),
-                Some(4093),
-                "delete winner must make create fail with ResourceInUse; got {create_body}"
-            );
-        }
-        (StatusCode::CONFLICT, StatusCode::OK) => {
-            assert_eq!(
-                delete_body["code"].as_i64(),
-                Some(4093),
-                "create winner must make delete fail with ResourceInUse; got {delete_body}"
-            );
-        }
-        _ => {
-            panic!(
-                "exactly one operation must succeed: \
-                 delete={delete_status} {delete_body}, \
-                 create={create_status} {create_body}"
-            );
-        }
+        sqlx::query("DELETE FROM functions WHERE plugin_id = ?")
+            .bind(plugin_id)
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM plugins WHERE id = ?")
+            .bind(plugin_id)
+            .execute(&pool)
+            .await?;
     }
-
-    assert_eq!(
-        deleted_plugin_reference_count(&pool, plugin_id).await?,
-        0,
-        "a Function must never reference a soft-deleted Plugin"
-    );
 
     Ok(())
 }

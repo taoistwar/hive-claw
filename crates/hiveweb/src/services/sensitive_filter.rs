@@ -99,17 +99,17 @@ impl SensitiveFilter {
 
         // 1. Aho-Corasick exact match (fast path, O(n+m))
         let ac_guard = self.ac.read().expect("AC lock poisoned");
-        if let Some(ref ac) = *ac_guard {
-            if ac.find(text).is_some() {
-                // Get the matched word for logging
-                let patterns_guard = self.patterns.read().expect("patterns lock poisoned");
-                // Find which exact pattern matched first
-                for pattern in patterns_guard.iter() {
-                    if let SensitivePattern::Exact { word, .. } = pattern {
-                        if text.to_lowercase().contains(&word.to_lowercase()) {
-                            return Some(pattern.clone());
-                        }
-                    }
+        if let Some(ref ac) = *ac_guard
+            && ac.find(text).is_some()
+        {
+            // Get the matched word for logging
+            let patterns_guard = self.patterns.read().expect("patterns lock poisoned");
+            // Find which exact pattern matched first
+            for pattern in patterns_guard.iter() {
+                if let SensitivePattern::Exact { word, .. } = pattern
+                    && text.to_lowercase().contains(&word.to_lowercase())
+                {
+                    return Some(pattern.clone());
                 }
             }
         }
@@ -118,10 +118,10 @@ impl SensitiveFilter {
         // 2. Regex patterns (check individually)
         let patterns_guard = self.patterns.read().expect("patterns lock poisoned");
         for pattern in patterns_guard.iter() {
-            if let SensitivePattern::Regex { re, .. } = pattern {
-                if re.is_match(text) {
-                    return Some(pattern.clone());
-                }
+            if let SensitivePattern::Regex { re, .. } = pattern
+                && re.is_match(text)
+            {
+                return Some(pattern.clone());
             }
         }
 
@@ -402,10 +402,8 @@ pub async fn delete_sensitive_word(
         .map_err(|e| AppError::Internal(format!("delete sensitive word: {e}")))?;
 
     let deleted = result.rows_affected() > 0;
-    if deleted {
-        if let Err(e) = filter.refresh_cache(pool).await {
-            tracing::warn!(error = %e, "Failed to refresh filter cache after delete");
-        }
+    if deleted && let Err(e) = filter.refresh_cache(pool).await {
+        tracing::warn!(error = %e, "Failed to refresh filter cache after delete");
     }
     Ok(deleted)
 }

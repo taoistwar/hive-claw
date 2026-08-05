@@ -119,10 +119,10 @@ pub async fn execute_answer_node(
     // messages and inject it as {context} for system_prompt template replacement.
     if history_window > 0 {
         let history_context = build_history_context(&agent_ctx, history_window);
-        if !history_context.is_empty() {
-            if let Value::Object(ref mut map) = input {
-                map.insert("context".to_string(), Value::String(history_context));
-            }
+        if !history_context.is_empty()
+            && let Value::Object(ref mut map) = input
+        {
+            map.insert("context".to_string(), Value::String(history_context));
         }
     }
 
@@ -210,10 +210,10 @@ fn build_user_message(input: &Value, system_prompt: &str) -> String {
             }
         }
         for (k, v) in map {
-            if !k.starts_with('_') {
-                if let Value::String(s) = v {
-                    return s.clone();
-                }
+            if !k.starts_with('_')
+                && let Value::String(s) = v
+            {
+                return s.clone();
             }
         }
         let re = regex::Regex::new(r"\{\s*([a-zA-Z0-9_]+)\s*\}")

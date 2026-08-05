@@ -382,13 +382,13 @@ pub async fn query_balance_async_impl(
     );
 
     // Resolve game_label_list codes to human-readable names via cc_label
-    if need_duration && !duration_card_json.is_empty() {
-        if let Err(e) =
+    if need_duration
+        && !duration_card_json.is_empty()
+        && let Err(e) =
             crate::services::membership::resolve_game_label_names(ext_pool, &mut duration_card_json)
                 .await
-        {
-            tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
-        }
+    {
+        tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
     }
 
     let has_membership = !membership_subscriptions.is_empty();

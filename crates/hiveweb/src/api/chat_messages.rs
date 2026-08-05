@@ -186,21 +186,21 @@ async fn list_messages(
 fn count_game_cards(messages: &[ChatMessageUser]) -> usize {
     let mut count = 0;
     for msg in messages {
-        if let Some(ref exts) = msg.extensions {
-            if let Some(arr) = exts.as_array() {
-                for ext in arr {
-                    let ct = ext
-                        .get("content_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let pt = ext
-                        .get("payload")
-                        .and_then(|p| p.get("type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if ct == "card" && pt == "game" {
-                        count += 1;
-                    }
+        if let Some(ref exts) = msg.extensions
+            && let Some(arr) = exts.as_array()
+        {
+            for ext in arr {
+                let ct = ext
+                    .get("content_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let pt = ext
+                    .get("payload")
+                    .and_then(|p| p.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if ct == "card" && pt == "game" {
+                    count += 1;
                 }
             }
         }
@@ -232,17 +232,17 @@ async fn filter_unavailable_games(ext_pool: &sqlx::MySqlPool, messages: &mut [Ch
     };
 
     for msg in messages.iter_mut() {
-        if let Some(ref mut exts) = msg.extensions {
-            if let Some(arr) = exts.as_array_mut() {
-                let before = arr.len();
-                arr.retain(|ext| retain_game_card(ext, &available));
-                // 有游戏卡片被过滤时，提示已下架
-                if arr.len() < before {
-                    msg.content = Some("很遗憾，这款游戏暂未在平台上架".into());
-                }
-                if arr.is_empty() {
-                    *exts = serde_json::Value::Null;
-                }
+        if let Some(ref mut exts) = msg.extensions
+            && let Some(arr) = exts.as_array_mut()
+        {
+            let before = arr.len();
+            arr.retain(|ext| retain_game_card(ext, &available));
+            // 有游戏卡片被过滤时，提示已下架
+            if arr.len() < before {
+                msg.content = Some("很遗憾，这款游戏暂未在平台上架".into());
+            }
+            if arr.is_empty() {
+                *exts = serde_json::Value::Null;
             }
         }
     }
@@ -487,10 +487,10 @@ async fn handle_single_game_card(
     };
 
     // 已匹配当前平台 → 无需处理
-    if let Some(i) = info {
-        if game_card_matches(i, client_type, channel) {
-            return;
-        }
+    if let Some(i) = info
+        && game_card_matches(i, client_type, channel)
+    {
+        return;
     }
 
     // 尝试刷新
@@ -506,14 +506,14 @@ async fn handle_single_game_card(
         None => None,
     };
 
-    if let Some(ref info_row) = refreshed {
-        if info_row.logic_game_id != 0 {
-            exts[idx]
-                .as_object_mut()
-                .unwrap()
-                .insert("payload".into(), build_game_card_payload(info_row));
-            return;
-        }
+    if let Some(ref info_row) = refreshed
+        && info_row.logic_game_id != 0
+    {
+        exts[idx]
+            .as_object_mut()
+            .unwrap()
+            .insert("payload".into(), build_game_card_payload(info_row));
+        return;
     }
 
     // 刷新失败 → 先提取游戏名（info 借用于 exts），再清空 extensions
@@ -582,14 +582,14 @@ async fn handle_multiple_game_cards(
             }
         };
         let fresh = fetch_fresh_game(ext_pool, game_id, client_type, channel, game_cache).await;
-        if let Some(info_row) = fresh {
-            if info_row.logic_game_id != 0 {
-                ext.as_object_mut()
-                    .unwrap()
-                    .insert("payload".into(), build_game_card_payload(&info_row));
-                any_refreshed = true;
-                continue;
-            }
+        if let Some(info_row) = fresh
+            && info_row.logic_game_id != 0
+        {
+            ext.as_object_mut()
+                .unwrap()
+                .insert("payload".into(), build_game_card_payload(&info_row));
+            any_refreshed = true;
+            continue;
         }
         // 刷新失败，记录游戏名
         if let Some(n) = game_card_name(info) {

@@ -64,12 +64,11 @@ where
         };
         event.record(&mut visitor);
 
-        if let Some(min_dur) = self.min_duration {
-            if let Some(secs) = fields.elapsed_secs {
-                if secs < min_dur.as_secs_f64() {
-                    return;
-                }
-            }
+        if let Some(min_dur) = self.min_duration
+            && let Some(secs) = fields.elapsed_secs
+            && secs < min_dur.as_secs_f64()
+        {
+            return;
         }
 
         let mut sql = fields.sql;

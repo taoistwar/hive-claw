@@ -204,7 +204,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 ### 🚨 分析 v5 补漏 — FR-031 / SC-009 / FR-027 / FR-029 缺失测试
 
 - [x] T164 [P] [US6] Integration test `crates/hiveweb/tests/it_chat_session_ownership.rs`：① admin-A 创建 session → admin-B 尝试 POST messages → 403；② admin-A 可正常读写；③ Super 可读其它 admin 的 session 消息；④ 非 Super 读其它 admin 的 session → 403（FR-027 v7 会话所有权与隔离）
-- [x] T165 [P] [US1] Integration test `crates/hiveweb/tests/it_plugin_delete_race.rs`：并发模拟 — Thread A 尝试软删除 Plugin（被 Function 引用）的同时 Thread B 新建 Function 引用该 Plugin；两层防御：① 软删除 transaction `SELECT ... FOR UPDATE` 锁住 Plugin + `SELECT COUNT(*) FROM functions` 同事务内查；② 新建 Function 的 INSERT 前二次校验 `deleted_at`；验证 100 场景无漏删（SC-009 race window）
+- [x] T165 [P] [US1] Integration test `crates/hiveweb/tests/it_plugin_delete_race.rs`：连续验证 100 个独立 service 并发场景 — Thread A 软删除当前无引用的 Plugin，同时 Thread B 新建 Function 引用该 Plugin；两条路径分别使用 `FOR UPDATE` / `FOR SHARE` 锁住同一 Plugin 行。严格验证仅允许两种结果：删除成功 + 创建 4093，或创建成功 + 删除 4093；两边同时成功必须失败，且每个场景最终不得存在引用已软删除 Plugin 的 Function。配套 HTTP 场景验证成功状态与 409/4093 映射（SC-009 race window）
 - [x] T166 [P] [US4] Integration test `crates/hiveweb/tests/it_plugin_memory_limit.rs`：构造 Plugin 分配 > 128 MB（`PLUGIN_CALL_MAX_MEMORY_MB`），验证被强制中止 + 5004 + 审计写入 + 实例不入池（FR-031）
 - [x] T167 [P] [US4] Integration test `crates/hiveweb/tests/it_wasm_sha256_verify.rs`：① 上传正常 Plugin → 记录 DB sha256；② 手动篡改对象存储中的 WASM 文件（翻转 1 byte）；③ 调用该 Plugin → 宿主 GET 后重算 sha256 ≠ DB 值 → 拒绝实例化 + 写 audit `outcome=error` + 通知运维（FR-029 v7 加载前校验）
 
@@ -218,7 +218,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端服务层 + API
 
-- [x] T070 [US1] Plugin service `crates/hiveweb-admin/src/services/plugin.rs`：
+- [x] T070 [US1] Plugin service `crates/hiveweb/src/services/plugin.rs`：
   - **upload**（5 项静态校验，FR-005 v7）：
     ① magic bytes（`\0asm` + version）— 拒绝非 WASM 二进制
     ② 文件大小 ≤ `PLUGIN_MAX_BYTES`（默认 16 MB）
@@ -229,7 +229,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
   - **soft delete with reference check**（spec SC-009 v7 race window 防护）：
     - 开 transaction
     - `SELECT * FROM plugins WHERE id = ? FOR UPDATE`（行锁）
-    - `SELECT COUNT(*) FROM functions WHERE plugin_id = ? AND ...`（同事务内）
+    - `SELECT COUNT(*) FROM functions WHERE plugin_id = ?`（同事务内；Function 为硬删除模型，无 `deleted_at`）
     - 任何引用 → ROLLBACK + 4093
     - 否则 UPDATE plugins SET deleted_at = NOW() + COMMIT
   - **加载前 sha256 重校验**（FR-029 v7）：从 S3 GET WASM 后重算 sha256 比对 DB；不一致 → 拒绝实例化 + audit + tracing::error 通知运维
@@ -263,10 +263,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 后端 — Function/Tool/Skill CRUD
 
-- [x] T081 [P] [US2] Function service `crates/hiveweb-admin/src/services/function.rs`：
+- [x] T081 [P] [US2] Function service `crates/hiveweb/src/services/function.rs`：
   - custom CRUD + Plugin 引用校验（plugin_id 存在且 `deleted_at IS NULL`）
   - JSON Schema 校验（draft 2020-12）
-  - **SC-009 第二层防御**：INSERT 前二次校验 `SELECT deleted_at FROM plugins WHERE id = ?`；若已删除 → ROLLBACK + 4093（与 T070 的软删除 transaction 两层防护配合）
+  - **SC-009 第二层防御**：开启 transaction，执行 `SELECT id, deleted_at FROM plugins WHERE id = ? FOR SHARE`；若已删除 → ROLLBACK + 4093；否则在同一事务 INSERT Function 与标签关联后 COMMIT（与 T070 的软删除 transaction 行锁串行化）
 - [x] T082 [P] [US2] Tool service `crates/hiveweb-admin/src/services/tool.rs`：CRUD + schema 一致性校验（data-model 不变量 #11）— `kind=1` 时 tools.input_schema / output_schema **深度 JSON 等值校验** 与引用 function 的 schema，不一致返 5002 `Schema mismatch`；`kind=2` 时 tools.input_schema 必须能赋值给 workflow 入口 function 的 input_schema（必含所有 required 字段且类型一致）
 - [x] T083 [P] [US2] Skill service `crates/hiveweb-admin/src/services/skill.rs`：CRUD（markdown content + 解析 frontmatter）
 - [x] T084 [P] [US2] Function API `crates/hiveweb-admin/src/api/function.rs`

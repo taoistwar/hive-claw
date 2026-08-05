@@ -116,7 +116,7 @@ mod tests {
         assert!(
             view1
                 .get_category(Category::Entities)
-                .map_or(true, |v| v.is_empty())
+                .is_none_or(|v| v.is_empty())
         );
     }
 

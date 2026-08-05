@@ -65,7 +65,6 @@ pub const WEB_FETCH_INPUT_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
     "url": { "type": "string", "description": "URL to fetch" },
-    "extractMode": { "type": "string", "enum": ["markdown", "text"], "default": "text" },
     "maxChars": { "type": "integer", "minimum": 100 }
   },
   "required": ["url"]

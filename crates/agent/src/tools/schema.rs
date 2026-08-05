@@ -52,74 +52,62 @@ pub fn validate_json_schema_value(val: &Value, schema: &Value, path: &str) -> Ve
     let mut errors: Vec<String> = Vec::new();
 
     match t.as_deref() {
-        Some("integer") => {
-            if !is_integer(val) {
-                return vec![format!("{label} should be integer")];
-            }
+        Some("integer") if !is_integer(val) => {
+            return vec![format!("{label} should be integer")];
         }
-        Some("number") => {
-            if !is_number_non_bool(val) {
-                return vec![format!("{label} should be number")];
-            }
+        Some("number") if !is_number_non_bool(val) => {
+            return vec![format!("{label} should be number")];
         }
-        Some("string") => {
-            if !val.is_string() {
-                return vec![format!("{label} should be string")];
-            }
+        Some("string") if !val.is_string() => {
+            return vec![format!("{label} should be string")];
         }
-        Some("boolean") => {
-            if !val.is_boolean() {
-                return vec![format!("{label} should be boolean")];
-            }
+        Some("boolean") if !val.is_boolean() => {
+            return vec![format!("{label} should be boolean")];
         }
-        Some("array") => {
-            if !val.is_array() {
-                return vec![format!("{label} should be array")];
-            }
+        Some("array") if !val.is_array() => {
+            return vec![format!("{label} should be array")];
         }
-        Some("object") => {
-            if !val.is_object() {
-                return vec![format!("{label} should be object")];
-            }
+        Some("object") if !val.is_object() => {
+            return vec![format!("{label} should be object")];
         }
         _ => {}
     }
 
-    if let Some(en) = schema_obj.get("enum").and_then(|v| v.as_array()) {
-        if !en.iter().any(|v| v == val) {
-            errors.push(format!(
-                "{label} must be one of {}",
-                serde_json::to_string(en).unwrap_or_default()
-            ));
-        }
+    if let Some(en) = schema_obj.get("enum").and_then(|v| v.as_array())
+        && !en.iter().any(|v| v == val)
+    {
+        errors.push(format!(
+            "{label} must be one of {}",
+            serde_json::to_string(en).unwrap_or_default()
+        ));
     }
 
     match t.as_deref() {
         Some("integer") | Some("number") => {
             if let Some(n) = val.as_f64() {
-                if let Some(min) = schema_obj.get("minimum").and_then(|v| v.as_f64()) {
-                    if n < min {
-                        errors.push(format!("{label} must be >= {min}"));
-                    }
+                if let Some(min) = schema_obj.get("minimum").and_then(|v| v.as_f64())
+                    && n < min
+                {
+                    errors.push(format!("{label} must be >= {min}"));
                 }
-                if let Some(max) = schema_obj.get("maximum").and_then(|v| v.as_f64()) {
-                    if n > max {
-                        errors.push(format!("{label} must be <= {max}"));
-                    }
+                if let Some(max) = schema_obj.get("maximum").and_then(|v| v.as_f64())
+                    && n > max
+                {
+                    errors.push(format!("{label} must be <= {max}"));
                 }
             }
         }
         Some("string") => {
             if let Some(s) = val.as_str() {
-                if let Some(min) = schema_obj.get("minLength").and_then(|v| v.as_u64()) {
-                    if (s.chars().count() as u64) < min {
-                        errors.push(format!("{label} must be at least {min} chars"));
-                    }
+                if let Some(min) = schema_obj.get("minLength").and_then(|v| v.as_u64())
+                    && (s.chars().count() as u64) < min
+                {
+                    errors.push(format!("{label} must be at least {min} chars"));
                 }
-                if let Some(max) = schema_obj.get("maxLength").and_then(|v| v.as_u64()) {
-                    if (s.chars().count() as u64) > max {
-                        errors.push(format!("{label} must be at most {max} chars"));
-                    }
+                if let Some(max) = schema_obj.get("maxLength").and_then(|v| v.as_u64())
+                    && (s.chars().count() as u64) > max
+                {
+                    errors.push(format!("{label} must be at most {max} chars"));
                 }
             }
         }
@@ -132,10 +120,10 @@ pub fn validate_json_schema_value(val: &Value, schema: &Value, path: &str) -> Ve
                     .unwrap_or(&empty_props);
                 if let Some(required) = schema_obj.get("required").and_then(|v| v.as_array()) {
                     for k in required {
-                        if let Some(k) = k.as_str() {
-                            if !obj.contains_key(k) {
-                                errors.push(format!("missing required {}", subpath(path, k)));
-                            }
+                        if let Some(k) = k.as_str()
+                            && !obj.contains_key(k)
+                        {
+                            errors.push(format!("missing required {}", subpath(path, k)));
                         }
                     }
                 }
@@ -148,15 +136,15 @@ pub fn validate_json_schema_value(val: &Value, schema: &Value, path: &str) -> Ve
         }
         Some("array") => {
             if let Some(arr) = val.as_array() {
-                if let Some(min) = schema_obj.get("minItems").and_then(|v| v.as_u64()) {
-                    if (arr.len() as u64) < min {
-                        errors.push(format!("{label} must have at least {min} items"));
-                    }
+                if let Some(min) = schema_obj.get("minItems").and_then(|v| v.as_u64())
+                    && (arr.len() as u64) < min
+                {
+                    errors.push(format!("{label} must have at least {min} items"));
                 }
-                if let Some(max) = schema_obj.get("maxItems").and_then(|v| v.as_u64()) {
-                    if (arr.len() as u64) > max {
-                        errors.push(format!("{label} must be at most {max} items"));
-                    }
+                if let Some(max) = schema_obj.get("maxItems").and_then(|v| v.as_u64())
+                    && (arr.len() as u64) > max
+                {
+                    errors.push(format!("{label} must be at most {max} items"));
                 }
                 if let Some(items_schema) = schema_obj.get("items") {
                     let prefix = if path.is_empty() {

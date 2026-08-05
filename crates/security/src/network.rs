@@ -115,10 +115,11 @@ pub fn clear_ssrf_whitelist() {
 }
 
 fn is_private(addr: IpAddr) -> bool {
-    if let Ok(guard) = ALLOWED_NETWORKS.read() {
-        if !guard.is_empty() && guard.iter().any(|n| n.contains(addr)) {
-            return false;
-        }
+    let is_allowed = ALLOWED_NETWORKS
+        .read()
+        .is_ok_and(|guard| !guard.is_empty() && guard.iter().any(|network| network.contains(addr)));
+    if is_allowed {
+        return false;
     }
     BLOCKED_NETWORKS.iter().any(|n| n.contains(addr))
 }
@@ -132,9 +133,7 @@ fn parse_url(url: &str) -> Option<(String, String, String)> {
     let scheme_end = url.find("://")?;
     let scheme = url[..scheme_end].to_lowercase();
     let rest = &url[scheme_end + 3..];
-    let netloc_end = rest
-        .find(|c: char| c == '/' || c == '?' || c == '#')
-        .unwrap_or(rest.len());
+    let netloc_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let netloc = &rest[..netloc_end];
     if netloc.is_empty() {
         return None;

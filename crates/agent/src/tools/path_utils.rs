@@ -20,15 +20,15 @@ pub fn resolve_workspace_path(
     extra_allowed_dirs: Option<&[PathBuf]>,
 ) -> Result<PathBuf, String> {
     let mut p = PathBuf::from(path);
-    if let Ok(rest) = p.strip_prefix("~") {
-        if let Some(home) = dirs::home_dir() {
-            p = home.join(rest);
-        }
+    if let Ok(rest) = p.strip_prefix("~")
+        && let Some(home) = dirs::home_dir()
+    {
+        p = home.join(rest);
     }
-    if !p.is_absolute() {
-        if let Some(ws) = workspace {
-            p = ws.join(&p);
-        }
+    if !p.is_absolute()
+        && let Some(ws) = workspace
+    {
+        p = ws.join(&p);
     }
     let resolved = p.canonicalize().unwrap_or_else(|_| p.clone());
     if let Some(allowed) = allowed_dir {

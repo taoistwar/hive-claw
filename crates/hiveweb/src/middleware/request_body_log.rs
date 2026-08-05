@@ -27,7 +27,10 @@ pub async fn log_request_body_middleware(request: Request, next: Next) -> Respon
 
     if !body_str.is_empty() {
         let json_log = if body_str.len() > 4096 {
-            let safe_len = body_str.floor_char_boundary(4096);
+            let mut safe_len = 4096;
+            while !body_str.is_char_boundary(safe_len) {
+                safe_len -= 1;
+            }
             match serde_json::from_str::<Value>(&body_str) {
                 Ok(_) => {
                     let truncated = format!(

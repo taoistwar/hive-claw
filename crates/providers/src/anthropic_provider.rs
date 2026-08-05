@@ -143,20 +143,19 @@ impl AnthropicProvider {
                 }
                 "tool" => {
                     let block = tool_result_block(msg);
-                    if let Some(last) = raw.last_mut() {
-                        if last.get("role").and_then(|v| v.as_str()) == Some("user") {
-                            match last.get_mut("content").unwrap() {
-                                Value::Array(arr) => arr.push(block),
-                                other => {
-                                    let text = other.as_str().unwrap_or("").to_string();
-                                    *other = Value::Array(vec![
-                                        json!({"type":"text","text":text}),
-                                        block,
-                                    ]);
-                                }
+                    if let Some(last) = raw
+                        .last_mut()
+                        .filter(|last| last.get("role").and_then(|v| v.as_str()) == Some("user"))
+                    {
+                        match last.get_mut("content").unwrap() {
+                            Value::Array(arr) => arr.push(block),
+                            other => {
+                                let text = other.as_str().unwrap_or("").to_string();
+                                *other =
+                                    Value::Array(vec![json!({"type":"text","text":text}), block]);
                             }
-                            continue;
                         }
+                        continue;
                     }
                     raw.push(json!({"role":"user","content":[block]}));
                 }
@@ -334,14 +333,11 @@ impl AnthropicProvider {
             body.insert("temperature".into(), json!(req.temperature as f64));
         }
 
-        if let Some(tools) = tools {
-            if !tools.is_empty() {
-                body.insert("tools".into(), Value::Array(tools));
-                if let Some(tc) =
-                    Self::convert_tool_choice(req.tool_choice.as_ref(), thinking_enabled)
-                {
-                    body.insert("tool_choice".into(), tc);
-                }
+        if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
+            body.insert("tools".into(), Value::Array(tools));
+            if let Some(tc) = Self::convert_tool_choice(req.tool_choice.as_ref(), thinking_enabled)
+            {
+                body.insert("tool_choice".into(), tc);
             }
         }
 
@@ -547,24 +543,23 @@ fn merge_consecutive(msgs: Vec<Value>) -> Vec<Value> {
             break;
         }
     }
-    if merged.is_empty() {
-        if let Some(popped) = last_popped.as_ref() {
-            if !has_tool_use(popped) {
-                merged.push(json!({
-                    "role":"user",
-                    "content": popped.get("content").cloned().unwrap_or(Value::Null),
-                }));
-            }
-        }
+    if let Some(popped) = last_popped
+        .as_ref()
+        .filter(|popped| merged.is_empty() && !has_tool_use(popped))
+    {
+        merged.push(json!({
+            "role":"user",
+            "content": popped.get("content").cloned().unwrap_or(Value::Null),
+        }));
     }
 
-    if let Some(first) = merged.first() {
-        if first.get("role").and_then(|v| v.as_str()) == Some("assistant") && !has_tool_use(first) {
-            merged.insert(
-                0,
-                json!({"role":"user","content":"(conversation continued)"}),
-            );
-        }
+    if merged.first().is_some_and(|first| {
+        first.get("role").and_then(|v| v.as_str()) == Some("assistant") && !has_tool_use(first)
+    }) {
+        merged.insert(
+            0,
+            json!({"role":"user","content":"(conversation continued)"}),
+        );
     }
     merged
 }
@@ -592,11 +587,9 @@ fn tool_cache_marker_indices(tools: &[Value]) -> Vec<usize> {
         }
     }
     let mut out = Vec::new();
-    for idx in [last_builtin, Some(tail)] {
-        if let Some(i) = idx {
-            if !out.contains(&i) {
-                out.push(i);
-            }
+    for i in [last_builtin, Some(tail)].into_iter().flatten() {
+        if !out.contains(&i) {
+            out.push(i);
         }
     }
     out
@@ -719,17 +712,19 @@ fn parse_error_response(
     let parsed: Option<Value> = serde_json::from_str(payload).ok();
     let mut error_type: Option<String> = None;
     let mut error_code: Option<String> = None;
-    if let Some(p) = parsed.as_ref() {
-        if let Some(obj) = p.get("error").and_then(|v| v.as_object()) {
-            error_type = obj
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_ascii_lowercase());
-            error_code = obj
-                .get("code")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_ascii_lowercase());
-        }
+    if let Some(obj) = parsed
+        .as_ref()
+        .and_then(|payload| payload.get("error"))
+        .and_then(|error| error.as_object())
+    {
+        error_type = obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_ascii_lowercase());
+        error_code = obj
+            .get("code")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_ascii_lowercase());
     }
 
     let retry_after = headers
@@ -933,20 +928,21 @@ impl LLMProvider for AnthropicProvider {
         }
 
         // Process any remaining event
-        if !current_event_data.is_empty() {
-            if let Some(event_type) = &current_event_type {
-                process_sse_event(
-                    event_type,
-                    &current_event_data,
-                    &mut content_parts,
-                    &mut tool_calls,
-                    &mut thinking_blocks,
-                    &mut finish_reason,
-                    &mut usage,
-                    on_delta.as_ref(),
-                    on_tool_call_delta.as_ref(),
-                );
-            }
+        if let Some(event_type) = current_event_type
+            .as_ref()
+            .filter(|_| !current_event_data.is_empty())
+        {
+            process_sse_event(
+                event_type,
+                &current_event_data,
+                &mut content_parts,
+                &mut tool_calls,
+                &mut thinking_blocks,
+                &mut finish_reason,
+                &mut usage,
+                on_delta.as_ref(),
+                on_tool_call_delta.as_ref(),
+            );
         }
 
         LLMResponse {
@@ -961,6 +957,10 @@ impl LLMProvider for AnthropicProvider {
 }
 
 /// Process a single SSE event from Anthropic's streaming API.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream event parsing updates several independent accumulators and callbacks"
+)]
 fn process_sse_event(
     event_type: &str,
     data: &str,
@@ -989,10 +989,9 @@ fn process_sse_event(
                             .get("content_block")
                             .and_then(|v| v.get("text"))
                             .and_then(|v| v.as_str())
+                            .filter(|text| !text.is_empty())
                         {
-                            if !text.is_empty() {
-                                content_parts.push(text.to_string());
-                            }
+                            content_parts.push(text.to_string());
                         }
                     }
                     "tool_use" => {
@@ -1021,7 +1020,7 @@ fn process_sse_event(
                                 provider_specific_fields: None,
                                 function_provider_specific_fields: None,
                             });
-                            if let Some(ref cb) = on_tool_call_delta {
+                            if let Some(cb) = on_tool_call_delta {
                                 let mut delta = serde_json::Map::new();
                                 delta.insert("call_id".into(), serde_json::Value::String(id));
                                 delta.insert("name".into(), serde_json::Value::String(name));
@@ -1054,56 +1053,44 @@ fn process_sse_event(
             {
                 match delta_type {
                     "text_delta" => {
-                        if let Some(text) = value
+                        let text = value
                             .get("delta")
                             .and_then(|v| v.get("text"))
                             .and_then(|v| v.as_str())
-                        {
-                            if !text.is_empty() {
-                                if let Some(ref cb) = on_delta {
-                                    cb(text.to_string());
-                                }
-                            }
+                            .filter(|text| !text.is_empty());
+                        if let (Some(text), Some(cb)) = (text, on_delta) {
+                            cb(text.to_string());
                         }
                     }
                     "input_json_delta" => {
-                        if let Some(partial_json) = value
+                        let partial_json = value
                             .get("delta")
                             .and_then(|v| v.get("partial_json"))
-                            .and_then(|v| v.as_str())
-                        {
-                            if let Some(ref cb) = on_tool_call_delta {
-                                let mut delta = serde_json::Map::new();
-                                delta.insert(
-                                    "arguments_delta".into(),
-                                    serde_json::Value::String(partial_json.to_string()),
-                                );
-                                cb(delta);
-                            }
+                            .and_then(|v| v.as_str());
+                        if let (Some(partial_json), Some(cb)) = (partial_json, on_tool_call_delta) {
+                            let mut delta = serde_json::Map::new();
+                            delta.insert(
+                                "arguments_delta".into(),
+                                serde_json::Value::String(partial_json.to_string()),
+                            );
+                            cb(delta);
                         }
                     }
                     "thinking_delta" => {
-                        if let Some(thinking) = value
+                        let thinking = value
                             .get("delta")
                             .and_then(|v| v.get("thinking"))
-                            .and_then(|v| v.as_str())
-                        {
-                            if !thinking_blocks.is_empty() {
-                                if let Some(last_thinking) = thinking_blocks.last_mut() {
-                                    if let Some(obj) = last_thinking.as_object_mut() {
-                                        let existing = obj
-                                            .get("thinking")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        obj.insert(
-                                            "thinking".into(),
-                                            serde_json::Value::String(format!(
-                                                "{existing}{thinking}"
-                                            )),
-                                        );
-                                    }
-                                }
-                            }
+                            .and_then(|v| v.as_str());
+                        let thinking_obj = thinking_blocks
+                            .last_mut()
+                            .and_then(|last| last.as_object_mut());
+                        if let (Some(thinking), Some(obj)) = (thinking, thinking_obj) {
+                            let existing =
+                                obj.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                            obj.insert(
+                                "thinking".into(),
+                                serde_json::Value::String(format!("{existing}{thinking}")),
+                            );
                         }
                     }
                     _ => {}
@@ -1123,10 +1110,12 @@ fn process_sse_event(
                     other => other.to_string(),
                 };
             }
-            if let Some(u) = value.get("usage") {
-                if let Some(output_tokens) = u.get("output_tokens").and_then(|v| v.as_i64()) {
-                    usage.insert("completion_tokens".into(), output_tokens);
-                }
+            if let Some(output_tokens) = value
+                .get("usage")
+                .and_then(|usage| usage.get("output_tokens"))
+                .and_then(|tokens| tokens.as_i64())
+            {
+                usage.insert("completion_tokens".into(), output_tokens);
             }
         }
         "message_start" => {

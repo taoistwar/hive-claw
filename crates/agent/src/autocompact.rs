@@ -114,28 +114,29 @@ impl AutoCompact {
             .consolidator
             .compact_idle_session(key, RECENT_SUFFIX_MESSAGES)
             .await;
-        if let Some(ref text) = summary {
-            if !text.is_empty() && text != "(nothing)" {
-                let mut mgr = self.sessions.lock().await;
-                let session = mgr.get_or_create(key);
-                let last_active = session.updated_at;
-                let mut entry = serde_json::Map::new();
-                entry.insert("text".into(), Value::String(text.clone()));
-                entry.insert(
-                    "last_active".into(),
-                    Value::String(last_active.to_rfc3339()),
-                );
-                let mut session = session;
-                session
-                    .metadata
-                    .insert("_last_summary".into(), Value::Object(entry));
-                mgr.save(session, false).map_err(|e| e.to_string())?;
-                self.inner
-                    .lock()
-                    .unwrap()
-                    .summaries
-                    .insert(key.to_string(), (text.clone(), last_active));
-            }
+        if let Some(text) = summary
+            .as_ref()
+            .filter(|text| !text.is_empty() && text.as_str() != "(nothing)")
+        {
+            let mut mgr = self.sessions.lock().await;
+            let session = mgr.get_or_create(key);
+            let last_active = session.updated_at;
+            let mut entry = serde_json::Map::new();
+            entry.insert("text".into(), Value::String(text.clone()));
+            entry.insert(
+                "last_active".into(),
+                Value::String(last_active.to_rfc3339()),
+            );
+            let mut session = session;
+            session
+                .metadata
+                .insert("_last_summary".into(), Value::Object(entry));
+            mgr.save(session, false).map_err(|e| e.to_string())?;
+            self.inner
+                .lock()
+                .unwrap()
+                .summaries
+                .insert(key.to_string(), (text.clone(), last_active));
         }
         Ok(())
     }

@@ -43,6 +43,10 @@ use agent::context::{
 
 pub const ROUTE_TOOL_NAME: &str = "route_to_subagent";
 
+type SseEventSender = UnboundedSender<Result<Event, Infallible>>;
+type AgentHooksByTrigger =
+    std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>;
+
 fn max_hops() -> usize {
     std::env::var("AGENT_MAX_HOPS")
         .ok()
@@ -90,24 +94,21 @@ fn build_chat_messages<T: HasRoleContent>(history: &[T], user_content: &str) -> 
         if is_assistant {
             // Filter out usage/card extensions, keep only non-card/non-usage types
             filtered_ext = extensions.and_then(|v| {
-                v.as_array()
-                    .map(|arr| {
-                        let filtered: Vec<Value> = arr
-                            .iter()
-                            .filter(|e| {
-                                let ct =
-                                    e.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
-                                ct != "usage" && ct != "card"
-                            })
-                            .cloned()
-                            .collect();
-                        if filtered.is_empty() {
-                            None
-                        } else {
-                            Some(Value::Array(filtered))
-                        }
-                    })
-                    .flatten()
+                v.as_array().and_then(|arr| {
+                    let filtered: Vec<Value> = arr
+                        .iter()
+                        .filter(|e| {
+                            let ct = e.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                            ct != "usage" && ct != "card"
+                        })
+                        .cloned()
+                        .collect();
+                    if filtered.is_empty() {
+                        None
+                    } else {
+                        Some(Value::Array(filtered))
+                    }
+                })
             });
             has_extensions = filtered_ext.is_some();
 
@@ -346,7 +347,7 @@ async fn run_session_internal_impl<T>(
     actor_id: i64,
     history: &[T],
     user_content: &str,
-    tx: &UnboundedSender<Result<Event, Infallible>>,
+    tx: &SseEventSender,
 ) -> Option<ChatMessageUser>
 where
     T: HasRoleContent,
@@ -388,14 +389,12 @@ where
     let mut final_content: Option<String> = None;
     let mut final_agent_id = starting_agent_id;
     // 保存最后一次 hop 的 hooks/identifier，用于循环结束后触发 after_agent_end hook
-    let mut last_hooks: Option<
-        std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>,
-    > = None;
+    let mut last_hooks: Option<AgentHooksByTrigger> = None;
     let mut last_identifier: Option<String> = None;
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息；
     // 有 extensions 时合并 content + extensions 为一个 JSON 对象，空字段不显示。
-    let mut messages = build_chat_messages(&history, user_content);
+    let mut messages = build_chat_messages(history, user_content);
 
     // ★ Store conversation history in AgentContext for function/workflow access
     let _ = agent_ctx.set_messages(messages.clone());
@@ -418,7 +417,7 @@ where
             {
                 Ok(c) => c,
                 Err(e) => {
-                    emit_error(&tx, 5000, format!("agent context: {e}"));
+                    emit_error(tx, 5000, format!("agent context: {e}"));
                     break;
                 }
             };
@@ -450,7 +449,7 @@ where
             )
             .await
             {
-                emit_error(&tx, 6005, e.to_string());
+                emit_error(tx, 6005, e.to_string());
                 break;
             }
         }
@@ -462,7 +461,7 @@ where
         {
             Ok(p) => p,
             Err(e) => {
-                emit_error(&tx, 5007, format!("preset error: {e}"));
+                emit_error(tx, 5007, format!("preset error: {e}"));
                 break;
             }
         };
@@ -521,7 +520,7 @@ where
             )
             .await
             {
-                emit_error(&tx, 6005, e.to_string());
+                emit_error(tx, 6005, e.to_string());
                 break;
             }
         }
@@ -536,7 +535,7 @@ where
                 .clone()
                 .or(resp.error_kind.clone())
                 .unwrap_or_else(|| "LLM error".into());
-            emit_error(&tx, resp.error_status_code.unwrap_or(5000) as u16, msg);
+            emit_error(tx, resp.error_status_code.unwrap_or(5000) as u16, msg);
             audit_llm(current_agent_id, "error", elapsed_start, &model).await;
             // ★ on_agent_error hook (audit-only)
             {
@@ -657,7 +656,7 @@ where
                 )
                 .await
                 {
-                    emit_error(&tx, 6005, e.to_string());
+                    emit_error(tx, 6005, e.to_string());
                     // ★ AgentContext: hook abort → terminate
                     let _ = agent_ctx.set_response_payload(ResponsePayload::new(
                         "Hook blocked tool execution".to_string(),
@@ -668,7 +667,7 @@ where
                         &deps.pool,
                         session_id,
                         actor_id,
-                        &tx,
+                        tx,
                         elapsed_start,
                         Some("Hook blocked tool execution".into()),
                         current_agent_id,
@@ -780,7 +779,7 @@ where
             if let Some(next_agent) = result.route_to {
                 if visited.contains(&next_agent) {
                     emit_error(
-                        &tx,
+                        tx,
                         5006,
                         format!("路由循环检测：agent_id={} 已访问过", next_agent),
                     );
@@ -794,7 +793,7 @@ where
                         &deps.pool,
                         session_id,
                         actor_id,
-                        &tx,
+                        tx,
                         elapsed_start,
                         final_content,
                         final_agent_id,
@@ -877,7 +876,7 @@ where
 
         // 有 tool_calls 但没路由 → 下一轮 LLM 用 tool result 继续
         if hop + 1 == max_hops {
-            emit_error(&tx, 5006, format!("已达最大 hop {max_hops}"));
+            emit_error(tx, 5006, format!("已达最大 hop {max_hops}"));
             final_content = Some(assistant_content);
             final_agent_id = current_agent_id;
             // ★ AgentContext: max hops reached → terminate
@@ -900,7 +899,7 @@ where
         &deps.pool,
         session_id,
         actor_id,
-        &tx,
+        tx,
         elapsed_start,
         final_content,
         final_agent_id,
@@ -914,15 +913,19 @@ where
     )
     .await
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finalization requires the complete persisted message and hook execution context"
+)]
 async fn finalize_with_variant(
     pool: &MySqlPool,
     session_id: i64,
     actor_id: i64,
-    tx: &UnboundedSender<Result<Event, Infallible>>,
+    tx: &SseEventSender,
     started: Instant,
     content: Option<String>,
     final_agent_id: i64,
-    hooks: Option<&std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>>,
+    hooks: Option<&AgentHooksByTrigger>,
     agent_identifier: Option<&str>,
     message: String,
     channel: String,
@@ -963,7 +966,7 @@ async fn finalize_with_variant(
     let extensions_for_sse: Option<Value> = if exts.is_empty() {
         None
     } else {
-        let arr: Vec<Value> = exts.iter().map(|e| flatten_extension(e)).collect();
+        let arr: Vec<Value> = exts.iter().map(flatten_extension).collect();
         Some(Value::Array(arr))
     };
     let extensions_json = extensions_for_sse.clone();
@@ -981,23 +984,23 @@ async fn finalize_with_variant(
         _ => rewrite_content_for_empty_extensions(content, &extensions_for_sse),
     };
 
-    let saved =
-        if final_content.as_deref().map_or(false, str::is_empty) && extensions_json.is_none() {
-            None
-        } else {
-            let text = final_content.as_deref().unwrap_or("");
-            tracing::debug!("Saving assistant message: {:?}", text);
-            append_assistant_message_user(
-                pool,
-                session_id,
-                actor_id,
-                text,
-                Some(elapsed),
-                extensions_json,
-            )
-            .await
-            .ok()
-        };
+    let saved = if final_content.as_deref().is_some_and(str::is_empty) && extensions_json.is_none()
+    {
+        None
+    } else {
+        let text = final_content.as_deref().unwrap_or("");
+        tracing::debug!("Saving assistant message: {:?}", text);
+        append_assistant_message_user(
+            pool,
+            session_id,
+            actor_id,
+            text,
+            Some(elapsed),
+            extensions_json,
+        )
+        .await
+        .ok()
+    };
 
     let done = json!({
         "elapsed_ms": elapsed,
@@ -1016,7 +1019,7 @@ async fn finalize_with_variant(
     saved
 }
 
-fn emit_error(tx: &UnboundedSender<Result<Event, Infallible>>, code: u16, message: String) {
+fn emit_error(tx: &SseEventSender, code: u16, message: String) {
     let _ = tx.send(Ok(Event::default()
         .event("error")
         .data(json!({"code": code, "message": message}).to_string())));
@@ -1200,14 +1203,15 @@ async fn handle_meta_tool(
                 }
             };
             // 查询 function 信息（包含 required_capabilities）
-            let func_row: Option<(i64, i8, Option<i64>, Option<String>, Option<Value>)> = sqlx::query_as(
-                "SELECT id, kind, plugin_id, plugin_export, required_capabilities FROM functions WHERE identifier = ?",
-            )
-            .bind(&func_ident)
-            .fetch_optional(&deps.pool)
-            .await
-            .map_err(|e| format!("function lookup: {e}"))
-            .unwrap_or(None);
+            type FunctionLookupRow = (i64, i8, Option<i64>, Option<String>, Option<Value>);
+            let func_row: Option<FunctionLookupRow> = sqlx::query_as(
+                    "SELECT id, kind, plugin_id, plugin_export, required_capabilities FROM functions WHERE identifier = ?",
+                )
+                .bind(&func_ident)
+                .fetch_optional(&deps.pool)
+                .await
+                .map_err(|e| format!("function lookup: {e}"))
+                .unwrap_or(None);
             let Some((func_id, func_kind, plugin_id, plugin_export, func_caps)) = func_row else {
                 return ToolOutcome::error(format!(
                     "invoke_function: function「{func_ident}」不存在"

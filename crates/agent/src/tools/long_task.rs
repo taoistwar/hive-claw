@@ -195,12 +195,12 @@ impl Tool for LongTaskTool {
         };
 
         let prior = parse_goal_state(goal_state_raw(&session.metadata));
-        if let Some(ref p) = prior {
-            if p.status == "active" {
-                return Ok(Value::String(
+        if let Some(ref p) = prior
+            && p.status == "active"
+        {
+            return Ok(Value::String(
                     "Error: a sustained goal is already active. Use complete_goal when finished, or ask the user before replacing it.".into(),
                 ));
-            }
         }
 
         let summary = ui_summary

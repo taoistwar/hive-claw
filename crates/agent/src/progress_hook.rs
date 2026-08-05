@@ -163,14 +163,14 @@ impl AgentHook for ProgressHook {
 
     async fn before_execute_tools(&self, ctx: &mut AgentHookContext) {
         if let Some(ref cb) = self.on_progress {
-            if !ctx.streamed_content && ctx.response.is_some() {
-                if let Some(ref resp) = ctx.response {
-                    if let Some(thought) = strip_think(resp.content.as_deref().unwrap_or("")) {
-                        if !thought.is_empty() {
-                            cb(ProgressPayload::Thought(thought));
-                        }
-                    }
-                }
+            if let Some(thought) = ctx
+                .response
+                .as_ref()
+                .filter(|_| !ctx.streamed_content)
+                .and_then(|resp| strip_think(resp.content.as_deref().unwrap_or("")))
+                .filter(|thought| !thought.is_empty())
+            {
+                cb(ProgressPayload::Thought(thought));
             }
             if !ctx.tool_calls.is_empty() {
                 let hint = Self::tool_hint(&ctx.tool_calls, self.tool_hint_max_length);
@@ -193,7 +193,11 @@ impl AgentHook for ProgressHook {
     }
 
     async fn after_iteration(&self, ctx: &mut AgentHookContext) {
-        if self.on_progress.is_some() && !ctx.tool_calls.is_empty() && !ctx.tool_events.is_empty() {
+        if let Some(cb) = self
+            .on_progress
+            .as_ref()
+            .filter(|_| !ctx.tool_calls.is_empty() && !ctx.tool_events.is_empty())
+        {
             let events: Vec<ToolEventPayload> = ctx
                 .tool_events
                 .iter()
@@ -205,17 +209,15 @@ impl AgentHook for ProgressHook {
                 })
                 .collect();
             if !events.is_empty() {
-                self.on_progress.as_ref().unwrap()(ProgressPayload::ToolEvents(events));
+                cb(ProgressPayload::ToolEvents(events));
             }
         }
-        if let Some(ref resp) = ctx.response {
-            if !resp.usage.is_empty() {
-                debug!(
-                    "LLM usage: prompt={} completion={}",
-                    resp.usage.get("prompt_tokens").copied().unwrap_or(0),
-                    resp.usage.get("completion_tokens").copied().unwrap_or(0),
-                );
-            }
+        if let Some(resp) = ctx.response.as_ref().filter(|resp| !resp.usage.is_empty()) {
+            debug!(
+                "LLM usage: prompt={} completion={}",
+                resp.usage.get("prompt_tokens").copied().unwrap_or(0),
+                resp.usage.get("completion_tokens").copied().unwrap_or(0),
+            );
         }
     }
 
@@ -224,7 +226,7 @@ impl AgentHook for ProgressHook {
         _ctx: &mut AgentHookContext,
         content: Option<String>,
     ) -> Option<String> {
-        content.map(|s| strip_think(&s).unwrap_or_else(|| s))
+        content.map(|s| strip_think(&s).unwrap_or(s))
     }
 }
 

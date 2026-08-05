@@ -89,15 +89,13 @@ fn _b64_image_data_url(value: &str) -> Result<String, ImageGenerationError> {
     let raw = base64::engine::general_purpose::STANDARD
         .decode(&encoded)
         .map_err(|_| ImageGenerationError::InvalidBase64)?;
-    let mime = detect_image_mime(&raw).ok_or_else(|| ImageGenerationError::UnsupportedPayload)?;
+    let mime = detect_image_mime(&raw).ok_or(ImageGenerationError::UnsupportedPayload)?;
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
 
 fn _aihubmix_size(aspect_ratio: Option<&str>, image_size: Option<&str>) -> String {
-    if let Some(size) = image_size {
-        if size.to_lowercase().contains('x') {
-            return size.to_string();
-        }
+    if let Some(size) = image_size.filter(|size| size.to_lowercase().contains('x')) {
+        return size.to_string();
     }
     if let Some(ar) = aspect_ratio {
         for &(k, v) in _AIHUBMIX_ASPECT_RATIO_SIZES {
@@ -146,7 +144,7 @@ async fn _download_image_data_url(
         .bytes()
         .await
         .map_err(|e| ImageGenerationError::RequestError(e.to_string()))?;
-    let mime = detect_image_mime(&raw).ok_or_else(|| ImageGenerationError::UnsupportedUrl)?;
+    let mime = detect_image_mime(&raw).ok_or(ImageGenerationError::UnsupportedUrl)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
@@ -204,10 +202,8 @@ pub trait ImageGenerationProvider: Send + Sync {
             return base.trim_end_matches('/').to_string();
         }
         let spec = find_by_name(self.provider_name());
-        if let Some(s) = spec {
-            if !s.default_api_base.is_empty() {
-                return s.default_api_base.trim_end_matches('/').to_string();
-            }
+        if let Some(spec) = spec.filter(|spec| !spec.default_api_base.is_empty()) {
+            return spec.default_api_base.trim_end_matches('/').to_string();
         }
         self.default_base_url()
     }
@@ -380,13 +376,11 @@ impl ImageGenerationProvider for OpenRouterImageGenerationClient {
             body["image_config"] = Value::Object(image_config);
         }
 
-        if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) =
-                (body.as_object_mut(), self.extra_body.as_object())
-            {
-                for (k, v) in extra_obj {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let (Some(body_obj), Some(extra_obj)) =
+            (body.as_object_mut(), self.extra_body.as_object())
+        {
+            for (k, v) in extra_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -436,12 +430,13 @@ impl ImageGenerationProvider for OpenRouterImageGenerationClient {
                             }
                             let image_url =
                                 image.get("image_url").or_else(|| image.get("imageUrl"));
-                            if let Some(obj) = image_url.and_then(|v| v.as_object()) {
-                                if let Some(url_value) = obj.get("url").and_then(|v| v.as_str()) {
-                                    if url_value.starts_with("data:image/") {
-                                        images.push(url_value.to_string());
-                                    }
-                                }
+                            if let Some(url_value) = image_url
+                                .and_then(|value| value.as_object())
+                                .and_then(|image_url| image_url.get("url"))
+                                .and_then(|value| value.as_str())
+                                .filter(|url| url.starts_with("data:image/"))
+                            {
+                                images.push(url_value.to_string());
                             }
                         }
                     }
@@ -599,13 +594,11 @@ impl AIHubMixImageGenerationClient {
             input_body["image"] = img;
         }
 
-        if self.extra_body.is_object() {
-            if let (Some(input_obj), Some(extra_obj)) =
-                (input_body.as_object_mut(), self.extra_body.as_object())
-            {
-                for (k, v) in extra_obj {
-                    input_obj.insert(k.clone(), v.clone());
-                }
+        if let (Some(input_obj), Some(extra_obj)) =
+            (input_body.as_object_mut(), self.extra_body.as_object())
+        {
+            for (k, v) in extra_obj {
+                input_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -648,17 +641,18 @@ impl AIHubMixImageGenerationClient {
 async fn _http_error_detail(response: reqwest::Response) -> String {
     let status = response.status();
     let body_bytes = response.bytes().await.unwrap_or_default();
-    if let Ok(data) = serde_json::from_slice::<Value>(&body_bytes) {
-        if let Some(obj) = data.as_object() {
-            if let Some(err) = obj.get("error") {
-                if let Some(err_obj) = err.as_object() {
-                    if let Some(msg) = err_obj.get("message").and_then(|v| v.as_str()) {
-                        return format!("HTTP {} - {}", status, msg);
-                    }
-                }
-                return format!("HTTP {} - {}", status, err);
-            }
+    if let Some(error) = serde_json::from_slice::<Value>(&body_bytes)
+        .ok()
+        .and_then(|data| data.get("error").cloned())
+    {
+        if let Some(message) = error
+            .as_object()
+            .and_then(|error| error.get("message"))
+            .and_then(|value| value.as_str())
+        {
+            return format!("HTTP {} - {}", status, message);
         }
+        return format!("HTTP {} - {}", status, error);
     }
     let text = String::from_utf8_lossy(&body_bytes);
     let preview: String = text.chars().take(500).collect();
@@ -721,19 +715,23 @@ async fn _aihubmix_collect(
 
     let obj = value.as_object().unwrap();
 
-    if let Some(b64_json) = obj.get("b64_json").and_then(|v| v.as_str()) {
-        if !b64_json.is_empty() {
-            images.push(_b64_image_data_url(b64_json)?);
-        }
+    if let Some(b64_json) = obj
+        .get("b64_json")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+    {
+        images.push(_b64_image_data_url(b64_json)?);
     } else if let Some(b64_json) = obj.get("b64_json") {
         Box::pin(_aihubmix_collect(b64_json, client, images)).await?;
     }
 
     for key in &["bytesBase64", "bytes_base64", "base64"] {
-        if let Some(bytes_base64) = obj.get(*key).and_then(|v| v.as_str()) {
-            if !bytes_base64.is_empty() {
-                images.push(_b64_image_data_url(bytes_base64)?);
-            }
+        if let Some(bytes_base64) = obj
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+        {
+            images.push(_b64_image_data_url(bytes_base64)?);
         }
     }
 
@@ -834,21 +832,19 @@ impl ImageGenerationProvider for GeminiImageGenerationClient {
         model: &str,
         reference_images: Option<&[String]>,
         aspect_ratio: Option<&str>,
-        image_size: Option<&str>,
+        _image_size: Option<&str>,
     ) -> Result<GeneratedImageResponse, ImageGenerationError> {
         if self.api_key.is_none() {
             return Err(ImageGenerationError::new(self.missing_key_message()));
         }
 
         if model.to_lowercase().contains("imagen") {
-            if let Some(refs) = reference_images {
-                if !refs.is_empty() {
-                    error!(
-                        "Imagen models do not support reference images; ignoring {} reference image(s) for {}",
-                        refs.len(),
-                        model,
-                    );
-                }
+            if let Some(refs) = reference_images.filter(|refs| !refs.is_empty()) {
+                error!(
+                    "Imagen models do not support reference images; ignoring {} reference image(s) for {}",
+                    refs.len(),
+                    model,
+                );
             }
             return self._generate_imagen(prompt, model, aspect_ratio).await;
         }
@@ -866,10 +862,10 @@ impl GeminiImageGenerationClient {
         aspect_ratio: Option<&str>,
     ) -> Result<GeneratedImageResponse, ImageGenerationError> {
         let mut parameters = serde_json::json!({"sampleCount": 1});
-        if let Some(ar) = aspect_ratio {
-            if _GEMINI_IMAGEN_ASPECT_RATIOS.contains(&ar) {
-                parameters["aspectRatio"] = Value::String(ar.to_string());
-            }
+        if let Some(aspect_ratio) =
+            aspect_ratio.filter(|ratio| _GEMINI_IMAGEN_ASPECT_RATIOS.contains(ratio))
+        {
+            parameters["aspectRatio"] = Value::String(aspect_ratio.to_string());
         }
 
         let mut body = serde_json::json!({
@@ -877,13 +873,11 @@ impl GeminiImageGenerationClient {
             "parameters": parameters,
         });
 
-        if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) =
-                (body.as_object_mut(), self.extra_body.as_object())
-            {
-                for (k, v) in extra_obj {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let (Some(body_obj), Some(extra_obj)) =
+            (body.as_object_mut(), self.extra_body.as_object())
+        {
+            for (k, v) in extra_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -979,13 +973,11 @@ impl GeminiImageGenerationClient {
             "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
         });
 
-        if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) =
-                (body.as_object_mut(), self.extra_body.as_object())
-            {
-                for (k, v) in extra_obj {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let (Some(body_obj), Some(extra_obj)) =
+            (body.as_object_mut(), self.extra_body.as_object())
+        {
+            for (k, v) in extra_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -1036,26 +1028,30 @@ impl GeminiImageGenerationClient {
                 if !candidate.is_object() {
                     continue;
                 }
-                if let Some(content_obj) = candidate.get("content").and_then(|v| v.as_object()) {
-                    if let Some(parts_arr) = content_obj.get("parts").and_then(|v| v.as_array()) {
-                        for part in parts_arr {
-                            if !part.is_object() {
-                                continue;
-                            }
-                            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                                text_parts.push(text.to_string());
-                            }
-                            if let Some(inline) = part.get("inlineData").and_then(|v| v.as_object())
+                if let Some(parts) = candidate
+                    .get("content")
+                    .and_then(|value| value.as_object())
+                    .and_then(|content| content.get("parts"))
+                    .and_then(|value| value.as_array())
+                {
+                    for part in parts {
+                        if !part.is_object() {
+                            continue;
+                        }
+                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                            text_parts.push(text.to_string());
+                        }
+                        if let Some(inline) = part.get("inlineData").and_then(|v| v.as_object()) {
+                            let mime = inline
+                                .get("mimeType")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("image/png");
+                            if let Some(b64) = inline
+                                .get("data")
+                                .and_then(|value| value.as_str())
+                                .filter(|data| !data.is_empty())
                             {
-                                let mime = inline
-                                    .get("mimeType")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("image/png");
-                                if let Some(b64) = inline.get("data").and_then(|v| v.as_str()) {
-                                    if !b64.is_empty() {
-                                        images.push(format!("data:{};base64,{}", mime, b64));
-                                    }
-                                }
+                                images.push(format!("data:{};base64,{}", mime, b64));
                             }
                         }
                     }
@@ -1169,7 +1165,7 @@ impl ImageGenerationProvider for MiniMaxImageGenerationClient {
         model: &str,
         reference_images: Option<&[String]>,
         aspect_ratio: Option<&str>,
-        image_size: Option<&str>,
+        _image_size: Option<&str>,
     ) -> Result<GeneratedImageResponse, ImageGenerationError> {
         if self.api_key.is_none() {
             return Err(ImageGenerationError::new(self.missing_key_message()));
@@ -1193,33 +1189,29 @@ impl ImageGenerationProvider for MiniMaxImageGenerationClient {
             "aspect_ratio": resolved_ratio,
         });
 
-        if let Some(refs) = reference_images {
-            if !refs.is_empty() {
-                let image_refs: Result<Vec<String>, ImageGenerationError> = refs
-                    .iter()
-                    .map(|p| image_path_to_data_url(Path::new(p)))
-                    .collect();
-                let image_refs = image_refs?;
-                let subject_reference: Vec<Value> = image_refs
-                    .into_iter()
-                    .map(|ref_data| {
-                        serde_json::json!({
-                            "type": "character",
-                            "image_file": ref_data,
-                        })
+        if let Some(refs) = reference_images.filter(|refs| !refs.is_empty()) {
+            let image_refs: Result<Vec<String>, ImageGenerationError> = refs
+                .iter()
+                .map(|p| image_path_to_data_url(Path::new(p)))
+                .collect();
+            let image_refs = image_refs?;
+            let subject_reference: Vec<Value> = image_refs
+                .into_iter()
+                .map(|ref_data| {
+                    serde_json::json!({
+                        "type": "character",
+                        "image_file": ref_data,
                     })
-                    .collect();
-                body["subject_reference"] = Value::Array(subject_reference);
-            }
+                })
+                .collect();
+            body["subject_reference"] = Value::Array(subject_reference);
         }
 
-        if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) =
-                (body.as_object_mut(), self.extra_body.as_object())
-            {
-                for (k, v) in extra_obj {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let (Some(body_obj), Some(extra_obj)) =
+            (body.as_object_mut(), self.extra_body.as_object())
+        {
+            for (k, v) in extra_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -1283,12 +1275,12 @@ fn _minimax_images_from_payload(payload: &Value) -> Vec<String> {
         .and_then(|v| v.as_array())
     {
         for b64 in image_base64 {
-            if let Some(b64_str) = b64.as_str() {
-                if !b64_str.is_empty() {
-                    if let Ok(url) = _b64_image_data_url(b64_str) {
-                        images.push(url);
-                    }
-                }
+            if let Some(url) = b64
+                .as_str()
+                .filter(|data| !data.is_empty())
+                .and_then(|data| _b64_image_data_url(data).ok())
+            {
+                images.push(url);
             }
         }
     }
@@ -1308,10 +1300,8 @@ static _STEPFUN_ASPECT_RATIO_SIZES: &[(&str, &str)] = &[
 ];
 
 fn _stepfun_size(aspect_ratio: Option<&str>, image_size: Option<&str>) -> String {
-    if let Some(size) = image_size {
-        if size.to_lowercase().contains('x') {
-            return size.to_string();
-        }
+    if let Some(size) = image_size.filter(|size| size.to_lowercase().contains('x')) {
+        return size.to_string();
     }
     if let Some(ar) = aspect_ratio {
         for &(k, v) in _STEPFUN_ASPECT_RATIO_SIZES {
@@ -1330,12 +1320,13 @@ fn _stepfun_images_from_payload(payload: &Value) -> Vec<String> {
             if !item.is_object() {
                 continue;
             }
-            if let Some(b64) = item.get("b64_json").and_then(|v| v.as_str()) {
-                if !b64.is_empty() {
-                    if let Ok(url) = _b64_image_data_url(b64) {
-                        images.push(url);
-                    }
-                }
+            if let Some(url) = item
+                .get("b64_json")
+                .and_then(|value| value.as_str())
+                .filter(|data| !data.is_empty())
+                .and_then(|data| _b64_image_data_url(data).ok())
+            {
+                images.push(url);
             }
         }
     }
@@ -1430,22 +1421,19 @@ impl ImageGenerationProvider for StepFunImageGenerationClient {
             body["size"] = Value::String(size);
         }
 
-        if let Some(refs) = reference_images {
-            if !refs.is_empty() && model.contains("1x") {
-                let data_url = image_path_to_data_url(Path::new(&refs[0]))?;
-                body["style_reference"] = serde_json::json!({
-                    "source_url": data_url,
-                });
-            }
+        if let Some(refs) = reference_images.filter(|refs| !refs.is_empty() && model.contains("1x"))
+        {
+            let data_url = image_path_to_data_url(Path::new(&refs[0]))?;
+            body["style_reference"] = serde_json::json!({
+                "source_url": data_url,
+            });
         }
 
-        if self.extra_body.is_object() {
-            if let (Some(body_obj), Some(extra_obj)) =
-                (body.as_object_mut(), self.extra_body.as_object())
-            {
-                for (k, v) in extra_obj {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let (Some(body_obj), Some(extra_obj)) =
+            (body.as_object_mut(), self.extra_body.as_object())
+        {
+            for (k, v) in extra_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 

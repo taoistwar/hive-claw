@@ -166,7 +166,6 @@ impl DataSourceForm {
 
         let store = self.store.read(cx).clone();
         let mode = self.mode.clone();
-        let this = cx.weak_entity();
 
         cx.spawn(async move |this, cx| {
             let result = match &mode {
@@ -224,7 +223,7 @@ impl Focusable for DataSourceForm {
 }
 
 impl Render for DataSourceForm {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match &self.mode {
             FormMode::Add => "添加数据源",
             FormMode::Edit(_) => "编辑数据源",

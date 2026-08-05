@@ -52,6 +52,10 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 /// Input: { "game_id": "<text>" }
 /// - game_id: 文本形式的游戏 ID，内部转为数字。id <= 0 或转换失败 → LLM 分类推荐。
 /// - 游戏信息始终写入 AgentContext extensions (card/game)。
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the builtin wrapper passes each optional runtime dependency explicitly"
+)]
 async fn game_info_async_impl(
     args: Value,
     pool: &sqlx::MySqlPool,
@@ -238,7 +242,14 @@ async fn fetch_categories(
 
 /// Build conversation context from _agent_context messages for LLM classification.
 /// Takes the last 3 messages, formats as "role: content" pairs.
-fn build_classify_context(args: &Value, user_input: &str) -> String {
+fn build_classify_context(
+    args: &Value,
+    #[expect(
+        unused_variables,
+        reason = "the classification input contract is retained pending a product decision on prompt composition"
+    )]
+    user_input: &str,
+) -> String {
     let messages: Vec<&Value> = args
         .get("_agent_context")
         .and_then(|ac| ac.get("messages"))
@@ -287,6 +298,10 @@ fn build_classification_prompt(context: &str, categories: &[(i64, String)]) -> S
 }
 
 /// Handle game_id == 0 path: classify user input → return top 3 games for the category.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keeps the builtin dispatcher dependencies explicit"
+)]
 async fn handle_classify_and_list(
     args: Value,
     _pool: &sqlx::MySqlPool,

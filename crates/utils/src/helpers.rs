@@ -169,6 +169,12 @@ impl IncrementalThinkExtractor {
     }
 }
 
+impl Default for IncrementalThinkExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Return `(reasoning_text, cleaned_content)` from one model response.
 ///
 /// Single source of truth for "what reasoning did this response carry, and
@@ -188,11 +194,9 @@ pub fn extract_reasoning(
     thinking_blocks: Option<&[Value]>,
     content: Option<&str>,
 ) -> (Option<String>, Option<String>) {
-    if let Some(rc) = reasoning_content {
-        if !rc.is_empty() {
-            let cleaned = content.map(|c| strip_think(c));
-            return (Some(rc.to_string()), cleaned);
-        }
+    if let Some(rc) = reasoning_content.filter(|reasoning| !reasoning.is_empty()) {
+        let cleaned = content.map(strip_think);
+        return (Some(rc.to_string()), cleaned);
     }
     if let Some(blocks) = thinking_blocks {
         let parts: Vec<String> = blocks
@@ -215,7 +219,7 @@ pub fn extract_reasoning(
         } else {
             Some(parts.join("\n\n"))
         };
-        let cleaned = content.map(|c| strip_think(c));
+        let cleaned = content.map(strip_think);
         return (joined, cleaned);
     }
     if let Some(c) = content {
@@ -389,12 +393,14 @@ pub fn find_legal_message_start(messages: &[Value]) -> usize {
                     declared.clear();
                     // Re-scan preceding messages within the new window.
                     for prev in &messages[start..=i] {
-                        if prev.get("role").and_then(Value::as_str) == Some("assistant") {
-                            if let Some(tcs) = prev.get("tool_calls").and_then(Value::as_array) {
-                                for tc in tcs {
-                                    if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                                        declared.insert(id.to_string());
-                                    }
+                        let tool_calls = (prev.get("role").and_then(Value::as_str)
+                            == Some("assistant"))
+                        .then_some(prev.get("tool_calls").and_then(Value::as_array))
+                        .flatten();
+                        if let Some(tool_calls) = tool_calls {
+                            for tool_call in tool_calls {
+                                if let Some(id) = tool_call.get("id").and_then(Value::as_str) {
+                                    declared.insert(id.to_string());
                                 }
                             }
                         }
@@ -626,10 +632,8 @@ pub fn build_assistant_message(
         "content".into(),
         Value::String(content.unwrap_or("").to_string()),
     );
-    if let Some(tcs) = tool_calls {
-        if !tcs.is_empty() {
-            msg.insert("tool_calls".into(), Value::Array(tcs.to_vec()));
-        }
+    if let Some(tool_calls) = tool_calls.filter(|tool_calls| !tool_calls.is_empty()) {
+        msg.insert("tool_calls".into(), Value::Array(tool_calls.to_vec()));
     }
     if reasoning_content.is_some() || thinking_blocks.is_some() {
         msg.insert(
@@ -637,10 +641,11 @@ pub fn build_assistant_message(
             Value::String(reasoning_content.unwrap_or("").to_string()),
         );
     }
-    if let Some(tb) = thinking_blocks {
-        if !tb.is_empty() {
-            msg.insert("thinking_blocks".into(), Value::Array(tb.to_vec()));
-        }
+    if let Some(thinking_blocks) = thinking_blocks.filter(|blocks| !blocks.is_empty()) {
+        msg.insert(
+            "thinking_blocks".into(),
+            Value::Array(thinking_blocks.to_vec()),
+        );
     }
     Value::Object(msg)
 }
@@ -652,7 +657,7 @@ pub fn build_assistant_message(
 /// Rough per-char token estimator (tiktoken-free). Roughly matches GPT's
 /// "one token ≈ 4 chars" rule of thumb.
 fn char_based_token_estimate(text: &str) -> usize {
-    (text.chars().count() + 3) / 4
+    text.chars().count().div_ceil(4)
 }
 
 /// Estimate prompt tokens. No `tiktoken` binding in Rust — we emit a
@@ -666,33 +671,38 @@ pub fn estimate_prompt_tokens(messages: &[Value], tools: Option<&[Value]>) -> us
                 Value::String(s) => parts.push(s.clone()),
                 Value::Array(arr) => {
                     for part in arr {
-                        if part.get("type").and_then(Value::as_str) == Some("text") {
-                            if let Some(t) = part.get("text").and_then(Value::as_str) {
-                                if !t.is_empty() {
-                                    parts.push(t.to_string());
-                                }
-                            }
+                        let text = (part.get("type").and_then(Value::as_str) == Some("text"))
+                            .then_some(part.get("text").and_then(Value::as_str))
+                            .flatten()
+                            .filter(|text| !text.is_empty());
+                        if let Some(text) = text {
+                            parts.push(text.to_string());
                         }
                     }
                 }
                 _ => {}
             }
         }
-        if let Some(tc) = msg.get("tool_calls") {
-            if !tc.is_null() {
-                parts.push(serde_json::to_string(tc).unwrap_or_default());
-            }
+        if let Some(tool_calls) = msg
+            .get("tool_calls")
+            .filter(|tool_calls| !tool_calls.is_null())
+        {
+            parts.push(serde_json::to_string(tool_calls).unwrap_or_default());
         }
-        if let Some(rc) = msg.get("reasoning_content").and_then(Value::as_str) {
-            if !rc.is_empty() {
-                parts.push(rc.to_string());
-            }
+        if let Some(reasoning) = msg
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .filter(|reasoning| !reasoning.is_empty())
+        {
+            parts.push(reasoning.to_string());
         }
         for key in ["name", "tool_call_id"] {
-            if let Some(v) = msg.get(key).and_then(Value::as_str) {
-                if !v.is_empty() {
-                    parts.push(v.to_string());
-                }
+            if let Some(value) = msg
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                parts.push(value.to_string());
             }
         }
     }
@@ -711,14 +721,17 @@ pub fn estimate_message_tokens(message: &Value) -> usize {
             Value::String(s) => parts.push(s.clone()),
             Value::Array(arr) => {
                 for part in arr {
-                    if part.get("type").and_then(Value::as_str) == Some("text") {
-                        if let Some(t) = part.get("text").and_then(Value::as_str) {
-                            if !t.is_empty() {
-                                parts.push(t.to_string());
+                    match part.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = part
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                            {
+                                parts.push(text.to_string());
                             }
                         }
-                    } else {
-                        parts.push(serde_json::to_string(part).unwrap_or_default());
+                        _ => parts.push(serde_json::to_string(part).unwrap_or_default()),
                     }
                 }
             }
@@ -727,21 +740,26 @@ pub fn estimate_message_tokens(message: &Value) -> usize {
         }
     }
     for key in ["name", "tool_call_id"] {
-        if let Some(v) = message.get(key).and_then(Value::as_str) {
-            if !v.is_empty() {
-                parts.push(v.to_string());
-            }
+        if let Some(value) = message
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(value.to_string());
         }
     }
-    if let Some(tc) = message.get("tool_calls") {
-        if !tc.is_null() {
-            parts.push(serde_json::to_string(tc).unwrap_or_default());
-        }
+    if let Some(tool_calls) = message
+        .get("tool_calls")
+        .filter(|tool_calls| !tool_calls.is_null())
+    {
+        parts.push(serde_json::to_string(tool_calls).unwrap_or_default());
     }
-    if let Some(rc) = message.get("reasoning_content").and_then(Value::as_str) {
-        if !rc.is_empty() {
-            parts.push(rc.to_string());
-        }
+    if let Some(reasoning) = message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .filter(|reasoning| !reasoning.is_empty())
+    {
+        parts.push(reasoning.to_string());
     }
     let payload = parts.join("\n");
     if payload.is_empty() {
@@ -769,17 +787,16 @@ pub fn estimate_prompt_tokens_chain<C: TokenCounter + ?Sized>(
     messages: &[Value],
     tools: Option<&[Value]>,
 ) -> (usize, String) {
-    if let Some(p) = provider {
-        if let Some((tokens, source)) = p.estimate_prompt_tokens(messages, tools, model) {
-            if tokens > 0 {
-                let src = if source.is_empty() {
-                    "provider_counter".into()
-                } else {
-                    source
-                };
-                return (tokens, src);
-            }
-        }
+    if let Some((tokens, source)) = provider
+        .and_then(|provider| provider.estimate_prompt_tokens(messages, tools, model))
+        .filter(|(tokens, _)| *tokens > 0)
+    {
+        let source = if source.is_empty() {
+            "provider_counter".into()
+        } else {
+            source
+        };
+        return (tokens, source);
     }
     let estimated = estimate_prompt_tokens(messages, tools);
     if estimated > 0 {
@@ -831,7 +848,7 @@ pub fn build_status_content(p: StatusContent<'_>) -> String {
         .saturating_sub(p.max_completion_tokens)
         .saturating_sub(1024)
         .max(1);
-    let ctx_pct = std::cmp::min((p.context_tokens_estimate * 100 / ctx_budget) as u64, 999);
+    let ctx_pct = std::cmp::min(p.context_tokens_estimate * 100 / ctx_budget, 999);
 
     let ctx_used_str = if p.context_tokens_estimate >= 1000 {
         format!("{}k", p.context_tokens_estimate / 1000)

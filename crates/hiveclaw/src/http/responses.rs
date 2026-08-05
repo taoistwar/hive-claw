@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -6,15 +5,12 @@ use axum::{
     Json,
     extract::Request,
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response, Sse, sse::Event, sse::KeepAlive},
+    response::{IntoResponse, Response, Sse, sse::KeepAlive},
 };
-use futures::stream::Stream;
 use tracing::info;
 
 use crate::agent_backend::{self, AgentBackend};
 use crate::openresponses::{self, AttachmentMeta, ErrorEnvelope, limits};
-
-const STREAM_CHUNK_DELAY: std::time::Duration = std::time::Duration::from_millis(8);
 
 pub fn make_handler(
     agent: Arc<AgentBackend>,

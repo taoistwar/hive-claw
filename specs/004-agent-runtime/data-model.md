@@ -621,7 +621,7 @@ RecommendedGame (独立实体)
 1. `agents.identifier = 'main'` 的行不可删除（service 层 + FE 双重）
 2. `agents.depth = parent.depth + 1`，最大 10（service 层校验）
 3. `functions.kind = 2` 必须有 plugin_id + plugin_export，且对应 plugin `deleted_at IS NULL`
-4. `plugins.deleted_at IS NULL` 的行被 `functions.plugin_id` 引用时，禁止删除（spec FR-007）
+4. Plugin 被任何现存 `functions.plugin_id` 引用时，禁止软删除（spec FR-007）；Function 为硬删除模型，无 `functions.deleted_at`
 5. `tools.kind` 与 function_id/workflow_id 一一对应（DB CHECK 已表达）
 6. `workflow_edges` 不能形成环（service 层 DFS 校验）
 7. `agent_permissions.capability` 必须属于 `capabilities.name`（service 层 lookup）

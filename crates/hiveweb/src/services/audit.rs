@@ -83,7 +83,7 @@ pub async fn record_game_alias(
     pool: &MySqlPool,
     operator_id: i64,
     operator_phone: &str,
-    game_id: i64,
+    _game_id: i64,
     game_name: &str,
     op: Operation,
     detail: Option<Value>,

@@ -241,13 +241,11 @@ fn bench_full_session_mock(c: &mut Criterion) {
             // 消费所有事件
             let mut events_received = 0usize;
             let mut got_done = false;
-            while let Some(event) = rx.recv().await {
+            while let Some(Ok(data)) = rx.recv().await {
                 events_received += 1;
-                if let Ok(data) = event {
-                    if data.starts_with("event: done") {
-                        got_done = true;
-                        break;
-                    }
+                if data.starts_with("event: done") {
+                    got_done = true;
+                    break;
                 }
             }
             black_box((events_received, got_done));
@@ -283,13 +281,11 @@ fn bench_full_session_mock(c: &mut Criterion) {
 
             let mut events_received = 0usize;
             let mut got_done = false;
-            while let Some(event) = rx.recv().await {
+            while let Some(Ok(data)) = rx.recv().await {
                 events_received += 1;
-                if let Ok(data) = event {
-                    if data.starts_with("event: done") {
-                        got_done = true;
-                        break;
-                    }
+                if data.starts_with("event: done") {
+                    got_done = true;
+                    break;
                 }
             }
             black_box((events_received, got_done));

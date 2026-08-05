@@ -133,10 +133,8 @@ impl FallbackProvider {
         let code = response.error_code.as_deref().unwrap_or("").to_lowercase();
         let text = response.content.as_deref().unwrap_or("").to_lowercase();
 
-        if let Some(s) = status {
-            if matches!(s, 400 | 401 | 403 | 404 | 422) {
-                return false;
-            }
+        if status.is_some_and(|s| matches!(s, 400 | 401 | 403 | 404 | 422)) {
+            return false;
         }
 
         if NON_FALLBACK_ERROR_KINDS.contains(&kind.as_str()) {
@@ -155,10 +153,8 @@ impl FallbackProvider {
             return true;
         }
 
-        if let Some(s) = status {
-            if matches!(s, 408 | 409 | 429) || (500..=599).contains(&s) {
-                return true;
-            }
+        if status.is_some_and(|s| matches!(s, 408 | 409 | 429) || (500..=599).contains(&s)) {
+            return true;
         }
 
         if FALLBACK_ERROR_KINDS.contains(&kind.as_str()) {
@@ -192,11 +188,9 @@ impl FallbackProvider {
                 return response;
             }
 
-            if let Some(flag) = has_streamed {
-                if flag.load(Ordering::SeqCst) {
-                    warn!("Primary model error but content already streamed; skipping failover");
-                    return response;
-                }
+            if has_streamed.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                warn!("Primary model error but content already streamed; skipping failover");
+                return response;
             }
 
             if !Self::should_fallback(&response) {
@@ -233,10 +227,8 @@ impl FallbackProvider {
         for (idx, fallback) in self.fallback_presets.iter().enumerate() {
             let fallback_model = &fallback.model;
 
-            if let Some(flag) = has_streamed {
-                if flag.load(Ordering::SeqCst) {
-                    break;
-                }
+            if has_streamed.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                break;
             }
 
             if idx == 0 && primary_skipped {

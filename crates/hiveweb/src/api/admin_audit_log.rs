@@ -137,8 +137,7 @@ pub async fn list_admin_audit_logs(
         }
     };
 
-    let items: Vec<AdminAuditLogPublic> =
-        rows.iter().map(|row| row_to_admin_audit_log(row)).collect();
+    let items: Vec<AdminAuditLogPublic> = rows.iter().map(row_to_admin_audit_log).collect();
 
     ApiResponse::success(PaginatedResponse {
         items,

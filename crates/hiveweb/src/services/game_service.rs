@@ -537,11 +537,11 @@ pub async fn get_trial_purchase_platform_config(
     Ok(row.and_then(|r| r.0))
 }
 
-/// Query external games by logic_game_id, then sort by trial purchase
-/// platform priority. Returns the sorted vec — callers pick `.first()`
-/// for the highest-priority result.
-
 /// Sort a vec of ExternalGameInfo by trial purchase platform priority in-place.
+#[expect(
+    clippy::ptr_arg,
+    reason = "retain the existing public service API parameter type"
+)]
 pub async fn sort_external_games_by_priority(
     ext_pool: &MySqlPool,
     games: &mut Vec<ExternalGameInfo>,

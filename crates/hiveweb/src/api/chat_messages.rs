@@ -19,7 +19,7 @@
 //!   5. 过滤 extensions 中已下架的游戏卡片
 
 use axum::{
-    Json, Router,
+    Router,
     extract::{Query, State},
     response::{IntoResponse, Response},
     routing::post,
@@ -166,9 +166,7 @@ async fn list_messages(
         );
 
         // 7. 刷新游戏卡片：如果 client_type/channel 与用户传入的不一致，重新查询
-        if let (Some(ref ct), Some(ref ch)) =
-            (params.client_type.as_deref(), params.channel.as_deref())
-        {
+        if let (Some(ct), Some(ch)) = (params.client_type.as_deref(), params.channel.as_deref()) {
             refresh_game_cards(ext_pool, ct, ch, &mut messages).await;
         }
     }
@@ -496,7 +494,7 @@ async fn handle_single_game_card(
     }
 
     // 尝试刷新
-    let game_id = info.and_then(|i| parse_game_id(i));
+    let game_id = info.and_then(parse_game_id);
     tracing::debug!(
         game_id = ?game_id,
         client_type = client_type,

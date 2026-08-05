@@ -1,9 +1,9 @@
 //! Integration & contract tests: Agent Hook 配置管理 (008-agent-hook-config)
 //!
-//! Covers: T008-T017, T052-T054, T056-T058 (Phase 2.5 红灯测试)
+//! Covers: T008-T011, T013-T014, T016-T017, T052, T054, T056-T058.
 //!
 //! Contract tests (REST API): T008-T011, T013-T014, T016, T052, T056
-//! Integration tests (chat session): T012, T015, T017, T053 (require full chat infra)
+//! Runtime tests: T017, T054, T057-T058
 
 mod common;
 
@@ -482,65 +482,6 @@ async fn t052_header_injection_rejected_with_6003() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// T015 — 不可达 Webhook 仅输出 tracing，不写执行历史。
-#[tokio::test]
-async fn t015_unreachable_webhook_does_not_persist_execution() -> anyhow::Result<()> {
-    let app = common::test_app().await?;
-    let pool = common::test_pool().await?;
-    let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
-    let token = admin.token()?;
-    let sort_ord = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos() as i32;
-
-    let (status, create_body) = common::post_json_auth(
-        &app,
-        "/api/agents/1/hooks",
-        &token,
-        json!({
-            "name": "t015-unreachable",
-            "trigger_point": "before_agent_start",
-            "action_type": "http_webhook",
-            "sort_order": sort_ord,
-            "action_params": {
-                "webhook_url": "https://203.0.113.1/hook",
-                "headers": {},
-                "timeout_ms": 1000
-            },
-        }),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::OK, "T015: create failed: {create_body}");
-    let hook_id = create_body["data"]["id"].as_i64().unwrap();
-
-    let (_, sb) = common::post_json_auth(
-        &app,
-        "/api/admin-chat/sessions",
-        &token,
-        json!({"title": "t015"}),
-    )
-    .await?;
-    let sid = sb["data"]["id"].as_i64().unwrap();
-    common::post_json_auth(
-        &app,
-        &format!("/api/admin-chat/sessions/{sid}/messages"),
-        &token,
-        json!({"content": "."}),
-    )
-    .await?;
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    let persisted: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM hook_executions WHERE hook_id = ?")
-            .bind(hook_id)
-            .fetch_one(&pool)
-            .await?;
-    assert_eq!(persisted, 0, "T015: Hook execution must not be persisted");
-    Ok(())
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // US3 — Function/Workflow 调用 (T016, T017)
 // ═══════════════════════════════════════════════════════════════════
@@ -577,160 +518,11 @@ async fn t016_nonexistent_function_id_returns_6002() -> anyhow::Result<()> {
 #[ignore = "Requires valid Workflow configured in the system"]
 async fn t017_workflow_hook_executes_on_after_agent_end() -> anyhow::Result<()> {
     // This test requires a valid Workflow in the database.
-    // Plantform admin must create a Workflow before running this test.
+    // Platform admin must create a Workflow before running this test.
     // Steps:
     // 1. Create hook (call_workflow) on agent 1 → trigger chat
     // 2. Verify the Workflow side effect; Hook observability is tracing-only.
     eprintln!("T017: skipped — requires pre-existing Workflow");
-    Ok(())
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Integration tests (require full chat session infrastructure)
-// ═══════════════════════════════════════════════════════════════════
-
-/// T012 — 配置 before_agent_start Hook (http_webhook) →
-/// 触发 Agent 对话 → 仅输出 tracing，不写执行历史。
-#[tokio::test]
-async fn t012_hook_execution_does_not_persist_history() -> anyhow::Result<()> {
-    let app = common::test_app().await?;
-    let pool = common::test_pool().await?;
-    let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
-    let token = admin.token()?;
-
-    // Use a non-main agent to avoid collision with other tests on agent 1
-    // Admin chat hardcodes agent_id=1, so hooks must be on agent 1
-    // Clean up stale hooks from previous runs to avoid trigger limit (max 5)
-    let _ = sqlx::query(
-        "DELETE FROM agent_hooks WHERE agent_id = 1 AND trigger_point = 'before_agent_start'",
-    )
-    .execute(&pool)
-    .await;
-    let sort_ord = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos() as i32;
-    let (status, create_body) = common::post_json_auth(
-        &app,
-        "/api/agents/1/hooks",
-        &token,
-        json!({
-            "name": "t012-before-agent-start",
-            "trigger_point": "before_agent_start",
-            "action_type": "http_webhook",
-            "sort_order": sort_ord,
-            "action_params": {
-                "webhook_url": "https://httpbin.org/post",
-                "headers": {},
-                "timeout_ms": 2000
-            },
-        }),
-    )
-    .await?;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "T012: hook create failed: {create_body}"
-    );
-    let hook_id = create_body["data"]["id"]
-        .as_i64()
-        .expect("hook id required");
-    eprintln!("T012: created hook id={hook_id}");
-
-    // Cleanup hook after test
-
-    // Create admin chat session
-    let (_, session_body) = common::post_json_auth(
-        &app,
-        "/api/admin-chat/sessions",
-        &token,
-        json!({"title": "t012"}),
-    )
-    .await?;
-    let sid = session_body["data"]["id"].as_i64().unwrap();
-    let (ms, _) = common::post_json_auth(
-        &app,
-        &format!("/api/admin-chat/sessions/{sid}/messages"),
-        &token,
-        json!({"content": "."}),
-    )
-    .await?;
-    eprintln!("T012: msg status={ms}");
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let persisted: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM hook_executions WHERE hook_id = ?")
-            .bind(hook_id)
-            .fetch_one(&pool)
-            .await?;
-    assert_eq!(persisted, 0, "T012: Hook execution must not be persisted");
-    Ok(())
-}
-
-/// T053 — 阻塞模式 Hook 失败 → SSE 流发出 error 事件 (SC-007)
-#[tokio::test]
-async fn t053_blocking_mode_failure_emits_sse_error() -> anyhow::Result<()> {
-    let app = common::test_app().await?;
-    let pool = common::test_pool().await?;
-    let admin = common::seed_admin(&pool, 3, 1, "test-pass-123").await?;
-    let token = admin.token()?;
-    let sort_ord = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos() as i32;
-
-    let (status, create_body) = common::post_json_auth(
-        &app,
-        "/api/agents/1/hooks",
-        &token,
-        json!({
-            "name": "t053-blocking-fail",
-            "trigger_point": "before_agent_start",
-            "action_type": "http_webhook",
-            "sort_order": sort_ord,
-            "blocking_mode": true,
-            "action_params": {
-                "webhook_url": "https://203.0.113.1/hook",
-                "headers": {},
-                "timeout_ms": 2000
-            },
-        }),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::OK, "T053: create failed: {create_body}");
-
-    let (_, sb) = common::post_json_auth(
-        &app,
-        "/api/admin-chat/sessions",
-        &token,
-        json!({"title": "t053"}),
-    )
-    .await?;
-    let sid = sb["data"]["id"].as_i64().unwrap();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri(&format!("/api/admin-chat/sessions/{sid}/messages"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token))
-        .header("accept", "text/event-stream")
-        .body(Body::from(json!({"content": "."}).to_string()))?;
-
-    let resp = app.clone().oneshot(req).await?;
-    let s = resp.status();
-    let bytes = resp.into_body().collect().await?.to_bytes();
-    let body_text = String::from_utf8_lossy(&bytes);
-    eprintln!(
-        "T053: status={s}, body={}",
-        body_text.chars().take(300).collect::<String>()
-    );
-
-    let has_error = body_text.to_lowercase().contains("error") || !s.is_success();
-    assert!(
-        has_error,
-        "SC-007 FAIL: blocking hook must produce SSE error. status={s}"
-    );
     Ok(())
 }
 

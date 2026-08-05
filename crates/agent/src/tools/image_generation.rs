@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -159,7 +159,7 @@ pub fn get_media_dir() -> PathBuf {
     todo!("TODO: implement media dir resolution")
 }
 
-fn is_relative_to(path: &PathBuf, root: &PathBuf) -> bool {
+fn is_relative_to(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
 
@@ -209,8 +209,8 @@ impl ImageGenerationTool {
         let provider = self.provider_config();
         let ctor = get_image_gen_provider(&self.config.provider)?;
         let cfg = ImageGenerationProviderConfig {
-            api_key: provider.map(|p| p.api_key.clone()).flatten(),
-            api_base: provider.map(|p| p.api_base.clone()).flatten(),
+            api_key: provider.and_then(|p| p.api_key.clone()),
+            api_base: provider.and_then(|p| p.api_base.clone()),
             extra_headers: provider.and_then(|p| p.extra_headers.clone()),
             extra_body: provider.and_then(|p| p.extra_body.clone()),
         };
@@ -218,7 +218,7 @@ impl ImageGenerationTool {
     }
 
     fn missing_api_key_error(&self) -> String {
-        if let Some(ctor) = get_image_gen_provider(&self.config.provider) {
+        if let Some(_ctor) = get_image_gen_provider(&self.config.provider) {
             todo!("TODO: implement missing key message retrieval")
         }
         format!("Error: {} API key is not configured.", self.config.provider)

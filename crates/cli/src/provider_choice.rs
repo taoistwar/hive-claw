@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use providers::{
     Backend, LLMProvider, ProviderBuildConfig, build_provider, env_api_base, env_api_key,
-    env_region, find_by_name,
+    env_region,
 };
 
 /// Which backend the CLI should instantiate.
@@ -166,6 +166,7 @@ pub fn default_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use providers::find_by_name;
 
     #[test]
     fn parse_choice_aliases() {

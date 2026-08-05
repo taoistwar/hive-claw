@@ -166,7 +166,7 @@ impl ExecTool {
             }
             let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
             let media_path =
-                std::fs::canonicalize(&get_media_dir(None)).unwrap_or_else(|_| get_media_dir(None));
+                std::fs::canonicalize(get_media_dir(None)).unwrap_or_else(|_| get_media_dir(None));
             for raw in extract_absolute_paths(cmd) {
                 let expanded = shellexpand(raw.trim());
                 if is_benign_device_path(&expanded.to_string_lossy()) {
@@ -298,16 +298,16 @@ impl Tool for ExecTool {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        if self.restrict_to_workspace {
-            if let Some(ws) = &self.working_dir {
-                let requested = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-                let root = std::fs::canonicalize(ws).unwrap_or_else(|_| ws.clone());
-                if requested != root && !requested.starts_with(&root) {
-                    return Ok(Value::String(
-                        "Error: working_dir is outside the configured workspace".to_string()
-                            + WORKSPACE_BOUNDARY_NOTE,
-                    ));
-                }
+        if self.restrict_to_workspace
+            && let Some(ws) = &self.working_dir
+        {
+            let requested = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+            let root = std::fs::canonicalize(ws).unwrap_or_else(|_| ws.clone());
+            if requested != root && !requested.starts_with(&root) {
+                return Ok(Value::String(
+                    "Error: working_dir is outside the configured workspace".to_string()
+                        + WORKSPACE_BOUNDARY_NOTE,
+                ));
             }
         }
         if let Some(err) = self.guard_command(command, &cwd) {
@@ -436,15 +436,15 @@ fn extract_absolute_paths(cmd: &str) -> Vec<String> {
 }
 
 fn shellexpand(raw: &str) -> PathBuf {
-    if let Some(stripped) = raw.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = raw.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(stripped);
     }
-    if raw == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+    if raw == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
     }
     PathBuf::from(raw)
 }

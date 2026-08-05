@@ -73,6 +73,10 @@ pub fn build_history_context(agent_ctx: &AgentContext, limit: usize) -> String {
 
 /// Extract the set of keys referenced by `{var}` placeholders in a template.
 /// Supports optional whitespace: `{ var }` and `{var}` both match.
+#[expect(
+    dead_code,
+    reason = "retained for the pending answer-node prompt composition path"
+)]
 fn referenced_template_keys(template: &str) -> std::collections::HashSet<String> {
     let re = regex::Regex::new(r"\{\s*([a-zA-Z0-9_]+)\s*\}")
         .unwrap_or_else(|_| regex::Regex::new(r"\{[^}]+\}").unwrap());
@@ -181,6 +185,10 @@ pub async fn execute_answer_node(
 ///
 /// Priority: well-known question key (query/text/etc) → first string field → "key: value" dump.
 /// Keys referenced by `{var}` in system_prompt are excluded from the dump to avoid duplication.
+#[expect(
+    dead_code,
+    reason = "retained for the pending answer-node prompt composition path"
+)]
 fn build_user_message(input: &Value, system_prompt: &str) -> String {
     const USER_QUESTION_KEYS: &[&str] = &[
         "query",

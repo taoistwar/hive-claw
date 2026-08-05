@@ -48,10 +48,8 @@ fn format_disk_total_size(size_gb: f64) -> String {
 
 /// sync wrapper for query_balance — bridges async DB queries inside tokio runtime.
 /// user_id is extracted from AgentContext, not from LLM args.
-/// category is optionally provided in args to filter the payload:
-///   membership | coins | duration_card | disk | discount | benefits (default: all fields)
-///
-/// category values: membership | coins | duration_card | disk | discount | benefits
+/// `category` optionally filters the payload. Supported values are `membership`,
+/// `coins`, `duration_card`, `disk`, `discount`, and `benefits`; omitted means all fields.
 pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     // Try to get user_id from context; if not available (e.g. test without user_input), return a structured response
     let user_id: Option<i64> = ctx
@@ -101,6 +99,7 @@ pub fn query_balance(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
 /// 3. Navigate JSON: client_type → channel → product_id → settings
 /// 4. Query cc_product for product info
 /// 5. Return single discount extension
+///
 /// 任何步骤失败时返回 "暂无产品优惠"
 async fn handle_discount(
     user_id: i64,
@@ -140,7 +139,7 @@ async fn try_handle_discount(
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "AIDiscountedProducts 配置查询失败");
-            BuiltinError::Exec(format!("{e}"))
+            BuiltinError::Exec(e.to_string())
         })?
         .ok_or_else(|| {
             tracing::warn!("AIDiscountedProducts 配置未找到");
@@ -156,7 +155,7 @@ async fn try_handle_discount(
         client_type,
         channel
     );
-    if discount.as_object().map_or(true, |o| o.is_empty()) {
+    if discount.as_object().is_none_or(|o| o.is_empty()) {
         return Ok(serde_json::json!({
             "message": "暂无产品优惠活动"
         }));
@@ -396,7 +395,7 @@ pub async fn query_balance_async_impl(
     let now = chrono::Utc::now().naive_utc();
     let expiring_soon = membership_subscriptions
         .iter()
-        .filter(|row| row.effective_end_time.map_or(false, |end| end >= now))
+        .filter(|row| row.effective_end_time.is_some_and(|end| end >= now))
         .any(|row| {
             row.effective_end_time
                 .map(|end| (end - now).num_days() <= 7)

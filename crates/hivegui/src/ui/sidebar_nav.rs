@@ -6,6 +6,10 @@ use crate::model::tools::ToolSeriesKind;
 use crate::ui::app::{AppRoute, HiveGuiAppState};
 
 pub struct SidebarNav {
+    #[expect(
+        dead_code,
+        reason = "retained until route ownership is consolidated with HiveGuiAppState"
+    )]
     active_route: AppRoute,
 }
 
@@ -74,7 +78,7 @@ impl SidebarNav {
         id: &str,
         icon: AnyElement,
         route: AppRoute,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = SharedString::from(id);
@@ -96,14 +100,14 @@ impl SidebarNav {
             })
             .hover(|style| style.bg(rgb(0xd8d8e8)))
             .child(icon)
-            .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
+            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 cx.update_global::<HiveGuiAppState, _>(|app, _| app.route = route);
                 cx.refresh_windows();
             })
     }
 }
 
-fn icon_home(active: bool) -> AnyElement {
+fn icon_home(_active: bool) -> AnyElement {
     div()
         .w(px(28.0))
         .h(px(28.0))
@@ -152,7 +156,7 @@ fn icon_home(active: bool) -> AnyElement {
         .into_any()
 }
 
-fn icon_conversation(active: bool) -> AnyElement {
+fn icon_conversation(_active: bool) -> AnyElement {
     div()
         .w(px(28.0))
         .h(px(28.0))
@@ -209,7 +213,7 @@ fn icon_conversation(active: bool) -> AnyElement {
         .into_any()
 }
 
-fn icon_day(active: bool) -> AnyElement {
+fn icon_day(_active: bool) -> AnyElement {
     div()
         .w(px(28.0))
         .h(px(28.0))
@@ -250,7 +254,7 @@ fn icon_day(active: bool) -> AnyElement {
         .into_any()
 }
 
-fn icon_hour(active: bool) -> AnyElement {
+fn icon_hour(_active: bool) -> AnyElement {
     div()
         .w(px(28.0))
         .h(px(28.0))
@@ -291,7 +295,7 @@ fn icon_hour(active: bool) -> AnyElement {
         .into_any()
 }
 
-fn icon_datasource(active: bool) -> AnyElement {
+fn icon_datasource(_active: bool) -> AnyElement {
     div()
         .w(px(28.0))
         .h(px(28.0))

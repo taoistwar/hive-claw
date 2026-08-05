@@ -142,10 +142,10 @@ fn build_chat_messages<T: HasRoleContent>(history: &[T], user_content: &str) -> 
         };
         messages.push(msg);
 
-        if m.role_ref() == "user" {
-            if let Some(text) = c {
-                last_user_content = Some(text.to_string());
-            }
+        if m.role_ref() == "user"
+            && let Some(text) = c
+        {
+            last_user_content = Some(text.to_string());
         }
     }
 
@@ -1219,26 +1219,26 @@ async fn handle_meta_tool(
             };
 
             // Capability check: 如果 function 声明了 required_capabilities，校验 agent 权限
-            if let Some(ref caps) = func_caps {
-                if let Some(arr) = caps.as_array() {
-                    let required: Vec<String> = arr
+            if let Some(ref caps) = func_caps
+                && let Some(arr) = caps.as_array()
+            {
+                let required: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+                if !required.is_empty() {
+                    let agent_perms: std::collections::HashSet<&str> =
+                        ctx.permissions.iter().map(|s| s.as_str()).collect();
+                    let missing: Vec<&str> = required
                         .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
+                        .filter(|c| !agent_perms.contains(c.as_str()))
+                        .map(|s| s.as_str())
                         .collect();
-                    if !required.is_empty() {
-                        let agent_perms: std::collections::HashSet<&str> =
-                            ctx.permissions.iter().map(|s| s.as_str()).collect();
-                        let missing: Vec<&str> = required
-                            .iter()
-                            .filter(|c| !agent_perms.contains(c.as_str()))
-                            .map(|s| s.as_str())
-                            .collect();
-                        if !missing.is_empty() {
-                            return ToolOutcome::error(format!(
-                                "function「{func_ident}」需要能力「{}」，但当前 Agent 未授权",
-                                missing.join("、")
-                            ));
-                        }
+                    if !missing.is_empty() {
+                        return ToolOutcome::error(format!(
+                            "function「{func_ident}」需要能力「{}」，但当前 Agent 未授权",
+                            missing.join("、")
+                        ));
                     }
                 }
             }

@@ -336,10 +336,10 @@ pub async fn resolve_game_label_names(
     for card in duration_card_json.iter() {
         if let Some(list) = card.get("game_label_list").and_then(|v| v.as_array()) {
             for item in list {
-                if let Some(code) = item.as_str() {
-                    if !codes.contains(&code.to_string()) {
-                        codes.push(code.to_string());
-                    }
+                if let Some(code) = item.as_str()
+                    && !codes.contains(&code.to_string())
+                {
+                    codes.push(code.to_string());
                 }
             }
         }

@@ -152,10 +152,8 @@ async fn game_info_async_impl(
         .filter(|t| !t.eq_ignore_ascii_case(client_type))
         .is_some();
 
-    if cross_platform {
-        if let Some(obj) = game_payload.as_object_mut() {
-            obj.remove("computer_id");
-        }
+    if cross_platform && let Some(obj) = game_payload.as_object_mut() {
+        obj.remove("computer_id");
     }
 
     let mut output = serde_json::json!({
@@ -172,10 +170,9 @@ async fn game_info_async_impl(
         "game_icon": game_info.game_icon,
     });
 
-    if cross_platform {
-        if let Some(obj) = output.as_object_mut() {
-            obj.remove("computer_id");
-            obj.insert(
+    if cross_platform && let Some(obj) = output.as_object_mut() {
+        obj.remove("computer_id");
+        obj.insert(
                 "data".into(),
                 serde_json::Value::String(format!(
                     "注意：游戏《{}》信息为 {} 客户端，与您当前使用的 {} 客户端，需要到{}客户端才能玩。",
@@ -185,7 +182,6 @@ async fn game_info_async_impl(
                     target_client_type.unwrap_or(""),
                 )),
             );
-        }
     }
 
     // 6. 写入 AgentContext extensions

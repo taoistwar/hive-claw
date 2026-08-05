@@ -429,10 +429,10 @@ pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, App
 
     // 构造结束节点
     let mut end_position = serde_json::json!({"x": 100, "y": 600});
-    if let Some(ref schema) = wf.output_schema {
-        if let Some(obj) = end_position.as_object_mut() {
-            obj.insert("output_schema".to_string(), schema.clone());
-        }
+    if let Some(ref schema) = wf.output_schema
+        && let Some(obj) = end_position.as_object_mut()
+    {
+        obj.insert("output_schema".to_string(), schema.clone());
     }
 
     let end_node = GraphNode {
@@ -645,12 +645,12 @@ pub async fn put_graph(
             .push(e.dst_node_key.as_str());
     }
 
-    if !db_nodes.is_empty() {
-        if let Some(cycle) = detect_cycle(&adjacency) {
-            return Err(AppError::DagCycle(format!(
-                "工作流中存在环，请检查节点 {cycle:?} 之间的连线"
-            )));
-        }
+    if !db_nodes.is_empty()
+        && let Some(cycle) = detect_cycle(&adjacency)
+    {
+        return Err(AppError::DagCycle(format!(
+            "工作流中存在环，请检查节点 {cycle:?} 之间的连线"
+        )));
     }
 
     // 4. mapping 校验：仅检查 function_node 的 required input
@@ -722,14 +722,13 @@ pub async fn put_graph(
     // 5. 聚合 required_capabilities（仅 function_node）
     let mut all_caps: HashSet<String> = HashSet::new();
     for n in &db_nodes {
-        if let Some(fid) = n.function_id {
-            if let Some((_, _, Some(caps))) = function_schemas.get(&fid) {
-                if let Some(arr) = caps.as_array() {
-                    for v in arr {
-                        if let Some(s) = v.as_str() {
-                            all_caps.insert(s.to_string());
-                        }
-                    }
+        if let Some(fid) = n.function_id
+            && let Some((_, _, Some(caps))) = function_schemas.get(&fid)
+            && let Some(arr) = caps.as_array()
+        {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    all_caps.insert(s.to_string());
                 }
             }
         }

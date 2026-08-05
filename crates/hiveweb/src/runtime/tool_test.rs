@@ -72,19 +72,19 @@ impl DebugLogger {
 
     pub fn log(&self, msg: &str) {
         let line = format!("[tool_test] {}", msg);
-        if !crate::app_mode::get().is_production() {
-            if let Some(ref tid) = self.trace_id {
-                let _ = std::fs::create_dir_all("/tmp/tool_test_logs");
-                let path = format!("/tmp/tool_test_logs/{}.log", tid);
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .and_then(|mut f| {
-                        use std::io::Write;
-                        writeln!(f, "{}", line)
-                    });
-            }
+        if !crate::app_mode::get().is_production()
+            && let Some(ref tid) = self.trace_id
+        {
+            let _ = std::fs::create_dir_all("/tmp/tool_test_logs");
+            let path = format!("/tmp/tool_test_logs/{}.log", tid);
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "{}", line)
+                });
         }
         if let Ok(mut lines) = self.lines.lock() {
             lines.push(line.clone());

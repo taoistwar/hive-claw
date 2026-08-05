@@ -123,13 +123,13 @@ impl DataSourceView {
             });
         }
 
-        if let Some(ref form_entity) = self.form {
-            if form_entity.read(cx).is_done() {
-                self.form = None;
-                self.tree.update(cx, |t, cx| {
-                    t.refresh(cx);
-                });
-            }
+        if let Some(ref form_entity) = self.form
+            && form_entity.read(cx).is_done()
+        {
+            self.form = None;
+            self.tree.update(cx, |t, cx| {
+                t.refresh(cx);
+            });
         }
 
         if let Some(modal) = self.tree.update(cx, |t, _| t.take_error_modal()) {

@@ -535,13 +535,11 @@ impl OpenTable {
     ) {
         let page = self.current_offset / self.page_size;
 
-        if !force {
-            if let Some(_cached) = self.get_cached_page(page) {
-                let cached_data = self.page_cache.get(&page).unwrap().data.clone();
-                self.table_data = Some(cached_data);
-                cx.notify();
-                return;
-            }
+        if !force && let Some(_cached) = self.get_cached_page(page) {
+            let cached_data = self.page_cache.get(&page).unwrap().data.clone();
+            self.table_data = Some(cached_data);
+            cx.notify();
+            return;
         }
 
         let ds = ds.clone();
@@ -704,57 +702,58 @@ impl Render for TableViewer {
             }
         }
 
-        if t.active_tab == TableTab::Data && t.context_menu_visible {
-            if let (Some(row), Some(col_idx)) = (t.context_menu_row, t.context_menu_col) {
-                let num_cols = t.columns.len();
-                let widths: Vec<f32> = (0..num_cols)
-                    .map(|i| t.column_widths.get(i).copied().unwrap_or(120.0).max(80.0))
-                    .collect();
+        if t.active_tab == TableTab::Data
+            && t.context_menu_visible
+            && let (Some(row), Some(col_idx)) = (t.context_menu_row, t.context_menu_col)
+        {
+            let num_cols = t.columns.len();
+            let widths: Vec<f32> = (0..num_cols)
+                .map(|i| t.column_widths.get(i).copied().unwrap_or(120.0).max(80.0))
+                .collect();
 
-                let row_number_width = 50.0;
-                let row_height = 11.0 + 4.0 + 1.0;
-                let header_height = 11.0 + 8.0 + 1.0;
+            let row_number_width = 50.0;
+            let row_height = 11.0 + 4.0 + 1.0;
+            let header_height = 11.0 + 8.0 + 1.0;
 
-                let mut menu_x = row_number_width + 16.0;
-                for ci in 0..col_idx {
-                    menu_x += widths.get(ci).copied().unwrap_or(120.0).max(80.0) + 16.0;
-                }
-                let menu_y = header_height + (row as f32) * row_height;
-
-                col = col.child(
-                    div()
-                        .absolute()
-                        .left(px(menu_x))
-                        .top(px(menu_y))
-                        .w(px(160.0))
-                        .bg(rgb(0xffffff))
-                        .border_1()
-                        .border_color(rgb(0xcccccc))
-                        .rounded(px(4.0))
-                        .shadow_lg()
-                        .cursor(CursorStyle::PointingHand)
-                        .child(
-                            div()
-                                .id("context-menu-item")
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .text_size(px(12.0))
-                                .text_color(rgb(0x333333))
-                                .hover(|s| s.bg(rgb(0xe8f0fe)))
-                                .cursor(CursorStyle::PointingHand)
-                                .child("查看完整值")
-                                .on_mouse_down(MouseButton::Left, {
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |v, cx| {
-                                            v.open_value_panel_from_context_menu(cx);
-                                        })
-                                        .ok();
-                                    }
-                                }),
-                        ),
-                );
+            let mut menu_x = row_number_width + 16.0;
+            for ci in 0..col_idx {
+                menu_x += widths.get(ci).copied().unwrap_or(120.0).max(80.0) + 16.0;
             }
+            let menu_y = header_height + (row as f32) * row_height;
+
+            col = col.child(
+                div()
+                    .absolute()
+                    .left(px(menu_x))
+                    .top(px(menu_y))
+                    .w(px(160.0))
+                    .bg(rgb(0xffffff))
+                    .border_1()
+                    .border_color(rgb(0xcccccc))
+                    .rounded(px(4.0))
+                    .shadow_lg()
+                    .cursor(CursorStyle::PointingHand)
+                    .child(
+                        div()
+                            .id("context-menu-item")
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(rgb(0x333333))
+                            .hover(|s| s.bg(rgb(0xe8f0fe)))
+                            .cursor(CursorStyle::PointingHand)
+                            .child("查看完整值")
+                            .on_mouse_down(MouseButton::Left, {
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |v, cx| {
+                                        v.open_value_panel_from_context_menu(cx);
+                                    })
+                                    .ok();
+                                }
+                            }),
+                    ),
+            );
         }
 
         // Render error modal if present

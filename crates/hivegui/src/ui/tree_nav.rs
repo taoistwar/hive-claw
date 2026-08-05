@@ -489,11 +489,10 @@ impl TreeNav {
                         tree.loading = false;
                         if let Some(TreeNode::DataSource { databases, .. }) =
                             tree.nodes.get_mut(source_index)
+                            && let Some(db) = databases.get_mut(db_index)
                         {
-                            if let Some(db) = databases.get_mut(db_index) {
-                                db.tables = tables;
-                                db.expanded = true;
-                            }
+                            db.tables = tables;
+                            db.expanded = true;
                         }
                         cx.notify();
                     })

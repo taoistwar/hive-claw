@@ -250,13 +250,14 @@ impl Conversation {
                 completed_at: Some(Utc::now()),
                 error: None,
             });
-        } else if let Some(t) = self.turns.iter_mut().rev().find(|t| {
-            matches!(t.author, Author::Assistant)
-                && matches!(&t.content, TurnContent::AssistantText { .. })
-        }) {
-            if let TurnContent::AssistantText { buffer } = &mut t.content {
-                buffer.push_str(chunk);
-            }
+        } else if let Some(t) = self
+            .turns
+            .iter_mut()
+            .rev()
+            .find(|t| matches!(t.author, Author::Assistant))
+            && let TurnContent::AssistantText { buffer } = &mut t.content
+        {
+            buffer.push_str(chunk);
         }
     }
 
@@ -368,14 +369,14 @@ impl Conversation {
     }
 
     pub fn dismiss_failure(&mut self, failed: TurnId) {
-        if let Some(t) = self.turns.iter_mut().find(|t| t.id == failed) {
-            if matches!(t.status, TurnStatus::Failed { .. }) {
-                // Leave the turn visible in history but unattached from any
-                // retry affordance. We model "dismissed" as cleared error +
-                // non-retryable failed status so the UI knows not to render
-                // the 重试 button.
-                t.status = TurnStatus::Failed { retryable: false };
-            }
+        if let Some(t) = self.turns.iter_mut().find(|t| t.id == failed)
+            && matches!(t.status, TurnStatus::Failed { .. })
+        {
+            // Leave the turn visible in history but unattached from any
+            // retry affordance. We model "dismissed" as cleared error +
+            // non-retryable failed status so the UI knows not to render
+            // the 重试 button.
+            t.status = TurnStatus::Failed { retryable: false };
         }
     }
 }

@@ -16,8 +16,8 @@ use std::{fs, path::PathBuf, time::Duration};
 
 use chrono::{DateTime, Utc};
 use hivegui::logging_v1::{
-    sanitise_and_truncate as prod_sanitise_and_truncate, ActivityLog, Clock, V1Record, V1Result,
-    V1Segments,
+    ActivityLog, Clock, V1Record, V1Result, V1Segments,
+    sanitise_and_truncate as prod_sanitise_and_truncate,
 };
 
 // ---------------------------------------------------------------------------

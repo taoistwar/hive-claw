@@ -10,8 +10,8 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -514,9 +514,7 @@ fn format_unix_millis_as_iso8601(millis: u64) -> String {
     let secs = millis / 1000;
     let ms = millis % 1000;
     let (year, month, day, hour, minute, second) = unix_secs_to_ymdhms(secs);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{ms:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{ms:03}Z")
 }
 
 fn unix_secs_to_ymdhms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {

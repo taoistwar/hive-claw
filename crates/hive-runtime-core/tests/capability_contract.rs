@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 use hive_runtime_core::{
     capability::{CapabilityId, CapabilitySet, DispatchError, DispatchOutcome, HandlerRegistry},
     persisted_tool::{
-        PersistedTool, PersistedToolBuilder, PersistedToolError, PersistedToolKind, PersistedToolTarget,
-        RequiredCapabilities,
+        PersistedTool, PersistedToolBuilder, PersistedToolError, PersistedToolKind,
+        PersistedToolTarget, RequiredCapabilities,
     },
 };
 
@@ -129,14 +129,20 @@ fn persisted_tool_only_accepts_function_or_workflow_target() {
         .target(PersistedToolTarget::workflow("wf.support_triage"))
         .err()
         .expect("function-wrap with workflow target must be rejected");
-    assert!(matches!(xor_violation, PersistedToolError::TargetKindMismatch { .. }));
+    assert!(matches!(
+        xor_violation,
+        PersistedToolError::TargetKindMismatch { .. }
+    ));
 
     // workflow-wrap + function target  → XOR violation
     let xor_violation2 = PersistedToolBuilder::new(PersistedToolKind::WorkflowWrap)
         .target(PersistedToolTarget::function("fn.format_template"))
         .err()
         .expect("workflow-wrap with function target must be rejected");
-    assert!(matches!(xor_violation2, PersistedToolError::TargetKindMismatch { .. }));
+    assert!(matches!(
+        xor_violation2,
+        PersistedToolError::TargetKindMismatch { .. }
+    ));
 }
 
 #[test]
@@ -197,15 +203,9 @@ fn hive_runtime_core_has_no_product_storage_or_transport_dependencies() {
     // via a list of allowed crate names; any foreign name in scope
     // triggers a build error elsewhere. Here we record the contract
     // for the human reviewer and assert the test still links.
-    let allowed: &[&str] = &[
-        "hive_runtime_core",
-        "serde",
-        "serde_json",
-        "thiserror",
-    ];
+    let allowed: &[&str] = &["hive_runtime_core", "serde", "serde_json", "thiserror"];
     for name in allowed {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("Cargo.toml");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let body = std::fs::read_to_string(&path).expect("read own manifest");
         let re = format!("name = \"{name}\"");
         assert!(

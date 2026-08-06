@@ -128,11 +128,8 @@ impl ActivityLog {
         // Initialise the high-watermark file if it does not exist.
         let high_watermark = logs_dir.join("high-watermark.json");
         if !high_watermark.exists() {
-            let initial = HighWatermark {
-                floor: clock.now(),
-            };
-            let json = serde_json::to_string(&initial)
-                .map_err(|e| LogError::Io(e.to_string()))?;
+            let initial = HighWatermark { floor: clock.now() };
+            let json = serde_json::to_string(&initial).map_err(|e| LogError::Io(e.to_string()))?;
             fs::write(&high_watermark, json).map_err(|e| LogError::Io(e.to_string()))?;
         }
         Ok(LogHandle {
@@ -212,8 +209,7 @@ impl LogHandle {
             cause_summary: sanitised_cause.clone(),
             segments_ms: record.segments_ms,
         };
-        let serialised = serde_json::to_string(&owned)
-            .map_err(|e| LogError::Io(e.to_string()))?;
+        let serialised = serde_json::to_string(&owned).map_err(|e| LogError::Io(e.to_string()))?;
         if serialised.len() > SINGLE_RECORD_MAX_BYTES {
             return Err(LogError::Capacity(format!(
                 "serialised record exceeds {} bytes",
@@ -236,7 +232,8 @@ impl LogHandle {
                 .map_err(|e| LogError::Io(e.to_string()))?;
             file.write_all(serialised.as_bytes())
                 .map_err(|e| LogError::Io(e.to_string()))?;
-            file.write_all(b"\n").map_err(|e| LogError::Io(e.to_string()))?;
+            file.write_all(b"\n")
+                .map_err(|e| LogError::Io(e.to_string()))?;
             file.flush().map_err(|e| LogError::Io(e.to_string()))?;
             file.sync_all().map_err(|e| LogError::Io(e.to_string()))?;
         }
@@ -261,9 +258,7 @@ impl LogHandle {
     pub fn rotate_now(&self) -> Result<RotatedSegment, LogError> {
         let active = self.root.join("activity.open");
         if !active.exists() {
-            return Ok(RotatedSegment {
-                segment_path: None,
-            });
+            return Ok(RotatedSegment { segment_path: None });
         }
         // Make sure the active file is fully flushed before rename.
         let file = fs::OpenOptions::new()
@@ -274,14 +269,8 @@ impl LogHandle {
         file.sync_all().map_err(|e| LogError::Io(e.to_string()))?;
         drop(file);
 
-        let timestamp = self
-            .clock
-            .now()
-            .timestamp_nanos_opt()
-            .unwrap_or_default();
-        let target = self
-            .root
-            .join(format!("activity-{timestamp}.jsonl"));
+        let timestamp = self.clock.now().timestamp_nanos_opt().unwrap_or_default();
+        let target = self.root.join(format!("activity-{timestamp}.jsonl"));
         // Same-directory atomic rename.
         fs::rename(&active, &target).map_err(|e| LogError::Io(e.to_string()))?;
         // Recreate the active file.
@@ -357,8 +346,8 @@ impl LogHandle {
                 // Atomic replace: write to staging, fsync, rename, fsync parent.
                 let staging = path.with_extension("jsonl.tmp");
                 {
-                    let mut f = fs::File::create(&staging)
-                        .map_err(|e| LogError::Io(e.to_string()))?;
+                    let mut f =
+                        fs::File::create(&staging).map_err(|e| LogError::Io(e.to_string()))?;
                     f.write_all(&kept_lines)
                         .map_err(|e| LogError::Io(e.to_string()))?;
                     f.flush().map_err(|e| LogError::Io(e.to_string()))?;
@@ -427,8 +416,7 @@ impl LogHandle {
         let next = HighWatermark { floor: new_floor };
         let json = serde_json::to_string(&next).map_err(|e| LogError::Io(e.to_string()))?;
         {
-            let mut f = fs::File::create(&staging)
-                .map_err(|e| LogError::Io(e.to_string()))?;
+            let mut f = fs::File::create(&staging).map_err(|e| LogError::Io(e.to_string()))?;
             f.write_all(json.as_bytes())
                 .map_err(|e| LogError::Io(e.to_string()))?;
             f.flush().map_err(|e| LogError::Io(e.to_string()))?;
@@ -479,8 +467,7 @@ impl LogHandle {
             let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as usize;
             // Atomic remove so a crash cannot leave a half-deleted file.
             let staging = path.with_extension("jsonl.del");
-            fs::rename(&path, &staging)
-                .map_err(|e| LogError::Io(e.to_string()))?;
+            fs::rename(&path, &staging).map_err(|e| LogError::Io(e.to_string()))?;
             fs::remove_file(&staging).map_err(|e| LogError::Io(e.to_string()))?;
             sync_dir(&self.root)?;
             total_after = total_after.saturating_sub(size);
@@ -600,9 +587,7 @@ fn current_total_bytes(root: &Path) -> Result<usize, LogError> {
             Some(n) => n,
             None => continue,
         };
-        if name == "activity.open"
-            || (name.starts_with("activity-") && name.ends_with(".jsonl"))
-        {
+        if name == "activity.open" || (name.starts_with("activity-") && name.ends_with(".jsonl")) {
             let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as usize;
             total = total.saturating_add(size);
         }
@@ -610,10 +595,7 @@ fn current_total_bytes(root: &Path) -> Result<usize, LogError> {
     Ok(total)
 }
 
-fn append_complete_lines(
-    path: &Path,
-    out: &mut Vec<serde_json::Value>,
-) -> Result<(), LogError> {
+fn append_complete_lines(path: &Path, out: &mut Vec<serde_json::Value>) -> Result<(), LogError> {
     let bytes = fs::read(path).map_err(|e| LogError::Io(e.to_string()))?;
     for line in bytes.split(|b| *b == b'\n') {
         if line.is_empty() {

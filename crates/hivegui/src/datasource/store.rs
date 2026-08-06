@@ -1596,7 +1596,7 @@ impl Store {
     /// table. Used by the query-count contract to pin the
     /// production SQL boundary to a single round trip.
     pub async fn schema_version(&self) -> Result<i64> {
-        // query-plan: id=t012.meta.read_schema_version; owner_phase=migrations; activation_task=T012M
+        // query-plan: id=t012.meta.read_schema_version; owner_phase=Foundation; activation_task=T028
         self.record_query("foundation.store.schema_version");
         let row: Option<String> =
             sqlx::query_scalar("SELECT value FROM meta WHERE key = 'schema_version'")

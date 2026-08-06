@@ -191,9 +191,8 @@ fn scan_source(root: &Path, path: &Path, source: &str, entries: &mut Vec<Invento
         let line_number = idx + 1;
         let trimmed = line.trim();
         // Skip `//!` and `///` doc comments and `//` line comments.
-        let is_doc_or_line_comment = trimmed.starts_with("//!")
-            || trimmed.starts_with("///")
-            || trimmed.starts_with("//");
+        let is_doc_or_line_comment =
+            trimmed.starts_with("//!") || trimmed.starts_with("///") || trimmed.starts_with("//");
         if is_doc_or_line_comment {
             in_block_comment = false;
             continue;

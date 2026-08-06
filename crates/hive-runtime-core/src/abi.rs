@@ -179,9 +179,7 @@ impl HostCallRequest {
     pub fn decode(bytes: &[u8]) -> Result<Self, HostCallRequestError> {
         let value: serde_json::Value = serde_json::from_slice(bytes)
             .map_err(|err| HostCallRequestError::InvalidJson(err.to_string()))?;
-        let map = value
-            .as_object()
-            .ok_or(HostCallRequestError::NotAnObject)?;
+        let map = value.as_object().ok_or(HostCallRequestError::NotAnObject)?;
         let capability = map
             .get("capability")
             .and_then(serde_json::Value::as_str)
@@ -331,12 +329,9 @@ impl HostCallReply {
                 // produce a different order).
                 let code_str = code.to_string();
                 let message_json = serde_json::Value::String(message.clone());
-                let message_str = serde_json::to_string(&message_json)
-                    .expect("serialising a String is total");
-                format!(
-                    r#"{{"ok":false,"code":{code_str},"message":{message_str}}}"#
-                )
-                .into_bytes()
+                let message_str =
+                    serde_json::to_string(&message_json).expect("serialising a String is total");
+                format!(r#"{{"ok":false,"code":{code_str},"message":{message_str}}}"#).into_bytes()
             }
         }
     }

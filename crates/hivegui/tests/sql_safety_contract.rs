@@ -262,8 +262,7 @@ fn every_hivegui_production_sql_call_is_tagged_owner_phase() {
             .expect("the workspace production SQL source inventory is exposed by the T017G security boundary")
             .expect("the inventory must enumerate every production SQL call site in HiveGUI");
 
-    let mut by_file: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
+    let mut by_file: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for entry in inventory.entries() {
         assert!(
             matches!(
@@ -573,12 +572,10 @@ fn find_token(haystack: &str, from: usize, needle: &[u8]) -> Option<usize> {
         if &bytes[i..i + needle.len()] == needle {
             // Must be a whole word: not preceded or followed by an
             // identifier character.
-            let prev_ok = i == 0
-                || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+            let prev_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
             let after_idx = i + needle.len();
             let next_ok = after_idx >= bytes.len()
-                || !(bytes[after_idx].is_ascii_alphanumeric()
-                    || bytes[after_idx] == b'_');
+                || !(bytes[after_idx].is_ascii_alphanumeric() || bytes[after_idx] == b'_');
             if prev_ok && next_ok {
                 return Some(i);
             }

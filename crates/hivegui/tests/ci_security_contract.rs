@@ -1247,14 +1247,14 @@ fn approved_dependency_remediation_hiveweb_sqlx_uses_verified_tls_without_rsa() 
         dependency_features(&hiveweb_sqlx),
         expected_features(&[
             "chrono",
-            "derive",
             "json",
+            "macros",
             "mysql",
             "runtime-tokio",
             "rust_decimal",
             "tls-rustls-ring-webpki",
         ]),
-        "HiveWeb SQLx must enable exactly its MySQL data types, Tokio, and the verified WebPKI TLS path; `mysql-rsa` and broader TLS/database features are forbidden"
+        "HiveWeb SQLx must enable exactly its MySQL data types, Tokio, and the verified WebPKI TLS path; `derive` is provided by `macros` (per T017G/T017D) and must not be re-declared; `mysql-rsa` and broader TLS/database features are forbidden"
     );
 }
 

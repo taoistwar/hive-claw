@@ -150,7 +150,9 @@ impl WasmValidationError {
                     WasmModuleShape::UnsupportedAbiVersion => "unsupported abi version",
                 };
                 match detail {
-                    Some(detail) => write!(formatter, "wasm validation rejected: {label} ({detail})"),
+                    Some(detail) => {
+                        write!(formatter, "wasm validation rejected: {label} ({detail})")
+                    }
                     None => write!(formatter, "wasm validation rejected: {label}"),
                 }
             }
@@ -266,8 +268,12 @@ impl WasmExecutionFailure {
     /// distinct category.
     pub fn stable_error_kind(self) -> crate::abi::StableErrorKind {
         match self {
-            WasmExecutionFailure::OutputLimitExceeded => crate::abi::StableErrorKind::PluginOutputLimit,
-            WasmExecutionFailure::MemoryLimitExceeded => crate::abi::StableErrorKind::PluginMemoryLimit,
+            WasmExecutionFailure::OutputLimitExceeded => {
+                crate::abi::StableErrorKind::PluginOutputLimit
+            }
+            WasmExecutionFailure::MemoryLimitExceeded => {
+                crate::abi::StableErrorKind::PluginMemoryLimit
+            }
             WasmExecutionFailure::FuelExhausted => crate::abi::StableErrorKind::PluginTimeout,
             WasmExecutionFailure::Timeout => crate::abi::StableErrorKind::PluginTimeout,
             WasmExecutionFailure::Trap => crate::abi::StableErrorKind::Internal,
@@ -332,7 +338,10 @@ mod tests {
     fn validation_rejected_carries_category() {
         let err = WasmValidationError::rejected(WasmModuleShape::WasiImportPresent, None);
         assert!(!err.is_ok());
-        assert_eq!(err.rejection_kind(), Some(WasmModuleShape::WasiImportPresent));
+        assert_eq!(
+            err.rejection_kind(),
+            Some(WasmModuleShape::WasiImportPresent)
+        );
     }
 
     #[test]

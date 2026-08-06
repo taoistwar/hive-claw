@@ -202,7 +202,8 @@ pub enum DispatchError {
 }
 
 /// Handler function signature.
-pub type HandlerFn = Arc<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+pub type HandlerFn =
+    Arc<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
 /// Map of `CapabilityId -> Handler`.
 ///
@@ -233,7 +234,11 @@ impl HandlerRegistry {
     /// Returns [`DispatchError::AlreadyRegistered`] if a handler is already
     /// present. The first registration wins; later attempts are rejected so
     /// the dispatch table is unambiguous.
-    pub fn register<F>(&mut self, capability: &CapabilityId, handler: F) -> Result<(), DispatchError>
+    pub fn register<F>(
+        &mut self,
+        capability: &CapabilityId,
+        handler: F,
+    ) -> Result<(), DispatchError>
     where
         F: Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static,
     {
@@ -242,8 +247,7 @@ impl HandlerRegistry {
                 capability: capability.clone(),
             });
         }
-        self.handlers
-            .insert(capability.clone(), Arc::new(handler));
+        self.handlers.insert(capability.clone(), Arc::new(handler));
         Ok(())
     }
 
@@ -254,11 +258,12 @@ impl HandlerRegistry {
         capability: &CapabilityId,
         input: &serde_json::Value,
     ) -> Result<DispatchOutcome, DispatchError> {
-        let handler = self.handlers.get(capability).ok_or_else(|| {
-            DispatchError::HandlerNotRegistered {
-                capability: capability.clone(),
-            }
-        })?;
+        let handler =
+            self.handlers
+                .get(capability)
+                .ok_or_else(|| DispatchError::HandlerNotRegistered {
+                    capability: capability.clone(),
+                })?;
         let output = handler(input.clone()).map_err(|message| DispatchError::HandlerFailed {
             capability: capability.clone(),
             message,
@@ -287,7 +292,8 @@ impl HandlerRegistry {
 
 impl fmt::Debug for HandlerRegistry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("HandlerRegistry")
+        formatter
+            .debug_struct("HandlerRegistry")
             .field("capabilities", &self.handlers.keys().collect::<Vec<_>>())
             .finish()
     }

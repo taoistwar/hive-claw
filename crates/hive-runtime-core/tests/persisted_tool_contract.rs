@@ -10,8 +10,8 @@
 //! public boundary (introduced by T021) is required for Green.
 
 use hive_runtime_core::persisted_tool::{
-    PersistedTool, PersistedToolBuilder, PersistedToolError, PersistedToolKind, PersistedToolTarget,
-    RequiredCapabilities,
+    PersistedTool, PersistedToolBuilder, PersistedToolError, PersistedToolKind,
+    PersistedToolTarget, RequiredCapabilities,
 };
 
 #[test]
@@ -76,12 +76,12 @@ fn persisted_tool_rejects_invalid_identifier_characters() {
     //   cover the non-empty "invalid characters" rejections so this
     //   test does not contradict the dedicated empty-target contract.
     for bad in &[
-        "FormatTemplate",      // uppercase
-        "fn..format",          // empty slug
-        "fn/format",           // slash
-        "fn format",           // space
-        "../fn.format",        // path traversal
-        "fn.format.sub",       // extra dots
+        "FormatTemplate", // uppercase
+        "fn..format",     // empty slug
+        "fn/format",      // slash
+        "fn format",      // space
+        "../fn.format",   // path traversal
+        "fn.format.sub",  // extra dots
     ] {
         let err = PersistedToolBuilder::new(PersistedToolKind::FunctionWrap)
             .target(PersistedToolTarget::function(bad))

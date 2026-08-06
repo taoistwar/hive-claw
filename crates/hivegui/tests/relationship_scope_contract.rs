@@ -340,7 +340,10 @@ async fn fresh_v4_schema_has_every_declared_table_and_fk_and_no_extra_structure(
             "search_index_docsize",
             "FTS5 trigram virtual table shadow table",
         ),
-        ("search_index_idx", "FTS5 trigram virtual table shadow table"),
+        (
+            "search_index_idx",
+            "FTS5 trigram virtual table shadow table",
+        ),
         ("short_gram_index", "derived 1-2 character search index"),
         (
             "plugin_artifact_operations",

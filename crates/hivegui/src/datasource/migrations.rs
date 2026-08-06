@@ -2364,7 +2364,7 @@ pub async fn migrate_to_current(
 }
 
 async fn read_schema_version(executor: &mut sqlx::Transaction<'_, Sqlite>) -> Result<Option<i64>> {
-    // query-plan: id=t012.meta.read_schema_version; owner_phase=migrations; activation_task=T012M
+    // query-plan: id=t012.meta.read_schema_version_tx; owner_phase=migrations; activation_task=T012M
     sqlx::query_scalar::<_, i64>(
         "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'",
     )
@@ -2407,7 +2407,7 @@ async fn read_schema_version_ro(database_path: &Path) -> Result<Option<i64>> {
         pool.close().await;
         return Ok(None);
     }
-    // query-plan: id=migrations_read_schema_version; owner_phase=migrations; activation_task=T012M
+    // query-plan: id=t012.meta.read_schema_version_ro; owner_phase=migrations; activation_task=T012M
     let result: Option<i64> =
         sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'")
             .fetch_optional(&pool)
@@ -2980,6 +2980,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     // only run for pre-existing v4 databases that were created
     // before T124 landed. SQLite does not support `ADD COLUMN
     // IF NOT EXISTS`, so the helper reads the current schema.
+    // query-plan: id=t124.agents.is_default_probe; owner_phase=US13; activation_task=T124
     let agents_is_default_present: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'is_default'",
     )
@@ -3325,6 +3326,7 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
         ("text.regex_match", "text_regex_match"),
     ];
     for (dotted, underscored) in dotted_renames {
+        // query-plan: id=migrations_dotted_builtin_collision_probe; owner_phase=migrations; activation_task=T012M
         let collision: Option<i64> =
             sqlx::query_scalar("SELECT id FROM functions WHERE identifier = ?")
                 .bind(underscored)
@@ -3338,6 +3340,7 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
                 underscored
             );
         }
+        // query-plan: id=migrations_dotted_builtin_rename; owner_phase=migrations; activation_task=T012M
         sqlx::query("UPDATE functions SET identifier = ? WHERE identifier = ?")
             .bind(underscored)
             .bind(dotted)
@@ -3418,6 +3421,7 @@ async fn migrate_legacy_tool_kinds(executor: &mut sqlx::Transaction<'_, Sqlite>)
     // Validate that every integer kind is in the known set so a
     // pre-existing row with kind 99 (or any other unknown) fails
     // the migration instead of being silently downgraded.
+    // query-plan: id=migrations_scan_unknown_tool_kinds; owner_phase=migrations; activation_task=T012M
     let unknown: Option<i64> =
         sqlx::query_scalar("SELECT kind FROM tools WHERE kind NOT IN (1, 2) LIMIT 1")
             .fetch_optional(&mut **executor)

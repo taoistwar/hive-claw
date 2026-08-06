@@ -222,8 +222,7 @@ impl WorkflowGraph {
         // 2. Missing edge endpoints.
         let key_set: HashSet<&str> = self.nodes.iter().map(|n| n.node_key.as_str()).collect();
         for edge in &self.edges {
-            if !key_set.contains(edge.source.as_str()) || !key_set.contains(edge.target.as_str())
-            {
+            if !key_set.contains(edge.source.as_str()) || !key_set.contains(edge.target.as_str()) {
                 return Err(WorkflowValidationError::new(
                     WorkflowValidationKind::MissingEndpoint,
                 ));
@@ -299,9 +298,7 @@ impl WorkflowGraph {
             ready = next;
         }
         if visited != self.nodes.len() {
-            return Err(WorkflowValidationError::new(
-                WorkflowValidationKind::Cycle,
-            ));
+            return Err(WorkflowValidationError::new(WorkflowValidationKind::Cycle));
         }
 
         // 7. End reachability: at least one End node must be reachable
@@ -339,8 +336,7 @@ impl WorkflowGraph {
             dependants.insert(node.node_key.clone(), targets);
         }
 
-        let node_keys: BTreeSet<String> =
-            self.nodes.iter().map(|n| n.node_key.clone()).collect();
+        let node_keys: BTreeSet<String> = self.nodes.iter().map(|n| n.node_key.clone()).collect();
 
         Ok(ValidatedWorkflow {
             layers,

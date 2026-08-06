@@ -1,140 +1,298 @@
-//! Plugin memory limit integration test (T166 / FR-031)
+//! Plugin memory limit integration test (T166 / FR-032).
 //!
-//! Verifies:
-//!   1. A Plugin that attempts to allocate > 128 MB (PLUGIN_CALL_MAX_MEMORY_MB)
-//!      is forcibly aborted
-//!   2. Error code 5004 is returned
-//!   3. Audit log is written with outcome=error
-//!   4. The instance is NOT returned to the pool
-//!
-//! Note: This test constructs a WASM plugin that deliberately allocates large
-//! amounts of memory. Since we can't easily compile a real WASM binary in the
-//! test, we verify the memory limit enforcement path through the pool/runtime
-//! layer directly.
+//! This test exercises the real MySQL → S3 → InstancePool → Invoker → Extism
+//! path with a WAT-generated Plugin. A control export grows to exactly 128 MiB
+//! and succeeds; a second export requests 129 MiB and must fail with a genuine
+//! linear-memory bounds trap. The HiveWeb infrastructure CI job supplies
+//! disposable MySQL, Redis, and MinIO services.
 
 mod common;
 
-use sqlx::MySqlPool;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-/// Helper: insert a test plugin row directly into the database for pool testing.
-#[expect(
-    dead_code,
-    reason = "staged helper for the pending full WASM memory-limit integration test"
-)]
-async fn insert_test_plugin(
-    pool: &MySqlPool,
-    identifier: &str,
-    sha256_hex: &str,
-) -> anyhow::Result<i64> {
+use hiveweb::runtime::RuntimeExecutionContext;
+use hiveweb::runtime::capability::{CapabilityRegistry, DispatchCtx};
+use hiveweb::runtime::invoker::{Invoker, InvokerError};
+use hiveweb::runtime::llm::LlmRegistry;
+use hiveweb::runtime::pool::{InstancePool, PoolConfig};
+use hiveweb::utils::error::{AppError, codes, http_status_for_code};
+use sha2::{Digest, Sha256};
+
+const MEMORY_LIMIT_PROBE_WAT: &str = r#"
+    (module
+      (memory (export "memory") 1)
+
+      (func (export "allocate_within_limit")
+        i32.const 2047
+        memory.grow
+        i32.const -1
+        i32.eq
+        if
+          unreachable
+        end
+        i32.const 134217727
+        i32.const 1
+        i32.store8)
+
+      (func (export "allocate_over_limit")
+        i32.const 2063
+        memory.grow
+        drop
+        i32.const 134217728
+        i32.const 1
+        i32.store8))
+"#;
+
+fn assert_memory_limit_evidence(error: &str) {
+    let normalized = error.to_ascii_lowercase();
+    let explicit_oom = normalized == "oom" || normalized.contains("out of memory");
+    let memory_boundary = normalized.contains("memory")
+        && (normalized.contains("out of bounds")
+            || normalized.contains("out-of-bounds")
+            || normalized.contains("limit")
+            || normalized.contains("maximum")
+            || normalized.contains("grow"));
+    assert!(
+        explicit_oom || memory_boundary,
+        "trap must contain OOM or linear-memory boundary evidence: {error}"
+    );
+    assert!(
+        !normalized.contains("unreachable"),
+        "probe must not pass through an arbitrary `unreachable` trap: {error}"
+    );
+}
+
+#[derive(Clone, Default)]
+struct TraceWriter(Arc<Mutex<Vec<u8>>>);
+
+struct TraceWriterGuard(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for TraceWriterGuard {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("trace buffer poisoned").extend(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceWriter {
+    type Writer = TraceWriterGuard;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        TraceWriterGuard(Arc::clone(&self.0))
+    }
+}
+
+#[tokio::test]
+async fn t166_real_plugin_memory_limit_maps_5000_audits_and_discards_instance() -> anyhow::Result<()>
+{
+    let db_pool = common::test_pool().await?;
+    let s3 = hiveweb::storage::s3::create_client().await?;
+    let wasm = wat::parse_str(MEMORY_LIMIT_PROBE_WAT)?;
+
+    let identifier = format!("t166-{}", uuid::Uuid::new_v4().simple());
     let s3_key = format!("plugins/{identifier}/1.0.0.wasm");
-    let result = sqlx::query(
+    let sha256 = format!("{:x}", Sha256::digest(&wasm));
+    let wasm_size = i64::try_from(wasm.len())?;
+
+    hiveweb::storage::s3::put_wasm(&s3, &s3_key, wasm.clone()).await?;
+    let insert = sqlx::query(
         r#"
-        INSERT INTO plugins (identifier, version, name, description, sha256, size_bytes, s3_key, created_at, updated_at)
-        VALUES (?, '1.0.0', ?, 'Test plugin', ?, 100, ?, NOW(), NOW())
+        INSERT INTO plugins
+            (identifier, version, name, description, sha256, size_bytes, s3_key,
+             created_at, updated_at)
+        VALUES (?, '1.0.0', ?, 'T166 real memory-limit plugin', ?, ?, ?, NOW(), NOW())
         "#,
     )
-    .bind(identifier)
-    .bind(identifier)
-    .bind(sha256_hex)
+    .bind(&identifier)
+    .bind(&identifier)
+    .bind(&sha256)
+    .bind(wasm_size)
     .bind(&s3_key)
-    .execute(pool)
-    .await?;
-    Ok(result.last_insert_id() as i64)
-}
+    .execute(&db_pool)
+    .await;
+    let insert = match insert {
+        Ok(insert) => insert,
+        Err(error) => {
+            if let Err(cleanup_error) = hiveweb::storage::s3::delete_wasm(&s3, &s3_key).await {
+                tracing::warn!(
+                    error = %cleanup_error,
+                    "failed to clean up T166 object after database insert failure"
+                );
+            }
+            return Err(error.into());
+        }
+    };
+    let plugin_id = insert.last_insert_id() as i64;
 
-#[tokio::test]
-async fn t166_pool_config_respects_memory_limit() -> anyhow::Result<()> {
-    let _pool = common::test_pool().await?;
-
-    // Read the configured memory limit from environment
-    let max_memory_mb: u64 = std::env::var("PLUGIN_CALL_MAX_MEMORY_MB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(128);
-
-    // Verify default is 128 MB
-    assert!(
-        max_memory_mb >= 128,
-        "PLUGIN_CALL_MAX_MEMORY_MB should be at least 128 MB, got {max_memory_mb}"
-    );
-
-    tracing::info!("t166: configured PLUGIN_CALL_MAX_MEMORY_MB = {max_memory_mb} MB");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn t166_plugin_with_excessive_memory_allocation_fails() -> anyhow::Result<()> {
-    let _pool = common::test_pool().await?;
-    let _s3 = hiveweb::storage::s3::create_client().await?;
-
-    // The memory limit configuration is verified through the pool config.
-    // A real WASM plugin that allocates > 128 MB would be needed for a
-    // full end-to-end test. Here we verify:
-    //
-    // 1. The pool reads PLUGIN_CALL_MAX_MEMORY_MB correctly
-    // 2. The sha256 mismatch path (separate test T167) handles rejection
-    // 3. The audit service can record memory-related errors
-
-    let max_memory_mb: u64 = std::env::var("PLUGIN_CALL_MAX_MEMORY_MB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(128);
-
-    // Verify the limit is in the expected range
-    assert_eq!(max_memory_mb, 128, "expected default 128 MB memory limit");
-
-    // Verify that audit logging works (for memory limit violations)
-    // Verify that audit logging works (for memory limit violations)
-    hiveweb::services::runtime_audit::record(hiveweb::services::runtime_audit::AuditRecord {
-        request_id: Some("test-t166"),
-        session_id: None,
-        agent_id: Some(1),
-        plugin_id: Some(99999),
-        function_id: None,
-        capability: Some("memory_limit_test"),
-        event_type: "plugin_invoke",
-        outcome: "error",
-        elapsed_ms: Some(50),
-        error_message: Some("WASM linear memory limit exceeded (128 MB)"),
-        payload_summary: Some(serde_json::json!({
-            "memory_requested_mb": 256,
-            "memory_limit_mb": 128
-        })),
+    let pool = InstancePool::new(PoolConfig {
+        max_per_plugin: 1,
+        max_total: 1,
+        idle_timeout: Duration::from_secs(60),
+        acquire_timeout: Duration::from_secs(5),
+        call_timeout_ms: 5_000,
+        call_memory_mb: 128,
+        call_fuel: 10_000_000_000,
     });
+    let invoker = Invoker::new(Arc::clone(&pool));
+    let dispatch_ctx = DispatchCtx {
+        execution_context: RuntimeExecutionContext::best_effort(
+            Some("t166-memory-limit".into()),
+            None,
+        ),
+        agent_id: 0,
+        plugin_id,
+        function_id: None,
+        permissions: Vec::new(),
+    };
 
-    tracing::info!("t166: memory limit enforcement verified via config + audit path");
+    let trace_writer = TraceWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(trace_writer.clone())
+        .finish();
+    let _trace_guard = tracing::subscriber::set_default(subscriber);
 
-    Ok(())
-}
+    let observations: anyhow::Result<_> = async {
+        let registry = Arc::new(CapabilityRegistry::new());
+        let llm = Arc::new(LlmRegistry::new());
+        let control = invoker
+            .invoke(
+                &db_pool,
+                Some(&s3),
+                Arc::clone(&registry),
+                Arc::clone(&llm),
+                plugin_id,
+                "allocate_within_limit",
+                "{}".into(),
+                dispatch_ctx.clone(),
+            )
+            .await;
+        let control_metrics = pool.metrics_snapshot().await;
+        let control_per_plugin = pool.per_plugin_snapshot().await;
 
-#[tokio::test]
-async fn t166_memory_limit_env_var_controls_plugin_call() -> anyhow::Result<()> {
-    // Verify that the memory limit environment variable is properly
-    // documented and defaults to 128 MB.
-    //
-    // The actual enforcement happens in the Extism plugin instantiation
-    // layer (runtime/pool.rs) where `call_memory_mb` is passed to the
-    // WASM runtime.
+        let invocation = invoker
+            .invoke(
+                &db_pool,
+                Some(&s3),
+                registry,
+                llm,
+                plugin_id,
+                "allocate_over_limit",
+                "{}".into(),
+                dispatch_ctx,
+            )
+            .await;
+        let metrics = pool.metrics_snapshot().await;
+        let per_plugin = pool.per_plugin_snapshot().await;
+        let trace_output = String::from_utf8(
+            trace_writer
+                .0
+                .lock()
+                .expect("trace buffer poisoned")
+                .clone(),
+        )?;
+        Ok((
+            control,
+            control_metrics,
+            control_per_plugin,
+            invocation,
+            metrics,
+            per_plugin,
+            trace_output,
+        ))
+    }
+    .await;
 
-    let env_val = std::env::var("PLUGIN_CALL_MAX_MEMORY_MB");
-    let effective_limit = env_val
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(128);
+    let delete_object = hiveweb::storage::s3::delete_wasm(&s3, &s3_key).await;
+    let delete_row = sqlx::query("DELETE FROM plugins WHERE id = ?")
+        .bind(plugin_id)
+        .execute(&db_pool)
+        .await;
+    let (
+        control,
+        control_metrics,
+        control_per_plugin,
+        invocation,
+        metrics,
+        per_plugin,
+        trace_output,
+    ) = match observations {
+        Ok(observations) => observations,
+        Err(error) => {
+            if let Err(cleanup_error) = &delete_object {
+                tracing::warn!(error = %cleanup_error, "failed to clean up T166 object");
+            }
+            if let Err(cleanup_error) = &delete_row {
+                tracing::warn!(error = %cleanup_error, "failed to clean up T166 database row");
+            }
+            return Err(error);
+        }
+    };
+    delete_object?;
+    delete_row?;
 
-    assert!(
-        effective_limit >= 64,
-        "memory limit must be at least 64 MB (got {effective_limit})"
+    let control_output =
+        control.expect("allocation and write at the 128 MiB boundary must succeed");
+    assert!(control_output.is_empty(), "probe returns no output payload");
+    assert_eq!(control_metrics.in_use, 0);
+    assert_eq!(
+        control_metrics.idle, 1,
+        "successful control instance must return to the idle pool"
     );
+    assert_eq!(control_metrics.created_total, 1);
+    assert_eq!(control_per_plugin.len(), 1);
+    assert_eq!(control_per_plugin[0].idle, 1);
+    assert_eq!(control_per_plugin[0].in_use, 0);
 
-    // Verify that the limit is a reasonable production default
+    let error = invocation.expect_err("129 MiB allocation must exceed the 128 MiB limit");
+    let raw_error = match &error {
+        InvokerError::PluginError(message) => message.clone(),
+        other => panic!("memory trap must remain a plugin runtime error, got {other:?}"),
+    };
+    assert_memory_limit_evidence(&raw_error);
+
+    let app_error: AppError = error.into();
+    assert_eq!(app_error.code(), codes::INTERNAL);
+    assert_eq!(app_error.message(), "Plugin 执行失败或超过内存上限");
     assert!(
-        effective_limit <= 1024,
-        "memory limit should not exceed 1024 MB (got {effective_limit})"
+        !app_error.message().contains(&raw_error),
+        "external error must not expose the runtime trap"
     );
+    assert_eq!(
+        http_status_for_code(app_error.code()),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_ne!(app_error.code(), codes::PLUGIN_INVOCATION_TIMEOUT);
 
-    tracing::info!("t166: effective memory limit = {effective_limit} MB");
+    assert_eq!(metrics.in_use, 0, "failed instance must release its slot");
+    assert_eq!(
+        metrics.idle, 0,
+        "failed instance must not return to idle pool"
+    );
+    assert_eq!(metrics.created_total, 1);
+    assert_eq!(
+        metrics.reset_failures, 0,
+        "a trapped invocation is a discard, not a reset failure"
+    );
+    assert_eq!(per_plugin.len(), 1);
+    assert_eq!(per_plugin[0].idle, 0);
+    assert_eq!(per_plugin[0].in_use, 0);
+
+    assert!(trace_output.contains("runtime_audit"));
+    assert!(trace_output.contains("plugin_invoke"));
+    assert!(trace_output.contains("t166-memory-limit"));
+    assert!(trace_output.contains("error_message"));
+    assert!(
+        trace_output.contains("outcome=\"error\"") || trace_output.contains("outcome=error"),
+        "memory-limit failure must emit an error audit: {trace_output}"
+    );
 
     Ok(())
 }

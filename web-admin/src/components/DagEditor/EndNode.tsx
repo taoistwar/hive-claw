@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from 'reactflow';
 interface EndNodeData {
   node_key: string;
   output_schema?: Record<string, unknown> | null;
+  end_description?: string | null;
   execution_result?: unknown;
 }
 
@@ -88,6 +89,21 @@ export function EndNode({ data, selected }: NodeProps<EndNodeData>) {
         <div style={{ fontSize: 11, color: '#d4380d', background: '#fff1e6', borderRadius: 4, padding: '2px 6px', alignSelf: 'flex-start' }}>
           {varCount} 个输出变量
         </div>
+        {data.end_description && (
+          <div
+            title={data.end_description}
+            style={{
+              maxWidth: 220,
+              overflow: 'hidden',
+              color: '#8c8c8c',
+              fontSize: 11,
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {data.end_description}
+          </div>
+        )}
         {hasResult && (
           <div style={{
             fontSize: 11,

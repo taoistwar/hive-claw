@@ -85,10 +85,9 @@ async fn list_messages(
     let params: MessagesBody = match serde_json::from_str::<MessagesBody>(&body) {
         Ok(p) => {
             tracing::debug!(
-                user_id = p.user_id,
-                date = ?p.date,
-                channel = ?p.channel,
-                client_type = ?p.client_type,
+                date_present = p.date.is_some(),
+                channel_present = p.channel.is_some(),
+                client_type_present = p.client_type.is_some(),
                 "list_messages: request parsed"
             );
             p
@@ -130,7 +129,7 @@ async fn list_messages(
         }
         None => chrono::Utc::now().naive_utc(),
     };
-    tracing::debug!(?cutoff, "list_messages: cutoff");
+    tracing::debug!("list_messages: cutoff resolved");
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
     let mut messages: Vec<ChatMessageUser> =
@@ -143,8 +142,11 @@ async fn list_messages(
                 );
                 rows
             }
-            Err(e) => {
-                tracing::error!(error = %e, user_id = params.user_id, "failed to query messages");
+            Err(_) => {
+                tracing::error!(
+                    error_kind = "message_query_failed",
+                    "failed to query messages"
+                );
                 return AppError::Internal("Failed to query messages".into())
                     .into_response::<()>()
                     .into_response();
@@ -172,9 +174,8 @@ async fn list_messages(
     }
 
     tracing::debug!(
-        user_id = params.user_id,
-        client_type = ?params.client_type,
-        channel = ?params.channel,
+        client_type_present = params.client_type.is_some(),
+        channel_present = params.channel.is_some(),
         message_count = messages.len(),
         "list_messages: returning"
     );
@@ -225,8 +226,11 @@ async fn filter_unavailable_games(ext_pool: &sqlx::MySqlPool, messages: &mut [Ch
 
     let available = match game_service::filter_available_games(ext_pool, &game_ids).await {
         Ok(ids) => ids,
-        Err(e) => {
-            tracing::warn!(error = %e, "filter_available_games failed, keeping all game cards");
+        Err(_) => {
+            tracing::warn!(
+                error_kind = "available_game_filter_failed",
+                "filter_available_games failed, keeping all game cards"
+            );
             return;
         }
     };
@@ -439,24 +443,17 @@ fn game_card_matches(info: &Value, client_type: &str, channel: &str) -> bool {
 
 /// 从 game 卡片的 info 中解析 game_id（支持字符串和数字类型）。
 fn parse_game_id(info: &Value) -> Option<i64> {
-    tracing::debug!(info = %info, "parse_game_id: input");
-    let id_val = info.get("id").inspect(|v| {
-        tracing::debug!(
-            ?v,
-            is_string = v.is_string(),
-            is_number = v.is_number(),
-            "parse_game_id: id raw value"
-        );
-    })?;
+    tracing::debug!(
+        info_field_count = info.as_object().map_or(0, serde_json::Map::len),
+        "parse_game_id: input metadata"
+    );
+    let id_val = info.get("id")?;
     let id = if let Some(s) = id_val.as_str() {
-        tracing::debug!(s, "parse_game_id: id as string");
         s.parse::<i64>().ok()
     } else {
-        let n = id_val.as_i64();
-        tracing::debug!(?n, "parse_game_id: id as number");
-        n
+        id_val.as_i64()
     };
-    tracing::debug!(?id, "parse_game_id: result");
+    tracing::debug!(id_present = id.is_some(), "parse_game_id: result");
     id
 }
 
@@ -613,7 +610,10 @@ async fn handle_multiple_game_cards(
 /// 找到第一个 game 卡片的索引和 info。
 fn find_game_card(exts: &[Value]) -> Option<(usize, Option<&Value>)> {
     exts.iter().enumerate().find_map(|(i, ext)| {
-        tracing::debug!(ext = %ext, "find_game_card: checking extension");
+        tracing::debug!(
+            extension_field_count = ext.as_object().map_or(0, serde_json::Map::len),
+            "find_game_card: checking extension metadata"
+        );
         let ct = ext
             .get("content_type")
             .and_then(|v| v.as_str())

@@ -35,8 +35,29 @@ jobs:
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
 
-      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
-        run: rustup show
+      - name: Install and verify Rust 1.97.1 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup show
+
+          expected_release="release: 1.97.1"
+          rustc_details="$(rustc --version --verbose)"
+          cargo_details="$(cargo --version --verbose)"
+
+          printf '%s\n' "$rustc_details"
+          printf '%s\n' "$cargo_details"
+
+          if ! grep -Fqx -- "$expected_release" <<<"$rustc_details"; then
+            echo "::error::expected rustc 1.97.1" >&2
+            exit 1
+          fi
+
+          if ! grep -Fqx -- "$expected_release" <<<"$cargo_details"; then
+            echo "::error::expected cargo 1.97.1" >&2
+            exit 1
+          fi
 
       - name: Cache cargo registry & target
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
@@ -45,7 +66,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-cargo-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
 
       - name: Gitleaks release download
         env:
@@ -99,10 +120,196 @@ jobs:
         run: SQLX_OFFLINE=true cargo sqlx prepare --workspace --check
 
       - name: cargo fmt
-        run: cargo fmt --all -- --check
+        run: cargo +1.97.1 fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo +1.97.1 clippy --locked --workspace --all-targets -- -D warnings
 
-      - name: cargo test
-        run: cargo test --workspace
+      - name: cargo test (workspace except HiveWeb)
+        run: cargo +1.97.1 test --locked --workspace --exclude hiveweb
+
+      - name: cargo test (HiveWeb lib + bins)
+        run: cargo +1.97.1 test --locked -p hiveweb --lib --bins
+
+      - name: cargo test (HiveWeb developer tools)
+        run: cargo +1.97.1 test --locked -p hiveweb --features dev-tools --bin api-test --bin seed
+
+      - name: cargo test (HiveWeb benchmark tool)
+        run: cargo +1.97.1 test --locked -p hiveweb --features bench-tools --bin seed-bench
+
+      - name: cargo test (HiveWeb docs)
+        run: cargo +1.97.1 test --locked -p hiveweb --doc
+
+  hiveweb-integration:
+    name: hiveweb integration
+    runs-on: ubuntu-latest
+
+    env:
+      TEST_DATABASE_URL: mysql://hiveweb:hiveweb_test_password@127.0.0.1:3306/hiveweb_test
+      REDIS_MODE: direct
+      REDIS_URL: redis://127.0.0.1:6379
+      REDIS_CONNECT_TIMEOUT_MS: "5000"
+      AWS_ENDPOINT_URL: http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      S3_BUCKET: hiveweb-test
+      APP_ENV: test
+      JWT_ADMIN_SECRET: ci-admin-secret
+      JWT_USER_SECRET: ci-user-secret
+      ASSISTANT_SECRET: ci-assistant-secret
+      PLUGIN_SYSTEM_ENABLED: "true"
+      RUST_BACKTRACE: "1"
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: hiveweb_test_root
+          MYSQL_DATABASE: hiveweb_test
+          MYSQL_USER: hiveweb
+          MYSQL_PASSWORD: hiveweb_test_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -phiveweb_test_root"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install HiveWeb system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config build-essential libssl-dev
+
+      - name: Install and verify Rust 1.97.1 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup show
+
+          expected_release="release: 1.97.1"
+          rustc_details="$(rustc --version --verbose)"
+          cargo_details="$(cargo --version --verbose)"
+
+          printf '%s\n' "$rustc_details"
+          printf '%s\n' "$cargo_details"
+
+          if ! grep -Fqx -- "$expected_release" <<<"$rustc_details"; then
+            echo "::error::expected rustc 1.97.1" >&2
+            exit 1
+          fi
+
+          if ! grep -Fqx -- "$expected_release" <<<"$cargo_details"; then
+            echo "::error::expected cargo 1.97.1" >&2
+            exit 1
+          fi
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-hiveweb-integration-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Start MinIO and create test bucket
+        shell: bash
+        run: |
+          docker run --detach --name hiveweb-ci-minio \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER="${AWS_ACCESS_KEY_ID}" \
+            --env MINIO_ROOT_PASSWORD="${AWS_SECRET_ACCESS_KEY}" \
+            minio/minio:latest server /data
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+              docker logs hiveweb-ci-minio
+              exit 1
+            fi
+            sleep 2
+          done
+
+          docker run --rm --network host \
+            --env AWS_ACCESS_KEY_ID \
+            --env AWS_SECRET_ACCESS_KEY \
+            --env S3_BUCKET \
+            --entrypoint /bin/sh \
+            minio/mc:latest -c '
+              mc alias set ci http://127.0.0.1:9000 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
+              mc mb --ignore-existing "ci/$S3_BUCKET"
+            '
+
+      - name: Build migration binary
+        run: cargo +1.97.1 build --locked -p hiveweb --bin migrate
+
+      - name: Migrate disposable database from clean cwd
+        shell: bash
+        run: |
+          migrate_cwd="$(mktemp -d "${RUNNER_TEMP}/hiveweb-migrate.XXXXXX")"
+          case "${TEST_DATABASE_URL}" in
+            mysql://*) ;;
+            *)
+              echo "TEST_DATABASE_URL must use the mysql:// scheme" >&2
+              exit 1
+              ;;
+          esac
+
+          database_authority="${TEST_DATABASE_URL#mysql://}"
+          database_authority="${database_authority%%/*}"
+          database_endpoint="${database_authority##*@}"
+          case "${database_endpoint}" in
+            127.0.0.1|127.0.0.1:*|localhost|localhost:*|\[::1\]|\[::1\]:*) ;;
+            *)
+              echo "TEST_DATABASE_URL must use a loopback MySQL host" >&2
+              exit 1
+              ;;
+          esac
+
+          case "${TEST_DATABASE_URL%%\?*}" in
+            */hiveweb_test|*/hiveweb_test_*) ;;
+            *)
+              echo "TEST_DATABASE_URL must target hiveweb_test or hiveweb_test_*" >&2
+              exit 1
+              ;;
+          esac
+
+          probe_dir="${migrate_cwd}"
+          while true; do
+            test ! -e "${probe_dir}/.env"
+            parent_dir="$(dirname "${probe_dir}")"
+            if [ "${parent_dir}" = "${probe_dir}" ]; then
+              break
+            fi
+            probe_dir="${parent_dir}"
+          done
+
+          (
+            cd "${migrate_cwd}"
+            DATABASE_URL="${TEST_DATABASE_URL}" \
+              "${GITHUB_WORKSPACE}/target/debug/migrate"
+          )
+
+      - name: cargo test (HiveWeb integration)
+        run: cargo +1.97.1 test --locked -p hiveweb --tests -- --test-threads=1

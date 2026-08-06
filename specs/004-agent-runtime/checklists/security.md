@@ -58,18 +58,18 @@
 
 ## Instance Pool 状态隔离
 
-- [x] CHK083 spec 是否明确"归还前 reset linear memory"是 hard requirement 而非 best-effort？[Clarity, Spec §FR-029 + Clarify v3.2] ⚠ — ✅ FR-029 已明示 hard requirement
-- [x] CHK084 spec 是否定义"Plugin 之间通过 Instance Pool 复用是否可能共享状态"——以及为何在 reset 后**不可能**？[Coverage]
-- [x] CHK085 跨 Agent 复用 Plugin 实例时，capability dispatcher 用的是当前调用 Agent 的 permissions 而非首次创建实例时的 Agent —— 是否在 spec / research 明示？[Clarity, Gap]
-- [x] CHK086 Plugin 实例创建期间发生 panic 时，宿主是否丢弃实例（不入池）？这一异常处理是否在 spec 定义？[Edge Case, Gap]
+- [x] CHK083 spec 是否明确 runtime state 隔离是 hard requirement 而非 best-effort？[Clarity, Spec §FR-029] — ✅ FR-029 要求每次调用 fresh Store/Instance
+- [x] CHK084 spec 是否定义 Plugin 调用之间为何不能共享 memory/global/table？[Coverage] — ✅ 池仅缓存 `CompiledPlugin`，不缓存 runtime state
+- [x] CHK085 跨 Agent 复用 `CompiledPlugin` 时，capability dispatcher 是否仍使用当前调用 Agent 的 permissions？[Clarity] — ✅ Store/Instance 不跨 Agent 复用，调用上下文逐次注入
+- [x] CHK086 fresh Store/Instance 创建期间发生 panic 时，宿主是否释放 permit、丢弃本次 runtime state 且不污染编译缓存？[Edge Case]
 - [x] CHK087 高并发场景下 Pool 满 → 等待 → 超时的语义是否在 spec 定义？等待期间 Agent permission 变更是否生效？[Coverage, Gap]
 
 ## Audit Trail 完整性
 
 - [x] CHK088 spec 是否定义"capability 鉴权失败也必须 audit"（不仅成功调用）？[Completeness, Spec §FR-004] ⚠ — ✅ FR-004 补强：4030 / 4040 拒绝路径同样必须 audit（`event_type = capability_denied`）
-- [x] CHK089 audit 字段 `payload_summary` 的脱敏规则（截断、字段黑名单）是否在 spec 中定义？[Clarity, data-model §V017]
+- [x] CHK089 audit 字段 `payload_summary` 是否按 capability-specific allowlist 构造、序列化后限制为 ≤1 KiB，并对未知 capability 返回 `None`？[Clarity, data-model §V032]
 - [x] CHK090 audit 不可篡改的要求是否在 spec 中明示（如只可 INSERT，不可 UPDATE / DELETE 除超期清理）？[Coverage, Gap]
-- [x] CHK091 90 天保留期满后，归档 vs 直接清理的策略是否在 spec 定义？[Edge Case, Spec §FR-022]
+- [x] CHK091 默认 36500 天（100 年、可配置）保留期满后，归档 vs 直接清理的策略是否在 spec 定义？[Edge Case, Spec §FR-022]
 - [x] CHK092 request_id 在跨 Plugin / Agent / SubAgent 边界传递的完整性要求是否定义？[Completeness, Spec §FR-021]
 
 ## Main Agent 与超管控制
@@ -83,7 +83,7 @@
 
 - [x] CHK097 Agent 嵌套 ≤ 10 是否在 spec 中给出**why 是 10**（防止指数级 LLM 调用？防止思考链过长？）？[Ambiguity, Spec §FR-023]
 - [x] CHK098 路由循环（A→B→A）检测的窗口是否在 spec 明确（同一 chat_session 范围 / 全局）？[Clarity, Spec §FR-025 + §Edge Cases]
-- [x] CHK099 子 Agent 抛错 / 超时如何向父 Agent 上报？错误是否泄漏内部信息（system_prompt / 内部 tool 名）？[Gap, Threat] — ✅ FR-025 增 "子 Agent 错误的脱敏上报" 段：仅暴露 `{code, message}` envelope，详情写 audit
+- [x] CHK099 子 Agent 抛错 / 超时如何向父 Agent 上报？错误是否泄漏内部信息（system_prompt / 内部 tool 名）？[Gap, Threat] — ✅ FR-025 增 "子 Agent 错误的脱敏上报" 段：仅暴露 `{code, message}` envelope；audit/tracing 只保留静态错误分类与关联 ID，不写原始详情
 - [x] CHK100 LLM 输出 `route_to_subagent(agent_id, reason)` 时，spec 是否要求验证 agent_id 必须是直接子 Agent（不能跨级跳）？[Clarity, Gap] — ✅ FR-025 hard-rule 第 ④ 项已加
 
 ## 输入校验（Boundary）

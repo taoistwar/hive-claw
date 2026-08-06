@@ -7,12 +7,31 @@
 
 ## 1. 数据集生成
 
+`DATABASE_URL` 必须由私密环境注入并指向专用 disposable MySQL database。以下
+片段从 URL 解析实际 database 名称，拒绝非 `_test` / `_bench` 后缀，并把该
+精确名称传给 destructive confirmation：
+
 ```bash
+: "${DATABASE_URL:?inject a disposable MySQL DATABASE_URL first}"
+BENCH_DB_NAME="$(
+  python3 - <<'PY'
+import os
+from urllib.parse import unquote, urlsplit
+
+name = unquote(urlsplit(os.environ["DATABASE_URL"]).path).strip("/")
+if not name or "/" in name or not name.endswith(("_test", "_bench")):
+    raise SystemExit("DATABASE_URL must select a database ending in _test or _bench")
+print(name)
+PY
+)"
+
 # 100 admins × 100 login_records each = 10 000 行 login_records
-cargo run -p hiveweb --bin seed-bench -- 100 100
+cargo run -p hiveweb --features bench-tools --bin seed-bench -- \
+  100 100 --confirm-destructive "$BENCH_DB_NAME"
 
 # SC-005 完整验收：100 admins × 10 000 each = 1 000 000 行
-cargo run -p hiveweb --bin seed-bench -- 100 10000
+cargo run -p hiveweb --features bench-tools --bin seed-bench -- \
+  100 10000 --confirm-destructive "$BENCH_DB_NAME"
 ```
 
 清空：`docker compose down -v` 后重新 `migrate`。
@@ -87,10 +106,12 @@ POST /api/auth/login p95 = 884 ms，**超过 Principle IV 的 200 ms 预算**。
 
 **未跑大数据集（100 admins × 10 000 login_records = 1 M 行）**。
 当前 168 admins × 10 313 logs 配置下 p95 都在预算的 1% 以内，
-有充足余量；建议 CI 用 `seed-bench 100 10000` 作回归门槛。
+有充足余量；建议 CI 在 disposable `_test` / `_bench` 数据库上用同一安全命令
+作回归门槛。
 
 ```bash
-cargo run -p hiveweb --bin seed-bench -- 100 10000
+cargo run -p hiveweb --features bench-tools --bin seed-bench -- \
+  100 10000 --confirm-destructive "$BENCH_DB_NAME"
 # 再重跑 §2.2 的 hey 命令，p95 应仍 < 50 ms（推断）
 ```
 
@@ -108,23 +129,86 @@ cargo run -p hiveweb --bin seed-bench -- 100 10000
 ## 6. Reproduce 步骤
 
 ```bash
-# 1) infra
+set -euo pipefail
+
+PERF_LOGIN_BODY=""
+HIVEWEB_PID=""
+cleanup_perf_reproduce() {
+  if [[ -n "$HIVEWEB_PID" ]]; then
+    if kill -0 "$HIVEWEB_PID" 2>/dev/null; then
+      kill "$HIVEWEB_PID"
+    fi
+    wait "$HIVEWEB_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$PERF_LOGIN_BODY" ]]; then
+    rm -f "$PERF_LOGIN_BODY"
+  fi
+}
+trap cleanup_perf_reproduce EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# 0) Inject a secret-managed DATABASE_URL that selects a dedicated database
+#    ending in _test or _bench. Never point this workflow at production.
+: "${DATABASE_URL:?inject a disposable MySQL DATABASE_URL first}"
+BENCH_DB_NAME="$(
+  python3 - <<'PY'
+import os
+from urllib.parse import unquote, urlsplit
+
+name = unquote(urlsplit(os.environ["DATABASE_URL"]).path).strip("/")
+if not name or "/" in name or not name.endswith(("_test", "_bench")):
+    raise SystemExit("DATABASE_URL must select a database ending in _test or _bench")
+print(name)
+PY
+)"
+
+# 1) infra + schema
 ./scripts/dev-up.sh -d
 cargo run -p hiveweb --bin migrate
 
-# 2) seed
-cargo run -p hiveweb --bin seed-bench -- 100 100
+# 2) Create a dedicated Super administrator through piped stdin. The password
+#    is neither hard-coded nor placed in argv. Existing phone numbers fail
+#    closed; use a fresh number or the authenticated password-change flow.
+PERF_ADMIN_PHONE=13900000000
+read -r -s -p "Benchmark Super password: " PERF_ADMIN_PASSWORD
+printf '\n'
+printf '%s\n' "$PERF_ADMIN_PASSWORD" | \
+  cargo run -p hiveweb --bin create-super-admin -- \
+    --phone "$PERF_ADMIN_PHONE" --nickname perf-super --password-stdin
 
-# 3) backend with relaxed rate limit
+# 3) Seed disposable benchmark fixtures. Super administrators are preserved.
+cargo run -p hiveweb --features bench-tools --bin seed-bench -- \
+  100 100 --confirm-destructive "$BENCH_DB_NAME"
+
+# 4) backend with relaxed rate limit
 docker exec -i hiveweb-redis redis-cli FLUSHDB
+PERF_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+cargo build -p hiveweb --bin hiveweb
 RATE_LIMIT_MAX=100000 RATE_LIMIT_WINDOW_SECS=60 \
-  cargo run -p hiveweb --bin hiveweb &
+  "$PERF_TARGET_DIR/debug/hiveweb" &
+HIVEWEB_PID=$!
 sleep 5
 
-# 4) bench
+# 5) Build a mode-0600 login body file. Only its path enters curl/hey argv.
+umask 077
+PERF_LOGIN_BODY="$(mktemp)"
+python3 - "$PERF_LOGIN_BODY" "$PERF_ADMIN_PHONE" \
+  3<<<"$PERF_ADMIN_PASSWORD" <<'PY'
+import json
+import os
+import sys
+
+with os.fdopen(3) as password_input:
+    password = password_input.read().rstrip("\n")
+with open(sys.argv[1], "w", encoding="utf-8") as body:
+    json.dump({"phone": sys.argv[2], "password": password}, body)
+PY
+unset PERF_ADMIN_PASSWORD
+
 TOKEN=$(curl -s -X POST http://localhost:3300/api/auth/login \
   -H 'content-type: application/json' \
-  -d '{"phone":"18810154696","password":"admin123"}' \
+  --data-binary @"$PERF_LOGIN_BODY" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["token"])')
 
 hey -z 15s -c 50 -H "Authorization: Bearer $TOKEN" \
@@ -138,6 +222,6 @@ hey -z 15s -c 50 -H "Authorization: Bearer $TOKEN" \
 
 hey -z 10s -c 5 -m POST \
   -H "Content-Type: application/json" \
-  -d '{"phone":"18810154696","password":"admin123"}' \
+  -D "$PERF_LOGIN_BODY" \
   'http://localhost:3300/api/auth/login'
 ```

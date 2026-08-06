@@ -17,12 +17,30 @@ mod tests {
     // Opt-in legacy DB suite runbook:
     //   Provision and migrate a disposable MySQL database using deployment
     //   tooling that verifies the target and does not load a repository .env.
-    //   export TEST_DATABASE_URL='mysql://.../disposable_db'
+    //   export TEST_DATABASE_URL='mysql://...@127.0.0.1/hiveweb_test_legacy_game'
     //   cargo test -p hiveweb --lib services::game_service_test -- --ignored --test-threads=1
     async fn pool() -> MySqlPool {
         let url = std::env::var("TEST_DATABASE_URL")
             .expect("legacy game DB tests require a disposable TEST_DATABASE_URL");
-        sqlx::MySqlPool::connect(&url)
+        let options = url
+            .parse::<MySqlConnectOptions>()
+            .expect("TEST_DATABASE_URL must be a valid MySQL URL");
+        let host = options.get_host();
+        assert!(
+            matches!(host, "127.0.0.1" | "localhost" | "::1"),
+            "refusing non-loopback MySQL host `{host}` in TEST_DATABASE_URL"
+        );
+        let database = options
+            .get_database()
+            .expect("TEST_DATABASE_URL must name a disposable database");
+        let database_lower = database.to_ascii_lowercase();
+        assert!(
+            database_lower == "hiveweb_test" || database_lower.starts_with("hiveweb_test_"),
+            "refusing database `{database}`: use `hiveweb_test` or the `hiveweb_test_` prefix"
+        );
+
+        MySqlPoolOptions::new()
+            .connect_with(options)
             .await
             .expect("disposable test DB connect failed")
     }

@@ -1,70 +1,83 @@
-use axum::body::Body;
 use axum::extract::Request;
-use axum::http::Method;
+use axum::http::{Method, Uri, header};
 use axum::middleware::Next;
 use axum::response::Response;
-use http_body_util::BodyExt;
-use serde_json::Value;
 
 pub async fn log_request_body_middleware(request: Request, next: Next) -> Response {
     if crate::app_mode::get().is_production() || request.method() != Method::POST {
         return next.run(request).await;
     }
 
-    let uri = request.uri().to_string();
-    let (parts, body) = request.into_parts();
+    let content_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    emit_post_request_metadata(request.uri(), content_length);
 
-    let body_bytes = match body.collect().await {
-        Ok(buf) => buf.to_bytes(),
-        Err(e) => {
-            tracing::debug!(error = %e, "failed to read request body");
-            let req = Request::from_parts(parts, Body::empty());
-            return next.run(req).await;
+    next.run(request).await
+}
+
+fn emit_post_request_metadata(_uri: &Uri, content_length: Option<u64>) {
+    tracing::debug!(method = "POST", content_length, "POST request metadata");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::emit_post_request_metadata;
+    use axum::http::Uri;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct TraceWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct TraceWriterGuard(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TraceWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("trace buffer poisoned").extend(buf);
+            Ok(buf.len())
         }
-    };
 
-    let body_str = String::from_utf8_lossy(&body_bytes);
-
-    if !body_str.is_empty() {
-        let json_log = if body_str.len() > 4096 {
-            let mut safe_len = 4096;
-            while !body_str.is_char_boundary(safe_len) {
-                safe_len -= 1;
-            }
-            match serde_json::from_str::<Value>(&body_str) {
-                Ok(_) => {
-                    let truncated = format!(
-                        "{}...(truncated, original {} bytes)",
-                        &body_str[..safe_len],
-                        body_str.len()
-                    );
-                    serde_json::to_string(&serde_json::json!({
-                        "_truncated": true,
-                        "preview": truncated
-                    }))
-                    .unwrap_or_else(|_| body_str.to_string())
-                }
-                Err(_) => format!(
-                    "{}...(truncated, original {} bytes)",
-                    &body_str[..safe_len],
-                    body_str.len()
-                ),
-            }
-        } else {
-            match serde_json::from_str::<Value>(&body_str) {
-                Ok(_) => serde_json::to_string(&body_str).unwrap_or_else(|_| body_str.to_string()),
-                Err(_) => body_str.to_string(),
-            }
-        };
-
-        tracing::debug!(
-            method = "POST",
-            uri = %uri,
-            body = %json_log,
-            "POST request body"
-        );
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
-    let req = Request::from_parts(parts, Body::from(body_bytes));
-    next.run(req).await
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceWriter {
+        type Writer = TraceWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TraceWriterGuard(Arc::clone(&self.0))
+        }
+    }
+
+    #[test]
+    fn post_metadata_omits_query_and_body() {
+        let writer = TraceWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let uri: Uri = "/api/reset-token/PATH_TOKEN_SENTINEL?token=QUERY_TOKEN_SENTINEL"
+            .parse()
+            .unwrap();
+        emit_post_request_metadata(&uri, Some(20));
+
+        let output =
+            String::from_utf8(writer.0.lock().expect("trace buffer poisoned").clone()).unwrap();
+        assert!(output.contains("POST request metadata"));
+        assert!(
+            output.contains("content_length=20"),
+            "missing content length metadata: {output}"
+        );
+        assert!(!output.contains("PATH_TOKEN_SENTINEL"));
+        assert!(!output.contains("QUERY_TOKEN_SENTINEL"));
+        assert!(!output.contains("BODY_SENTINEL"));
+    }
 }

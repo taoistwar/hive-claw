@@ -5458,6 +5458,7 @@ dependencies = [
  "http-body-util",
  "jsonschema",
  "jsonwebtoken",
+ "libc",
  "md5",
  "mime",
  "once_cell",
@@ -5485,6 +5486,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wasmparser 0.221.3",
+ "wat",
 ]
 
 [[package]]

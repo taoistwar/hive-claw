@@ -66,7 +66,7 @@ description: "Task list for Agent Hook Configuration Management"
 
 **Purpose**: 按照 TDD 宪法要求，先写测试 → 观察失败 → 再实现。
 
-> ✅ **TDD 流程**：执行历史移除先由 T056–T058 观察红灯，再修改生产代码；T017 (call_workflow) 仍需系统中配置有效 Workflow，标记 `#[ignore]`。
+> ✅ **TDD 流程**：执行历史移除先由 T056–T058 观察红灯，再修改生产代码。T012、T015、T017、T053 需要真实 Assistant/Hook 基础设施，当前保持 Pending；不得用空的 `#[ignore]` 测试宣称完成。
 
 ### US1 红灯测试 — Hook 配置 CRUD + 执行
 
@@ -74,20 +74,20 @@ description: "Task list for Agent Hook Configuration Management"
 - [x] T009 [P] [US1] 契约测试：`GET /api/agents/:id/hooks` 列出 Agent 全部 Hook → 验证返回数组 + 按 sort_order 排序
 - [x] T010 [P] [US1] 契约测试：`PUT /api/agents/:id/hooks/:hook_id` 更新 Hook → 验证 optimistic lock (4094) 行为
 - [x] T011 [P] [US1] 契约测试：`DELETE /api/agents/:id/hooks/:hook_id` 删除 Hook → 验证返回 200 + 再次 GET 列表不含该 Hook
-- [x] T012 [P] [US1] 集成测试：配置 `before_agent_start` Hook（http_webhook）→ 触发 Agent 对话 → 验证 Hook 执行且 `hook_executions` 不新增记录
+- [ ] T012 [P] [US1] 集成测试：配置 `before_agent_start` Hook（http_webhook）→ 调用 `POST /api/assistant` → 验证 Hook 执行且 `hook_executions` 不新增记录（需要真实 MySQL、Redis、外部用户库、LLM 与有效 Agent）
 - [x] T013 [P] [US1] 集成测试：同一触发点配置 6 个 Hook → 验证保存时返回 6001 错误码
-- [x] T053 [P] [US1] 集成测试：配置 `before_agent_start` Hook（blocking_mode=true）指向不可达 webhook → 触发 Agent 对话 → 验证 SSE 流发出 error 事件 (SC-007)
+- [ ] T053 [P] [US1] 集成测试：配置 `before_agent_start` 阻塞 Hook → 调用 `POST /api/assistant` → 验证超时返回 6004/HTTP 408、其他失败返回 6005/HTTP 500、配额恰好回滚一次、`after_agent_end` 未执行且没有 assistant 占位消息 (SC-007)
 
 ### US2 红灯测试 — HTTP Webhook
 
 - [x] T014 [P] [US2] 契约测试：`POST /api/agents/:id/hooks`（action_type=http_webhook, webhook_url=http://...）→ 验证返回 6003（非 HTTPS）
-- [x] T015 [P] [US2] 集成测试：配置 Webhook Hook 指向不可达 URL → 触发对话 → 验证失败与重试不会写入 `hook_executions`
+- [ ] T015 [P] [US2] 集成测试：配置 Webhook Hook 指向不可达 URL → 调用 `POST /api/assistant` → 验证失败与重试不会写入 `hook_executions`（需要可控 HTTPS 测试端点）
 - [x] T052 [P] [US2] 契约测试：POST Hook 的 `action_params.headers` 含 `\r\n` header injection → 验证返回 6003（FR-007b）
 
 ### US3 红灯测试 — Function/Workflow 调用
 
 - [x] T016 [P] [US3] 契约测试：`POST /api/agents/:id/hooks`（action_type=call_function, function_id 不存在）→ 验证返回 6002
-- [ ] T017 [P] [US3] 集成测试：配置 `after_agent_end` Hook（call_workflow）→ 触发对话 → 验证 workflow 被执行 #[ignore] 需 chat 基础设施 + valid Workflow
+- [ ] T017 [P] [US3] 集成测试：配置 `after_agent_end` Hook（call_workflow）→ 调用 `POST /api/assistant` → 验证 workflow 被执行（需要 Assistant 基础设施 + 有效 Workflow；当前无可执行测试）
 
 ### 2026-07-16 回归红灯测试 — tracing-only
 
@@ -106,8 +106,8 @@ description: "Task list for Agent Hook Configuration Management"
 ### 后端 — Service 层
 
 - [x] T020 [P] [US1] 实现 Hook CRUD service 在 `crates/hiveweb/src/services/agent_hook.rs`：
-  - `create_hook(pool, agent_id, actor_role, meta) -> Result<AgentHook, AppError>`：校验权限（FR-017/FR-018）、校验每触发点 ≤ 5 个（FR-001）、校验引用有效性（FR-006）、校验 URL 合法性（FR-007）、校验 HTTP headers 无注入（FR-007b，拒绝 `\r`/`\n`，name 仅 `[a-zA-Z0-9_-]+`）
-  - `update_hook(pool, agent_id, hook_id, actor_role, meta) -> Result<AgentHook, AppError>`：乐观锁校验 + 权限校验
+  - `create_hook(pool, agent_id, actor_role, meta) -> Result<AgentHook, AppError>`：校验权限（FR-017/FR-018）、校验每触发点 ≤ 5 个（FR-001）、校验引用有效性（FR-006）、校验 URL/DNS 公网目标（FR-007）、用实际 HTTP parser 校验 headers 并拒绝 `Host` 覆盖（FR-007b）
+  - `update_hook(pool, agent_id, hook_id, actor_role, meta) -> Result<AgentHook, AppError>`：先合并并校验有效 action type/params，再执行乐观锁与更新；仅修改 `action_params` 也不得绕过出站策略
   - `delete_hook(pool, agent_id, hook_id, actor_role) -> Result<(), AppError>`：权限校验
   - `list_hooks(pool, agent_id) -> Result<Vec<AgentHook>, AppError>`：按 trigger_point + sort_order 排序
   - `load_hooks_for_agent(pool, agent_id) -> Result<HashMap<String, Vec<AgentHook>>, AppError>`：给 orchestrator 用，按 trigger_point 分组
@@ -126,7 +126,7 @@ description: "Task list for Agent Hook Configuration Management"
 ### 后端 — Runtime 层（Hook 执行引擎）
 
 - [x] T024 [P] [US1] 创建 `crates/hiveweb/src/runtime/hook.rs`：
-  - `HookContext` struct：含 `agent_id`、`identifier`、`session_id`、`actor_id`、`request_id`、`trigger_point`、`timestamp`
+  - `HookContext` struct：含 `agent_id`、`identifier`、`session_id`、`actor_id`、`request_id`、`trigger_point`、`message`、`channel`、`client_type`、`client_version`；Webhook payload 的 `timestamp` 在发送时生成
   - `pub async fn run_hooks(pool, hooks, point, ctx, deps) -> Result<(), HookError>`：核心执行循环
   - `async fn execute_hook_action(hook, ctx, deps) -> Result<(), HookError>`：分发到三种动作类型
   - `fn trace_hook_exec(hook, ctx, outcome, error_kind, elapsed_ms)`：输出仅含白名单错误分类的结构化 tracing，不写数据库
@@ -135,20 +135,20 @@ description: "Task list for Agent Hook Configuration Management"
 
 ### 后端 — Orchestrator 集成
 
-- [x] T026 [US1] 修改 `build_agent_context()` 在 `crates/hiveweb/src/runtime/orchestrator.rs`：在加载 Agent 配置后，调用 `agent_hook::load_hooks_for_agent(pool, agent_id)` 加载 hooks 并存入 `AgentContext`
-- [x] T027 [US1] 在 `AgentContext` struct 中添加 `hooks: HashMap<String, Vec<AgentHook>>` 字段
+- [x] T026 [US1] 修改 `services::agent::fetch_content_from_db()`：加载 Agent 配置时调用 `agent_hook::load_hooks_for_agent(pool, agent_id)`，按 trigger point 分组后存入 `AgentContent.hooks`
+- [x] T027 [US1] 在 `AgentContent` struct 中添加 `hooks: HashMap<String, Vec<AgentHook>>` 字段，供 orchestrator 为每个成功 hop 固定快照
 - [x] T028 [US1] 在 orchestrator 中插入 `run_hooks()` 调用（7 个触发点），每个插入点按错误处理策略分类：
   - **阻塞模式可中止主流程的触发点**（`before_agent_start` / `before_llm_call` / `before_tool_call`）：
-    - `let result = run_hooks(...).await; if let Err(e) = result { return ... }` — 阻塞模式失败时中止 Agent 流程
+    - `let result = run_hooks(...).await; if let Err(e) = result { return ... }` — 阻塞模式失败时中止 Agent 流程；Timeout 映射 6004，BlockingFailed 映射 6005；先执行 tracing-only `on_agent_error`，不得进入正常 finalize
   - **仅 tracing、不可回滚的触发点**（`after_llm_call` / `after_tool_call` / `after_agent_end`）：
     - `let _ = run_hooks(...).await;` — 无论成功失败都忽略，继续主流程（因为 after 阶段不能回滚已完成操作）
   - **错误处理触发点**（`on_agent_error`）：
-    - `let _ = run_hooks(...).await;` — 即使 on_agent_error Hook 失败，也不能阻止错误事件发出
-    - **关键守卫**：调用 `run_hooks()` 前需检查 `ctx.hooks` 是否为空。若 hooks 尚未加载（错误发生在 `build_agent_context()` 之前），跳过不触发（与 spec Edge Case "on_agent_error 提前失败路径"对齐）。
+    - `run_hooks(...).await` 的结果只写结构化 tracing；即使 on_agent_error Hook 失败，也不能覆盖 `POST /api/assistant` 的原始同步 JSON 错误
+    - **关键守卫**：仅在已有 `LoadedAgentHooks` 时调用 `on_agent_error`。首次 `fetch_content()` 失败且快照尚未加载时跳过；后续 fetch 失败使用最近一次成功快照（与 spec Edge Case "on_agent_error 提前失败路径"对齐）。
   - 具体插入位置：
     - `before_agent_start`：在 system_prompt 组装 + tools schema 构建之后、`provider.chat_stream_with_retry()` 之前（当前 L214 附近）— **阻塞模式可中止**
-    - `after_agent_end`：在 `finalize_with_variant()` 中 `append_assistant_message` 之后、`emit done` 之前（当前 L442-L447 之间）— **仅 tracing**
-    - `on_agent_error`：在每个 `emit_error()` 调用之后（L182/L231/L341/L382）— **仅 tracing**；L173 处因 hooks 未加载，加 `ctx.hooks.is_empty()` 守卫跳过
+    - `after_agent_end`：仅在正常 `finalize_with_variant()` 路径、最终扩展收集和 assistant 消息持久化之前执行 — **仅 tracing**；阻塞 Hook 失败路径跳过
+    - `on_agent_error`：在错误确定后、同步 JSON 响应返回前执行 — **仅 tracing**；hooks 未加载时以空集合守卫跳过
     - `before_tool_call`：在 `handle_workspace_tool()` capability 鉴权之前（L970-987）— **阻塞模式可中止**
     - `after_tool_call`：在 tool result emit + persist 之后（L311-L330 之后）— **仅 tracing**
     - `before_llm_call`：在 `provider.chat_stream_with_retry()` 调用之前（L214 之前）— **阻塞模式可中止**
@@ -188,16 +188,17 @@ description: "Task list for Agent Hook Configuration Management"
 
 - [x] T033 [P] [US2] 在 `crates/hiveweb/src/runtime/hook.rs` 中实现 `execute_webhook()` 函数：
   - 构造 POST payload（含 `agent_identifier`、`session_id`、`trigger_point`、`timestamp`）
-  - 复用现有 SSRF 校验逻辑（检查 URL host 不是内网 IP / 云 metadata 端点）
+  - 复用 `network.http` 的 URL/metadata/IP 策略，要求 DNS 全部答案均为公网地址，并对通过校验的地址做 DNS pinning
   - 仅允许 `https://` 协议（FR-007）
-  - 可选自定义 headers（从 `action_params.headers` 读取）
+  - 禁用环境代理与重定向；可选自定义 headers 使用保存期同一 parser 且不得覆盖 `Host`
   - 超时 = hook.timeout_ms 或默认 10s（FR-011）
 - [x] T034 [US2] 在 `crates/hiveweb/src/runtime/hook.rs` 中实现 `retry_webhook()` 后台重试函数：
-  - 最多重试 3 次，间隔 1s / 2s / 4s 指数退避（FR-007a）
+  - 最多重试 3 次，使用固定 1s / 2s / 4s 退避表（FR-007a）
   - 通过 `tokio::spawn` 异步执行，不阻塞 Hook 串行流；任务不持有数据库连接
   - 每次重试独立计时（不计入 Hook 整体超时）
+  - 每次重试重新执行相同的 URL/DNS 全答案校验、pinning、禁代理/重定向与 header 策略；仅 `ResolveUnavailable`、reqwest `is_connect()` 与 attempt timeout 重试，`Policy` / header / client build / 其他 Request / HTTP non-2xx 均停止
   - 每次尝试、最终成功或失败均输出不含 URL、payload、响应体或原始错误文本的结构化 tracing
-- [x] T035 [US2] 在 `execute_hook_action()` 中集成 Webhook 分支：首次调用 `execute_webhook()`，失败则 `tokio::spawn(retry_webhook(...))` 并立即返回 Ok（不阻塞后续 Hook）
+- [x] T035 [US2] 在 `execute_hook_action()` 中集成 Webhook 分支：首次调用 `execute_webhook()` 后同步 typed 分类；仅 eligible transient failure 执行 `tokio::spawn(retry_webhook(...))`，不可重试错误直接返回安全失败且不阻塞后续非阻塞 Hook
 
 ### 前端 — Webhook 配置 UI
 
@@ -212,7 +213,7 @@ description: "Task list for Agent Hook Configuration Management"
 
 ## Phase 5: User Story 3 — Hook 调用 Workflow/Function 实现自动化 (Priority: P2)
 
-**Goal**: Hook 可调用平台已有 Function/Workflow（只读观察者），复用现有 invoker 和 workflow executor。
+**Goal**: Hook 可调用平台已有 Function/Workflow，读取 `_agent_context` 快照并通过受控 `_agent_context_updates` 更新当前运行的 `AgentContext`；复用现有 invoker、workflow executor 与 capability 权限边界。
 
 **Independent Test**: 配置 `before_agent_start` Hook（call_function: `format_template`）→ 触发对话 → 验证调用成功并输出 tracing，数据库无新增执行记录。
 
@@ -223,10 +224,12 @@ description: "Task list for Agent Hook Configuration Management"
   - 构造入参：合并 `action_params.args` + HookContext 字段
   - 通过 `Invoker` 或 `builtins::lookup()` 执行（沿用现有 capability 鉴权）
   - `chat_respond` 内置 Function 禁止调用（返回 error）
+  - 将只读 `_agent_context` 快照最后注入 Function 输入并覆盖 `action_params.args` 中的同名字段；仅对返回值中的 `_agent_context_updates` 调用受控 `apply_agent_context_updates`
 - [x] T038 [P] [US3] 在 `crates/hiveweb/src/runtime/hook.rs` 中实现 `execute_workflow()`：
   - 从 `action_params.workflow_id` 解析 Workflow
   - 通过 `WorkflowExecutor` 执行
   - 构造入参：合并 `action_params.args` + HookContext 字段
+  - Workflow 节点输出中的 `_agent_context_updates` 在执行层内同步到当前 `AgentContext`；所有公共 end-output 及 HTTP `node_results` 每节点顶层移除该内部字段，显式 output schema 声明该字段时以 5005/HTTP 422 拒绝
 - [x] T039 [US3] 在 `execute_hook_action()` 中集成 Function 和 Workflow 分支
 
 ### 前端 — Function/Workflow 选择
@@ -254,18 +257,79 @@ description: "Task list for Agent Hook Configuration Management"
 
 ---
 
+## Phase 6.5: 2026-07-23 Assistant 同步错误语义回归
+
+- [x] T064 [P] [US1] 在 `crates/hiveweb/src/api/chat_assistant.rs` 增加非 ignored 直接测试：6004/HTTP 408、6005/HTTP 500、普通文本 message、无效内部错误降级 5000，并以注入计数器验证错误响应路径只调用一次配额回滚
+- [x] T065 [US1] 在 `crates/hiveweb/src/runtime/orchestrator.rs` 使用强类型内部错误通道；阻塞 Hook 失败执行 tracing-only `on_agent_error` 后立即返回，跳过 `after_agent_end` 和 assistant 消息持久化
+
+**Remaining infrastructure coverage**: T012、T015、T017、T053 保持 Pending，待真实 Assistant/Hook 基础设施测试完成后才能勾选。
+
+---
+
+## Phase 6.6: 2026-07-23 终止错误 Hook 覆盖与总预算
+
+- [x] T066 [P] [US1] 在 `crates/hiveweb/src/runtime/orchestrator.rs` 增加终止错误变体映射和暂停时间单元测试：覆盖 Agent 内容加载、模型预设、Provider、阻塞 Hook、路由循环和最大跳数错误；证明 `on_agent_error` 使用单一 30 秒总预算，阶段失败或预算耗尽后原始错误保持不变
+- [x] T067 [US1] 将已加载 Hook 快照后的终止错误收敛到统一 `terminate_agent_error` 路径；在固定 30 秒总预算内执行 tracing-only `on_agent_error`，预算耗尽只记录安全 tracing，不递归、不覆盖原始错误；首次 Agent 内容加载失败时明确跳过
+- [x] T068 [US1] 保持阻塞 Hook 的 6004/6005、配额单次回滚、跳过 `finalize_with_variant` / `after_agent_end` / assistant 占位消息语义，并同步 spec、plan、contracts 与 checklists
+
+---
+
+## Phase 6.7: 2026-07-23 per-hop Hook 快照与缓存一致性
+
+- [x] T069 [P] [US1] 增加非基础设施单元测试与源码接线契约，证明 Hook mutation 成功时缓存失效恰好调用一次，mutation 失败时不调用且保留原始错误，并验证 create/update/delete 均在数据库写入之后接入统一失效 helper
+- [x] T070 [US1] 为 Hook create/update/delete service 增加成功后 best-effort `agent:content:{id}` 缓存失效；失败仅记录固定 `redis_delete_failed` tracing，不覆盖已提交的 mutation 结果
+- [x] T071 [US1] 将 spec、plan、research、tasks、contracts、quickstart 与 checklists 统一为 per-successful-Agent-hop 快照：hop 内固定、下一 hop 重新 fetch、后续加载失败使用最近成功快照、首次失败跳过
+
+---
+
+## Phase 6.8: 2026-07-24 显式执行上下文与 sticky tracing-only
+
+- [x] T072 [P] [US1] 在 `crates/hiveweb/src/services/runtime_audit.rs` 增加聚焦测试：普通 `RuntimeExecutionContext` 保留 request/session 并可入 best-effort DB 队列；`for_hook()` 保留关联 ID、禁止 DB 入队且重复派生仍为 tracing-only
+- [x] T073 [P] [US1] 在 `crates/hiveweb/src/runtime/execution_context.rs` 增加 compile-fail 合同，证明 persistence mode 不能通过 `Default` 或 `Deserialize` 从外部 payload 构造；在 `runtime_audit.rs` 增加源码接线合同，覆盖 Assistant → Orchestrator → Hook → Workflow → Plugin → Capability 的显式传播且禁止 task-local 隐式状态
+- [x] T074 [US1] 在 `crates/hiveweb/src/api/chat_assistant.rs`、`runtime/orchestrator.rs`、`runtime/hook.rs`、`runtime/workflow/workflow_executor.rs`、`runtime/workflow/function_node.rs`、`runtime/invoker.rs` 与 `runtime/capability.rs` 实现并传播显式 `RuntimeExecutionContext`：Assistant 构造携带 request/session 的普通 best-effort 上下文；Orchestrator 在 Hook 边界调用 sticky `for_hook()`；下游只克隆或传递受限上下文，所有 audit tracing 保留关联 ID 且 Hook 子链不得重新启用 DB audit
+- [x] T075 [P] [US1] 将 `spec.md`、`plan.md`、`research.md`、`contracts/api.md`、`quickstart.md` 与 `tasks.md` 同步为显式上下文边界；保留 2026-07-16 Hook tracing-only 决议，并明确 tracing-only 不禁止业务或配置所需的正常数据库访问
+
+---
+
+## Phase 6.9: 2026-07-24 受控 `AgentContext` 更新语义
+
+- [x] T076 [US3] 审阅 `crates/hiveweb/src/runtime/hook.rs` 与 `runtime/workflow/workflow_executor.rs` 的现有接线：Function/Workflow 合并 `action_params.args`，运行时 `_agent_context` 覆盖配置同名字段；仅将顶层 `_agent_context_updates` 映射到当前内存 `AgentContext` 的 records、extensions 与字符串 metadata；Workflow 节点即时应用 updates，所有公共 end-output 路径移除内部字段，output schema 禁止声明该保留键
+- [x] T077 [P] [US3] 同步 `spec.md`、`plan.md`、`research.md`、`data-model.md`、`contracts/api.md`、`quickstart.md`、`tasks.md` 与 checklists：将 2026-06-02 “严格只读观察者”标记为被取代的历史决议，明确受控 updates 不直接修改持久化 Agent 配置、system prompt、数据库或 sticky tracing-only 审计模式
+
+---
+
+## Phase 6.10: 2026-07-24 可信输入与 Webhook 出站边界
+
+- [x] T078 [P] [US2] 先增加聚焦红灯测试：Function/Workflow HookContext
+  覆盖伪造 args；共享出站策略拒绝私网/metadata/混合 DNS、禁止 redirect/proxy
+  并固定 DNS；header 拒绝非法形态与 `Host`；仅 `action_params` 更新仍验证；
+  resolver 使用 typed `Policy` / `ResolveUnavailable`；Hook 仅重试
+  `ResolveUnavailable`、reqwest `is_connect()` 与 attempt timeout，
+  Policy/header/client build/其他 Request/HTTP non-2xx 均不重试；
+  Request-ID 拒绝非 canonical/nil UUID 且原始值不进入 tracing
+- [x] T079 [US2] 在 `runtime/hook.rs`、`runtime/capabilities/network_http.rs`
+  与 `services/agent_hook.rs` 实现统一安全路径：固定
+  `args < HookContext < _agent_context`，Webhook 保存、首次发送和每次重试均
+  使用 HTTPS、DNS 全答案公网校验、DNS pinning、禁代理/重定向与共享 header
+  parser
+- [x] T080 [P] [US1] 在 `middleware/request_id.rs` 将 HTTP 关联边界收敛为
+  固定 36 字节非 nil hyphenated UUID，统一小写；缺失/非法时生成新 UUID，响应、
+  RuntimeExecutionContext、HookContext 与 tracing 只传播规范化值
+
+---
+
 ## Phase 7: Polish & Cross-Cutting Concerns
 
 **Purpose**: 跨 user story 的完善工作。
 
-- [x] T045 [P] 在 `crates/hiveweb/src/runtime/hook.rs` 中输出结构化 tracing：字段包含 `agent_id`、`agent_identifier`、`hook_id`、`hook_name`、`session_id`、`trigger_point`、`action_type`、`outcome`、`elapsed_ms`、`request_id`；仅记录白名单 `error_kind`，不记录任意下游错误文本
+- [x] T045 [P] 在 `crates/hiveweb/src/runtime/hook.rs` 中输出结构化 tracing：字段包含 `agent_id`、`hook_id`、`session_id`、`trigger_point`、`action_type`、`outcome`、`elapsed_ms`、`request_id`；仅记录白名单 `error_kind`，不记录可识别的 Agent/Hook 名称、任意下游错误文本或原始 update payload
 - [x] T047 [P] 在 `crates/hiveweb/src/api/agent_hook.rs` 中为 `call_function`/`call_workflow` 类型 Hook 的 `GET /api/agents/:id/hooks` 响应中附带目标 Function/Workflow 的名称（便于前端展示引用摘要）
 - [x] T048 [P] 前端错误提示中文统一：在 `web-admin/src/utils/error_messages.ts` 中新增 6001-6006 错误码的用户文案映射
 - [x] T049 [P] 添加 `HOOK_WEBHOOK_RETRY_MAX` 到 `crates/hiveweb/.env.example`；不提供执行历史保留期配置
 - [ ] T050 运行 `quickstart.md` 验证：完整走通配置 Hook → 触发对话 → 查看 tracing，并确认执行历史数据库行数不变
 - [x] T051 [P] 在 `crates/hiveweb/src/services/agent_hook.rs` 的 `create_hook`/`update_hook` 中实现 FR-007b HTTP header 校验：
-  - 拒绝 header name/value 中包含 `\r` 或 `\n` 字符
-  - header name 仅允许 `[a-zA-Z0-9_-]+` 字符集，不合格返回 6003 并提示具体违规字段
+  - 要求 `headers` 为字符串键值对象，使用实际 HTTP header parser 拒绝 CR/LF 与非法 name/value
+  - 拒绝 `Host` 覆盖；不合格统一返回不回显原始 header 的静态 6003 文案
 - [x] T054 [P] 性能基准测试：编写 benchmark 验证 Hook 调度开销 p95 ≤ 50ms（SC-003），不含 action 本身耗时 — 对 `run_hooks()` 空钩子列表压测
 - [x] T055 [P] 持久化回归测试：任意 Hook 执行及 Webhook 重试均不新增 `hook_executions` 行（SC-006）
 
@@ -282,6 +346,9 @@ description: "Task list for Agent Hook Configuration Management"
 - **Phase 4 (US2)**: Depends on Phase 2 — 可与 US1 并行（依赖 `runtime/hook.rs` 骨架）
 - **Phase 5 (US3)**: Depends on Phase 2 — 可与 US1/US2 并行（依赖 `runtime/hook.rs` 骨架）
 - **Phase 6 (tracing-only supersession)**: Depends on Phase 3–5，移除旧执行历史合同
+- **Phase 6.8 (explicit execution context)**: Depends on Phase 6，显式保留关联 ID 并保证 Hook 子链 sticky tracing-only
+- **Phase 6.9 (controlled AgentContext updates)**: Depends on Phase 5–6.8，统一既有运行时更新能力、权限边界与 tracing-only 审计语义
+- **Phase 6.10 (trusted input/outbound boundary)**: Depends on Phase 4–6.9，统一 HookContext、Webhook SSRF 和 Request-ID 边界
 - **Phase 7 (Polish)**: Depends on all three user stories 完成
 
 ### User Story Dependencies

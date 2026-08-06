@@ -46,14 +46,11 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
         .await;
 
     match row {
-        Ok(Some(membership)) => {
+        Ok(Some(_membership)) => {
             tracing::debug!(
                 operation = "check_vip_membership",
                 outcome = "membership_found",
                 user_id,
-                membership_id = membership.id,
-                membership_level = ?membership.membership_level,
-                effective_end_time = ?membership.effective_end_time,
                 duration_ms = started_at.elapsed().as_millis(),
                 "finished checking VIP membership"
             );
@@ -74,7 +71,7 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
                 operation = "check_vip_membership",
                 outcome = "query_error",
                 user_id,
-                error = %error,
+                error_kind = "membership_query_failed",
                 duration_ms = started_at.elapsed().as_millis(),
                 "failed to check VIP membership"
             );

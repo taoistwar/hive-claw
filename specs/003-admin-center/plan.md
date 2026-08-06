@@ -11,7 +11,8 @@
 
 ## Technical Context
 
-**Language/Version**: Rust 1.85+ (backend), TypeScript 5.x (frontend)
+**Language/Version**: Rust 1.97.1 exact (backend; pinned by
+`rust-toolchain.toml` and workspace `rust-version`), TypeScript 5.x (frontend)
 **Primary Dependencies**: axum (API), React (web), tokio (async runtime), SQLx (MySQL client), redis (Redis client)
 **Storage**: MySQL 8.0+ (InnoDB 引擎), Redis 7+ (缓存), Rustfs/S3 (对象存储)
 **Testing**: cargo test (Rust), Vitest + Testing Library (React)
@@ -253,7 +254,9 @@ web/
 详见 [quickstart.md](file:///home/developer/agent/hive-claw/specs/003-admin-center/quickstart.md)
 
 **开发环境搭建**:
-1. 安装 Rust (1.85+), Node.js (18+), MySQL 8.0+
+1. 安装精确版本 Rust 1.97.1
+   (`rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy`)、
+   Node.js (18+)、MySQL 8.0+
 2. 克隆仓库并切换到 003-admin-center 分支
 3. 创建 MySQL 数据库：`CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
 4. 后端：配置 DATABASE_URL，运行迁移 `cargo run --bin migrate`
@@ -261,8 +264,15 @@ web/
 6. 访问 http://localhost:5173
 
 **初始化超级管理员**:
+
+> **Superseded security note**：旧版 `--password` argv 方式已移除，因为会暴露
+> 在 shell history / process listing。当前命令只接受私密文件或非交互 stdin；
+> 重复手机号非零失败，不再 upsert 昵称。
+
 ```bash
-cargo run --bin create-super-admin -- --phone <手机号> --password <密码> --nickname <昵称>
+printf '%s\n' "$HIVEWEB_BOOTSTRAP_PASSWORD" | \
+  cargo run --bin create-super-admin -- \
+    --phone <手机号> --nickname <昵称> --password-stdin
 ```
 
 ### Agent Context Update

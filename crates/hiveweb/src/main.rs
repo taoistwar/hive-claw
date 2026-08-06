@@ -1,5 +1,5 @@
 use clap::Parser;
-use hiveweb::{api, app_mode, cache, db, runtime, services, storage, web_admin};
+use hiveweb::{api, app_mode, cache, db, runtime, services, shutdown, storage, web_admin};
 
 use tracing_subscriber::{
     self, EnvFilter,
@@ -44,6 +44,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialize database connection pool
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = db::connection::create_pool(&database_url).await?;
+    if services::runtime_audit::install_mysql_writer(pool.clone()).is_err() {
+        tracing::error!(
+            error_kind = "runtime_audit_writer_init_failed",
+            "runtime audit DB writer initialization failed"
+        );
+    }
 
     // Schema creation and migrations are intentionally excluded from service startup.
     // Production schemas are provisioned before deployment; development and test
@@ -76,10 +82,10 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("External DB initialized: {}", mask_url_password(&url));
                 Some(p)
             }
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!(
-                    "External DB connection failed ({}), assistant API will be unavailable",
-                    e
+                    error_kind = "external_database_connection_failed",
+                    "External DB connection failed, assistant API will be unavailable"
                 );
                 None
             }
@@ -93,9 +99,9 @@ async fn main() -> anyhow::Result<()> {
     // Development/test keeps builtin metadata in sync. Production data is
     // provisioned by SQL import and must not be rewritten during startup.
     if app_mode::get().should_register_builtins() {
-        if let Err(e) = runtime::builtins::ensure_registered(&pool).await {
+        if runtime::builtins::ensure_registered(&pool).await.is_err() {
             // 启动期 builtin upsert 失败 → panic（schema 错乱比启动失败更严重）
-            panic!("builtin functions upsert failed: {e}");
+            panic!("builtin function registration failed");
         }
     } else {
         tracing::info!("Production mode: builtin registration skipped");
@@ -103,12 +109,27 @@ async fn main() -> anyhow::Result<()> {
 
     // Startup: initialize sensitive word filter
     let sensitive_filter = services::sensitive_filter::SensitiveFilter::new();
-    if let Err(e) = sensitive_filter.load_from_db(&pool).await {
-        tracing::warn!(error = %e, "Failed to load sensitive words from DB, filter disabled");
+    if sensitive_filter.load_from_db(&pool).await.is_err() {
+        tracing::warn!(
+            error_kind = "sensitive_words_load_failed",
+            "Failed to load sensitive words from DB, filter disabled"
+        );
     }
 
-    // Create router and serve the web-admin SPA from the mode-specific dist directory.
-    let app = api::create_router(pool, redis, s3_client, ext_pool, sensitive_filter);
+    // LLM preset configuration is a startup dependency. Do not bind the
+    // listener with a missing/invalid default registry.
+    let llm_path =
+        std::env::var("LLM_PRESETS_PATH").unwrap_or_else(|_| "./llm_presets.toml".to_string());
+    let llm = runtime::LlmRegistry::load_from_path(&llm_path).map_err(|_| {
+        tracing::error!(
+            error_kind = "llm_registry_load_failed",
+            "LLM registry initialization failed"
+        );
+        anyhow::anyhow!("LLM registry initialization failed")
+    })?;
+
+    // Resolve static assets and bind before starting background tasks so a
+    // startup failure cannot detach the Plugin idle reaper.
     let web_admin_dist = web_admin::dist_dir(app_mode::get())?;
     if web_admin_dist.join("index.html").is_file() {
         tracing::info!(
@@ -122,14 +143,54 @@ async fn main() -> anyhow::Result<()> {
             "web-admin index.html not found; API remains available but admin pages return 404"
         );
     }
+
+    let addr = format!("{}:{}", host, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    // Keep shutdown handles for the shared SQL pools. The runtime audit writer
+    // also owns a MySqlPool clone, so dropping Router/AppState alone is not
+    // sufficient to close the underlying pool.
+    let shutdown_pool = pool.clone();
+    let shutdown_ext_pool = ext_pool.clone();
+
+    // Create router and serve the web-admin SPA from the mode-specific dist directory.
+    let (app, background_tasks) =
+        api::create_router_with_lifecycle(pool, redis, s3_client, ext_pool, sensitive_filter, llm);
     let app = web_admin::serve_dist(app, &web_admin_dist);
     tracing::info!("HTTP router initialized with CORS and rate limiting");
 
-    // Start server
-    let addr = format!("{}:{}", host, port);
+    tracing::info!(
+        event = "graceful_shutdown_ready",
+        drain_timeout_secs = shutdown::DEFAULT_DRAIN_TIMEOUT.as_secs(),
+        "graceful shutdown initialized"
+    );
+    let server_result =
+        shutdown::serve_with_graceful_shutdown(listener, app, shutdown::shutdown_signal()).await;
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    // The server future only resolves after all connections have drained or
+    // their request/body futures have been cancelled at the fixed deadline.
+    // Stop the reaper deterministically, then close all DB connections even if
+    // a process-global audit sink still holds a pool clone.
+    background_tasks.shutdown().await;
+    shutdown_pool.close().await;
+    if let Some(ext_pool) = shutdown_ext_pool {
+        ext_pool.close().await;
+    }
+
+    match server_result? {
+        shutdown::ShutdownOutcome::Drained => {
+            tracing::info!(
+                event = "graceful_shutdown_complete",
+                "graceful shutdown completed"
+            );
+        }
+        shutdown::ShutdownOutcome::Forced => {
+            tracing::warn!(
+                event = "graceful_shutdown_deadline_reached",
+                "graceful shutdown deadline reached; active requests cancelled"
+            );
+        }
+    }
 
     Ok(())
 }

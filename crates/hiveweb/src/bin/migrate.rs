@@ -149,6 +149,14 @@ const MIGRATIONS: &[Migration] = &[
         version: "V031__game_image_text",
         sql: include_str!("../../migrations/V031__game_image_text.sql"),
     },
+    Migration {
+        version: "V032__runtime_audit_logs",
+        sql: include_str!("../../migrations/V032__runtime_audit_logs.sql"),
+    },
+    Migration {
+        version: "V033__normalize_workflow_timeout_default",
+        sql: include_str!("../../migrations/V033__normalize_workflow_timeout_default.sql"),
+    },
 ];
 
 #[tokio::main]
@@ -217,4 +225,24 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS;
+
+    #[test]
+    fn migration_chain_registers_runtime_audit_and_workflow_default() {
+        let versions: Vec<&str> = MIGRATIONS
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+
+        assert!(versions.contains(&"V032__runtime_audit_logs"));
+        assert!(versions.contains(&"V033__normalize_workflow_timeout_default"));
+        assert_eq!(
+            versions.last(),
+            Some(&"V033__normalize_workflow_timeout_default")
+        );
+    }
 }

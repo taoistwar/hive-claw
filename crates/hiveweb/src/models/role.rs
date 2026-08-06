@@ -36,6 +36,12 @@ impl Role {
         true
     }
 
+    /// Runtime audit details can contain operational metadata and are therefore
+    /// restricted to Super administrators (004 spec TM-3).
+    pub fn can_view_runtime_audit_logs(&self) -> bool {
+        matches!(self, Role::Super)
+    }
+
     pub fn can_modify_role(&self, target_role: &Role) -> bool {
         match self {
             Role::Super => true,

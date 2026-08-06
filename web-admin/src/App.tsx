@@ -21,7 +21,9 @@ import UserManagementPage from './pages/UserManagementPage'
 import GlobalConfigPage from './pages/GlobalConfigPage'
 import GameAliasPage from './pages/GameAliasPage'
 import SensitiveWordPage from './pages/SensitiveWordPage'
+import RuntimeAuditLogPage from './pages/RuntimeAuditLogPage'
 import Layout from './components/Layout'
+import PermissionGuard from './components/PermissionGuard'
 import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
 import { WEB_ADMIN_BASE_PATH } from './config/basePath'
@@ -164,6 +166,14 @@ function AppRoutes() {
           <Route path="recommended-games" element={<RecommendedGamePage />} />
           <Route path="users" element={<UserManagementPage />} />
           <Route path="admin-audit-logs" element={<AdminAuditLogPage />} />
+          <Route
+            path="runtime-audit-logs"
+            element={
+              <PermissionGuard requiredRole={3}>
+                <RuntimeAuditLogPage />
+              </PermissionGuard>
+            }
+          />
           <Route path="sensitive-words" element={<SensitiveWordPage />} />
           <Route path="login-records" element={<LoginRecordPage />} />
           <Route path="settings/change-password" element={<ChangePasswordPage />} />

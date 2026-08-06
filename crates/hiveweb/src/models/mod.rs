@@ -14,6 +14,7 @@ pub mod global_config;
 pub mod plugin;
 pub mod recommended_game;
 pub mod recommended_game_strategy;
+pub mod runtime_audit_log;
 pub mod sensitive_word;
 pub mod skill;
 pub mod tag;
@@ -37,6 +38,7 @@ pub use function::Function;
 pub use plugin::Plugin;
 #[allow(deprecated)]
 pub use recommended_game::RecommendedGame;
+pub use runtime_audit_log::RuntimeAuditLog;
 pub use skill::Skill;
 pub use tag::Tag;
 pub use tool::Tool;

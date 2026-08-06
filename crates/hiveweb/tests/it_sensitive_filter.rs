@@ -188,7 +188,9 @@ async fn test_create_sensitive_word() {
 
 #[tokio::test]
 async fn test_create_invalid_regex_rejected() {
-    let pool = common::test_pool().await.unwrap();
+    let pool = sqlx::mysql::MySqlPoolOptions::new()
+        .connect_lazy_with(sqlx::mysql::MySqlConnectOptions::new());
+    pool.close().await;
     let filter = SensitiveFilter::new();
 
     let req = hiveweb::models::sensitive_word::CreateSensitiveWordRequest {

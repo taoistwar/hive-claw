@@ -88,26 +88,25 @@ async fn create_new_session(
         }
     };
 
-    let cloud_info = match membership::get_cloud_user_info_cached(
-        &state.redis,
-        ext_pool,
-        req.user_id,
-    )
-    .await
-    {
-        Ok(Some(info)) => info,
-        Ok(None) => {
-            return AppError::BadRequest("User not found".into())
-                .into_response::<()>()
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached 查询失败");
-            return AppError::Internal("用户数据查询失败，请稍后重试".into())
-                .into_response::<()>()
-                .into_response();
-        }
-    };
+    let cloud_info =
+        match membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id).await {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                return AppError::BadRequest("User not found".into())
+                    .into_response::<()>()
+                    .into_response();
+            }
+            Err(_) => {
+                tracing::error!(
+                    user_id = req.user_id,
+                    error_kind = "cloud_user_query_failed",
+                    "get_cloud_user_info_cached 查询失败"
+                );
+                return AppError::Internal("用户数据查询失败，请稍后重试".into())
+                    .into_response::<()>()
+                    .into_response();
+            }
+        };
     let (uid, nickname) = (Some(cloud_info.0.as_str()), Some(cloud_info.1.as_str()));
 
     if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {

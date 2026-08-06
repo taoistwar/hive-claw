@@ -22,6 +22,7 @@ use sqlx::MySqlPool;
 use std::sync::Arc;
 
 use crate::cache::redis::RedisClient;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::llm::LlmRegistry;
 use agent::context::AgentContext;
 
@@ -51,6 +52,8 @@ use text_regex_match::{TEXT_REGEX_MATCH_INPUT_SCHEMA, TEXT_REGEX_MATCH_OUTPUT_SC
 pub enum BuiltinError {
     #[error("invalid arguments: {0}")]
     BadArgs(String),
+    #[error("model preset {0:?} is unknown")]
+    ModelPresetUnknown(String),
     #[error("execution failed: {0}")]
     Exec(String),
 }
@@ -59,6 +62,9 @@ pub type BuiltinResult = Result<Value, BuiltinError>;
 
 /// Context needed when executing a builtin function (DB connection pool + AgentContext)
 pub struct BuiltinContext<'a> {
+    /// Correlation/audit state for builtins that make nested runtime calls.
+    /// `None` only for entry points that do not grant nested LLM access.
+    pub execution_context: Option<RuntimeExecutionContext>,
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
     /// Redis client for cache-aside operations. `None` when Redis is unavailable.
@@ -310,6 +316,7 @@ mod tests {
             sqlx::MySqlPool::connect_lazy(&test_url).expect("connect_lazy"),
         ));
         BuiltinContext {
+            execution_context: None,
             pool,
             ext_pool: None,
             redis: None,

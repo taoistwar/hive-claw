@@ -6,7 +6,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     routing::{get, post},
 };
 use chrono::Utc;
@@ -18,8 +18,11 @@ use std::sync::Arc;
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
 use crate::api::AppState;
+use crate::middleware::request_id::RequestId;
 use crate::runtime::capability::DispatchCtx;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::pool::{PerPluginMetrics, PoolMetrics};
+use crate::services::runtime_audit::{self, AuditMetricsSnapshot};
 use crate::utils::error::{ApiResponse, AppError};
 
 pub fn router() -> Router<AppState> {
@@ -32,12 +35,18 @@ pub fn router() -> Router<AppState> {
 pub struct PoolStatsResp {
     pub global: PoolMetrics,
     pub per_plugin: Vec<PerPluginMetrics>,
+    pub audit: AuditMetricsSnapshot,
 }
 
 async fn pool_stats(State(state): State<AppState>) -> ApiResponse<PoolStatsResp> {
     let global = state.runtime_state.pool.metrics_snapshot().await;
     let per_plugin = state.runtime_state.pool.per_plugin_snapshot().await;
-    ApiResponse::success(PoolStatsResp { global, per_plugin })
+    let audit = runtime_audit::metrics_snapshot();
+    ApiResponse::success(PoolStatsResp {
+        global,
+        per_plugin,
+        audit,
+    })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -80,6 +89,7 @@ pub struct InvokeResp {
 
 async fn invoke_function(
     State(state): State<AppState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
     Path(id): Path<i64>,
     Json(body): Json<InvokeBody>,
 ) -> Result<ApiResponse<InvokeResp>, ApiResponse<()>> {
@@ -122,8 +132,8 @@ async fn invoke_function(
                     metadata.insert("client_version".into(), v.clone());
                 }
                 tracing::info!(
-                    actor_id = ?ui.actor_id,
-                    raw_text = ?ui.raw_text,
+                    actor_id_present = ui.actor_id.is_some(),
+                    raw_text_bytes = ui.raw_text.as_deref().map_or(0, str::len),
                     "invoke_function: 使用前端提供的 UserInput 构建 AgentContext"
                 );
                 Some(Arc::new(AgentContext::new(
@@ -145,6 +155,7 @@ async fn invoke_function(
         };
 
         let bctx = crate::runtime::builtins::BuiltinContext {
+            execution_context: None,
             pool: &state.pool,
             ext_pool: state.ext_pool.as_ref(),
             redis: Some(&state.redis),
@@ -159,18 +170,13 @@ async fn invoke_function(
                     elapsed_ms: t0.elapsed().as_millis() as i32,
                 }));
             }
-            Err(e) => {
+            Err(_) => {
                 tracing::error!(
                     function_id = id,
-                    identifier = %fn_row.identifier,
-                    error = %e,
+                    error_kind = "builtin_function_failed",
                     "builtin 函数执行失败"
                 );
-                return Err(AppError::Internal(format!(
-                    "builtin「{}」执行失败: {}",
-                    fn_row.identifier, e
-                ))
-                .into_response());
+                return Err(AppError::Internal("内置函数执行失败".into()).into_response());
             }
         }
     }
@@ -232,8 +238,7 @@ async fn invoke_function(
         .collect();
 
     let dispatch_ctx = DispatchCtx {
-        request_id: None,
-        session_id: None,
+        execution_context: RuntimeExecutionContext::best_effort(Some(request_id), None),
         agent_id: body.agent_id,
         plugin_id,
         function_id: Some(id),
@@ -266,7 +271,7 @@ async fn invoke_function(
                 export,
                 e
             );
-            AppError::Internal(format!("WASM 插件调用失败: {}", e)).into_response()
+            AppError::from(e).into_response()
         })?;
 
     let output: Value = serde_json::from_str(&output_str).unwrap_or(Value::String(output_str));

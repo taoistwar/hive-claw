@@ -88,7 +88,8 @@ pub type InputSpec = BTreeMap<String, InputSource>;
 
 /// Input keys that the framework injects into the input map at runtime.
 /// Users must NOT declare these as input fields.
-pub const RESERVED_INPUT_KEYS: &[&str] = &["_agent_context", "_agent_context_updates"];
+pub const AGENT_CONTEXT_UPDATES_KEY: &str = "_agent_context_updates";
+pub const RESERVED_INPUT_KEYS: &[&str] = &["_agent_context", AGENT_CONTEXT_UPDATES_KEY];
 
 /// Parse a JSON value into an `InputSpec`. The value should be a JSON object
 /// where each entry maps `field_name` → `InputSource`.

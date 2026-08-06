@@ -200,19 +200,6 @@ fn rewrite_content_for_empty_extensions(
         }
 
         let payload = ext.get("payload");
-        let payload_type = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
-
-        // support 卡片：根据 category 生成 reply 作为 content
-        if payload_type == Some("support") {
-            let category = payload
-                .and_then(|p| p.get("category"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("other");
-            let reply = support_category_reply(category);
-            if !reply.is_empty() {
-                return Some(reply.to_string());
-            }
-        }
 
         let category = ext.get("category").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -247,36 +234,6 @@ fn rewrite_content_for_empty_extensions(
     }
 
     content
-}
-
-/// 根据 support card 的 category 生成对应的回复文案
-fn support_category_reply(category: &str) -> &'static str {
-    match category {
-        "cannot_play" => {
-            "抱歉让你遇到无法正常进入游戏的问题。此类情况可能和游戏服务状态、云端环境、网络连接或游戏本身兼容性有关。我们会尽量保障游戏可正常启动，你可以通过下方「联系客服」继续反馈，我们会协助核实处理。"
-        }
-        "lag" => {
-            "抱歉影响了你的游戏体验。云游戏对网络稳定性和当前线路状态比较敏感，网络波动、服务器负载或画质设置都可能导致卡顿、延迟高或掉帧。你可以通过下方「联系客服」反馈，我们会进一步协助排查。"
-        }
-        "update" => {
-            "抱歉当前版本没有及时满足你的使用需求。云游戏内的游戏版本通常需要经过适配、测试和上线流程，可能会比官方版本略有延迟。我们会持续关注版本更新进度，你也可以通过下方「联系客服」反馈具体游戏。"
-        }
-        "quality" => {
-            "抱歉当前画质没有达到你的预期。云游戏画质会受到网络状态、画质设置、设备显示效果以及云端渲染策略影响。我们会持续优化画质体验，你可以通过下方「联系客服」继续反馈问题。"
-        }
-        "account" => {
-            "很抱歉遇到账号异常问题。账号封禁或异常通常由游戏官方规则判断，平台本身无法直接修改游戏官方的处理结果。但如果你怀疑和云游戏登录环境有关，可以通过下方「联系客服」反馈，我们会协助核实。"
-        }
-        "save_data" => {
-            "抱歉给你带来困扰。游戏存档通常和游戏账号、区服、云端同步或游戏自身机制有关，出现丢失时确实会很影响体验。你可以通过下方「联系客服」继续反馈，我们会协助核实是否存在同步异常。"
-        }
-        "money" => {
-            "抱歉影响了你的充值或会员权益。付费后到账可能受到支付状态、服务器端回调或订单同步延迟影响。请先不要重复支付，可以通过下方「联系客服」反馈，我们会优先协助核实订单处理情况。"
-        }
-        _ => {
-            "抱歉这次体验让你不满意，我们理解这种情况会很影响心情。你的反馈对我们很重要，我们会持续优化游戏体验和服务稳定性。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
-        }
-    }
 }
 
 /// 单次会话调用入口（spawned task）
@@ -846,7 +803,15 @@ where
 
         // ★ AgentContext: check if a tool requested agent_loop_break
         if agent_ctx.get_metadata("agent_loop_break").as_deref() == Some("true") {
-            final_content = Some(String::new());
+            final_content = agent_ctx
+                .get_metadata("agent_loop_reply")
+                .and_then(|reply| {
+                    let reply = reply.trim().to_string();
+                    (!reply.is_empty()).then_some(reply)
+                });
+            if final_content.is_none() {
+                final_content = Some(String::new());
+            }
             final_agent_id = current_agent_id;
             let _ = agent_ctx.set_record(
                 Category::StateChanges,
@@ -1255,7 +1220,7 @@ async fn handle_meta_tool(
                         ext_pool: deps.ext_pool.as_ref(),
                         redis: Some(&deps.redis),
                         agent_ctx: Some(Arc::clone(&agent_ctx)),
-                        llm: Some(&deps.llm),
+                        llm: Arc::clone(&deps.llm),
                         agent_id: Some(ctx.agent_id),
                     };
                     match (builtin.handler)(function_input, &bctx) {
@@ -1461,7 +1426,7 @@ pub(crate) async fn handle_workspace_tool(
                     ext_pool: deps.ext_pool.as_ref(),
                     redis: Some(&deps.redis),
                     agent_ctx: Some(Arc::clone(&agent_ctx)),
-                    llm: Some(&deps.llm),
+                    llm: Arc::clone(&deps.llm),
                     agent_id: Some(ctx.agent_id),
                 };
                 match (builtin.handler)(args_value, &bctx) {

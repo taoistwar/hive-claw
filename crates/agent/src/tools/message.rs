@@ -12,7 +12,7 @@ use bus::{MessageBus, OutboundMessage};
 use utils::helpers::strip_think;
 
 use super::base::{Tool, ToolExecError};
-use super::context::{ContextAware, RequestContext};
+use super::context::RequestContext;
 use super::path_utils::resolve_workspace_path;
 
 /// Runtime-mutable channel context (set by the loop each turn).
@@ -221,7 +221,7 @@ impl Tool for MessageTool {
         };
 
         let mut metadata: Map<String, Value> = if same_target {
-            default_metadata.into_iter().map(|(k, v)| (k, v)).collect()
+            default_metadata.into_iter().collect()
         } else {
             Map::new()
         };

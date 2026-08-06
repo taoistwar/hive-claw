@@ -19,7 +19,6 @@ use crate::openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
 use crate::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
 use crate::registry::{Backend, ProviderSpec, find_by_model, find_by_name};
 use config::schema::{Config, ProviderConfig};
-use config::{get_config_path, paths::is_default_workspace, set_config_path};
 
 /// Snapshot of a built provider chain, including fallback windows and config signature.
 #[derive(Clone)]
@@ -32,7 +31,6 @@ pub struct ProviderSnapshot {
 
 /// Compute a signature for a single preset (model + provider + credentials + settings).
 fn preset_signature(
-    cfg: &Config,
     model: &str,
     provider_config: Option<&ProviderConfig>,
     spec: Option<&ProviderSpec>,
@@ -95,7 +93,6 @@ pub fn provider_signature(cfg: &Config) -> Vec<Value> {
     let context_window_tokens = defaults.context_window_tokens;
 
     let mut sig = preset_signature(
-        cfg,
         model,
         provider_config,
         spec,
@@ -129,7 +126,7 @@ pub fn build_provider_snapshot(cfg: &Config) -> Result<ProviderSnapshot, String>
 
 /// Load config from path and build a ProviderSnapshot.
 pub fn load_provider_snapshot(config_path: Option<&str>) -> Result<ProviderSnapshot, String> {
-    let cfg = Config::from_config(config_path.map(|p| std::path::Path::new(p)));
+    let cfg = Config::from_config(config_path.map(std::path::Path::new));
     build_provider_snapshot(&cfg)
 }
 
@@ -367,8 +364,10 @@ pub fn make_provider(cfg: &Config) -> Result<Arc<dyn LLMProvider>, String> {
 
     let provider: Arc<dyn LLMProvider> = match backend {
         Backend::OpenAICodex => {
-            let mut cx_cfg = OpenAICodexConfig::default();
-            cx_cfg.default_model = model;
+            let cx_cfg = OpenAICodexConfig {
+                default_model: model,
+                ..OpenAICodexConfig::default()
+            };
             let p = OpenAICodexProvider::new(cx_cfg).map_err(|e| format!("openai_codex: {e}"))?;
             Arc::new(p)
         }
@@ -425,10 +424,8 @@ pub fn make_provider(cfg: &Config) -> Result<Arc<dyn LLMProvider>, String> {
         }
         Backend::Bedrock => {
             let mut bc = BedrockConfig::new(model.clone());
-            if let Some(pc) = provider_config {
-                if let Some(k) = &pc.api_key {
-                    bc = bc.with_api_key(k.clone());
-                }
+            if let Some(k) = provider_config.and_then(|pc| pc.api_key.as_ref()) {
+                bc = bc.with_api_key(k.clone());
             }
             if let Some(base) = resolve_api_base(provider_spec, provider_config) {
                 bc = bc.with_api_base(base);
@@ -447,17 +444,14 @@ fn resolve_api_base(
     provider_spec: Option<&ProviderSpec>,
     provider_config: Option<&ProviderConfig>,
 ) -> Option<String> {
-    if let Some(pc) = provider_config {
-        if let Some(b) = &pc.api_base {
-            if !b.is_empty() {
-                return Some(b.clone());
-            }
-        }
+    if let Some(b) = provider_config
+        .and_then(|pc| pc.api_base.as_ref())
+        .filter(|base| !base.is_empty())
+    {
+        return Some(b.clone());
     }
-    if let Some(s) = provider_spec {
-        if !s.default_api_base.is_empty() {
-            return Some(s.default_api_base.to_string());
-        }
+    if let Some(s) = provider_spec.filter(|spec| !spec.default_api_base.is_empty()) {
+        return Some(s.default_api_base.to_string());
     }
     None
 }
@@ -467,10 +461,11 @@ fn resolve_api_base(
 pub fn resolve_spec(cfg: &Config) -> Option<&'static ProviderSpec> {
     let defaults = &cfg.agents.defaults;
     let configured = defaults.provider.trim();
-    if !configured.is_empty() && configured != "auto" {
-        if let Some(spec) = find_by_name(configured) {
-            return Some(spec);
-        }
+    if let Some(spec) = (!configured.is_empty() && configured != "auto")
+        .then(|| find_by_name(configured))
+        .flatten()
+    {
+        return Some(spec);
     }
     find_by_model(&defaults.model)
 }

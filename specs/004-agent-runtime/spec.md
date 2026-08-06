@@ -181,7 +181,7 @@
   - 忽略 Plugin manifest 中的 `allowed_hosts` / `allowed_paths` 字段（防止 Plugin 通过 manifest 自我提权）
   - 计算并存储 sha256 + 文件大小
 - **FR-006**: 系统必须支持对 Plugin 的添加、修改、软删除（标记 `deleted_at`）。
-- **FR-007**: 系统必须在 Plugin 被任何未删除 Function 引用时拒绝软删除。
+- **FR-007**: 系统必须在 Plugin 被任何现存 Function 引用时拒绝软删除。Function 不支持软删除（`functions` 表无 `deleted_at` 列），因此每一条现存 Function 记录都属于有效引用。
 - **FR-008**: WASM 文件必须存储到 S3 兼容对象存储；DB 仅持有引用键 + 校验和。
 - **FR-009**: 系统必须支持"分类 + 标签 + 关键词" 三维组合检索，关键词需覆盖名称/标识符/描述。
 
@@ -293,7 +293,7 @@
 - **SC-006**: Agent 路由决策 p95 ≤ 1.5 秒（含一次 LLM 决策调用）。
 - **SC-007**: 越权 Capability 调用 100% 被宿主拒绝并审计，无任何漏放。
 - **SC-008**: `main` Agent 删除尝试 100% 被拒绝。
-- **SC-009**: Plugin 软删除前的引用检查 100% 准确（被引用时 0% 误删）。**Race window 规避**：软删除 transaction 必须 `SELECT ... FOR UPDATE` 锁住目标 Plugin 行 + `SELECT COUNT(*) FROM functions WHERE plugin_id = ? AND ...` 同事务内查；锁释放前并发的"新建 Function 引用此 Plugin" 必须 `SELECT plugin FOR SHARE`（应用层）— 否则视为竞态读到旧"未删除"状态，service 层 INSERT 时再查一次 `deleted_at` 并 rollback。两层防御。
+- **SC-009**: Plugin 软删除前的引用检查 100% 准确（被引用时 0% 误删）。**Race window 规避**：软删除 transaction 必须 `SELECT ... FOR UPDATE` 锁住目标 Plugin 行，并在同一事务执行 `SELECT COUNT(*) FROM functions WHERE plugin_id = ?`；并发的新建 Function 必须在同一 transaction 先执行 `SELECT id, deleted_at FROM plugins WHERE id = ? FOR SHARE`，确认未删除后再 INSERT Function（以及标签关联）并 COMMIT。若 Plugin 已软删除则 ROLLBACK + 4093。两条路径通过同一 Plugin 行锁串行化，因此删除与创建恰好只有一方成功，且不允许 Function 引用已软删除 Plugin。
 - **SC-010**: 一次完整对话（入口 → 路由 → 子 Agent → 一次 Tool 调用 → 回复）端到端 p95 ≤ 8 秒（含 1 次 LLM 调用）。
 
 ## Threat Model

@@ -14,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings};
 use crate::registry::ChannelEntry;
 
 /// Matrix channel configuration.
@@ -61,6 +61,10 @@ pub struct MatrixChannel {
     config: MatrixConfig,
     bus: MessageBus,
     running: Arc<AtomicBool>,
+    #[expect(
+        dead_code,
+        reason = "reserved for staged inbound media transcription integration"
+    )]
     transcription: TranscriptionSettings,
 }
 

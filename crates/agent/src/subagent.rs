@@ -23,6 +23,8 @@ use crate::hook::{AgentHook, AgentHookContext, ToolEvent};
 use crate::runner::{AgentRunResult, AgentRunSpec, AgentRunner};
 use crate::tools::ToolRegistry;
 
+pub type LlmWallTimeoutResolver = Arc<dyn Fn(Option<&str>) -> Option<f64> + Send + Sync>;
+
 /// Real-time status of a running subagent.
 #[derive(Debug, Clone)]
 pub struct SubagentStatus {
@@ -99,8 +101,7 @@ pub struct SubagentConfig {
     /// Maximum iterations for each spawned subagent.
     pub max_iterations: u32,
     /// Optional per-session LLM wall timeout override (seconds).
-    pub llm_wall_timeout_for_session:
-        Option<Arc<dyn Fn(Option<&str>) -> Option<f64> + Send + Sync>>,
+    pub llm_wall_timeout_for_session: Option<LlmWallTimeoutResolver>,
 }
 
 /// Manages background subagent execution.
@@ -139,6 +140,10 @@ impl SubagentManager {
     ///
     /// The caller is responsible for registering appropriate tools
     /// (filesystem/web/exec/...) before calling this method.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps task routing metadata explicit"
+    )]
     pub fn spawn(
         self: Arc<Self>,
         tools: ToolRegistry,
@@ -205,11 +210,12 @@ impl SubagentManager {
             inner.running_tasks.remove(&tid_for_task);
             inner.task_statuses.remove(&tid_for_task);
             if let Some(key) = &session_key_c {
-                if let Some(ids) = inner.session_tasks.get_mut(key) {
+                let remove_session = inner.session_tasks.get_mut(key).is_some_and(|ids| {
                     ids.remove(&tid_for_task);
-                    if ids.is_empty() {
-                        inner.session_tasks.remove(key);
-                    }
+                    ids.is_empty()
+                });
+                if remove_session {
+                    inner.session_tasks.remove(key);
                 }
             }
         });
@@ -225,6 +231,7 @@ impl SubagentManager {
         )
     }
 
+    #[expect(clippy::too_many_arguments, reason = "mirrors explicit spawn context")]
     async fn run_subagent(
         &self,
         task_id: &str,
@@ -329,6 +336,10 @@ impl SubagentManager {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps result routing metadata explicit"
+    )]
     async fn announce_result(
         &self,
         task_id: &str,
@@ -474,14 +485,12 @@ fn format_partial_progress(result: &AgentRunResult) -> String {
         lines.push("Failure:".into());
         lines.push(format!("- {}: {}", f.name, f.detail));
     }
-    if let Some(err) = &result.error {
-        if failure.is_none() {
-            if !lines.is_empty() {
-                lines.push(String::new());
-            }
-            lines.push("Failure:".into());
-            lines.push(format!("- {err}"));
+    if let Some(err) = result.error.as_ref().filter(|_| failure.is_none()) {
+        if !lines.is_empty() {
+            lines.push(String::new());
         }
+        lines.push("Failure:".into());
+        lines.push(format!("- {err}"));
     }
     if lines.is_empty() {
         result

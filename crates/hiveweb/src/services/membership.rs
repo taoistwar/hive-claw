@@ -336,10 +336,10 @@ pub async fn resolve_game_label_names(
     for card in duration_card_json.iter() {
         if let Some(list) = card.get("game_label_list").and_then(|v| v.as_array()) {
             for item in list {
-                if let Some(code) = item.as_str() {
-                    if !codes.contains(&code.to_string()) {
-                        codes.push(code.to_string());
-                    }
+                if let Some(code) = item.as_str()
+                    && !codes.contains(&code.to_string())
+                {
+                    codes.push(code.to_string());
                 }
             }
         }
@@ -517,8 +517,6 @@ pub async fn get_ai_assistant_chat_limit_config(
         None => Ok(None),
     }
 }
-
-/// Cached version of `get_ai_assistant_chat_limit_config`.
 
 /// Query AIDiscountedProducts config from cc_config table.
 /// Returns the raw JSON content (None if not found).

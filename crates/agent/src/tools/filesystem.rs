@@ -283,20 +283,20 @@ impl Tool for ReadFileTool {
         }
 
         let mime = detect_image_mime(&raw).or_else(|| mime_from_extension(path));
-        if let Some(m) = mime {
-            if m.starts_with("image/") {
-                return Ok(Value::String(build_image_response(&raw, m, &fp, path)));
-            }
+        if let Some(m) = mime
+            && m.starts_with("image/")
+        {
+            return Ok(Value::String(build_image_response(&raw, m, &fp, path)));
         }
 
         let text = match String::from_utf8(raw.clone()) {
             Ok(s) => s.replace("\r\n", "\n"),
             Err(_) => {
                 let mime = detect_image_mime(&raw).or_else(|| mime_from_extension(path));
-                if let Some(m) = mime {
-                    if m.starts_with("image/") {
-                        return Ok(Value::String(build_image_response(&raw, m, &fp, path)));
-                    }
+                if let Some(m) = mime
+                    && m.starts_with("image/")
+                {
+                    return Ok(Value::String(build_image_response(&raw, m, &fp, path)));
                 }
                 return Ok(Value::String(format!(
                     "Error: Cannot read binary file {path} (MIME: {}). Only UTF-8 text and images are supported.",
@@ -748,28 +748,27 @@ fn strip_trailing_ws(text: &str) -> String {
 fn file_not_found_msg(path: &str, fp: &Path) -> String {
     let parent = fp.parent();
     let mut suggestions: Vec<String> = Vec::new();
-    if let Some(p) = parent {
-        if p.is_dir() {
-            if let Ok(entries) = fs::read_dir(p) {
-                let mut siblings: Vec<String> = Vec::new();
-                for entry in entries.flatten() {
-                    if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                        if let Some(name) = entry.file_name().to_str() {
-                            siblings.push(name.to_string());
-                        }
-                    }
-                }
-                let close = fuzzy_close_matches(
-                    fp.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-                    &siblings,
-                    3,
-                );
-                suggestions = close
-                    .into_iter()
-                    .map(|s| p.join(s).display().to_string())
-                    .collect();
+    if let Some(p) = parent
+        && p.is_dir()
+        && let Ok(entries) = fs::read_dir(p)
+    {
+        let mut siblings: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && let Some(name) = entry.file_name().to_str()
+            {
+                siblings.push(name.to_string());
             }
         }
+        let close = fuzzy_close_matches(
+            fp.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            &siblings,
+            3,
+        );
+        suggestions = close
+            .into_iter()
+            .map(|s| p.join(s).display().to_string())
+            .collect();
     }
     let mut parts = vec![format!("Error: File not found: {}", path)];
     if !suggestions.is_empty() {
@@ -958,10 +957,10 @@ impl Tool for WriteFileTool {
             Ok(p) => p,
             Err(e) => return Ok(Value::String(format!("Error: {e}"))),
         };
-        if let Some(parent) = fp.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                return Ok(Value::String(format!("Error writing file: {e}")));
-            }
+        if let Some(parent) = fp.parent()
+            && let Err(e) = fs::create_dir_all(parent)
+        {
+            return Ok(Value::String(format!("Error writing file: {e}")));
         }
         if let Err(e) = fs::write(&fp, content) {
             return Ok(Value::String(format!("Error writing file: {e}")));

@@ -80,8 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     tracing::info!(method = %method_upper, %path, %base_url, %sign_body, "sending request");
 
-
-    println!("url:{}\nbody:{}", &url, &body);
+    println!("url:{}\nbody:{}", url, body);
 
     let resp = match method_upper.as_str() {
         "GET" => client.get(&url).send().await?,
@@ -146,7 +145,7 @@ fn make_sign(secret: &str, path: &str, body: &str) -> String {
     let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
     println!("sign data='{}'", sign_string);
     println!("sign hash='{}'", sign);
-    return sign
+    sign
 }
 
 #[cfg(test)]

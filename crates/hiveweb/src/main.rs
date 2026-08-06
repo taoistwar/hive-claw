@@ -1,22 +1,11 @@
 use clap::Parser;
+use hiveweb::{api, app_mode, cache, db, runtime, services, storage, web_admin};
 
 use tracing_subscriber::{
     self, EnvFilter,
     fmt::{self, time::OffsetTime},
     layer::SubscriberExt,
 };
-
-mod api;
-mod app_mode;
-mod cache;
-mod db;
-mod middleware;
-mod models;
-mod runtime;
-mod services;
-mod storage;
-mod utils;
-mod web_admin;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -113,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Startup: initialize sensitive word filter
-    let sensitive_filter = crate::services::sensitive_filter::SensitiveFilter::new();
+    let sensitive_filter = services::sensitive_filter::SensitiveFilter::new();
     if let Err(e) = sensitive_filter.load_from_db(&pool).await {
         tracing::warn!(error = %e, "Failed to load sensitive words from DB, filter disabled");
     }
@@ -171,7 +160,7 @@ pub fn file_tracing() -> anyhow::Result<()> {
         .with_target(true)
         .with_level(true)
         .with_ansi(false)
-        .with_timer(fmt::time::SystemTime::default())
+        .with_timer(fmt::time::SystemTime)
         .with_writer(non_blocking_appender);
     // subscriber
     let env_filter = EnvFilter::try_from_default_env()
@@ -240,7 +229,7 @@ pub fn test_tracing() -> anyhow::Result<()> {
         .with_target(true)
         .with_level(true)
         .with_ansi(false)
-        .with_timer(fmt::time::SystemTime::default())
+        .with_timer(fmt::time::SystemTime)
         .with_writer(non_blocking_appender);
 
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap_or(UtcOffset::UTC);

@@ -18,7 +18,7 @@ use std::time::Instant;
 fn test_exact_match_hit() {
     let filter = SensitiveFilter::new();
     // Build with synthetic test data via internal builder
-    let _test_words = vec![
+    let _test_words = [
         hiveweb::models::sensitive_word::SensitiveWord {
             id: 1,
             word: "敏感词".to_string(),
@@ -92,7 +92,8 @@ async fn test_cache_refresh_picks_up_new_word() {
 #[test]
 fn test_regex_compile_failure_rejected() {
     // Invalid regex should not compile
-    assert!(regex::Regex::new("(unclosed").is_err());
+    let invalid_pattern = ["(", "unclosed"].concat();
+    assert!(regex::Regex::new(&invalid_pattern).is_err());
     // Valid regex should compile
     assert!(regex::Regex::new(r"\d+").is_ok());
 }
@@ -264,7 +265,7 @@ async fn test_update_triggers_cache_refresh() {
     )
     .await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().enabled, false);
+    assert!(!result.unwrap().enabled);
 
     // Clean up
     let _ = sqlx::query("DELETE FROM sensitive_words WHERE id = ?")

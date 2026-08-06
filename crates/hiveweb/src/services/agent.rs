@@ -23,6 +23,21 @@ use super::cache_helper;
 pub const MAX_DEPTH: i8 = 10;
 pub const MAIN_AGENT_IDENTIFIER: &str = "main";
 
+type AgentToolRow = (
+    i64,
+    String,
+    String,
+    String,
+    i8,
+    Option<i64>,
+    Option<i64>,
+    Value,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<Value>,
+);
+
 #[derive(Debug, Deserialize)]
 pub struct CreateMeta {
     pub identifier: String,
@@ -316,9 +331,8 @@ pub async fn update(
     }
 
     // 计算 depth（如果 parent_agent_id 有变更）
-    let new_depth: Option<i8> =
-        if meta.parent_agent_id.is_some() && meta.parent_agent_id != existing.parent_agent_id {
-            let pid = meta.parent_agent_id.unwrap();
+    let new_depth: Option<i8> = match meta.parent_agent_id {
+        Some(pid) if Some(pid) != existing.parent_agent_id => {
             // 不允许设置自己为父
             if pid == id {
                 return Err(AppError::BadRequest("parent_agent_id 不能指向自身".into()));
@@ -337,9 +351,9 @@ pub async fn update(
                 )));
             }
             Some(parent_depth + 1)
-        } else {
-            None
-        };
+        }
+        _ => None,
+    };
 
     crate::services::optimistic_lock::check_and_bump(pool, "agents", id, meta.updated_at).await?;
 
@@ -587,7 +601,7 @@ pub async fn fetch_content(
             .map_err(|e| format!("{e}"))
     })
     .await
-    .map_err(|s| AppError::Internal(s))
+    .map_err(AppError::Internal)
 }
 
 /// DB-only path for fetching agent content (used as the fetch closure in cached_or_fetch).
@@ -617,20 +631,7 @@ async fn fetch_content_from_db(pool: &MySqlPool, agent_id: i64) -> Result<AgentC
     }
 
     // Tools: agent-specific + always tools (deduplicated by tool id)
-    let tool_rows: Vec<(
-        i64,
-        String,
-        String,
-        String,
-        i8,
-        Option<i64>,
-        Option<i64>,
-        Value,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        Option<Value>,
-    )> = sqlx::query_as(
+    let tool_rows: Vec<AgentToolRow> = sqlx::query_as(
         r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
                       f.plugin_id, f.plugin_export, f.identifier,

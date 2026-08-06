@@ -27,6 +27,10 @@ pub struct DataSourceView {
     prev_tree_selection: Option<TreeSelection>,
     form: Option<Entity<DataSourceForm>>,
     left_width: f32,
+    #[expect(
+        dead_code,
+        reason = "retained for the pending second splitter in the datasource layout"
+    )]
     mid_width: f32,
     error_modal: Option<ErrorModal>,
 }
@@ -99,7 +103,6 @@ impl DataSourceView {
                 }
                 PendingAction::Delete(id) => {
                     let store = self.store.read(cx).clone();
-                    let this = cx.weak_entity();
                     cx.spawn(async move |this, cx| {
                         let _ = store.delete(id).await;
                         this.update(cx, |view, cx| {
@@ -120,13 +123,13 @@ impl DataSourceView {
             });
         }
 
-        if let Some(ref form_entity) = self.form {
-            if form_entity.read(cx).is_done() {
-                self.form = None;
-                self.tree.update(cx, |t, cx| {
-                    t.refresh(cx);
-                });
-            }
+        if let Some(ref form_entity) = self.form
+            && form_entity.read(cx).is_done()
+        {
+            self.form = None;
+            self.tree.update(cx, |t, cx| {
+                t.refresh(cx);
+            });
         }
 
         if let Some(modal) = self.tree.update(cx, |t, _| t.take_error_modal()) {
@@ -232,16 +235,13 @@ impl Render for DataSourceView {
                     }
                     let drag = cx.global::<SplitterDrag>().clone();
                     let delta: f32 = (event.position.x - gpui::px(drag.start_x)).into();
-                    match drag.splitter_index {
-                        0 => {
-                            let new_left = (drag.start_widths.0 + delta).max(MIN_WIDTH);
-                            this.update(cx, |v, cx| {
-                                v.left_width = new_left;
-                                cx.notify();
-                            })
-                            .ok();
-                        }
-                        _ => {}
+                    if drag.splitter_index == 0 {
+                        let new_left = (drag.start_widths.0 + delta).max(MIN_WIDTH);
+                        this.update(cx, |v, cx| {
+                            v.left_width = new_left;
+                            cx.notify();
+                        })
+                        .ok();
                     }
                 }
             })

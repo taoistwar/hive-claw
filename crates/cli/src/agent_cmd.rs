@@ -148,10 +148,11 @@ async fn repl(
 }
 
 fn split_session(key: &str) -> (String, String) {
-    if let Some((a, b)) = key.split_once(':') {
-        if !a.is_empty() && !b.is_empty() {
-            return (a.to_string(), b.to_string());
-        }
+    if let Some((a, b)) = key.split_once(':')
+        && !a.is_empty()
+        && !b.is_empty()
+    {
+        return (a.to_string(), b.to_string());
     }
     ("cli".into(), key.to_string())
 }

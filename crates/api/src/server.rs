@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use axum::extract::{FromRequest, Multipart, Request, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -50,10 +49,7 @@ pub fn safe_filename(input: &str) -> String {
     if input.is_empty() {
         return "upload.bin".into();
     }
-    let base = input
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(input);
+    let base = input.rsplit(['/', '\\']).next().unwrap_or(input);
     let cleaned = UNSAFE_CHARS.replace_all(base, "_").to_string();
     let trimmed = cleaned.trim_start_matches('.').trim();
     if trimmed.is_empty() {
@@ -345,17 +341,19 @@ async fn handle_chat_completions(
     };
 
     // Model whitelist — Python rejects requests that name another model.
-    if let Some(requested) = parsed.model.as_deref() {
-        if requested != state.config.model_name {
-            return error_json(
-                StatusCode::BAD_REQUEST,
-                &format!(
-                    "Only configured model '{}' is available",
-                    state.config.model_name
-                ),
-                "invalid_request_error",
-            );
-        }
+    if parsed
+        .model
+        .as_deref()
+        .is_some_and(|requested| requested != state.config.model_name)
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "Only configured model '{}' is available",
+                state.config.model_name
+            ),
+            "invalid_request_error",
+        );
     }
 
     let req = ApiRequest {
@@ -735,6 +733,7 @@ fn is_blank(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
 
     struct Echo;
 

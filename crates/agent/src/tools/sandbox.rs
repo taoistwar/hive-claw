@@ -26,18 +26,18 @@ pub fn resolve_path(
     extra_allowed_dirs: &[PathBuf],
 ) -> Result<PathBuf, PathError> {
     let mut p = expand_user(path);
-    if !p.is_absolute() {
-        if let Some(ws) = workspace {
-            p = ws.join(p);
-        }
+    if !p.is_absolute()
+        && let Some(ws) = workspace
+    {
+        p = ws.join(p);
     }
     let resolved = canonicalize(&p);
     if let Some(allowed) = allowed_dir {
-        let media = canonicalize(&get_media_dir(None));
+        let media = canonicalize(get_media_dir(None));
         let mut all: Vec<PathBuf> = Vec::with_capacity(2 + extra_allowed_dirs.len());
         all.push(canonicalize(allowed));
         all.push(media);
-        all.extend(extra_allowed_dirs.iter().map(|d| canonicalize(d)));
+        all.extend(extra_allowed_dirs.iter().map(canonicalize));
         if !all.iter().any(|d| is_under(&resolved, d)) {
             return Err(PathError::OutsideAllowed {
                 path: path.to_string(),
@@ -61,15 +61,15 @@ pub fn is_under(path: &Path, dir: &Path) -> bool {
 }
 
 fn expand_user(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(stripped);
     }
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+    if path == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
     }
     PathBuf::from(path)
 }
@@ -93,7 +93,7 @@ pub fn wrap_command(
 
 fn bwrap(command: &str, workspace: &Path, cwd: &Path) -> String {
     let ws = canonicalize(workspace);
-    let media = canonicalize(&get_media_dir(None));
+    let media = canonicalize(get_media_dir(None));
     let sandbox_cwd = canonicalize(cwd);
     let sandbox_cwd = sandbox_cwd
         .strip_prefix(&ws)

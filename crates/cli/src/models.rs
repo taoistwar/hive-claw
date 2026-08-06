@@ -1,8 +1,8 @@
-/// Model information helpers for the onboard wizard.
-///
-/// Model database / autocomplete is temporarily disabled while litellm is
-/// being replaced. All public function signatures are preserved so callers
-/// continue to work without changes.
+//! Model information helpers for the onboard wizard.
+//!
+//! Model database / autocomplete is temporarily disabled while litellm is
+//! being replaced. All public function signatures are preserved so callers
+//! continue to work without changes.
 
 /// Returns an empty list of all models (database temporarily disabled).
 pub fn get_all_models() -> Vec<String> {
@@ -31,7 +31,7 @@ pub fn format_token_count(tokens: u64) -> String {
     let mut result = String::with_capacity(len + len / 3);
     for (i, c) in s.chars().enumerate() {
         let from_end = len - i;
-        if from_end < len && from_end % 3 == 0 {
+        if from_end < len && from_end.is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);

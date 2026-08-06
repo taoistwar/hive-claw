@@ -145,6 +145,12 @@ pub struct SDKCaptureHook {
     pub messages: std::sync::Mutex<Vec<Value>>,
 }
 
+impl Default for SDKCaptureHook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SDKCaptureHook {
     pub fn new() -> Self {
         Self {

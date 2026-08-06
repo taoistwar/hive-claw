@@ -29,11 +29,19 @@ pub struct OnboardResult {
 
 /// Field type introspection result (mirrors Python FieldTypeInfo).
 #[derive(Debug, Clone)]
+#[expect(
+    dead_code,
+    reason = "retained for the staged generic-field onboarding implementation"
+)]
 struct FieldTypeInfo {
     type_name: &'static str,
 }
 
 impl FieldTypeInfo {
+    #[expect(
+        dead_code,
+        reason = "retained for the staged generic-field onboarding implementation"
+    )]
     fn new(type_name: &'static str) -> Self {
         Self { type_name }
     }
@@ -114,7 +122,6 @@ fn format_value_for_display(value: &serde_json::Value, field_name: &str) -> Stri
                 parts.join(", ")
             }
         }
-        _ => "not set".to_string(),
     }
 }
 
@@ -213,7 +220,7 @@ fn input_with_existing(
         && current.as_object().map(|o| !o.is_empty()).unwrap_or(true);
 
     if has_existing && !current.is_array() {
-        let mut choices = vec![
+        let choices = vec![
             "Enter new value".to_string(),
             "Keep existing value".to_string(),
         ];
@@ -257,6 +264,10 @@ fn input_select(prompt: &str, choices: &[String], default: Option<&str>) -> Sele
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "retained for the staged model autocomplete onboarding flow"
+)]
 fn input_model_with_autocomplete(
     display_name: &str,
     current: &str,
@@ -276,6 +287,10 @@ fn input_model_with_autocomplete(
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "retained for the staged model context-window onboarding flow"
+)]
 fn input_context_window(
     display_name: &str,
     current: Option<u32>,
@@ -340,6 +355,10 @@ enum SelectResult<T> {
 // Display Names & Suffixes
 // ---------------------------------------------------------------------------
 
+#[expect(
+    dead_code,
+    reason = "retained for the staged generic-field onboarding implementation"
+)]
 fn get_field_display_name(field_key: &str) -> String {
     let mut name = field_key.to_string();
     let suffix_map: &[(&str, &str)] = &[
@@ -556,6 +575,7 @@ fn get_provider_names() -> Vec<(String, String)> {
         .collect()
 }
 
+#[expect(dead_code, reason = "retained for the staged provider onboarding flow")]
 fn get_current_provider(config_value: &serde_json::Value) -> String {
     config_value
         .get("provider")
@@ -680,12 +700,11 @@ fn configure_provider(cfg: &mut Config, provider_name: &str) {
         .map(|p| p.default_api_base)
         .unwrap_or("");
 
-    if !default_api_base.is_empty() {
-        if let Some(p) = get_provider_config_mut(cfg, provider_name) {
-            if p.api_base.as_deref().unwrap_or("").is_empty() {
-                p.api_base = Some(default_api_base.to_string());
-            }
-        }
+    if !default_api_base.is_empty()
+        && let Some(p) = get_provider_config_mut(cfg, provider_name)
+        && p.api_base.as_deref().unwrap_or("").is_empty()
+    {
+        p.api_base = Some(default_api_base.to_string());
     }
 
     if let Some(value) =
@@ -779,19 +798,16 @@ fn configure_channels(_cfg: &mut Config) {
     let mut choices = channel_names.clone();
     choices.push("<- Back".to_string());
 
-    match Select::with_theme(&theme())
+    if let Ok(Some(idx)) = Select::with_theme(&theme())
         .with_prompt("Select channel:")
         .items(&choices)
         .default(0)
         .interact_opt()
     {
-        Ok(Some(idx)) => {
-            let answer = &choices[idx];
-            if answer != "<- Back" {
-                configure_channel(&mut Config::default(), answer);
-            }
+        let answer = &choices[idx];
+        if answer != "<- Back" {
+            configure_channel(&mut Config::default(), answer);
         }
-        _ => {}
     }
 }
 
@@ -1046,10 +1062,10 @@ fn input_generic_field(value: &mut serde_json::Value, field: &FieldDef) -> Selec
         }
         "bool" => {
             let default = current.as_bool().unwrap_or(false);
-            if let Some(v) = input_bool(&field.display_name, default) {
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert(field.name.clone(), serde_json::Value::Bool(v));
-                }
+            if let Some(v) = input_bool(&field.display_name, default)
+                && let Some(obj) = value.as_object_mut()
+            {
+                obj.insert(field.name.clone(), serde_json::Value::Bool(v));
             }
         }
         "model" => {
@@ -1061,14 +1077,13 @@ fn input_generic_field(value: &mut serde_json::Value, field: &FieldDef) -> Selec
             pause();
         }
         _ => {
-            let default_str = format_value_for_input(&current, &field.field_type);
-            if let Some(v) = input_with_existing(&field.display_name, &current, &field.field_type) {
-                if let Some(obj) = value.as_object_mut() {
-                    if v.as_str().map(|s| s.is_empty()).unwrap_or(false) {
-                        obj.insert(field.name.clone(), serde_json::Value::Null);
-                    } else {
-                        obj.insert(field.name.clone(), v);
-                    }
+            if let Some(v) = input_with_existing(&field.display_name, &current, &field.field_type)
+                && let Some(obj) = value.as_object_mut()
+            {
+                if v.as_str().map(|s| s.is_empty()).unwrap_or(false) {
+                    obj.insert(field.name.clone(), serde_json::Value::Null);
+                } else {
+                    obj.insert(field.name.clone(), v);
                 }
             }
         }

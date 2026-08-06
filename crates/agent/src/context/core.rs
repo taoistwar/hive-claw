@@ -564,6 +564,7 @@ impl AgentContext {
     /// Record an agent delegation (sub-agent invocation) in the audit log.
     ///
     /// Public API for external orchestrators to record sub-agent fork/merge events.
+    #[expect(clippy::too_many_arguments, reason = "mirrors delegation audit schema")]
     pub fn record_delegation(
         &self,
         subagent_id: String,
@@ -624,15 +625,16 @@ impl AgentContext {
     }
 
     fn check_blacklist(&self, category: Category) -> Result<(), ContextError> {
-        if let (Some(blacklist), Some(subagent_id)) =
-            (&self.blacklisted_categories, &self.subagent_id)
+        if let Some((_blacklist, subagent_id)) = self
+            .blacklisted_categories
+            .as_ref()
+            .zip(self.subagent_id.as_ref())
+            .filter(|(blacklist, _)| blacklist.contains(&category))
         {
-            if blacklist.contains(&category) {
-                return Err(ContextError::BlacklistedCategoryWrite {
-                    category,
-                    subagent_id: subagent_id.clone(),
-                });
-            }
+            return Err(ContextError::BlacklistedCategoryWrite {
+                category,
+                subagent_id: subagent_id.clone(),
+            });
         }
         Ok(())
     }

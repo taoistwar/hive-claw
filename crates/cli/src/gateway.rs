@@ -107,7 +107,7 @@ pub async fn run(args: GatewayArgs) -> Result<(), String> {
         dream: dream.clone(),
     });
     let cron_svc = Arc::new(::cron::CronService::new(store_path, Some(cron_handler)));
-    cron_svc.start().await;
+    cron_svc.start().await?;
 
     // ---- Register the recurring "Dream" system job ----
     register_dream_job(&cron_svc, &cfg).await;
@@ -312,20 +312,18 @@ impl JobHandler for CronAgentHandler {
                 .as_ref()
                 .map(|s| s.is_empty())
                 .unwrap_or(true)
+            && let Some(ref content) = response
+            && !content.is_empty()
         {
-            if let Some(ref content) = response {
-                if !content.is_empty() {
-                    let outbound = bus::OutboundMessage {
-                        channel,
-                        chat_id,
-                        content: content.clone(),
-                        reply_to: None,
-                        media: Vec::new(),
-                        metadata: Default::default(),
-                    };
-                    self.agent.bus().publish_outbound(outbound).await;
-                }
-            }
+            let outbound = bus::OutboundMessage {
+                channel,
+                chat_id,
+                content: content.clone(),
+                reply_to: None,
+                media: Vec::new(),
+                metadata: Default::default(),
+            };
+            self.agent.bus().publish_outbound(outbound).await;
         }
 
         Ok(response)

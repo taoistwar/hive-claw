@@ -13,11 +13,11 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings};
 use crate::registry::ChannelEntry;
 
 /// WeCom channel configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WecomConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -33,24 +33,15 @@ pub struct WecomConfig {
     pub transcription: Option<serde_json::Value>,
 }
 
-impl Default for WecomConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            bot_id: String::new(),
-            secret: String::new(),
-            allow_from: Vec::new(),
-            welcome_message: String::new(),
-            transcription: None,
-        }
-    }
-}
-
 /// WeCom channel using WebSocket long connection.
 pub struct WecomChannel {
     config: WecomConfig,
     bus: MessageBus,
     running: Arc<AtomicBool>,
+    #[expect(
+        dead_code,
+        reason = "reserved for staged inbound media transcription integration"
+    )]
     transcription: TranscriptionSettings,
 }
 

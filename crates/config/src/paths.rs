@@ -16,10 +16,11 @@ use crate::loader::get_config_path;
 /// best-effort behavior; the returned path is always the requested one.
 pub fn ensure_dir<P: AsRef<Path>>(path: P) -> PathBuf {
     let p = path.as_ref().to_path_buf();
-    if let Err(err) = std::fs::create_dir_all(&p) {
-        if err.kind() != io::ErrorKind::AlreadyExists {
+    match std::fs::create_dir_all(&p) {
+        Err(err) if err.kind() != io::ErrorKind::AlreadyExists => {
             log::warn!("Failed to create directory {:?}: {}", p, err);
         }
+        _ => {}
     }
     p
 }
@@ -29,10 +30,11 @@ fn expand_tilde(raw: &str) -> PathBuf {
     if raw == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(expanded) = raw
+        .strip_prefix("~/")
+        .and_then(|rest| dirs::home_dir().map(|home| home.join(rest)))
+    {
+        return expanded;
     }
     PathBuf::from(raw)
 }

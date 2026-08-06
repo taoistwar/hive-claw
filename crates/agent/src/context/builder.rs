@@ -179,16 +179,19 @@ impl ContextBuilder {
         let mut parts = Vec::new();
         for filename in BOOTSTRAP_FILES {
             let path = self.workspace.join(filename);
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    parts.push(format!("## {filename}\n\n{content}"));
-                }
+            if let Some(content) = path
+                .exists()
+                .then(|| std::fs::read_to_string(&path).ok())
+                .flatten()
+            {
+                parts.push(format!("## {filename}\n\n{content}"));
             }
         }
         parts.join("\n\n")
     }
 
     /// Build the complete message list for an LLM call.
+    #[expect(clippy::too_many_arguments, reason = "keeps prompt inputs explicit")]
     pub fn build_messages(
         &self,
         history: Vec<Value>,

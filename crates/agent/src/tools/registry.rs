@@ -120,8 +120,8 @@ impl ToolRegistry {
                 builtins.push(schema);
             }
         }
-        builtins.sort_by_key(|s| schema_name(s));
-        mcp_tools.sort_by_key(|s| schema_name(s));
+        builtins.sort_by_key(schema_name);
+        mcp_tools.sort_by_key(schema_name);
         builtins.extend(mcp_tools);
         inner.cached_definitions = Some(builtins.clone());
         builtins
@@ -207,10 +207,10 @@ impl ToolRegistry {
 }
 
 fn schema_name(schema: &Value) -> String {
-    if let Some(func) = schema.get("function") {
-        if let Some(n) = func.get("name").and_then(|v| v.as_str()) {
-            return n.to_string();
-        }
+    if let Some(func) = schema.get("function")
+        && let Some(n) = func.get("name").and_then(|v| v.as_str())
+    {
+        return n.to_string();
     }
     schema
         .get("name")

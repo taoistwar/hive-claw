@@ -188,10 +188,10 @@ impl CronTool {
         if tz.is_some() && cron_expr.is_none() {
             return "Error: tz can only be used with cron_expr".into();
         }
-        if let Some(tz_name) = &tz {
-            if let Some(err) = Self::validate_timezone(tz_name) {
-                return err;
-            }
+        if let Some(tz_name) = &tz
+            && let Some(err) = Self::validate_timezone(tz_name)
+        {
+            return err;
         }
 
         let (schedule, delete_after) = if let Some(sec) = every_seconds.filter(|v| *v > 0) {

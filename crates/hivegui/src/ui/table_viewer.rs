@@ -69,6 +69,10 @@ struct OpenTable {
     context_menu_x: f32,
     context_menu_y: f32,
     hovered_row: Option<usize>,
+    #[expect(
+        dead_code,
+        reason = "retained for the pending per-cell hover interaction"
+    )]
     hovered_row_col: Option<usize>,
     context_menu_row: Option<usize>,
     context_menu_col: Option<usize>,
@@ -123,13 +127,9 @@ impl OpenTable {
     }
 
     fn get_cached_page(&self, page: i64) -> Option<&PageCache> {
-        self.page_cache.get(&page).and_then(|cache| {
-            if cache.loaded_at.elapsed().as_secs() < PAGE_CACHE_TTL_SECS {
-                Some(cache)
-            } else {
-                None
-            }
-        })
+        self.page_cache
+            .get(&page)
+            .filter(|&cache| cache.loaded_at.elapsed().as_secs() < PAGE_CACHE_TTL_SECS)
     }
 
     fn show_error(&mut self, title: String, message: String) {
@@ -190,8 +190,6 @@ impl TableViewer {
 
         self.open_tables[new_idx].loading = true;
         cx.notify();
-
-        let this = cx.weak_entity();
 
         cx.spawn(async move |this, cx| {
             let password = match store_clone.decrypt_password(&ds_clone.encrypted_password) {
@@ -349,6 +347,10 @@ impl TableViewer {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "retained until inline row handlers are consolidated"
+    )]
     fn select_row(&mut self, row_idx: usize, cx: &mut Context<Self>) {
         if let Some(t) = self.open_tables.get_mut(self.active_table_index) {
             t.selected_row = Some(row_idx);
@@ -356,6 +358,10 @@ impl TableViewer {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "retained until inline row handlers are consolidated"
+    )]
     fn deselect_row(&mut self, cx: &mut Context<Self>) {
         if let Some(t) = self.open_tables.get_mut(self.active_table_index) {
             t.selected_row = None;
@@ -363,6 +369,10 @@ impl TableViewer {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "retained until inline context-menu handlers are consolidated"
+    )]
     fn dismiss_context_menu(&mut self, cx: &mut Context<Self>) {
         if let Some(t) = self.open_tables.get_mut(self.active_table_index) {
             t.context_menu_visible = false;
@@ -525,13 +535,11 @@ impl OpenTable {
     ) {
         let page = self.current_offset / self.page_size;
 
-        if !force {
-            if let Some(_cached) = self.get_cached_page(page) {
-                let cached_data = self.page_cache.get(&page).unwrap().data.clone();
-                self.table_data = Some(cached_data);
-                cx.notify();
-                return;
-            }
+        if !force && let Some(_cached) = self.get_cached_page(page) {
+            let cached_data = self.page_cache.get(&page).unwrap().data.clone();
+            self.table_data = Some(cached_data);
+            cx.notify();
+            return;
         }
 
         let ds = ds.clone();
@@ -694,57 +702,58 @@ impl Render for TableViewer {
             }
         }
 
-        if t.active_tab == TableTab::Data && t.context_menu_visible {
-            if let (Some(row), Some(col_idx)) = (t.context_menu_row, t.context_menu_col) {
-                let num_cols = t.columns.len();
-                let widths: Vec<f32> = (0..num_cols)
-                    .map(|i| t.column_widths.get(i).copied().unwrap_or(120.0).max(80.0))
-                    .collect();
+        if t.active_tab == TableTab::Data
+            && t.context_menu_visible
+            && let (Some(row), Some(col_idx)) = (t.context_menu_row, t.context_menu_col)
+        {
+            let num_cols = t.columns.len();
+            let widths: Vec<f32> = (0..num_cols)
+                .map(|i| t.column_widths.get(i).copied().unwrap_or(120.0).max(80.0))
+                .collect();
 
-                let row_number_width = 50.0;
-                let row_height = 11.0 + 4.0 + 1.0;
-                let header_height = 11.0 + 8.0 + 1.0;
+            let row_number_width = 50.0;
+            let row_height = 11.0 + 4.0 + 1.0;
+            let header_height = 11.0 + 8.0 + 1.0;
 
-                let mut menu_x = row_number_width + 16.0;
-                for ci in 0..col_idx {
-                    menu_x += widths.get(ci).copied().unwrap_or(120.0).max(80.0) + 16.0;
-                }
-                let menu_y = header_height + (row as f32) * row_height;
-
-                col = col.child(
-                    div()
-                        .absolute()
-                        .left(px(menu_x))
-                        .top(px(menu_y))
-                        .w(px(160.0))
-                        .bg(rgb(0xffffff))
-                        .border_1()
-                        .border_color(rgb(0xcccccc))
-                        .rounded(px(4.0))
-                        .shadow_lg()
-                        .cursor(CursorStyle::PointingHand)
-                        .child(
-                            div()
-                                .id("context-menu-item")
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .text_size(px(12.0))
-                                .text_color(rgb(0x333333))
-                                .hover(|s| s.bg(rgb(0xe8f0fe)))
-                                .cursor(CursorStyle::PointingHand)
-                                .child("查看完整值")
-                                .on_mouse_down(MouseButton::Left, {
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |v, cx| {
-                                            v.open_value_panel_from_context_menu(cx);
-                                        })
-                                        .ok();
-                                    }
-                                }),
-                        ),
-                );
+            let mut menu_x = row_number_width + 16.0;
+            for ci in 0..col_idx {
+                menu_x += widths.get(ci).copied().unwrap_or(120.0).max(80.0) + 16.0;
             }
+            let menu_y = header_height + (row as f32) * row_height;
+
+            col = col.child(
+                div()
+                    .absolute()
+                    .left(px(menu_x))
+                    .top(px(menu_y))
+                    .w(px(160.0))
+                    .bg(rgb(0xffffff))
+                    .border_1()
+                    .border_color(rgb(0xcccccc))
+                    .rounded(px(4.0))
+                    .shadow_lg()
+                    .cursor(CursorStyle::PointingHand)
+                    .child(
+                        div()
+                            .id("context-menu-item")
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(rgb(0x333333))
+                            .hover(|s| s.bg(rgb(0xe8f0fe)))
+                            .cursor(CursorStyle::PointingHand)
+                            .child("查看完整值")
+                            .on_mouse_down(MouseButton::Left, {
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |v, cx| {
+                                        v.open_value_panel_from_context_menu(cx);
+                                    })
+                                    .ok();
+                                }
+                            }),
+                    ),
+            );
         }
 
         // Render error modal if present
@@ -981,7 +990,7 @@ impl TableViewer {
         this: gpui::WeakEntity<Self>,
         _cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let column_labels = vec!["列名", "类型", "可空", "主键", "注释"];
+        let column_labels = ["列名", "类型", "可空", "主键", "注释"];
         let column_data: Vec<_> = t
             .columns
             .iter()
@@ -1403,11 +1412,9 @@ impl TableViewer {
                             }
                         })
                         .child(
-                            div().truncate().child(
-                                val.as_ref()
-                                    .map(|v| v.clone())
-                                    .unwrap_or(SharedString::from("NULL")),
-                            ),
+                            div()
+                                .truncate()
+                                .child(val.clone().unwrap_or(SharedString::from("NULL"))),
                         ),
                 )
             });
@@ -1568,7 +1575,7 @@ impl TableViewer {
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .child(format!("每页"))
+                .child("每页".to_string())
                 .child(
                     div()
                         .flex()
@@ -1769,8 +1776,6 @@ impl TableViewer {
             .w(px(4.0))
             .cursor(CursorStyle::PointingHand)
             .on_mouse_down(MouseButton::Left, {
-                let col_idx = col_idx;
-                let start_width = start_width;
                 move |event: &gpui::MouseDownEvent, _window, cx| {
                     cx.set_global(ColumnResize {
                         col_index: col_idx,
@@ -1781,7 +1786,6 @@ impl TableViewer {
             })
             .on_mouse_move({
                 let this = this.clone();
-                let col_idx = col_idx;
                 move |event: &gpui::MouseMoveEvent, _window, cx| {
                     if cx.has_global::<ColumnResize>() {
                         let resize = cx.global::<ColumnResize>();

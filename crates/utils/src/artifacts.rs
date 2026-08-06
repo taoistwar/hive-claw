@@ -100,6 +100,10 @@ fn artifact_root(
 }
 
 /// Persist a generated image and sidecar metadata under the media root.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the public API until an artifact request type is introduced"
+)]
 pub fn store_generated_image_artifact(
     data_url: &str,
     prompt: &str,

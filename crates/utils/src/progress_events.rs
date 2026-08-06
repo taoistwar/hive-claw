@@ -1,6 +1,19 @@
 /// Structured progress-event helpers shared by agent runtimes.
 use serde_json::{Map, Value};
 
+/// Future returned by progress callbacks.
+pub type ProgressFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Borrowed progress callback signature used by invocation helpers.
+pub type ProgressHandler = dyn Fn(
+    String,
+    bool,
+    Option<Vec<Map<String, Value>>>,
+    Option<Vec<Map<String, Value>>>,
+    bool,
+    bool,
+) -> ProgressFuture;
+
 /// Progress callback type.
 pub type ProgressCallback = Box<
     dyn Fn(
@@ -26,14 +39,7 @@ pub fn on_progress_accepts_file_edit_events() -> bool {
 
 /// Invoke the on_progress callback with tool events if applicable.
 pub async fn invoke_on_progress(
-    on_progress: &dyn Fn(
-        String,
-        bool,
-        Option<Vec<Map<String, Value>>>,
-        Option<Vec<Map<String, Value>>>,
-        bool,
-        bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    on_progress: &ProgressHandler,
     content: String,
     tool_hint: bool,
     tool_events: Option<Vec<Map<String, Value>>>,
@@ -47,14 +53,7 @@ pub async fn invoke_on_progress(
 
 /// Invoke the on_progress callback with file edit events.
 pub async fn invoke_file_edit_progress(
-    on_progress: &dyn Fn(
-        String,
-        bool,
-        Option<Vec<Map<String, Value>>>,
-        Option<Vec<Map<String, Value>>>,
-        bool,
-        bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    on_progress: &ProgressHandler,
     file_edit_events: Vec<Map<String, Value>>,
 ) {
     if file_edit_events.is_empty() || !on_progress_accepts_file_edit_events() {

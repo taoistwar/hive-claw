@@ -17,6 +17,10 @@ mod common;
 use sqlx::MySqlPool;
 
 /// Helper: insert a test plugin row directly into the database for pool testing.
+#[expect(
+    dead_code,
+    reason = "staged helper for the pending full WASM memory-limit integration test"
+)]
 async fn insert_test_plugin(
     pool: &MySqlPool,
     identifier: &str,
@@ -61,8 +65,8 @@ async fn t166_pool_config_respects_memory_limit() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn t166_plugin_with_excessive_memory_allocation_fails() -> anyhow::Result<()> {
-    let pool = common::test_pool().await?;
-    let s3 = hiveweb::storage::s3::create_client().await?;
+    let _pool = common::test_pool().await?;
+    let _s3 = hiveweb::storage::s3::create_client().await?;
 
     // The memory limit configuration is verified through the pool config.
     // A real WASM plugin that allocates > 128 MB would be needed for a

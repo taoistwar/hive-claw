@@ -73,6 +73,10 @@ pub fn build_history_context(agent_ctx: &AgentContext, limit: usize) -> String {
 
 /// Extract the set of keys referenced by `{var}` placeholders in a template.
 /// Supports optional whitespace: `{ var }` and `{var}` both match.
+#[expect(
+    dead_code,
+    reason = "retained for the pending answer-node prompt composition path"
+)]
 fn referenced_template_keys(template: &str) -> std::collections::HashSet<String> {
     let re = regex::Regex::new(r"\{\s*([a-zA-Z0-9_]+)\s*\}")
         .unwrap_or_else(|_| regex::Regex::new(r"\{[^}]+\}").unwrap());
@@ -115,10 +119,10 @@ pub async fn execute_answer_node(
     // messages and inject it as {context} for system_prompt template replacement.
     if history_window > 0 {
         let history_context = build_history_context(&agent_ctx, history_window);
-        if !history_context.is_empty() {
-            if let Value::Object(ref mut map) = input {
-                map.insert("context".to_string(), Value::String(history_context));
-            }
+        if !history_context.is_empty()
+            && let Value::Object(ref mut map) = input
+        {
+            map.insert("context".to_string(), Value::String(history_context));
         }
     }
 
@@ -181,6 +185,10 @@ pub async fn execute_answer_node(
 ///
 /// Priority: well-known question key (query/text/etc) → first string field → "key: value" dump.
 /// Keys referenced by `{var}` in system_prompt are excluded from the dump to avoid duplication.
+#[expect(
+    dead_code,
+    reason = "retained for the pending answer-node prompt composition path"
+)]
 fn build_user_message(input: &Value, system_prompt: &str) -> String {
     const USER_QUESTION_KEYS: &[&str] = &[
         "query",
@@ -202,10 +210,10 @@ fn build_user_message(input: &Value, system_prompt: &str) -> String {
             }
         }
         for (k, v) in map {
-            if !k.starts_with('_') {
-                if let Value::String(s) = v {
-                    return s.clone();
-                }
+            if !k.starts_with('_')
+                && let Value::String(s) = v
+            {
+                return s.clone();
             }
         }
         let re = regex::Regex::new(r"\{\s*([a-zA-Z0-9_]+)\s*\}")

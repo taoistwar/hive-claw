@@ -94,10 +94,10 @@ impl WebFetchTool {
             .user_agent(&self.user_agent)
             .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS as usize))
             .timeout(Duration::from_secs(30));
-        if let Some(p) = &self.proxy {
-            if let Ok(proxy) = reqwest::Proxy::all(p) {
-                b = b.proxy(proxy);
-            }
+        if let Some(p) = &self.proxy
+            && let Ok(proxy) = reqwest::Proxy::all(p)
+        {
+            b = b.proxy(proxy);
         }
         b.build()
     }
@@ -122,7 +122,6 @@ impl Tool for WebFetchTool {
             "type":"object",
             "properties":{
                 "url":{"type":"string","description":"URL to fetch"},
-                "extractMode":{"type":"string","enum":["markdown","text"],"default":"text"},
                 "maxChars":{"type":"integer","minimum":100},
             },
             "required":["url"],
@@ -145,11 +144,6 @@ impl Tool for WebFetchTool {
             .and_then(|v| v.as_u64())
             .map(|n| n as usize)
             .unwrap_or(self.max_chars);
-        let extract_mode = params
-            .get("extractMode")
-            .or_else(|| params.get("extract_mode"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("markdown");
 
         let (ok, err) = validate_url_target(url);
         if !ok {
@@ -290,22 +284,22 @@ impl WebFetchTool {
             reqwest::header::HeaderValue::from_str(&self.user_agent)
                 .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(DEFAULT_USER_AGENT)),
         );
-        if let Ok(key) = std::env::var("JINA_API_KEY") {
-            if !key.is_empty() {
-                headers.insert(
-                    "Authorization",
-                    reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
-                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
-                );
-            }
+        if let Ok(key) = std::env::var("JINA_API_KEY")
+            && !key.is_empty()
+        {
+            headers.insert(
+                "Authorization",
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
+                    .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
+            );
         }
 
         let jina_url = format!("https://r.jina.ai/{url}");
         let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
-        if let Some(p) = &self.proxy {
-            if let Ok(proxy) = reqwest::Proxy::all(p) {
-                builder = builder.proxy(proxy);
-            }
+        if let Some(p) = &self.proxy
+            && let Ok(proxy) = reqwest::Proxy::all(p)
+        {
+            builder = builder.proxy(proxy);
         }
         let client = builder.build().map_err(|e| e.to_string())?;
         let resp = client

@@ -30,14 +30,14 @@ use serde::{Deserialize, Serialize};
 /// A `PathBuf` with the tilde expanded to the home directory
 /// 展开波浪号后的 PathBuf
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    } else if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+    if let Some(expanded) = path
+        .strip_prefix("~/")
+        .and_then(|rest| dirs::home_dir().map(|home| home.join(rest)))
+    {
+        return expanded;
+    }
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
     }
     PathBuf::from(path)
 }
@@ -275,17 +275,12 @@ impl Default for ModelPresetConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderRetryMode {
+    #[default]
     Standard,
     Persistent,
-}
-
-impl Default for ProviderRetryMode {
-    fn default() -> Self {
-        ProviderRetryMode::Standard
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1360,7 +1355,7 @@ impl Config {
         model: Option<&str>,
         preset: Option<&ModelPresetConfig>,
     ) -> (Option<ProviderConfig>, Option<String>) {
-        let resolved = preset.map(|p| p.clone()).unwrap_or_else(|| {
+        let resolved = preset.cloned().unwrap_or_else(|| {
             self.resolve_preset(None)
                 .unwrap_or_else(|_| self.resolve_default_preset())
         });
@@ -1391,10 +1386,12 @@ impl Config {
         // Explicit provider prefix wins
         for spec in PROVIDERS {
             let p = self.get_provider_by_spec(spec);
-            if p.0.is_some() && !model_prefix.is_empty() && normalized_prefix == spec.name {
-                if spec.is_oauth || spec.is_local || spec.is_direct || self.has_api_key(spec.name) {
-                    return p;
-                }
+            if p.0.is_some()
+                && !model_prefix.is_empty()
+                && normalized_prefix == spec.name
+                && (spec.is_oauth || spec.is_local || spec.is_direct || self.has_api_key(spec.name))
+            {
+                return p;
             }
         }
 
@@ -1406,10 +1403,9 @@ impl Config {
                     .keywords
                     .iter()
                     .any(|kw| kw_matches(kw, &model_lower, &model_normalized))
+                && (spec.is_oauth || spec.is_local || spec.is_direct || self.has_api_key(spec.name))
             {
-                if spec.is_oauth || spec.is_local || spec.is_direct || self.has_api_key(spec.name) {
-                    return p;
-                }
+                return p;
             }
         }
 
@@ -1420,17 +1416,20 @@ impl Config {
                 continue;
             }
             let p = self.get_provider_by_spec(spec);
-            if let (Some(provider), _) = &p {
-                if let Some(api_base) = &provider.api_base {
-                    if let Some(detect_kw) = spec.detect_by_base_keyword {
-                        if api_base.contains(detect_kw) {
-                            return p;
-                        }
-                    }
-                    if local_fallback.is_none() {
-                        local_fallback = Some((provider.clone(), spec.name.to_string()));
-                    }
-                }
+            let (Some(provider), _) = &p else {
+                continue;
+            };
+            let Some(api_base) = &provider.api_base else {
+                continue;
+            };
+            if spec
+                .detect_by_base_keyword
+                .is_some_and(|detect_kw| api_base.contains(detect_kw))
+            {
+                return p;
+            }
+            if local_fallback.is_none() {
+                local_fallback = Some((provider.clone(), spec.name.to_string()));
             }
         }
         if let Some((cfg, name)) = local_fallback {
@@ -1724,17 +1723,15 @@ impl Config {
         preset: Option<&ModelPresetConfig>,
     ) -> Option<String> {
         let (p, name) = self.match_provider(model, preset);
-        if let Some(provider) = p {
-            if let Some(api_base) = provider.api_base {
-                return Some(api_base);
-            }
+        if let Some(api_base) = p.and_then(|provider| provider.api_base) {
+            return Some(api_base);
         }
-        if let Some(name_str) = name {
-            if let Some(spec) = find_provider_spec(&name_str) {
-                if let Some(default_base) = spec.default_api_base {
-                    return Some(default_base.to_string());
-                }
-            }
+        if let Some(default_base) = name
+            .as_deref()
+            .and_then(find_provider_spec)
+            .and_then(|spec| spec.default_api_base)
+        {
+            return Some(default_base.to_string());
         }
         None
     }

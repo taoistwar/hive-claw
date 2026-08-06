@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use log::{error, info, warn};
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
@@ -14,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings};
 use crate::registry::ChannelEntry;
 
 /// WhatsApp channel configuration.
@@ -53,9 +53,17 @@ impl Default for WhatsAppConfig {
 
 /// WhatsApp channel connecting to a Node.js bridge.
 pub struct WhatsAppChannel {
+    #[expect(
+        dead_code,
+        reason = "reserved for staged WhatsApp bridge transport integration"
+    )]
     config: WhatsAppConfig,
     bus: MessageBus,
     running: Arc<AtomicBool>,
+    #[expect(
+        dead_code,
+        reason = "reserved for staged inbound media transcription integration"
+    )]
     transcription: TranscriptionSettings,
 }
 

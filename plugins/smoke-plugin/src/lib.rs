@@ -43,8 +43,8 @@ struct TimeNowData {
 
 #[derive(Debug, Deserialize, Default)]
 struct LogEmitData {
-    #[serde(default)]
-    logged: bool,
+    #[serde(default, rename = "logged")]
+    _logged: bool,
 }
 
 #[derive(Debug, Serialize)]

@@ -42,7 +42,7 @@ impl From<Admin> for AdminPublic {
             id: admin.id,
             phone: admin.phone,
             nickname: admin.nickname,
-            role: admin.role as i8,
+            role: admin.role,
             status: admin.status,
         }
     }
@@ -233,14 +233,13 @@ pub async fn change_password(
 
     let is_locked = match admin::get_admin_by_id(&state.pool, admin_id).await {
         Ok(Some(admin)) => {
-            let locked = match auth_service::is_account_locked(&state.redis, &admin.phone).await {
+            match auth_service::is_account_locked(&state.redis, &admin.phone).await {
                 Ok(l) => l,
                 Err(e) => {
                     tracing::error!("Redis check failed: {}", e);
                     return AppError::Internal("Service unavailable".to_string()).into_response();
                 }
-            };
-            locked
+            }
         }
         Ok(None) => {
             return AppError::AdminNotFound("Admin not found".to_string()).into_response();

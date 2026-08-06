@@ -14,7 +14,7 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings};
 use crate::registry::ChannelEntry;
 
 /// Discord channel configuration.
@@ -62,6 +62,10 @@ pub struct DiscordChannel {
     config: DiscordConfig,
     bus: MessageBus,
     running: Arc<AtomicBool>,
+    #[expect(
+        dead_code,
+        reason = "reserved for staged inbound media transcription integration"
+    )]
     transcription: TranscriptionSettings,
 }
 

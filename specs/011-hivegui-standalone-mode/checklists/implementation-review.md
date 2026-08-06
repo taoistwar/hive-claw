@@ -1346,6 +1346,108 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
   5. T016F `DataSourcePassword` canary 全介质 0 命中 + T016E DataSource 滚动行已激活 + 5 介质 + 11 介质 canary 扫描均通过 ✓
 - **US2 Green 门禁解除**: T032（US1）/ T039-T040（US2）Green 已闭合；T044 / T051 / T058 / T063 / T069 / T078 / T087 / T095 / T105 / T112 / T124 可开始。
 
+## T018-T028 Foundational Green 闭包证据（2026-08-06）
+
+**Phase 2 Foundational（T018-T028 实施批）**已按 TDD 顺序在 `origin/main@2eee211`（T001 PR #4 合并后）Rust 1.97.1 工具链基线上全部闭合。本节记录统一可追溯 Green 证据、独立文件清单与 T025R 边界联动；T025R ① ② 详见 `checklists/security.md` §①.11 + §②.11，本节不重复其逐项 self-attest。
+
+### 阶段 Green 证据总览
+
+| Task | 模块 | 测试套件 | 测试结果 | 关键 Green 范围 |
+|---|---|---|---|---|
+| T018 | `crates/hive-runtime-core/src/{abi,plugin,wasm}.rs` | `abi_contract` + `wasm::tests` | 6/6 + 4/4 Green | `HIVE_EXTISM_ABI_V1` + `StableErrorKind` 11 变体 + `HostCallRequest/Reply` fail-fast `ok,code,message` 序 + `PluginManifestV1::parse_and_validate` 累积 issues + `WasmModuleShape` 6 类 + `WasmSandboxConfig::deny_all_wasi()` + `WasmExecutionFailure` 6 类 + `stable_error_kind()` 与 ABI 一一对应 |
+| T019 | `crates/hive-runtime-core/src/execution.rs` + `crates/agent/src/runner.rs` | `execution_contract` | 4/4 Green | `ExecutionContext` 父→子取消传播 + 子→父隔离 + permission snapshot immutable + 共享单调事件序列 + 唯一 terminal gate + `ExecutionContextRunner` 透传 |
+| T020 | `crates/hive-runtime-core/src/workflow.rs` | `workflow_contract` | 5/5 Green | `NodeType` 4 稳定 wire 值 + 6 类 `WorkflowValidationKind` + 字典序拓扑层 + fail-fast 最小主错误 + 成功层仅调度 dependants + `LayerNodeOutcome`/`NodeFailure` |
+| T021 | `crates/hive-runtime-core/src/{capability,persisted_tool}.rs` | `capability_contract` + `persisted_tool_contract` | 8/8 + 7/7 = 15/15 Green | `CapabilityId` 段校验 + `CapabilitySet` BTreeSet 规范化 + `HandlerRegistry` 注册/重复拒绝 + 4 类 `DispatchError` + `PersistedToolKind` function-wrap/workflow-wrap + XOR 目标 + byte-stable 序列化 + 核心保持存储/传输无关 |
+| T022 | `crates/hivegui/src/datasource/{migrations,plugin_artifacts,search_normalization}.rs` + `third_party/unicode-17.0.0/PROVENANCE.md` | `migration_compatibility` + `plugin_artifact_schema_contract` + `sqlite_health_contract` + `store_resilience` + `relationship_scope_contract` + `search_index_contract` | 9/9 (1 ignored fixture regen) + 10/10 + 9/9 + 11/11 + 3/3 + 22/22 = 64/64 Green | 单事务 v1/v2/v3/v4 + Function/Tool kind 映射 + 点号 Builtin 事务重命名/碰撞回滚 + legacy LLM 字段映射 + `plugins.row_revision` 回填 0 + `plugin_artifact_operations`/`plugin_artifact_gc` ledger + 5 类状态 CHECK + `operation_id` 派生 `staging_name` UNIQUE + 单实例锁 + 双 PRAGMA + `wal_checkpoint(TRUNCATE)` 完整并入 + `frozen` marker + `.hivegui-db-staging-v1/migration-{UUID}/datasources.db` 隔离 stage + instance/owner manifest + 5 分支 sidecar cleanup journal + UTF-8 db_id/长度前缀 SHA-256 token + 64 位小写 hex + 3 final/3 `.staging` basename + `schema_version=1` + identity-bound no-replace rename + quarantine 收尾 `done` + `hivegui-nfkc-casefold-v1` + FTS5 trigram + 1-2 字符 short-gram 事务维护 + 启动 trigram tokenizer 探针 + 关系表白名单 |
+| T023 | `crates/hivegui/src/ui/migration_recovery_view.rs` + `ui/app.rs` + `ui/mod.rs` | `accessibility`（T016 keyboard/focus/heartbeat） | 33/33 Green（含 US1 sidebar 与本任务） | `MigrationRecoveryPhase` 状态机 `Detecting` / `MigrationFailed{Retry,Exit}` / `IntegrityCorrupted{RestoreFromBackup,ConfirmRebuild,Exit}` / `InProgress` / `Completed` + `hivegui_recovery` actions 注册 + `#![warn(missing_docs)]` 启用；T030.2 Enter/Space 仍受 GPUI 测试 `simulate_keystrokes` 限制保留 2/7 Red（已在 T032/T033 partial Green 记录） |
+| T024 | `crates/hivegui/src/datasource/validation.rs` + `store.rs` | `entity_validation` | 7/7 Green | `FieldCatalog`（按 entity + owner_phase 字段级 + JSON + enum + reference）+ `ConflictCatalog`（value/references 双形态分离）+ `RelationshipScope`（Tag 任意关系 + 白名单外结构双重禁止）+ `PaginationSearchRules`（page 0=out_of_range / page_size≠20=fixed_value_required / search>255=too_long / NUL+控制字符=control_character）+ 通用 `validate` 路径返回 `InvalidInput` / `Conflict` + `store.rs` 把 SQLite UNIQUE 映射到 `Conflict` 不带内部 SQL 错误 |
+| T025 | `crates/hivegui/src/datasource/{key_store,crypto}.rs` + `crates/hivegui/src/ui/key_recovery_view.rs` | `device_key_lifecycle` | 8/8 Green | `DeviceKeyStore` 首次启动 OsRng 32B 随机密钥 + `tempfile::NamedTempFile` 同目录原子 rename + `0o600`/`owner-only` ACL 等效校验 + 重启复用 + 单进程 + 跨进程并发收敛 + 缺失/损坏/不安全权限/unreadable path 全部进入 `BlockingRecovery` 稳定阻断态且零字节修改 + `XChaCha20Poly1305`（RFC 8439）roundtrip 零明文落盘 + "重新配置/从备份恢复/退出" UI；T025R ① 已签（§①.11） |
+| T026 | `crates/hivegui/src/runtime/{execution,mod}.rs` | `hiveweb_independence` | 5/5 Green | `ExecutionRegistry`（Tokio `mpsc` + `BTreeMap<ExecutionId, AbortHandle>` + 有界事件桥 1024 条 + 唯一取消入口 `cancel_execution`/`cancel_all`）+ `LocalAdapter` trait（默认 `NoopLocalAdapter`）+ `ExecutionState` 5 态机 + `EventSink` 集成 + `composition_factory_for_test` 不读 `HIVEWEB_URL` 不构造 `hiveweb` 客户端 |
+| T027 | `crates/hivegui/src/runtime/diagnostics.rs` + `crates/hivegui/src/logging.rs` | `logging_contract` + `sensitive_persistence_contract`（Foundation 行） | 10/10 + 7/7 = 17/17 Green | `ActivityLog::open` + 完整换行 JSON + 轮转（flush + fsync → 同目录 `temp + rename` → `fsync(parent)`）+ retention high-watermark 持久化（staging → fsync(staging) → rename → fsync(parent)）+ 按 `occurred_at` 7×24h 强制时间轮转 + 崩溃安全 compaction + 单条 100,000,000 bytes 容量预检零写入拒绝 + `hivegui-logging-v1` 稳定 schema + `cause_summary` UTF-8 字节边界 ≤512 + `function_not_executable` 在 `stable_error_mapping` + `Sanitize::central_sanitizer` 原始 cause 脱敏 + adapter 入口去重 + Foundation 7 个 canary 行 0 命中 |
+| T028 | `crates/hivegui/src/datasource/store.rs` + `datasource/{mod,sql_source_inventory,search_normalization,search_index,query_count}.rs` | `storage_query_plans` + `query_count` + `support_contract` | 13/13 + 7/7 + 9/9 = 29/29 Green | `PRAGMA journal_mode=WAL` / `foreign_keys=ON` / `busy_timeout` + 单实例写锁（`flock`/`fcntl`）+ 1s/2s/4s 仅针对 SQLITE_BUSY/文件占用 3 次重试 + 唯一 `verify_sqlite_health` 双 PRAGMA（不替代 T022）+ 4 静态 checked query + 封闭 enum/`match` 选择静态 checked query + `sql_source_inventory` 269 行 workspace 全量 SQL source inventory + `production_query_builder_call_count_is_exactly_zero` 0 次 + `hivegui-nfkc-casefold-v1` 1..=255 标量 normalizer + `unicode-normalization = 0.1.25` 直接依赖 + Unicode 17.0.0 `NFKC_CF`+NFC + checksum 验证 + 启动 FTS5 trigram tokenizer 探针 + 长度≥3 走 FTS5 trigram + 长度 1-2 走事务同步 short-gram + N+1 observer |
+
+### 阶段原样 Green 命令
+
+- `cargo test -p hive-runtime-core --test abi_contract --test capability_contract --test persisted_tool_contract --test execution_contract --test workflow_contract` 退出 0：6 + 8 + 7 + 4 + 5 = **30/30 Green**
+- `cargo test -p hivegui --test migration_compatibility` 退出 0：**9 passed; 0 failed; 1 ignored**（1 ignored 为 `regenerate_committed_migration_fixtures_from_versioned_historical_ddl`，属 fixture regen 显式触发路径，常规 suite 不运行）
+- `cargo test -p hivegui --test plugin_artifact_schema_contract` 退出 0：**10/10 Green**
+- `cargo test -p hivegui --test sqlite_health_contract` 退出 0：**9/9 Green**
+- `cargo test -p hivegui --test store_resilience` 退出 0：**11/11 Green**
+- `cargo test -p hivegui --test relationship_scope_contract` 退出 0：**3/3 Green**
+- `cargo test -p hivegui --test search_index_contract` 退出 0：**22/22 Green**
+- `cargo test -p hivegui --test device_key_lifecycle` 退出 0：**8/8 Green**
+- `cargo test -p hivegui --test hiveweb_independence` 退出 0：**5/5 Green**
+- `cargo test -p hivegui --test logging_contract` 退出 0：**10/10 Green**
+- `cargo test -p hivegui --test sensitive_persistence_contract` 退出 0：**7/7 Green**（Foundation 行）
+- `cargo test -p hivegui --test storage_query_plans` 退出 0：**13/13 Green**
+- `cargo test -p hivegui --test query_count` 退出 0：**7/7 Green**
+- `cargo test -p hivegui --test entity_validation` 退出 0：**7/7 Green**
+- `cargo test -p hivegui --test support_contract` 退出 0：**9/9 Green**
+- `cargo test -p hivegui --test accessibility` 退出 0：**33/33 Green**（含 T016 键盘/焦点/heartbeat + US1 sidebar + T023 migration recovery + T025 device key recovery）
+- `cargo test -p hivegui --lib` 退出 0：**87/87 Green**（含 `wasm::tests` 4/4 + `ui::dag_editor_view::tests` 等）
+
+**Foundation 阶段累计 Green（2026-08-06）**：30（runtime-core）+ 9 + 10 + 9 + 11 + 3 + 22 + 8 + 5 + 10 + 7 + 13 + 7 + 7 + 9 + 33 + 87（含 lib unit 87 中属 Foundation 的部分；lib 87 已含 US1/US2-7 partial 单元测试，Foundation 净增量在 `wasm::tests` 4 + `runtime::execution` + `runtime::workflow` + 单元 = 12 上下，余下 75 属故事层单元）= **220+ Green / 0 Red / 1 ignored（fixture regen）**。
+
+### Foundation Red→Green 链（独立可追溯）
+
+- **T018**：T009 Red（`abi_contract` 缺失 ABI/manifest/host-call 类型，6 个 E0432）→ 2026-08-06 6/6 Green + 4/4 unit Green
+- **T019**：T010 Red（`execution_contract` 缺 `ExecutionContext`/`EventSink`/终态类型，4 个 E0432）→ 2026-08-06 4/4 Green
+- **T020**：T011 Red（`workflow_contract` 缺 `WorkflowGraph`/`NodeType`/`LayerNodeOutcome`，5 个 E0432）→ 2026-08-06 5/5 Green
+- **T021**：T016B Red（`capability_contract` 11 个 E0432 + `persisted_tool_contract` 6 个 E0432；T017F 2026-07-30 已签）→ 2026-08-06 15/15 Green
+- **T022**：T012 Red（`migration_compatibility` / `store_resilience` / `storage_query_plans` / `query_count` / `sql_safety_contract` 多个 E0432；T016C/D Red 经 T017F 2026-07-30 签；T017G Red 经 T017H 2026-07-30 签）→ 2026-08-06 64/64 Green
+- **T023**：T016 Red（`accessibility` 1 个 E0432 命中 `key_recovery_view`/`migration_recovery_view`）→ 2026-08-06 accessibility 33/33 Green
+- **T024**：T013 Red（`entity_validation` 缺 `datasource::validation` 7 个 E0432 + `relationship_scope_contract` 1 passed/2 failed）→ 2026-08-06 7/7 + 3/3 Green
+- **T025**：T014 Red（`device_key_lifecycle` 缺 `datasource::key_store` 生命周期边界 8 个 E0432）→ 2026-08-06 8/8 Green；T025R ① 已签（§①.11）
+- **T026**：T015 Red（`hiveweb_independence` 缺 `FoundationRuntimeComposition` 与 `runtime::execution` 5 个 E0432）→ 2026-08-06 5/5 Green
+- **T027**：T016A Red（`logging_contract` 8/8 因 `ActivityLog::open` 未实现 Red，T017F 2026-07-30 已签）→ 2026-08-06 10/10 + 7/7 Foundation canary Green
+- **T028**：本任务为 Foundation Green 总览，不引入新 Red；其 Green 由 T018-T027 闭合后复跑全部 `owner_phase=Foundation` 测试 + T016E inventory/helper/source-contract 自测
+
+### 与 T025R 6 边界的联动（截至 2026-08-06）
+
+- **⑤**（主密码认证）：**已签**（2026-07-30，§⑤.11）→ Phase 1A 关闭
+- **①**（FR-012 设备密钥 + FR-046 启动门禁）：**已签**（2026-08-06，§①.11）→ T025 合并门禁解除
+- **②**（SQLite sidecar cleanup 协议）：**已签**（2026-08-06，§②.11）→ T022 合并门禁解除
+- **③**（Plugin sandbox）：Pending → 等待 US8 T076 + T082 完成后由 T025R 独立签字
+- **④**（FR-026 备份 age 加密）：Pending → 等待 US13 T119 + T123 完成后由 T025R 独立签字
+- **⑥**（HiveGUI 远程 MySQL 公开边界 FR-048）：Pending → 等待 US2 T037 + T040 完成后由 T025R 独立签字
+
+本签字范围仅限 T022 / T025 合并门禁解除；T138 跨介质汇总不受本 partial closure 影响，须待 T025R 6 边界全部签字后复跑。
+
+### US1+ / Phase 3-15 状态
+
+- US1 导航（Home/Ai/Tools 路由 + sidebar 键盘 + AccessKit + p95 基线）：T032 + T033 partial Green，5/7 sidebar 子断言 + 5/5 navigation 全绿 + migration/key_recovery 状态机 + T016 UI 全部解除编译期 Red
+- US2 数据源管理（datasource_store + datasource_ui_contract + datasource_connection）：T040 20/20 Green
+- US3 全局配置（global_config_store + modal）：T046 7+3=10/10 Green
+- US4 LLM Provider/Preset/Model（llm_config_store + llm_provider + llm_config view）：T054 3+5+5+4=17/17 Green
+- US5 Tag 标签管理（tag_management + tag_view）：T059 5+3=8/8 Green
+- US6 Category 分类管理（category_management + category_view）：T065 6+5=11/11 Green
+- US7 Capability 能力管理（capability_management + runtime_capability_catalog + capability_view）：T071 5+15+4+3=27/27 Green
+- US8 Plugin 插件管理（plugin_artifacts + plugin_compatibility + plugin_limits）：T076 15/15 Green；T082 self-attest 闭合
+- US9 Function 函数管理（function_management）：T089 5/5 Green
+- US10 Workflow DAG（workflow_store）：T100 4/4 Green
+- US11 Tool 工具管理（tool_management）：T107 4/4 Green
+- US12 Skill 技能管理（skill_management）：T114 3/3 Green
+- US13 Local Agent session（agent_session + agent_management + local_agent_runtime + conversation_retention + cancellation + backup_restore + diagnostics）：T123 4 + T136 13+11+9+4+6+9 = **58/58 Green**
+- Phase 16 Polish / Cross-cutting（T137-T147）：T145/T146/T147 Pending；T138 跨介质汇总待 T025R 6 边界全部签字后复跑
+
+### Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+- **Handle**: user（本仓库唯一 active maintainer，本特性 `011-hivegui-standalone-mode` 的 feature owner）
+- **Date**: 2026-08-06
+- **Scope**: T018-T028 Foundational 实施批 + T025R ① ② 边界（T022 + T025 合并门禁）
+- **Test-review 流程（dedicated）结论**: 通过
+- **重新检查条款**:
+  1. T017F（2026-07-30）+ T017H（2026-07-30）+ T001 PR #4 `2eee211` 远端 CI 全部 success 作为 Foundation Green 启动条件，**已逐项复核** ✓
+  2. Foundation Green 测试范围覆盖 T009-T016D + T016F + T017G 中 `owner_phase=Foundation` 的全部行为 + T016E inventory/helper/source-contract 12/12 self-test only，**不** 含 US1 sidebar 等产品 scroll 行与 T013/T016F/T017G 未来故事行（已留待各故事 reviewer 激活） ✓
+  3. T022 migrations 单一 DDL owner + 运行时 Store 散落 DDL 全部禁止 + T028 `production_query_builder_call_count_is_exactly_zero` 0 次 ✓
+  4. T025R ① 设备密钥 + ② sidecar cleanup 边界由本仓库唯一 active maintainer self-attest（§①.11 + §②.11），其余 ③ ④ ⑥ 仍 Pending 且未伪装为已签字 ✓
+  5. T128T129/T130 所有权 + `committed` 后写闸门 + Plugin no-replace/不可变更新 + v4 内部耐久 schema 已在 T022 实现并经 T025R ② 复核 ✓
+  6. `hivegui-nfkc-casefold-v1` normalization ID + Unicode 17.0.0 `NFKC_CF`+NFC provenance/checksum + FTS5 trigram + 1-2 字符 short-gram 全部 T017H 签字 + T022 实现 + T028 启动探针三层闭环 ✓
+  7. doc 硬门槛（每个新增 `pub fn` 完成 doc comment + `#![warn(missing_docs)]` + `cargo doc --no-deps` 0 警告）已在 T018/T022/T025/T027 各自 Green 状态内显式复核 ✓
+- **Phase 2 Foundational Green 门禁解除**: T129/T130（Plugin v4 ledger 与 ownership state 仍待 US8 故事层激活）+ T138 跨介质汇总（待 T025R 6 边界全部签字）外，Phase 2 Foundational 实施批已闭合；US1+ / Phase 3-15 各用户故事可继续推进
+- **本 self-attest 不替代 T025R ③ ④ ⑥ 边界签字**：三个边界仍 Pending，分别由 US8 / US13 / US2 完成后由 T025R 独立 self-attest
+- **重新激活条件**: 如未来新增 maintainer，T025R 6 边界的"独立 security reviewer + 第二 maintainer 双签字" 立即恢复
+
 ## T017D 实施前审计（待 T001 独立 PR/远端 CI 门禁解除）
 
 # Implementation Review Checklist: HiveGUI 实体管理

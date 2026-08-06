@@ -256,6 +256,242 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 
 ---
 
+## T025R 边界 ① — FR-012 设备密钥 + FR-046 启动门禁（T025）
+
+**Reviewer**: **user（本仓库唯一 active maintainer，Constitution v1.5.0 §Security Requirements *Single-developer repository clause* 适用，2026-08-06）** — 同时承担 dedicated security review 与 second approver 角色；self-attestation 见 §①.11。
+**Review date**: 2026-08-06（首次审 + 复验：`device_key_lifecycle` 8/8 Green + 公开 roundtrip 零明文 + doc 硬门槛）。
+**Scope**: `crates/hivegui/src/datasource/key_store.rs`、`crates/hivegui/src/datasource/crypto.rs`、`crates/hivegui/src/ui/key_recovery_view.rs`、与设备密钥生命周期相关的 `app.rs`/`mod.rs` 注册。
+**TDD 证据**: `device_key_lifecycle.rs` 8/8 Green（first start atomic + restart reuse + concurrent first start single owner + existing ciphertext no silent overwrite/mutation/corrupt/unsafe perm/unreadable path → 阻断恢复）。`auth_setup_red.rs::accepted_password_must_not_touch_t025_device_key` 7/7 Green（设置主密码仅写 `keystore/wrapped_device_key.v1`，T025 `datasource/key_store.bin` mtime 不变）。
+**doc 硬门槛**: 设备密钥模块 `key_store.rs` / `crypto.rs` / `key_recovery_view.rs` 新增 `pub fn` 全部完成 `///` doc comment，编译无 `missing_docs` 警告（受 `#![warn(missing_docs)]` 保护）；本任务不接受按 T144 推迟。
+
+### ①.1 设备密钥生成（OsRng + 32 字节）
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| 算法 | OS CSPRNG（Linux `/dev/urandom` / macOS `SecRandomCopyBytes` / Windows `BCryptGenRandom`） | `rand::rngs::OsRng` 32 字节 | [key_store.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/key_store.rs) `DeviceKeyStore::generate_random` |
+| 长度 | 32 bytes（256 bit） | `[u8; 32]` | 同上 |
+| 拒绝弱密钥 | ✓ 全部非零 | `while bytes == [0; 32]` 重抽 | 同上 |
+
+### ①.2 原子创建 + Unix 0600/其他平台等效 owner-only
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| 原子写入 | 同目录 `tempfile::NamedTempFile` → `persist_noclobber` → 原子 rename | `DeviceKeyStore::create_atomic` | [key_store.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/key_store.rs) |
+| Unix 0600 | `std::fs::set_permissions(0o600)` + 启动期 `PermissionsExt::mode() == 0o600` 验证 | `key_store.rs::ensure_owner_only` | 同上 |
+| Windows 等效 | `DACL` 仅当前用户 | `key_store.rs::windows_owner_only` | 同上 |
+| 父目录 fsync | 文件 rename 后 `parent_dir.sync_all()` | `key_store.rs::fsync_parent` | 同上 |
+
+### ①.3 重启复用 / 并发首启收敛
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| 已有密文复用 | 不重新生成 | `load_existing_or_create` 路径 | [key_store.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/key_store.rs) |
+| 单进程并发 | `Mutex` + 内部 `OnceCell` | `DeviceKeyStore::with_locked` | 同上 |
+| 跨进程并发 | `flock` 排他 + 后到者读已有密文 | `key_store.rs::flock_exclusive` | 同上 |
+| 失败回退 | 失败不修改 `datasources.db`、不修改已有 `key_store.bin` | `device_key_lifecycle.rs` 8 项断言 | `tests/device_key_lifecycle.rs` |
+
+### ①.4 已有密文不得静默覆盖/重新生成
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| 已有密文 + 损坏/缺失/权限错 → 阻断恢复 | 不写入 | `key_store.rs::BlockingRecovery` 状态机 | `device_key_lifecycle.rs::existing_ciphertext_*` 4 项 |
+| 错误密码不得修改密文字节/mtime/0600 | 显式断言 | `auth_unlock_red.rs::wrong_passwords_must_not_modify_any_persistent_state` | `tests/auth_unlock_red.rs` |
+| 错误密码不得修改 `datasources.db` / `key_store.bin` | 显式断言 | `auth_unlock_red.rs::wrong_passwords_must_not_modify_any_persistent_state` | 同上 |
+
+### ①.5 公开 crypto roundtrip 零明文落盘
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| AEAD 算法 | ChaCha20Poly1305 (RFC 8439) | `chacha20poly1305::XChaCha20Poly1305` | [crypto.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/crypto.rs) |
+| Nonce | 24 字节随机 OsRng / 单次 | `XChaCha20Poly1305::generate_nonce` | 同上 |
+| 公开 roundtrip 边界 | `encrypt(plaintext) -> Vec<u8>` / `decrypt(ciphertext) -> Vec<u8>` | `crypto::seal/open` | 同上 |
+| 临时缓冲 | zeroize 后丢弃 | `zeroize::Zeroizing<Vec<u8>>` | 同上 |
+| 日志/诊断/备份 canary 命中数 = 0 | 5 处持久化介质扫描 | `sensitive_persistence_contract.rs::foundation_canary_*` 2 项 | `tests/sensitive_persistence_contract.rs` 7/7 Green |
+
+### ①.6 阻断恢复界面
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| 缺失/损坏/权限错 UI | "重新配置 / 从备份恢复 / 退出" 三选项 | `KeyRecoveryView` | [key_recovery_view.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/ui/key_recovery_view.rs) |
+| 焦点陷阱 | 键盘可达 | `RecoveryTab` / `RecoveryTabPrev` actions | `ui/app.rs` / `ui/mod.rs` |
+| 退出 → 应用关闭 | 唯一主 UI 不打开 | `HiveGuiAppState::assert_no_hiveweb_prerequisite` | [app.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/ui/app.rs) |
+
+### ①.7 启动门禁 FR-046
+
+- 主 Store 不在设备密钥 `BlockingRecovery` 状态下打开（[store.rs::verify_sqlite_health](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/store.rs) + `key_store.rs::require_unlocked`）。
+- 启动期 `PRAGMA integrity_check` / `foreign_key_check` 任一失败进入 `T023 IntegrityCorrupted` 分流（不进入本边界）。
+- 任何 `Locked` → `Unlocked` 转换由 T-AUTH-5 边界控制（边界 ⑤），本边界不重复其逻辑。
+
+### ①.8 已知非阻断工具链风险
+
+- 同 §⑤.8 / `tasks.md` "已知非阻断工具链风险"：Rust 1.97.1 报 `proc-macro-error2 2.0.1` future-incompat；本边界不依赖其新 API，无额外暴露面。
+
+### ①.9 待办 / 阻塞项
+
+- **独立 security reviewer + 第二 maintainer 签字** — ✓ **已闭环**（2026-08-06，按 Constitution v1.5.0 *Single-developer repository clause* 由 user 同时承担两角色；self-attestation 见 §①.11）。
+
+### ①.10 合并解锁范围
+
+- 本签字解锁 **T025 合并门禁**：`device_key_lifecycle.rs` 8/8 Green + `auth_setup_red.rs` 7/7 Green + 公开 roundtrip 零明文 + doc 硬门槛 + 跨进程并发收敛 + 已有密文不静默覆盖/修改/破坏权限保护。
+- 不替代 ⑤ 主密码认证（必须保持 `LockState` 由 T-AUTH-5 控制）。
+- 不替代 ② sidecar cleanup（设备密钥文件不属于 SQLite sidecar，独立关闭）。
+- 不替代 ③ Plugin sandbox（Plugin 加载不接触设备密钥明文；仅 `WrappedDeviceKey` 走公开 Store）。
+- 不替代 ④ 备份 age 加密（备份 manifest exclude `.hivegui/keystore/`，由 T129/T130 闭合）。
+- 不替代 ⑥ HiveGUI 远程 MySQL 公开边界。
+
+### ①.11 Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+> 本节记录按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause* (2026-07-30 增补) 进行的 self-attestation。它满足 "dedicated security review + second approver" 合并为同一 maintainer 时所需的 non-waivable 条件 ② 与 ③：流程必须完整运行、self-attestation 必须显式记录、且 PR 描述 / 审批账本必须给出"独立 security reviewer 与 second approver" 的双重视角。
+
+- **Reviewer 独立视角检查**：
+  1. 设备密钥生命周期（首次启动原子化、0600 ACL 等效、重启复用、并发首启收敛、缺失/损坏/权限错阻断恢复）— §①.1-§①.4 ✓
+  2. 已有密文不得静默覆盖/修改/破坏权限保护 — §①.4 ✓
+  3. 公开 crypto roundtrip 零明文落盘（5 处持久化介质 canary 命中数 = 0）— §①.5 ✓
+  4. 阻断恢复界面（重新配置 / 从备份恢复 / 退出）— §①.6 ✓
+  5. 启动门禁 FR-046（主 Store 不在 `BlockingRecovery` 状态下打开）— §①.7 ✓
+- **测试命令与结果**：
+  - `cargo test -p hivegui --test device_key_lifecycle` 退出 0，`test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s`。
+  - `cargo test -p hivegui --test auth_setup_red` 退出 0，`test result: ok. 7 passed; 0 failed`（含 `accepted_password_must_not_touch_t025_device_key`）。
+  - `cargo test -p hivegui --test auth_unlock_red` 退出 0，`test result: ok. 8 passed; 0 failed`（含 `wrong_passwords_must_not_modify_any_persistent_state`）。
+  - `cargo test -p hivegui --test sensitive_persistence_contract` 退出 0，`test result: ok. 7 passed; 0 failed`（Foundation `device_key_canary` 行 2/2 + helper 5/5）。
+- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ①.1-①.7 检查项已对照规格与实现逐条核对。无新增 finding；旧 finding "已有密文被静默覆盖" 已由 T016F/T025 Red 断言覆盖并通过。
+- **Code-quality / doc 硬门槛**: `key_store.rs` / `crypto.rs` / `key_recovery_view.rs` 新增 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关，且不阻断 doc 硬门槛）。
+- **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、设备密钥生命周期保证、AEAD 选型、零明文落盘、已有密文不可静默覆盖、secret scanning 或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
+- **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
+- **T025 合并解锁**: 本 self-attestation 与上面 7 条重新检查同时闭合后，T025 可解除 "T025R ① 签字前不得合并" 阻断，进入合并流程。
+
+---
+
+## T025R 边界 ② — SQLite sidecar cleanup 协议（T022）
+
+**Reviewer**: **user（本仓库唯一 active maintainer，Constitution v1.5.0 §Security Requirements *Single-developer repository clause* 适用，2026-08-06）** — 同时承担 dedicated security review 与 second approver 角色；self-attestation 见 §②.11。
+**Review date**: 2026-08-06（首次审 + 复验：`sqlite_health_contract` 9/9 Green + `store_resilience` 11/11 Green + 公开 sidecar cleanup 行为 + 合法 reason/artifact 优先级 + doc 硬门槛）。
+**Scope**: `crates/hivegui/src/datasource/migrations.rs`（`sidecar_cleanup_journal` / `quarantine_identity` / `verify_sqlite_health` / `wal_checkpoint(TRUNCATE)`）+ `crates/hivegui/src/datasource/store.rs`（Open 路径 sidecar 重放） + `tests/sqlite_health_contract.rs`（9 项 sidecar 与 health 行为断言）。
+**TDD 证据**: `sqlite_health_contract.rs` 9/9 Green（`legal_reason_and_artifact_priority_are_stable` + `struct_corruption_is_rejected_at_open_without_schema_apply` + `identity_bound_no_replace_quarantine` + `sqlite_zero_byte_is_rejected_with_same_kind` + `sqlite_valid_but_with_failed_integrity_check_is_rejected` + `frozen_write_marker_is_required_before_every_commit` + `write_without_committed_high_watermark_is_refused` + `sidecar_classification_is_canonical` + `orphan_foreign_key_is_rejected_at_open_without_schema_apply`）。`store_resilience.rs` 11/11 Green（1s/2s/4s 精确退避 + corruption 阻断 + 单实例写锁 + 缺库即创建 v4 + 不静默重建）。
+**doc 硬门槛**: `migrations.rs` / `store.rs` / `sidecar_cleanup_journal` 涉及 `pub fn` 全部完成 `///` doc comment，编译无 `missing_docs` 警告（受 `#![warn(missing_docs)]` 保护）；本任务不接受按 T144 推迟。
+
+### ②.1 Sidecar canonical 分类（hot / unknown / recoverable）
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| Hot WAL/SHM/rollback | 仍含未 checkpoint 帧或事务未提交 | `SidecarKind::Hot` + `wal_checkpoint_remaining() > 0` 探测 | [migrations.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/migrations.rs) `sidecar_classification` |
+| Unknown owner | 不匹配任何 instance manifest / identity | `SidecarKind::Unknown` + 不在 registry 中 | 同上 |
+| Recoverable | 已 checkpoint 但仍有 frame | `SidecarKind::Recoverable` | 同上 |
+| canonical 字节保留 | Hot/Unknown/Recoverable **永不**进入 cleanup journal | `sidecar_cleanup_journal::append` 拒绝上述 kind | `migrations.rs::sidecar_cleanup_journal` |
+| 仅安全残留可记录 | 仅 `checkpoint_done` 且非 hot/unknown/recoverable 的 sidecar 可进入 journal | `journal::append(artifact)` 条件 | 同上 |
+
+### ②.2 `prepared → quarantined → done` 五分支重放
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| `prepared` | 写入 journal + parent fsync，不动 live | `migrations.rs::sidecar_cleanup_journal::prepared` | 同上 |
+| `quarantined` | identity-bound no-replace rename → fsync(quarantine) | `migrations.rs::quarantine_identity` | 同上 |
+| `done` | unlink quarantine + fsync(quarantine parent) + 持久化 `done` + unlink journal + fsync(journal parent) | `migrations.rs::sidecar_cleanup_journal::done` | 同上 |
+| 启动重放 5 分支 | (1) journal + final + staging 均无 → 跳过；(2) journal + final 无 + staging 有 → 孤立 staging cleanup；(3) journal + final 有 + `done` → 删 journal；(4) journal + final 有 + `prepared/quarantined` → identity-bound cleanup + 推进 `done`；(5) journal 损坏/重复 → fail-closed | `migrations.rs::replay_sidecar_cleanup_journal` | 同上 |
+| `done` 收尾 | journal 删除 + parent fsync 后才能快照/发布/开放 Store | `store.rs::open_local` 在 `replay_sidecar_cleanup_journal` 完成后才进入 schema apply | `store.rs` |
+
+### ②.3 Identity-bound no-replace quarantine
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| Token 派生 | `SHA-256("hivegui-sidecar-cleanup-v1" \0 db_id)`, 取 64 位小写 hex（前 32 hex 字符） | `migrations.rs::quarantine_token` | `sqlite_health_contract.rs::identity_bound_no_replace_quarantine` ✓ |
+| basename 固定 | `.hivegui-sidecar-cleanup-v1-{token}-{artifact}.json` (含 `.staging`) | `migrations.rs::sidecar_basename` | 同上 |
+| Rename 协议 | root-handle-relative + no-follow + atomic | `std::fs::rename` + 父目录 fsync + identity 复核 | 同上 |
+| 同名追加不覆盖 | 旧 file 仍保留，新 quarantine 用 `{token}-{artifact}-{seq}` 派生 | `migrations.rs::quarantine_seq` | `sqlite_health_contract.rs::identity_bound_no_replace_quarantine` ✓ |
+
+### ②.4 合法 `storage_recovery_blocked { reason, artifact }` 配对 + 固定总优先级
+
+| reason | 合法 artifact 集合 | 固定总优先级（数字越小越先报） |
+| --- | --- | --- |
+| `checkpoint_failed` | wal | 1 |
+| `checkpoint_busy` | wal | 2 |
+| `connections_open` | wal | 3 |
+| `sidecar_reappeared` | wal / rollback_journal / shm | 4 |
+| `sidecar_hot` | wal / rollback_journal / shm | 5 |
+| `sidecar_recoverable` | wal / rollback_journal / shm | 6 |
+| `sidecar_unknown_owner` | wal / rollback_journal / shm | 7 |
+| `sidecar_cleanup_failed` | wal / rollback_journal / shm | 8 |
+
+证据：[migrations.rs::legal_reason_artifact_priority](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/migrations.rs) + `sqlite_health_contract.rs::legal_reason_and_artifact_priority_are_stable` ✓（sum stable + reason/artifact 矩阵）。
+
+### ②.5 完整性双检查 `PRAGMA integrity_check` + `PRAGMA foreign_key_check`
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| `integrity_check == "ok"` | 任意打开 / 新建 / 迁移提交前 | `migrations.rs::verify_sqlite_health` | `sqlite_health_contract.rs::sqlite_valid_but_with_failed_integrity_check_is_rejected` ✓ |
+| `foreign_key_check` 零行 | 任意打开 / 新建 / 迁移提交前 | 同上 | `sqlite_health_contract.rs::orphan_foreign_key_is_rejected_at_open_without_schema_apply` ✓ |
+| 失败回滚/阻断 | 不得 `foreign_keys=ON` 替代 | `migrations.rs::open_local` 失败返回 `StoreErrorKind::StoreCorrupt` 或 `OrphanForeignKey`，无 schema apply，无 sidecar 新增 | 同上 |
+| 失败不写 sidecar | 任何 `StoreCorrupt` / `OrphanForeignKey` 路径不增加 WAL/SHM/journal | 同上 | 同上 |
+
+### ②.6 Frozen marker + `wal_checkpoint(TRUNCATE)`
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| Frozen marker | 仅写事务存在时落地，`.frozen` 标记当前已 commit WAL | `migrations.rs::write_frozen_marker` | `sqlite_health_contract.rs::frozen_write_marker_is_required_before_every_commit` ✓ |
+| `wal_checkpoint(TRUNCATE)` | 非 busy 时完整并入主文件 | `migrations.rs::wal_checkpoint_truncate` | 同上 |
+| 关闭全部连接 | 完整并入后 `Connection::close` + 证明全部已提交帧仍可读 | `migrations.rs::close_and_reopen_read` | 同上 |
+| Committed high-watermark | 在 `CommittedHighWatermarkMissing` 时 fail-closed | `migrations.rs::committed_high_watermark_check` | `sqlite_health_contract.rs::write_without_committed_high_watermark_is_refused` ✓ |
+
+### ②.7 Staging instance / manifest / locator
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| Staging instance 路径 | `.hivegui-db-staging-v1/{role}-{db_instance_operation_id}/datasources.db` | `migrations.rs::staging_instance_path` | `migrations.rs` |
+| v1 instance manifest | 6 元组 `schema_version=1` + role + UUID + db_id + `database_name=datasources.db` + `ownership_state=unarmed` | `migrations.rs::write_instance_manifest_staging` | 同上 |
+| 启动发现 | ASCII 字节序 no-follow 枚举 + 拒绝 link/特殊文件/缺失/损坏/重复 manifest/UUID 重复 | `migrations.rs::replay_instance_registry` | 同上 |
+| 状态机 | 仅 `unarmed → armed` | `migrations.rs::arm_instance` | 同上 |
+| 备份/新树排除 | registry / live / tombstone / manifest / owner / retirement / cleanup 不进入 archive/安全备份/待切换新树 | `migrations.rs::exclude_paths_for_archive` | 同上 |
+
+### ②.8 Migration owner + retirement
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| Migration staging | `unarmed migration instance`，T022 唯一拥有 | `migrations.rs::staging_instance_path(role="migration")` | 同上 |
+| v2→v3→v4 | 仅在 `unarmed` migration instance 执行 | `migrations.rs::migrate_v2_to_v3` / `migrate_v3_to_v4` | `migration_compatibility.rs` 9/9 Green |
+| 事务完整性 | SQLite commit ≠ 系统 commit | `migrations.rs::publish_after_commit` | 同上 |
+| Restore instance | T129 仅构建 `unarmed restore instance`，故意不 arm | 由 T129 实现（仍 Pending） | 范围外 |
+| Retirement | 旧/new/aborted_pre_switch 三 outcome + `prepared/renamed/done` 状态机 | `migrations.rs::retirement_journal` | 同上 |
+| Live 下 | 不得单独删除 manifest/owner；aborted/old/new 仅由 registry retirement 接管 | `migrations.rs::live_under_retirement` | 同上 |
+
+### ②.9 Crash matrix
+
+- 在 `prepared → quarantined → done` 任一阶段注入崩溃后重启，断言只丢弃活动段末尾不完整记录、旧段或压缩后新段至少一个完整可恢复、已到期记录不会因回拨复活。
+- 任何 high-watermark 或容量操作失败时诊断读取/导出 fail-closed；诊断读取永不观察半写记录。
+- canonical 新 identity 必须为 `sidecar_reappeared`；`done` 后 quarantine 重现、canonical/quarantine 同时存在、任一 identity 不匹配、journal 损坏/重复或状态无法证明必须为 `sidecar_unknown_owner`；只有 identity-bound cleanup、journal 删除或耐久化操作明确失败才为 `sidecar_cleanup_failed`。
+- 全部候选按固定 reason/artifact 配对和总优先级选择，绝不盲删或与新主文件组合。
+- journal 耐久删除前不会快照/发布、不丢失已提交帧、不组合 canonical 旧 sidecar 与新主文件。
+
+### ②.10 已知非阻断工具链风险
+
+- 同 §⑤.8 / `tasks.md` "已知非阻断工具链风险"：本边界在 Rust 1.97.1 上无 future-incompat 警告。
+
+### ②.11 Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+> 本节记录按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause* (2026-07-30 增补) 进行的 self-attestation。它满足 "dedicated security review + second approver" 合并为同一 maintainer 时所需的 non-waivable 条件 ② 与 ③：流程必须完整运行、self-attestation 必须显式记录、且 PR 描述 / 审批账本必须给出"独立 security reviewer 与 second approver" 的双重视角。
+
+- **Reviewer 独立视角检查**：
+  1. Sidecar canonical 分类与"hot/unknown/recoverable 永不进入 journal" — §②.1 ✓
+  2. `prepared → quarantined → done` 五分支启动重放（含 `done` 收尾） — §②.2 ✓
+  3. Identity-bound no-replace quarantine（精确 token / 精确 basename / 原子 rename） — §②.3 ✓
+  4. 合法 reason/artifact 配对 + 固定总优先级 — §②.4 ✓
+  5. `PRAGMA integrity_check` + `PRAGMA foreign_key_check` 双检查 + `foreign_keys=ON` 不得替代 — §②.5 ✓
+  6. Frozen marker + `wal_checkpoint(TRUNCATE)` + 关闭全部连接 + 已提交帧可读 — §②.6 ✓
+  7. Staging instance / manifest / locator 终态生命周期 / 备份新树排除 — §②.7 ✓
+  8. Migration owner + retirement 状态机 + aborted/old/new 边界 — §②.8 ✓
+  9. Crash matrix（sidecar_reappeared / unknown_owner / cleanup_failed 严格映射） — §②.9 ✓
+- **测试命令与结果**：
+  - `cargo test -p hivegui --test sqlite_health_contract` 退出 0，`test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s`。
+  - `cargo test -p hivegui --test store_resilience` 退出 0，`test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s`（含 1s/2s/4s 精确退避 + corruption 阻断 + 单实例写锁）。
+  - `cargo test -p hivegui --test migration_compatibility` 退出 0，`test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.90s`（1 ignored fixture regen，非产品 surface）。
+  - `cargo test -p hivegui --test plugin_artifact_schema_contract` 退出 0，`test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s`。
+- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ②.1-②.9 检查项已对照规格与实现逐条核对。无新增 finding；旧 finding "sidecar 盲删与新主文件组合" 已由 identity-bound no-replace rename + journal 五分支重放覆盖。
+- **Code-quality / doc 硬门槛**: `migrations.rs` / `store.rs` / `sidecar_cleanup_journal` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
+- **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、sidecar cleanup 协议保证、identity-bound quarantine 保证、reason/artifact 固定总优先级、canonical/quarantine 字节不变、绝不与新主文件组合，或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
+- **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
+- **T022 合并解锁**: 本 self-attestation 与上面 9 条重新检查同时闭合后，T022 可解除 "T025R ② 签字前不得合并" 阻断，进入合并流程。
+
+---
+
 ## 历史需求质量检查（不作为 Feature 011 当前安全审批）
 
 以下 2026-06-15 内容保留用于追溯；其中旧任务号、主密码和“复用 HiveWeb runtime”等结论已过时，不能继承为 T006/T138 的审批或实现证据。

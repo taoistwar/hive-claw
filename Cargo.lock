@@ -227,6 +227,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "globset",
+ "hive-runtime-core",
  "log",
  "mime_guess",
  "once_cell",

@@ -36,6 +36,7 @@ command = { path = "../command" }
 config = { path = "../config" }
 security = { path = "../security" }
 cron = { path = "../cron" }
+hive-runtime-core = { path = "../hive-runtime-core" }
 
 [dev-dependencies]
 tokio = { workspace = true }

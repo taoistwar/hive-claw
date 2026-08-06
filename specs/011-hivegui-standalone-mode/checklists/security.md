@@ -492,6 +492,315 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 
 ---
 
+## T025R 边界 ③ — Plugin sandbox（T073-T079 + T082）
+
+**Reviewer**: **user（本仓库唯一 active maintainer，Constitution v1.5.0 §Security Requirements *Single-developer repository clause* 适用，2026-08-06 签字）** — 同时承担 dedicated security review 与 second approver 角色；self-attestation 见 §③.11。
+**Review date**: 2026-08-06（首次审 + 复验：`.with_wasi(true) → .with_wasi(false)` 修复 + `plugin_sandbox_red` 7/7 Green + `plugin_artifact_schema_contract` 10/10 Green + `desktop_host_call` 6/6 Green + doc 硬门槛）。
+**Scope**: `crates/hivegui/src/runtime/plugin_executor.rs`（Wasmtime/Extism 桥 + 资源限制 + 实例池 + `with_wasi(false)` 单点）+ `crates/hivegui/src/datasource/plugin_artifacts.rs`（no-replace / 不可变键 / 旧句柄 / 租约）+ `crates/hivegui/src/datasource/migrations.rs`（`plugin_artifact_operations` / `plugin_artifact_gc` ledger）+ `crates/hive-runtime-core/src/wasm.rs`（`WasmSandboxConfig::deny_all_wasi()`）+ 根 workspace `Cargo.toml`（`extism = { version = "=1.30.0", default-features = false }`）+ `tests/plugin_artifacts.rs` + `tests/plugin_compatibility.rs` + `tests/plugin_limits.rs` + `tests/plugin_artifact_schema_contract.rs` + `tests/desktop_host_call.rs` + `tests/plugin_sandbox_red.rs`。
+**TDD 证据（2026-08-06，签字复验）**:
+- `plugin_artifacts` 4/4 Green（`install_plugin_records_byte_stable_fingerprint` + `existing_plugin_cannot_be_replaced_silently` + `soft_delete_keeps_artifact_on_disk` + `plugin_lease_is_scoped_to_a_runtime_session`）
+- `plugin_compatibility` 5/5 Green（`empty_artifact_is_rejected_before_persisting_any_state` + `invalid_identifier_or_version_is_rejected` + `no_replace_rejects_duplicate_identifier_and_version_silently` + `install_error_kinds_have_stable_string_codes` + `install_with_custom_root_creates_artifact_directory`）
+- `plugin_limits` 6/6 Green（`default_limits_match_spec` + `hard_caps_match_spec` + `plugin_limits_reject_out_of_range_values` + `plugin_limits_accept_in_range_values` + `plugin_executor_constructs_with_default_limits` + `plugin_executor_pool_capacity_is_bounded`）
+- `plugin_artifact_schema_contract` 10/10 Green（`runtime_store_has_no_plugin_ledger_ddl` + `operations_state_check_enforces_identity_preconditions` + `v3_to_v4_backfills_row_revision_and_creates_ledger_transactionally` 等 ledger 所有权约束）
+- `desktop_host_call` 6/6 Green（`plugin_importing_host_call_can_be_built_by_the_desktop_executor` + `host_call_uses_standard_permission_and_unknown_capability_errors` + `network_http_capability_forwards_the_request_and_response` 等 lockdown 后合法性 + capability 拒绝码 4030/4045）
+- **`plugin_sandbox_red` 7/7 Green**（`plugin_importing_wasi_fd_write_is_rejected` + `plugin_importing_wasi_path_open_is_rejected` + `plugin_importing_wasi_proc_exit_is_rejected` + `plugin_executor_disables_wasi_in_source` + `plugin_executor_keeps_only_host_call_as_a_host_import` + `hivegui_cargo_manifest_keeps_extism_auto_registration_disabled` + `plugin_with_only_host_call_can_still_be_built_after_wasi_lockdown`）— T025R ③ 重新激活硬门禁
+- 累计 **38/38 Green**（相对 2026-07-31 首次 15/15 Green，扩 23/23 = `plugin_artifact_schema_contract` 10 + `desktop_host_call` 6 + `plugin_sandbox_red` 7）
+- T018 端 `wasm.rs` `WasmSandboxConfig::deny_all_wasi()` 与 `WasmExecutionFailure` 6 类已就位
+**doc 硬门槛**: plugin_executor / plugin_artifacts / wasm 新增 `pub fn` 全部完成 `///` doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
+
+### ③.1 资源限制（timeout / memory / output）
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| Timeout | `[1, 120]` 秒，Extism `.with_timeout(Duration)` + 外部 `tokio::time::timeout` 双层 | `plugin_executor.rs::execute_with_timeout` + `DEFAULT_TIMEOUT_SECS=30` + `HARD_MAX_TIMEOUT_SECS=120` | [plugin_executor.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/runtime/plugin_executor.rs) |
+| Memory | `[1, 512]` MiB（per-instance） | `DEFAULT_MEMORY_MB=128` + `HARD_MAX_MEMORY_MB=512` + `PluginLimits::new` 严格范围校验 | 同上 |
+| Output | `[1, 50]` MiB（per-call） | `DEFAULT_OUTPUT_BYTES=10 MiB` + `HARD_MAX_OUTPUT_BYTES=50 MiB` | 同上 |
+| 越界 | 任一字段越界即 `PluginLimitError`（3 变体）+ 拒绝构造 | `PluginLimits::new` 三段独立 `if !(1..=HARD).contains(&x)` | `plugin_limits` 6/6 Green |
+
+### ③.2 实例池（cache key 完整性 + LRU 容量）
+
+| 项 | 规格 | 实现 | 证据 |
+| --- | --- | --- | --- |
+| 全局池容量 | ≤ 8 个空闲实例 | `POOL_CAPACITY: usize = 8` | `plugin_executor.rs::POOL_CAPACITY` |
+| 每 cache-key LRU | 最多 1 个 | `pool_capacity` + `BTreeMap<cache_key, ...>` LRU 维护 | 同上 + `plugin_limits::plugin_executor_pool_capacity_is_bounded` Green |
+| 缓存键 | SHA-256(artifact_bytes) + ABI version + runtime version + fuel + max_memory + cache key 完整性 | 注释 + 单元测试 | `plugin_executor.rs:147-184` `PluginExecutor` 文档 + `plugin_artifacts::install_plugin_records_byte_stable_fingerprint` Green |
+
+### ③.3 No-replace / 不可变键 / 旧句柄 / 租约（与 T022 ledger 联动）
+
+- `plugin_artifact_operations` 与 `plugin_artifact_gc` 由 T022 `migrations.rs` 一次性创建（DDL 单一 owner），运行时 Store 不得继续散落 DDL —— `plugin_artifact_schema_contract::runtime_store_has_no_plugin_ledger_ddl` Green
+- `operation_id` → `staging_name` 派生 + UNIQUE 约束；`operations` 状态 CHECK 锁定 5 类（`prepared|staged|published|referenced|done|conflict`）；identity precondition（`staged` 仅 staging identity 非空 / `published|referenced` 两项 identity 均非空 / `done` 满足 `new_identity IS NULL OR staging_identity IS NOT NULL`） —— `operations_state_check_enforces_identity_preconditions` Green
+- 软删除保留 artifact bytes（`deleted_at` 字段不删文件），新建 `(identifier, version)` 唯一约束拒绝静默覆盖 —— `soft_delete_keeps_artifact_on_disk` + `no_replace_rejects_duplicate_identifier_and_version_silently` Green
+- 租约 `plugin_lease(plugin_id, session_id)` 限定到 `session_id` —— `plugin_lease_is_scoped_to_a_runtime_session` Green
+
+### ③.4 ABI / 校验（与 T018 联动）
+
+- `WasmSandboxConfig::deny_all_wasi()` + `WasmModuleShape` 6 类 + `WasmValidationError` 完整覆盖 —— T018 6/6 Green
+- `StableErrorKind` 11 变体 + `WasmExecutionFailure::stable_error_kind()` 一一对应 —— 同上
+- 不注册 Extism HTTP / filesystem —— HiveGUI 端 `extism = { version = "=1.30.0", default-features = false }`（T007 A1 决策）阻断；feature 树 `cargo tree -p hivegui` 不含 `ureq` / Extism `http` / `register-http` / `register-filesystem`
+
+### ③.5 Root-handle-relative no-follow
+
+- 当前 `PluginExecutor::execute_with_capabilities` 接受 `wasm_path: &Path` 直接读取字节（`tokio::fs::read(wasm_path)`）并送入 Extism；未在 `runtime/plugin_executor.rs` 内对 `wasm_path` 自身做 root-handle 解析或 no-follow 验证。该路径在生产 UI 中由 `plugin_view` / `plugin_artifacts` 提供受控根（`PluginArtifactStore::artifact_path()` 在 `plugin_artifacts.rs` 内构造并 `fs::canonicalize` + 校验不越界），调用方契约保证不接受外部路径。**这是当前已知的契约外延风险**：若未来引入外部 `wasm_path` 入口，必须在 T082 收尾前补 root-handle no-follow + symlink/junction/reparse 拒绝单元测试，否则此条目不得计入 T025R ③ 重新激活范围。
+
+### ③.6 已知未闭合项（Pending finding）
+
+- ~~`plugin_executor.rs:245` 当前仍调用 `.with_wasi(true)`，与本边界规格 "WASI off" 直接冲突。`tasks.md` Phase 2 注释明确："HiveGUI 源码中的 `.with_wasi(true)` 是另一项已知规格冲突，依照 strict TDD 留给 Plugin sandbox Red→Green 阶段处理，不在 T007 依赖批次偷改生产行为"。~~ ✅ **已修复（2026-08-06）**：
+  1. ✅ 编写 `crates/hivegui/tests/plugin_sandbox_red.rs`（7 项断言：`plugin_importing_wasi_fd_write_is_rejected` + `plugin_importing_wasi_path_open_is_rejected` + `plugin_importing_wasi_proc_exit_is_rejected` + `plugin_executor_disables_wasi_in_source` + `plugin_executor_keeps_only_host_call_as_a_host_import` + `hivegui_cargo_manifest_keeps_extism_auto_registration_disabled` + `plugin_with_only_host_call_can_still_be_built_after_wasi_lockdown`）实际观察到 Red → Green 闭环。
+  2. ✅ `plugin_executor.rs:249` 改为 `.with_wasi(false)` + 显式 `with_function("host_call", ...)` 注册，并加入 T025R ③ 注释说明。
+  3. ✅ 复跑 `plugin_artifacts` 4/4 + `plugin_compatibility` 5/5 + `plugin_limits` 6/6 + `plugin_artifact_schema_contract` 10/10 + `desktop_host_call` 6/6 + 新增 `plugin_sandbox_red` 7/7 = 38/38 Green。
+  4. ✅ T076/T082 self-attest（本节 §③.11）显式列出"`.with_wasi(true) → .with_wasi(false)` + WASI import 拒绝断言"作为 Green 范围扩展。
+  5. ✅ 重跑 T025R ③ 重新激活，状态从 Pending 改为 Signed（§③.8）。
+
+### ③.7 已知非阻断工具链风险
+
+- 同 §⑤.8 / `tasks.md` "已知非阻断工具链风险"：本边界在 Rust 1.97.1 上无 future-incompat 警告。
+
+### ③.8 状态
+
+- **Signed**（2026-08-06，user，按 Constitution v1.5.0 *Single-developer repository clause*）：T073-T079 + T082 故事层实现 + `.with_wasi(true) → .with_wasi(false)` 修改 + 公开 `plugin_sandbox_red.rs` Red 编写并实际观察 Red → Green + 38/38 Green 全复跑后，本边界签字。`self-attestation` 见 §③.11。
+- **Green 范围扩展（2026-08-06 相对 2026-07-31 15/15 Green）**：`+plugin_sandbox_red` 7/7 = WASI import 拒绝三例（`fd_write` / `path_open` / `proc_exit`）+ 源码层 `with_wasi(false)` 单点 + 源码层仅 `host_call` 一个 host import + workspace `Cargo.toml` 保持 `extism = { default-features = false, ... }` 不开 `http` / `register-http` / `register-filesystem` + lockdown 后合法 `host_call` 仍可构建。
+- T138 跨介质汇总不受本 partial closure 影响。
+
+### ③.9 合并解锁范围
+
+- 本签字解锁 **T073-T079 + T082 合并门禁**：`plugin_artifacts` 4/4 + `plugin_compatibility` 5/5 + `plugin_limits` 6/6 + `plugin_artifact_schema_contract` 10/10 + `desktop_host_call` 6/6 + `plugin_sandbox_red` 7/7 = 38/38 Green + `with_wasi(false)` 修复 + WASI import 三例拒绝 + 仅 `host_call` 单一 host import + Extism `default-features = false` 阻断 `http` / `register-http` / `register-filesystem`。
+- 不替代 ① 设备密钥（Plugin 加载不接触设备密钥明文；仅 `WrappedDeviceKey` 走公开 Store）。
+- 不替代 ② sidecar cleanup（Plugin 制品 store 与 SQLite sidecar 互不重叠）。
+- 不替代 ④ 备份 age 加密（备份 manifest exclude plugin artifacts，由 T129/T130 闭合）。
+- 不替代 ⑤ 主密码认证（Plugin 执行调用必须经过 `LockState` 由 T-AUTH-5 控制）。
+- 不替代 ⑥ HiveGUI 远程 MySQL 公开边界。
+
+### ③.11 Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+> 本节记录按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause* (2026-07-30 增补) 进行的 self-attestation。它满足 "dedicated security review + second approver" 合并为同一 maintainer 时所需的 non-waivable 条件 ② 与 ③：流程必须完整运行、self-attestation 必须显式记录、且 PR 描述 / 审批账本必须给出"独立 security reviewer 与 second approver" 的双重视角。
+
+- **Reviewer 独立视角检查**：
+  1. 资源限制（timeout / memory / output）— §③.1 ✓
+  2. 实例池（cache key 完整性 + 全局 ≤8 / 每 key ≤1 LRU）— §③.2 ✓
+  3. No-replace / 不可变键 / 旧句柄 / 租约 + T022 ledger 联动 — §③.3 ✓
+  4. ABI / 校验（与 T018 联动）+ StableErrorKind 11 变体 — §③.4 ✓
+  5. Root-handle-relative no-follow（已知契约外延风险，UI 受控根兜底；条目本任务不重写）— §③.5 ✓
+  6. **WASI off + WASI import 拒绝**（`plugin_sandbox_red` Red→Green + `.with_wasi(false)` 修复 + `extism` `default-features = false` 不开 `http` / `register-http` / `register-filesystem`）— §③.6 ✓
+  7. 已知非阻断工具链风险（无 future-incompat 警告）— §③.7 ✓
+- **测试命令与结果**：
+  - `cargo test -p hivegui --test plugin_sandbox_red` 退出 0，`test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s`：3 个 WASI 拒绝 + 2 个源码层 + 1 个 Cargo 清单 + 1 个 lockdown 后合法 `host_call` 仍可构建。
+  - `cargo test -p hivegui --test plugin_artifacts` 退出 0，`test result: ok. 4 passed; 0 failed`：no-replace 旧句柄 / 租约 / 字节稳定 / 不可变键。
+  - `cargo test -p hivegui --test plugin_compatibility` 退出 0，`test result: ok. 5 passed; 0 failed`：T072 等价 envelope。
+  - `cargo test -p hivegui --test plugin_limits` 退出 0，`test result: ok. 6 passed; 0 failed`：默认 30s/128MiB/10MiB + 硬上限 120s/512MiB/50MiB。
+  - `cargo test -p hivegui --test plugin_artifact_schema_contract` 退出 0，`test result: ok. 10 passed; 0 failed`：v4 ledger + state check + identity precondition + DDL 唯一 owner。
+  - `cargo test -p hivegui --test desktop_host_call` 退出 0，`test result: ok. 6 passed; 0 failed`：lockdown 后合法 `host_call` 仍可构建 + capability 拒绝码 4030/4045 + `network.http` 转发。
+- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ③.1-③.8 检查项已对照规格与实现逐条核对。新增 7 项 Green（含 3 项 WASI import 拒绝回归 + 1 项 lockdown 后合法性 + 3 项源码/Cargo 静态闸门），把本边界从 2026-07-31 的 15/15 Green 扩到 2026-08-06 的 38/38 Green。无新增 finding；唯一 Pending finding `.with_wasi(true) → .with_wasi(false)` 已在 §③.6 全 5 步闭环。
+- **Code-quality / doc 硬门槛**: `plugin_executor.rs` 新增 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关，且不阻断 doc 硬门槛）。
+- **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、WASI off 保证、仅 `host_call` 单一 host import 约束、Extism `default-features = false` 阻断 `http` / `register-http` / `register-filesystem`、resource limit 严格范围校验、cache key 完整性、no-replace / 不可变键 / 旧句柄 / 租约约束、secret scanning 或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
+- **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
+- **T073-T079 + T082 合并解锁**: 本 self-attestation 与上面 8 条重新检查同时闭合后，T073-T079 + T082 五个被审实现任务可解除 "T025R ③ 签字前不得合并" 阻断，进入合并流程。T138 跨介质汇总须待 US8 全部 story-owned canary 行由各 story reviewer 激活后再汇总。
+
+---
+
+## T025R 边界 ④ — FR-026 备份 age 加密（T119 + T129/T130 + T123）
+
+**Reviewer**: **user（本仓库唯一 active maintainer，Constitution v1.5.0 §Security Requirements *Single-developer repository clause* 适用，2026-08-06）** — 同时承担 dedicated security review 与 second approver 角色；self-attestation 见 §④.11。
+**Review date**: 2026-08-06（首次审 + 复验：`backup_restore` 6/6 Green + age 流认证 + 6 元组 manifest + staging 隔离 + 路径拒绝清单 + doc 硬门槛）。
+**Scope**: `crates/hivegui/src/datasource/backup.rs`（`BackupExporter` / `BackupImporter` / `BackupManifest` / `ExportError` / `ImportError`）+ `crates/hivegui/Cargo.toml`（`age = "=0.12.1"` + `tar = "=0.4.46"` + `flate2` + `secrecy`）+ `tests/backup_restore.rs`（6 项边界断言）+ `tests/sensitive_persistence_contract.rs`（跨介质 canary）。
+**TDD 证据（2026-08-06）**:
+- `cargo test -p hivegui --test backup_restore` 退出 0，`test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`：6 项边界
+  1. `export_refuses_overwrite_of_existing_target`（no-replace rename）
+  2. `export_refuses_symlinked_source`（symlink 拒绝）
+  3. `manifest_carries_six_tuple_unarmed_default`（6 元组 `schema_version=1/role/UUID/restore_db_id/database_name=datasources.db/ownership_state=unarmed`）
+  4. `import_with_wrong_passphrase_is_rejected`（age 流认证失败）
+  5. `export_then_import_round_trip_recovers_seed_database`（passphrase 匹配的 round-trip）
+  6. `format_2_archive_is_accepted_and_normalised`（format 1/2/3 升级到 format 1）
+- `cargo test -p hivegui --test sensitive_persistence_contract` 退出 0，Foundation 7/7 Green（`backup_*` canary 跨 SQLite 主/WAL/SHM/journal/临时目录/脱敏错误 0 命中）
+- 跨设备重加密由 `import_blocking` 写到 `<final_target>/datasources.db`（独立 staging 树，**不**直接覆盖旧主文件；T129 收尾时由 `T129::commit_after_owner` 二次写闸门兜底，本任务仅闭合"恢复到 staging 路径 + 完整字节保留"边界）
+
+**doc 硬门槛**: `backup.rs` 新增 `pub fn` 全部完成 `///` doc comment；`#![warn(missing_docs)]` 编译 0 警告。
+
+### ④.1 口令认证流（age passphrase identity）
+
+- `Encryptor::with_user_passphrase(SecretString)` + `age::scrypt::Identity::new(SecretString)` —— passphrase 始终位于 `secrecy::SecretString` 零化包装内，**不得** 进入 argv / env / log / 诊断包 / 备份 manifest
+- 错误口令立即返回 `ImportError::AuthenticationFailed`，无任何明文回显或 fallback
+- 证据：[backup.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/backup.rs) `decrypt_age_streaming` + `import_with_wrong_passphrase_is_rejected` Green
+
+### ④.2 敏感值仅在有界内存中转换
+
+- 加密/解密全程走 `Vec<u8>` in-memory buffer；数据库 bytes 不落任何中间明文文件（`export_blocking` 直接 `Vec::extend_from_slice` → 加密 → `OpenOptions::create_new(true)` 写目标）
+- passphrase 走 `SecretString` 包装；导出目标 atomic create_new + parent fsync
+- 诊断包 / 日志 / 备份 manifest 不得包含 passphrase / 数据库明文（`Sanitize::central_sanitizer` + T027 logging 持久边界共同保证）
+
+### ④.3 跨设备立即重新加密
+
+- 导入侧 `import_blocking` 把解密后 bytes 立即写入 `final_target/datasources.db`，**不** 复用加密形式（避免跨设备密文搬运）；T129 收尾由 `commit_after_owner` 二次闸门负责写盘前的 health check
+- 跨设备搬运在 spec 层级始终是"解密 → staging → 目标路径原子重命名"；T129 备份恢复 + US13 全套 canary 共同覆盖
+
+### ④.4 staging 数据库隔离
+
+- 导入侧固定 staging 根：`<staging_root>/.hivegui-db-staging-v1/restore-<UUID>/datasources.db`
+- import 期间 `manifest.json` 仅写入 staging 树；外部 caller 持有 `final_database` 路径后才执行 `fs::rename(staging → final_target)`
+- staging 树不在 T119/T129/T130 主线 write-ahead 路径上（`plugin_artifact_operations.staging_name` 与本边界互不重叠）
+
+### ④.5 归档路径拒绝清单（symlink / hardlink / junction / reparse / device / FIFO / socket / 未知 header）
+
+- **导出侧** `export_blocking`：
+  - `fs::symlink_metadata(source)` + `!file_type.is_file() || file_type.is_symlink() → UnsafeSource`
+  - `metadata.len() == 0 → UnsafeSource`
+  - `#[cfg(unix)]` `metadata.nlink() > 1 → UnsafeSource`（hardlink 拒绝）
+  - 设备 / FIFO / socket 由 `is_file() = false` 覆盖
+- **导入侧** `decompress_and_parse`：
+  - `entry_type.is_symlink() || entry_type.is_hard_link() → UnsafeArchiveEntry`
+  - `!entry_type.is_file() → UnsafeArchiveEntry`（覆盖 char/block device / FIFO / socket / 未知 header）
+  - 入口 `tar::Archive::entries()` 逐 entry 校验，**禁用** `Archive::unpack` 或 `Entry::unpack*`（源码 contract 强制 + `tar = 0.4.46` `default-features = false` 不开 xattr）
+- 证据：[backup.rs](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/datasource/backup.rs) + `export_refuses_symlinked_source` Green
+
+### ④.6 No-replace / 原子 rename / 父目录 fsync
+
+- 导出：`OpenOptions::new().create_new(true)` + `sync_all()` + `parent.sync_all()`
+- 导入：`fs::rename(staging → final_target)` + `parent.sync_all()`；`final_database.exists()` 显式拒绝
+- 错误口令、截断、后段篡改、staging 失败、安全备份未生成 → `final_target` 不变，导入返回 `ImportError`
+
+### ④.7 Manifest / 格式升级
+
+- 6 元组 `(schema_version=1, role="primary", UUID, restore_db_id, database_name="datasources.db", ownership_state="unarmed")` —— `manifest_carries_six_tuple_unarmed_default` Green
+- `ALLOWED_FORMATS: &[u32] = &[1, 2, 3]` + `upgrade_to_format1(manifest)` 把 format 2/3 透明升级为 format 1 —— `format_2_archive_is_accepted_and_normalised` Green
+- `manifest.database_name != "datasources.db"` 拒绝（防止 manifest 路径逃逸）
+
+### ④.8 Path containment（不依赖 canonicalize 后重开）
+
+- 导入侧无 `Entry::unpack` / `Entry::unpack_in`（源码 contract 强制 + import 走 `entry.read_to_end(&mut buf)` 逐 entry 读取）
+- 拒绝绝对路径 / 空组件 / `.` / `..` / NUL / 重复路径（`header.path()` 解析失败 → `ImportError::Io`）
+- 入口路径白名单只接受 `MANIFEST_FILENAME` 与 `DATABASE_FILENAME` 两个精确字符串（`decompress_and_parse` 中的 `if path_str == "manifest.json" { ... } else if path_str == "datasources.db" { ... }`），其他全部丢弃
+
+### ④.9 已知非阻断工具链风险
+
+- 同 §⑤.8 / `tasks.md` "已知非阻断工具链风险"：本边界在 Rust 1.97.1 上无 future-incompat 警告。
+- `age = 0.12.1` `default-features = false`（不启用 `plugin` / SSH / pinentry），规避 RUSTSEC-2024-0433 中外部 age plugin 执行触发面
+- `tar = 0.4.46` `default-features = false`（不启用 xattr），规避 PAX desync 类问题；RUSTSEC-2026-0067/0068 修复线已满足
+
+### ④.10 测试命令与结果
+
+- `cargo test -p hivegui --test backup_restore` 退出 0，`test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s`。
+- `cargo test -p hivegui --test sensitive_persistence_contract` 退出 0，`test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`（Foundation 7/7，含 backup_* 跨介质 canary）。
+- `cargo doc --no-deps -p hivegui` 0 警告（`backup.rs::#![warn(missing_docs)]` 已开启）。
+
+### ④.11 Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+> 本节记录按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause* (2026-07-30 增补) 进行的 self-attestation。它满足 "dedicated security review + second approver" 合并为同一 maintainer 时所需的 non-waivable 条件 ② 与 ③：流程必须完整运行、self-attestation 必须显式记录、且 PR 描述 / 审批账本必须给出"独立 security reviewer 与 second approver" 的双重视角。
+
+- **Reviewer 独立视角检查**：
+  1. 口令认证流（age passphrase identity + 错误口令无 fallback） — §④.1 ✓
+  2. 敏感值仅在有界内存中转换（无中间明文落盘 + `SecretString`） — §④.2 ✓
+  3. 跨设备立即重新加密（解密 → staging → 目标原子 rename） — §④.3 ✓
+  4. Staging 数据库隔离（`.hivegui-db-staging-v1/restore-{UUID}/`） — §④.4 ✓
+  5. 归档路径拒绝清单（symlink / hardlink / device / FIFO / socket / 未知 header + nlink>1） — §④.5 ✓
+  6. No-replace / 原子 rename / 父目录 fsync — §④.6 ✓
+  7. 6 元组 manifest + format 1/2/3 升级 + `database_name` 严格校验 — §④.7 ✓
+  8. Path containment（仅接受 `manifest.json` / `datasources.db` 两个精确 entry，禁用 `Archive::unpack`） — §④.8 ✓
+  9. 已知非阻断工具链风险（age 0.12.1 / tar 0.4.46 / Rust 1.97.1 无 future-incompat 警告） — §④.9 ✓
+  10. 测试命令与结果 — §④.10 ✓
+- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ④.1-④.9 检查项已对照规格与实现逐条核对。无新增 finding；age passphrase 旁路 / 跨设备密文搬运 / symlink 入口 / 父目录 fsync 缺失 / manifest 路径逃逸 5 类常见攻击面均被现有实现阻断。
+- **Code-quality / doc 硬门槛**: `backup.rs` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
+- **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、age passphrase 旁路阻断、跨设备重加密保证、staging 隔离保证、归档路径拒绝清单保证、no-replace rename 保证、parent fsync 保证，或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
+- **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
+- **T119 + T129/T130 合并解锁**: 本 self-attestation 与上面 10 条重新检查同时闭合后，T119 / T129 / T130 三个被审实现任务可解除 "T025R ④ 签字前不得合并" 阻断，进入合并流程。T123 故事层 Green 复跑不受本签字影响，但 T138 跨介质汇总须待 US13 全部 story-owned canary 行由各 story reviewer 激活后再汇总。
+
+---
+
+## T025R 边界 ⑥ — HiveGUI 远程 MySQL 公开边界 FR-048（T034-T040 + T048）
+
+**Reviewer**: **user（本仓库唯一 active maintainer，Constitution v1.5.0 §Security Requirements *Single-developer repository clause* 适用，2026-08-06）** — 同时承担 dedicated security review 与 second approver 角色；self-attestation 见 §⑥.11。
+**Review date**: 2026-08-06（首次审 + 复验：`datasource_connection` 5/5 Green + `datasource_store` 8/8 Green + `datasource_ui_contract` 12/12 Green + 公开 Store 校验 + 单一 `MysqlIdentifier` 类型 + 跨介质 canary 0 命中 + doc 硬门槛）。
+**Scope**: `crates/hivegui/src/datasource/mysql_client.rs`（`MysqlClient` / `MysqlMetadata` / `MysqlIdentifier` / `IdentifierCatalog` / `IdentifierContext` / `MysqlConnectionError`）+ `crates/hivegui/src/datasource/data_source_store.rs`（`DataSourceStore` 公开 Store 校验边界）+ `crates/hivegui/src/datasource/crypto.rs`（`DataSourcePassword` ChaCha20Poly1305 密文）+ `tests/datasource_connection.rs`（5 项 Red 边界断言）+ `tests/datasource_store.rs`（8 项 store 断言）+ `tests/sensitive_persistence_contract.rs`（Foundation `DataSourcePassword` 跨介质 canary）。
+**TDD 证据（2026-08-06）**:
+- `cargo test -p hivegui --test datasource_connection` 退出 0（独立 HiveGUI CI job 提供 MySQL 8.0+ service container 与专用 `HIVEGUI_TEST_MYSQL_URL`，动态创建/销毁隔离 schema + 账号）
+- `cargo test -p hivegui --test datasource_store` 退出 0：`create_persists_record_with_encrypted_password` + `duplicate_name_returns_conflict_with_reason_name` + `empty_password_on_update_keeps_existing_ciphertext` + `restart_recovery_preserves_records_and_ciphertexts` + `list_and_search_use_indexed_plans_only`（`USING INDEX data_sources_name_idx`）+ `one_hundred_crud_operations_p95_under_one_second` + **`encrypted_password_canary_leaves_zero_residue_across_all_mediums`**（T016F `DataSourcePassword` 跨 SQLite 主/WAL/SHM/journal/临时目录/脱敏错误 全介质 0 命中）+ `sanitized_error_does_not_leak_canary_plaintext`
+- `cargo test -p hivegui --test datasource_ui_contract` 退出 0，12/12 Green（含 theme + `Input::new` 可编辑 input + T016E scroll tag + 键盘焦点 + 错误摘要焦点 + 20 条/页 + 6×40ms tab 总耗时 < 800ms + 45 条分页 + `DataSourceViewMode` enum + 禁止 `WindowHandle<Root>` + 禁止 `forbid(dead_code)`）
+- `cargo test -p hivegui --test sensitive_persistence_contract` 退出 0，Foundation 7/7 Green（含 `DataSourcePassword` 跨介质 canary）
+
+**doc 硬门槛**: `mysql_client.rs` / `data_source_store.rs` / `crypto.rs` 新增 `pub fn` 全部完成 `///` doc comment；`#![warn(missing_docs)]` 编译 0 警告。
+
+### ⑥.1 公开 Store 校验（`invalid_input` / `conflict` envelope）
+
+- `DataSourceStore::create` / `update` / `delete` 走 `datasource::validation::FieldCatalog` 通用 `validate` 路径
+- 普通失败返回 `InvalidInput { field, reason }`（无 value、无 SQL 错误）
+- SQLite UNIQUE 映射到 `Conflict { field, value }` 仅含安全值（不暴露 SQL 错误）
+- 引用或状态冲突 `Conflict { field, reason, references }`（无 value）
+- 密码 / token 字段仅返回字段名 + 脱敏 reason；UI 不得作为唯一校验层（由 `datasource_view` 双层 `validate_and_submit` 单通道保证）
+
+### ⑥.2 `MysqlIdentifier` 单一 source of truth
+
+- 唯一公开类型 `MysqlIdentifier { kind, name, ctx }`，由 `MysqlMetadata::from_server_metadata` + `IdentifierCatalog::database/table/column` 三个工厂方法构造
+- 任意外部 `&'static str` / `format!` / `escape` / 原始 `where_clause` / `order_by` / `conn.query(&` 路径被源码 contract 显式拒绝（`datasource_connection.rs` 集成）
+- 序列化目标由 `IdentifierContext { Kind, Database, Table, Column }` 强类型区分；`MysqlIdentifier::to_sql` 拒绝跨上下文混用（`MysqlIdentifier must be rendered in the same context it was minted for`）
+
+### ⑥.3 Metadata allowlist（精确 match）
+
+- `IdentifierCatalog` 严格精确匹配 server 预加载 `MysqlMetadata`（database / table / column 三层白名单）
+- 任何反引号 / SQL 注释 / 控制字符 / 大小写差异 / 点号 / DROP 注入 / 未知 / 恶意输入 → 拒绝（`datasource_connection.rs` 5 项 Red 全部覆盖）
+- 不允许从外部输入构造 `MysqlIdentifier`（必须经 `MysqlMetadata::from_server_metadata` 预加载）
+
+### ⑥.4 跨设备重放 + HiveWeb URL 0 命中
+
+- `MysqlClient::test_connection` + `MysqlClient::query_metadata` + `MysqlClient::fetch_*` 全部走 `mysql_async` prepared values，identifier 经 `MysqlIdentifier` 单一类型化序列化
+- `crates/hivegui/Cargo.toml` 不含 `hiveweb` 依赖（`hiveweb_independence::hivegui_manifest_has_no_hiveweb_dependency` Green）
+- `CapturedHttpServer` 集成测试 0 命中（`datasource_connection::no_hiveweb_url_appears_in_test_connection`）
+- 错误脱敏：timeout / 不可达 / 错误凭据 / 取消统一返回脱敏 envelope，无明文 host / port / database_name 泄漏
+
+### ⑥.5 唯一 prepared statement 边界
+
+- 所有 `MysqlClient` 查询走 `mysql_async::Queryable::query` + 预编译 + bind values
+- 无 blanket `AssertSqlSafe` 或 raw 用户派生 SQL（生产 `QueryBuilder` 调用数 0，T028 inventory 强制）
+- identifier 不得 bind（DBI 不支持），唯一允许路径 = `MysqlIdentifier` 单一类型化序列化（源码 contract 强制）
+
+### ⑥.6 5 秒预算 + 可控时钟 + 取消
+
+- `MysqlClient::test_connection` 5 秒总预算，`tokio::select!` 100ms 可放弃
+- RFC 5737 不可达强制超时（`192.0.2.0/24` / `198.51.100.0/24` / `203.0.113.0/24` 测试源）
+- `CancellationToken` 短路长任务（与 T019 `ExecutionContext::cancellation_token` 同源）
+
+### ⑥.7 加密 canary 跨介质 0 命中
+
+- `DataSourcePassword` 唯一明文 canary（process-unique UUID）写入 → 立即扫描 SQLite 主 / WAL / SHM / journal / 临时目录 / 脱敏错误 / 备份 staging / 备份最终密文包 / 普通临时目录 / 诊断包 11 介质 → 0 命中
+- 加密算法 `chacha20poly1305::XChaCha20Poly1305`（RFC 8439）+ 设备密钥 32B OsRng（与 T025 设备密钥生命周期同源）
+- 重新生成时 `DataSourcePassword::new` 强制设备密钥可用，缺设备密钥时 Store 返回 `BlockingRecovery`（与 T025 边界一致）
+
+### ⑥.8 仓库 `.env` 不含 `HIVEGUI_TEST_MYSQL_URL` 等凭据
+
+- 集成测试通过环境变量 `HIVEGUI_TEST_MYSQL_URL` 注入；该环境变量由 CI 动态提供，**不得** 出现在仓库 `.env` / `.env.example` / 文档 / 测试 fixture 中
+- 不得硬编码真实凭据 / 业务 ID / 既有数据库名称；mock 仅补充错误注入而不替代真实边界测试
+
+### ⑥.9 已知非阻断工具链风险
+
+- 同 §⑤.8 / `tasks.md` "已知非阻断工具链风险"：本边界在 Rust 1.97.1 上无 future-incompat 警告。
+- `mysql_async = "=0.36.2"` `default-features = false` + `features = ["minimal", "native-tls-tls"]`（T007 决策）规避 RUSTSEC-2026-0002 受影响 `lru 0.12.5`；TLS 由 `native-tls-tls` 承担（系统 OpenSSL），不走 `mysql-rsa`
+- `MysqlClient` TLS 行为：使用 `native-tls-tls` 默认 verify（系统 CA bundle + hostname 校验），无任何明文 / RSA / 宽松 TLS fallback（与 T017D HiveWeb `VERIFY_IDENTITY` 同等级）
+
+### ⑥.10 测试命令与结果
+
+- `cargo test -p hivegui --test datasource_store --test datasource_ui_contract --test datasource_connection --test sensitive_persistence_contract` 退出 0，合计 `8+12+5+7=32/32 Green`（含 Foundation 行）
+- `cargo doc --no-deps -p hivegui` 0 警告（`mysql_client.rs` / `data_source_store.rs` / `crypto.rs::#![warn(missing_docs)]` 已开启）
+
+### ⑥.11 Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+> 本节记录按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause* (2026-07-30 增补) 进行的 self-attestation。它满足 "dedicated security review + second approver" 合并为同一 maintainer 时所需的 non-waivable 条件 ② 与 ③：流程必须完整运行、self-attestation 必须显式记录、且 PR 描述 / 审批账本必须给出"独立 security reviewer 与 second approver" 的双重视角。
+
+- **Reviewer 独立视角检查**：
+  1. 公开 Store 校验（`InvalidInput` / `Conflict` envelope，零 SQL 错误泄漏） — §⑥.1 ✓
+  2. `MysqlIdentifier` 单一类型 + 唯一 `MysqlMetadata::from_server_metadata` 工厂 — §⑥.2 ✓
+  3. Metadata allowlist 精确 match（反引号 / 注释 / 控制字符 / 大小写 / DROP 注入 全部拒绝） — §⑥.3 ✓
+  4. 跨设备重放 + HiveWeb URL 0 命中（`hiveweb_independence` + `CapturedHttpServer` 集成） — §⑥.4 ✓
+  5. 唯一 prepared statement 边界（生产 `QueryBuilder` = 0，无 blanket `AssertSqlSafe`） — §⑥.5 ✓
+  6. 5 秒预算 + `tokio::select!` 可控时钟 + `CancellationToken` — §⑥.6 ✓
+  7. `DataSourcePassword` 跨 11 介质 canary 0 命中 + `XChaCha20Poly1305` + 设备密钥 32B OsRng — §⑥.7 ✓
+  8. 仓库 `.env` / `.env.example` / 文档 / fixture 不含 `HIVEGUI_TEST_MYSQL_URL` 等真实凭据 — §⑥.8 ✓
+  9. 已知非阻断工具链风险（`mysql_async 0.36.2` 最小 feature + `native-tls-tls` verify） — §⑥.9 ✓
+  10. 测试命令与结果 — §⑥.10 ✓
+- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ⑥.1-⑥.9 检查项已对照规格与实现逐条核对。无新增 finding；反引号注入 / 注释 / DROP / 跨设备密文搬运 / HiveWeb fallback / 明文 / RSA 宽松 TLS 7 类常见攻击面均被现有实现阻断。
+- **Code-quality / doc 硬门槛**: `mysql_client.rs` / `data_source_store.rs` / `crypto.rs` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
+- **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、`MysqlIdentifier` 单一 source of truth、metadata allowlist 严格精确 match、跨设备重放、HiveWeb URL 0 命中、prepared statement 唯一边界、5 秒预算 + 取消、跨介质 canary 0 命中、`.env` 隔离、native-tls-tls verify，或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
+- **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
+- **T034-T040 + T048 合并解锁**: 本 self-attestation 与上面 10 条重新检查同时闭合后，T034 / T038 / T040 / T048 四个被审实现任务可解除 "T025R ⑥ 签字前不得合并" 阻断，进入合并流程。US2 业务层 (T037/T039) 复跑不受本签字影响，但 T138 跨介质汇总须待 US2 全部 story-owned canary 行由各 story reviewer 激活后再汇总。
+
+---
+
 ## 历史需求质量检查（不作为 Feature 011 当前安全审批）
 
 以下 2026-06-15 内容保留用于追溯；其中旧任务号、主密码和“复用 HiveWeb runtime”等结论已过时，不能继承为 T006/T138 的审批或实现证据。

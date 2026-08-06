@@ -241,8 +241,12 @@ impl PluginExecutor {
 
         let execution = tokio::task::spawn_blocking(move || {
             let manifest = Manifest::new([Wasm::data(wasm_bytes)]).with_timeout(timeout);
+            // T025R ③ / T082: sandbox must keep WASI disabled. Plugins that
+            // import any WASI snapshot0/preview1 function (fd_write,
+            // fd_read, proc_exit, …) are rejected at instantiation time;
+            // only the `host_call` host import is exposed.
             let mut plugin = PluginBuilder::new(manifest)
-                .with_wasi(true)
+                .with_wasi(false)
                 .with_function(
                     "host_call",
                     [ValType::I64],

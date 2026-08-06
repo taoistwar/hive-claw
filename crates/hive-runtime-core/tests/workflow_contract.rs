@@ -197,6 +197,7 @@ fn fail_fast_waits_for_the_started_layer_and_chooses_smallest_failed_node_key() 
         (
             "work-c".to_owned(),
             LayerNodeOutcome::Failed(NodeFailure {
+                node_key: "work-c".to_owned(),
                 kind: "plugin_timeout".to_owned(),
                 elapsed_ms: 40,
             }),
@@ -205,6 +206,7 @@ fn fail_fast_waits_for_the_started_layer_and_chooses_smallest_failed_node_key() 
         (
             "work-a".to_owned(),
             LayerNodeOutcome::Failed(NodeFailure {
+                node_key: "work-a".to_owned(),
                 kind: "capability_denied".to_owned(),
                 elapsed_ms: 25,
             }),

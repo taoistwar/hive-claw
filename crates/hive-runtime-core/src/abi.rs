@@ -247,7 +247,10 @@ pub enum HostCallReplyError {
     /// The error kind does not have a host_call code (placeholder
     /// rejections must be raised before envelope construction).
     #[error("error kind {kind} has no host_call_code; use it before constructing a failure reply")]
-    MissingHostCallCode { kind: &'static str },
+    MissingHostCallCode {
+        /// The kind that has no host_call_code.
+        kind: &'static str,
+    },
 }
 
 impl HostCallReply {

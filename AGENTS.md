@@ -12,5 +12,9 @@ Supporting design artifacts for the active feature:
 - specs/004-agent-runtime/quickstart.md
 
 Constitution (always authoritative; cite, do not contradict):
-.specify/memory/constitution.md (v1.3.0)
+.specify/memory/constitution.md (v1.4.0)
+
+Product boundary (always authoritative): HiveWeb is the cloud-hosted Agent and
+HiveGUI is the independent desktop-local Agent. They may reuse code and
+contracts, but HiveGUI must never request or fall back to HiveWeb.
 <!-- SPECKIT END -->

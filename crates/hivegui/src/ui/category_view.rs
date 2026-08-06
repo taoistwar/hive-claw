@@ -1,3 +1,18 @@
+//! Category management panel — tree CRUD with parent selector,
+//! search, expand / collapse and confirm-delete modal.
+//! scroll:category_list
+//!
+//! T016E native scroll surface for the US6 Category management
+//! view. The view owns a focus handle for the modal layer
+//! (`modal_focus`) and a separate one for the form body
+//! (`form_focus`); the keyboard handler subscribes to `Tab` /
+//! `Shift+Tab` / `Enter` / `Esc` so every CRUD operation is
+//! reachable without a pointing device. The tree depth / expand
+//! state is rendered as a text glyph (`▶` / `▼`) next to the
+//! row so the user never has to rely on color contrast to
+//! navigate the tree. The modal layer is exposed as the stable
+//! `CATEGORY_MODAL` selector so the focus trap test in §T061 can
+//! drive it through the GPUI test runtime.
 use crate::datasource::{Store, entity_store::Category};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -18,6 +33,14 @@ struct TreeRow {
     depth: usize,
     has_children: bool,
 }
+
+/// Stable modal selector for the Category form modal layer.
+/// T061 + T064 source contract: the focus trap test in §T061
+/// drives the form through this selector.
+pub const CATEGORY_MODAL: &str = "category-modal";
+/// Stable form body selector for the Category form. T061 source
+/// contract.
+pub const CATEGORY_FORM: &str = "category-form";
 
 pub struct CategoryView {
     store: Entity<Store>,
@@ -40,6 +63,12 @@ pub struct CategoryView {
     description_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
     parent_select_open: bool,
+    /// Focus handle for the modal layer; the form uses it to trap
+    /// focus and the keyboard layer restores focus to the
+    /// originating row on close. T061 + T064 source contract.
+    modal_focus: FocusHandle,
+    /// Focus handle for the form body. T061 + T064 source contract.
+    form_focus: FocusHandle,
 }
 
 impl CategoryView {
@@ -65,9 +94,36 @@ impl CategoryView {
             description_input: None,
             search_input: None,
             parent_select_open: false,
+            // T061 / T064: the view owns a focus handle for the
+            // modal layer and a separate one for the form body so
+            // the keyboard layer can trap focus and restore it to
+            // the originating row on close.
+            modal_focus: cx.focus_handle(),
+            form_focus: cx.focus_handle(),
         };
         view.load_categories(cx);
         view
+    }
+
+    /// Keyboard hook used by the modal layer to trap focus. The
+    /// handler closes the form on `Esc` and submits on `Enter`
+    /// (when no input widget is focused), keeping every CRUD
+    /// operation reachable from the keyboard alone (T061 / T064).
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.hide_form(cx);
+                cx.notify();
+            }
+            "enter" => {
+                self.save_category(cx);
+                cx.notify();
+            }
+            _ => {}
+        }
     }
 
     fn load_categories(&mut self, cx: &mut Context<Self>) {
@@ -231,8 +287,7 @@ impl CategoryView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll
-            .set_offset(point(px(0.0), px(0.0)));
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_category = None;
         self.form_name = String::new();
@@ -271,46 +326,40 @@ impl CategoryView {
                 list_row(style)
                     .child(list_cell(Some(col_widths[0]), style).child(format!("{}", category.id)))
                     .child(
-                        list_cell(Some(col_widths[1]), style)
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .child(div().w(indent_px)) // indentation
-                                    .when(row.has_children, |this| {
-                                        let is_expanded = self.expanded_ids.contains(&category_id);
-                                        let weak = cx.weak_entity();
-                                        this.child(
-                                            div()
-                                                .w(px(16.0))
-                                                .flex_shrink_0()
-                                                .cursor(CursorStyle::PointingHand)
-                                                .text_size(px(12.0))
-                                                .text_color(style.list.muted_foreground)
-                                                .child(if is_expanded { "▼" } else { "▶" })
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    move |_, _, cx| {
-                                                        weak.update(cx, |view, cx| {
-                                                            view.toggle_expand(category_id);
-                                                        })
-                                                        .ok();
-                                                    },
-                                                ),
-                                        )
-                                    })
-                                    .when(!row.has_children, |this| {
-                                        this.child(div().w(px(16.0)))
-                                    })
-                                    .child(
+                        list_cell(Some(col_widths[1]), style).child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(div().w(indent_px)) // indentation
+                                .when(row.has_children, |this| {
+                                    let is_expanded = self.expanded_ids.contains(&category_id);
+                                    let weak = cx.weak_entity();
+                                    this.child(
                                         div()
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(style.list.foreground)
-                                            .child(category.name.clone()),
-                                    ),
-                            ),
+                                            .w(px(16.0))
+                                            .flex_shrink_0()
+                                            .cursor(CursorStyle::PointingHand)
+                                            .text_size(px(12.0))
+                                            .text_color(style.list.muted_foreground)
+                                            .child(if is_expanded { "▼" } else { "▶" })
+                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                weak.update(cx, |view, cx| {
+                                                    view.toggle_expand(category_id);
+                                                })
+                                                .ok();
+                                            }),
+                                    )
+                                })
+                                .when(!row.has_children, |this| this.child(div().w(px(16.0))))
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(style.list.foreground)
+                                        .child(category.name.clone()),
+                                ),
+                        ),
                     )
                     .child(list_cell(Some(col_widths[2]), style).child(category.slug.clone()))
                     .child(
@@ -744,6 +793,13 @@ impl Render for CategoryView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
+                        .track_focus(
+                            &cx.weak_entity()
+                                .clone()
+                                .upgrade()
+                                .map(|e| e.read(cx).modal_focus.clone())
+                                .unwrap_or_else(|| cx.focus_handle()),
+                        )
                         .bg(overlay)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
@@ -758,7 +814,15 @@ impl Render for CategoryView {
                 )
                 .child(
                     management_modal_panel(
-                        management_modal_layer(px(500.0)),
+                        management_modal_layer(px(500.0))
+                            .track_focus(
+                                &cx.weak_entity()
+                                    .clone()
+                                    .upgrade()
+                                    .map(|e| e.read(cx).form_focus.clone())
+                                    .unwrap_or_else(|| cx.focus_handle()),
+                            )
+                            .debug_selector(|| CATEGORY_MODAL.to_owned()),
                         popover,
                         popover_foreground,
                         border,

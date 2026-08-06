@@ -1,7 +1,11 @@
+pub mod agent;
+pub mod auth;
 pub mod config;
 pub mod datasource;
 pub mod logging;
+pub mod logging_v1;
 pub mod model;
+pub mod plugin;
 pub mod runtime;
 pub mod ui;
 pub mod version;

@@ -8,7 +8,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+use gpui_component::scroll::{Scrollable, ScrollableElement};
 
 pub struct ToolView {
     store: Entity<Store>,
@@ -24,19 +24,19 @@ pub struct ToolView {
     form_identifier: String,
     form_name: String,
     form_description: String,
-    form_kind: String,
+    form_kind: i64,
     form_source: String,
     form_function_id: String,
     form_workflow_id: String,
     form_input_schema: String,
     form_output_schema: String,
+    kind_select_open: bool,
+    source_select_open: bool,
     error_message: Option<String>,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
     description_input: Option<Entity<InputState>>,
-    kind_input: Option<Entity<InputState>>,
-    source_input: Option<Entity<InputState>>,
     function_id_input: Option<Entity<InputState>>,
     workflow_id_input: Option<Entity<InputState>>,
     input_schema_input: Option<Entity<InputState>>,
@@ -60,19 +60,19 @@ impl ToolView {
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
-            form_kind: "1".into(),
+            form_kind: 1,
             form_source: "workspace".into(),
             form_function_id: String::new(),
             form_workflow_id: String::new(),
             form_input_schema: "{}".into(),
             form_output_schema: "{}".into(),
+            kind_select_open: false,
+            source_select_open: false,
             error_message: None,
             confirm_delete_id: None,
             identifier_input: None,
             name_input: None,
             description_input: None,
-            kind_input: None,
-            source_input: None,
             function_id_input: None,
             workflow_id_input: None,
             input_schema_input: None,
@@ -111,12 +111,14 @@ impl ToolView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_kind = "1".into();
+        self.form_kind = 1;
         self.form_source = "workspace".into();
         self.form_function_id.clear();
         self.form_workflow_id.clear();
         self.form_input_schema = "{}".into();
         self.form_output_schema = "{}".into();
+        self.kind_select_open = false;
+        self.source_select_open = false;
         self.error_message = None;
         self.identifier_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -132,16 +134,6 @@ impl ToolView {
             InputState::new(window, cx)
                 .placeholder("工具描述")
                 .default_value("")
-        }));
-        self.kind_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("1")
-                .default_value("1")
-        }));
-        self.source_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("workspace")
-                .default_value("workspace")
         }));
         self.function_id_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -172,12 +164,14 @@ impl ToolView {
         self.form_identifier = item.identifier.clone();
         self.form_name = item.name.clone();
         self.form_description = item.description.clone();
-        self.form_kind = item.kind.to_string();
+        self.form_kind = item.kind;
         self.form_source = item.source.clone();
         self.form_function_id = item.function_id.map(|i| i.to_string()).unwrap_or_default();
         self.form_workflow_id = item.workflow_id.map(|i| i.to_string()).unwrap_or_default();
         self.form_input_schema = item.input_schema.clone();
         self.form_output_schema = item.output_schema.clone();
+        self.kind_select_open = false;
+        self.source_select_open = false;
         self.error_message = None;
         self.identifier_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -193,16 +187,6 @@ impl ToolView {
             InputState::new(window, cx)
                 .placeholder("工具描述")
                 .default_value(&item.description)
-        }));
-        self.kind_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("1")
-                .default_value(&item.kind.to_string())
-        }));
-        self.source_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("workspace")
-                .default_value(&item.source)
         }));
         self.function_id_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -228,8 +212,7 @@ impl ToolView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll
-            .set_offset(point(px(0.0), px(0.0)));
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
         self.error_message = None;
@@ -245,12 +228,6 @@ impl ToolView {
         }
         if let Some(ref inp) = self.description_input {
             self.form_description = inp.read(cx).value().to_string();
-        }
-        if let Some(ref inp) = self.kind_input {
-            self.form_kind = inp.read(cx).value().to_string();
-        }
-        if let Some(ref inp) = self.source_input {
-            self.form_source = inp.read(cx).value().to_string();
         }
         if let Some(ref inp) = self.function_id_input {
             self.form_function_id = inp.read(cx).value().to_string();
@@ -272,16 +249,24 @@ impl ToolView {
             cx.notify();
             return;
         }
-        let kind: i64 = self.form_kind.parse().unwrap_or(1);
-        let fid: Option<i64> = if self.form_function_id.is_empty() {
-            None
+        let kind: i64 = self.form_kind;
+        let fid: Option<i64> = if kind == 1 {
+            if self.form_function_id.is_empty() {
+                None
+            } else {
+                self.form_function_id.parse().ok()
+            }
         } else {
-            self.form_function_id.parse().ok()
+            None
         };
-        let wid: Option<i64> = if self.form_workflow_id.is_empty() {
-            None
+        let wid: Option<i64> = if kind == 2 {
+            if self.form_workflow_id.is_empty() {
+                None
+            } else {
+                self.form_workflow_id.parse().ok()
+            }
         } else {
-            self.form_workflow_id.parse().ok()
+            None
         };
         let store = self.store.read(cx).clone();
         let idf = self.form_identifier.clone();
@@ -401,6 +386,116 @@ impl ToolView {
             self.load(cx);
         }
     }
+
+    fn select_kind(&mut self, new_kind: i64, cx: &mut Context<Self>) {
+        if self.form_kind != new_kind {
+            self.form_function_id.clear();
+            self.form_workflow_id.clear();
+        }
+        self.form_kind = new_kind;
+        self.kind_select_open = false;
+        cx.notify();
+    }
+
+    fn select_source(&mut self, new_source: String, cx: &mut Context<Self>) {
+        self.form_source = new_source;
+        self.source_select_open = false;
+        cx.notify();
+    }
+
+    fn toggle_kind(&mut self, cx: &mut Context<Self>) {
+        self.kind_select_open = !self.kind_select_open;
+        self.source_select_open = false;
+        cx.notify();
+    }
+
+    fn toggle_source(&mut self, cx: &mut Context<Self>) {
+        self.source_select_open = !self.source_select_open;
+        self.kind_select_open = false;
+        cx.notify();
+    }
+
+    fn kind_label(&self) -> &'static str {
+        match self.form_kind {
+            1 => "函数",
+            2 => "工作流",
+            _ => "未知",
+        }
+    }
+}
+
+fn selector_field(
+    label: &'static str,
+    value: impl Into<SharedString>,
+    id: impl Into<ElementId>,
+    theme: &gpui_component::theme::Theme,
+    on_toggle: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme.foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .id(id)
+                .h(px(32.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(8.0))
+                .border_1()
+                .border_color(theme.border)
+                .rounded(px(4.0))
+                .bg(theme.background)
+                .text_size(px(13.0))
+                .cursor(CursorStyle::PointingHand)
+                .child(value.into())
+                .child("⌄")
+                .on_mouse_down(MouseButton::Left, on_toggle),
+        )
+}
+
+fn selector_menu(theme: &gpui_component::theme::Theme) -> Scrollable<Div> {
+    div()
+        .flex()
+        .flex_col()
+        .max_h(px(160.0))
+        .overflow_y_scrollbar()
+        .border_1()
+        .border_color(theme.border)
+        .rounded(px(4.0))
+        .bg(theme.popover)
+        .text_color(theme.popover_foreground)
+}
+
+fn selector_option(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    theme: &gpui_component::theme::Theme,
+    on_select: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let list_hover = theme.list_hover;
+    div()
+        .id(id)
+        .px(px(8.0))
+        .py(px(6.0))
+        .bg(if selected {
+            theme.list_active
+        } else {
+            theme.popover
+        })
+        .hover(move |option| option.bg(list_hover))
+        .text_size(px(13.0))
+        .cursor(CursorStyle::PointingHand)
+        .child(label.into())
+        .on_mouse_down(MouseButton::Left, on_select)
 }
 
 impl Render for ToolView {
@@ -421,16 +516,6 @@ impl Render for ToolView {
                 InputState::new(window, cx)
                     .placeholder("工具描述")
                     .default_value(&self.form_description)
-            }));
-            self.kind_input = Some(cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("1")
-                    .default_value(&self.form_kind)
-            }));
-            self.source_input = Some(cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("workspace")
-                    .default_value(&self.form_source)
             }));
             self.function_id_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
@@ -561,21 +646,47 @@ impl Render for ToolView {
                             .child(
                                 list_header(style)
                                     .child(list_header_cell(Some(col_widths[0]), style).child("ID"))
-                                    .child(list_header_cell(Some(col_widths[1]), style).child("名称"))
-                                    .child(list_header_cell(Some(col_widths[2]), style).child("Identifier"))
-                                    .child(list_header_cell(Some(col_widths[3]), style).child("Kind"))
-                                    .child(list_header_cell(Some(col_widths[4]), style).child("描述"))
-                                    .child(list_header_cell(Some(col_widths[5]), style).child("操作")),
+                                    .child(
+                                        list_header_cell(Some(col_widths[1]), style).child("名称"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[2]), style)
+                                            .child("Identifier"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[3]), style).child("Kind"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[4]), style).child("描述"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[5]), style).child("操作"),
+                                    ),
                             )
                             .children(self.items.iter().map(|item| {
                                 let id = item.id;
                                 let ic = item.clone();
                                 list_row(style)
-                                    .child(list_cell(Some(col_widths[0]), style).child(format!("{}", item.id)))
-                                    .child(list_cell(Some(col_widths[1]), style).child(item.name.clone()))
-                                    .child(list_cell(Some(col_widths[2]), style).child(item.identifier.clone()))
-                                    .child(list_cell(Some(col_widths[3]), style).child(format!("{}", item.kind)))
-                                    .child(list_cell(Some(col_widths[4]), style).child(item.description.clone()))
+                                    .child(
+                                        list_cell(Some(col_widths[0]), style)
+                                            .child(format!("{}", item.id)),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[1]), style)
+                                            .child(item.name.clone()),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[2]), style)
+                                            .child(item.identifier.clone()),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[3]), style)
+                                            .child(format!("{}", item.kind)),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[4]), style)
+                                            .child(item.description.clone()),
+                                    )
                                     .child(
                                         list_actions(None, style)
                                             .child(
@@ -651,12 +762,15 @@ impl Render for ToolView {
                                     ActionSize::Page,
                                     style,
                                 )
-                                .on_mouse_down(MouseButton::Left, {
-                                    let t = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        t.update(cx, |v, cx| v.prev_page(cx)).ok();
-                                    }
-                                }),
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.prev_page(cx)).ok();
+                                        }
+                                    },
+                                ),
                             )
                             .child(
                                 div()
@@ -680,12 +794,15 @@ impl Render for ToolView {
                                     ActionSize::Page,
                                     style,
                                 )
-                                .on_mouse_down(MouseButton::Left, {
-                                    let t = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        t.update(cx, |v, cx| v.next_page(cx)).ok();
-                                    }
-                                }),
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.next_page(cx)).ok();
+                                        }
+                                    },
+                                ),
                             ),
                     ),
             )
@@ -693,12 +810,17 @@ impl Render for ToolView {
                 let identifier_input = self.identifier_input.clone().unwrap();
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
-                let kind_input = self.kind_input.clone().unwrap();
-                let source_input = self.source_input.clone().unwrap();
                 let function_id_input = self.function_id_input.clone().unwrap();
                 let workflow_id_input = self.workflow_id_input.clone().unwrap();
                 let input_schema_input = self.input_schema_input.clone().unwrap();
                 let output_schema_input = self.output_schema_input.clone().unwrap();
+                let kind_label = self.kind_label().to_string();
+                let source_label = self.form_source.clone();
+                let kind_select_open = self.kind_select_open;
+                let source_select_open = self.source_select_open;
+                let form_kind = self.form_kind;
+                let form_source = self.form_source.clone();
+                let view_handle = cx.weak_entity();
                 this.child(
                     div()
                         .absolute()
@@ -710,7 +832,7 @@ impl Render for ToolView {
                         .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
-                            let t = cx.weak_entity();
+                            let t = view_handle.clone();
                             move |_, _, cx| {
                                 t.update(cx, |v, cx| v.hide_form(cx)).ok();
                             }
@@ -723,79 +845,181 @@ impl Render for ToolView {
                         theme.foreground,
                         theme.border,
                     )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            management_modal_scroll("tool-form-scroll", &self.form_scroll)
-                                .gap(px(10.0))
-                                .child(
-                                    div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(if self.editing_id.is_some() {
-                                            "编辑工具"
-                                        } else {
-                                            "添加工具"
-                                        }),
-                                )
-                                .child(form_field("Identifier *", identifier_input, theme))
-                                .child(form_field("名称 *", name_input, theme))
-                                .child(form_field("描述 *", description_input, theme))
-                                .child(form_field("Kind (1=function, 2=workflow)", kind_input, theme))
-                                .child(form_field("Source", source_input, theme))
-                                .child(form_field("Function ID (kind=1)", function_id_input, theme))
-                                .child(form_field("Workflow ID (kind=2)", workflow_id_input, theme))
-                                .child(form_field("Input Schema (JSON)", input_schema_input, theme))
-                                .child(form_field("Output Schema (JSON)", output_schema_input, theme))
-                                .when_some(self.error_message.as_ref(), |this, err| {
-                                    this.child(
-                                        div()
-                                            .p(px(8.0))
-                                            .bg(theme.warning.opacity(0.1))
-                                            .rounded(px(4.0))
-                                            .text_size(px(12.0))
-                                            .text_color(theme.warning)
-                                            .child(err.clone()),
-                                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        management_modal_scroll("tool-form-scroll", &self.form_scroll)
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_id.is_some() {
+                                        "编辑工具"
+                                    } else {
+                                        "添加工具"
+                                    }),
+                            )
+                            .child(form_field("Identifier *", identifier_input, theme))
+                            .child(form_field("名称 *", name_input, theme))
+                            .child(form_field("描述 *", description_input, theme))
+                            .child(
+                                selector_field("类型 *", kind_label, "tool-kind-toggle", theme, {
+                                    let view = view_handle.clone();
+                                    move |_, _, cx| {
+                                        view.update(cx, |v, cx| v.toggle_kind(cx)).ok();
+                                    }
                                 })
-                                .child(
+                                .when(kind_select_open, |field| {
+                                    let kind_view = view_handle.clone();
+                                    field.child(selector_menu(theme).children(
+                                        [(1_i64, "函数"), (2_i64, "工作流")].into_iter().map(
+                                            move |(k, l)| {
+                                                let label = l.to_string();
+                                                let selected = k == form_kind;
+                                                let option_id = format!("tool-kind-option-{k}");
+                                                let view = kind_view.clone();
+                                                selector_option(
+                                                    option_id,
+                                                    label,
+                                                    selected,
+                                                    theme,
+                                                    move |_, _, cx| {
+                                                        view.update(cx, |view, cx| {
+                                                            if view.form_kind != k {
+                                                                view.form_function_id.clear();
+                                                                view.form_workflow_id.clear();
+                                                            }
+                                                            view.form_kind = k;
+                                                            view.kind_select_open = false;
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                    },
+                                                )
+                                            },
+                                        ),
+                                    ))
+                                }),
+                            )
+                            .child(
+                                selector_field(
+                                    "Source",
+                                    source_label,
+                                    "tool-source-toggle",
+                                    theme,
+                                    {
+                                        let view = view_handle.clone();
+                                        move |_, _, cx| {
+                                            view.update(cx, |v, cx| v.toggle_source(cx)).ok();
+                                        }
+                                    },
+                                )
+                                .when(
+                                    source_select_open,
+                                    |field| {
+                                        let source_view = view_handle.clone();
+                                        field.child(
+                                            selector_menu(theme).children(
+                                                [
+                                                    ("workspace", "workspace"),
+                                                    ("builtin", "builtin"),
+                                                ]
+                                                .into_iter()
+                                                .map(move |(v, l)| {
+                                                    let label = l.to_string();
+                                                    let value = v.to_string();
+                                                    let selected = v == form_source;
+                                                    let option_id =
+                                                        format!("tool-source-option-{v}");
+                                                    let view = source_view.clone();
+                                                    selector_option(
+                                                        option_id,
+                                                        label,
+                                                        selected,
+                                                        theme,
+                                                        move |_, _, cx| {
+                                                            view.update(cx, |view, cx| {
+                                                                view.form_source = value.clone();
+                                                                view.source_select_open = false;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        },
+                                                    )
+                                                }),
+                                            ),
+                                        )
+                                    },
+                                ),
+                            )
+                            .when(self.form_kind == 1, |this| {
+                                this.child(form_field("Function ID *", function_id_input, theme))
+                            })
+                            .when(self.form_kind == 2, |this| {
+                                this.child(form_field("Workflow ID *", workflow_id_input, theme))
+                            })
+                            .child(form_field("Input Schema (JSON)", input_schema_input, theme))
+                            .child(form_field(
+                                "Output Schema (JSON)",
+                                output_schema_input,
+                                theme,
+                            ))
+                            .when_some(self.error_message.as_ref(), |this, err| {
+                                this.child(
                                     div()
-                                        .flex()
-                                        .justify_end()
-                                        .gap(px(8.0))
-                                        .child(
-                                            action_button(
-                                                "cancel",
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                ActionSize::Page,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .p(px(8.0))
+                                        .bg(theme.warning.opacity(0.1))
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme.warning)
+                                        .child(err.clone()),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        action_button(
+                                            "cancel",
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            ActionSize::Page,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.hide_form(cx)).ok();
                                                 }
-                                            }),
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "save",
+                                            "保存",
+                                            ActionRole::Main,
+                                            ActionSize::Page,
+                                            style,
                                         )
-                                        .child(
-                                            action_button(
-                                                "save",
-                                                "保存",
-                                                ActionRole::Main,
-                                                ActionSize::Page,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.save(cx)).ok();
                                                 }
-                                            }),
+                                            },
                                         ),
-                                ),
-                        ),
+                                    ),
+                            ),
+                    ),
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
@@ -915,7 +1139,11 @@ impl Render for ToolView {
     }
 }
 
-fn form_field(label: &'static str, input: Entity<InputState>, theme: &gpui_component::theme::Theme) -> impl IntoElement {
+fn form_field(
+    label: &'static str,
+    input: Entity<InputState>,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()

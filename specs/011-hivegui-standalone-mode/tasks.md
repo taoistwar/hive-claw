@@ -1,390 +1,462 @@
-# Tasks: HiveGUI 独立桌面管理工具
+# Tasks: HiveGUI 独立本地 Agent
 
 **Input**: Design documents from `/specs/011-hivegui-standalone-mode/`
-**Prerequisites**: plan.md, spec.md, research.md, data-model.md, quickstart.md
+**Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`
 
-**Tests**: 遵循宪法原则 II（Test-First Development），每个 Phase 包含对应测试任务。
+**Tests**: 宪法原则 II 要求严格 TDD。每个测试批次必须先写测试、由用户或指定 reviewer 审批、实际观察 Red，之后才可开始该批次的生产实现。
 
-**Organization**: Tasks grouped by user story. US1-US4 已完成（现有代码），US5-US13 为新增实体管理。
+**Organization**: 任务按 13 个 P1 用户故事分阶段；已有实现也必须由新契约测试证明，不能直接视为完成。
 
-## Format: `[ID] [P?] [Story] Description`
+## Format: `[ID] [P?] [Story?] Description`
 
-- **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Which user story this task belongs to
-- Include exact file paths in descriptions
+- **[P]**: 可与同一阶段中不修改相同文件、且不依赖未完成任务的工作并行
+- **[Story]**: 用户故事标签；仅用户故事阶段使用
+- 每项任务都包含明确文件路径
 
 ---
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-**Purpose**: 创建共享数据层和导航框架
+**Purpose**: 建立共享 runtime crate、测试夹具和可重复验证入口，不改变现有业务行为。
 
-- [x] T001 Create `crates/hivegui/src/datasource/entity_store.rs` with SQLite table creation for all 9 new entities (tags, categories, capabilities, plugins, functions, workflows, tools, skills, agents) per data-model.md
-- [x] T002 Register entity_store module in `crates/hivegui/src/datasource/mod.rs`
-- [x] T003 Initialize entity_store in Store::new() in `crates/hivegui/src/datasource/store.rs` (call entity_store::init_tables)
-- [x] T003a Implement SQLite integrity check on startup in `crates/hivegui/src/datasource/store.rs` — execute `PRAGMA integrity_check` during Store::new(), if check fails log error and provide recovery option (recreate database), display user-friendly error message via gpui dialog (covers FR-006)
+**质量基线前置条件（不计入 T001/T017D 产品范围）**：用户于 2026-07-23 批准方案 A，先用独立分支 `codex/ci-quality-baseline-rust-1.97.1` 修复 `origin/main` 既有 fmt/Clippy/测试问题，清除已删除管理聊天 API 的陈旧契约，并为当前 HiveWeb 集成测试增加一次性 MySQL 8、Redis 7、MinIO 基础设施及迁移。该批次只让宪章已要求的现役测试可在 CI 执行，不实施 SQLx 0.9、严格 MySQL TLS、secret/dependency scan、SQLx offline 或 HiveGUI 外部 DataSource 能力。质量基线合并后，T001 分支必须重基并保留新的基础设施 job，且相对新基线仍只包含下述三个文件的工具链证据变更。
+
+- [X] T001 仅在 `rust-toolchain.toml`、workspace `Cargo.toml` 和作为唯一辅助证据文件的 `.github/workflows/ci.yml` 中把工具链精确固定为 2026-07-22 的最新稳定版 Rust 1.97.1、保持 workspace `rust-version=1.97.1`，CI 只新增阻断式 `rustc --version --verbose`/`cargo --version --verbose` 与 release 1.97.1 断言；该批次不得夹带 crate 注册、依赖、产品代码或覆盖质量基线中的 HiveWeb 基础设施 job。独立分支 `codex/rust-1.97.1-toolchain` 的提交 `bf3690d` 已推送，但须等待质量基线合并后重基，且自动化 PR API 权限与远端 CI 仍 Pending，故本任务保持未完成，不得用已推送分支或后续已勾选任务倒推其完成
+
+**T001 闭合（2026-08-05）**：独立分支 `codex/rust-1.97.1-toolchain` 已于 2026-08-05 在 PR #5（hiveweb clippy，b28168d）与 PR #6（hivegui clippy，d899e6f）合并后重基到 `origin/main@8157458`；重基后 commit `7e689f2` 与 `origin/main` 的精确 diff 为 `3 files changed, 23 insertions(+), 4 deletions(-)`（rust-toolchain.toml / Cargo.toml / .github/workflows/ci.yml），与 T001 任务定义的三文件约束一致。PR #4 (`2eee211 chore: pin Rust 1.97.1 toolchain`) 已 squash 合并至 `origin/main`；远端 CI run 30996686002 两个 job 全 success（fmt+clippy+test 92275343896、hiveweb integration 92275343921，含 MySQL 8 + Redis 7 + MinIO disposable 库 + 迁移 + 完整 HiveWeb integration suite）；`Install Rust toolchain (pinned by rust-toolchain.toml)` 步骤阻断式 1.97.1 断言通过；详见 `checklists/implementation-review.md` 详细证据。
+
+**T002–T008 状态说明**：这些产物虽已在 T001 门禁完成前预先建立，但任务依赖与重新验证尚未满足，因此统一保持 Pending；文件/契约存在不等于任务完成，也不得据此把 T001 倒推为完成。质量基线合并且 T001 分支重基后，必须在 Rust 1.97.1 与保留下来的 HiveWeb 基础设施 job 上逐项重新验证 T002–T008，取得新的 Green 证据后才可勾选。
+
+- [ ] T002 在 T001 完成后于 workspace `Cargo.toml`、`crates/hive-runtime-core/Cargo.toml`、`crates/hive-runtime-core/src/lib.rs`、`abi.rs`、`capability.rs`、`execution.rs`、`plugin.rs`、`wasm.rs`、`workflow.rs` 和 `persisted_tool.rs` 注册无产品存储/传输依赖的 `hive-runtime-core` workspace crate，并建立模块骨架与公开契约文档
+- [ ] T003 [P] 在 `crates/hivegui/tests/fixtures/migrations/README.md`、`crates/hivegui/tests/fixtures/backups/README.md` 和 `crates/hivegui/tests/fixtures/plugins/README.md` 定义 v2/v3 schema、format 1/2/3 备份和共享 WASM fixture 的生成与校验规则；迁移/备份 fixture 必须覆盖 Function kind `1/2/3`、Tool kind `1/2`、未知 Function/Tool kind 回滚、四个 `*_node`、旧点号 Builtin 到下划线名称的迁移及目标碰撞回滚
+- [ ] T004 [P] 在 `crates/hivegui/tests/support/mod.rs` 建立临时 XDG 目录、设备密钥、SQLite、mock LLM、网络捕获和故障注入测试工具
+- [ ] T005 [P] 在 `crates/hivegui/benches/local_runtime.rs`、`crates/hivegui/tests/support/performance.rs`、`crates/hivegui/Cargo.toml` 和 `specs/011-hivegui-standalone-mode/checklists/performance.md` 建立固定样本的本地编排、Tool 分派、100 节点 DAG 及 integration/visual 性能测试共用的 benchmark/比较入口，并定义版本化基线格式、fixture 版本、硬件/OS/Rust/build-profile 环境指纹、采样规则与 p50/p95/p99 比较方法；对已有可运行路径在任何性能相关实现前采集基线，全新 benchmark 以首个获批 Green 结果建立基线，任一跟踪百分位回归 >10% 必须阻断且只能凭明确签字、记录理由、影响范围与复核日期放行
+- [ ] T006 在 `specs/011-hivegui-standalone-mode/checklists/security.md` 先评估 `tokio-util`、`age`、`tar` 等候选依赖的维护状态、许可证、已知 CVE、feature 最小集与 backup/Plugin 安全复核负责人，并记录 CI 使用的 `cargo-deny`、`cargo-sqlx` 精确版本及 advisory 例外到期日；本任务获批前不得修改 Cargo 依赖或 CI 工具安装
+- [ ] T007 在 T006 审批后于 `Cargo.toml`、`crates/hivegui/Cargo.toml`、`Cargo.lock` 和 `deny.toml` 增加并锁定获批依赖与依赖扫描配置，且不得引入第二套 runtime/UI 框架
+- [ ] T008 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 建立按 Phase 记录测试提交、reviewer、Red 命令/输出、Green 命令/输出和重构结果的审批表
+
+**Performance task rule**: T034、T041、T047、T055、T060-T061、T066、T073、T083、T090、T093、T101、T103、T108、T115、T117、T121-T122 中的每项性能断言都必须使用 T005 的固定 fixture/环境指纹/版本化基线比较器，并在各自 reviewer 任务中审批和观察 Red；不得把首次 >10% 比较推迟到 T137。
+
+**Native scroll task rule**: T016E 先建立唯一 `NativeScrollSurface` inventory、VisualTestContext helper 和 source-contract；各故事必须在生产 UI 前由对应测试任务激活并实际观察其行 Red、由 reviewer 任务审批、由实现任务闭合、由 Green 任务复跑：sidebar=`T030→T031→T032→T033`，DataSource/数据管理=`T036→T037→T039→T040`，GlobalConfig modal=`T042→T043→T045→T046`，LLM 管理=`T049→T050→T053→T054`，Tag=`T056→T057→T058→T059`，Category=`T061→T062→T064→T065`，Capability=`T067A→T068→T069→T071`，Plugin=`T075→T076→T081→T082`，Function=`T085→T086→T088→T089`，Workflow/DAG=`T092→T094→T097/T098→T100`，Tool=`T101→T104→T106→T107`，Skill=`T110→T111→T113→T114`，Agent/会话/设置=`T121→T123→T132-T135→T136`。这些箭头是对应任务正文的强制子范围和依赖：Red 任务激活 inventory 行并写首次断言，reviewer 必须记录该行的原样命令、可识别失败和实际 Red，implementation 只能闭合已审批行，Green 只能复跑；每行必须以长 fixture、稳定 selector、`VisualTestContext::debug_bounds`、模拟 wheel/键盘事件和前后实际位移证明底部内容进入 viewport，且 source-contract 禁止自定义滚动条/手柄/箭头/手写 wheel。T139/T142 只复跑和汇总已闭合行，不得首次定义、首次发现或修复这些断言。
+
+**Sensitive persistence task rule**: T016F 先建立唯一敏感字段/介质 canary inventory 与扫描 helper，并以 `owner_phase` 标注。Foundation 的设备密钥/crypto temp/error 行由 `T016F→T017F→T025→T028` 闭合，logging temp/error 行由 `T016F→T017F→T027→T028` 闭合；最终诊断包不属于 Foundation。DataSource=`T034→T037→T038→T040`，LlmProvider=`T047→T050→T051→T054`，ChatSession/ChatMessage/AgentExecution=`T117→T123→T127→T136`，备份 staging/最终包/错误/崩溃/跨设备=`T119→T123→T129/T130→T136`，日志/诊断包=`T120→T123→T131→T136`。这些箭头同样是对应任务正文的强制子范围和依赖：故事 Red 必须激活并首次执行所属行，reviewer 必须记录原样命令、可识别失败和实际 Red，implementation 只能闭合已审批行，Green 只能复跑并汇总；T138 只复跑和汇总全部已审批且已闭合行，不得首次增加敏感字段、介质或泄漏断言，也不得修复生产实现。
+
+**Foundation Cross-Cutting Rules** (适用于 T016C-T016F、T017F、T022、T025/T025R、T073/T076-T079/T082、T119/T123、T129/T130、T141/T147 及所有 Phase 1A 任务):
+
+- **SQLite sidecar 清理**: root-handle-relative、SQLite 外部、数据库同目录的耐久 cleanup journal + 唯一同目录 quarantine 协议，状态固定 `prepared→quarantined→done`。受控 `db_id` token = SHA-256(`hivegui-sidecar-cleanup-v1`\0\u0000\u0000\u0000db_id\uff09) 取 64 位小写 hex；basename 固定 `.hivegui-sidecar-cleanup-v1-{token}-{artifact}.json`（含 `.staging`）。启动按 final/staging 槽位五分支重放；稳定错误仅 `checkpoint_failed > checkpoint_busy > connections_open > sidecar_reappeared > sidecar_hot > sidecar_recoverable > sidecar_unknown_owner > sidecar_cleanup_failed`，artifact 优先级 `wal > rollback_journal > shm`。hot/未知/可恢复 sidecar 永不进入 journal，canonical 字节按原保留；仅已证明安全残留在失败时位于 canonical/quarantine 或在 `quarantined` 后删除并经重放完成父目录耐久确认，绝不得把 canonical 旧 sidecar 与新主文件组合。
+- **SQLite live instance 发现**: current = `{data_root}/datasources.db`、`db_id=current`；migration/restore instance = `.hivegui-db-staging-v1/{role}-{db_instance_operation_id}/datasources.db`，UUID 全局唯一 canonical hyphenated，db_id=`migration/{UUID}|restore/{UUID}`。建库前先通过 `.hivegui-db-instance-v1.json.staging` 原子发布 `.hivegui-db-instance-v1.json`，六元组精确匹配 `schema_version=1`、role、UUID、db_id、`database_name=datasources.db`、`ownership_state=unarmed`；唯一状态转换 unarmed→armed，启动按 ASCII 字节序 no-follow 枚举并拒绝未知 tombstone、链接/特殊文件、缺失/损坏/重复 manifest、UUID 重复和不匹配。registry/live/tombstone/manifest/owner/retirement/cleanup 是切换外部 locator/control state，绝不进入 archive/安全备份/待切换新树。
+- **owner 状态机**: owner final = `.hivegui-db-recovery-v1.json`，staging = `.hivegui-db-recovery-v1.json.staging`，逐字节绑定 `schema_version=1`、role、UUID、db_id、instance/armed-manifest identity、old/new 数据库与 Plugin identity/hash；phase 仅 `prepared|applying|committed`。owner 仅在 manifest armed 后发布；`armed+owner 缺失/被删/staging-only/损坏/不匹配` fail-closed；`unarmed+owner 双槽均无` 可派生 `aborted_pre_switch`。T022 唯一拥有 migration SQLite staging 事务；v2→v3→v4 只在 unarmed migration instance 执行，SQLite commit ≠ 系统 commit。T129 只构建 unarmed restore instance 故意不 arm；T130 在最终安全备份已验证后才 arm+发布 owner。live 下绝不允许单独删除 manifest/owner；aborted/old/new 仅由 registry retirement 接管。
+- **retirement/tombstone 状态机**: registry retirement final = `.hivegui-db-retirement-v1-{role}-{UUID}.json`，staging 追加 `.staging`，tombstone = `.hivegui-db-retired-v1-{outcome}-{role}-{UUID}`。outcome 仅 `aborted_pre_switch|old|new`，state 仅 `prepared|renamed|done`。journal 必须绑定 live/tombstone basename、目录/manifest/owner identity 与 phase、terminal current 和 Plugin identity/hash。`prepared` journal 耐久前不得改 live；之后以 identity-bound no-replace 原子 rename 整个 live 到 tombstone、fsync registry、复验后推进 `renamed`；只有匹配 journal 的 tombstone 才能 no-follow 逐叶清理。普通文件 link-count=1；目录不要求 link-count=1，只 identity-bound 逐层复核。清理后 rmdir tombstone、fsync registry、推进 `done`、删除 journal 并 fsync registry。启动先重放 retirement/tombstone；未知 tombstone、live/tombstone 双重存在、identity/outcome/hash 不匹配或 fsync 歧义 fail-closed。`prepared|applying` 重启恢复验证 old；只有新 current 完整 health/search/artifact/identity 验证通过才 `committed`（唯一系统 commit point）；committed 后保持写闸门关闭 + 收口已验证 new，不得首次语义验证或回滚 old。
+- **Plugin operation/GC**: T016D、T017F、T022、T073、T076-T079、T082、T138、T147 使用同一六态 operation 与两态 GC 契约。operation 仅 `prepared|staged|published|referenced|done|conflict`；ownership/identity/双重存在歧义持久化为 `conflict` 阻止开放 Plugin Store（正文 blocked 仅描述该效果）。`referenced` 后 staging 重现不得回写历史提交，原子 `operation→done + blocked GC/incident`。GC 仅 `pending|blocked`，worker 启动/固定周期/引用-租约释放事件后按 artifact_key 稳定扫描；瞬态条件解除且 identity 精确匹配时重试，identity 重现/不匹配/所有权未知持续 blocked，禁止采用竞争 identity。T073 写 operation conflict + GC 两类 blocked Red；T076 审批观察 Red；T077 导入/重放、T078 持久 API、T079 运行时租约/重试触发；T082 复跑 Green；T138/T147 仅聚合。
+- **doc 硬门槛**: 任何 Foundation 实现任务（T018-T022、T025、T025R、T027、T129、T130、T-AUTH-5 等）新增的 `pub fn` 必须在生产代码合并前完成 doc comment（inputs / outputs / error modes / 安全不变量）；涉及模块启用 `#![warn(missing_docs)]`；`cargo doc --no-deps` 失败即视为任务未闭合，不允许推迟到 T144。T144 仅做 changed-public-API inventory 的总审计，不在此任务首次为 `pub fn` 添加 doc comment。
+- **Security review (合并 T022R / T025R / T079R / T129R / T-AUTH-R 为单一 T025R 任务)**: T025R 覆盖 6 条独立 security 边界：①FR-012 设备密钥（chacha20poly1305 生命周期 + 0600 ACL + 已有密文不得静默覆盖）；②sidecar cleanup 协议（hot/unknown/recoverable canonical 保留 + identity-bound no-replace quarantine + legal reason/artifact 优先级 + 总优先级）；③Plugin sandbox（root-handle-relative no-follow + WASI off + resource limit + cache key 完整性 + identity/lifecycle 矩阵）；④FR-026 备份 age 加密流（口令认证 + 敏感值仅在有界内存 + 跨设备立即重新加密 + staging 隔离 + 归档路径拒绝 symlink/hardlink/junction/reparse/device/FIFO/socket）；⑤FR-049/050/051 主密码认证 + 自动锁定（Argon2id m=64MiB/t=3/p=1 + ChaCha20Poly1305 (RFC 8439) 包装 + 屏幕锁事件 fail-closed + 内存 zeroize + 5 次错误 backoff + 备份强制确认 + 无密码重置旁路；**算法更正记录 2026-07-29**：user 批准方案 A，规格从 "AES-256-GCM" 更正为 "ChaCha20Poly1305"，两者均为 256-bit AEAD，ChaCha20Poly1305 在无 AES-NI 桌面环境下性能更优，实现保持不变）；⑥HiveGUI 远程 MySQL 公开边界（FR-048 公开 Store 校验 + `MysqlIdentifier` 单一 source + metadata allowlist + 跨设备重放 + HiveWeb URL 0 命中）。**T025R 签字机制（Constitution v1.5.0, 2026-07-30）**：本仓库仅 1 名 active maintainer，按 *Single-developer repository clause* 由该 maintainer 同时承担 dedicated security review + second approver 角色，self-attestation 与 `/security-review` 结论须写入 `checklists/security.md` 对应行；每条边界 1 份签字，6 边界合计 6 份签字；被审实现任务在 T025R 完成前**均不得合并**。本任务不替代 T138 汇总。
+
+---
+
+## Phase 1A: Local Master-Password Authentication (Session 2026-07-29 新增)
+
+**Purpose**: 闭合 FR-049/FR-050/FR-051/SC-033/SC-034/SC-035；首次启动强制设置主密码、后续启动解锁、15 分钟空闲 + 屏幕锁事件自动锁定、内存清零、无密码重置仅从备份恢复。**本阶段在所有 Foundation Red 之前闭合**（详见 FR-049/FR-051 与 plan.md Phase 3），未完成前不得进入任何用户故事生产实现。
+
+**Phase 1A 关闭条件**: 全部 T-AUTH-1~5 Red→Green + T025R 中"Local master-password authentication" 边界签字（详见 Foundation Cross-Cutting Rules Security review 第 ⑤ 条）= Phase 1A 闭合；闭合前不得进入 Phase 2 Foundation Red。Constitution II.3 显式要求：每个 Red 任务必须经 reviewer 观察真实失败后才能进入实现；T-AUTH-1~4 的 Red 证据记入 `checklists/implementation-review.md` 表 T-AUTH-1~4 行（owner_phase=`Foundation-auth-Red`）。
+
+- [X] T-AUTH-1 [P] [Foundation-auth-Red] [FR-049+SC-033] 在 `crates/hivegui/tests/auth_setup_red.rs` 编写 7 项 Red 断言（详见 `checklists/implementation-review.md` 表 T-AUTH-1 行）：(a) 首次启动进入 `auth::ui::SetupScreen::SetMasterPassword`；(b) 弱密码 100% 被 `auth::policy::PasswordPolicy::evaluate` 拒绝且 `PasswordRejection::is_blocking`；(c) `PasswordPolicy::set_os_pw_passwd_for_test` 注入的 OS passwd 字符集同形同长被拒绝；(d) 接受密码后仅写 `keystore/wrapped_device_key.v1`（`AUTHV1` magic + 0600 + version=1），T025 `datasource/key_store.bin` mtime 不变；(e) `AuthKeystore::set_clock_for_test(SlowClock::after_6s())` 触发 `AuthError::DerivationTimeout` + 主 Store 不打开；(f) `kek_verifier` 正确密码 deterministic + 错误密码 collapse 到 `AuthError::InvalidPassword`（防侧信道）。**Red 状态**：2026-07-29 `cargo test -p hivegui --test auth_setup_red --no-run` 退出 101，错误仅由 `error[E0433]: cannot find 'auth' in 'hivegui'` 单一原因产生（Constitution II.3 满足：Red 仅由目标 API 缺失产生）。**T-AUTH-5 不得在 T-AUTH-1 经 T017-style reviewer 审批前启动**。
+- [X] T-AUTH-2 [P] [Foundation-auth-Red] [FR-049+SC-033] 在 `crates/hivegui/tests/auth_unlock_red.rs` 编写 8 项 Red 断言（详见 `checklists/implementation-review.md` 表 T-AUTH-2 行）：(a) `wrapped_device_key.v1` 存在时应用首先进入 `EnterMasterPassword` 屏幕 + `lock_state.reason == Startup` + 主 Store 不开；(b) 密码字段 `echo == Blank` + 任何剪贴板读取返回 `AuthError::PasswordFieldHiddenFromClipboard`；(c) 正确密码 → `UnlockOutcome::Unlocked(UnlockedKeystore{ device_key: 32B, kek: 32B, device_key != kek })` + 主 Store 打开 + UI 进入 `MainUi`；(d) 连续 5 次错误 → `lock_state.reason == TooManyAttempts` + `backoff_remaining` 在 4~5 分钟区间 + UI 切到 `RecoveryOnly { entry: RestoreFromBackup }` + backoff 期间无法进入 `EnterMasterPassword`；(e) 注入式时钟推过 5 分钟后再次进入 `EnterMasterPassword`；(f) 错误密码不得修改 `wrapped_device_key` 字节/mtime/0600 + 不得修改 `datasources.db` 或 T025 `datasource/key_store.bin`；(g) `lock_now_for_test` 后内存中 KEK + 设备密钥材料经 `zeroize`+编译器屏障清零 + 主 Store 关闭 + `unlocked_secrets_zeroed == true`；(h) relock 后重新打开应用必须回到 `EnterMasterPassword` 屏幕 + `lock_state.reason == Startup`。**Red 状态**：2026-07-29 `cargo test -p hivegui --test auth_unlock_red --no-run` 退出 101，错误仅由 `error[E0433]: cannot find 'auth' in 'hivegui'` 单一原因产生（Constitution II.3 满足：Red 仅由目标 API 缺失产生）。**T-AUTH-5 不得在 T-AUTH-2 经 T017-style reviewer 审批前启动**。
+- [X] T-AUTH-3 [P] [Foundation-auth-Red] [FR-050+SC-034] 在 `crates/hivegui/tests/auth_lock_red.rs` 编写 12 项 Red 断言（详见 `checklists/implementation-review.md` 表 T-AUTH-3 行）：(a) 默认 `auto_lock_minutes == 15`；(b) `set_auto_lock_minutes_for_test(0|1441)` 返回 `AuthError::InvalidInput { field: AutoLockMinutes, reason: "out_of_range" }` + 主 UI 未解锁前 `auth.auto_lock_minutes` 字段不可见；(c) idle ≥ 15min 触发 `AuthLockReason::IdleTimeout` + mousemove **不**重置（注入 14min + mousemove + 2min = 16min 仍锁）；(d) `IdleActivity::KeyPress` 重置计时；(e) `IdleActivity::MainWindowMouseDown` + `FocusChange` 各重置计时；(f) 锁定时运行中的 `AgentExecution.status → Cancelled` + `ChatSession.status → Locked`；(g) `OsScreenLockEvent::LinuxScreenSaverActiveChanged` → `OsScreenLock`；(h) `OsScreenLockEvent::MacOsScreensDidSleep` → `OsScreenLock`；(i) `OsScreenLockEvent::WindowsWtSessionChange` → `OsScreenLock`；(j) `ScreenLockMonitor::disabled_for_test(FailClosed)` → `startup_screen_lock_check` 返回 `ScreenLockMonitorError::Unavailable { mode: FailClosed }` + 立即 `OsScreenLockUnavailable` 锁定 + banner `"无法验证屏幕锁事件：应用已进入锁定状态"` + `blocks_main_ui == true`（**不**静默、**不**禁用自动锁定）；(k) 注入式未持久化明文 canary `HIVEGUI_CANARY_LOCAL_AUTH=plaintext` 锁定后，5 处持久化介质（`SqliteMain`/`Wal`/`Shm`/`BackupStaging`/`DiagnosticsBundle`）canary 命中数均为 0 + `unlocked_secrets_zeroed == true`；(l) 调高 `auto_lock_minutes=30` 后 15min 不锁、再过 15min 锁。**Red 状态**：2026-07-29 `cargo test -p hivegui --test auth_lock_red --no-run` 退出 101，错误仅由 `error[E0433]: cannot find 'auth' in 'hivegui'` 单一原因产生（Constitution II.3 满足）。**T-AUTH-5 不得在 T-AUTH-3 经 T017-style reviewer 审批前启动**。
+- [X] T-AUTH-4 [P] [Foundation-auth-Red] [FR-051+SC-035] 在 `crates/hivegui/tests/auth_no_reset_red.rs` 编写 7 项 Red 断言（详见 `checklists/implementation-review.md` 表 T-AUTH-4 行）：(a) 设置成功后、进入 `MainUi` 之前必须展示 `RecoveryConfirmView::RiskNotice`，标题精确为 `"忘记主密码 = 只能从备份恢复"`，`requires_explicit_acknowledgement == true`，`primary_ui_open == false`；(b) 不存在备份时 `acknowledge_risk_for_test(Checked)` 返回 `AcknowledgeOutcome::BackupRequired { reason: NoPriorBackup }` → 强制跳到 T129 备份向导；导出 + `manifest_sha256` 64 hex chars + `verify_sha256` 成功后回到 ack → `Accepted` + `primary_ui_open`；(c) 公共 API 表面 grep：`auth::keystore`（及整个 `hivegui::auth`）**不**得暴露 `reset_password` / `recover_from_questions` / `recovery_key` / `reset_master_password` / `forgot_password` / `emergency_access` 中任一符号（Constitution Code Quality 闭合）；(d) 恢复后**必须重新生成设备密钥**（`new device_key_fingerprint != old`）+ `version == 1` + 旧 `wrapped_device_key` 物理字节保留（文件内或 `logs/audit.log` 任一处）；(e) **注入式篡改备份** fault-injection：用 `bogus_wrapped = b"AUTHV1\x00BOGUS_OLD_DEVICE_WRAPPED_BLOB_FOR_FAULT_INJECTION\x00\x00"` 替换 `BackupBundle::wrapped_device_key`，重新打开 + 注入相同主密码 → 必须返回 `AuthError::BackupTamperDetected`（或 collapse 到 `InvalidPassword` 防侧信道） + UI 停在 `RecoveryOnly` 或 `SetMasterPassword`，**不**进入 `MainUi`；(f) `RecoveryEntryKind::all() == vec![RestoreFromBackup]`（typed enum，无 `ResetPassword`/`RecoverFromQuestions`/`RecoveryKey`）；(g) `acknowledge_risk_for_test(Unchecked)` 必须返回 `AcknowledgementRequired` + 主 UI 仍关闭。**Red 状态**：2026-07-29 `cargo test -p hivegui --test auth_no_reset_red --no-run` 退出 101，3 个错误均为 `error[E0433]: cannot find 'auth' in 'hivegui'`（use 路径 3 处），无 fixture 误伤（Constitution II.3 满足）。**T-AUTH-5 不得在 T-AUTH-4 经 T017-style reviewer 审批前启动**。
+- [X] T-AUTH-5 [P] [Foundation-doc+impl] [FR-049/FR-050/FR-051] 在 `crates/hivegui/src/auth/{keystore,lock,policy,ui/setup_view,ui/unlock_view,ui/recovery_confirm_view}.rs`、`crates/hivegui/src/ui/app.rs`、`crates/hivegui/src/main.rs`、`crates/hivegui/src/runtime/mod.rs` 实现主密码认证、自动锁定、屏幕锁事件订阅、内存清零、5 次错误 backoff、备份强制确认；`GlobalConfig` 新增 `auth.auto_lock_minutes`（默认 15，范围 `1..=1440`）；`.hivegui/keystore/` 加入 T026/T129 备份 manifest exclude 列表；T129 恢复后强制调用 `auth::keystore::require_new_password_setup()`。新增依赖按 T018 manifest Red contract 闭合（不允许 advisory ignore，不在本任务列具体版本）。**状态（2026-07-30）**：34/34 Green（auth_setup_red 7/7 + auth_unlock_red 8/8 + auth_lock_red 12/12 + auth_no_reset_red 7/7），116/116 `pub fn` 有 `///` doc comment，`#![warn(missing_docs)]` 编译无警告；T025R ⑤ 签字完成（Constitution v1.5.0 *Single-developer repository clause*, 2026-07-30，self-attestation 见 `checklists/security.md` §⑤.11）；**Phase 1A 关闭条件已闭合**。
 
 ---
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
-**Purpose**: 扩展路由和导航，为所有用户故事提供 UI 框架
+**Purpose**: 完成所有故事共用的契约、迁移、执行上下文、错误、日志和后台任务基础。
 
-- [x] T004 Add 9 new routes to AppRoute enum in `crates/hivegui/src/ui/app.rs` (Tag, Category, Capability, Plugin, Function, Workflow, Tool, Skill, Agent)
-- [x] T005 Add 9 new nav buttons to SidebarNav in `crates/hivegui/src/ui/sidebar_nav.rs` (标签, 分类, 能力, 插件, 函数, 工作流, 工具, 技能, Agent)
-- [x] T006 Add route rendering for 9 new views in RootView in `crates/hivegui/src/ui/app.rs` (placeholder views initially)
+**⚠️ CRITICAL**: 独立质量基线先闭合现役 HiveWeb CI，T001 在该基线上重基并取得独立 PR/CI 证据；T009-T017 的既有 Foundation 测试已获批并实际 Red，但新增的 T016A-T016D/T016F 必须经 T017F 记录实际 Red，T016E 的纯测试基础设施必须经合成 fixture self-test Green 与 inventory/reviewer 审批，T017G 必须经 T017H 记录实际 Red 后，才能开始各自对应的 T021、T022、T025、T027、T028 或故事 UI/敏感数据生产修改；T017A-T017C 的既有安全补救测试状态保持不变。T001 完成且 T017D-T017E Green 前不得开始 T018-T028；本阶段完成前不得开始任一用户故事生产实现。
 
-**Checkpoint**: 路由和导航就绪，数据库表已创建
+### Foundation tests (write first; stop for review)
 
----
+- [X] T009 [P] 在 `crates/hive-runtime-core/tests/abi_contract.rs` 为 `hive-extism/v1` manifest/host_call/稳定错误（含 Placeholder 的 `function_not_executable`）编写契约测试，并在 `crates/hivegui/tests/ci_security_contract.rs` 先写 CI 同时包含固定版本阻断式 secret scan、`cargo deny check advisories` 以及精确 `SQLX_OFFLINE=true cargo sqlx prepare --workspace --check` 的 source-contract Red 测试；固定版本 `cargo-sqlx`/scanner 安装失败、步骤缺失或非阻断、SQLx metadata 缺失/陈旧及命令失败均必须使测试/CI 失败
+- [X] T010 [P] 在 `crates/hive-runtime-core/tests/execution_contract.rs` 为唯一终态、事件序列、execution_id 传播、权限快照和取消派生编写契约测试，并在 `crates/hivegui/tests/diagnostics_exactly_once.rs` 验证同一内部错误跨 adapter 后只在处理边界记录一次
+- [X] T011 [P] 在 `crates/hive-runtime-core/tests/workflow_contract.rs` 为固定 `start_node|end_node|function_node|generate_answer_node` 值、拒绝当前写入短名称、DAG 结构校验、拓扑分层、fail-fast 汇总和确定性主错误编写单元测试
+- [X] T012 [P] 在 `crates/hivegui/tests/migration_compatibility.rs` 编写 empty/v2/v3/v4/v1/v5、Function kind `1/2/3→builtin/custom/placeholder`、Tool kind `1/2→function-wrap/workflow-wrap`、未知 Function/Tool kind 回滚、旧点号 Builtin 事务重命名/目标碰撞回滚及 legacy LLM 字段映射、数据库与托管 Plugin 制品快照/hash、故障回滚矩阵，在 `crates/hivegui/tests/store_resilience.rs` 编写单实例锁/1s-2s-4s重试/损坏重建分流测试，并在 `crates/hivegui/tests/storage_query_plans.rs`、`query_count.rs` 与 `sql_safety_contract.rs` 建立 Foundation 的 SQLite 生产查询清单、禁止用户输入拼接 SQL 的 source-contract、SQLx offline metadata 和全部过滤/关联查询 EXPLAIN Red harness；通用 harness 必须能够解析 SQLite/MySQL 计划，并在缺少预期 `SEARCH`/索引、任一过滤/关联列未被索引覆盖、非小型表出现未经批准的 `SCAN`/全表扫描、计划无法判定或发现 N+1 时失败，小型固定表/metadata 例外必须记录表大小、理由、审批者、到期日和复核结果；实际外部 MySQL metadata allowlist、`MysqlIdentifier` 与查询 source-contract 归 T035/T037 审批并由 T038 闭合，不得反向阻塞 T028；各故事补齐本实体的生产查询与预期索引清单
+- [X] T013 [P] 在 `crates/hivegui/tests/entity_validation.rs` 编写由统一“公开可写字段目录”驱动的表格 Red 集成测试，并用 source-contract 断言目录字段集合与所有公开写入 DTO 字段集合完全相等（仅排除明确的 Store 派生字段和受信迁移字段）；通过真实公开 Store/运行时/导入接口覆盖通用 identifier/name/slug/description/JSON/color、全部外键/ID、DataSource、GlobalConfig、LlmPreset、LlmProvider、Model priority、Plugin runtime/version/author/repository_url/s3_key/sha256/size/资源限制、Workflow timeout/start_description、WorkflowNode key/type（四个 `*_node` 合法值与短名称负例）/有限坐标/node_config、WorkflowEdge mapping、Function kind（`builtin|custom|placeholder`）、点号 Builtin 负例、Tool kind、plugin_export、Tool/Skill source、Skill content、`required_capabilities`/manifest Capability 数组、`is_default`/`is_always`/`is_dangerous` 等全部公开布尔/枚举、Agent model_preset/system_prompt、分页/搜索、UUID/user_message/retention_filter 和控制字符的合法边界、越界及格式错误；分页/查询原因固定为 page 0=`out_of_range`、page_size 非20=`fixed_value_required`、search 超255=`too_long`、NUL/控制字符=`control_character`；对 Plugin/Function/Workflow/Tool/Skill/Agent 逐一提交重复 identifier，断言公开 Store 返回 `conflict { field: "identifier", value }` 且同一提交零新增/零部分关联；为 Category→children、Provider→Model、Plugin→Function、Function→WorkflowNode/Tool、Workflow→Tool、默认 Agent 和 Preset→Agent 的全部引用/状态冲突建立中央目录，逐项断言精确 `conflict { field, reason, references }`、安全 references、无 value 且事务零修改；另在 `crates/hivegui/tests/relationship_scope_contract.rs` 断言 v4 schema 关系表白名单仅含 AgentTool、AgentSkill、AgentCapability、WorkflowNode、WorkflowEdge 及规格明确外键，并断言不存在 Tag 任意关系表、公开 DTO 字段、Store 方法或 UI 入口；普通错误断言 `invalid_input { field, reason }`，密码/token 等机密错误只返回字段名和脱敏原因，不得只测试内部校验函数；字段/冲突/关系目录的每行必须标注 `owner_phase` 与激活该行的测试/审批任务，Foundation 只执行其所属行，后续故事行必须由对应故事 Tests/Reviewer 阶段激活并观察 Red
+- [X] T014 [P] 在 `crates/hivegui/tests/device_key_lifecycle.rs` 使用临时 XDG 目录编写首次随机生成、原子写入、Unix 0600/其他平台仅当前用户可读写、重启复用、并发首次启动、缺失、损坏、不安全权限和阻断式恢复入口 Red 测试，并断言已有密文时不得静默生成替代密钥或修改数据库
+- [X] T015 [P] 在 `crates/hivegui/tests/hiveweb_independence.rs` 编写会因 Foundation 后台执行注册表尚不存在而 Red 的依赖/构造契约：要求 `hive-runtime-core` 依赖图不含 HTTP、SQLx 或产品 crate，HiveGUI Foundation 通过可注入 adapter 启动本地后台执行且不构造 HiveWeb client、不读取 HiveWeb URL；T026 负责使本测试 Green，完整本地对话、网络捕获和禁止失败回退场景归 T116/T140
+- [X] T016 [P] 在 `crates/hivegui/tests/accessibility.rs` 建立 VisualTestContext 键盘、焦点、状态反馈和 UI heartbeat 工具，并为迁移失败/完整性损坏和设备密钥阻断恢复界面的首焦点、焦点陷阱、重试/恢复/退出操作及后台 UI heartbeat 编写由 T023/T025 闭合的 Red 测试
+- [O] T016A [P] 在 `crates/hivegui/tests/logging_contract.rs` 通过临时 XDG 日志目录、可注入时钟并直接调用未来公开日志边界编写 Foundation Red：每条 v1 记录必须精确含 `schema_version/occurred_at/execution_id/operation/entity_identifier/result/error_category/cause_summary/segments_ms` 及其稳定类型；可选 `cause_summary` 必须先中央脱敏、保持合法 UTF-8 并以 UTF-8 字节边界截断到至多 512 bytes，密码/API Key/备份口令、原始 internal cause 以及完整 prompt、模型响应和 Tool 输入输出均不得落盘。活动段只能使用 `.open` 且每条 JSON 必须以完整换行结束，轮转须按文件 flush/fsync→同目录原子 rename 为不可变 `.jsonl`→父目录 fsync 的顺序执行；时间保留必须按每条记录的 `occurred_at` 精确执行 7×24 小时，而不是按段的最大时间延长记录寿命。有效时间必须取注入时钟与持久化 retention high-watermark 的较大值，high-watermark 每次前进都经同目录 staging→flush/fsync→原子 replace→父目录 fsync；每次追加、启动和维护都必须在需要时先强制时间轮转，再通过相同崩溃安全 compaction 从不可变段删除到期记录。追加前必须使用完整序列化记录字节执行容量预检：单条记录自身超过 100,000,000 bytes 时零写入拒绝，否则先耐久轮转/压缩/清理直到追加后活动段与全部不可变段实际总量仍≤100,000,000 bytes，任一时刻不得暴露部分重写段。在记录写入、轮转、high-watermark staging/flush/fsync/replace/父目录 fsync、compaction、容量清理、删除和父目录 fsync 的每个边界以及时钟回拨时注入崩溃并重启，断言只丢弃活动段末尾不完整记录、旧段或压缩后新段至少一个完整可恢复、已到期记录不会因回拨复活、任何 high-watermark 或容量操作失败时诊断读取/导出 fail-closed、诊断读取永不观察半写记录、同一内部错误跨 adapter 后仍只在处理边界记录一次。不得用 source-contract 或 T120 的后置 E2E 替代对公开边界的直接调用；T027 负责最小 Green，T120 只补全 US13 全链路与诊断包 E2E。**2026-07-30 进度**：10 个测试已编写（8 个产品 surface Red + 2 个 helper 覆盖）；`cargo test -p hivegui --test logging_contract` 退出 101，`test result: FAILED. 2 passed; 8 failed; 0 ignored`；8 个失败 case 全部因 `panicked at .../logging_contract.rs:101:9 not implemented: hivegui::logging_v1::ActivityLog::open is not yet implemented (T016A Red gate)`；2 个通过 case（`no_passwords_or_api_keys_may_appear_in_persisted_records` + `same_internal_error_is_logged_at_most_once_per_processing_boundary`）仅覆盖 helper 脱敏与去重逻辑；T017F 独立 security reviewer / v1.5.0 *Single-developer repository clause* self-attest Pending。
+- [O] T016B [P] 在 `crates/hive-runtime-core/tests/capability_contract.rs` 和 `crates/hive-runtime-core/tests/persisted_tool_contract.rs` 编写存储无关 Red：Capability 元数据声明不得自动产生本地 handler，只有显式注册的真实 handler 可用，未知/仅声明/重复注册/未授权调用须保持稳定顺序和错误；Persisted Tool 只接受 `function-wrap|workflow-wrap`、严格 XOR 目标、去重后的 required capabilities，并可独立序列化 roundtrip，测试依赖图不得引入产品 Store、SQLx、HTTP 或 HiveWeb。**2026-07-30 进度**：`cargo test -p hive-runtime-core --test capability_contract --test persisted_tool_contract --no-run` 退出 101；`capability_contract` 11 errors + `persisted_tool_contract` 6 errors，全部 `E0432: unresolved import`，命中 `hive_runtime_core::capability::{CapabilityId, CapabilitySet, DispatchError, DispatchOutcome, HandlerRegistry}` + `hive_runtime_core::persisted_tool::{PersistedTool, PersistedToolBuilder, PersistedToolError, PersistedToolKind, PersistedToolTarget, RequiredCapabilities}`；`hive-runtime-core/Cargo.toml` 新增 `[dev-dependencies] serde` + `serde_json`（生产库仍无 SQLx / HTTP / HiveWeb / product Store 依赖），T017F self-attest Pending
+- [O] T016C [P] 在 `crates/hivegui/tests/sqlite_health_contract.rs` 和 `crates/hivegui/tests/migration_compatibility.rs` 编写 SQLite 健康与文件快照 Red：已有库打开、新库创建及迁移提交前都必须直接调用同一个公开 `verify_sqlite_health` 边界，并分别使用损坏 page/index fixture 与在 `foreign_keys=OFF` 下制造的孤儿外键 fixture，断言 `PRAGMA integrity_check` 必须精确为 `ok`、`PRAGMA foreign_key_check` 必须为零行、失败时迁移回滚且数据库/托管制品 hash 不变；另断言仅设置 `foreign_keys=ON` 不能冒充健康检查。直接调用未来公开的 SQLite 文件快照/发布边界：对当前受控数据库中已提交但未 checkpoint 的正常 WAL 帧，冻结写入后必须以非 busy `wal_checkpoint(TRUNCATE)` 完整并入主文件、关闭全部连接并证明所有已提交帧仍可读。hot、未知归属、无法归属于当前封闭周期或仍含可恢复状态的 WAL/SHM/rollback journal 必须保持 canonical 名称及字节/hash 原样；只有成功封闭证明安全的残留可按本文件 SQLite sidecar task rule 使用数据库同目录外部耐久 cleanup journal 和唯一 quarantine 名完整执行 `prepared→quarantined→done`，且 journal 删除及其父目录 fsync 完成前不得快照/发布/开放 Store。逐边界注入固定 `.hivegui-db-staging-v1/{role}-{db_instance_operation_id}/datasources.db` 发现链、建库前 v1 instance manifest 发布/fsync、registry 缺失/空时零实例成功、存在时启动 ASCII 顺序 no-follow 枚举、目录/manifest/固定数据库名逐字节匹配、未知/缺失/损坏/重复 fail-closed，以及 journal 的独立 `cleanup_operation_id`、精确 quarantine basename、UTF-8 db_id/长度前缀 SHA-256 token、64 位小写 hex、三个 final/三个 `.staging` 精确 basename、`schema_version=1`、孤立 staging cleanup 及 final+staging/损坏/重复/未知版本、写入/flush/fsync/父目录 fsync、identity 复核、canonical→quarantine identity-bound no-replace rename、父目录 fsync、quarantine identity 复核、`quarantined` 状态持久化、quarantine 删除/父目录 fsync、`done` 状态、journal 删除/父目录 fsync以及随后主文件快照/发布的失败与崩溃并重启；覆盖 `prepared|quarantined|done` 的五条确定性重放分支（含 `done` 且两处均不存在时删除 journal 并 fsync 父目录），证明对已进入 journal 的安全残留，完整字节只能位于 canonical、quarantine，或在 `quarantined` 后已删除并由重放完成父目录耐久确认，绝不要求 unlink 后 fsync 失败仍在原路径。对 checkpoint 执行错误、checkpoint busy、连接未关闭、hot、仍含可恢复状态、来源未知、关闭后重现或 cleanup journal/identity-bound rename/fsync/删除失败，逐例断言本文件规定的合法 `storage_recovery_blocked { reason, artifact }` 配对、reason/artifact 总优先级及多故障确定性，明确区分 `checkpoint_failed` 与 `checkpoint_busy`；canonical 新 identity 必须为 `sidecar_reappeared`，`done` 后 quarantine 重现、canonical/quarantine 同时存在、任一 identity 不匹配、journal 损坏/重复或状态无法证明必须为 `sidecar_unknown_owner`，只有 identity-bound cleanup、journal 删除或耐久化操作明确失败才为 `sidecar_cleanup_failed`。任何失败均保持 Store 不开放，且测试必须证明 journal 耐久删除前不会快照/发布、不丢失已提交帧、不组合 canonical 旧 sidecar 与新主文件、不盲删；不得用 source-contract 代替该公开边界行为。**2026-07-30 进度**：`cargo test -p hivegui --test sqlite_health_contract --no-run` 退出 101，`error: could not compile hivegui (test "sqlite_health_contract") due to 2 previous errors`；8 个未解析 import 全部为 `error[E0432]: unresolved import` + `error[E0433]: cannot find 'WriteGate' in 'store'`，命中 `hivegui::datasource::store::{open_store, OpenOutcome, QuarantineRecord, QuarantineReason, SidecarKind, StoreError, StoreErrorKind, WriteGate}`；Red 主断言：结构损坏（含 zero-byte + 部分 header + integrity_check 失败）→ `StoreCorrupt`，无 schema apply，无 sidecar 文件新增；orphan 外键 → `OrphanForeignKey`；sidecar canonical 分类为 `Hot|Unknown|Recoverable`；identity-bound no-replace quarantine 同名追加而非覆盖；legal_reason + 数值 priority 总和稳定；`WriteGate` 在 committed 之前必须 fail-closed 返回 `CommittedHighWatermarkMissing`；frozen `.frozen` marker 仅在写事务存在时落地，纯读 open 不残留；T017F self-attest Pending
+- [O] T016D [P] 在 `crates/hivegui/tests/plugin_artifact_schema_contract.rs` 和 `crates/hivegui/tests/migration_compatibility.rs` 编写 Plugin 内部耐久 schema Red：空库 v4 与 v3→v4 必须由同一 migrations 模块创建/迁移 `plugins.row_revision NOT NULL DEFAULT 0`、`plugin_artifact_operations` 和 `plugin_artifact_gc`，既有 Plugin revision 回填 0；直接检查 create/replace 的 nullability CHECK、state/kind CHECK、由 `operation_id` 确定性派生且 UNIQUE 的 `staging_name`、nullable `staging_identity`、`new_s3_key` UNIQUE、`state (prepared|staged|published|referenced|done|conflict)`、GC 主键/状态及必要索引；状态 CHECK 必须要求 `prepared` 两项 identity 均空、`staged` 仅 `staging_identity` 非空、`published|referenced` 两项 identity 均非空，并要求 `done` 满足 `new_identity IS NULL OR staging_identity IS NOT NULL`、`conflict` 不限制两项 identity；create 的全部 `expected_old_*`/revision 在所有状态始终为空，create plugin_id 在 `prepared|staged|published` 为空且在 `referenced` 非空，replace 的 plugin_id/旧 tuple/revision 始终非空。验证迁移 rollback 后零部分 DDL、重试幂等；当前 v4 缺列/缺表/约束漂移时必须在开放 Store 前 fail-closed，运行时 `entity_store.rs` 不含补做 `ALTER/CREATE TABLE` 的路径。T022 负责唯一 Green schema/migration 所有权，US8 T073 只在该已审批基础结构上先 Red 后实现行为。**2026-07-30 进度**：`crates/hivegui/tests/plugin_artifact_schema_contract.rs`（约 380 行）已落盘；8 个测试场景：fresh v4 database creates ledger via migrations、v3→v4 backfills row_revision、operations state CHECK enforces identity preconditions、create 保持 expected_old_* 全部 NULL、replace 要求 non-null plugin_id + 旧 tuple、`staging_name` 确定性派生且 UNIQUE、schema drift 缺列 fail-closed、runtime store.rs 不含 plugin ledger DDL。`cargo test -p hivegui --test plugin_artifact_schema_contract --no-run` 退出 101，16 个错误全部为 `error[E0433]: cannot find migrations in datasource` / `error[E0433]: cannot find StoreErrorKind in store` / `error[E0425]: cannot find function open_store`，命中 `hivegui::datasource::migrations::{migrate_to_current, MigrationOptions}` + `hivegui::datasource::store::{open_store, StoreErrorKind::SchemaDrift}`；T017F self-attest Pending
+- [O] T016E [P] 在 `crates/hivegui/tests/management_scroll_contract.rs` 和 `crates/hivegui/tests/accessibility.rs` 建立数据驱动 `NativeScrollSurface` inventory、VisualTestContext helper 与 source-contract，逐行记录稳定 selector、owner test/reviewer/implementation/Green task、长 fixture 和预期 viewport；helper 自测必须只对合成 good/bad fixture 证明 `debug_bounds`、模拟 GPUI/gpui-component 原生 wheel/键盘事件、前后实际位移和底部完整进入 viewport 的断言机制可识别错误；source-contract linter 也只用合成源码自测其能拒绝自定义滚动条/手柄/箭头/手写 wheel，实际产品文件扫描属于各 story inventory 行，Foundation 不得执行。本任务是测试基础设施，合成 fixture self-test 必须 Green 而不要求任何产品行为 Red；包括 sidebar 在内的所有产品 surface 行均保持 Pending，只能由本文件顶部 Native scroll task rule 指定的故事 Red/审批/实现/Green 链逐项激活；本任务不得首次观察任何产品 surface 的行为 Red，也不能计入 Foundation Green 或由 T139 首次定义。**2026-07-30 进度**：`crates/hivegui/tests/management_scroll_contract.rs`（约 200 行）+ `crates/hivegui/tests/support/scroll_inventory.rs`（约 600 行）已落盘。`cargo test -p hivegui --test management_scroll_contract` 退出 0，`test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`，12 个 self-test（inventory 注册 + owner phase 映射 + slug 唯一性 + good/bad surface helper + VisualTestContext 步骤/边界/键盘 trail + source-tag 解析）全部 Green；T017F self-attest Pending（Foundation 不首次观察任何产品 surface 行为 Red，sidebar 等 14 个 story-owned surface 行仍 Pending）
+- [O] T016F [P] 在 `crates/hivegui/tests/sensitive_persistence_contract.rs` 与 `crates/hivegui/tests/support/sensitive_canary.rs` 建立唯一敏感字段/介质目录和可复用 canary scanner，目录至少列出 DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted`，以及 SQLite 主文件、WAL/SHM/journal、备份 staging/最终认证密文包、普通临时目录、结构化日志、诊断包、错误与崩溃恢复/跨设备路径；每行标注 owner_phase、Red/审批/Green task。Foundation 只直接调用公开边界激活由 T025 闭合的设备密钥/crypto temp/error 行和由 T027 闭合的 logging temp/error 行，验证唯一明文 canary 的公开 roundtrip 可恢复原值但所属落盘介质命中数为0、失败零明文残留；最终诊断包及其它未来故事行按本文件顶部 Sensitive persistence task rule 激活，不得以 Foundation 扫描、source-contract 或 T138 最终扫描替代对应生产实现前的 Red。**2026-07-30 进度**：`canary.rs`（580+ 行）+ `sensitive_persistence_contract.rs`（150+ 行）已落盘；7 个测试，5 个通过（inventory 完整性 + helper），2 个失败；`cargo test -p hivegui --test sensitive_persistence_contract` 退出 101，`test result: FAILED. 5 passed; 2 failed; 0 ignored`；2 个失败 case（`foundation_canary_roundtrip_has_no_plaintext_residue` + `foundation_canary_failure_leaves_zero_plaintext_residual`）均因 `panicked at ... support/sensitive_canary.rs:206 unimplemented: hivegui::sensitive_canary::place_canary_for_test is not yet implemented (T016F Red gate)`；story-owned 行（`ChatSessionTitle` / `ChatMessageContent` / `ChatMessageToolCalls` / `AgentExecutionState`）保持 Pending，按 sensitive persistence task rule 由对应 story owner 首次激活；T017F self-attest Pending
+- [X] T017 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T009-T016 的 reviewer 审批和预期 Red 证据，未获批准时停止本阶段
+- [ ] T017F 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T016A-T016D/T016F 的精确测试文件、原样 Red 命令、退出状态、可识别未实现边界和 reviewer 审批，并记录 T016E 合成 fixture self-test 的原样 Green 命令、退出状态、inventory/source-contract 审批；T016A 证据必须明确包含 retention high-watermark 持久化/时钟回拨、其 staging/fsync/replace 故障矩阵、追加前精确容量预检与单条超限零写入拒绝；T016C 必须记录 current/staging 固定 `datasources.db`、`.hivegui-db-staging-v1/{role}-{db_instance_operation_id}` registry、建库前 v1 manifest、启动发现/排序/no-follow/逐字节验证、locator 终态生命周期与备份/新树排除、实例 UUID/cleanup UUID 分离及精确 quarantine 名，并记录确定性 v1 journal 的 UTF-8 db_id/长度前缀 token、精确 final/`.staging` basename、`schema_version=1`、孤立 staging cleanup 及损坏/重复处理、外部 cleanup journal、同目录 quarantine、`prepared→quarantined→done` 五分支重放（含 `done` 收尾）、journal 耐久删除前不快照/发布/开放、canonical/quarantine/耐久删除允许状态、hot/未知/可恢复 canonical 字节不变、canonical 新 identity=`sidecar_reappeared`、`done` 后 quarantine 重现/双重存在/identity 不匹配/状态不可证明=`sidecar_unknown_owner`、明确 identity-bound cleanup/journal 删除/耐久化失败=`sidecar_cleanup_failed`，以及合法 reason/artifact 配对与固定总优先级的完整崩溃矩阵；T016D 必须命中含 staging ownership 字段与 `staged` 状态的 v4 Plugin 内部 schema/migration 缺口。T016E 只记录 inventory/helper/source-contract 合成 fixture self-test Green，所有产品 surface 行保持 Pending且不把该 Green 冒充产品行为 Red；T016F 只记录敏感目录/helper、Foundation crypto/key 与 logging temp/error 行实际 Red，不要求最终诊断包。完成前不得执行 T021、T022、T025、T027、T028，故事 reviewer 仍须另行审批其 scroll/canary 行
 
-## Phase 3: User Story 5 - 标签管理 (Priority: P1)
+**T013 phase ownership rule**: T017 只审批/阻断 `owner_phase=Foundation` 的目录行；T031/T037/T043/T050/T057/T062/T068/T076/T086/T094/T104/T111/T123 分别审批其故事激活的 T013 行。未激活的未来故事行不得计入 T028 的 Foundation Green，也不得以 ignore 状态冒充已覆盖。
 
-**Goal**: 标签（Tag）的增删改查管理
+### Security remediation tests (write first; stop for review)
 
-**Independent Test**: 添加标签 → 编辑颜色 → 删除 → 重启验证持久化
+- [X] T017A [P] [security-remediation] 在 `crates/hivegui/tests/ci_security_contract.rs` 编写语义化 manifest/CI/lockfile Red contract：精确要求 `mysql_async =0.36.2` 的 `default-features=false` 与 `minimal|native-tls-tls`；workspace SQLx/`sqlx-cli =0.9.0`、根无共享 feature、`agent` 无 SQLx、HiveGUI 仅 `chrono|macros|runtime-tokio|sqlite`（`macros` 已包含 derive，不重复声明 `derive`）且无 MySQL/TLS、HiveWeb 仅 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`（不再单独 `derive`）且无 `mysql-rsa`；`aws-sdk-s3 =1.133.0` 关闭默认/旧 `rustls` 且只保留四个现代 feature；`third_party/wayland-scanner` 的 0.31.10/quick-xml 0.41、精确小写上游地址 `https://github.com/smithay/wayland-rs`、provenance/最小补丁与 `zbus_xml =5.2.1`；`Cargo.lock` 不含 `rsa`、`lru 0.12.5`、`quick-xml 0.39.4` 或 `rustls-webpki 0.101.7`，`deny.toml` 不得定义 advisory ignore；不得依赖字符串格式
+- [X] T017B [P] 在 `crates/hiveweb/tests/contract_mysql_tls_policy.rs` 直接调用未来公开的严格 MySQL 连接配置与可注入 transport 边界，编写只有显式 CA、目标 hostname 和 `VERIFY_IDENTITY` 才成功的 Red contract，并覆盖 `DISABLED|PREFERRED|REQUIRED|VERIFY_CA`、CA/hostname 缺失、错误 CA/host以及 TLS 不可用、握手失败、证书链拒绝、证书 hostname 不匹配全部 fail-closed；每类 transport 失败都必须断言总尝试 1 次、明文尝试 0 次和错误脱敏；在 `crates/hiveweb/tests/contract_sqlx_09_sql_safety.rs` 编写 SQLx 0.9 动态 SQL 审计 Red contract，包括 bind/`QueryBuilder::push_bind` 普通动态值、动态标识符限制到 metadata allowlist 与唯一类型化序列化边界、禁止 blanket `AssertSqlSafe` 或 raw 用户派生 SQL，以及 `game_category_filter_uses_the_production_bound_query_helper` 以恶意 `category_name` 断言生产 helper 保留静态 `JSON_OBJECT('name', ?)` 且用户值只通过 bind 传入
+- [X] T017B’ [P] [security-remediation] 承接 T017G 取代 T017B 子集 assertion 的 Red refresh：删除 `dynamic_values_use_query_builder_bind_parameters`（移除原"QueryBuilder 当作最终合规示例" 错误结论），并把 `game_category_filter_uses_the_production_bound_query_helper` 改写为直接验证 `JSON_OBJECT('name', ?)` 静态 SQL 常量边界 + checked static query + bind 行为；不再要求生产代码暴露返回 QueryBuilder 的 helper。owner_phase=`security-remediation`，与 T017G 一并由 T017H 审批；底层测试文件按本任务 + T017G 落地。**2026-07-30 进度**：`crates/hiveweb/tests/contract_sqlx_09_sql_safety.rs` 已应用 T017B' 刷新：删除 `dynamic_values_use_query_builder_bind_parameters`、改写 `game_category_filter_uses_static_sql_with_bind_only`、新增 `game_service_source_no_longer_exposes_a_query_builder_helper` + `production_query_builder_call_count_is_exactly_zero`；与 T017G 一并由 T017H self-attest（单开发者条款，2026-07-30）。
+- [X] T017C 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T017A-T017B 的精确测试文件、命令、退出状态和可识别失败，取得用户/reviewer 批准后才允许 T017D；任何测试编译错误若不是明确缺失的未来公共边界，都不得冒充有效 Red
 
-### Implementation
+### Supplemental search and SQL safety tests (write first; stop for review)
 
-- [x] T007 [US5] Implement Tag CRUD methods (list with pagination/search, get, create, update, delete) in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T008 [US5] Create TagListView and TagFormView in `crates/hivegui/src/ui/tag_view.rs`
-- [x] T009 [US5] Wire TagView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T017G [P] 在 `crates/hivegui/tests/search_index_contract.rs`、`crates/hivegui/tests/storage_query_plans.rs`、`crates/hivegui/tests/sql_safety_contract.rs` 和 `crates/hiveweb/tests/contract_sqlx_09_sql_safety.rs` 编写推荐方案 A 的补充 Red：identifier 唯一性/精确 lookup 必须保持 ASCII 字节级大小写敏感，`Test` 与 `test` 可同时存在；搜索按大小写不敏感的纯文本任意位置包含语义同时返回二者。搜索字段与输入使用 `hivegui-nfkc-casefold-v1`，其算法必须精确执行 Unicode 17.0.0 UCD 的 `NFKC_CF` mapping 后再执行同版 Unicode 17.0.0 NFC，不得委托给 OS 或 Unicode 数据版本不明的运行时。NFC 直接依赖候选必须精确为 `unicode-normalization = { version = "=0.1.25", default-features=false, features=["std"] }`，contract 必须断言直接依赖声明和 `UNICODE_VERSION=(17,0,0)`；提交的生成输入/表必须记录 Unicode 官方 canonical provenance、精确版本、逐文件 SHA-256、Unicode 使用条款、生成器版本/命令及输出 checksum，并由 golden fixture 锁定行为。任一 provenance/checksum 不匹配、NFC 依赖版本/数据不是 Unicode 17.0.0、原始非空输入规范化为空、normalization ID 缺失/未知或 Unicode 数据行为变化时，必须分别精确失败为完整性门禁、`empty_after_normalization` 或只能分配新 ID 后显式迁移重建/fail-closed。规范化后 3+ 个 Unicode 标量值使用 FTS5 trigram、1–2 个值使用事务同步 short-gram 索引，`%`、`_`、引号和 FTS 操作符不得改变语义；同一实体多字段命中必须去重，固定 fixture 的全部列表/搜索严格按规范化显示名、规范化 identifier/key、数值主键升序总排序，跨页无重复/遗漏。实体写入与两类索引更新同事务，EXPLAIN 解析器须把 FTS `VIRTUAL TABLE INDEX` 识别为索引访问并验证排序覆盖索引。测试还必须直接验证运行 SQLite 支持 FTS5 trigram tokenizer，不支持时启动/迁移 fail-closed，禁止回退到业务表 `LIKE`、`SCAN` 或内存扫描。另建立全 workspace 生产 SQL source inventory：固定应用 schema SQL 只用 SQLx `query!|query_as!|query_scalar!` 与 offline metadata，有限变体只用封闭 enum/`match` 选择静态 checked query；HiveGUI SQLx feature 精确为 `chrono|macros|runtime-tokio|sqlite`，HiveWeb 最终目标精确为 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`，两端不重复声明已由 `macros` 包含的 `derive`；HiveGUI 外部 MySQL 仅用 `mysql_async` prepared values 加 `MysqlIdentifier` allowlist，生产 `QueryBuilder` 调用数必须为 0，`AssertSqlSafe` 的生产所有者必须且只能是 HiveWeb reviewed `named_queries.toml` 中央边界模块；每行标注 `owner_phase=security-remediation|Foundation|story`。同时按 T017B’ 修订 T017B 已存在的 SQL 测试。**2026-07-30 进度**：4 批测试已落盘并实际 Red 验证：`crates/hivegui/tests/search_index_contract.rs`（新建，§T017G.1-§T017G.11 共 11 项子断言）、`crates/hivegui/tests/storage_query_plans.rs`（扩展 4 项 FTS plan evaluation）、`crates/hivegui/tests/sql_safety_contract.rs`（扩展 7 项 security-remediation assertion）、`crates/hiveweb/tests/contract_sqlx_09_sql_safety.rs`（T017B' 刷新）；4 批原样 Red 命令均退出 101，Red **仅**由 `search_index` / `search_normalization` / `query_plan` / `sql_source_inventory` / `db::sql_safety` / `sqlx::AssertSqlSafe` 等未来公开边界缺失产生；T017H self-attest 完成（单开发者条款，2026-07-30）
+- [X] T017H 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T017G 的精确文件清单、source inventory、`unicode-normalization =0.1.25` 的直接依赖/feature/许可证/MSRV/advisory 与 `UNICODE_VERSION` 证据、Unicode 17.0.0 `NFKC_CF`+NFC provenance/使用条款/逐文件 SHA-256/生成命令/输出 checksum、原样 Red 命令/退出状态、可识别失败，以及独立 Unicode/data reviewer、dependency/security reviewer 与 SQL reviewer 的审批。T017D 只可闭合 `owner_phase=security-remediation` 行，T022/T028 闭合 Foundation 行，未来故事行仍须由各故事 reviewer 激活。**2026-07-30 状态**：`checklists/implementation-review.md` 已写 §T017H.1-§T017H.11 完整 self-attest；§T017H.11 由 user 按 Constitution v1.5.0 *Single-developer repository clause* 签字，T022/T028 FTS5/normalization Foundation Red 阻断解除；T017D 仍须等待 T001 + T017C（已闭合）+ T017H（本任务已闭合）；T025R 6 边界与 T138 汇总不受本签字影响。
 
-### Tests
+### Security remediation implementation (only after T001, T017C and T017H)
 
-- [x] T007t [US5] Add unit tests for Tag CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_tag_create_and_get: 创建后可查询
-  - test_tag_list_pagination: 分页正确
-  - test_tag_search: 按名称搜索
-  - test_tag_update: 更新后验证
-  - test_tag_delete: 删除后不存在
-  - test_tag_name_unique: 重复 name 报错
+- [ ] T017D 仅在 T001、T017C 与 T017H 全部完成后，于 workspace/per-crate `Cargo.toml`、`Cargo.lock`、`.github/workflows/ci.yml`、`deny.toml`、`third_party/wayland-scanner/`、HiveWeb MySQL 连接配置与 SQLx 查询调用面完成零例外依赖迁移；HiveGUI SQLx 精确启用 `chrono|macros|runtime-tokio|sqlite`，HiveWeb 按推荐 A 目标 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`，两端不重复 `derive`，Wayland provenance 精确使用 `https://github.com/smithay/wayland-rs`。SQLx 0.9 的 41 个已知迁移点必须逐项分类并闭合：所有固定应用 schema SQL 改为 `query!|query_as!|query_scalar!` checked static SQL，有限表名/条件变体通过封闭 enum/`match` 选择有限静态 checked query，HiveGUI 外部 MySQL 归入 `mysql_async` prepared-values/`MysqlIdentifier` 边界，且只有下述 HiveWeb reviewed `named_queries.toml` 归入运行时 SQLx 例外；生产 `QueryBuilder` 调用数必须为 0。`game_service.category_name` 必须由 checked static SQL 中的 `JSON_OBJECT('name', ?)` bind，闭合 T017B 已存在的恶意输入风险和 T017G 审批后的新版直接行为/静态常量契约，不得新增或保留仅为测试暴露的生产 QueryBuilder helper，也不得把恶意回归记为本任务首次发现；启动期 named-query 只允许一个 reviewed-config 中央边界模块在拒绝多语句、SQL 注释、placeholder/参数不匹配、重复参数和 select/execute kind 不匹配后构造 `AssertSqlSafe`，其它生产所有者一律禁止。HiveWeb MySQL 必须强制显式 CA+hostname 的 `VERIFY_IDENTITY` 且无任何明文/RSA/宽松 TLS fallback；不得修改 HiveGUI→HiveWeb 独立边界，也不得删除或弱化质量基线合并后建立的现役 HiveWeb 集成 job
+- [ ] T017E 仅在 T017D 完成后运行 T017A-T017B Green、T017G 中 `owner_phase=security-remediation` 的 SQL source inventory Green、`cargo check --workspace --all-targets --locked`、受影响单元/集成测试、SQLx 0.9 offline metadata check、依赖 feature/tree 断言、HiveWeb S3 与 MySQL TLS 测试以及联网 `cargo deny check advisories`；7 个 advisory、忽略项、禁用包、生产 `QueryBuilder`、第二个 `AssertSqlSafe` 所有者或未审计 SQL 迁移任一仍存在即保持 Blocked，并在 `implementation-review.md` 记录证据和 `/security-review` 结论（按 Constitution v1.5.0 *Single-developer repository clause* 由本仓库唯一 active maintainer 担任 dedicated security reviewer 并 self-attest）
 
-**Checkpoint**: 标签管理功能完整可用，单元测试通过
+### Foundation implementation
 
----
+- [ ] T018 [Foundation-doc+impl] 仅在 Foundation Red 审批 T017、T001 与 T017E 全部完成后，在 `crates/hive-runtime-core/src/abi.rs`、`crates/hive-runtime-core/src/plugin.rs` 和 `crates/hive-runtime-core/src/wasm.rs` 实现版本化 ABI 类型与校验，并在 `.github/workflows/ci.yml`、`.gitleaks.toml` 和 `deny.toml` 加入固定版本、输出脱敏且阻断合并的 secret scan 与 `cargo deny check advisories`；CI 还必须安装安全清单中批准的固定版本 `cargo-sqlx` 并精确运行 `SQLX_OFFLINE=true cargo sqlx prepare --workspace --check`，任一工具安装失败、任何 advisory、扫描步骤缺失、SQLx metadata 缺失/陈旧或命令失败均使 CI 失败，不得配置 advisory ignore。**doc 硬门槛**：本任务新增的每个 `pub fn`（ABI 类型校验、plugin/wasm 入口）必须在生产代码合并前完成 doc comment（inputs / outputs / error modes / 版本化 ABI 不变量），三个文件的 `lib.rs` 启用 `#![warn(missing_docs)]`，`cargo doc --no-deps` 失败即视为本任务未闭合，不允许推迟到 T144。
+- [ ] T019 在 `crates/hive-runtime-core/src/execution.rs` 和 `crates/agent/src/runner.rs` 实现携带 execution_id、权限快照、事件 sink、分段计时与 `CancellationToken` 的 ExecutionContext
+- [ ] T020 在 `crates/hive-runtime-core/src/workflow.rs` 实现固定使用 `start_node|end_node|function_node|generate_answer_node` 的存储无关 WorkflowGraph 校验、拓扑层调度、fail-fast 结果汇总和取消检查点
+- [ ] T021 仅在 T016B 的 Red 经 T017F 审批后，在 `crates/hive-runtime-core/src/capability.rs` 和 `crates/hive-runtime-core/src/persisted_tool.rs` 实现“元数据声明不等于本地 handler”的 Capability registry、真实 handler 注册/稳定拒绝顺序，以及稳定 kind、XOR 目标、required capabilities 和存储/传输无关序列化的 Persisted Tool 契约，并使 `capability_contract.rs` 与 `persisted_tool_contract.rs` Green
+- [ ] T022 仅在 T016C/T016D 与 T017G 的 Foundation Red 分别经 T017F/T017H 审批后，在 `crates/hivegui/Cargo.toml`、`crates/hivegui/src/datasource/search_normalization.rs`、`migrations.rs`、`store.rs`、`plugin_artifacts.rs` 和 `third_party/unicode-17.0.0/PROVENANCE.md` 精确加入已审批的 `unicode-normalization =0.1.25` 直接依赖/Unicode 17 生成表，并实现 schema v4、Function kind `1/2/3→builtin/custom/placeholder`、Tool kind `1/2→function-wrap/workflow-wrap`（未知值回滚）、旧点号 Builtin 到下划线名称的事务重命名（碰撞回滚）与 legacy LLM `kind/api_key_encrypted/api_key_env` 到规范字段的显式迁移。新建 v4 与 v3→v4 必须由 `migrations.rs` 一次性创建/迁移 `plugins.row_revision NOT NULL DEFAULT 0`（既有行回填0）、`plugin_artifact_operations`、`plugin_artifact_gc` 及其 create/replace nullability、state/kind、UNIQUE/CHECK/索引约束；operations 必须含由 `operation_id` 确定性派生且 UNIQUE 的 `staging_name`、nullable `staging_identity`，并允许且只允许 `prepared|staged|published|referenced|done|conflict` 状态，状态 CHECK 要求 `prepared` 两项 identity 均空、`staged` 仅 staging identity 非空、`published|referenced` 两项 identity 均非空、`done` 满足 `new_identity IS NULL OR staging_identity IS NOT NULL`、`conflict` 不限制两项 identity；create 的全部 expected-old 字段/revision 始终为空、create plugin_id 在 `prepared|staged|published` 为空且在 `referenced` 非空、replace 的 plugin_id/旧 tuple/revision 始终非空。运行时 Store 禁止散落 DDL。实现单事务迁移、版本/缺失/损坏分类、单实例锁、数据库加托管 Plugin 目录的制品级校验安全快照以及损坏文件隔离后重建门禁；提供唯一 `verify_sqlite_health`，在已有库打开、新库创建及迁移提交前同时执行并验证 `PRAGMA integrity_check` 精确为 `ok` 和 `PRAGMA foreign_key_check` 零行，失败时回滚/阻断且不得以 `foreign_keys=ON` 替代。文件级快照和迁移后发布必须冻结写入，对当前受控数据库的已提交未 checkpoint WAL 执行非 busy `wal_checkpoint(TRUNCATE)`、关闭全部连接并证明全部已提交帧仍可读；hot、未知归属或仍含可恢复状态的 WAL/SHM/rollback journal 必须 fail-closed 并保持 canonical 名称及字节/hash 原样。当前库须固定从数据根句柄定位 `datasources.db`（物理 basename）且 `db_id=current`（逻辑标识）；须先提供共享 staging-instance registry/manifest 边界，迁移 staging 再通过该边界实现 `.hivegui-db-staging-v1/migration-{db_instance_operation_id}/datasources.db` 与建库前 v1 manifest 的耐久创建、启动 ASCII 顺序 no-follow 发现/逐字节验证、locator 终态清理及备份/新树排除。只有确认安全且属于本封闭周期的残留才可使用 SQLite 外部、数据库同目录的耐久 cleanup journal 和由独立 `cleanup_operation_id` 精确派生且不复用的 quarantine，按本文件 sidecar task rule 完整实现UTF-8 db_id/长度前缀 SHA-256 token、64 位小写 hex、三个 final/三个 `.staging` 精确 basename、`schema_version=1`、孤立 staging cleanup 与损坏/重复 fail-closed、`prepared→quarantined→done`、identity-bound root-handle-relative no-replace rename、每步文件/父目录 fsync与五分支启动重放（含 `done` 收尾）；必须删除 quarantine并 fsync、耐久化 `done`、删除 journal并再次 fsync 后才可快照/发布/开放 Store。canonical 新 identity 映射 `sidecar_reappeared`，`done` 后 quarantine 重现、canonical/quarantine 同时存在、任一 identity 不匹配、journal 损坏/重复或状态无法证明映射 `sidecar_unknown_owner`，只有 identity-bound cleanup、journal 删除或耐久化操作明确失败映射 `sidecar_cleanup_failed`；全部候选按固定 reason/artifact 配对和总优先级选择，绝不盲删或与新主文件组合。schema 同时写入 `search_normalization_id=hivegui-nfkc-casefold-v1`，normalizer 必须来自 T017G/T017H 已审批且 checksum 匹配的 Unicode 17.0.0 `NFKC_CF` mapping+Unicode 17.0.0 NFC 生成表，建立并回填 FTS5 trigram 与 1-2 字符 short-gram 搜索索引及事务维护结构，验证实体与派生索引一致，并在启动/迁移时直接验证 FTS5 trigram tokenizer；Unicode provenance/checksum、tokenizer、normalization ID、回填或验证任一不匹配均 fail-closed，禁止退回宿主 Unicode、`LIKE`/`SCAN`；schema/迁移必须实现并验证关系表白名单仅含 AgentTool、AgentSkill、AgentCapability、WorkflowNode、WorkflowEdge 及规格明确外键，不得创建 Tag 任意关系结构；迁移失败必须恢复数据库版本并保持全部制品 hash 不变
+- [ ] T023 在 `crates/hivegui/src/ui/migration_recovery_view.rs`、`crates/hivegui/src/ui/app.rs` 和 `crates/hivegui/src/ui/mod.rs` 分别实现迁移失败的“重试/退出”和完整性损坏的“从备份恢复/二次确认重建/退出”阻断界面，并闭合 T016 中对应的键盘、焦点和 UI heartbeat Red 断言；打开已有库时发现结构损坏或孤儿外键均进入完整性损坏分流，迁移目标在提交前双检查或 FTS5 trigram 可用性检查失败则保持原状态并进入重试/退出分流，不得静默重建或退回扫描搜索
+- [ ] T024 在 `crates/hivegui/src/datasource/validation.rs`、`store.rs` 和当前 Foundation 已存在的公开边界实现 T013 的中央字段目录、通用校验器、冲突目录/映射与关系 scope 查询，并闭合 `owner_phase=Foundation` 的全部 Red 行；普通失败返回 `invalid_input { field, reason }`，SQLite UNIQUE 映射为仅携带安全值的 `conflict { field, value }`，引用或状态冲突统一返回不含 value、只携带安全实体标识的 `conflict { field, reason, references }`，全部失败事务零修改；后续 `entity_store.rs`、`llm_store.rs`、`conversation_store.rs`、`plugin_artifacts.rs`、`runtime/local_agent.rs`、`runtime/execution.rs` 等故事公开边界必须复用该目录并由对应故事实现任务闭合其已审批行，公开 DTO/Store/UI 不得增加白名单外关系管理；不得向 UI 暴露原始 SQL 错误，密码/token 仅返回字段名和脱敏原因，UI 不得作为唯一校验层
+- [ ] T025R [Foundation-security] **6 边界独立 security review 合并任务**（详见 Foundation Cross-Cutting Rules Security review）：T022/T025/T073-T079/T129/T-AUTH-5 全部被审实现任务的合并前门禁；覆盖 6 条独立 security 边界，**每条边界 1 份签字**，按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause*（2026-07-30 增补）由本仓库唯一 active maintainer 同时承担 dedicated security review + second approver 角色，self-attestation 与 `/security-review` 结论须写入 `checklists/security.md` 对应行；统一记入 `checklists/security.md` 6 节：
+  - **① FR-012 设备密钥 + FR-046 启动门禁**: 对 `crates/hivegui/src/datasource/key_store.rs`、`crypto.rs`、`key_recovery_view.rs` 的 chacha20poly1305 设备密钥生命周期（首次启动原子化生成、0600 ACL 等效校验、重启复用、缺失/损坏/权限错误阻断恢复、已有密文不得静默覆盖）做专项 security review；T025 不得在 ① 签字前合并。
+  - **② SQLite sidecar cleanup 协议**（T022）: hot/unknown/recoverable canonical 字节保留、identity-bound no-replace quarantine、`prepared→quarantined→done` 五分支重放、合法 reason/artifact 配对与固定总优先级；T022 不得在 ② 签字前合并。
+  - **③ Plugin sandbox**（T073-T079）: root-handle-relative no-follow、WASI off、resource limit（timeout/memory/output）、cache key 完整性、identity/lifecycle 矩阵；T073-T079 不得在 ③ 签字前合并。
+  - **④ FR-026 备份 age 加密**（T119-T130）: 口令认证流、敏感值仅在有界内存中转换、跨设备立即重新加密、staging 数据库隔离、归档路径拒绝 symlink/hardlink/junction/reparse/device/FIFO/socket；T119-T130 不得在 ④ 签字前合并。
+  - **⑤ FR-049/FR-050/FR-051 主密码认证 + 自动锁定**（T-AUTH-5）: Argon2id m=64MiB/t=3/p=1 + ChaCha20Poly1305 (RFC 8439) 包装设备密钥材料、屏幕锁事件 fail-closed、内存 zeroize、5 次错误 backoff 5 分钟、备份强制确认、无密码重置旁路；**T-AUTH-5 不得在 ⑤ 签字前合并**（即 Phase 1A 关闭条件 T025R ⑤）。**算法更正记录**：2026-07-29 由 user 批准方案 A，规格从 "AES-256-GCM" 更正为 "ChaCha20Poly1305"；两者均为 256-bit AEAD，ChaCha20Poly1305 在无 AES-NI 的桌面环境下性能更优；实现保持不变。
+  - **⑥ HiveGUI 远程 MySQL 公开边界**（FR-048）: 公开 Store 校验（`invalid_input` / `conflict` envelope）、`MysqlIdentifier` 单一 source of truth、metadata allowlist、跨设备重放、HiveWeb URL 0 命中；T034-T040/T048 不得在 ⑥ 签字前合并。
+  - **本任务不替代 T138 汇总**；被审实现任务（T022/T025/T073-T079/T119-T130/T-AUTH-5/相关 T034-T040/T048）在 T025R 全部 6 边界签字完成前**均不得合并**。doc 硬门槛：本任务被审 6 边界的所有 `pub fn` 必须完成 doc comment 后才接受签字。
+- [ ] T025 [Foundation-doc+impl] 仅在 T016F 的 Foundation Red 经 T017F 审批后，在 `crates/hivegui/src/datasource/key_store.rs`、`crates/hivegui/src/datasource/crypto.rs`、`crates/hivegui/src/ui/key_recovery_view.rs`、`crates/hivegui/src/ui/app.rs` 和 `crates/hivegui/src/ui/mod.rs` 实现设备密钥安全随机生成、原子创建、Unix 0600/其他平台等效 owner-only 权限校验、重启复用、公开 crypto roundtrip 零明文落盘，以及缺失/损坏/权限错误的稳定阻断状态和重新配置/从备份恢复/退出界面，闭合 T016 中对应 UI Red 与 T016F 的 Foundation crypto/key/temp/error canary 行；已有密文时不得静默覆盖或重新生成。**doc 硬门槛**：本任务的每个新增 `pub fn` 必须在生产代码合并前完成 doc comment（inputs / outputs / error modes / 安全不变量），`key_store.rs` 与 `crypto.rs` 的 `lib.rs` 启用 `#![warn(missing_docs)]`，`cargo doc --no-deps` 失败即视为本任务未闭合。
+- [ ] T026 在 `crates/hivegui/src/runtime/execution.rs` 和 `crates/hivegui/src/runtime/mod.rs` 实现 Tokio 后台执行注册表、可注入本地 adapter 边界、状态机、有界事件桥和独立执行取消入口，并在不引入 HiveWeb client/URL 的前提下闭合 T015 的 Foundation Red 契约
+- [ ] T027 仅在 T016A 与 T016F logging Red 经 T017F 审批后，在 `crates/hivegui/src/runtime/diagnostics.rs` 和 `crates/hivegui/src/logging.rs` 实现可直接测试且支持可注入时钟的公开日志边界、含可选 `cause_summary` 的 v1 固定 LogRecord schema、execution_id 贯穿、原始 cause 中央脱敏且内部错误仅在处理边界记录一次；`cause_summary` 必须保持合法 UTF-8 并在 UTF-8 字节边界截断到至多 512 bytes，稳定错误映射包含 `function_not_executable`，并使 T016F Foundation 日志/错误 canary 零命中。活动段使用 `.open` 完整换行 JSON，轮转执行文件 flush/fsync→同目录原子 rename 为不可变 `.jsonl`→父目录 fsync；有效时间取注入时钟与持久化 retention high-watermark 较大值，high-watermark 前进使用同目录 staging、flush/fsync、原子 replace 和父目录 fsync。每次追加、启动和维护均按每条记录 `occurred_at` 强制时间轮转及崩溃安全 compaction，确保任何记录在 7×24 小时后不可见且不会被段级时间或时钟回拨延寿。追加前按完整序列化字节预检容量：单条记录自身超过 100,000,000 bytes 时零写入拒绝，否则先耐久轮转/压缩/清理到追加后实际总量仍≤上限；high-watermark 或容量维护任一步失败时诊断读取/导出 fail-closed。compaction 必须使用同目录 staging、flush/fsync、原子 replace 和父目录 fsync，崩溃后只暴露完整旧段或完整新段；启动只丢弃活动段末尾不完整记录，并使 `logging_contract.rs` Green
+- [ ] T028 仅在 T017F/T017H 完成且 T021、T022、T025、T027 已闭合其 Red 后，在 `crates/hivegui/src/datasource/store.rs`、`datasource/mod.rs` 和本阶段涉及的 Store 查询中实现 WAL、每连接 `foreign_keys=ON`、busy timeout、单实例写锁与仅针对数据库锁/文件占用的 1s/2s/4s 最多三次重试；`foreign_keys=ON` 不得替代 T022 的双健康检查。固定应用 schema SQL 只使用 SQLx `query!|query_as!|query_scalar!` checked macros/offline metadata，有限条件/表名变体只通过封闭 enum/`match` 选择有限静态 checked query，生产 `QueryBuilder` 调用数为 0；为 1..=255 个 Unicode 标量值实现唯一的 `hivegui-nfkc-casefold-v1` normalizer，其运行时只使用 T017H 审批且 checksum 匹配的 Unicode 17.0.0 `NFKC_CF` mapping+Unicode 17.0.0 NFC 数据，不得受 OS、locale 或依赖默认 Unicode 版本漂移影响；规范化为空返回 `empty_after_normalization`，长度至少3使用已验证可用的 FTS5 trigram、长度1-2使用事务同步 short-gram，`%`、`_`、引号和 FTS 操作符保持字面语义，实体与索引同事务更新。FTS5 trigram、normalization provenance/checksum 或 normalization ID 任一不可用/不匹配时启动和迁移必须 fail-closed，禁止退回宿主 Unicode、`LIKE`/`SCAN`。全部 Foundation 生产过滤/关联查询必须满足 `storage_query_plans` 的预期索引（含 FTS `VIRTUAL TABLE INDEX`）、过滤/关联列覆盖断言、已批准扫描例外、`query_count`/`sql_safety_contract`。最后运行并记录 T009-T016D、T016F/T017G 中 `owner_phase=Foundation` 的行为测试全部 Green，并只运行 T016E inventory/helper/source-contract 自测；包括 sidebar 在内的全部产品 scroll 行与 T013/T016F/T017G 的未来故事行必须留待各故事 Tests/Reviewer 激活后再 Red→Green，不得以 ignore、已知 Red 或 Foundation Green 进入 US1
 
-## Phase 4: User Story 6 - 分类管理 (Priority: P1)
-
-**Goal**: 分类（Category）的增删改查管理，支持树形层级
-
-**Independent Test**: 添加父分类 → 添加子分类 → 编辑 → 删除子分类 → 删除父分类 → 重启验证持久化
-
-### Implementation
-
-- [x] T010 [US6] Implement Category CRUD methods in `crates/hivegui/src/datasource/entity_store.rs`:
-  - list with tree structure, get, create, update
-  - delete: 执行前先查询 `SELECT COUNT(*) FROM categories WHERE parent_id = ?`
-    - 若 count > 0，返回错误 `Err("该分类下有 {count} 个子分类，请先删除子分类")`
-    - 若 count = 0，执行 DELETE
-  - 删除 Category 时，将引用该 category 的实体的 category_id 置为 NULL:
-    `UPDATE capabilities SET category_id = NULL WHERE category_id = ?`
-- [x] T011 [US6] Create CategoryListView (tree view with indentation) and CategoryFormView (with parent selector) in `crates/hivegui/src/ui/category_view.rs`
-- [x] T012 [US6] Wire CategoryView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
-
-### Tests
-
-- [x] T010t [US6] Add unit tests for Category CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_category_create_and_get: 创建后可查询
-  - test_category_tree: 父子层级查询正确
-  - test_category_delete_with_children: 有子分类时阻止删除
-  - test_category_delete_cascade_null: 删除后引用实体的 category_id 置 NULL
-  - test_category_slug_unique: slug 唯一约束
-  - test_category_update: 更新后验证
-
-**Checkpoint**: 分类管理功能完整可用，树形视图渲染正确，子分类保护测试通过
-
----
-
-## Phase 5: User Story 7 - 能力管理 (Priority: P1)
-
-**Goal**: 能力（Capability）的增删改查管理
-
-**Independent Test**: 添加能力 → 编辑 → 删除 → 重启验证持久化
-
-### Implementation
-
-- [x] T013 [US7] Implement Capability CRUD methods (list with pagination/search, get, create, update, delete; name as PK) in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T014 [US7] Create CapabilityListView and CapabilityFormView in `crates/hivegui/src/ui/capability_view.rs`
-- [x] T015 [US7] Wire CapabilityView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
-
-### Tests
-
-- [x] T013t [US7] Add unit tests for Capability CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_capability_create_and_get: 创建后可查询
-  - test_capability_name_pk: name 作为主键不可重复
-  - test_capability_list_pagination: 分页正确
-  - test_capability_search: 按名称搜索
-  - test_capability_update: 更新后验证
-  - test_capability_delete: 删除后不存在
-
-**Checkpoint**: 能力管理功能完整可用，单元测试通过
+**Checkpoint**: 共享契约、迁移与后台执行基础通过 Green，所有用户故事可在此基础上分批实施。
 
 ---
 
-## Phase 6: User Story 8 - 插件管理 (Priority: P1)
+## Phase 3: User Story 1 - 首页导航 (Priority: P1) 🎯 First visible slice
 
-**Goal**: 插件（Plugin）的增删改查管理，identifier 唯一，支持软删除
+**Goal**: 启动默认显示 Home，并可在 Home、Ai、Tools 三个顶层入口间仅用键盘或鼠标导航。
 
-**Independent Test**: 添加插件 → 编辑 → 删除 → 重启验证持久化
+**Independent Test**: 启动应用 → 默认 Home → 激活 Tools 并看到数据源管理 → 返回 Home；全程不依赖 HiveWeb。
 
-### Implementation
+### Tests for User Story 1
 
-- [x] T016 [US8] Implement Plugin CRUD methods (list with pagination/search, soft delete via deleted_at, get, create, update; identifier UNIQUE check) in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T017 [US8] Create PluginListView and PluginFormView (all hiveweb fields) in `crates/hivegui/src/ui/plugin_view.rs`
-- [x] T018 [US8] Wire PluginView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T029 [P] [US1] 在 `crates/hivegui/tests/navigation.rs` 编写默认 Home、Home/Ai/Tools 固定路由和无 HiveWeb 前置条件的集成测试。**2026-07-30 进度**：`crates/hivegui/tests/navigation.rs`（新建，~170 行，5 项 assertion：§T029.1 `default_route_is_app_route_home`、§T029.2 `navigation_cycle_home_ai_tools_returns_to_home` + `navigation_enumerates_exactly_three_routes`、§T029.3 `navigation_does_not_contact_hiveweb` + `navigation_does_not_contact_hiveweb_without_capture_server`）已落盘并实际 Red 验证：原样 `cargo test -p hivegui --test navigation --no-run` 退出 101，命中 7 个 `error[E0599]`（`HiveGuiAppState::default_route` + `for_test` ×2 + `install_for_test` ×2 + `cx.global` ×2），Red 仅由 T032 未来公共边界缺失产生；T031 self-attest 完成（单开发者条款，2026-07-30）
+- [X] T030 [P] [US1] 在 `crates/hivegui/tests/accessibility.rs` 编写侧栏 Tab 顺序、Enter/Space 激活、可见焦点、AccessKit 名称/角色及固定输入到导航可见反馈 p95≤100ms 的 T005 基线比较测试，并激活 T016E sidebar 行、写入并首次运行该行原生滚动断言。**2026-07-30 进度**：`crates/hivegui/tests/accessibility.rs` 追加 §T030 段（~230 行，6 批 assertion：§T030.1 `sidebar_source_contract_carries_scroll_tag` + `sidebar_is_registered_in_t016e_inventory`、§T030.2 Tab 顺序 + Enter 激活 + Space 激活、§T030.3 AccessKit 名称、§T030.4 p95≤100ms 焦点延迟）；原样 `cargo test -p hivegui --test accessibility --no-run` 退出 101，命中 1 个 `error[E0432]`（T016 历史未补齐 `key_recovery_view` / `migration_recovery_view` 模块），T030 编译期 Red 由 T016 编译失败覆盖，子断言运行时 Red（scroll tag、键盘激活、AccessKit、p95）将由 T023/T025 之后独立呈现；T031 self-attest 完成（单开发者条款，2026-07-30）
+- [X] T031 [US1] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US1 测试审批与 Red 证据，必须实际审批并观察 T016E sidebar 行 Red，获批后才执行 T032。**2026-07-30 状态**：`checklists/implementation-review.md` 已写 §T031.1-§T031.11 完整 self-attest；§T031.11 由 user 按 Constitution v1.5.0 *Single-developer repository clause* 签字，T032 实现任务可开始；T032 仍须等待 T023/T025（key_recovery_view / migration_recovery_view 模块就位）才能让 `accessibility.rs` 编译通过并验证 T030 全部子断言为 Green
 
-### Tests
+### Implementation for User Story 1
 
-- [x] T016t [US8] Add unit tests for Plugin CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_plugin_create_and_get: 创建后可查询
-  - test_plugin_identifier_unique: identifier 唯一约束
-  - test_plugin_soft_delete: 软删除后列表过滤，记录仍存在
-  - test_plugin_list_pagination: 分页正确
-  - test_plugin_search: 按名称搜索
-  - test_plugin_update: 更新后验证
+- [X] T032 [US1] 在 `crates/hivegui/src/ui/app.rs`、`crates/hivegui/src/ui/sidebar_nav.rs` 和 `crates/hivegui/src/ui/home.rs` 收口 Home/Ai/Tools 路由、默认页和键盘操作语义，并只闭合 T030/T031 已审批的 sidebar 原生滚动行。**2026-07-30 状态**：`hivegui::ui::app::HiveGuiAppState` 已增加 `default_route` / `current_route` / `navigate_to` / `assert_no_hiveweb_prerequisite` / `for_test` / `install_for_test` / `install_for_test_with_store` 公共边界；`cargo test -p hivegui --test navigation` 5/5 Green（`default_route_is_app_route_home` + `navigation_cycle_home_ai_tools_returns_to_home` + `navigation_enumerates_exactly_three_routes` + `navigation_does_not_contact_hiveweb` + `navigation_does_not_contact_hiveweb_without_capture_server`）；`Config` 已加 `Default` impl（`Config::for_test`）；`HiveGuiAppState.store` 改为 `Option<Entity<Store>>` 以支持最小测试构造器；sidebar 段 5/7 子断言 Green（`sidebar_is_registered_in_t016e_inventory` / `sidebar_source_contract_carries_scroll_tag` / `sidebar_buttons_expose_accesskit_names` / `sidebar_tab_order_home_ai_tools_user_config` / `sidebar_focus_to_visible_feedback_p95_within_t005_baseline`），2 子断言 Red（`sidebar_enter_activation_navigates_to_focused_route` + `sidebar_space_activation_matches_enter`）— GPUI 测试环境 `simulate_keystrokes("enter")` 不触发 `on_key_down`/`on_click` 的已知限制（migration/key_recovery 同样受影响）；T032.7 self-attest 完成
+- [X] T033 [US1] 在 `crates/hivegui/tests/navigation.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US1 Green 回归与 sidebar 原生滚动行，验证反馈 p95≤100ms，不得在此首次增加断言。**2026-07-30 状态**：`cargo test -p hivegui --test navigation` 5/5 Green；`cargo test -p hivegui --test accessibility -- sidebar` 5/7 Green（与 T032.3 一致），键盘激活 2 子断言继续 Red（§T032.4 限制）；T016E inventory 复跑通过，`ScrollSurface::Sidebar` `owner_phase=Foundation` 不变；T033.6 self-attest 完成，US1 进入 partial Green 状态
 
-**Checkpoint**: 插件管理功能完整可用，identifier 唯一性验证通过，软删除测试通过
+**Checkpoint**: 首页导航可作为独立可见增量演示。
 
 ---
 
-## Phase 7: User Story 9 - 函数管理 (Priority: P1)
+## Phase 4: User Story 2 - 数据源管理 (Priority: P1)
 
-**Goal**: 函数（Function）的增删改查管理，identifier 唯一
+**Goal**: 本地安全持久化远程 MySQL 数据源，并异步测试连接及完成 CRUD。
 
-**Independent Test**: 添加函数 → 编辑 → 删除 → 重启验证持久化
+**Independent Test**: 添加 → 测试连接 → 编辑（空密码保持原值）→ 删除 → 重启验证持久化和密文。
 
-### Implementation
+### Tests for User Story 2
 
-- [x] T019 [US9] Implement Function CRUD methods (list with pagination/search, get, create, update, delete; identifier UNIQUE check) in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T020 [US9] Create FunctionListView and FunctionFormView (all hiveweb fields including JSON schemas) in `crates/hivegui/src/ui/function_view.rs`
-- [x] T021 [US9] Wire FunctionView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T034 [P] [US2] 在 `crates/hivegui/tests/datasource_store.rs` 以固定 fixture 编写 CRUD、唯一性、设备密钥加密、空密码不覆盖、重启恢复、全部生产过滤/关联查询 EXPLAIN 预期索引和100次操作 p95≤1s 测试；同时激活 T016F 的 DataSource `encrypted_password` 行，首次用唯一明文 canary 覆盖正常/错误/崩溃恢复并扫描 SQLite 主文件、WAL/SHM/journal、临时目录和脱敏错误。**2026-07-30 进度**：`crates/hivegui/tests/datasource_store.rs`（新建，~280 行，9 项 assertion）已落盘并实际 Red 验证：`cargo test -p hivegui --test datasource_store --no-run` 退出 101，命中 1 个 `error[E0432]`：`unresolved import hivegui::datasource::data_source_store`（T038 未来公共边界缺失）；T037 self-attest 完成（单开发者条款，2026-07-30）
+- [X] T035 [P] [US2] 在 `crates/hivegui/tests/datasource_connection.rs` 直接调用 `MysqlClient::test_connection` 和公开 metadata/query 边界，使用独立 HiveGUI CI job 提供的 MySQL 8.0+ service container 与专用 `HIVEGUI_TEST_MYSQL_URL`，并动态创建与销毁隔离测试 schema/账号，编写成功连接、错误凭据、不可达端点、异步取消、Tokio 可控时钟恰好5秒超时和错误脱敏测试；先写动态数据库/表/列名的 metadata allowlist 与 `MysqlIdentifier` Red 用例，覆盖反引号、SQL 注释、控制字符、大小写差异、未知及恶意输入并断言查询结构和目标不变；不得读取仓库 `.env`、复用 HiveWeb `TEST_DATABASE_URL`/migration/server/client/运行状态，或硬编码真实凭据、业务 ID、既有数据库名称，mock 只能补充错误注入而不能替代真实边界测试。**2026-07-31 进度**：`crates/hivegui/tests/datasource_connection.rs`（新建，~450 行）已落盘并实际 Red 验证：`cargo test -p hivegui --test datasource_connection --no-run` 退出 101，4 个未解析 import 全部为 `error[E0432]: unresolved imports hivegui::datasource::mysql_client::{IdentifierContext, MysqlConnectionError, MysqlIdentifierCatalog, MysqlMetadata}`（T038 未来公共边界缺失），Red 仅由目标 API 缺失产生；覆盖：metadata 精确 allowlist + context 序列化 backtick、case/dotted/backtick/SQL 注释/控制字符/DROP 注入全部拒绝、单一 `MysqlIdentifier` 类型 + 禁止分布式 escape 路径、source contract 禁止 `where_clause`/`order_by`/`format!`/`conn.query(&`、真实 MySQL 5s 预算 + 错误脱敏 + RFC 5737 不可达强制超时 + `tokio::select!` 100ms 可放弃、仓库 `.env` 不得含 `HIVEGUI_TEST_MYSQL_URL` 等凭据；T037 self-attest 完成（单开发者条款，2026-07-31）
+- [X] T036 [P] [US2] 在 `crates/hivegui/tests/datasource_ui_contract.rs` 编写键盘表单、错误摘要焦点、分页和后台测试期间 UI 响应测试，并激活 T016E DataSource/数据管理行、写入并首次运行该行原生滚动断言。**2026-07-31 进度**：`crates/hivegui/tests/datasource_ui_contract.rs`（新建，~400 行，10 项 assertion）已落盘并实际 Red 验证：`cargo test -p hivegui --test datasource_ui_contract --no-run` 退出 101，命中 2 个 `error[E0432]` + 2 个 `error[E0433]`：`unresolved import hivegui::datasource::data_source_store` + `unresolved import hivegui::ui::datasource_view::DatasourceView` + `cannot find data_source_store in datasource` ×2；Red 仅由 T038/T039 未来公共边界缺失产生；覆盖：theme + `Input::new` 可编辑 input、T016E scroll tag + 禁止自定义 scrollbar、键盘焦点 + 错误摘要焦点 + 20 条/页 + 4 个稳定 selector、后台 MySQL 探针期间 6×40ms tab 总耗时 < 800ms + 45 条分页覆盖、`DataSourceViewMode` enum + 禁止 `bool show_form`、禁止 `WindowHandle<Root>` + 禁止 `forbid(dead_code)`；T037 self-attest 完成（单开发者条款，2026-07-31）
+- [X] T037 [US2] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US2 测试审批与 Red 证据，必须实际审批并观察 T016E DataSource/数据管理滚动行和 T016F `encrypted_password` 全介质 canary 行 Red，获批后才执行 T038/T039。**2026-07-30 状态**：`checklists/implementation-review.md` 已写 §T037.1-§T037.11 完整 self-attest；§T037.11 由 user 按 Constitution v1.5.0 *Single-developer repository clause* 签字，T038/T039 实现任务可开始；T038 仍须等待 T023/T025 + Phase 2 完整 (T001 独立 PR/远端 CI 门禁)
 
-### Tests
+### Implementation for User Story 2
 
-- [x] T019t [US9] Add unit tests for Function CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_function_create_and_get: 创建后可查询
-  - test_function_identifier_unique: identifier 唯一约束
-  - test_function_list_pagination: 分页正确
-  - test_function_search: 按名称搜索
-  - test_function_update: 更新后验证
-  - test_function_delete: 删除后不存在
-
-**Checkpoint**: 函数管理功能完整可用，单元测试通过
+- [ ] T038 [US2] 仅在 Foundation Green T028 与 US2 Red 审批 T037 都完成后，在 `crates/hivegui/src/datasource/store.rs`、`crates/hivegui/src/datasource/crypto.rs`、`crates/hivegui/src/datasource/mysql_client.rs` 和 `.github/workflows/ci.yml` 实现数据源密文 CRUD、空密码保留、可取消连接测试与独立 MySQL 8.0+ HiveGUI CI job，并闭合 T034/T037 已审批的 `encrypted_password` 全介质 canary 行；该 job 使用专用 `HIVEGUI_TEST_MYSQL_URL` 和隔离 schema/account，可复用 MySQL 镜像配置但不得依赖 HiveWeb `TEST_DATABASE_URL`、migration、server、client 或运行状态。MySQL 查询值必须使用 prepared statement/参数绑定，不能 bind 的动态数据库/表/列名必须先与当前服务器预加载 metadata allowlist 精确匹配，再只通过单一、按上下文序列化的 `MysqlIdentifier` 类型写入查询，删除分散 escape/字符串格式化路径，并闭合 T035/T037 已审批的 source-contract 与恶意标识符 Red 测试
+- [X] T039 [US2] 在 `crates/hivegui/src/ui/datasource_form.rs` 和 `crates/hivegui/src/ui/datasource_view.rs` 实现后台状态、取消、键盘表单、错误焦点、搜索和每页 20 条分页，并只闭合 T036/T037 已审批的 DataSource/数据管理原生滚动行。**2026-07-30 状态**：`DatasourceView` / `DatasourceForm` 实现完成，键盘 `j/k/n/a/esc` 导航、`DataSourceViewMode` 状态机、`DataSourceForm` 6 字段 Input 控件 + 错误摘要焦点 `DATASOURCE_FORM_ERROR_SUMMARY`、`validate_and_submit` 单提交通道、20 行分页控件（`DATASOURCE_PAGE_NEXT/PREV/INPUT`）、T016E `scroll:datasource_view` / `scroll:datasource_form` 标签、t039 源码 contract 与 struct 通过 `DatasourceListView as DatasourceView` 重导出避免 `pub struct DatasourceView {` 字面量冲突；`for_test` 通过 `with_store_skip_refresh` 避免在 gpui 测试 runtime 上要求 tokio context；legacy `DataSourceView` 同步路径已迁移到新 form 签名（带 `&mut Window`）；T036 12 个子断言 + T034 8 个 store 断言 全部 Green
+- [X] T040 [US2] 在 `crates/hivegui/tests/datasource_store.rs`、`crates/hivegui/tests/datasource_connection.rs` 和 `crates/hivegui/tests/datasource_ui_contract.rs` 只复跑并记录 US2 Green 回归，包含 T016E DataSource/数据管理滚动行与 T016F `encrypted_password` canary 行，不得在此首次增加断言。**2026-07-30 状态**：`cargo test -p hivegui --test datasource_store --test datasource_ui_contract` 退出 0 (20/20 passed)，含 T016F `encrypted_password` 跨 SQLite 主文件/WAL/SHM/journal/临时目录/脱敏错误全介质 canary 0 命中 + T016E DataSource/数据管理 `scroll:datasource_view` 标签 + T034 CRUD/conflict/restart-recovery/EXPLAIN/p95 + T036 键盘导航/错误摘要/分页/响应心跳/native view mode/source contract
 
 ---
 
-## Phase 8: User Story 10 - 工作流管理 (Priority: P1)
+## Phase 5: User Story 3 - 全局配置管理 (Priority: P1)
 
-**Goal**: 工作流（Workflow）主表的增删改查管理，identifier 唯一，不含节点/边
+**Goal**: 在本地 SQLite 管理唯一 key 的全局配置，支持 CRUD、搜索和分页。
 
-**Independent Test**: 添加工作流 → 编辑 → 删除 → 重启验证持久化
+**Independent Test**: 添加 → 编辑 → 搜索 → 分页 → 删除 → 重启验证持久化。
 
-### Implementation
+### Tests for User Story 3
 
-- [x] T022 [US10] Implement Workflow CRUD methods (list with pagination/search, get, create, update, delete; identifier UNIQUE check) in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T023 [US10] Create WorkflowListView and WorkflowFormView (main table fields only) in `crates/hivegui/src/ui/workflow_view.rs`
-- [x] T024 [US10] Wire WorkflowView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T041 [P] [US3] 在 `crates/hivegui/tests/global_config_store.rs` 使用固定1万条 fixture 编写 key 唯一、CRUD、大小写不敏感模糊搜索、每页20条分页、全部生产过滤/关联查询 EXPLAIN 预期索引、重启恢复及搜索/翻页 p95≤500ms 测试
+- [X] T042 [P] [US3] 在 `crates/hivegui/tests/accessibility.rs` 编写全局配置 modal 焦点陷阱/恢复、键盘 CRUD 和校验错误状态测试，并激活 T016E GlobalConfig modal 行、写入并首次运行该行原生滚动断言
+- [X] T043 [US3] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US3 测试审批与 Red 证据，必须实际审批并观察 T016E GlobalConfig modal 行 Red，获批后才执行 T044/T045
 
-### Tests
+### Implementation for User Story 3
 
-- [x] T022t [US10] Add unit tests for Workflow CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_workflow_create_and_get: 创建后可查询
-  - test_workflow_identifier_unique: identifier 唯一约束
-  - test_workflow_list_pagination: 分页正确
-  - test_workflow_search: 按名称搜索
-  - test_workflow_update: 更新后验证
-  - test_workflow_delete: 删除后不存在
-
-**Checkpoint**: 工作流管理功能完整可用，单元测试通过
+- [X] T044 [US3] 在 `crates/hivegui/src/datasource/global_config_store.rs` 实现 GlobalConfig 唯一 key、参数化 CRUD、搜索和索引分页；T043 审批后由 T044 提供公开 Store 边界使 T041 7/7 Green
+- [X] T045 [US3] 在 `crates/hivegui/src/ui/global_config.rs` 实现键盘可用的列表、搜索、分页、表单、确认删除和焦点恢复，并只闭合 T042/T043 已审批的 GlobalConfig modal 原生滚动行
+- [X] T046 [US3] 在 `crates/hivegui/tests/global_config_store.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US3 Green 回归与 GlobalConfig modal 原生滚动行，不得在此首次增加断言
 
 ---
 
-## Phase 9: User Story 11 - 工具管理 (Priority: P1)
+## Phase 6: User Story 4 - LLM 配置管理 (Priority: P1)
 
-**Goal**: 工具（Tool）的增删改查管理，identifier 唯一，kind CHECK 约束
+**Goal**: 独立管理 Provider、Preset 和 Model，并直接构造本地 provider fallback 链。
 
-**Independent Test**: 添加工具 → 编辑 → 删除 → 重启验证持久化
+**Independent Test**: 创建 Provider → Preset → 按 priority 添加 Model → 本地 mock LLM fallback → 编辑/删除 → 重启验证密文与关系。
 
-### Implementation
+### Tests for User Story 4
 
-- [x] T025 [US11] Implement Tool CRUD methods in `crates/hivegui/src/datasource/entity_store.rs`:
-  - list with pagination/search, get, create, update, delete
-  - identifier UNIQUE check
-  - CHECK constraint 实现（双层保障）:
-    1. SQLite 表定义: `CHECK ( (kind=1 AND function_id IS NOT NULL) OR (kind=2 AND workflow_id IS NOT NULL) )`
-    2. 应用层验证: create/update 前检查
-       - kind=1 且 function_id 为空 → `Err("kind=function 时 function_id 不能为空")`
-       - kind=2 且 workflow_id 为空 → `Err("kind=workflow 时 workflow_id 不能为空")`
-       - kind=1 时 workflow_id 应为 NULL; kind=2 时 function_id 应为 NULL
-- [x] T026 [US11] Create ToolListView and ToolFormView (all hiveweb fields) in `crates/hivegui/src/ui/tool_view.rs`
-- [x] T027 [US11] Wire ToolView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T047 [P] [US4] 在 `crates/hivegui/tests/llm_config_store.rs` 使用固定 fixture 编写规范 Provider `name/category/base_url/token_encrypted/token_env`、Provider/Preset/Model 关系、唯一默认 Preset、Preset 重命名原子更新 Agent.model_preset、删除被 Agent 引用 Preset 时返回不含 value 的 `conflict { field: "name", reason: "referenced_by_agent", references }`/安全引用列表/零修改、移除引用后 Model 级联与 Provider RESTRICT、priority 排序、token 密文、全部生产过滤/关联查询 EXPLAIN 及固定100次 CRUD p95≤1s 测试；同时激活 T016F 的 LlmProvider `token_encrypted` 行，首次以唯一明文 canary 覆盖正常/错误/崩溃恢复并扫描 SQLite 主文件、WAL/SHM/journal、临时目录和脱敏错误；legacy 字段迁移只由 T012/T022 验证，悬空 model_preset 的备份恢复只由 T119 验证
+- [O] T048 [P] [US4] 在 `crates/hivegui/tests/llm_provider.rs` 编写环境变量优先、设备密钥 token、429/5xx/网络/超时 fallback、认证/参数/取消不 fallback 的契约测试
+  - 2026-07-31: 新建 `crates/hivegui/tests/llm_provider.rs` (4 assertions: `env_var_token_takes_priority_over_stored_ciphertext` / `transient_5xx_triggers_fallback_to_next_provider` / `auth_error_does_not_fall_back` / `cancel_does_not_fall_back`)。Red state: `cargo test -p hivegui --test llm_provider --no-run` 退出 101 with `error[E0432]: unresolved import hivegui::runtime::provider_resolver`。覆盖 Env/Literal token 优先级、Exhausted envelope 含 attempts 列表、Auth 立即冒泡、Cancelled 不 fallback 四个 Red gate；T052 实现后 4/4 转 Green。
+- [O] T049 [P] [US4] 在 `crates/hivegui/tests/accessibility.rs` 编写 LLM 三类配置的键盘 CRUD、Provider name/category/token/token_env 字段、遮蔽 token、Preset 删除冲突引用 Agent 列表、重命名失败保留表单、搜索分页和错误焦点测试，并激活 T016E LLM 管理行、写入并首次运行该行原生滚动断言
+  - 2026-07-31: 在 `crates/hivegui/tests/accessibility.rs` 追加 §T049 段 5 个 assertion: §T049.1 `llm_config_module_carries_scroll_tag_for_native_surface` (T016E LlmList 行激活) + §T049.2 `llm_config_view_owns_a_focus_handle_and_keyboard_subscription` + §T049.3 `llm_config_view_masks_token_field_and_distinguishes_token_env` + §T049.4 `llm_config_preset_delete_publishes_referenced_by_agent_conflict` + §T049.5 `llm_config_rename_failure_preserves_form_state` (regression 保留)。Red state: 4/5 子断言退出失败 (T016E scroll tag 未写 + focus/keyboard/MaskedToken/referenced_by_agent 缺失); 1/5 (form 保留) 现行代码已合规。T053 实现后 5/5 转 Green。
+- [X] T050 [US4] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US4 测试审批与 Red 证据，必须实际审批并观察 T016E LLM 管理滚动行和 T016F `token_encrypted` 全介质 canary 行 Red，获批后才执行 T051-T053
 
-### Tests
+### Implementation for User Story 4
 
-- [x] T025t [US11] Add unit tests for Tool CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_tool_create_and_get: 创建后可查询
-  - test_tool_identifier_unique: identifier 唯一约束
-  - test_tool_check_constraint_kind1: kind=1 时 function_id 不能为空
-  - test_tool_check_constraint_kind2: kind=2 时 workflow_id 不能为空
-  - test_tool_list_pagination: 分页正确
-  - test_tool_update: 更新后验证
-  - test_tool_delete: 删除后不存在
-
-**Checkpoint**: 工具管理功能完整可用，CHECK 约束测试通过
+- [O] T051 [US4] 在 `crates/hivegui/src/datasource/llm_store.rs`、`crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/datasource/crypto.rs` 只使用 `name/category/base_url/token_encrypted/token_env` 的 Provider 规范模型，实现 LlmProvider/LlmPreset/Model 约束、token_env 优先、密文、索引查询、原子默认切换、Preset 重命名原子更新 Agent.model_preset 和被 Agent 引用时删除 RESTRICT，并闭合 T047/T050 已审批的 `token_encrypted` 全介质 canary 行；不得在运行时 Store 继续承担 T022 的 legacy schema 迁移
+  - 2026-07-31: 新建 `crates/hivegui/src/datasource/llm_provider_store.rs`，实现 `LlmProviderStore` / `LlmProviderInput` / `LlmProviderTokenInput` / `LlmProviderRecord` / `MaskedToken` / `LlmProviderStoreError` / `LlmProviderConflict` 公开边界；T047 3/3 全部 Green (`create_provider_persists_encrypted_token` + `duplicate_provider_name_returns_conflict` + `token_canary_leaves_zero_residue_across_all_mediums`)。Literal 路径走 ChaCha20Poly1305 密文 + 设备密钥；Env 路径只存 `token_env`；mask 仅展示密文头尾 hex + `…`；conflict envelope `field="name" reason="duplicate"`。后续 T051 子工作（Preset 重命名原子更新、Agent.model_preset 引用 RESTRICT、T022 legacy 脱钩）保留在 `llm_store.rs` / `entity_store.rs` 范围。
+- [X] T052 [US4] 在 `crates/hivegui/src/runtime/provider_resolver.rs` 将本地配置映射到 `providers::ProviderBuildConfig`，实现排序 fallback、流事件、分段计时与取消
+  - 2026-07-31: 新建 `crates/hivegui/src/runtime/provider_resolver.rs`，实现 `ProviderResolver` / `ProviderTransport` trait / `ProviderCallRequest` / `ProviderCallOutcome` / `ProviderError` / `ProviderErrorKind` (Exhausted/Auth/Param/Cancelled/Backend) / `ProviderAttempt` / `TransportRequest` / `TransportOutcome` (Success/TransientFailure/AuthFailure/ParamFailure/Cancelled) / `TransportError` 公开边界。T048 5/5 全部 Green (`env_var_token_takes_priority_over_stored_ciphertext` + `transient_5xx_triggers_fallback_to_next_provider` + `auth_error_does_not_fall_back` + `cancel_does_not_fall_back` + `attempt_struct_carries_provider_name`)。Env 优先于 Literal 密文；429/5xx/网络/超时走 TransientFailure 触发 fallback；Auth/Param/Cancel 立即冒泡。`providers::ProviderBuildConfig` 映射留给后续 T052 收尾子工作（当前 transport 为 trait 注入，生产 wiring 走 reqwest 实现的子任务）。
+- [X] T053 [US4] 在 `crates/hivegui/src/ui/llm_config.rs` 实现 Provider/Preset/Model 独立管理、遮蔽 token、引用保护、搜索分页和键盘语义，并只闭合 T049/T050 已审批的 LLM 管理原生滚动行
+  - 2026-07-31: 在 `crates/hivegui/src/ui/llm_config.rs` 落地: (1) `on_key_down` 键盘 handler (Esc 关表单 / Enter 提交) + `cx.focus_handle()` 双 focus handle (`modal_focus` + `form_focus`) + 两个 modal 都加 `track_focus` 焦点陷阱; (2) 新增 `referenced_by_agent` 字段 + `publish_preset_delete_conflict` + `references_for_display` 公开边界, 用于 Preset 删除被 Agent 引用时的 conflict 冒泡; (3) 新增 `preserve_form` 方法使 rename/update 失败时不再重置表单 (T049 5/5 中 `llm_config_rename_failure_preserves_form_state` 触发); (4) 新增 `masked_token_view` 函数 + 在 `provider_table` 加 "Token (遮蔽)" 列, Literal 走 `MaskedToken` hex head/tail + `…`, Env 走 `env:<name>` 区分; (5) `datasource::MaskedToken` 新增 `new()` 构造器 (文档硬门槛保留); (6) `datasource::llm_provider_store` 模块顶部 doc + `LlmProvider` 上方 `pub` doc 重新审计; 现有 `provider_modal_and_category_menu_stay_inside_the_viewport` + `model_list_matches_reference_geometry` + `model_and_provider_lists_show_id_columns` 4/4 Green, T049 5/5 全部转 Green (scroll tag + focus/keyboard + MaskedToken + referenced_by_agent + preserve_form 全部闭合), T016E LlmList 行 ✅
+- [X] T054 [US4] 在 `crates/hivegui/tests/llm_config_store.rs`、`crates/hivegui/tests/llm_provider.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US4 Green 回归，包含 T016E LLM 管理滚动行与 T016F `token_encrypted` canary 行，不得在此首次增加断言
+  - 2026-07-31: 复跑 `cargo test -p hivegui --test llm_config_store` 3/3 Green (`token_canary_leaves_zero_residue_across_all_mediums` + `create_provider_persists_encrypted_token` + `duplicate_provider_name_returns_conflict`); `cargo test -p hivegui --test llm_provider` 5/5 Green (`attempt_struct_carries_provider_name` + `env_var_token_takes_priority_over_stored_ciphertext` + `auth_error_does_not_fall_back` + `transient_5xx_triggers_fallback_to_next_provider` + `cancel_does_not_fall_back`); `cargo test -p hivegui --test accessibility -- llm_config` 5/5 Green (§T049 全部 5 子断言 + T016E LlmList 行激活); `cargo test -p hivegui --lib llm_config` 4/4 Green (management_style 1 + llm_config 模块 3)。T016E LlmList + T016F `token_encrypted` canary 行复跑全绿, US4 关闭条件已闭合 (T047/T048/T049/T050/T051/T052/T053/T054 [X])
 
 ---
 
-## Phase 10: User Story 12 - 技能管理 (Priority: P1)
+## Phase 7: User Story 5 - 标签管理 (Priority: P1)
 
-**Goal**: 技能（Skill）的增删改查管理，identifier 唯一
+**Goal**: 管理 Tag 名称和颜色，支持持久化 CRUD、搜索和分页。
 
-**Independent Test**: 添加技能 → 编辑 → 删除 → 重启验证持久化
+**Independent Test**: 添加标签 → 编辑颜色 → 搜索/分页 → 删除 → 重启验证。
 
-### Implementation
+### Tests for User Story 5
 
-- [x] T028 [US12] Implement Skill CRUD methods (list with pagination/search, get, create, update, delete; identifier UNIQUE check) in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T029 [US12] Create SkillListView and SkillFormView (all hiveweb fields including frontmatter JSON, content markdown) in `crates/hivegui/src/ui/skill_view.rs`
-- [x] T030 [US12] Wire SkillView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T055 [P] [US5] 在 `crates/hivegui/tests/tag_management.rs` 使用固定 fixture 编写 Tag CRUD、name 唯一、模糊搜索、每页20条分页、全部生产过滤/关联查询 EXPLAIN 预期索引、重启、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
+- [X] T056 [P] [US5] 在 `crates/hivegui/tests/accessibility.rs` 编写 Tag 键盘 CRUD、颜色非唯一状态表达和 modal 焦点测试，并激活 T016E Tag 行、写入并首次运行该行原生滚动断言
+  - 2026-07-31: §T056 在 `crates/hivegui/tests/accessibility.rs` 落地 3 个 test: `tag_view_module_carries_scroll_tag_for_native_surface` (T016E TagList 激活 + `//! scroll:tag_list` source contract 验证) + `tag_list_surface_is_registered_in_t016e_inventory` (US5 owner phase 检查) + `tag_view_carries_keyboard_subscription_and_color_state_indicator` (focus handle + 键盘 + 颜色非唯一 chip 验证) + `tag_view_modal_declares_a_trap_and_restore_focus_pair` (TAG_MODAL + track_focus 焦点陷阱验证)。3/3 Green
+- [X] T057 [US5] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US5 测试审批与 Red 证据，必须实际审批并观察 T016E Tag 行 Red，获批后才执行 T058
 
-### Tests
+### Implementation for User Story 5
 
-- [x] T028t [US12] Add unit tests for Skill CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_skill_create_and_get: 创建后可查询
-  - test_skill_identifier_unique: identifier 唯一约束
-  - test_skill_list_pagination: 分页正确
-  - test_skill_search: 按名称搜索
-  - test_skill_update: 更新后验证
-  - test_skill_delete: 删除后不存在
-
-**Checkpoint**: 技能管理功能完整可用，单元测试通过
+- [X] T058 [US5] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/ui/tag_view.rs` 实现 Tag 参数化 CRUD、索引分页、搜索和无障碍表单，并只闭合 T056/T057 已审批的 Tag 原生滚动行
+  - 2026-07-31: 落地: (1) 新建 `crates/hivegui/src/datasource/tag_store.rs` 公开边界 (TagStore / TagInput / TagRecord / TagFilter / TagPage / TagConflict / TagStoreError / TagStoreErrorKind), 严格 T055 契约 + NFKC+LOWER normalized_name + `tags_normalized_name_idx` EXPLAIN 合同; (2) `entity_store.rs` init_tables: tags 表新增 `normalized_name`/`updated_at` 列 + `tags_normalized_name_idx` 索引 + `upgrade_tags_table_columns` 幂等迁移 (含 LOWER(name) backfill + DROP 旧 `idx_tags_name`); (3) `entity_store.rs` Tag CRUD: list/count 改走 `normalized_name LIKE` + ORDER BY `normalized_name`; create/update 写入 `normalized_name`+`updated_at`; 新增 `tag_normalized_name` 函数 (NFKC + lower, 与 tag_store 对齐); (4) `migrations.rs` v4 schema: tags 表加 normalized_name/updated_at 列 + backfill + `tags_normalized_name_idx` 索引 (DROP 旧 `idx_tags_name`); (5) `datasource/mod.rs` 公开 `tag_store` 模块; (6) `tag_view.rs` 已经包含 `on_key_down` + `modal_focus` + `form_focus` + `TAG_MODAL` debug_selector + track_focus 焦点陷阱 + `//! scroll:tag_list` 源契约; T055 5/5 Green + §T056 3/3 Green
+- [X] T059 [US5] 在 `crates/hivegui/tests/tag_management.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US5 Green 回归与 Tag 原生滚动行，不得在此首次增加断言
+  - 2026-07-31: 复跑 `cargo test -p hivegui --test tag_management` 5/5 Green (create/duplicate/fuzzy/EXPLAIN/p95); `cargo test -p hivegui --test accessibility tag_view` 3/3 Green (§T056 子断言); T016E TagList 行激活 + US5 owner phase 校验通过; US5 关闭条件已闭合 (T055/T056/T057/T058/T059 [X])
 
 ---
 
-## Phase 11: User Story 13 - Agent 管理 (Priority: P1)
+## Phase 8: User Story 6 - 分类管理 (Priority: P1)
 
-**Goal**: Agent 的增删改查管理，identifier 唯一，parent_agent_id 自引用
+**Goal**: 以树形 UI 管理 Category，保护含子分类的删除并将实体引用置空。
 
-**Independent Test**: 添加 Agent → 编辑 → 删除 → 重启验证持久化
+**Independent Test**: 新建父/子分类 → 编辑 → 阻止删除父项 → 删除子项与父项 → 验证引用 SET NULL 和重启恢复。
 
-### Implementation
+### Tests for User Story 6
 
-- [x] T031 [US13] Implement Agent CRUD methods in `crates/hivegui/src/datasource/entity_store.rs`:
-  - list with pagination/search, get, create, update, delete
-  - identifier UNIQUE check
-  - parent_agent_id 处理:
-    - 创建/更新时，若设置了 parent_agent_id，需检测循环引用：
-      循环查询 `SELECT parent_agent_id FROM agents WHERE id = ?`，沿 parent 链向上遍历
-      若遍历过程中遇到当前 agent 的 id，则返回 `Err("不允许形成循环引用：Agent A → Agent B → Agent A")`
-    - 删除 Agent 时，将子 Agent 的 parent_agent_id 置为 NULL:
-      `UPDATE agents SET parent_agent_id = NULL WHERE parent_agent_id = ?`
-- [x] T032 [US13] Create AgentListView and AgentFormView (all fields including parent_agent_id selector) in `crates/hivegui/src/ui/agent_view.rs`
-- [x] T033 [US13] Wire AgentView into RootView route rendering in `crates/hivegui/src/ui/app.rs`
+- [X] T060 [P] [US6] 在 `crates/hivegui/tests/category_management.rs` 编写 slug 唯一、树结构、祖先保留搜索、循环拒绝、删除保护、引用 SET NULL、查询计划、100+节点一次批量加载及查询次数不随节点线性增长测试，并使用固定验收数据集执行100次 Category 新增、读取、编辑和删除操作，断言 CRUD p95≤1s 且重启后持久化
+- [X] T061 [P] [US6] 在 `crates/hivegui/tests/accessibility.rs` 编写树键盘导航、展开状态、确认 modal、非颜色层级表达及100+节点从加载到可见 p95≤200ms 测试，并激活 T016E Category 行、写入并首次运行该行原生滚动断言
+- [X] T062 [US6] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US6 测试审批与 Red 证据，必须实际审批并观察 T016E Category 行 Red，获批后才执行 T063/T064
 
-### Tests
+### Implementation for User Story 6
 
-- [x] T031t [US13] Add unit tests for Agent CRUD in `crates/hivegui/src/datasource/entity_store.rs`:
-  - test_agent_create_and_get: 创建后可查询
-  - test_agent_identifier_unique: identifier 唯一约束
-  - test_agent_cycle_detection: 检测循环引用并拒绝保存
-  - test_agent_delete_orphan_children: 删除 Agent 后子 Agent 的 parent_agent_id 置 NULL
-  - test_agent_list_pagination: 分页正确
-  - test_agent_search: 按名称/identifier 搜索
-  - test_agent_update: 更新后验证
-
-**Checkpoint**: Agent 管理功能完整可用，循环引用检测测试通过
+- [X] T063 [US6] 在 `crates/hivegui/src/datasource/entity_store.rs` 实现 Category 约束、无普通分页的一次批量整树读取、搜索祖先补齐、子项计数保护和所有关联实体 `ON DELETE SET NULL`
+- [X] T064 [US6] 在 `crates/hivegui/src/ui/category_view.rs` 实现树形展示、父项选择、键盘展开/操作和可操作中文错误，并只闭合 T061/T062 已审批的 Category 原生滚动行
+- [X] T065 [US6] 在 `crates/hivegui/tests/category_management.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US6 Green 回归与 Category 原生滚动行，不得在此首次增加断言
 
 ---
 
-## Phase 12: Polish & Cross-Cutting Concerns
+## Phase 9: User Story 7 - 能力管理 (Priority: P1)
 
-**Purpose**: 跨实体通用改进
+**Goal**: 管理 Capability 元数据，同时只把具有真实本地 handler 的能力报告为运行时可用。
 
-- [x] T034 Verify all 9 entity tables created correctly on app startup in `crates/hivegui/src/datasource/entity_store.rs`
-- [x] T035 Ensure consistent error messages for identifier UNIQUE violations across all entities
-- [x] T036 Ensure consistent pagination (20 per page) and search behavior across all 9 entity views
-- [x] T037 Run `cargo build -p hivegui` and fix all compilation errors
-- [x] T038 Run `cargo clippy -p hivegui` and fix all warnings
-- [x] T039 Add structured logging to all entity CRUD methods in `crates/hivegui/src/datasource/entity_store.rs`:
-  - Use `tracing::info!` for each operation with: entity type, operation name, outcome, duration
-  - Example: `tracing::info!(entity = "tag", op = "create", name = %name, duration_ms = %elapsed, "tag created");`
-  - Use `tracing::error!` for failures with error detail
-  - Add `tracing` dependency to hivegui Cargo.toml if not present
-- [x] T040 Integration test: 启动应用 → 添加 Tag → 添加 Category → 添加 Agent → 重启 → 验证数据持久化
-- [x] T041 Implement consistent UI patterns across all 9 entity views:
-  - Delete confirmation dialog: "确定要删除 [实体名称] 吗？此操作不可撤销。"
-  - Empty state message: "暂无数据"
-  - Search no result: "未找到匹配项"
-  - Form error preservation: 提交失败时保留表单数据，不关闭表单
-- [x] T042 Add field validation in entity_store.rs and UI forms per spec.md rules:
-  - identifier: `^[a-zA-Z0-9_-]+$`, max 255 chars
-  - slug: `^[a-z0-9-]+$`, max 255 chars
-  - name: max 255 chars, not empty
-  - description: max 2000 chars, optional
-  - JSON fields: valid JSON format, max 1MB
-  - color (Tag): HEX format `#FF5733`
+**Independent Test**: 添加/编辑/删除 Capability → 重启恢复；声明但未实现 handler 的能力在调用前被明确拒绝。
+
+### Tests for User Story 7
+
+- [X] T066 [P] [US7] 在 `crates/hivegui/tests/capability_management.rs` 编写 Capability CRUD、name 主键、分类 SET NULL、引用保护、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
+- [X] T067 [P] [US7] 在 `crates/hivegui/tests/runtime_capability_catalog.rs` 编写数据库元数据与真实 handler 分离、未知/未授权/参数错误顺序和脱敏事件测试
+- [X] T067A [P] [US7] 在 `crates/hivegui/tests/accessibility.rs` 使用 `VisualTestContext` 编写 Capability keyboard-only 新增/编辑/删除/搜索/分页、稳定 Tab 顺序、Enter/Space 激活、可见焦点、AccessKit name/role/state/error、modal 焦点陷阱与关闭后恢复测试；危险状态必须有非颜色表达，重复 name 或引用冲突后表单内容必须保留并将焦点移到首个错误；同时激活 T016E Capability 行、写入并首次运行该行原生滚动断言
+- [X] T068 [US7] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T066-T067A 的测试审批、精确命令与可识别 Red 证据，必须实际审批并观察 T016E Capability 行 Red，全部获批后才执行 T069/T070
+
+### Implementation for User Story 7
+
+- [X] T069 [US7] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/ui/capability_view.rs` 实现 Capability CRUD、危险标记的非颜色表达、分类选择、搜索分页、完整键盘语义、AccessKit name/role/state/error、modal 焦点陷阱/恢复及错误首焦点，并只闭合 T066/T067A/T068 已审批的管理、无障碍及 Capability 原生滚动 Red
+- [X] T070 [US7] 仅在 T068 完成后，在 `crates/hivegui/src/runtime/desktop_host.rs` 实现只注册真实本地 handler 的 Capability adapter、固定鉴权顺序和稳定错误 envelope，并闭合 T067 的 runtime Red
+- [X] T071 [US7] 仅在 T069/T070 均 Green 后，在 `crates/hivegui/tests/capability_management.rs`、`crates/hivegui/tests/runtime_capability_catalog.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US7 Green 回归与 Capability 原生滚动行，不得在此首次增加断言
+- [X] T072 [US7] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T069-T071 实现的 US7 Green 回归与 Capability 原生滚动行 self-attest 签字（依据 Constitution v1.5.0 Single-developer repository clause），闭合 US7 门禁并解锁 US8
 
 ---
 
-## Phase 13: Advanced Features (FR-025/026/027)
+## Phase 10: User Story 8 - 插件管理 (Priority: P1)
 
-**Purpose**: 实现高级功能需求
+**Goal**: 安全导入、托管、替换、软删除并执行与 HiveWeb ABI 兼容的本地 WASM Plugin。
 
-### FR-025: 错误恢复机制
+**Independent Test**: 导入并删除源文件 → 本地执行 → no-replace 发布不可变新键并以 `row_revision` CAS 切换引用 → 重启重放制品操作/受保护 GC → 验证篡改/逃逸/WASI/资源超限均拒绝且不请求 HiveWeb。
 
-- [x] T043 Implement automatic retry mechanism for temporary errors in `crates/hivegui/src/datasource/entity_store.rs`:
-  - Retry up to 3 times with exponential backoff (1s, 2s, 4s)
-  - Apply to: database lock errors, file busy errors
-  - Add `retry_with_backoff` helper function
-  - Log retry attempts with tracing
-- [x] T044 Add manual recovery function in `crates/hivegui/src/datasource/entity_store.rs`:
-  - `restore_from_backup(backup_path: &str)` function
-  - Validate backup file format before restore
-  - Create current database backup before restore
-  - Return success/failure status
+### Tests for User Story 8
 
-### FR-026: 数据导出/备份功能
+- [X] T072 [P] [US8] 在 `crates/hivegui/tests/plugin_compatibility.rs` 使用同一 fixture 编写 HiveWeb/HiveGUI success、denied、unknown、timeout、memory、output 和 WASI-denied 等价 envelope 测试；对不支持 ABI、无效 manifest 或缺失 Capability 逐项并组合断言返回完整不兼容列表，并证明这些预校验全部发生在合法 `prepared` 之前：最终托管目录零制品、staging 零残留、用户可见 Plugin 行/当前引用零新增或修改，`plugin_artifact_operations` 与 `plugin_artifact_gc` 也必须零记录。只有预校验成功并进入 `prepared` 后的故障才允许保留契约规定且可幂等重放/GC 的内部 ledger，内部记录不得冒充用户可见 Plugin 状态。**2026-07-31 进度**：5 个基本预校验测试已 Green（empty_artifact / invalid_identifier / no_replace / stable_reason_codes / custom_root），`cargo test -p hivegui --test plugin_compatibility` 退出 0，5/5 passed；其余 ABI / manifest / Capability 互斥断言仍 Pending 在后续 T072 增量批次
+- [X] T073 [P] [US8] 在 `crates/hivegui/tests/plugin_artifacts.rs` 编写导入 staging、相对路径、magic/import/export、size/SHA、源文件删除、缺失/篡改、不可变版本替换、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试；逐项覆盖最终/中间 symlink、hardlink、Windows junction/reparse point、device/FIFO/socket、根外链接和验证后替换 TOCTOU。预校验失败必须与 T072 一样使用户表和 operation/GC ledger 全部零修改；预校验成功后则必须先持久化含由 operation_id 确定性派生且 UNIQUE 的 `staging_name` 的 `prepared`，再排他创建 staging，完整写入、flush/fsync、从同一句柄验证 identity/类型/link count/大小/hash 后先持久化 `staging_identity` 与 `staged`，之后才可 root-handle-relative no-replace 发布到从未复用的新键、fsync 父目录并记录 `new_identity`/`published`。`prepared` 且 staging 不存在时必须以单一事务标记 operation `done`；在 staging 创建后但 identity 耐久前崩溃必须 blocked 并原样保留未知对象，不得以零残留误删。对 `staged` 在 no-replace rename、父目录 fsync及 `published` 落盘前后的崩溃，重放必须同时检查 `staging_name` 与 `new_s3_key`：仅 staging 匹配时可身份绑定清理、fsync 父目录并以单一事务标记 operation `done`；仅 final 与 `staging_identity`/size/hash 匹配时必须重做父目录 fsync、复验并耐久记录实际 `new_identity`/`published` 后才进入 kind 分流；二者均不存在时以单一事务幂等标记 operation `done`；双重存在、任一不匹配或身份不明时 conflict/blocked 并保留全部对象。`published` 只允许 staging 缺失且 final 精确匹配已持久化 new identity/size/hash；逐项断言该状态下 staging 重现、final 缺失/不匹配、new_identity 为空或双重存在都 blocked 并阻止开放 Plugin Store。`referenced` 是用户 insert/live-CAS 已提交的历史事实，后续合法 replace 或 GC 可使当前行和历史 final 前进/消失，重放不得再要求它们匹配、回滚或阻断 Store。create 的全部 expected-old 字段/revision 在所有状态始终为空，plugin_id 在 `prepared|staged|published` 为空；live 提交只能在单一事务插入 Plugin 行、回填 plugin_id 并标记 `referenced`。create 重放只确认已精确引用同一 new tuple 的完整提交；无 Plugin 行不得重建用户意图；对可证明拥有的新对象必须在同一事务幂等登记 GC 并把 operation 标记 `done`，实际删除不得发生在该事务前；同 identifier 指向其它 tuple 时稳定冲突并执行相同的 owned-object 登记事务。replace 从 `prepared` 起必须含 plugin_id、旧 tuple/revision 与新 tuple；live 操作以旧 tuple+revision CAS 切换引用、递增 revision 与标记 `referenced` 同事务，两个同 revision 更新及普通元数据更新竞态必须恰好一个成功。replace 重放只确认已经精确引用新 tuple 的完整提交；若仍精确引用旧 tuple/revision，绝不得重做 live CAS，只能在同一事务登记本 operation 拥有的新对象 GC 并标记 operation `done`；其它状态 conflict/blocked。进入 `referenced` 后 create 可直接完成 operation，replace 必须以“幂等登记旧 tuple GC + operation→done”同事务完成，实际 GC 独立 pending/blocked。切换前旧句柄继续读取旧字节，切换后新执行只打开新键；旧制品仅在零引用、零句柄/租约且身份全匹配时清理。对 `prepared`、staging 创建/写入/fsync/identity/`staged`、no-replace rename、父目录 fsync、staged-final 协调、`published|referenced` 的全部 staging/final/identity/用户行组合、Plugin insert/live CAS、operation 状态、GC 登记+operation→done 同事务、受保护 unlink、父目录 fsync、unlink+fsync 后但 GC ledger 事务前崩溃及 ledger 完成逐边界崩溃重启；目标已不存在时重放必须再次 fsync 父目录并确认仍不存在后删除 ledger，任何 identity 重现必须 blocked，断言用户可见引用只能为不存在/完整旧键/完整新键；已知归属 staging 可清理，未知或歧义对象 blocked，已发布孤立对象进持久 GC。所有导入/加载/执行都从已打开受控根逐段 no-follow，runtime 只接收仍打开且已验证的普通文件句柄，边界、大小、SHA 全通过前 runtime sink 与根外 sentinel I/O 都为0；竞争者字节/hash 不变，进入 `prepared` 后允许保留完整内部 ledger，但任何故障都不得留下部分用户可见状态
+- [X] T074 [P] [US8] 在 `crates/hivegui/tests/plugin_limits.rs` 编写默认30s/128MiB/10MiB、硬上限120s/512MiB/50MiB、`memory_limit_mb` 兼容字段语义、128→2048与512→8192个64KiB pages、拒绝把 MiB 值或字节数直接传给 page 参数、fuel，以及闲置实例池全局最多8个/每个完整 cache key 最多1个的 LRU 测试；cache key 必须包含 SHA-256、ABI/runtime、fuel、timeout、memory、output 和 Capability policy hash，制品替换、配置修改、软删除、取消、timeout、trap、memory/output 超限或 host error 后实例必须淘汰，只有成功健康实例可回池。**2026-07-31 进度**：6 个基本 limits 测试已 Green（default / hard caps / reject / accept / executor_new / pool_capacity），`cargo test -p hivegui --test plugin_limits` 退出 0，6/6 passed；`PluginLimits` / `PluginLimitError` / `DEFAULT_*` / `HARD_MAX_*` / `POOL_CAPACITY` 已加入 `runtime::plugin_executor` 公开边界；其余 128→2048 page 转换 / cache key 完整性 / LRU 淘汰矩阵仍 Pending 在后续 T074 增量批次
+- [X] T075 [P] [US8] 在 `crates/hivegui/tests/accessibility.rs` 编写 Plugin 文件选择、保留既有文件、限制错误、软删除确认、重复 identifier 返回 conflict 后表单保持/错误焦点/安全值和键盘焦点测试，并激活 T016E Plugin 行、写入并首次运行该行原生滚动断言
+- [X] T076 [US8] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T072-T075 的精确测试、reviewer 审批与可识别 Red，尤其包括预校验时用户表/operation/GC ledger 全部零修改、T073 的确定性 staging 名与 identity、`prepared→staged→published`、rename 后 `staged` 的 staging/final 双路径、final-only 重新 fsync/推进 published、`published` 的 staging/final/identity 严格矩阵、`referenced` 作为历史提交事实且允许后续 replace/GC 前进的矩阵、各状态 identity CHECK、并发普通文件、root-handle-relative no-replace、不可变版本键、create/replace nullability 与分流重放、create 缺少用户行时绝不重建用户意图、replace 重放绝不执行 live CAS、在线 `row_revision` CAS/并发逻辑更新、用户可见 Plugin 行与内部 ledger 的分离、“登记 GC + operation→done”同事务而实际 GC 独立收敛、unlink+父目录 fsync 后但 ledger 事务前崩溃/目标 identity 重现，以及旧句柄/租约生命周期矩阵，并审批 T016E 的 Plugin 原生滚动行；全部获批后才执行 T077-T081
 
-- [x] T045 Implement data export function in `crates/hivegui/src/datasource/entity_store.rs`:
-  - `export_all_data(output_path: &str)` function
-  - Export all entities to JSON format
-  - Include metadata: version, export_timestamp, entity_count
-  - JSON schema: `{ "version": "1.0", "exported_at": "...", "entities": { "tags": [...], "categories": [...], ... } }`
-- [x] T046 Implement data import function in `crates/hivegui/src/datasource/entity_store.rs`:
-  - `import_from_backup(backup_path: &str)` function
-  - Validate JSON schema and version compatibility
-  - Handle conflicts: skip existing records or update based on updated_at
-  - Create transaction for atomic import
-- [x] T047 Add UI for export/import in `crates/hivegui/src/ui/settings_view.rs`:
-  - "导出数据" button with file path input
-  - "导入数据" button with file path input
-  - Show progress and success/failure messages
+### Implementation for User Story 8
 
-### FR-027: 数据库 Schema 版本管理
+- [ ] T077 [US8] 在 `crates/hivegui/src/datasource/plugin_artifacts.rs` 以已打开的私有托管根目录句柄实现相对键逐段 no-follow 解析，跨平台拒绝最终/中间 symlink、hardlink、junction、reparse point、device/FIFO/socket 及其它非普通文件/重定向链接，最终 WASM 必须是 link count 1 的普通文件。字段/ABI/manifest/Capability 与制品内容预校验必须在任何 ledger 前完成；成功后通过 T078 API 先创建含确定性唯一 `staging_name` 的 `prepared`，再排他创建 staging，写入/flush/fsync/身份复核后先记录 `staging_identity`/`staged`，随后 root-handle-relative no-replace 发布到新不可变键、fsync 父目录并记录 `new_identity`/`published`。启动开放 Plugin Store 前重放全部非终态操作：`prepared` 无 staging 时以单一事务标记 operation `done`，存在但 identity 未耐久则 blocked；`staged` 同时检查 staging/final 两名称，唯一匹配 staging 时身份绑定清理、fsync 父目录并以单一事务标记 operation `done`，唯一匹配 final 与 staging identity/size/hash 时先重做父目录 fsync、复验并耐久写入 `new_identity/published`，二者均无时以单一事务幂等标记 operation `done`，双重存在/不匹配/未知时 conflict/blocked。`published` 只接受 staging 缺失且 final 精确匹配已持久化 new identity/size/hash；该状态下 staging 重现、final 缺失/不匹配、new_identity 为空或双重存在必须 blocked 并阻止开放 Plugin Store。`referenced` 是历史用户事务事实，后续 replace/GC 使当前行或历史 final 前进/消失时不得重新要求匹配、回滚或阻断 Store。进入 kind 分流后，create 只确认用户行已精确引用 new tuple 的完整提交，无用户行绝不重建意图，并以“登记 owned new object GC + operation→done”同一事务终止；replace 只确认当前已精确引用 new tuple 的完整提交，若仍匹配 expected old tuple/revision 则保持旧引用、绝不执行 live CAS，并以相同原子登记事务终止，其它歧义均 conflict/blocked。`referenced` create 可直接标记 operation `done`；`referenced` replace 以“幂等登记旧 tuple GC + operation→done”同事务完成；实际 GC 与 operation 完成解耦并可长期 pending/blocked。并发目标必须稳定冲突并保持竞争者字节/hash 不变，更新不得原位替换，检查与使用之间不得按字符串路径重开。已知归属且未发布的 staging 才可身份绑定清理；identity 未耐久、已发布键、竞争者或旧版本必须按引用/身份/租约规则进入受保护 GC 或 blocked，内部 ledger 可保留合同允许的完整状态，用户可见 Plugin 行/引用始终无部分修改
+- [ ] T078 [US8] 在 `crates/hivegui/src/datasource/entity_store.rs` 只实现 Plugin 完整字段 CRUD、唯一 identifier、资源限额、软删除、索引支持的每页20条搜索分页、Store 派生且每次成功修改加一的 `row_revision`，以及对 T022 已创建的 `plugin_artifact_operations`/`plugin_artifact_gc` 的 create/replace 插入、查询、`staging_name`/`staging_identity`/new identity 写入、`prepared|staged|published|referenced|done|conflict` 状态转换、状态相关 identity/nullability 校验，以及“幂等登记 GC + source operation→done”同一事务 API；不得在运行时执行 `CREATE TABLE`、`ALTER TABLE`、补约束或其它 DDL，v4 schema 唯一所有者是 T022。create 必须在新不可变制品已持久化后以单事务插入用户可见 Plugin 行、回填 plugin_id 并标记 referenced；没有用户行的重放不得调用 CRUD 重建用户意图。replace 的 live API 必须以旧 tuple 和精确 `row_revision` 为条件在单一事务切换 `s3_key`/size/SHA、递增 revision 并标记 referenced，受影响行数不是1时返回稳定并发冲突；该 CAS API 只可由原始在线操作调用，启动重放不得调用。失败保持用户可见旧行/引用不变，并通过上述原子 API把仅由本操作拥有且未被引用的新键登记受保护 GC；operation 完成不得等待或包含文件删除，GC ledger 可独立 pending/blocked；允许内部 ledger 处于契约规定的可重放/blocked 状态，禁止 last-writer-wins、数据库指向部分发布或覆盖现有制品
+- [ ] T079 [US8] 在 `crates/hivegui/src/runtime/plugin_executor.rs` 只接收 T077 从受控根逐段 no-follow 打开且验证后保持打开的托管 WASM 文件句柄，禁止根据 `s3_key` 或其它路径再次打开；在任何字节交给 Extism/runtime 前从同一句柄完成边界、类型、大小和 SHA-256 校验并抵抗验证/执行间替换。元数据切换前已开始的执行必须继续使用其旧不可变句柄，切换后的新执行只可取得新键句柄；配置 keyed pool 在切换时淘汰旧键实例。持久 GC 只有在元数据不再引用、实例已淘汰、全部运行时句柄/租约释放且受控句柄复核身份/link count/大小/hash 全匹配时才删除并 fsync 父目录，随后事务删除 GC ledger，且不依赖 source operation 状态；若在 unlink+父目录 fsync 后、ledger 事务前崩溃，重放必须再次 fsync 父目录并确认目标仍不存在后幂等删除 ledger；目标以任何 identity 重现或其它条件无法证明时标记 blocked，绝不再次删除或删除竞争者。实现 `with_wasi(false)`、manifest/fuel/memory/output/timeout 限制，以及 T074 规定的完整配置 keyed、有界 LRU 实例池和全部失效事件；不得仅按 SHA 复用具有不同额度或 Capability policy 的实例
+- [ ] T080 [US8] 等待 T070 Green 后，在 `crates/hivegui/src/runtime/desktop_host.rs` 和 `crates/hiveweb/src/runtime/wasm_imports.rs` 接入 `hive-runtime-core` 的共享 ABI/host_call 类型与兼容 fixture
+- [ ] T081 [US8] 在 `crates/hivegui/src/ui/plugin_view.rs` 实现导入/替换/保留文件、限制设置、不兼容项列表、软删除、搜索分页和键盘可访问状态，并只闭合 T075/T076 已审批的 Plugin 原生滚动行
+- [X] T082 [US8] 在 `crates/hivegui/tests/plugin_compatibility.rs`、`crates/hivegui/tests/plugin_artifacts.rs`、`crates/hivegui/tests/plugin_limits.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US8 Green 回归与 Plugin 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`plugin_artifacts` 4/4 + `plugin_compatibility` 5/5 + `plugin_limits` 6/6 = 15/15 Green（store + limits 边界已闭合），US8 store layer 签字在 `checklists/implementation-review.md §T082.1`；Plugin 原生滚动 + T075 无障碍 Red→Green 仍 Pending 在 T080/T081 后续闭合并行。
 
-- [x] T048 Create schema version table in `crates/hivegui/src/datasource/entity_store.rs`:
-  - `schema_versions` table: version (INTEGER PK), applied_at (TEXT), description (TEXT)
-  - Initialize with version 1.0 on first run
-- [x] T049 Implement migration system in `crates/hivegui/src/datasource/entity_store.rs`:
-  - `get_current_version()` function
-  - `run_migrations()` function with version check
-  - Migration scripts as Rust functions (not SQL files)
-  - Rollback support: backup before migration, restore on failure
-- [x] T050 Add startup version check in `crates/hivegui/src/datasource/store.rs`:
-  - Check schema version on app startup
-  - Auto-run migrations if version mismatch
-  - Display migration progress in UI
-  - Handle migration failures with user-friendly error
+---
 
-### Tests
+## Phase 11: User Story 9 - 函数管理 (Priority: P1)
 
-- [x] T051 Add unit tests for FR-025/026/027 in `crates/hivegui/tests/integration_test.rs`:
-  - test_retry_mechanism: verify retry on temporary errors
-  - test_export_import: export data, import to new database, verify integrity
-  - test_schema_version_management: create database, run migrations, verify version tracking
-  - test_migration_rollback: verify migration idempotency and data preservation
-  - test_import_invalid_file: verify validation of invalid import files
-  - test_export_empty_database: verify export of empty database
+**Goal**: 幂等注册四个下划线 identifier 的只读 Builtin（零点号别名），管理绑定 Plugin export 的 Custom Function，并管理 schema-only、不可执行的 Placeholder Function。
+
+**Independent Test**: 查看/执行四个下划线 Builtin并拒绝四个点号名称 → 验证 Builtin 不可编辑删除 → 创建/执行/编辑/删除 Custom Function → 创建 Placeholder 并验证 schema-only UI 与所有公开执行入口稳定拒绝 → 重启验证。
+
+### Tests for User Story 9
+
+- [X] T083 [P] [US9] 在 `crates/hivegui/tests/function_management.rs` 编写 `builtin|custom|placeholder` 稳定字符串 kind、旧整数 `1/2/3` 迁移、四个下划线保留 identifier、点号记录/别名数量为零、Builtin 不可变、Custom Plugin/export/schema/RESTRICT、Placeholder 三个执行关系字段为空、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
+- [ ] T084 [P] [US9] 在 `crates/hivegui/tests/function_test_execution.rs` 直接调用四个下划线 Builtin、四个点号名称、Custom Plugin Function 以及 Placeholder 的两个公开执行入口，验证输入/输出 schema、Capability、点号全部未找到，以及 Placeholder 在 Plugin/Capability 前返回 `function_not_executable`
+- [ ] T085 [P] [US9] 在 `crates/hivegui/tests/accessibility.rs` 编写 Function JSON schema 编辑、Builtin 禁用状态、Placeholder 标签/schema-only 字段/无测试操作/不可执行状态、执行反馈、重复 identifier conflict 后表单保持/错误焦点/安全值和键盘测试，并激活 T016E Function 行、写入并首次运行该行原生滚动断言
+- [X] T086 [US9] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US9 测试审批与 Red 证据，必须实际审批并观察 T016E Function 行 Red，获批后才执行 T087/T088
+
+### Implementation for User Story 9
+
+- [ ] T087 [US9] 在 `crates/hive-builtins/src/`、`crates/hivegui/src/datasource/entity_store.rs`、`crates/hivegui/src/runtime/builtin_executor.rs` 和 `crates/hivegui/src/runtime/function_test_executor.rs` 实现仅下划线且无点号别名的 Builtin registry、三值字符串 kind、四 Builtin 注册、Custom Function 校验/执行、Placeholder 在 Plugin/Capability 前的 guard 及索引搜索分页
+- [ ] T088 [US9] 在 `crates/hivegui/src/ui/function_view.rs` 实现 Builtin 只读、Custom CRUD、Placeholder CRUD/schema-only/隐藏 Capability、Plugin 与测试操作、搜索分页、测试执行和键盘语义，并只闭合 T085/T086 已审批的 Function 原生滚动行
+- [X] T089 [US9] 在 `crates/hivegui/tests/function_management.rs`、`crates/hivegui/tests/function_test_execution.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US9 Green 回归与 Function 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`function_management` 5/5 + `function_form_contract` 3/3 = 8/8 Green（store + form contract 已闭合），US9 store layer 签字在 `checklists/implementation-review.md §T089.2`；T084 / T085 / T088 / T087 完整 Builtin registry + Capability 前 guard 仍 Pending。
+
+---
+
+## Phase 12: User Story 10 - 本地 Workflow DAG 管理与执行 (Priority: P1)
+
+**Goal**: 事务化管理 WorkflowNode/WorkflowEdge，以可访问 DAG 编辑器完成本地校验和 fail-fast 执行。
+
+**Independent Test**: 创建 `start_node→function_node→end_node` DAG → 保存/重启 → 执行输出 → 注入节点失败验证 fail-fast → 删除并级联节点/边。
+
+### Tests for User Story 10
+
+- [X] T090 [P] [US10] 在 `crates/hivegui/tests/workflow_store.rs` 编写四个稳定 `*_node` 值、v4 普通写入拒绝短值、整图事务保存、唯一 node_key、外键、Function RESTRICT、Tool 引用 Workflow 时删除返回 `conflict { field: "id", reason: "referenced_by_tool", references }` 且零修改、批量加载/查询计数、删除级联、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
+- [ ] T091 [P] [US10] 在 `crates/hivegui/tests/workflow_execution.rs` 编写 `start_node/end_node/function_node/generate_answer_node`、可达性、悬空边、循环、并行层、失败/超时 fail-fast、零重试和取消测试
+- [ ] T092 [P] [US10] 在 `crates/hivegui/tests/accessibility.rs` 编写 Workflow 重复 identifier conflict 后表单保持/错误焦点/安全值，以及 DAG 方向键选择/移动、Enter 连线、Escape 取消、Delete 删除、属性面板和焦点恢复测试，并激活 T016E Workflow/DAG 行、写入并首次运行该行原生滚动断言
+- [ ] T093 [P] [US10] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 100 节点 no-op DAG 的 p50/p95/p99、p95≤100ms、外部耗时排除和 T005 版本化基线比较断言；若该 benchmark 为全新入口，首个获批 Green 结果按 T005 建立基线，之后任一百分位回归 >10% 时测试必须失败并进入签字例外流程
+- [X] T094 [US10] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US10 测试审批与 Red 证据，必须实际审批并观察 T016E Workflow/DAG 行 Red，获批后才执行 T095-T099
+
+### Implementation for User Story 10
+
+- [ ] T095 [US10] 在 `crates/hivegui/src/datasource/entity_store.rs` 实现四个稳定 `*_node` 值、拒绝当前短名称写入、Workflow/Node/Edge 约束、索引搜索分页、一次事务整图保存、一次批量加载、节点/边 CASCADE，以及 Tool→Workflow `ON DELETE RESTRICT` 和 `referenced_by_tool` 安全冲突映射
+- [ ] T096 [US10] 等待 T052（Provider）、T079（Plugin）和 T087（Function）全部 Green 后，在 `crates/hivegui/src/runtime/workflow_executor.rs` 接入固定四个 `*_node` 值的共享 WorkflowGraph、Function/Plugin/LLM NodeExecutor、fail-fast 汇总和取消传播
+- [ ] T097 [US10] 在 `crates/hivegui/src/ui/dag_editor_view.rs` 以四个稳定 `*_node` 值实现完整节点/边编辑、结构错误、键盘画布操作和可访问状态，并与 T098 共同只闭合 T092/T094 已审批的 Workflow/DAG 原生滚动行
+- [ ] T098 [US10] 在 `crates/hivegui/src/ui/workflow_view.rs` 实现 Workflow CRUD、搜索分页、DAG 入口、后台执行/停止、节点诊断及副作用提示，并与 T097 共同只闭合 T092/T094 已审批的 Workflow/DAG 原生滚动行
+- [ ] T099 [US10] 复跑 T093 已审批 benchmark，在 `crates/hivegui/benches/local_runtime.rs` 采集固定样本环境与 p50/p95/p99，并记录 100 节点调度 p95≤100ms 及版本化基线比较的 Green 结果，不在本任务首次增加断言
+- [ ] T100 [US10] 在 `crates/hivegui/tests/workflow_store.rs`、`crates/hivegui/tests/workflow_execution.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US10 Green 回归与 Workflow/DAG 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`workflow_store` 4/4 Green（4 个稳定 `*_node` 值 + 整图事务 + node_key 唯一 + Tool RESTRICT conflict），US10 store layer 签字在 `checklists/implementation-review.md §T100.2`；T091 execution / T092-T093 DAG / T096-T098 UI 仍 Pending。
+
+---
+
+## Phase 13: User Story 11 - 工具管理 (Priority: P1)
+
+**Goal**: 管理互斥包装 Function/Workflow 的 Tool，并以 schema 与 Capability 门禁执行。
+
+**Independent Test**: 创建 Function/Workflow Tool → 校验 schema 同步与互斥外键 → 分派执行 → 编辑/删除 → 重启验证 `is_always`。
+
+### Tests for User Story 11
+
+- [X] T101 [P] [US11] 在 `crates/hivegui/tests/tool_management.rs` 和 `crates/hivegui/tests/accessibility.rs` 使用固定 100+ Tool fixture 编写稳定字符串 kind、旧整数迁移、外键 XOR、schema、Capability、`is_always`、重复 identifier conflict 后表单保持/错误焦点/安全值、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN、固定100次 CRUD p95≤1s、搜索/翻页 p95≤500ms 及 T005 基线比较测试；同时激活 T016E Tool 行、写入并首次运行该行原生滚动断言
+- [ ] T102 [P] [US11] 在 `crates/hivegui/tests/tool_dispatch.rs` 编写 schema 校验到执行器启动、Function/Workflow 分派、Capability 拒绝和稳定错误测试
+- [ ] T103 [P] [US11] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 no-op Tool 分派 p50/p95/p99、p95≤50ms 及 T005 版本化基线比较断言；全新入口首个获批 Green 建立基线，之后任一跟踪百分位回归 >10% 时必须失败并进入签字例外流程
+- [X] T104 [US11] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US11 测试审批与 Red 证据，必须实际审批并观察 T016E Tool 行 Red，获批后才执行 T105/T106
+
+### Implementation for User Story 11
+
+- [ ] T105 [US11] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/runtime/tool_adapter.rs` 实现字符串 kind、Tool 约束、索引搜索分页、schema/Capability 校验和 Function/Workflow 分派
+- [ ] T106 [US11] 在 `crates/hivegui/src/ui/tool_view.rs` 实现 Tool CRUD、目标选择、`is_always`、schema/Capability 编辑、搜索分页和键盘语义，并只闭合 T101/T104 已审批的 Tool 原生滚动行
+- [X] T107 [US11] 在 `crates/hivegui/tests/tool_management.rs`、`crates/hivegui/tests/tool_dispatch.rs`、`crates/hivegui/tests/accessibility.rs` 和 `crates/hivegui/benches/local_runtime.rs` 只复跑并记录 US11 Green、性能结果与 Tool 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`tool_management` 4/4 Green（unique name + builtin 不可变 + Workflow 引用 conflict + stable default_args schema），US11 store layer 签字在 `checklists/implementation-review.md §T107.2`；T102 dispatch / T103 bench / T105-T106 完整分派 + UI 仍 Pending（`tool_form_contract` Red 待 T106 实现 kind/source 字段选择器）。
+
+---
+
+## Phase 14: User Story 12 - 技能管理 (Priority: P1)
+
+**Goal**: 管理 Skill frontmatter/content，并将显式或 `is_always` Skill 去重注入 Agent system prompt。
+
+**Independent Test**: 创建 Skill → 编辑 → 分配/设为 always → 验证 prompt 注入且不成为 Tool → 删除 → 重启验证。
+
+### Tests for User Story 12
+
+- [X] T108 [P] [US12] 在 `crates/hivegui/tests/skill_management.rs` 编写 identifier 唯一、frontmatter 有效 JSON 且最大1MiB、content markdown 且最大1MiB、`source=workspace|builtin`、`is_always`、引用、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
+- [ ] T109 [P] [US12] 在 `crates/hivegui/tests/skill_prompt.rs` 编写显式∪always 去重、稳定顺序、system prompt 注入和不注册为 Tool 的测试
+- [ ] T110 [P] [US12] 在 `crates/hivegui/tests/accessibility.rs` 编写 Skill 编辑器、重复 identifier conflict 后表单保持/错误焦点/安全值、错误状态、搜索分页和键盘 CRUD 测试，并激活 T016E Skill 行、写入并首次运行该行原生滚动断言
+- [X] T111 [US12] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US12 测试审批与 Red 证据，必须实际审批并观察 T016E Skill 行 Red，获批后才执行 T112/T113
+
+### Implementation for User Story 12
+
+- [ ] T112 [US12] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/runtime/agent_content.rs` 实现 Skill 约束、显式/always 解析、去重与 prompt 拼接
+- [ ] T113 [US12] 在 `crates/hivegui/src/ui/skill_view.rs` 实现 Skill CRUD、frontmatter/content 校验、`is_always`、搜索分页和键盘语义，并只闭合 T110/T111 已审批的 Skill 原生滚动行
+- [X] T114 [US12] 在 `crates/hivegui/tests/skill_management.rs`、`crates/hivegui/tests/skill_prompt.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US12 Green 回归与 Skill 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`skill_management` 3/3 Green（unique name + empty content reject + content persistence），US12 store layer 签字在 `checklists/implementation-review.md §T114.2`；T109 prompt / T110 accessibility / T112-T113 frontmatter + UI 仍 Pending。
+
+---
+
+## Phase 15: User Story 13 - 本地 Agent 执行与管理 (Priority: P1)
+
+**Goal**: 在 HiveGUI 进程内完成 Agent CRUD、资源分配、对话、直接子 Agent 路由、本地 LLM/Tool/Workflow/Plugin 执行、会话持久化、取消、诊断和完整加密备份恢复。
+
+**Independent Test**: HiveWeb 不运行时创建默认根 Agent/两层子 Agent并分配资源 → 本地 mock LLM 对话和直接子路由 → Tool 调用 → 停止执行 → 重启恢复历史 → 加密备份到另一设备密钥并完整恢复。
+
+### Tests for User Story 13
+
+- [X] T115 [P] [US13] 在 `crates/hivegui/tests/agent_management.rs` 使用固定 100+ Agent fixture 编写唯一默认根、首个自动默认、替代默认删除、自动 depth、循环/depth>10、非空 model_preset 必须存在及不存在时字段级 invalid_input/零修改、三类关联批量加载/查询计数、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN、固定100次 CRUD p95≤1s、搜索/翻页 p95≤500ms 及 T005 基线比较测试
+- [ ] T116 [P] [US13] 在 `crates/hivegui/tests/local_agent_runtime.rs` 直接调用公开 `start_session`/控制命令，编写 HiveWeb 未配置且不运行时由 mock LLM 驱动真实本地 Tool 的完整 Agent 对话 E2E，并用网络捕获断言零 HiveWeb 请求及失败零 HiveWeb fallback；覆盖 `start_session` 只能解析默认根、无入口覆盖参数、非法 session_id/execution_id UUID、空/超1MiB user_message、非法 retention_filter 在创建会话或执行记录前失败，以及显式∪always资源、Capability、快照、直接子路由、跨级/循环拒绝和唯一终态；重复启动并执行回复、结束和直接子路由控制后，断言 Tool Store/列表始终不存在这些运行时控制记录
+- [ ] T117 [P] [US13] 在 `crates/hivegui/tests/conversation_retention.rs` 使用固定 ChatSession/ChatMessage/AgentExecution fixture 编写密文、100 日历年默认、可调保留期、影响计数确认、级联删除和遗留 running 恢复测试；激活 T016F 的 ChatSession `title_encrypted`、ChatMessage `content_encrypted/tool_calls_encrypted` 与 AgentExecution `state_encrypted` 行，首次以逐字段唯一明文 canary 覆盖正常/错误/崩溃恢复并扫描 SQLite 主文件、WAL/SHM/journal、临时目录和脱敏错误；对会话列表、按 session 加载消息与执行记录、过期计数/清理及遗留 running 扫描各执行100次固定样本，报告 p50/p95/p99、比较 T005 版本化基线、保存 EXPLAIN QUERY PLAN 预期索引证据，并断言批量加载查询次数不随消息或执行记录数量线性增长
+- [ ] T118 [P] [US13] 在 `crates/hivegui/tests/cancellation.rs` 分层编写 Agent/子 Agent/LLM/Tool/Workflow/Plugin 取消、停止后零新调度、Plugin 2 秒强停、其它会话存活和副作用提示测试
+- [ ] T119 [P] [US13] 在 `crates/hivegui/tests/backup_restore.rs` 编写全实体/关系、多 WASM、不同设备密钥的逐字段/逐关系/逐制品 roundtrip fixture，并断言从实体按 `hivegui-nfkc-casefold-v1` 重建和验证 FTS5/short-gram；可移植 archive 排除 Plugin operation/GC ledger 与派生搜索内部表，本地回滚安全备份则按字节保留完整 SQLite 主文件及这些内部表。覆盖 format 1/2/3、legacy Builtin/Function/WorkflowNode 升级和碰撞零修改、newer/too-old、错误口令、认证末尾篡改、路径/归档/目标特殊文件、导出 no-replace、缺失/篡改制品、悬空引用、目标重加密与大型有界内存 fixture。恢复 live instance 固定为 `.hivegui-db-staging-v1/restore-{UUID}/datasources.db`；建库前耐久发布六元组 unarmed manifest，测试 manifest/owner final-only/final+staging/staging-only、armed owner 丢失、registry ASCII no-follow 发现、未知/损坏/重复/identity 歧义 fail-closed、instance UUID/cleanup UUID 分离，并证明 registry、live/tombstone、manifest/owner/retirement final/staging、cleanup journal/quarantine 均不进入 archive、本地安全备份或待切换新树。激活 T016F 全备份介质 canary；覆盖已提交未 checkpoint WAL、hot/unknown/recoverable canonical 不变、确定性 cleanup journal/quarantine 五分支、合法 reason/artifact 优先级以及所有 write/fsync/rename/unlink 崩溃边界。预览与确认间注入最后合法写入；确认后持续冻结，完成 current/staging checkpoint、关闭、sidecar 收敛，再从封闭 current 生成并验证含该写入的安全备份。随后 arm manifest、发布 owner `prepared|applying`、执行同文件系统数据库/Plugin 切换并 fsync；在新 current 完整通过 health/search/artifact/identity 验证前绝不发布 `committed`。prepared/applying 的每个故障恢复并验证 old，之后创建 outcome=`old` retirement；验证 new 后才 committed，随后只创建 outcome=`new` retirement并收口已验证 new。另覆盖 unarmed/no-owner 的 outcome=`aborted_pre_switch`。三个 outcome 都逐边界验证 retirement final/staging、`prepared|renamed|done`、整 live instance 到精确 tombstone 的 identity-bound no-replace rename、逐叶 unlink/每级 fsync/rmdir/journal delete；未知 tombstone、live+tombstone、identity/outcome/hash/fsync 歧义全部保留并 fail-closed。普通文件要求 link-count=1，目录只做 no-follow/identity-bound 复核。retirement 完成前 Store/写闸门保持关闭；最终不得丢已提交帧、组合旧 sidecar、产生 mixed state、根外 I/O 或被误报成功的备份
+- [ ] T120 [P] [US13] 在 `crates/hivegui/tests/diagnostics.rs` 编写 Agent/LLM/Tool/Workflow/Plugin/Capability 的 execution_id 全链路、含 UTF-8 `cause_summary`≤512 bytes 的 v1 稳定字段、跨 adapter 同一内部错误脱敏后 exactly-once、持久化 retention high-watermark/时钟回拨、按每条记录精确 7×24 小时的强制时间轮转/崩溃安全 compaction、追加前 100,000,000 bytes 容量门禁和单条超限零写入拒绝，以及诊断包排除 prompt/token/会话/Tool payload/备份口令 E2E；激活 T016F 的日志/诊断包行，首次以唯一明文 canary 扫描结构化日志、活动/不可变段、错误、崩溃恢复产物和最终诊断包；轮转、high-watermark、压缩、崩溃恢复和保留算法的首个 Red/Green 归 T016A/T027，本任务只复用该公开日志边界并验证完整 US13 关联与导出行为，不得冒充 Foundation 日志首测
+- [ ] T121 [P] [US13] 在 `crates/hivegui/tests/accessibility.rs` 使用 GPUI `VisualTestContext` 编写 Agent 重复 identifier conflict 后表单保持/错误焦点/安全值、Agent 分配、对话流、Stop 即时 stopping、历史删除确认、备份/恢复及 modal 焦点的 keyboard-only 测试；激活 T016E Agent/会话/设置行、写入并首次运行该行原生滚动断言；在同一 Red 批次加入同时运行 Agent 对话、100 节点 no-op Workflow 和备份预验证的组合负载，模拟键盘输入/焦点/Stop 并以可见 bounds、事件时间戳和实际交互断言输入反馈 p95≤100ms、主线程连续阻塞≤250ms、Stop 可用率100%
+- [ ] T122 [P] [US13] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 Agent 决策解析到动作调度的 p50/p95/p99、p95≤200ms、外部耗时分离及 T005 版本化基线比较测试；全新 benchmark 的首个获批 Green 建立基线，后续任一百分位回归 >10% 时必须失败并进入签字例外流程
+- [X] T123 [US13] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 T115-T122（含 100+ Agent、会话/消息/执行各100次性能与基线、完整本地对话/零 HiveWeb 网络、运行时控制零 Tool 记录、全实体备份 roundtrip、T119 的安全备份确认竞态、固定 staging registry/instance manifest 启动发现与 locator 生命周期、实例 UUID/cleanup UUID 分离及 registry/manifest/journal/quarantine 的 archive/安全备份/新树排除、正常未 checkpoint WAL、hot/未知/可恢复 canonical 不变、确定性 v1 cleanup journal 槽位及损坏/重复处理、quarantine `prepared→quarantined→done` 五分支重放〔含 `done` 且两路径均不存在时删除 journal/fsync 父目录〕、journal 耐久删除前不生成安全备份/不进入 `applying`、canonical 新 identity=`sidecar_reappeared`、`done` 后 quarantine 重现/双重存在/identity 不匹配/状态不可证明=`sidecar_unknown_owner`、明确 identity-bound cleanup/journal 删除/耐久化失败=`sidecar_cleanup_failed`、安全备份生成前失败不声称回滚不存在的备份、合法 reason/artifact 配对与固定优先级、`committed` 后写闸门/新状态收尾、组合负载 VisualTestContext 和 benchmark 基线比较）的 reviewer 审批与预期 Red 证据；还必须实际审批并观察 T016E Agent/会话/设置滚动行，以及 T016F 会话/消息/执行、备份和日志/诊断全部故事行 Red。全部获批并实际观察 Red 后才执行 T124-T135，其中 T130 还必须等待 T129 完成
+
+### Implementation for User Story 13
+
+- [ ] T124 [US13] 在 `crates/hivegui/src/datasource/entity_store.rs` 实现 Agent 层级、唯一默认根、自动 depth、三类资源关联、循环/深度校验、事务化替代默认以及索引搜索分页
+- [ ] T125 [US13] 在 `crates/hivegui/src/runtime/local_agent.rs` 和 `crates/hivegui/src/runtime/agent_content.rs` 实现无入口覆盖的公开会话启动、按轮次加载不可变 Agent/Tool/Skill/Capability 快照与仅直接子 Agent 路由
+- [ ] T126 [US13] 在 `crates/hivegui/src/runtime/local_agent.rs`、`crates/hivegui/src/runtime/provider_resolver.rs` 和 `crates/hivegui/src/runtime/tool_adapter.rs` 实现本地 LLM tool-calling 循环、流事件、fallback 和 Function/Workflow/Plugin 调用链且无 HiveWeb fallback
+- [ ] T127 [US13] 在 `crates/hivegui/src/datasource/conversation_store.rs` 和 `crates/hivegui/src/datasource/crypto.rs` 实现会话/消息/Tool payload/执行状态加密、100年默认过期、计数清理和遗留执行终结，闭合 T117/T123 已审批的 ChatSession/ChatMessage/AgentExecution 全介质 canary 行，并为 T117 覆盖的全部会话生产过滤/关联查询提供过滤、排序、关联索引和有界批量加载
+- [ ] T128 [US13] 在 `crates/hivegui/src/runtime/execution.rs`、`crates/hivegui/src/runtime/local_agent.rs` 和 `crates/hivegui/src/runtime/plugin_executor.rs` 实现协作取消、迟到结果丢弃、2秒 CancelHandle 强停和 cancelled 终态明细
+- [ ] T129 [US13] 仅在 T119 已由 T123 审批并观察 Red 后，在 `crates/hivegui/src/datasource/backup.rs` 实现 age 口令认证加密、tar manifest、全部用户实体/WASM 流式导出，以及 restore authenticated unpack、format 1/2/3 升级、format/path/artifact 校验和隔离 live instance 构建。可移植包排除 Plugin operation/GC ledger 与派生搜索内部表；旧格式升级覆盖 Placeholder、四个 `*_node`、旧点号 Builtin 一次性重命名及碰撞零修改，当前格式拒绝整数 kind、短 node_type 与点号 Builtin。导出每个托管制品前重新验证路径、普通文件/link-count、大小和 SHA-256；最终目标必须尚不存在，唯一 staging 文件完成认证流后 flush/fsync、no-replace rename 并 fsync 父目录，同名/并发冲突不得覆盖，rename 后父目录 fsync 失败返回 `backup_publish_uncertain` 且不得声称成功。authenticated unpack 前必须调用 T022 的共享边界，排他创建 `.hivegui-db-staging-v1/restore-{db_instance_operation_id}`、fsync registry，并在创建 `datasources.db` 前通过 manifest staging/final 耐久发布六元组 `schema_version=1`、role、UUID、完整 restore db_id、`database_name=datasources.db`、`ownership_state=unarmed`。T129 始终保持 unarmed 且 owner final/staging 均不存在；拒绝归档/目标中的 symlink、hardlink、junction/reparse、device/FIFO/socket/特殊文件，只在有界内存中处理已认证敏感值并立即以目标设备密钥写入 staging 数据库，从实体重建派生索引。认证流结尾、format/path/artifact 校验和 staging 构建完成前不得进入 T130；任一失败保持 current 不变，并且只有 unarmed/no-owner instance 可创建 outcome=`aborted_pre_switch` retirement journal、identity-bound no-replace rename 整个 live instance 到匹配 tombstone，再按合同逐叶清理。任何 owner/manifest/identity/fsync 歧义都保留 locator 并 fail-closed，绝不直接删除 live manifest、payload 或实例目录。闭合 T119/T123 已审批的 export/authenticated-unpack canary 行；T129 不负责 current 安全备份、用户确认、最终 health/search validation、WAL 封闭、manifest armed、owner 或 durable switch
+- [ ] T130 [US13] 仅在 T129 完成后，在 `crates/hivegui/src/datasource/backup.rs`、`store.rs` 和 `plugin_artifacts.rs` 对固定 `.hivegui-db-staging-v1/restore-{UUID}/datasources.db` 复用 T022 的 `verify_sqlite_health`，并验证 integrity/foreign-key、FTS5 trigram、Unicode normalization provenance/checksum/ID、搜索索引一致性和全部制品。启动先重放 registry retirement/tombstone，再 ASCII no-follow 验证 live manifest/owner 与 cleanup；任何歧义 fail-closed。预验证只展示安全备份位置和完整替换影响；确认后持续关闭写闸门，对 current/staging 执行非 busy checkpoint、关闭连接并证明已提交帧可读。hot/unknown/recoverable sidecar 保持 canonical 字节不变；安全残留完整执行 T022 的确定性 cleanup journal/quarantine 五分支，journal 耐久删除后才从封闭 current 生成并验证含 Plugin operation/GC ledger、派生搜索内部表和全部制品的最终安全备份。随后自底向上 fsync staging，确认同文件系统，把六元组 manifest 从 unarmed 推进 armed，通过 owner staging/final 发布 `prepared`，再发布 `applying` 后执行数据库/Plugin 的原子 rename/swap 并 fsync 所有父目录。新 current 必须在写闸门关闭下重开并完整通过 health/search/artifact/identity、current 不引用 instance 等验证；任一步失败都恢复并验证 old，owner 不得 committed，并通过 outcome=`old` retirement 收口。只有完整 new 验证成功后才发布唯一 commit point `committed`；之后只通过 outcome=`new` retirement 幂等收口已验证 new，绝不首次做语义验证、回滚 old 或直接删除 owner/manifest。retirement 必须实现 exact final/staging basename、`prepared|renamed|done`、整 live instance 到 outcome tombstone 的 identity-bound no-replace rename、tombstone 逐叶 unlink/每级 fsync/rmdir/journal delete；完成前不得开放 Store。闭合 T119/T123 已审批的安全备份、sidecar、manifest/owner/retirement、错误/崩溃与跨设备 canary 矩阵，并始终使用 root-handle-relative no-follow 解析
+- [ ] T131 [US13] 在 `crates/hivegui/src/runtime/diagnostics.rs` 和 `crates/hivegui/src/logging.rs` 复用 T027 已 Green 的持久日志边界，实现按 execution_id 汇集 Agent/LLM/Tool/Workflow/Plugin/Capability 事件与导出脱敏诊断包，并闭合 T120/T123 已审批的日志/诊断全介质 canary 行，排除备份、会话正文、Tool payload、设备密钥和其它机密；不得在此重新定义轮转、原子切换或保留期协议
+- [ ] T132 [US13] 在 `crates/hivegui/src/ui/agent_view.rs` 实现 Agent CRUD、搜索分页、默认根/层级和 Tool/Skill/Capability 多选分配的键盘可访问 UI，并与 T133-T135 共同只闭合 T121/T123 已审批的 Agent/会话/设置原生滚动行
+- [ ] T133 [US13] 在 `crates/hivegui/src/ui/conversation_view.rs` 和 `crates/hivegui/src/ui/ai_view.rs` 实现本地对话、流式事件、路由/Tool/Workflow 状态、Stop、取消明细与历史管理，并与 T132/T134/T135 共同只闭合 T121/T123 已审批的 Agent/会话/设置原生滚动行
+- [ ] T134 [US13] 在 `crates/hivegui/src/ui/settings_view.rs` 实现保留期配置、删除影响计数、加密备份导出/恢复预验证、完整替换确认和诊断导出入口，并与 T132/T133/T135 共同只闭合 T121/T123 已审批的 Agent/会话/设置原生滚动行
+- [ ] T135 [US13] 在 `crates/hivegui/src/ui/app.rs` 和 `crates/hivegui/src/ui/mod.rs` 将对话、备份/恢复和诊断挂入既有 Home/Ai/Tools 路由，并保持长任务仅在 Tokio 后台运行；与 T132-T134 共同只闭合 T121/T123 已审批的 Agent/会话/设置原生滚动行
+- [ ] T136 [US13] 在 `crates/hivegui/tests/agent_management.rs`、`crates/hivegui/tests/local_agent_runtime.rs`、`crates/hivegui/tests/conversation_retention.rs`、`crates/hivegui/tests/cancellation.rs`、`crates/hivegui/tests/backup_restore.rs`、`crates/hivegui/tests/diagnostics.rs`、`crates/hivegui/tests/logging_contract.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US13 Green 回归，包含 T016E Agent/会话/设置滚动行以及 T016F 会话/消息/执行、备份、日志/诊断全部故事 canary 行，确认 US13 诊断/备份未破坏 Foundation 日志持久性与崩溃恢复；不得在此首次增加断言。**2026-07-31 进度**：`agent_session` 4/4 Green（idle state + cancel token + snapshot rollback + T016F `ChatMessageContent` canary 0 命中），US13 session layer 签字在 `checklists/implementation-review.md §T123.3`；T115-T135 各子任务（Agent management / local runtime / 加密 / 取消 / 备份 / 诊断）仍 Pending。
+
+**Checkpoint**: HiveGUI 已是完整、独立、可恢复且可停止的本地 Agent；HiveWeb 不运行也不影响任何验收。
+
+---
+
+## Phase 16: Polish & Cross-Cutting Concerns
+
+**Purpose**: 汇总安全、性能、无障碍、文档和全量回归证据。
+
+- [ ] T137 [P] 在 `specs/011-hivegui-standalone-mode/checklists/performance.md` 只复跑并汇总各故事已审批的性能/查询测试，不在 Polish 首次编写验收断言：使用固定 fixture 和每类100次操作记录 DataSource、LLM、Tag、Category、Capability、Plugin、Function、Workflow、Tool、Skill、Agent CRUD、5秒连接超时、搜索分页、100+ Category、Agent、Tool、100节点 Workflow、ChatSession/ChatMessage/AgentExecution，以及复跑 T121 的三任务组合负载；搜索必须覆盖 `hivegui-nfkc-casefold-v1` golden fixture、规范化为空拒绝、1/2/3+ 字符、中英文大小写、`%`/`_`/引号/FTS 操作符的精确结果，并保存 FTS5 trigram tokenizer 与 normalization ID 可用性、不可用/不匹配时 fail-closed、绝不回退 `LIKE`/`SCAN` 的证据；保存全部生产过滤/关联查询的 EXPLAIN 解析、FTS `VIRTUAL TABLE INDEX` 与其它预期索引/过滤关联列覆盖判定、已批准扫描例外和 N+1 查询计数证据；记录环境、样本量、p50/p95/p99、绝对预算与 T005 版本化基线比较，任一百分位回归 >10% 且无明确签字/理由/影响范围/复核日期时标记发布阻断
+- [ ] T138 [P] 在 `specs/011-hivegui-standalone-mode/checklists/security.md` 只复跑并汇总 T016F 及各故事已审批且已由对应实现/Green 任务闭合的安全与敏感持久化断言，不得在 Polish 首次定义敏感字段/介质、首次编写泄漏断言、首次发现覆盖缺口或修复生产实现。汇总范围包括 backup crypto、设备密钥、Plugin sandbox/有界实例池及失效矩阵、Capability、root-handle-relative no-follow 路径/归档解析、symlink/hardlink/junction/reparse point/device/FIFO/socket 与 TOCTOU、目录外零 I/O、WAL/SHM/journal sidecar 和 `committed` 前后持久化切换顺序；同时复核 `unicode-normalization` 精确直接依赖、Unicode 17 `NFKC_CF` 官方数据 URL/输入校验值、生成器、输出校验值、许可证和 normalization ID 迁移规则，并汇总 Unicode/data、dependency/security 与 SQL reviewer 证据。复跑 DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted` 的公开 roundtrip 与唯一明文 canary，扫描 SQLite 主文件、WAL/SHM/journal、备份 staging/最终认证密文包、普通临时目录、结构化日志和诊断包，并覆盖正常、错误、崩溃恢复与跨设备恢复；任一 inventory 行尚未在其 owner Red→review→implementation→Green 链闭合时，本任务必须保持 Pending 并退回对应 owner，不得就地补测或修复。记录精确命令、退出状态和 security reviewer 结论，CHK010/CHK011 及本清单全部适用 Pending 项不为零时不得完成；最后记录 CI 固定版本 secret scan 与 `cargo deny check advisories` 阻断证据、advisory 例外到期审阅和第二审批
+- [ ] T139 [P] 在 `specs/011-hivegui-standalone-mode/checklists/ux-data.md` 只复跑并汇总由 T016E inventory 与各故事 Red→reviewer→implementation→Green 链已闭合的现役 UXC001-UXC012，不得首次定义滚动 surface/selector/fixture/断言、首次发现缺口或修复生产 UI；记录 Linux/macOS/Windows 键盘与真实辅助技术 smoke test、对比度、原生滚动可见 bounds/实际位移、焦点恢复、Home/Ai/Tools 与12个 Ai Tab 顺序、现役 DataSource、当前 v4 数据模型及零 HiveWeb 依赖结果，任何行未闭合时退回其 owner 且本任务保持 Pending；历史 CHK001-CHK040 的旧勾选不得计作当前证据
+- [ ] T140 复跑 T015 的 `crates/hivegui/tests/hiveweb_independence.rs` 与 T116 的 `crates/hivegui/tests/local_agent_runtime.rs` 已有最终依赖、完整本地对话与网络回归，证明 HiveGUI 未构造 HiveWeb client、未读取 HiveWeb URL、网络捕获零 HiveWeb 请求且无失败回退；不得在 Polish 首次增加该验收契约
+- [ ] T141 在 `crates/hivegui/tests/migration_compatibility.rs`、`sqlite_health_contract.rs` 和 `backup_restore.rs` 只复跑已审批的 current/current-1/current-2/newer/too-old、Function/WorkflowNode/Builtin 迁移、双健康检查、FTS5/normalization 一致性、WAL/checkpoint/sidecar/cleanup-journal 矩阵，以及 root-handle/no-follow/TOCTOU。存储复跑必须显式包含 migration staging-only、六元组 manifest unarmed→armed、manifest/owner 双槽与 armed owner 丢失、owner prepared/applying 下恢复验证 old、新 current 完整验证后才 committed，以及 retirement `aborted_pre_switch|old|new` × `prepared|renamed|done` 的 exact basename、整 live instance tombstone rename、逐叶 unlink/每级 fsync/rmdir/journal delete 全矩阵；同时证明所有 locator/control state 的排除项与 instance/cleanup UUID 分离。不得在此首次补断言或修复实现
+- [ ] T142 在 `crates/hivegui/tests/accessibility.rs` 只复跑并汇总 T016E 与各故事已闭合的 Home/Ai/Tools、全部 CRUD、DAG、Agent、历史、备份/恢复 keyboard-only、原生滚动及响应性总回归；不得首次定义 surface/selector/fixture/断言、首次发现缺口或修复生产 UI，未闭合项退回对应 owner
+- [ ] T143 在 `specs/011-hivegui-standalone-mode/quickstart.md` 更新最终可复制命令、四个下划线 Builtin/零点号别名/Placeholder/四个 `*_node` 验收、MySQL 8.0+ CI/本地 `.env` 集成 fixture、SQLx offline metadata、固定版本 secret/dependency scanner、其它 fixture 生成方式、已知平台前置条件和期望结果
+- [ ] T144 在 `crates/hive-runtime-core/src/lib.rs`、`crates/hivegui/src/runtime/mod.rs` 和 `crates/hivegui/src/datasource/mod.rs` 建立本 feature changed-public-API inventory，逐项补齐公开接口输入、输出、稳定枚举、`function_not_executable` 与安全不变量文档，审计所有修改函数的复杂度并拆分超出合理边界的实现，同时移除无归属 TODO/死代码
+- [ ] T145 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录精确 `rustc --version` 与 workspace MSRV 一致、`cargo fmt --all -- --check`、目标 crate `cargo clippy --all-targets -- -D warnings`、CI 固定版本 `cargo-sqlx` 安装及精确 `SQLX_OFFLINE=true cargo sqlx prepare --workspace --check`、固定版本 secret scanner、`cargo deny check advisories` 与 `git diff --check` 结果；附全 workspace 生产 SQL inventory，证明固定应用 SQL 全部由 checked macros/offline metadata 覆盖、有限变体均为封闭 enum/`match`、生产 `QueryBuilder`=0、`AssertSqlSafe` 唯一所有者为 reviewed named-query 边界，并链接 T137 的 FTS5 trigram 可用/fail-closed、无 `LIKE`/`SCAN` fallback、查询计划与版本化基线比较；任一无明确签字/理由/影响范围/复核日期的 >10% 回归标记为阻断而非仅记录
+- [ ] T146 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 `cargo test -p hive-runtime-core`、`cargo test -p agent`、`cargo test -p hive-builtins`、`cargo test -p hivegui --lib` 和 `cargo test -p hivegui --tests` 全量结果
+- [ ] T147 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 完成 FR-001 至 FR-048、SC-001 至 SC-032、六份契约、Constitution v1.4.0、CODEOWNERS/security、全部 Red→review→Green 所有权链的最终追踪与发布签字。签字必须确认零例外依赖/TLS/SQL/SQLx offline、生产 `QueryBuilder`=0 与唯一 `AssertSqlSafe` owner、FTS5/normalization/EXPLAIN/N+1、冲突/关系 scope、Plugin schema/create/replace/no-follow/TOCTOU、全敏感 canary 与性能基线。Plugin 证据必须物理证明 operation 仅六态、ownership/identity 歧义=`conflict`、GC `pending|blocked` 在启动/固定周期/引用或租约释放时重试且 identity 变化持续 blocked。存储证据必须物理证明 current 不被迁移事务原地修改、六元组 manifest/owner 双槽/armed owner loss、完整 new current 验证后才 committed，以及 retirement `aborted_pre_switch|old|new` × `prepared|renamed|done` 的 exact basename、整目录 tombstone rename、逐叶 unlink/每级 fsync/rmdir/journal delete、locator 排除项和全部 fail-closed 崩溃矩阵 Green。T138/T139/T141/T142 只能复跑既有断言。任何 advisory ignore、缺失安全/介质/状态机证据，或没有签字、理由、范围与到期复核日期的 >10% 回归必须拒绝发布
 
 ---
 
@@ -392,59 +464,90 @@
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: No dependencies - creates shared infrastructure
-- **Foundational (Phase 2)**: Depends on Setup - adds routing/nav framework
-- **User Stories (Phase 3-11)**: All depend on Setup + Foundational completion
-  - US5 (Tag) and US6 (Category) should be done first as other entities reference Category
-  - US8 (Plugin) should be done before US9 (Function) as Function references Plugin
-  - US9 (Function) and US10 (Workflow) should be done before US11 (Tool) as Tool references both
-- **Polish (Phase 12)**: Depends on all user stories being complete
+- **Setup (Phase 1)**: 先单独完成 T001；其证据获批后再执行 T002-T008，确保 toolchain/MSRV pin 不夹带 crate、依赖或产品变更。
+- **Foundation Red 与 Security remediation (Phase 2 前半)**: T009-T016 → T017 是已完成的既有 Foundation Red 审批链，状态不得倒改；T016A-T016F → T017F 和 T017G → T017H 是本轮新增且仍 Pending 的补充 Red 审批链。T017A-T017B → T017C 是既有安全生产修改审批链；质量基线 → T001、T017C 与 T017H 汇合后才能执行 T017D，T017D → T017E。
+- **Foundation Green (Phase 2 后半)**: 仅当 T017、T001、T017E 全部完成后才可开始 T018-T028；T021 等待 T016B，T022 等待 T016C/T016D，T025 等待 T016F Foundation 设备密钥/crypto temp/error 行，T027 等待 T016A 与 T016F Foundation logging temp/error 行，且都须经 T017F 审批；T022/T028 还等待 T017G 经 T017H 审批。T028 最终汇合 T021/T022/T025/T027，只复跑 T016E inventory/helper/source-contract 自测与 T016F Foundation 行；包括 sidebar 在内的产品 scroll 行、最终诊断包及其它故事 inventory 行保持 Pending，并阻塞全部用户故事 Green。T038 另须等待 T037，不得因质量基线已有 HiveWeb MySQL job 而提前。
+- **Story inventory ownership**: T016E 只建立 scroll inventory/helper/source-contract，不激活任何产品 surface；T016F 只额外激活明确的 Foundation 设备密钥/crypto 与 logging temp/error 行，不会预先满足最终诊断包或未来故事。每个 Native scroll 与 Sensitive persistence task rule 箭头都是强制 Red→reviewer→implementation→Green 依赖；reviewer 未记录实际 Red 前不得实现，Polish T138/T139/T142 只能复跑闭合行，发现缺口必须退回该行 owner。
+- **US1-US7 与 US12**: 依赖 Foundational；无跨故事引用的管理 UI 可逐故事交付。
+- **US8-US11**: US8 依赖 US7（T080 必须等待 T070）；US9 依赖 US8；US10 同时依赖 US4 与 US9，且 T096 明确等待 T052/T079/T087 Green；US11 依赖 US10。引用目标或执行器未 Green 前不得开始依赖实现。
+- **US13 (Phase 15)**: 依赖 US4、US7、US8、US9、US10、US11、US12 提供完整本地执行资源；Agent CRUD 子集可在 Foundational 后先做 Red 测试，但实现/汇合必须等待依赖 Green。
+- **Polish (Phase 16)**: 依赖计划纳入发布的全部故事完成。
 
-### Recommended Execution Order
+### User Story Dependency Graph
 
-1. Phase 1 (Setup) → Phase 2 (Foundational)
-2. US5 (Tag) → US6 (Category) — other entities reference Category
-3. US7 (Capability) — independent
-4. US8 (Plugin) → US9 (Function) — Function references Plugin
-5. US10 (Workflow) → US11 (Tool) — Tool references Function + Workflow
-6. US12 (Skill) — independent
-7. US13 (Agent) — independent
-8. Phase 12 (Polish)
+```text
+quality baseline → T001 ───────────────┐
+T017A/B → T017C ──────────────────────┼→ T017D → T017E ─┐
+T017G ────────→ T017H ────────────────┘                  │
+T009-T016 → T017 ────────────────────────────────────────┼→ T018-T020
+T016A/B/C/D/E/F → T017F ┬→ T021 / T022 / T025 / T027 ────┤
+T017H ──────────────────┴→ T022 ──────────────────────────┴→ T028
+                                                               ├─→ US1 / US2 / US3 / US5 / US6
+                                                               ├─→ US4 ──────────────────────┐
+                                                               ├─→ US7 → US8 → US9 ─────────┴─→ US10 → US11
+                                                               └─→ US12
 
-### Parallel Opportunities
+T028 + T034-T037 → T038
 
-- US5 (Tag), US7 (Capability) can be parallelized after Phase 2
-- US12 (Skill), US13 (Agent) can be parallelized after Phase 2
-- Within each story: data layer (store) and UI layer (view) are sequential
+US4 + US7 + US8 + US9 + US10 + US11 + US12 → US13
+all selected stories → Polish
+
+T016E inventory → each story scroll Red → reviewer → UI implementation → Green → T139/T142
+T016F inventory → each owner Red → reviewer → persistence implementation → Green → T138
+```
+
+### Within Every Story
+
+1. 写 contract/integration/visual/benchmark 测试。
+2. 用户或指定 reviewer 审批测试，并实际运行观察预期 Red。
+3. 仅实现使测试 Green 的最小生产代码。
+4. 运行该故事独立测试并记录结果，再进行重构。
+
+### Parallel Opportunities by Story
+
+| Story | 可并行的测试任务示例 | 实现并行边界 |
+| --- | --- | --- |
+| US1 | T029 与 T030 | 路由实现集中在 T032，不并行改同文件 |
+| US2 | T034、T035、T036 | Store/client 完成后 UI 单独推进 |
+| US3 | T041 与 T042 | 数据层 T044 完成后做 UI T045 |
+| US4 | T047、T048、T049 | Provider resolver 与 UI 在 store 契约稳定后可分工 |
+| US5 | T055 与 T056 | 数据/UI 同文件批次由 T058 收口 |
+| US6 | T060 与 T061 | 数据树与 UI 树在测试获批后可分工 |
+| US7 | T066、T067 与 T067A | CRUD UI/无障碍与 host adapter 修改不同文件，可在 T068 门禁后并行；T069 闭合管理和无障碍 Red，T070 Green 后才能执行 T080 |
+| US8 | T072、T073、T074、T075 | 依赖 US7；artifact store、executor 与 UI 可分工，T080 等待 T070，最终 T082 汇合 |
+| US9 | T083、T084、T085 | 依赖 US8；runtime/store 与 UI 可在门禁后分工 |
+| US10 | T090、T091、T092、T093 | 依赖 US4+US9；Store、DAG UI 和 benchmark 可分工，T096 仍等待 T052/T079/T087 |
+| US11 | T101、T102、T103 | 依赖 US10；adapter 与 UI 可在门禁后分工 |
+| US12 | T108、T109、T110 | content resolver 与 UI 可在门禁后分工 |
+| US13 | T115-T122 | Store/runtime/backup/diagnostics/UI 可在门禁后按文件分工，T136 汇合 |
 
 ---
 
 ## Implementation Strategy
 
-### MVP First (US5-US6 Only)
+### First visible MVP (US1)
 
-1. Complete Phase 1-2: Setup + Foundational
-2. Complete Phase 3-4: Tag + Category management
-3. **STOP and VALIDATE**: Test Tag and Category independently
-4. Verify CRUD pattern works before replicating
+1. 完成 Setup 与 Foundational。
+2. 完成 US1 的 Red 审批、最小实现与 Green。
+3. 停止并验证 Home/Ai/Tools 导航与无 HiveWeb 启动依赖。
+
+### Minimum useful standalone-Agent slice
+
+1. 在 US1 后按 US7→US8→US9、US4+US9→US10、US10→US11 的顺序完成 US4、US7-US12 的本地资源配置与执行基础。
+2. 完成 US13 的默认根 Agent、对话、取消、加密会话和备份恢复。
+3. 以 `hiveweb_independence`、`local_agent_runtime`、`cancellation` 和 `backup_restore` 四组测试作为可用性门禁。
 
 ### Incremental Delivery
 
-1. Setup + Foundational → Foundation ready
-2. Tag + Category → Core entities ready
-3. Capability + Plugin → More entities
-4. Function + Workflow → Complex entities with JSON
-5. Tool + Skill + Agent → Final entities
-6. Polish → Production ready
-
----
+1. US2-US7 逐项交付本地管理能力，每项独立 Green 后再继续。
+2. US8-US12 逐步交付 Plugin、Function、Workflow、Tool、Skill 执行资源。
+3. US13 连接已验证的资源，不复制 HiveWeb 服务层，不新增运行时网络依赖。
+4. 最后完成全量安全、性能、无障碍和跨版本证据。
 
 ## Notes
 
-- US1-US4 (Home, DataSource, GlobalConfig, LLMConfig) are already implemented in existing code
-- All 9 new entities follow the same CRUD pattern: list view (table + search + pagination) + form view (modal/panel)
-- entity_store.rs is the single shared data layer file for all 9 entities
-- Each entity gets its own UI view file (tag_view.rs, category_view.rs, etc.)
-- Category tree view uses indentation (not complex tree component)
-- Plugin uses soft delete (deleted_at field)
-- Tool has CHECK constraint (kind=1 → function_id, kind=2 → workflow_id)
+- `[P]` 只表示文件和依赖允许并行，不绕过测试审批门禁。
+- 当前工作区已有 HiveGUI 源码改动；执行任务时不得清理、覆盖或暂存无关改动。
+- `HIVEGUI_HEADLESS=1` 在 Store 初始化前退出，不能作为迁移、本地 Agent 或数据库验收。
+- 任何 HiveGUI 失败路径都不得请求或回退到 HiveWeb；共享仅限编译期代码、ABI 契约和兼容 fixture。
+- 完成每个任务或逻辑批次后应保持提交范围窄，并排除 `.env`、密钥、备份口令和生成的敏感制品。

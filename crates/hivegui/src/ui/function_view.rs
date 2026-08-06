@@ -339,7 +339,7 @@ impl FunctionView {
         }
         let kind = self.form_kind;
         if kind == 2 && (self.form_plugin_id.is_none() || self.form_plugin_export.is_none()) {
-            self.error_message = Some("自定义函数必须选择关联插件和插件导出函数名".into());
+            self.error_message = Some("插件函数必须选择关联插件和插件导出函数名".into());
             cx.notify();
             return;
         }
@@ -347,9 +347,12 @@ impl FunctionView {
         let plugin_export = (kind == 2)
             .then_some(self.form_plugin_export.clone())
             .flatten();
-        let required_capabilities = self.form_capability.as_ref().map(|name| {
+        let mut required_capabilities = self.form_capability.as_ref().map(|name| {
             serde_json::to_string(&vec![name.clone()]).expect("serialize capability selection")
         });
+        if kind == 3 {
+            required_capabilities = None;
+        }
         let store = self.store.read(cx).clone();
         let idf = self.form_identifier.clone();
         let name = self.form_name.clone();
@@ -857,10 +860,13 @@ impl Render for FunctionView {
                                             .truncate()
                                             .child(item.identifier.clone()),
                                     )
-                                    .child(list_cell(Some(col_widths[3]), style).child(format!("{}", item.kind)))
+                                    .child(
+                                        list_cell(Some(col_widths[3]), style)
+                                            .child(function_kind_label(item.kind)),
+                                    )
                                     .child(
                                         list_actions(Some(col_widths[4]), style)
-                                            .child(
+                                            .when(ic.kind != 3, |actions| actions.child(
                                                 action_button(
                                                     ("test", id as u64),
                                                     "测试",
@@ -878,7 +884,7 @@ impl Render for FunctionView {
                                                         .ok();
                                                     }
                                                 }),
-                                            )
+                                            ))
                                             .child(
                                                 action_button(
                                                     ("edit", id as u64),
@@ -991,11 +997,7 @@ impl Render for FunctionView {
                 let description_input = self.description_input.clone().unwrap();
                 let input_schema_input = self.input_schema_input.clone().unwrap();
                 let output_schema_input = self.output_schema_input.clone().unwrap();
-                let kind_label = if self.form_kind == 1 {
-                    "内置函数"
-                } else {
-                    "自定义函数"
-                };
+                let kind_label = function_kind_label(self.form_kind);
                 let plugin_label = self
                     .form_plugin_id
                     .and_then(|id| self.plugins.iter().find(|plugin| plugin.id == id))
@@ -1076,7 +1078,11 @@ impl Render for FunctionView {
                                     )
                                     .when(self.kind_select_open, |field| {
                                         field.child(selector_menu(theme).children(
-                                            [(1_i64, "内置函数"), (2_i64, "自定义函数")]
+                                            [
+                                                (1_i64, "内置函数"),
+                                                (2_i64, "自定义函数"),
+                                                (3_i64, "占位"),
+                                            ]
                                                 .into_iter()
                                                 .map(|(kind, label)| {
                                                     selector_option(
@@ -1090,10 +1096,13 @@ impl Render for FunctionView {
                                                                 view.update(cx, |view, cx| {
                                                                     view.form_kind = kind;
                                                                     view.kind_select_open = false;
-                                                                    if kind == 1 {
+                                                                    if kind != 2 {
                                                                         view.form_plugin_id = None;
                                                                         view.form_plugin_export = None;
                                                                         view.plugin_exports.clear();
+                                                                    }
+                                                                    if kind == 3 {
+                                                                        view.form_capability = None;
                                                                     }
                                                                     cx.notify();
                                                                 })
@@ -1218,8 +1227,8 @@ impl Render for FunctionView {
                                         }),
                                     )
                                 })
-                                .child(
-                                    selector_field(
+                                .when(self.form_kind != 3, |form| {
+                                    form.child(selector_field(
                                         "所属 Capability",
                                         capability_label,
                                         "capability-selector",
@@ -1290,8 +1299,8 @@ impl Render for FunctionView {
                                                     },
                                                 )),
                                         )
-                                    }),
-                                )
+                                    }))
+                                })
                                 .child(form_field_multiline("Input Schema (JSON)", input_schema_input, theme))
                                 .child(form_field_multiline("Output Schema (JSON)", output_schema_input, theme))
                                 .when_some(self.error_message.as_ref(), |this, err| {
@@ -1464,7 +1473,7 @@ impl Render for FunctionView {
                     None => return this,
                 };
 
-                let kind_label = if function.kind == 1 { "内置函数" } else { "自定义函数" };
+                let kind_label = function_kind_label(function.kind);
                 let mut selected_capabilities = self
                     .test_capabilities
                     .iter()
@@ -1915,6 +1924,15 @@ impl Render for FunctionView {
                     ),
                 )
             })
+    }
+}
+
+fn function_kind_label(kind: i64) -> &'static str {
+    match kind {
+        1 => "内置函数",
+        2 => "自定义函数",
+        3 => "占位",
+        _ => "未知",
     }
 }
 

@@ -44,6 +44,23 @@ impl Config {
             headless,
         })
     }
+
+    /// Test-only constructor that bypasses `from_env`. The returned
+    /// configuration points at a non-existent log directory; production
+    /// code uses `from_env` instead.
+    pub fn for_test() -> Self {
+        Self {
+            log_level: tracing::Level::INFO,
+            log_dir: PathBuf::from("/tmp/hivegui-test-logs"),
+            headless: true,
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::for_test()
+    }
 }
 
 fn default_log_dir() -> Option<PathBuf> {

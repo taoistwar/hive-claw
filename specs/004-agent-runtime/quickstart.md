@@ -1,5 +1,7 @@
 # Quickstart: Agent Runtime
 
+> **范围更新（2026-07-23）：** 原 `web-admin` 测试聊天和 `/api/chat/sessions*` SSE 流已由 `81a84fe` 移除并 superseded，不得恢复。现行普通用户聊天位于 `web-user`，调用 `/api/assistant`、`/api/newsession`、`/api/messages`；本 quickstart 只说明边界，详细请求签名与 payload 以 `007-external-assistant-api` 和当前实现为准。
+
 **Created**: 2026-05-26
 **Feature**: 004-agent-runtime
 **Audience**: 内部开发者 + Plugin 作者
@@ -196,19 +198,15 @@ curl -X POST http://localhost:3300/api/skills \
 
 ---
 
-## 8. 测试聊天
+## 8. 验证现行普通用户 Assistant
 
-**Web → 测试聊天 → 新会话**：
+不要在 `web-admin` 中寻找或恢复“测试聊天”。通过 `web-user` 新建用户会话并发送“北京现在多少度”；客户端依次使用：
 
-输入：`北京现在多少度`
+1. `POST /api/newsession` 创建普通用户会话
+2. `POST /api/assistant` 执行 Agent 并接收完整 JSON 消息
+3. `POST /api/messages` 拉取该用户的历史消息
 
-应当看到：
-1. SSE 流推送 `token` 事件 → 增量文本
-2. 一个 `tool_call` 事件指向 `weather.lookup` 工具
-3. 一个 `tool_result` 事件返回 Plugin 的输出
-4. 最终 `done`
-
-如果 Agent 没有 `network.http` capability，会看到 `error` 事件 + 错误码 4030 + audit 中的拒绝记录。
+三者使用 `chat_sessions_user` / `chat_messages_user` 并按 `user_id` 隔离。Plugin/Tool/Agent 的运行审计仍可用于确认 `weather.lookup` 是否执行；客户端不会收到原管理端 SSE 的 `token` / `tool_call` / `done` 事件。
 
 ---
 
@@ -232,7 +230,7 @@ curl -X POST http://localhost:3300/api/workflows/<id>/execute \
 
 **Web → Agent → 新建** `coding-expert`（parent = main）→ tools / skills / permissions 视需要配置 → 在 main 的 system_prompt 中提示"对编程问题路由到 coding-expert"。
 
-下次问"Rust 写个 async function" → 应见 SSE `routed` 事件 → 最终回复来自 coding-expert。
+下次从 `web-user` 问"Rust 写个 async function" → `/api/assistant` 返回最终 JSON 回复；通过 runtime audit / tracing 确认请求路由到 coding-expert。客户端不再依赖原管理端 SSE `routed` 事件。
 
 ---
 

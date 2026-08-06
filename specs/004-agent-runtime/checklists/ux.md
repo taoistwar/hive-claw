@@ -1,5 +1,7 @@
 # UX Requirements Quality Checklist: Agent Runtime
 
+> **历史边界（2026-07-23）：** 涉及 `ChatStream`、admin Chat/SSE、EventSource 或管理端聊天历史的 UX 条目已 superseded，仅保留历史，不是现役页面要求。
+
 **Purpose**: 验证 `specs/004-agent-runtime/spec.md` 中 UX 相关需求的**完整性 / 清晰度 / 一致性 / 可测量性**，作为 spec 作者在进入 `/speckit-implement` 前的自查清单。
 **Created**: 2026-05-26
 **Feature**: [specs/004-agent-runtime/spec.md](file:///home/developer/agent/hive-claw/specs/004-agent-runtime/spec.md)

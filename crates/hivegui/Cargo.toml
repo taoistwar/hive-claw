@@ -18,7 +18,10 @@ debug = true
 name = "hivegui"
 path = "src/main.rs"
 
-
+[[bench]]
+name = "local_runtime"
+path = "benches/local_runtime.rs"
+harness = false
 
 [lib]
 name = "hivegui"
@@ -30,6 +33,7 @@ gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
 gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -40,16 +44,28 @@ directories = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+uuid = { workspace = true }
 mysql_async = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "chrono"] }
+sqlx = { workspace = true, features = ["chrono", "macros", "runtime-tokio", "sqlite"] }
 chacha20poly1305 = { workspace = true }
 zeroize = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 wasmparser = "0.221"
-extism = "1"
+extism = { workspace = true }
+wasmtime = { workspace = true }
+age = { workspace = true }
+tar = { workspace = true }
+flate2 = "=1.0.35"
+argon2 = "0.5"
+rand = "0.8"
+hex = "0.4"
+parking_lot = "0.12"
+unicode-normalization = { version = "=0.1.25", default-features = false, features = ["std"] }
+fnv = "1"
 hive-builtins = { path = "../hive-builtins" }
 providers = { path = "../providers" }
+hive-runtime-core = { path = "../hive-runtime-core" }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

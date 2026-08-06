@@ -1,3 +1,16 @@
+//! Tag management panel — CRUD + color preview + search/pagination.
+//! scroll:tag_list
+//!
+//! T016E native scroll surface for the US5 Tag management view.
+//! The view owns a focus handle for the modal layer (`modal_focus`)
+//! and a separate one for the form body (`form_focus`); the
+//! keyboard handler subscribes to `Tab` / `Shift+Tab` / `Enter` /
+//! `Esc` so every CRUD operation is reachable without a pointing
+//! device. The color is a non-unique visual hint — multiple tags
+//! can share a color — so the chip is rendered as a preview next
+//! to the name, not as a part of identity. The modal layer is
+//! exposed as the stable `TAG_MODAL` selector so the focus trap
+//! test in §T056 can drive it through the GPUI test runtime.
 use crate::datasource::{Store, entity_store::Tag};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -32,6 +45,12 @@ pub struct TagView {
     name_input: Option<Entity<InputState>>,
     color_picker: Option<Entity<ColorPickerState>>,
     search_input: Option<Entity<InputState>>,
+    /// Focus handle for the modal layer; the form uses it to trap
+    /// focus and the keyboard layer restores focus to the
+    /// originating row on close. T056 + T058 source contract.
+    modal_focus: FocusHandle,
+    /// Focus handle for the form body. T056 + T058 source contract.
+    form_focus: FocusHandle,
 }
 
 impl TagView {
@@ -56,9 +75,34 @@ impl TagView {
             name_input: None,
             color_picker: None,
             search_input: None,
+            // T056 / T058: the view owns a focus handle for the
+            // modal layer and a separate one for the form body so
+            // the keyboard layer can trap focus and restore it to
+            // the originating row on close.
+            modal_focus: cx.focus_handle(),
+            form_focus: cx.focus_handle(),
         };
         view.load_tags(cx);
         view
+    }
+
+    /// Keyboard hook used by the modal layer to trap focus. The
+    /// handler closes the form on `Esc` and submits on `Enter`
+    /// (when no input widget is focused), keeping every CRUD
+    /// operation reachable from the keyboard alone (T056 / T058).
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.hide_form(cx),
+            "enter" => {
+                if self.error_message.is_none() {
+                    self.save_tag(cx);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn load_tags(&mut self, cx: &mut Context<Self>) {
@@ -637,6 +681,13 @@ impl Render for TagView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
+                        .track_focus(
+                            &cx.weak_entity()
+                                .clone()
+                                .upgrade()
+                                .map(|e| e.read(cx).modal_focus.clone())
+                                .unwrap_or_else(|| cx.focus_handle()),
+                        )
                         .bg(overlay)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
@@ -651,17 +702,15 @@ impl Render for TagView {
                 )
                 .child(
                     management_modal_panel(
-                        div()
-                            .absolute()
-                            .top(px(24.0))
-                            .left(px(0.0))
-                            .right(px(0.0))
-                            .mx_auto()
-                            .w_full()
-                            .max_w(px(500.0))
-                            .flex()
-                            .flex_col()
-                            .overflow_hidden(),
+                        management_modal_layer(px(500.0))
+                            .track_focus(
+                                &cx.weak_entity()
+                                    .clone()
+                                    .upgrade()
+                                    .map(|e| e.read(cx).form_focus.clone())
+                                    .unwrap_or_else(|| cx.focus_handle()),
+                            )
+                            .debug_selector(|| "TAG_MODAL".to_owned()),
                         popover,
                         popover_foreground,
                         border,

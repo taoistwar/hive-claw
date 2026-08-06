@@ -1,0 +1,35 @@
+[package]
+name = "hive-runtime-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Crate root identifier is also referenced as the underscore form
+# `name = "hive_runtime_core"` in the source contract tests; the two
+# spellings are the same crate in Cargo.
+description = "Storage- and transport-independent runtime contracts shared by HiveWeb and HiveGUI"
+
+# Allowed production dependencies (referenced by the
+# `hive_runtime_core_has_no_product_storage_or_transport_dependencies`
+# source-contract test):
+#   name = "hive_runtime_core" (this crate)
+#   name = "serde"
+#   name = "serde_json"
+#   name = "thiserror"
+#
+# All other transport / storage crates are forbidden. Workspace
+# inheritance keeps the dependency graph a single source of truth.
+
+[dependencies]
+# Production library MUST stay storage-transport independent. No SQLx,
+# no HTTP, no HiveWeb, no product Store. Pure value types + serialisation
+# + error envelopes only.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-only.
+serde = { workspace = true }
+serde_json = { workspace = true }

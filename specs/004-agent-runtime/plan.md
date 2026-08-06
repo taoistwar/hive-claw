@@ -1,5 +1,7 @@
 # Implementation Plan: Agent Runtime（Capability-based WASM Plugin Runtime）
 
+> **范围更新（2026-07-23）：** 原 US6 管理端测试聊天、admin chat 表、`/api/admin-chat*`、`/api/chat/sessions*` 及 `web-admin` Chat UI 已由 `81a84fe` 移除，属于 Legacy / Superseded，禁止恢复。现行普通用户聊天位于 `web-user`，使用 `/api/assistant`、`/api/newsession`、`/api/messages` 和 `chat_*_user` 表；其接口契约由 `007-external-assistant-api` 与当前实现负责。
+
 **Branch**: `004-agent-runtime` | **Date**: 2026-05-26 | **Spec**: [specs/004-agent-runtime/spec.md](file:///home/developer/agent/hive-claw/specs/004-agent-runtime/spec.md)
 **Input**: Feature specification from `/specs/004-agent-runtime/spec.md`
 
@@ -18,11 +20,11 @@
 3. Capability dispatcher（host_call 鉴权 + 转发 + 审计）
 4. 把 DB 中的 Tool / Function 注册成 `agent::Tool` 注入 `ToolRegistry`
 5. 把 DB 中的 Skill markdown 拼到 Agent 的 system prompt（沿用 SkillsLoader 思路）
-6. HTTP REST + SSE 聊天 + DAG 编辑器（reactflow）
+6. HTTP REST 管理端 + DAG 编辑器（reactflow）；不含已移除的管理端测试聊天。Agent Runtime 可被独立的普通用户 Assistant API 复用，但 HiveWeb/HiveGUI 产品边界不因此改变。
 
 ## Technical Context
 
-**Language/Version**：Rust 1.85+（后端 / 宿主 runtime），TypeScript 5.x（Web）；WASM 插件作者可任选 Extism 支持的语言。
+**Language/Version**：Rust 1.97.1（后端 / 宿主 runtime，由根 `rust-toolchain.toml` 与 workspace `rust-version` 精确固定），TypeScript 5.x（Web）；WASM 插件作者可任选 Extism 支持的语言。
 **Primary Dependencies**：
 - 后端：`axum`（HTTP）、`extism` ≥ 1.x（WASM runtime，Rust host SDK）、`sqlx` (MySQL)、`redis`、`aws-sdk-s3`、`tokio`、`tower-http`
 - LLM 客户端：**复用 workspace 现有 `crates/providers`**（Anthropic / Azure OpenAI / Bedrock / OpenAI Compat / OpenAI Codex / GitHub Copilot / Fallback；`LLMProvider` trait + `ProviderRegistry` + `ToolCallRequest`）。Agent Runtime 不引入新的 LLM 客户端依赖。Per-Agent 模型选择：`agents.model_preset` 字段在 runtime 解析阶段查 `ProviderRegistry`，未命中 / NULL → 走启动期全局默认 preset。
@@ -32,7 +34,7 @@
 **Testing**：cargo test（含集成测试加载真实 Extism plugin）；Vitest + Testing Library；axe-core
 **Target Platform**：Linux server；WASM 由 Wasmtime（Extism 内部默认）执行
 **Project Type**：Web application（hiveweb crate 扩展） + 独立 plugin SDK 文档
-**Performance Goals**：见 spec §SC（host_call p95 ≤ 5ms，Plugin 调用命中池 p95 ≤ 50ms，对话端到端 p95 ≤ 8s）
+**Performance Goals**：见 spec §SC（host_call p95 ≤ 5ms，Plugin 调用命中池 p95 ≤ 50ms；原管理端对话端到端指标属于 superseded 历史记录）
 **Constraints**：
 - Plugin 越权调用 100% 拒绝（spec SC-007）
 - WASM 单次调用硬超时 30s（FR-030，待 clarify）、内存上限 128MB（FR-031，待 clarify）
@@ -46,15 +48,15 @@
 **Re-evaluated 2026-05-26 post-clarify-v4**（吸收 12 项 clarify 决议）：
 
 ✅ **Principle I - Code Quality & Maintainability**：cargo fmt / clippy `-D warnings` / ESLint / Prettier 沿用 003 既有 CI。
-✅ **Principle II - Test-First Development (NON-NEGOTIABLE)**：在 tasks.md 中 Phase 2.5 显式排红灯测试任务（不重蹈 003 的 ⚠ 偏离 1）。覆盖：契约测试（host_call ABI、HTTP、`GET /api/agents/model-presets`、SSE chat）、集成测试（Capability 鉴权 + 子 Agent 不继承 / Workflow 拓扑 + 环检测 / Agent 路由 + 循环检测 / FallbackProvider 失败链 / Instance Pool 命中 + reset / Plugin 软删除时引用阻塞）、组件测试（DAG 编辑器 + 聊天窗口 + Skill markdown 编辑 + ModelPreset 下拉）。
-✅ **Principle III - User Experience Consistency**：a11y / 错误码（含 5007 ModelPresetUnknown）/ 分页样式沿用 003 约定；DAG 编辑器需补 keyboard navigation（轮廓在 plan，验证在 tasks）；SSE chat 错误事件结构化。
-⚠ **Principle IV - Performance & Efficiency**：SC-005 / SC-006 / SC-010 含跨 LLM 远端调用，依赖外部服务延迟，需在 perf-evidence 单独 disclaimer；本地组件（host_call / Instance Pool 命中）应满足 < 200ms。LLM 端到端延迟登记为偏离 4（同 003 偏离 4 的精神）。
+✅ **Principle II - Test-First Development (NON-NEGOTIABLE)**：在 tasks.md 中 Phase 2.5 显式排红灯测试任务（不重蹈 003 的 ⚠ 偏离 1）。现行覆盖：契约测试（host_call ABI、HTTP、`GET /api/agents/model-presets`）、集成测试（Capability 鉴权 + 子 Agent 不继承 / Workflow 拓扑 + 环检测 / Agent 路由 + 循环检测 / FallbackProvider 失败链 / Instance Pool 命中 + reset / Plugin 软删除时引用阻塞）、组件测试（DAG 编辑器 + Skill markdown 编辑 + ModelPreset 下拉）。原 SSE Chat/Chat UI 测试任务仅保留为 superseded 历史记录。
+✅ **Principle III - User Experience Consistency**：a11y / 错误码（含 5007 ModelPresetUnknown）/ 分页样式沿用 003 约定；DAG 编辑器需补 keyboard navigation（轮廓在 plan，验证在 tasks）。原管理端 SSE Chat UX 已 superseded。
+⚠ **Principle IV - Performance & Efficiency**：现行 SC-005 / SC-006 的本地组件（host_call / Instance Pool 命中）应满足 < 200ms。原管理端 Chat 的 SC-010/LLM 端到端延迟仅作为 superseded 偏离 4 历史记录保留。
 ✅ **Principle V - Simplicity & YAGNI**：增量到 hiveweb crate；**复用 `crates/agent` / `crates/skills` / `crates/providers` 三个现有 crate，不再造编排核心、不引入 async-openai**；Plugin SDK 重用 Extism PDK，不自造 ABI；DAG 编辑器用 reactflow，不自造图渲染。
 ✅ **Principle VI - Observability & Structured Logging**：每次 host_call / Workflow 节点 / Agent 路由 / LLM 调用 emit 结构化日志，含 request_id（沿用 003 的 middleware）；`runtime_audit_logs` 表新增 capability 维度 + 出入参摘要（脱敏）。
 ✅ **Security Requirements**：Capability 零信任默认 deny；Plugin 不能访问宿主任何资源除非显式声明；子 Agent 不继承父的 permissions / model_preset（最小权限）；WASM 执行隔离（Wasmtime sandbox）；Plugin 上传走管理中心 JWT + System+ 角色鉴权；危险 capability 赋予 + `main` 编辑 = Super-only；`db.execute` 仅命名查询，自由 SQL 永不暴露。
-✅ **Technology Stack**：Rust + axum + MySQL + Redis + Rustfs 符合宪法 v1.3.0；LLM 走 `crates/providers`（多 backend + FallbackProvider）；Extism 是新增的 WASM runtime（无对应宪法条款），登记在 Complexity Tracking 偏离 5。
+✅ **Technology Stack**：Rust + axum + MySQL + Redis + Rustfs 符合宪法 v1.4.0；LLM 走 `crates/providers`（多 backend + FallbackProvider）；Extism 是新增的 WASM runtime（无对应宪法条款），登记在 Complexity Tracking 偏离 5。
 
-**Gate Result**：CONDITIONAL PASS — 偏离 4（LLM 端到端延迟外部依赖）+ 偏离 5（引入 Extism 新组件）记录于 Complexity Tracking。Phase 2.5 红灯测试必须先红再绿。
+**Gate Result**：CONDITIONAL PASS — 偏离 5（引入 Extism 新组件）仍为现役；偏离 4（原管理端 Chat 的 LLM 端到端延迟）仅保留历史。Phase 2.5 红灯测试必须先红再绿。
 
 ## Project Structure
 
@@ -86,8 +88,7 @@ crates/hiveweb/
 │   │   ├── workflow.rs      # /workflows CRUD + 执行
 │   │   ├── tool.rs          # /tools CRUD
 │   │   ├── skill.rs         # /skills CRUD
-│   │   ├── agent.rs         # /agents CRUD + 路由
-│   │   └── chat.rs          # /chat/sessions + SSE
+│   │   └── agent.rs         # /agents CRUD + 路由
 │   ├── runtime/
 │   │   ├── mod.rs
 │   │   ├── capability.rs    # Host capability 注册表 + 鉴权 + 派发
@@ -106,8 +107,7 @@ crates/hiveweb/
 │   │   ├── workflow.rs
 │   │   ├── tool.rs
 │   │   ├── skill.rs
-│   │   ├── agent.rs
-│   │   └── chat.rs
+│   │   └── agent.rs
 │   ├── models/
 │   │   ├── capability.rs
 │   │   ├── category.rs
@@ -117,8 +117,7 @@ crates/hiveweb/
 │   │   ├── workflow.rs
 │   │   ├── tool.rs
 │   │   ├── skill.rs
-│   │   ├── agent.rs
-│   │   └── chat.rs
+│   │   └── agent.rs
 │   ├── middleware/         # 复用 003 既有：auth/request_id/rate_limit
 │   ├── utils/              # 复用 003 既有
 │   └── lib.rs              # 增加 runtime 模块 pub mod
@@ -136,8 +135,7 @@ web/
 │   │   ├── WorkflowPage.tsx         # 含 DAG 编辑器
 │   │   ├── ToolPage.tsx
 │   │   ├── SkillPage.tsx
-│   │   ├── AgentPage.tsx            # 树形 Agent 层级
-│   │   └── ChatPage.tsx             # 测试聊天
+│   │   └── AgentPage.tsx            # 树形 Agent 层级
 │   ├── components/
 │   │   ├── DagEditor/              # 基于 reactflow
 │   │   ├── PluginUploader.tsx
@@ -151,16 +149,16 @@ web/
 
 ## Complexity Tracking
 
-### 偏离 4 — Principle IV / 对话端到端延迟（SC-010 ≤ 8s）
+### 偏离 4 — Principle IV / 对话端到端延迟（历史，已 Superseded）
 
 | 项 | 内容 |
 | --- | --- |
-| 现状 | SC-010 含 1 次 LLM 调用，p95 受外部模型供应商延迟主导 |
+| 现状 | 原管理端 Chat 的 SC-010 含 1 次 LLM 调用；该 UI/API 已移除，本表仅保留历史决策 |
 | 偏离类型 | 不可压缩的外部依赖延迟 |
 | 缓解方案 | LLM 调用前/后耗时分别打 tracing span 字段 `llm_ms` 与 `host_ms`；perf-evidence 把宿主侧 ≤ 200ms 与端到端 ≤ 8s 分列 |
-| 退出条件 | 永久接受偏离；SLO 文档分离"宿主延迟"与"含外部 LLM 延迟" |
+| 退出条件 | 不再作为 004 现行 SLO；普通用户 Assistant API 如需端到端 SLO，由其所属特性另行定义 |
 
-### 偏离 5 — 引入 Extism WASM runtime（宪法 v1.3.0 未列）
+### 偏离 5 — 引入 Extism WASM runtime（宪法 v1.4.0 未列）
 
 | 项 | 内容 |
 | --- | --- |
@@ -183,10 +181,10 @@ hiveweb 启动期严格按以下顺序执行；任一步失败 → panic 退出�
 4. **Custom Function 索引** — 拉所有 DB 中 `kind = 2` 的 Function + 关联 Plugin metadata，构建 `Arc<HashMap<identifier, FunctionDef>>` 缓存
 5. **llm_presets.toml 加载** — 解析所有命名 preset，逐个调 `providers::make_provider` 构造 primary + `providers::FallbackProvider::new` 套上 fallback 链；校验**正好 1 个** `default = true`（违反 → panic）
 6. **ToolRegistry 装配** — builtin Tools（5 个）+ DB custom Tools + Workflow-wrapped Tools 全部注册到 `agent::ToolRegistry`
-7. **SubagentManager / MemoryStore 初始化** — 从 DB 加载 Agent 树 + ChatSession 摘要到 `crates/agent::*` 内存结构
+7. **SubagentManager / MemoryStore 初始化** — 从 DB 加载 Agent 树并初始化 `crates/agent::*` 运行结构；不加载已移除的 admin ChatSession
 8. **Instance Pool 初始化** — 创建空 `HashMap<PluginId, PluginPool>`；不预热（lazy 编译，命中 SC-005 冷启动预算）
-9. **HTTP Router 装配** — middleware 链（request_id → CORS → rate_limit-with-SSE-bypass → auth）→ 各 API group
-10. **后台任务启动** — chat_retention cron / audit_retention cron / pool idle reaper
+9. **HTTP Router 装配** — middleware 链（request_id → CORS → rate_limit → auth）→ 现行管理端 API group
+10. **后台任务启动** — audit_retention cron / pool idle reaper；普通用户 chat retention 属外部 Assistant API 运行面
 11. **HTTP server listen** — 在所有前置完成后才开始接 socket
 
 启动期任一步失败的处理：
@@ -206,9 +204,9 @@ hiveweb 启动期严格按以下顺序执行；任一步失败 → panic 退出�
 5. **Workflow 执行器**：拓扑 BFS + 并行 + 错误传播；超时与中断
 6. **Agent 路由决策**：纯 LLM tool-calling / 规则 / 混合
 7. **LLM client**：OpenAI 兼容 / litellm-style 多 provider 抽象
-8. **流式回复**：SSE vs WebSocket vs Server-Streamed HTTP
+8. **流式回复（历史，已 superseded）**：原管理端测试聊天的 SSE vs WebSocket vs Server-Streamed HTTP 选型
 9. **JSON Schema 校验**：jsonschema crate + draft 2020-12
-10. **聊天会话持久化**：MySQL JSON 列 / 独立 chat_messages 表 / Redis 暂存
+10. **聊天会话持久化（历史，已 superseded）**：原 admin chat 表选型；现行用户表由外部 Assistant API 维护
 
 ## Phase 1: Design
 
@@ -216,7 +214,7 @@ hiveweb 启动期严格按以下顺序执行；任一步失败 → panic 退出�
 - `data-model.md` — 10 个核心实体 + DDL（V008–V0xx）
 - `contracts/api.md` — REST 端点契约
 - `contracts/host-functions.md` — `host_call(capability, payload)` 单入口 ABI + 各 capability payload schema
-- `quickstart.md` — 起 infra + 上传 plugin + 注册 function + 调聊天
+- `quickstart.md` — 起 infra + 上传 plugin + 注册 function + 验证 Agent；另说明普通用户 Assistant API 的边界
 
 ## Phase 2: Tasks（不在本命令产出）
 
@@ -229,6 +227,6 @@ hiveweb 启动期严格按以下顺序执行；任一步失败 → panic 退出�
 6. US3 Workflow DAG
 7. US4 Capability 鉴权
 8. US5 Agent 编排
-9. US6 测试聊天 + SSE
+9. US6 管理端测试聊天 + SSE（历史，已 superseded；不实施、不恢复）
 10. US7 Category / Tag
 11. Polish — 文档 / 性能 / a11y / 安全审查

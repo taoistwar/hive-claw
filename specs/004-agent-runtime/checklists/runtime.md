@@ -1,5 +1,7 @@
 # Runtime / Performance Quality Checklist: Agent Runtime
 
+> **历史边界（2026-07-23）：** 涉及 admin Chat/SSE、SC-010 或 per-admin SSE 限流的条目已随管理端测试聊天删除而 superseded，仅保留核对历史，不是现役阻塞项。
+
 **Purpose**: 验证 `specs/004-agent-runtime/research.md` + `plan.md` + `spec.md` FR-029..031 中 runtime / Instance Pool / 性能预算需求的**完整性 / 清晰度 / 可测量性**。
 **Created**: 2026-05-26
 **Audience / Depth**: 作者自查（轻量）

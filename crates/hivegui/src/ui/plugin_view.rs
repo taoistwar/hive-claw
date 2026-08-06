@@ -6,7 +6,7 @@ use crate::datasource::{Store, entity_store::Plugin, wasm_exports::extract_wasm_
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
-    management_modal_panel, management_modal_scroll,
+    management_modal_panel, management_modal_scroll_content,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -757,6 +757,8 @@ impl Render for PluginView {
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
                 let version_input = self.version_input.clone().unwrap();
+                let form_scroll =
+                    management_modal_scroll_content("plugin-form-scroll", &self.form_scroll);
                 this.child(
                     div()
                         .absolute()
@@ -786,73 +788,306 @@ impl Render for PluginView {
                         cx.stop_propagation();
                     })
                     .child(
-                        management_modal_scroll("plugin-form-scroll", &self.form_scroll)
-                            .gap(px(10.0))
-                            .debug_selector(|| "PLUGIN_FORM_SCROLL".to_owned())
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .debug_selector(|| "PLUGIN_SCROLLBAR_HOST".to_owned())
                             .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(if self.editing_id.is_some() {
-                                        "编辑插件"
-                                    } else {
-                                        "添加插件"
-                                    }),
-                            )
-                            .child(form_field("Identifier *", identifier_input, theme))
-                            .child(form_field("名称 *", name_input, theme))
-                            .child(form_field("描述", description_input, theme))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
+                                form_scroll
+                                    .gap(px(10.0))
+                                    .debug_selector(|| "PLUGIN_FORM_SCROLL".to_owned())
                                     .child(
                                         div()
-                                            .text_size(px(13.0))
-                                            .text_color(theme.foreground)
-                                            .child("Runtime *"),
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(if self.editing_id.is_some() {
+                                                "编辑插件"
+                                            } else {
+                                                "添加插件"
+                                            }),
                                     )
+                                    .child(form_field("Identifier *", identifier_input, theme))
+                                    .child(form_field("名称 *", name_input, theme))
+                                    .child(form_field("描述", description_input, theme))
                                     .child(
                                         div()
-                                            .w_full()
-                                            .h(px(32.0))
-                                            .px(px(8.0))
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .rounded(px(4.0))
-                                            .bg(theme.background.opacity(0.3))
                                             .flex()
-                                            .items_center()
+                                            .flex_col()
+                                            .gap(px(4.0))
                                             .child(
                                                 div()
                                                     .text_size(px(13.0))
-                                                    .text_color(theme.foreground.opacity(0.6))
-                                                    .child("extism"),
+                                                    .text_color(theme.foreground)
+                                                    .child("Runtime *"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .h(px(32.0))
+                                                    .px(px(8.0))
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                                    .rounded(px(4.0))
+                                                    .bg(theme.background.opacity(0.3))
+                                                    .flex()
+                                                    .items_center()
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.0))
+                                                            .text_color(
+                                                                theme.foreground.opacity(0.6),
+                                                            )
+                                                            .child("extism"),
+                                                    ),
                                             ),
-                                    ),
-                            )
-                            .child(form_field("Version *", version_input, theme))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.0))
-                                            .text_color(theme.foreground)
-                                            .child("WASM 文件 *"),
                                     )
+                                    .child(form_field("Version *", version_input, theme))
                                     .child(
                                         div()
                                             .flex()
-                                            .items_center()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .text_color(theme.foreground)
+                                                    .child("WASM 文件 *"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.0))
+                                                    .child(
+                                                        action_button(
+                                                            "pick-wasm",
+                                                            "选择 WASM 文件",
+                                                            ActionRole::Main,
+                                                            ActionSize::Page,
+                                                            style,
+                                                        )
+                                                        .on_mouse_down(MouseButton::Left, {
+                                                            let t = cx.weak_entity();
+                                                            move |_, _, cx| {
+                                                                t.update(cx, |v, cx| {
+                                                                    v.pick_wasm_file(cx)
+                                                                })
+                                                                .ok();
+                                                            }
+                                                        }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .text_size(px(12.0))
+                                                            .text_color(
+                                                                theme.foreground.opacity(0.6),
+                                                            )
+                                                            .child(
+                                                                self.form_wasm_path
+                                                                    .as_ref()
+                                                                    .map(|p| {
+                                                                        p.file_name()
+                                                                            .and_then(|n| {
+                                                                                n.to_str()
+                                                                            })
+                                                                            .unwrap_or("")
+                                                                            .to_string()
+                                                                    })
+                                                                    .unwrap_or_else(|| {
+                                                                        if self.editing_id.is_some()
+                                                                        {
+                                                                            "未选择新文件"
+                                                                                .to_string()
+                                                                        } else {
+                                                                            "未选择文件".to_string()
+                                                                        }
+                                                                    }),
+                                                            ),
+                                                    ),
+                                            ),
+                                    )
+                                    .when_some(self.form_file_path.as_ref(), |this, path| {
+                                        this.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(theme.foreground)
+                                                        .child("文件地址"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w_full()
+                                                        .min_h(px(32.0))
+                                                        .px(px(8.0))
+                                                        .py(px(6.0))
+                                                        .border_1()
+                                                        .border_color(theme.border)
+                                                        .rounded(px(4.0))
+                                                        .bg(theme.background.opacity(0.3))
+                                                        .text_size(px(11.0))
+                                                        .text_color(theme.foreground.opacity(0.7))
+                                                        .debug_selector(|| {
+                                                            "PLUGIN_FILE_ADDRESS".to_owned()
+                                                        })
+                                                        .child(path.display().to_string()),
+                                                ),
+                                        )
+                                    })
+                                    .when(!exports.is_empty(), |this| {
+                                        this.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(theme.foreground)
+                                                        .child("exports"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_wrap()
+                                                        .gap(px(6.0))
+                                                        .p(px(8.0))
+                                                        .border_1()
+                                                        .border_color(theme.border)
+                                                        .rounded(px(4.0))
+                                                        .debug_selector(|| {
+                                                            "PLUGIN_EXPORTS".to_owned()
+                                                        })
+                                                        .children(exports.iter().cloned().map(
+                                                            |export| {
+                                                                div()
+                                                                    .px(px(7.0))
+                                                                    .py(px(3.0))
+                                                                    .rounded(px(4.0))
+                                                                    .bg(export_background)
+                                                                    .text_color(export_foreground)
+                                                                    .text_size(px(11.0))
+                                                                    .child(export)
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                    })
+                                    .when(!self.form_sha256.is_empty(), |this| {
+                                        this.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(theme.foreground)
+                                                        .child("SHA256"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w_full()
+                                                        .h(px(32.0))
+                                                        .px(px(8.0))
+                                                        .border_1()
+                                                        .border_color(theme.border)
+                                                        .rounded(px(4.0))
+                                                        .bg(theme.background.opacity(0.3))
+                                                        .flex()
+                                                        .items_center()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.0))
+                                                                .text_color(
+                                                                    theme.foreground.opacity(0.6),
+                                                                )
+                                                                .child(self.form_sha256.clone()),
+                                                        ),
+                                                ),
+                                        )
+                                    })
+                                    .when(!self.form_size_bytes.is_empty(), |this| {
+                                        this.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(theme.foreground)
+                                                        .child("文件大小"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w_full()
+                                                        .h(px(32.0))
+                                                        .px(px(8.0))
+                                                        .border_1()
+                                                        .border_color(theme.border)
+                                                        .rounded(px(4.0))
+                                                        .bg(theme.background.opacity(0.3))
+                                                        .flex()
+                                                        .items_center()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.0))
+                                                                .text_color(
+                                                                    theme.foreground.opacity(0.6),
+                                                                )
+                                                                .child(format!(
+                                                                    "{} bytes",
+                                                                    self.form_size_bytes
+                                                                )),
+                                                        ),
+                                                ),
+                                        )
+                                    })
+                                    .when_some(self.error_message.as_ref(), |this, err| {
+                                        this.child(
+                                            div()
+                                                .p(px(8.0))
+                                                .bg(theme.warning.opacity(0.1))
+                                                .rounded(px(4.0))
+                                                .text_size(px(12.0))
+                                                .text_color(theme.warning)
+                                                .child(err.clone()),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .justify_end()
                                             .gap(px(8.0))
+                                            .debug_selector(|| "PLUGIN_FORM_ACTIONS".to_owned())
                                             .child(
                                                 action_button(
-                                                    "pick-wasm",
-                                                    "选择 WASM 文件",
+                                                    "cancel",
+                                                    "取消",
+                                                    ActionRole::Neutral,
+                                                    ActionSize::Page,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                    }
+                                                }),
+                                            )
+                                            .child(
+                                                action_button(
+                                                    "save",
+                                                    "保存",
                                                     ActionRole::Main,
                                                     ActionSize::Page,
                                                     style,
@@ -860,221 +1095,13 @@ impl Render for PluginView {
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let t = cx.weak_entity();
                                                     move |_, _, cx| {
-                                                        t.update(cx, |v, cx| v.pick_wasm_file(cx))
-                                                            .ok();
+                                                        t.update(cx, |v, cx| v.save(cx)).ok();
                                                     }
                                                 }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .text_size(px(12.0))
-                                                    .text_color(theme.foreground.opacity(0.6))
-                                                    .child(
-                                                        self.form_wasm_path
-                                                            .as_ref()
-                                                            .map(|p| {
-                                                                p.file_name()
-                                                                    .and_then(|n| n.to_str())
-                                                                    .unwrap_or("")
-                                                                    .to_string()
-                                                            })
-                                                            .unwrap_or_else(|| {
-                                                                if self.editing_id.is_some() {
-                                                                    "未选择新文件".to_string()
-                                                                } else {
-                                                                    "未选择文件".to_string()
-                                                                }
-                                                            }),
-                                                    ),
                                             ),
                                     ),
                             )
-                            .when_some(self.form_file_path.as_ref(), |this, path| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .text_color(theme.foreground)
-                                                .child("文件地址"),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .min_h(px(32.0))
-                                                .px(px(8.0))
-                                                .py(px(6.0))
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded(px(4.0))
-                                                .bg(theme.background.opacity(0.3))
-                                                .text_size(px(11.0))
-                                                .text_color(theme.foreground.opacity(0.7))
-                                                .debug_selector(|| "PLUGIN_FILE_ADDRESS".to_owned())
-                                                .child(path.display().to_string()),
-                                        ),
-                                )
-                            })
-                            .when(!exports.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .text_color(theme.foreground)
-                                                .child("exports"),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_wrap()
-                                                .gap(px(6.0))
-                                                .p(px(8.0))
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded(px(4.0))
-                                                .debug_selector(|| "PLUGIN_EXPORTS".to_owned())
-                                                .children(exports.iter().cloned().map(|export| {
-                                                    div()
-                                                        .px(px(7.0))
-                                                        .py(px(3.0))
-                                                        .rounded(px(4.0))
-                                                        .bg(export_background)
-                                                        .text_color(export_foreground)
-                                                        .text_size(px(11.0))
-                                                        .child(export)
-                                                })),
-                                        ),
-                                )
-                            })
-                            .when(!self.form_sha256.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .text_color(theme.foreground)
-                                                .child("SHA256"),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .h(px(32.0))
-                                                .px(px(8.0))
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded(px(4.0))
-                                                .bg(theme.background.opacity(0.3))
-                                                .flex()
-                                                .items_center()
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.0))
-                                                        .text_color(theme.foreground.opacity(0.6))
-                                                        .child(self.form_sha256.clone()),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .when(!self.form_size_bytes.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .text_color(theme.foreground)
-                                                .child("文件大小"),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .h(px(32.0))
-                                                .px(px(8.0))
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded(px(4.0))
-                                                .bg(theme.background.opacity(0.3))
-                                                .flex()
-                                                .items_center()
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.0))
-                                                        .text_color(theme.foreground.opacity(0.6))
-                                                        .child(format!(
-                                                            "{} bytes",
-                                                            self.form_size_bytes
-                                                        )),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .when_some(self.error_message.as_ref(), |this, err| {
-                                this.child(
-                                    div()
-                                        .p(px(8.0))
-                                        .bg(theme.warning.opacity(0.1))
-                                        .rounded(px(4.0))
-                                        .text_size(px(12.0))
-                                        .text_color(theme.warning)
-                                        .child(err.clone()),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.0))
-                                    .debug_selector(|| "PLUGIN_FORM_ACTIONS".to_owned())
-                                    .child(
-                                        action_button(
-                                            "cancel",
-                                            "取消",
-                                            ActionRole::Neutral,
-                                            ActionSize::Page,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
-                                                let t = cx.weak_entity();
-                                                move |_, _, cx| {
-                                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
-                                                }
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        action_button(
-                                            "save",
-                                            "保存",
-                                            ActionRole::Main,
-                                            ActionSize::Page,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
-                                                let t = cx.weak_entity();
-                                                move |_, _, cx| {
-                                                    t.update(cx, |v, cx| v.save(cx)).ok();
-                                                }
-                                            },
-                                        ),
-                                    ),
-                            ),
+                            .vertical_scrollbar(&self.form_scroll),
                     ),
                 )
             })
@@ -1359,6 +1386,7 @@ mod tests {
         });
         cx.run_until_parked();
 
+        let typed_window = window.clone();
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let modal = cx
             .debug_bounds("PLUGIN_MODAL")
@@ -1366,6 +1394,9 @@ mod tests {
         let scroll = cx
             .debug_bounds("PLUGIN_FORM_SCROLL")
             .expect("plugin form scroll bounds");
+        let scrollbar_host = cx
+            .debug_bounds("PLUGIN_SCROLLBAR_HOST")
+            .expect("GPUI Component scrollbar host bounds");
         let actions_before = cx
             .debug_bounds("PLUGIN_FORM_ACTIONS")
             .expect("plugin form action bounds");
@@ -1375,6 +1406,17 @@ mod tests {
         assert_eq!(modal.left(), px(125.0));
         assert_eq!(modal.right(), px(675.0));
         assert!(scroll.bottom() <= modal.bottom());
+        assert_eq!(scrollbar_host, scroll);
+        assert!(cx.debug_bounds("PLUGIN_SCROLL_UP").is_none());
+        assert!(cx.debug_bounds("PLUGIN_SCROLL_DOWN").is_none());
+        assert!(cx.debug_bounds("PLUGIN_SCROLLBAR_TRACK").is_none());
+        let (offset_at_top, max_offset) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (view.form_scroll.offset(), view.form_scroll.max_offset())
+            })
+            .expect("plugin view update at top");
+        assert_eq!(offset_at_top.y, px(0.0));
+        assert!(max_offset.y > px(0.0));
         assert!(
             actions_before.right() <= scroll.right() - px(16.0),
             "plugin form content overlaps the scrollbar gutter: scroll={scroll:?}, actions={actions_before:?}"
@@ -1388,6 +1430,13 @@ mod tests {
         });
         cx.run_until_parked();
 
+        let (offset_at_bottom, max_offset_at_bottom) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (view.form_scroll.offset(), view.form_scroll.max_offset())
+            })
+            .expect("plugin view update at bottom");
+        assert_eq!(offset_at_bottom.y, -max_offset_at_bottom.y);
+
         let actions_after = cx
             .debug_bounds("PLUGIN_FORM_ACTIONS")
             .expect("plugin form action bounds after scrolling");
@@ -1396,5 +1445,28 @@ mod tests {
             "plugin form did not scroll: before={actions_before:?}, after={actions_after:?}"
         );
         assert!(actions_after.bottom() <= modal.bottom());
+
+        assert_eq!(
+            cx.debug_bounds("PLUGIN_SCROLLBAR_HOST")
+                .expect("GPUI Component scrollbar host bounds after scrolling"),
+            scrollbar_host
+        );
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(32.0), scroll.top() + px(32.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        let offset_back_at_top = typed_window
+            .update(&mut cx, |view, _, _| view.form_scroll.offset())
+            .expect("plugin view update after scrolling back to top");
+        assert_eq!(offset_back_at_top.y, px(0.0));
+        assert_eq!(
+            cx.debug_bounds("PLUGIN_SCROLLBAR_HOST")
+                .expect("GPUI Component scrollbar host bounds back at top"),
+            scrollbar_host
+        );
     }
 }

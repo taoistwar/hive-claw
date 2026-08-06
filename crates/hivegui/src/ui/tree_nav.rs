@@ -411,8 +411,17 @@ impl TreeNav {
                 }
             };
 
-            let result =
-                MysqlClient::query_tables(&host, port, &username, &password, &db_node.name).await;
+            let result = MysqlClient::query_tables(
+                &host,
+                port,
+                &username,
+                &password,
+                &crate::datasource::mysql_client::MysqlIdentifier::new_trusted(
+                    db_node.name.clone(),
+                    crate::datasource::mysql_client::IdentifierKind::Database,
+                ),
+            )
+            .await;
 
             match result {
                 Ok(tables) => {

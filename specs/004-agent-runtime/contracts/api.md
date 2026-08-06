@@ -1,5 +1,7 @@
 # HTTP API Contract — Agent Runtime
 
+> **范围更新（2026-07-23）：** 原管理端测试聊天 API（`/api/admin-chat*`、`/api/chat/sessions*`）已由 `81a84fe` 移除并 superseded，本契约不得用于恢复它们。现行普通用户聊天是独立的外部 Assistant API：`/api/assistant`、`/api/newsession`、`/api/messages`，由 `web-user` 使用且不属于下述管理中心 JWT 契约。
+
 **Created**: 2026-05-26
 **Auth**: 全部端点都需要管理中心 JWT（沿用 003）。`POST /api/auth/login` 之外的所有端点都走 `Authorization: Bearer <jwt>`。Capability / 资源 CRUD 默认要求 role ≥ System（2），Agent permission 修改要求 Super（3）（与 spec FR-022 / FR-026 对齐）。
 **Envelope**: 沿用 003 的 `{ code, message, data }`。错误码沿用 003 的 1001/1004/2001/3001/3002 等，新增本特性专属在 §Errors 列出。
@@ -376,52 +378,16 @@ Role: System+. 返回 Instance Pool 当前快照（CHK238 / quickstart §11）�
 
 ---
 
-## 10. Chat
+## 10. Legacy 管理端 Chat（已 Superseded；无现役端点）
 
-### POST /api/chat/sessions
-Body: `{ "title"?: string }` → return new session id.
+原 admin session CRUD + SSE 契约已经删除。本节不定义任何可调用端点；特别是：
 
-### GET /api/chat/sessions
-List my sessions：`?offset=0&limit=20`。
+- 不存在 `/api/admin-chat*`
+- 不存在 `/api/chat/sessions*`
+- `web-admin` 不提供 `ChatPage` / `ChatStream`
+- 不存在 admin chat 的 EventSource、keep-alive、事件 payload 或 per-admin 并发契约
 
-### GET /api/chat/sessions/:id/messages
-Full history of a session.
-
-### POST /api/chat/sessions/:id/messages
-Body: `{ "content": "你好" }`
-Response: `text/event-stream`（SSE）
-
-**Response headers**（CHK196 — production-critical 防 reverse-proxy 缓冲）：
-```
-Content-Type: text/event-stream
-Cache-Control: no-cache, no-transform
-Connection: keep-alive
-X-Accel-Buffering: no
-```
-
-**Keep-alive 频率**（CHK195）：服务端每 15 秒发一行 SSE comment `: ping\n\n`（comment 不触发 client `EventSource.onmessage`，仅维持 TCP 活跃 + 绕过中间代理 30s 默认空闲超时）。
-
-**事件格式**：每个事件 = `event: <name>\n` + `data: <single-line JSON>\n` + 空行 `\n`。多行 data 用 `\n` 转义在 JSON 内。`done` 与 `error` 互斥，必有其一作为流终点。
-Events:
-```
-event: token
-data: {"text": "您好"}
-
-event: tool_call
-data: {"tool_call_id": "tc_1", "name": "route_to_subagent", "args": {"agent_id": 2, "reason": "Rust 异步问题"}}
-
-event: routed
-data: {"agent_id": 2, "agent_identifier": "rust-expert"}
-
-event: done
-data: {"elapsed_ms": 1842, "final_agent_id": 2}
-```
-
-错误：
-```
-event: error
-data: {"code": 5003, "message": "Capability denied: llm.invoke"}
-```
+现行用户聊天由 `/api/assistant`、`/api/newsession`、`/api/messages` 提供，使用其自己的签名/用户隔离契约；`/api/assistant` 返回 JSON，不继承本节已删除的 SSE 设计。详细定义见 `007-external-assistant-api` 与当前实现。
 
 ---
 
@@ -437,14 +403,15 @@ data: {"code": 5003, "message": "Capability denied: llm.invoke"}
 | 4094 | 409 | OptimisticLockConflict（PUT 请求携带的 updated_at 与 DB 不一致） | `内容已被他人修改，请刷新后重试` |
 | 5001 | 403 | Cannot delete main agent | `入口 Agent「main」不可删除` |
 | 5002 | 422 | Schema mismatch（tool/function schema 不一致） | `Tool 与 Function 的输入/输出结构不匹配，请重新选择或调整` |
-| 5003 | 403 | Capability denied at chat level | `当前 Agent 没有执行该会话所需的能力（{capability}）` |
+| 5003 | 403 | Capability denied during Agent invocation | `当前 Agent 没有执行本次请求所需的能力（{capability}）` |
 | 5004 | 408 | Plugin invocation timeout | `Plugin 执行超过 {timeout_ms} 毫秒已被中止` |
 | 5005 | 422 | Workflow node input mapping invalid | `节点「{node_key}」的输入映射「{field}」无效` |
 | 5006 | 422 | Agent depth exceeded（> 10） | `Agent 层级已达最大深度 10，无法继续添加子 Agent` |
 | 5007 | 422 | Unknown model preset | `模型 preset「{preset}」不存在，请重新选择` |
 | 5008 | 403 | Builtin skill cannot be deleted | `内置技能「{identifier}」不可删除` |
 | 5009 | 503 | Plugin instance pool busy（acquire 等待超时） | `Plugin 实例池繁忙，请稍后重试` |
-| 4291 | 429 | SSE chat concurrency exceeded（单 admin 同时活跃 SSE 流过多） | `并发会话过多，请关闭其它对话窗口后重试` |
+
+> 历史错误码 `4291` 曾用于 admin SSE 并发上限，现已随管理端 Chat superseded，不是 004 现役错误契约。
 
 **前端实现要求**（CHK020 决议）：
 1. 所有错误展示组件（toast / message / inline）必须**只**使用上表"用户可见消息"列的文案；不得直接展示后端 `message` 字段的英文原文。
@@ -461,5 +428,4 @@ data: {"code": 5003, "message": "Capability denied: llm.invoke"}
 | Plugin/Function/Workflow/Tool/Skill/Category/Tag CRUD | ≥ System | 写操作 |
 | Agent CRUD（含 permissions 中不含 dangerous） | ≥ System | |
 | Agent permissions 含 dangerous capability | Super | |
-| Chat sessions / messages | ≥ Normal | 自己的会话 |
 | Workflow execute | ≥ System | 直接执行 |

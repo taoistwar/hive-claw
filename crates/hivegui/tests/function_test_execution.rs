@@ -111,6 +111,23 @@ async fn custom_function_precondition_errors_return_instead_of_stalling() {
 }
 
 #[tokio::test]
+async fn placeholder_function_is_explicitly_non_executable() {
+    let temp_dir = tempfile::tempdir().expect("create temp directory");
+    let mut function = custom_function(None, None);
+    function.kind = 3;
+
+    let error = FunctionTestExecutor::execute(
+        &function,
+        serde_json::json!({"query": "prompt-only"}),
+        temp_dir.path(),
+    )
+    .await
+    .expect_err("placeholder functions must not be executable");
+
+    assert_eq!(error, "占位函数没有可执行实现，仅用于 LLM 提示词调试");
+}
+
+#[tokio::test]
 async fn plugin_execution_has_a_hard_timeout() {
     let temp_dir = tempfile::tempdir().expect("create temp directory");
     let wasm_path = temp_dir.path().join("loop.wasm");

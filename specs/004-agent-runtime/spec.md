@@ -1,12 +1,15 @@
 # Feature Specification: Agent Runtime（基于 Capability 的 WASM 插件 Agent 运行时）
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：**
+> - `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。
+> - 原 US6“管理端测试聊天”及其 admin session/SSE API、`web-admin` Chat UI 和 admin chat 表已由 `81a84fe` 移除，属于 **Legacy / Superseded** 历史设计；不得恢复 `/api/admin-chat*` 或 `/api/chat/sessions*`。
+> - 现行聊天是面向普通用户的独立入口：`web-user` 调用 `/api/assistant`、`/api/newsession`、`/api/messages`，使用 `chat_sessions_user` / `chat_messages_user`；`/api/assistant` 对客户端返回 JSON，而非本规范旧设计的管理端 SSE。其接口细节由 `007-external-assistant-api` 与当前实现负责。
 
 **Feature Branch**: `004-agent-runtime`
 **Created**: 2026-05-26
-**Last Updated**: 2026-05-29
+**Last Updated**: 2026-07-23
 **Status**: Implemented
-**Input**: User description: 添加 Agent Runtime（Capability-based with Extism WASM Plugin），它包括能力管理、分类管理、标签管理、WASM 插件管理、函数管理、Workflow 管理、工具管理、技能管理、Agent 管理、测试聊天窗口。
+**Input**: User description: 添加 Agent Runtime（Capability-based with Extism WASM Plugin），它包括能力管理、分类管理、标签管理、WASM 插件管理、函数管理、Workflow 管理、工具管理、技能管理、Agent 管理；原始输入还包含管理端测试聊天窗口，但该部分现已 superseded。
 
 ## Glossary
 
@@ -25,10 +28,10 @@
 
 - Q: Agent 把请求路由到子 Agent 的决策机制采用哪种？ → A: LLM tool-calling 自决 + hard-rule 安全门（深度上限 / 循环检测 / 越权 capability 拒绝）
 - Q: Capability `db.execute` / `db.query` 允许的 SQL 范围？ → A: 仅宿主预注册的命名查询/写入；自由 SQL 永不暴露
-- Q: 聊天端点是否必须流式返回？ → A: 强制 SSE（text/event-stream）；client 即便不读流也能在 `done` 事件拿到最终结果
+- Q: 聊天端点是否必须流式返回？ → A（历史，已 superseded）: 原管理端测试聊天曾决定强制 SSE；该端点已移除，不能据此恢复。现行 `/api/assistant` 返回 JSON。
 - Q: 同 Plugin identifier 多版本如何处理？ → A: 多版本共存；唯一性 = `(identifier, version)`；Function.plugin_id 绑定具体版本主键；升级 = 新版本 + 新 Function 显式接入
 - Q: LLM 客户端/供应商抽象如何选？ → A: 复用 workspace 已有的 `crates/providers`（提供 `LLMProvider` trait + Anthropic/Azure-OpenAI/Bedrock/OpenAI-Compat/Codex/GitHub-Copilot/Fallback 多 backend + ProviderRegistry + ToolCallRequest）。Agent Runtime 不引入 async-openai，新增的 `runtime/llm.rs` 仅作 thin adapter：通过 `providers::make_provider(&cfg)` 拿到 `Arc<dyn LLMProvider>` 后转发 chat / tool-calling。
-- Q: LLM 调用失败时的回退策略？ → A: 强制使用 `providers::FallbackProvider` 链；启动期按 preset（`primary` + `fallback: [...]`）构造一次，runtime 不感知具体 backend；链全部失败才作为 SSE `error` 事件抛出。
+- Q: LLM 调用失败时的回退策略？ → A: 强制使用 `providers::FallbackProvider` 链；启动期按 preset（`primary` + `fallback: [...]`）构造一次，runtime 不感知具体 backend。原“链全部失败后发管理端 SSE `error`”的呈现契约已 superseded；现行调用方按自身 API 契约接收错误。
 - Q: Agent CRUD 权限矩阵？ → A: `main` 任何字段修改限 Super；非 main Agent CRUD = System+；不论哪个 Agent，permissions 含 `is_dangerous=1` 的 capability（`network.http` / `db.execute` / `secret.get`）必须 Super 提交。
 - Q: MVP 内置 function 初始集合？ → A: 启动期注册 5 个胶水函数：`format_template`（模板填充）/ `json_parse` / `json_stringify` / `text_regex_match` / `chat_respond`（生成用户可见回复）。这些不依赖 WASM、不可删除、可被禁用。
 - Q: 路由到子 Agent 后 host_call 鉴权看哪个 permission 集合？ → A: 当前执行中的 Agent 自己的 permissions；不继承父 Agent，也不取交集。Capability 始终按"最近的 Agent 框架"判断，符合最小权限 / zero-trust。
@@ -36,7 +39,7 @@
 - Q: Skill 与 Tool 在 LLM 看到的工具列表中如何区分？ → A: 沿用已有 `crates/agent` 模式。Tool 注册到 `agent::ToolRegistry`，LLM 通过 OpenAI tool-calling 看到（含 JSON Schema 入参/出参）；Skill 是 markdown 内容，调用 = `SkillsLoader` 把内容拼进当前 Agent 的 system prompt，**不**出现在 LLM tools 列表。Workflow 在 runtime 内被包装成一个 Tool 注册（Workflow Wrapper）。
 - Q: 既然 `crates/agent` / `crates/skills` / `crates/providers` 已实现 agent loop / tool registry / skills loader / multi-provider LLM，004 应该复用哪些？ → A: 复用 `crates/agent::{AgentRunner, ToolRegistry, SubagentManager, SkillsLoader, ContextBuilder, MemoryStore}` 与 `crates/providers::{LLMProvider, FallbackProvider}`；004 在 hiveweb 中新增的是**管理面**（DB-backed 元数据 + HTTP CRUD + DAG 编辑器 + WASM Plugin Extism 适配器 + Capability dispatcher），**不**再造 agent 编排核心。
 - Q: 不同 Agent 是否允许选不同的 LLM 模型 / FallbackProvider 链？ → A: 是。`agents` 表加 `model_preset VARCHAR(64) NULL` 字段，对应 hiveweb 启动时从 `llm_presets.toml` 加载的命名 preset（每个 preset 内部封装一个 `providers::FallbackProvider`：primary + fallback 链）。为空 = 走全局默认 preset（启动校验必须正好 1 个 `default = true`）。子 Agent 不继承父的 preset。
-- Q: SSE 事件顺序 / 加载态 / 中途断开 UX 如何定义？（CHK003/004/048）→ A: 事件类型 token/tool_call/tool_result/routed/done/error；`done` 必有且仅 1 次，与 `error` 互斥；提交后到首事件期间显示"正在思考…" + 30s 无响应超时；SSE 中途断开显示"连接中断 + 重新发送"按钮，user 消息已 persist，assistant 中断内容不写库。详见 FR-028 重写。
+- Q: SSE 事件顺序 / 加载态 / 中途断开 UX 如何定义？（CHK003/004/048）→ A（历史，已 superseded）: 以下事件与管理端 UI 契约随原测试聊天一起移除，不再是现行验收条件。
 - Q: 危险 capability 在 CapabilityPicker 中对 System 角色的行为？（CHK015）→ A: 不渲染（hidden）而非 disabled。Super 才看得到；后端在保存时再校验一遍角色，前端绕过仍会被 2001 拒绝。详见 FR-022 补强。
 - Q: 全部 14 个错误码的用户可见文案如何统一？（CHK020）→ A: contracts/api.md §Errors 用三列表（code / 内部含义 / 用户文案）固化全部 14 项；前端 `web-admin/src/utils/error_messages.ts` 集中维护映射，组件只引该字典。
 - Q: capability 鉴权失败的 audit 行为？（CHK088）→ A: 4030 / 4040 拒绝路径**必须**写 audit log（`event_type = capability_denied`）— FR-004 v7 已强化。
@@ -45,7 +48,7 @@
 - Q: WASM 上传期静态校验？（CHK080）→ A: magic bytes + 文件大小 + import 全在 host 注册表内 + 忽略 manifest 自提权字段 + sha256 计算 — FR-005 v7。
 - Q: 子 Agent 错误如何向父上报？（CHK099）→ A: 仅暴露 `{code, message}` envelope；system_prompt / 内部 tool 名 / stack trace / plugin identifier 不外泄；详情写 audit — FR-025 v7。
 - Q: route_to_subagent 是否允许跨级路由？（CHK100）→ A: 不允许；必须是当前 Agent 的直接子 Agent — FR-025 hard-rule 第 ④ 项。
-- Q: SSE chat 端点的会话所有权？（CHK107）→ A: JWT.admin_id == session.admin_id；Super 例外但仍走显式判定 — FR-027 v7。
+- Q: SSE chat 端点的会话所有权？（CHK107）→ A（历史，已 superseded）: 原设计为 JWT.admin_id == session.admin_id；admin session 端点和表均已移除。现行用户聊天按 `user_id` 隔离，不存在 Super 读取他人会话的管理端例外。
 - Q: Threat Model 是否在 spec 中文档化？（CHK112）→ A: 是。spec §Threat Model 新增 TM-1..TM-5 + Out of Scope —— 显式列出 5 类威胁与缓解 + 不纳入范围的项。
 - Q: WASM 加载前 sha256 校验？（CHK116）→ A: 是。宿主每次从对象存储 GET 后重算 sha256 比对 DB 值；不一致 → 拒绝 + audit + 通知运维 — FR-029 v7。
 
@@ -123,16 +126,11 @@
 
 ---
 
-### User Story 6 - 测试聊天窗口 (Priority: P2)
+### User Story 6 - 管理端测试聊天窗口（历史，已 Superseded）
 
-管理员在 Web 上输入文字，后端从 `main` Agent 开始运行，返回最终回复（可流式）。
+该故事曾要求 `web-admin` 提供测试聊天窗口和 admin session SSE API。实现后来被移除，现行 004 不再包含此用户故事，也不得以兼容名义恢复 `/api/admin-chat*`、`/api/chat/sessions*`、`ChatPage` 或 `ChatStream`。
 
-**Independent Test**：输入"你好" → 几秒内返回回复 → 输入触发路由的问题 → 看到（最终）由子 Agent 应答。
-
-**Acceptance Scenarios**:
-1. **Given** 管理员在测试窗口, **When** 输入文字并点击发送, **Then** 收到 `main` Agent 的回复。
-2. **Given** 一段对话已开始, **When** 管理员继续输入, **Then** 同一会话内的历史可被 Agent 看到（多轮上下文）。
-3. **Given** Agent 调用模型超时, **When** 用户等待, **Then** 后端在 30 秒内（默认 LLM 单次调用上限，可通过环境变量调）回退到 FallbackProvider 下一节点，或在整条链全部超时后通过 SSE `error` 事件回报。
+普通用户的现行聊天由 `web-user` 通过 `/api/assistant`、`/api/newsession`、`/api/messages` 使用，属于独立的外部 Assistant API 范围；它复用 Agent Runtime，但不构成管理端测试聊天。
 
 ---
 
@@ -159,7 +157,7 @@
 - WASM 编译失败的 Plugin：上传时即拒绝并报错；不写入对象存储。
 - 大文件 Plugin：上限 **16 MB**（默认，可配 `PLUGIN_MAX_BYTES` env），超出拒绝。
 - Capability `db.execute` / `db.query` 仅暴露宿主预注册的命名查询/写入；自由 SQL 永不可达 — 已在 §Clarifications 锁定。
-- 流式回复中途断开：MVP 不保留中断点；client 收到断开后应重新发起请求。已写入的 user 消息保留在 `chat_messages`；assistant 中断的部分按未完成处理（不写库）。后续版本若需 resume，再在 ChatMessage 增 `is_partial` 字段。
+- （历史，已 superseded）原管理端 SSE 中断恢复设计随测试聊天移除；现行用户聊天的失败、重试与持久化语义由外部 Assistant API 规范负责。
 
 ## Requirements *(mandatory)*
 
@@ -219,27 +217,12 @@
 - **FR-024**: Agent 可嵌套至多 10 层；新建子 Agent 时校验深度。
 - **FR-025**: Agent 字段：id、name、description、created_at、updated_at、tools（多对多 Tool）、skills（多对多 Skill）、system_prompt、permissions（capability 名集合）、parent_agent_id（NULL 表示根）、`model_preset`（可选；指向 hiveweb 启动时从 `llm_presets.toml` 加载的命名 preset；为空时 fallback 到全局默认 preset；子 Agent 不继承父的 preset）。
 - **FR-026**: Agent 路由由 LLM tool-calling 自决（系统组装 system_prompt + 子 Agent 列表 + tools/skills 后由 LLM 选择 `route_to_subagent(agent_id, reason)` / 直接回复 / 调用 Tool）。宿主在此之上叠加 hard-rule 安全门：① 深度 ≥ 10 拒绝路由；② 同会话路径出现循环立刻终止（最大跳次见 §Edge Cases）；③ 越权 capability 直接 4030 拒绝；④ `route_to_subagent(agent_id, ...)` 的 `agent_id` 必须是当前 Agent 的**直接子 Agent**（不能跨级跳，防止越级访问）。
-  **子 Agent 错误的脱敏上报**：子 Agent 内部抛错时，宿主仅向父 Agent / SSE client 暴露 `{ code, message }` envelope（message 为用户文案，见 contracts/api.md §Errors）；**不**暴露子 Agent 的 system_prompt、内部 tool 名、Plugin identifier、stack trace、内部 capability 名（防止信息泄漏给恶意构造提示词的用户）。完整内部错误信息只写 audit log（含 request_id 供运维追溯）。
+  **子 Agent 错误的脱敏上报**：子 Agent 内部抛错时，宿主仅向父 Agent / 当前调用方暴露 `{ code, message }` envelope（message 为用户文案，见 contracts/api.md §Errors）；**不**暴露子 Agent 的 system_prompt、内部 tool 名、Plugin identifier、stack trace、内部 capability 名（防止信息泄漏给恶意构造提示词的用户）。完整内部错误信息只写 audit log（含 request_id 供运维追溯）。
 - **FR-027**：（已合并入 FR-003）Agent 调用 LLM、Tool、Skill、Workflow 时均必须先通过 Capability 鉴权；越权立即返回错误。详见 FR-003 的适用范围条款。
 
-**测试聊天**
-- **FR-028**: 管理员可通过测试窗口与 `main` Agent 对话；后端持久化会话历史，至少在同一登录会话内可见。
-  **会话所有权与隔离**（hard requirement）：每个 `chat_sessions` 行绑定 `admin_id`（创建时从 JWT claims 取）；所有 `/api/chat/sessions/:id/*` 端点（GET messages、POST messages、DELETE session 等）必须校验：当前 JWT 的 admin_id == session.admin_id，**否则 403**（即使 token 有效）。Super 角色可读其它管理员的 session（审计用途）但仍走显式 403/200 判定，不允许任何路径绕过所有权检查。
-  **Rate-limit 兼容**（CHK232）：复用 003 的 `tower-http RateLimit` 中间件对 SSE 长连接不友好（每个 token 事件计为一次请求会被误杀）。`POST /api/chat/sessions/:id/messages` 端点在 router 装配时**绕过** RateLimit 中间件，改用独立的 per-admin SSE 并发上限：默认每个 admin 同时 ≤ 2 个 active SSE 流（`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` env），超出 → 立即返 429 + `code = 4291` 而非排队。
-- **FR-029**: 聊天端点 `POST /api/chat/sessions/:id/messages` 必须以 SSE（text/event-stream）返回。
-  **事件类型与顺序**：
-  - `token`（0..N 次）— 增量文本片段；按时间顺序，可被 `tool_call` 或 `routed` 中断
-  - `tool_call`（0..N 次）— Agent 决定调用 Tool；服务端**在此事件后暂停 `token` 流**直到 tool 执行完
-  - `tool_result`（与 `tool_call` 配对）— Tool 执行完成的结果摘要
-  - `routed`（0..N 次）— 切换到子 Agent；后续 `token` 来自新 Agent；服务端写入 `routed_to_agent_id` 字段到 chat_messages
-  - `fallback_used`（0..N 次）— LLM provider 失败已切到 fallback 节点；`{ from, to, reason }`；client 可忽略
-  - `done`（必有且仅 1 次，整流终点）— 含 final assistant 消息 / elapsed_ms / final_agent_id；客户端即使不消费中间事件也能仅从 `done` 重建完整内容
-  - `error`（与 `done` 互斥）— 整链失败时发出，含 code（4030/4040/5003/5004/...）+ message；任一发出后流即结束
-  **客户端 UX 契约**：
-  - 提交后到第一个 `token`/`tool_call` 之间：UI 显示"正在思考…"占位符 + spinner；30 秒无任何事件视为超时并降级展示错误
-  - SSE 连接中途断开：UI 在已渲染内容下方显示"连接中断"提示 + "重新发送"按钮；user 消息已 persist（仍可在历史中看到），assistant 中断的内容**不**写库（避免半截消息污染历史）
-  - `tool_call` 期间：UI 显示该 tool 名称 + 入参摘要的卡片，等 `tool_result` 到达后折叠
-  - `routed` 触发：UI 显示一行"已切换到 {agent_identifier}：{reason}"分隔条，后续 token 视觉上归属新 Agent
+**Legacy 管理端测试聊天（已移除）**
+- **FR-028 / 原聊天 FR-029（历史，已 superseded）**: 原管理端测试窗口、admin 会话所有权、SSE 事件/并发/UX 契约均不再是现行需求。相关 API、UI 与表已移除，不得恢复 `/api/admin-chat*` 或 `/api/chat/sessions*`。
+- **现行边界**: 普通用户聊天只通过 `web-user` 的 `/api/assistant`、`/api/newsession`、`/api/messages` 入口访问；会话按 `user_id` 隔离并存储在 `chat_sessions_user` / `chat_messages_user`。该入口不使用管理中心 JWT/Super 例外，且 `/api/assistant` 返回完整 JSON 消息，不暴露原管理端 SSE 契约。
 
 **Runtime 实现**
 - **FR-029**: WASM 执行使用 Instance Pool：编译好的 Plugin 实例缓存复用，避免重复编译；池大小可配置，超时空闲实例回收。**实例可跨 Agent / 跨 Session 复用**，但每次归还池前必须 reset linear memory；Plugin 作者不得依赖 mut global 在不同 host_call 之间持久化状态（违反此约束的行为视为 Plugin bug，不在宿主兜底范围内）。
@@ -247,7 +230,7 @@
   **Pool 容量与行为**（CHK211 / CHK213 / CHK214）：
   - 默认上限：每 Plugin 最多 8 实例（`PLUGIN_POOL_MAX_PER_PLUGIN`），全局总数 64（`PLUGIN_POOL_MAX_TOTAL`）
   - 空闲回收：实例闲置超过 10 分钟（`PLUGIN_POOL_IDLE_TIMEOUT_SEC`）由后台任务释放
-  - **Pool 满时 acquire 行为**：先按 FIFO 等待空闲实例最多 5 秒（`PLUGIN_POOL_ACQUIRE_TIMEOUT_MS`）；超时 → 返回 `5009 PoolBusy` 错误而非阻塞 chat session
+  - **Pool 满时 acquire 行为**：先按 FIFO 等待空闲实例最多 5 秒（`PLUGIN_POOL_ACQUIRE_TIMEOUT_MS`）；超时 → 返回 `5009 PoolBusy` 错误而非无限阻塞当前 Agent 运行
   - **实例 reset 失败处理**：归还前 reset 抛错 → 丢弃实例（不入池）+ 计入 `pool.reset_failures` 指标 + audit 一条 `outcome=error`；下次 acquire 会重新编译一个新实例（cache_miss 计数 +1）
 - **FR-030**: 单次 Plugin 调用必须有硬超时，默认 **30 秒**（可配 `PLUGIN_CALL_TIMEOUT_MS` env），超时强制中止并归还实例位。
   **双层 timeout 实现**（CHK215）：① Wasmtime **fuel-based budget** 防止纯 CPU 死循环（按指令计数中断；上限由 `PLUGIN_CALL_FUEL` env 调，默认值与 30s × 典型指令吞吐对齐）；② tokio `select!` 包一层墙钟超时防止 await 永远不返回（如 host_call 内部网络挂起未响应）。两者任一触发即视为 timeout，宿主返 5004 + audit + 丢弃实例（被中断的 Wasmtime 实例不再可信，不入池）。
@@ -274,12 +257,12 @@
 - **Tool**：包装层。引用 Function 或 Workflow；声明 source（workspace | builtin）/ is_always / category_id / required_capabilities。
 - **Skill**：上层封装。声明 source（workspace | builtin）/ is_always / category_id / required_capabilities。引用 Function 或 Workflow + 自有描述/示例。
 - **Agent**：交互单元。自引用 parent_agent_id；多对多 Tools；多对多 Skills；Set 列存 permissions；可选 model_preset。
-- **ChatSession + ChatMessage**：测试聊天的会话与消息。ChatSession 含 admin 快照列。
+- **ChatSessionUser + ChatMessageUser（外部用户聊天，后续特性所有）**：普通用户会话与消息，分别存于 `chat_sessions_user` / `chat_messages_user` 并按 `user_id` 隔离；004 不提供 admin chat 实体。
 - **AuditLog（runtime）**：每次 capability 调用、每次 Agent 路由、每次 Workflow 节点执行的审计记录。
 - **Admin + AdminAuditLog**：管理员账户与操作审计（继承自 003-admin-center）。
 - **LoginRecord**：登录记录（继承自 003-admin-center）。
 - **RecommendedGame**：推荐游戏列表，含排序和分类标签。
-- **Dashboard**：统计聚合视图（plugin/function/workflow/agent/tool/skill/chat 计数 + 最近活动）。
+- **Dashboard**：统计聚合视图（plugin/function/workflow/agent/tool/skill/现行 user chat 计数 + 最近活动）；不包含已删除的 admin Chat。
 
 ## Success Criteria *(mandatory)*
 
@@ -294,7 +277,7 @@
 - **SC-007**: 越权 Capability 调用 100% 被宿主拒绝并审计，无任何漏放。
 - **SC-008**: `main` Agent 删除尝试 100% 被拒绝。
 - **SC-009**: Plugin 软删除前的引用检查 100% 准确（被引用时 0% 误删）。**Race window 规避**：软删除 transaction 必须 `SELECT ... FOR UPDATE` 锁住目标 Plugin 行 + `SELECT COUNT(*) FROM functions WHERE plugin_id = ? AND ...` 同事务内查；锁释放前并发的"新建 Function 引用此 Plugin" 必须 `SELECT plugin FOR SHARE`（应用层）— 否则视为竞态读到旧"未删除"状态，service 层 INSERT 时再查一次 `deleted_at` 并 rollback。两层防御。
-- **SC-010**: 一次完整对话（入口 → 路由 → 子 Agent → 一次 Tool 调用 → 回复）端到端 p95 ≤ 8 秒（含 1 次 LLM 调用）。
+- **SC-010（历史，已 superseded）**: 原管理端测试聊天曾要求完整对话端到端 p95 ≤ 8 秒；该 API/UI 删除后不再是 004 现行验收项。
 
 ## Threat Model
 
@@ -313,11 +296,10 @@
 
 ### TM-2 越权管理员（assume System role 操作恶意 / 失误）
 
-**威胁**：System 角色试图给 Agent 授予危险 capability、删除 main、修改 main 的 system_prompt、跨用户访问 chat session。
+**威胁**：System 角色试图给 Agent 授予危险 capability、删除 main 或修改 main 的 system_prompt。
 **缓解**：
 - 危险 capability 的赋予 / 撤销 = Super only（FR-022 v6）；System 在 UI 上看不到（hidden 而非 disabled）+ 后端再校验
 - `main` Agent 删除拒绝（FR-022）+ 修改限 Super
-- chat session 绑定 admin_id（FR-027 v6）
 - 所有变更走 audit log（FR-004）
 
 ### TM-3 凭据 / 密钥泄漏
@@ -331,12 +313,11 @@
 
 ### TM-4 DoS / 资源耗尽
 
-**威胁**：Plugin 死循环 / OOM；高并发刷 host_call；超大 WASM 文件；超长 chat content。
+**威胁**：Plugin 死循环 / OOM；高并发刷 host_call；超大 WASM 文件。
 **缓解**：
 - Plugin 单次 timeout 30 s（FR-030）+ memory 128 MB（FR-031）+ fuel-based 中断
 - Pool 大小 + 等待超时（research §2）
 - Plugin 文件 ≤ 16 MB（spec §Edge Cases）
-- chat content ≤ 64 KB（contracts/api.md §8）
 - rate limit 沿用 003
 
 ### TM-5 数据外泄（含 LLM 提示词注入）
@@ -345,7 +326,7 @@
 **缓解**：
 - Capability 鉴权对 LLM 决策不可逆（不论 LLM 输出什么，host_call 进入 dispatcher 仍按 Agent permissions 判定）
 - 子 Agent 错误脱敏上报（FR-025 v6）
-- audit log 不可篡改（append-only）+ 90 天后归档；非 Super 不可读其它管理员的会话/审计（FR-027 v6 + 003 权限模型）
+- audit log 不可篡改（append-only）+ 90 天后归档；非 Super 不可读取受限审计数据（003 权限模型）
 
 ### Out of Scope（继承自 003 或工程基础保障，不在 004 spec 重复约定）
 
@@ -369,9 +350,9 @@
 - **CHK203**: HTTP 状态码是 transport-level 映射，业务码（`code`字段）才是权威。前端必须按 `code` 分支。
 - **CHK204**: Plugin 上传超过 `PLUGIN_MAX_BYTES`（默认16MB）时返 4001，`params: { "limit": "16MB" }`。
 
-### SSE Chat 补充（CHK193）
+### Legacy 管理端 SSE Chat 补充（CHK193，已 Superseded）
 
-- **CHK193**: SSE 事件完整 payload schema：`token`: `{ "text": string }`; `tool_call`: `{ "tool_call_id": string, "name": string, "args": object }`; `tool_result`: `{ "tool_call_id": string, "result_summary": string }`; `routed`: `{ "agent_id": number, "agent_identifier": string, "reason"?: string }`; `fallback_used`: `{ "from": string, "to": string, "reason": string }`; `done`: `{ "elapsed_ms": number, "final_agent_id": number, "message"?: object }`; `error`: `{ "code": number, "message": string }`。
+- **CHK193（历史）**: 原 SSE payload schema 仅记录被移除的管理端测试聊天设计，不是现行 API 契约；不得据此恢复 admin chat。
 
 ### host_call ABI 补充（CHK198/207/209）
 
@@ -381,7 +362,7 @@
 
 ### Capability Coverage Matrix 补充（CHK201/202）
 
-- **CHK201**: Matrix 覆盖所有 10 组端点（Capabilities/Categories/Tags/Plugins/Functions/Workflows/Tools/Skills/Agents/Chat + Runtime Metrics）。
+- **CHK201**: Matrix 覆盖现行管理端资源端点（Capabilities/Categories/Tags/Plugins/Functions/Workflows/Tools/Skills/Agents + Runtime Metrics）；原 Chat 组已 superseded。
 - **CHK202**: 危险 capability 涉及的 Agent permissions 修改路径标记为 Super-only（与 FR-022 一致）。
 
 ### WASM 资源限制补充（CHK216/217/218/219）
@@ -398,13 +379,13 @@
 
 ### 并发与背压补充（CHK230/231/233）
 
-- **CHK230**: SSE 全局并发上限默认 100（`CHAT_SSE_MAX_SESSIONS`），超出→503+5009。Per-admin 上限 2（FR-027 已定义）。
+- **CHK230（历史，已 superseded）**: 原管理端 SSE 全局/per-admin 并发限制随 Chat API 移除，不再是 004 运行时要求。
 - **CHK231**: Plugin 调用速率由 Instance Pool `PLUGIN_POOL_MAX_PER_PLUGIN=8` 隐式限流。MVP 不额外加 per-Agent/per-session 限制。
 - **CHK233**: DB 连接池 `max_connections` 默认 20。audit 写入走同一池；运维可调 `SQLX_MAX_CONNECTIONS` env。
 
 ### 启动与生命周期补充（CHK236/237）
 
-- **CHK236**: Graceful shutdown：SIGTERM→停止 accept→等待 active SSE 完成（最多30s）→释放 Instance Pool→关闭 DB pool。未完成 session 标记 interrupted。
+- **CHK236**: Graceful shutdown：SIGTERM→停止 accept→等待活跃请求完成（最多30s）→释放 Instance Pool→关闭 DB pool。原“等待 admin SSE 并标记 session interrupted”语义已 superseded。
 - **CHK237**: 在线 reload `llm_presets.toml`：MVP 不支持（YAGNI）。修改 preset 需重启 hiveweb。
 
 ### 观测性补充（CHK239/240）
@@ -445,7 +426,7 @@
 - **CHK095**: 禁止创建 identifier='main' 的 Agent — UNIQUE+service 层额外校验。
 - **CHK096**: Super 降级恢复：沿用 003 设计（至少保留 1 个 Super）。
 - **CHK097**: Agent 嵌套≤10 的理由：①防指数级 LLM 调用；②防上下文窗口溢出；③运营经验值。
-- **CHK098**: 路由循环检测窗口：同一 chat_session 范围。orchestrator 维护 agent visit history。
+- **CHK098**: 路由循环检测窗口：同一次 Agent 运行范围。orchestrator 维护 agent visit history；不依赖已移除的 admin chat session。
 - **CHK101**: 所有 capability 入参在 dispatcher 层做 JSON schema 校验，非法→4001+audit。
 - **CHK102**: identifier 字符集：`[a-z0-9_]+(\.[a-z0-9_]+)*`，2-64字符。service 层正则校验。
 - **CHK103**: WASM magic bytes 校验在 FR-005 已明确。
@@ -458,11 +439,11 @@
 - **CHK111**: Agent permissions 修改与正在执行的 host_call：已发出用入口时快照，后续用新。TOCTOU 窗口≤30s。
 - **CHK113**: capability handler 内部抛错→统一包装为 5000+用户文案，原始错误只写 audit+tracing。
 - **CHK114**: Plugin 反复 4030 的 fail-fast：MVP 不自动熔断。依赖 rate limit+audit 告警。
-- **CHK115**: 失败 host_call 通过 SSE error 事件时，`message` 用用户文案，不暴露内部细节。
+- **CHK115**: 失败 host_call 返回调用方时，`message` 使用用户文案，不暴露内部细节；原管理端 SSE `error` 载体已 superseded。
 - **CHK117**: audit append-only 语义（CHK090）。hash chain：MVP 不加（YAGNI）。
 - **CHK118**: JWT_SECRET/LLM API KEY 存储：env-injected 不落盘。轮换=更新 env+重启。
 - **CHK119**: DB 连接字符串密码在日志中遮码：沿用 003 `Secret` wrapper。
-- **CHK120**: admin PII 保留/删除：admin 删除→SET NULL+snapshot 保留；聊天内容按 30 天 cron 清理。
+- **CHK120（历史，已 superseded）**: 原 admin chat 的 PII/30 天清理设计已移除；现行用户聊天的数据保留策略不由 004 定义。
 - **CHK121**: 审计日志合规导出：MVP 不提供 API。运维直接查 DB。
 - **CHK122**: LLM 调用"不发送敏感字段"过滤：MVP 不实现。缓解：payload_summary 脱敏+子 Agent 错误脱敏。
 
@@ -470,8 +451,7 @@
 
 - **CHK001**: Plugin 上传进度：MVP 显示 spinner+"上传中…"，不提供实时进度条。
 - **CHK002**: 大文件上传失败显示 4001+"Plugin 文件大小超过 16MB 限制"。
-- **CHK005**: Agent 路由时 SSE `routed` 事件→UI 显示"已切换到 {agent_identifier}"分隔条。FR-028 已定义。
-- **CHK006**: `tool_call` 事件渲染：UI 显示 tool 名称+入参摘要卡片。FR-028 已定义。
+- **CHK005/CHK006（历史，已 superseded）**: 原管理端 SSE `routed` / `tool_call` 渲染不再是现行 UI 验收条件。
 - **CHK007**: DAG 编辑器空状态：提示"拖入 Function 开始构建工作流"+空画布。
 - **CHK008**: 节点级失败 UI：节点高亮红色+tooltip 显示错误信息。
 - **CHK009**: Skill frontmatter 校验时机：保存时校验（非实时）。
@@ -479,43 +459,42 @@
 - **CHK011**: 拖拽 Function：reactflow 标准拖拽。从左侧列表拖入画布创建节点。
 - **CHK012**: DAG 边端口映射：从 output port 拖到 input port+边属性面板。
 - **CHK013**: 环检测红框：仅环上节点+连线高亮红色。
-- **CHK014**: `done` 事件完整 assistant 消息：`{ "elapsed_ms", "final_agent_id", "message": {...} }`。
+- **CHK014（历史，已 superseded）**: 原管理端 SSE `done` 事件结构不再是现行 API 契约。
 - **CHK016**: `system_prompt` 最大长度 32KB，超出→4001。textarea 显示字符计数器。
 - **CHK017**: Skill content 64KB 超出→保存时拒绝+toast 提示。
 - **CHK018**: Agent 编辑器字段顺序与 contracts §9 一致。
 - **CHK019**: "无权限=不渲染"在 004 全部 5 个新页面贯彻。
 - **CHK021**: Plugin 列表"已删除"行灰显+日期标签，与 003 "已禁用"视觉统一。
-- **CHK022**: SSE chat 与 003 消息组件视觉统一。
+- **CHK022（历史，已 superseded）**: 原管理端 SSE chat 视觉要求已移除。
 - **CHK023**: SC-001 度量起点=HTTP 请求到达，终点=200/201 响应。
 - **CHK024**: SC-003 含服务端校验耗时，不含 reactflow 渲染。
 - **CHK025**: SC-006 含 LLM 调用延迟。宿主侧 routing overhead≤200ms。
-- **CHK026**: SC-010 用户可感知=首字时间。`done`=完整响应。
+- **CHK026（历史，已 superseded）**: 原管理端 SSE 首字/`done` 度量已移除。
 - **CHK027**: a11y 覆盖全部 004 新增页面+组件。reactflow canvas 可豁免部分 axe 规则。
 - **CHK028**: Plugin 软删除后 Function 下拉过滤已删除项。
 - **CHK029**: Workflow 引用已删除 Plugin 的 Function 节点：灰色+"Plugin 已删除"标签。
 - **CHK030**: model_preset 不存在时保存返 5007。
-- **CHK031**: 聊天历史超可视范围：虚拟滚动+分页加载。
+- **CHK031（历史，已 superseded）**: 原管理端聊天历史虚拟滚动要求已移除。
 - **CHK032**: Skill 勾选后右侧面板实时预览 system_prompt 拼接结果。
 - **CHK033**: 同 identifier 不同 version Plugin：列表行显示 version badge。
 - **CHK034**: Agent 第 10 层新建子 Agent 按钮隐藏（不渲染）。
 - **CHK035**: main Agent 在树中锚定：不可拖动、无删除按钮、显示 `main` badge。
-- **CHK036**: SSE error 事件各 code 有用户友好文案（contracts §Errors 统一）。
-- **CHK037**: 路由跳次达上限时 Chat 显示"对话已达到最大路由次数"。
+- **CHK036/CHK037（历史，已 superseded）**: 原管理端 SSE error 与 Chat 提示要求已移除。
 - **CHK038**: DagEditor keyboard navigation：Tab/Enter/Delete/Esc。
 - **CHK039**: Monaco editor a11y 限制：axe 排除 Monaco 容器，手动验证。
 - **CHK040**: reactflow jsdom 限制：axe 排除容器；a11y 通过 Playwright E2E 验证。
-- **CHK041**: SSE 浏览器兼容性：Chrome 6+/Firefox 6+/Safari 5+/Edge 79+。
+- **CHK041（历史，已 superseded）**: 原管理端 SSE 浏览器兼容性要求已移除。
 - **CHK042**: i18n：沿用 003 默认中文。
-- **CHK043**: 长 content 渲染：react-markdown+虚拟滚动。
+- **CHK043（历史，已 superseded）**: 原管理端 Chat 长内容渲染要求已移除。
 - **CHK044**: reactflow 11.x 稳定性：锁定 minor 版本。
 - **CHK045**: Monaco worker 加载失败→降级 textarea。
 - **CHK046**: 假设管理员熟悉 markdown+JSON Schema：显式登记。
-- **CHK047**: 假设浏览器支持原生 EventSource：显式登记。MVP 不提供 polyfill。
-- **CHK049**: `route_to_subagent` 是特殊 Tool，SSE 流中表现为 `tool_call`+`routed` 事件组合。
+- **CHK047（历史，已 superseded）**: 原管理端 EventSource 假设已移除。
+- **CHK049（历史，已 superseded）**: `route_to_subagent` 仍是运行时特殊 Tool，但原 SSE `tool_call` + `routed` 客户端表现不再是现行契约。
 - **CHK050**: Tool 与 Skill 在 Agent 编辑器多选框中区分视觉：不同 section+不同 icon。
 - **CHK051**: SkillsLoader frontmatter 解析失败→UI toast+保存拒绝。
 - **CHK052**: 内置/定制 Tool 视觉区分：`builtin`/`custom` badge。
-- **CHK053**: FallbackProvider 切换时 SSE `fallback_used` 事件→UI 显示"已切换到备用模型"。
+- **CHK053（历史，已 superseded）**: FallbackProvider 仍可切换后端，但原管理端 SSE `fallback_used` UI 要求已移除。
 - **CHK054**: LlmPresetName 命名约束：`[a-z0-9_-]+`，2-64字符。UI 下拉按字母排序。
 
 ### 需求完整性/清晰度补充（CHK002..072）
@@ -523,17 +502,16 @@
 - **CHK002/003/004/006**: 已在 CHK193/内置 Function schema/FR-005/安全门错误码中补充。
 - **CHK015**: Plugin 内存 128MB 超限→Wasmtime trap→5000+audit+实例不入池。
 - **CHK017**: 跳次计数：main=第0跳，main→子=第1跳。`AGENT_MAX_HOPS` 限制路由次数。
-- **CHK021**: 30 天聊天保留 cron：每日凌晨 3:00，事务内批量删除（每批 1000 session）。
-- **CHK023**: FR-028 与 T127 的 7 种事件类型统一（token/tool_call/tool_result/routed/fallback_used/done/error）。
+- **CHK021/CHK023（历史，已 superseded）**: 原 admin chat 保留 cron 与七类 SSE 事件要求随管理端测试聊天移除。
 - **CHK029**: SC-001 度量起点=HTTP 请求到达，终点=200/201 响应。
 - **CHK032**: SC-007 测试方法：11 capability×3 路径=33 个合约测试用例。
 - **CHK054/057/058/059**: 度量工具/a11y 验收/错误不携带 stack trace/16MB 双重校验已补充。
 - **CHK061/062/063**: providers 复用/003 角色复用/S3 兼容性验证已在 tasks 中体现。
 - **CHK065**: DagEditor keyboard navigation 已排期（T157-T161）。
-- **CHK067**: "正在思考…" 30s 超时是客户端 UX 超时，不影响后端。LLM 单次 30s+链 45s 独立。
+- **CHK067（历史，已 superseded）**: 原管理端“正在思考”客户端超时已移除；LLM/runtime timeout 仍按各自现行配置处理。
 - **CHK068**: named query schema 在 `named_queries.toml`：`{ name, sql, params_schema }`。
 - **CHK069**: Skill 模板插值：`{{function:identifier(args)}}`。MVP 仅支持此语法。
-- **CHK070**: model_preset 切换不影响已有活跃会话（用创建时快照）。
+- **CHK070**: model_preset 切换不影响已开始的 Agent 运行（使用启动时解析结果）；不依赖已移除的 admin chat session。
 - **CHK071**: Workflow 失败无回滚/补偿。DAG 执行"尽力向前"。
 - **CHK072**: Pool lazy 初始化与冷启动≤300ms：首访可能 100-500ms，SC-05 已区分命中/冷启动。
 
@@ -542,11 +520,11 @@
 - **CHK128**: `agents.identifier VARCHAR(64)` 足够（最长合理路径约 40 字符）。
 - **CHK129**: `model_preset` 字符集 `[a-z0-9_-]+`，2-64字符。
 - **CHK130**: `payload_summary` 截断≤1KB+字段黑名单脱敏。
-- **CHK131**: `chat_messages.content` 改用 `MEDIUMTEXT`（消除 TEXT 65535 bytes vs 64KB 边界冲突）。service 层校验≤64KB。
+- **CHK131（历史，已 superseded）**: 原 `chat_messages` admin 表字段设计已移除；现行用户表为 `chat_messages_user`，其字段约束由外部 Assistant API 与迁移负责。
 - **CHK132**: `workflow_edges.mapping` schema：`{ "dst_key.dst_field": "src_key.src_field" }`。
 - **CHK135**: `agents.identifier` 全局唯一，不以 parent 前缀区分。by-design。
 - **CHK136**: `categories (parent_id, slug) UNIQUE` 允许跨 parent 同 slug。by-design。
-- **CHK137**: `chat_messages (session_id, seq)` 并发写安全：同一 session 由 orchestrator 串行写入。
+- **CHK137（历史，已 superseded）**: 原 admin `chat_messages (session_id, seq)` 设计已移除；现行 `chat_messages_user` 没有该 `seq` 契约。
 - **CHK138**: FK ON DELETE 理由：CASCADE=强拥有；SET NULL=弱引用+需保留；RESTRICT=引用阻塞；无 FK=审计不可级联。
 - **CHK143**: `runtime_audit_logs` 无 FK→intentional（audit 不可级联删除）。
 - **CHK144**: 不变量每条标明"谁强制"：1/2/8=service+FE; 3=DB CHECK+service; 4/6/7/10/11/12=service; 5/9/13=DB。
@@ -569,14 +547,14 @@
 ## Assumptions
 
 - LLM 调用一律走 workspace 中既有的 `crates/providers`（多 backend 抽象 + Fallback + tool-calling）。Agent Runtime 不直接持 vendor SDK，只通过 `LLMProvider` trait 调用。
-- LLM 失败回退由 `providers::FallbackProvider` 链承担；启动配置以 preset 形式给出 primary + fallback 列表（如 `primary=openai-compat, fallback=[bedrock, anthropic]`）。仅当整条链全部失败时，错误才作为 SSE `error` 事件传给客户端。
+- LLM 失败回退由 `providers::FallbackProvider` 链承担；启动配置以 preset 形式给出 primary + fallback 列表（如 `primary=openai-compat, fallback=[bedrock, anthropic]`）。整条链失败时由现行调用方 API 返回错误；004 不再规定管理端 SSE `error`。
 - 同时支持多个命名 preset（如 `cheap-fast` / `code-expert` / `claude-fallback`），每个 Agent 通过 `model_preset` 字段选择；为空 fallback 到全局默认 preset。
 - 已有的管理中心（003-admin-center）提供的角色与认证体系直接复用；Runtime 端点保护沿用同一 JWT。
 - 对象存储沿用既有 Rustfs（S3 兼容）部署，不引入新存储。
 - Plugin 作者用 Extism 官方 SDK（Rust/Go/JS/Python 等任一）；宿主仅承诺 Extism PDK 兼容。
 - DAG 编辑器使用前端通用图编辑库（具体选型在 plan）。
 - 内置 Function 由系统启动时静态注册；不支持热加载内置函数。
-- 聊天会话历史保留期默认 **30 天**（可配 `CHAT_RETENTION_DAYS` env）；cron 任务每日清理超期 session（含级联 message）。
+- 原 admin chat 的 30 天保留假设已 superseded；004 不定义现行用户聊天的保留期。
 - Capability `db.execute` / `db.query` 仅允许宿主预注册的命名查询/写入（zero-trust），自由 SQL 永不暴露 — 已锁定。
 - `is_always = 1` 的 Tool/Skill 对所有 Agent 自动可用/加载，无需在 `agent_tools` / `agent_skills` 中建立关联。
 - `source = 'builtin'` 的 Tool 不可编辑，只能包装 builtin Function (kind=1)。
@@ -616,11 +594,11 @@
 | 1 | LLM 提供商 | 复用 `crates/providers` 多 backend 抽象（含 Anthropic / OpenAI 兼容 / Bedrock / Codex / Copilot / Azure / Fallback） |
 | 2 | Agent 路由决策 | LLM tool-calling 自决 + hard-rule（深度 ≤ 10 / 循环 / 越权拒绝） |
 | 3 | Plugin 多版本 | 共存；唯一 `(identifier, version)`；Function 绑定具体版本主键 |
-| 4 | 聊天历史保留 | 30 天默认，可配 `CHAT_RETENTION_DAYS` env |
+| 4 | 聊天历史保留 | 历史决议，已随 admin chat superseded；现行用户聊天保留期不由 004 定义 |
 | 5 | 路由跳次上限 | 5（默认，可配 `AGENT_MAX_HOPS` env） |
 | 6 | Plugin 文件大小 | 16 MB（默认，可配 `PLUGIN_MAX_BYTES` env） |
 | 7 | `db.execute` 范围 | 仅宿主预注册的命名查询/写入；自由 SQL 永不暴露 |
-| 8 | 流式回复 | 强制 SSE |
+| 8 | 流式回复 | 历史决议，已 superseded；不得恢复管理端 SSE Chat |
 | 9 | Plugin 调用 timeout / memory | 30 秒 / 128 MB（默认，可配 env） |
 | 10 | 并发编辑冲突 | 乐观锁 `updated_at`；冲突返回 409 |
 | 11 | 子 Agent capability 边界 | 不继承；按当前执行中的 Agent 鉴权 |

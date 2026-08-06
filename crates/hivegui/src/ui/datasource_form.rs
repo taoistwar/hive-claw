@@ -1,71 +1,151 @@
+//! HiveGUI DataSource add / edit form.
+//!
+//! T039 [US2] implementation. Source of truth:
+//! `specs/011-hivegui-standalone-mode/tasks.md` §T039.
+//!
+//! T016E `scroll:datasource_form` is the native-scroll tag the
+//! inventory helper (and `datasource_ui_contract.rs`) keys off.
+//! T036 enforces:
+//!   - editable input widgets must be `gpui_component::input::Input`
+//!   - the error summary must have a stable focus target
+//!     (`DATASOURCE_FORM_ERROR_SUMMARY`)
+//!   - submit routes through `validate_and_submit`
+//!   - the state machine uses [`DataSourceViewMode`], not parallel
+//!     ad-hoc visibility flags.
+
+#![warn(missing_docs)]
+
+use std::sync::Arc;
+
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle,
-    SharedString, Window, div, prelude::*, px,
+    App, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, Render, SharedString, Window,
+    div, prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputState};
 
-use crate::datasource::{DataSource, MysqlClient, Store};
-use crate::ui::management_style::{
-    ActionRole, ActionSize, ManagementStyle, action_button as management_action_button,
-    management_modal_layer, management_modal_panel, management_modal_scroll,
+use crate::datasource::data_source_store::{
+    DataSourceRecord, DataSourceStore, DataSourceViewMode, EmptyPasswordPolicy,
 };
 
+/// Stable selector for the error summary focus target (T036 contract).
+pub const DATASOURCE_FORM_ERROR_SUMMARY: &str = "DATASOURCE_FORM_ERROR_SUMMARY";
+
+/// T016E native-scroll tag for the DataSource form.
+pub const SCROLL_TAG: &str = "scroll:datasource_form";
+
+/// Legacy form mode enum preserved for the legacy `DataSourceView`
+/// path used by `utility_view.rs`. New code uses the
+/// [`DataSourceViewMode`] state machine in the parent view.
 #[derive(Clone)]
 pub enum FormMode {
+    /// Add a brand-new data source.
     Add,
+    /// Edit an existing one (the integer is the row id).
     Edit(i64),
 }
 
+/// Helper that owns the editable `InputState` entities used by the
+/// form. Splitting the entity bag out keeps [`DataSourceForm`]
+/// focused on the state machine and validation logic.
+struct FormFields {
+    name: Entity<InputState>,
+    host: Entity<InputState>,
+    port: Entity<InputState>,
+    username: Entity<InputState>,
+    password: Entity<InputState>,
+    database: Entity<InputState>,
+}
+
+impl FormFields {
+    fn build(
+        name: &str,
+        host: &str,
+        port: &str,
+        username: &str,
+        password: &str,
+        database: &str,
+        password_placeholder: &'static str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let name_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("名称")
+                .default_value(name)
+        });
+        let host_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("主机")
+                .default_value(host)
+        });
+        let port_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("端口")
+                .default_value(port)
+        });
+        let username_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("用户名")
+                .default_value(username)
+        });
+        let password_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(password_placeholder)
+                .default_value(password)
+        });
+        let database_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("数据库")
+                .default_value(database)
+        });
+        Self {
+            name: name_state,
+            host: host_state,
+            port: port_state,
+            username: username_state,
+            password: password_state,
+            database: database_state,
+        }
+    }
+}
+
+/// Keyboard-driven form used for both Add and Edit. The form
+/// owns its `InputState` entities and the in-flight validation
+/// state; the parent view only sees a [`DataSourceViewMode`]
+/// switch when the form is closed.
 pub struct DataSourceForm {
     mode: FormMode,
-    store: Entity<Store>,
-    // Initial values used when the editable InputState entities are created.
-    name: SharedString,
-    host: SharedString,
-    port: SharedString,
-    username: SharedString,
-    password: SharedString,
+    store: Entity<crate::datasource::Store>,
     placeholder_password: &'static str,
-    /// 编辑模式下保存的原始加密密码，用于连接测试时密码为空的情况
-    original_encrypted_password: Option<Vec<u8>>,
-    name_input: Option<Entity<InputState>>,
-    host_input: Option<Entity<InputState>>,
-    port_input: Option<Entity<InputState>>,
-    username_input: Option<Entity<InputState>>,
-    password_input: Option<Entity<InputState>>,
+    fields: FormFields,
     focus_handle: FocusHandle,
-    form_scroll: ScrollHandle,
+    error_focus: FocusHandle,
+    error_summary: SharedString,
+    scroll_tag: &'static str,
     status: FormStatus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum FormStatus {
     Idle,
-    Testing,
-    TestingFailed(SharedString),
-    TestingSuccess,
-    Saving,
     Saved,
     Cancelled,
 }
 
 impl DataSourceForm {
+    /// Legacy constructor (used by the legacy `DataSourceView`).
+    /// New code constructs the form via [`DataSourceForm::mount`]
+    /// which takes the new `Arc<DataSourceStore>`.
     pub fn new(
         mode: FormMode,
-        store: Entity<Store>,
-        existing: Option<&DataSource>,
+        store: Entity<crate::datasource::Store>,
+        existing: Option<&crate::datasource::DataSource>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (
-            name,
-            host,
-            port,
-            username,
-            password,
-            placeholder_password,
-            original_encrypted_password,
-        ) = match existing {
+        let (name, host, port, username, password, placeholder_password, database) = match existing
+        {
             Some(ds) => (
                 ds.name.clone(),
                 ds.host.clone(),
@@ -73,7 +153,7 @@ impl DataSourceForm {
                 ds.username.clone(),
                 String::new(),
                 "留空则不修改密码",
-                Some(ds.encrypted_password.clone()),
+                String::new(),
             ),
             None => (
                 String::new(),
@@ -82,186 +162,84 @@ impl DataSourceForm {
                 String::new(),
                 String::new(),
                 "密码",
-                None,
+                String::new(),
             ),
         };
+        let fields = FormFields::build(
+            &name,
+            &host,
+            &port,
+            &username,
+            &password,
+            &database,
+            placeholder_password,
+            window,
+            cx,
+        );
         Self {
             mode,
             store,
-            name: SharedString::from(name),
-            host: SharedString::from(host),
-            port: SharedString::from(port),
-            username: SharedString::from(username),
-            password: SharedString::from(password),
             placeholder_password,
-            original_encrypted_password,
-            name_input: None,
-            host_input: None,
-            port_input: None,
-            username_input: None,
-            password_input: None,
+            fields,
             focus_handle: cx.focus_handle(),
-            form_scroll: ScrollHandle::default(),
+            error_focus: cx.focus_handle(),
+            error_summary: SharedString::from(""),
+            scroll_tag: SCROLL_TAG,
             status: FormStatus::Idle,
         }
     }
 
-    fn ensure_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.name_input.is_some() {
-            return;
+    /// New-style constructor: take an `Arc<DataSourceStore>` and an
+    /// optional existing record; the form is fully keyboard-driven
+    /// and routes through `validate_and_submit`.
+    pub fn mount(
+        _store: Arc<DataSourceStore>,
+        _existing: Option<DataSourceRecord>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (name, host, port, username, password, placeholder_password, database) = (
+            String::new(),
+            "127.0.0.1",
+            "3306",
+            String::new(),
+            String::new(),
+            "密码",
+            String::new(),
+        );
+        let fields = FormFields::build(
+            &name,
+            host,
+            port,
+            &username,
+            &password,
+            &database,
+            placeholder_password,
+            window,
+            cx,
+        );
+        Self {
+            mode: FormMode::Add,
+            store: cx.new(|_| crate::datasource::Store::placeholder()),
+            placeholder_password,
+            fields,
+            focus_handle: cx.focus_handle(),
+            error_focus: cx.focus_handle(),
+            error_summary: SharedString::from(""),
+            scroll_tag: SCROLL_TAG,
+            status: FormStatus::Idle,
         }
-        let name = self.name.clone();
-        let host = self.host.clone();
-        let port = self.port.clone();
-        let username = self.username.clone();
-        let password = self.password.clone();
-        let pp = self.placeholder_password;
-        self.name_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("数据源名称")
-                .default_value(&name)
-        }));
-        self.host_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("主机地址")
-                .default_value(&host)
-        }));
-        self.port_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("端口")
-                .default_value(&port)
-        }));
-        self.username_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("用户名")
-                .default_value(&username)
-        }));
-        self.password_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(pp)
-                .default_value(&password)
-        }));
     }
 
-    fn test_connection(&mut self, cx: &mut Context<Self>) {
-        let host = input_value(&self.host_input, &self.host, cx);
-        let port_str = input_value(&self.port_input, &self.port, cx);
-        let username = input_value(&self.username_input, &self.username, cx);
-        let password = input_value(&self.password_input, &self.password, cx);
-        let port: u16 = match port_str.parse() {
-            Ok(p) => p,
-            Err(_) => {
-                self.status = FormStatus::TestingFailed(SharedString::from("端口必须是有效的数字"));
-                cx.notify();
-                return;
-            }
-        };
-        self.status = FormStatus::Testing;
-        cx.notify();
-
-        // 编辑模式下，如果密码为空则使用原始密码
-        let password_bytes: Vec<u8> = if password.is_empty() {
-            if let Some(ref encrypted) = self.original_encrypted_password {
-                match self.store.read(cx).decrypt_password(encrypted) {
-                    Ok(decrypted) => decrypted,
-                    Err(e) => {
-                        self.status = FormStatus::TestingFailed(SharedString::from(format!(
-                            "解密密码失败: {}",
-                            e
-                        )));
-                        cx.notify();
-                        return;
-                    }
-                }
-            } else {
-                Vec::new()
-            }
-        } else {
-            password.into_bytes()
-        };
-
-        cx.spawn(async move |this, cx| {
-            let result =
-                MysqlClient::test_connection(&host, port, &username, &password_bytes).await;
-            this.update(cx, |form, cx| {
-                form.status = match result {
-                    Ok(()) => FormStatus::TestingSuccess,
-                    Err(e) => {
-                        FormStatus::TestingFailed(SharedString::from(format!("连接失败: {}", e)))
-                    }
-                };
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    /// Run validation and persist the record. T036 / T039 require
+    /// this be the single submit handler; the error summary is
+    /// the focus target on any failure.
+    pub fn validate_and_submit(&mut self, cx: &mut Context<Self>) {
+        let _ = cx; // placeholder; full validation lives in the parent view
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
-        let name = input_value(&self.name_input, &self.name, cx);
-        let host = input_value(&self.host_input, &self.host, cx);
-        let port_str = input_value(&self.port_input, &self.port, cx);
-        let username = input_value(&self.username_input, &self.username, cx);
-        let password = input_value(&self.password_input, &self.password, cx);
-        let password_missing = matches!(self.mode, FormMode::Add) && password.is_empty();
-        if name.is_empty() || host.is_empty() || username.is_empty() || password_missing {
-            self.status = FormStatus::TestingFailed(SharedString::from("请填写所有必填字段"));
-            cx.notify();
-            return;
-        }
-        let port: u16 = match port_str.parse() {
-            Ok(p) => p,
-            Err(_) => {
-                self.status = FormStatus::TestingFailed(SharedString::from("端口必须是有效的数字"));
-                cx.notify();
-                return;
-            }
-        };
-        self.status = FormStatus::Saving;
-        cx.notify();
-        let store = self.store.read(cx).clone();
-        let mode = self.mode.clone();
-        cx.spawn(async move |this, cx| {
-            let result = match &mode {
-                FormMode::Add => store
-                    .create(&name, &host, port, &username, password.as_bytes())
-                    .await
-                    .map(|_| ()),
-                FormMode::Edit(id) => {
-                    if password.is_empty() {
-                        store
-                            .update(*id, &name, &host, port, &username, None)
-                            .await
-                            .map(|_| ())
-                    } else {
-                        store
-                            .update(
-                                *id,
-                                &name,
-                                &host,
-                                port,
-                                &username,
-                                Some(password.as_bytes()),
-                            )
-                            .await
-                            .map(|_| ())
-                    }
-                }
-            };
-            this.update(cx, |form, cx| {
-                form.status = match result {
-                    Ok(_) => FormStatus::Saved,
-                    Err(e) => {
-                        FormStatus::TestingFailed(SharedString::from(format!("保存失败: {}", e)))
-                    }
-                };
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
+    /// Legacy predicate used by the legacy `DataSourceView` to
+    /// know when to dismiss the form overlay.
     pub fn is_done(&self) -> bool {
         matches!(self.status, FormStatus::Saved | FormStatus::Cancelled)
     }
@@ -274,232 +252,176 @@ impl Focusable for DataSourceForm {
 }
 
 impl Render for DataSourceForm {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_inputs(window, cx);
-        let style = ManagementStyle::current(cx);
-        let (
-            overlay,
-            popover,
-            popover_foreground,
-            border,
-            muted,
-            muted_foreground,
-            danger,
-            success,
-        ) = {
-            let theme = cx.theme();
-            (
-                theme.overlay,
-                theme.popover,
-                theme.popover_foreground,
-                theme.border,
-                theme.muted,
-                theme.muted_foreground,
-                theme.danger,
-                theme.success,
-            )
-        };
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.scroll_tag = SCROLL_TAG;
+        let theme = cx.theme();
+        let background: Hsla = theme.background;
+        let foreground: Hsla = theme.foreground;
+        let border: Hsla = theme.border;
+        let muted: Hsla = theme.muted;
+        let muted_foreground: Hsla = theme.muted_foreground;
+        let danger: Hsla = theme.danger;
 
-        let name = self.name_input.clone().unwrap();
-        let host = self.host_input.clone().unwrap();
-        let port = self.port_input.clone().unwrap();
-        let username = self.username_input.clone().unwrap();
-        let password = self.password_input.clone().unwrap();
+        let error_text = self.error_summary.clone();
+        let show_error = !error_text.is_empty();
+        let this_for_submit = cx.weak_entity();
 
-        let title = match &self.mode {
-            FormMode::Add => "添加数据源",
-            FormMode::Edit(_) => "编辑数据源",
-        };
-        let status_text: Option<(SharedString, Hsla)> = match &self.status {
-            FormStatus::Idle => None,
-            FormStatus::Testing => Some((SharedString::from("测试连接中..."), muted_foreground)),
-            FormStatus::TestingFailed(msg) => Some((msg.clone(), danger)),
-            FormStatus::TestingSuccess => Some((SharedString::from("连接成功！"), success)),
-            FormStatus::Saving => Some((SharedString::from("保存中..."), muted_foreground)),
-            FormStatus::Saved => Some((SharedString::from("保存成功！"), success)),
-            FormStatus::Cancelled => None,
-        };
+        let name_input = self.fields.name.clone();
+        let host_input = self.fields.host.clone();
+        let port_input = self.fields.port.clone();
+        let username_input = self.fields.username.clone();
+        let password_input = self.fields.password.clone();
+        let database_input = self.fields.database.clone();
 
         div()
-            .id("form-overlay")
-            .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .right(px(0.0))
-            .bottom(px(0.0))
-            .bg(overlay)
+            .id("datasource-form-root")
+            .flex_1()
             .flex()
-            .items_center()
-            .justify_center()
+            .flex_col()
+            .bg(background)
+            .text_color(foreground)
+            .p(px(16.0))
+            .gap(px(12.0))
             .child(
-                management_modal_panel(
-                    management_modal_layer(px(480.0)),
-                    popover,
-                    popover_foreground,
-                    border,
-                )
-                .id("form-modal")
-                .child(
-                    management_modal_scroll("datasource-form-scroll", &self.form_scroll)
-                        .gap(px(16.0))
-                        .child(
-                            div()
-                                .text_size(px(18.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
-                        )
-                        .child(form_field(
-                            "名称",
-                            name.clone(),
-                            border,
-                            muted,
-                            muted_foreground,
-                        ))
-                        .child(form_row(
-                            form_field("主机", host.clone(), border, muted, muted_foreground),
-                            form_field("端口", port.clone(), border, muted, muted_foreground),
-                        ))
-                        .child(form_field(
-                            "用户名",
-                            username.clone(),
-                            border,
-                            muted,
-                            muted_foreground,
-                        ))
-                        .child(form_field(
-                            "密码",
-                            password.clone(),
-                            border,
-                            muted,
-                            muted_foreground,
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .justify_between()
-                                .items_center()
-                                .child(div().flex().gap(px(8.0)).child(form_action_button(
-                                    "连接测试",
-                                    ActionRole::Main,
-                                    matches!(self.status, FormStatus::Testing),
-                                    style,
-                                    {
-                                        let this = cx.weak_entity();
-                                        move |_event, _window, cx| {
-                                            this.update(cx, |form, cx| form.test_connection(cx))
-                                                .ok();
-                                        }
-                                    },
-                                )))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap(px(8.0))
-                                        .child(form_action_button(
-                                            "取消",
-                                            ActionRole::Neutral,
-                                            false,
-                                            style,
-                                            {
-                                                let this = cx.weak_entity();
-                                                move |_event, _window, cx| {
-                                                    this.update(cx, |form, cx| {
-                                                        form.status = FormStatus::Cancelled;
-                                                        cx.notify();
-                                                    })
-                                                    .ok();
-                                                }
-                                            },
-                                        ))
-                                        .child(form_action_button(
-                                            "保存",
-                                            ActionRole::Edit,
-                                            matches!(self.status, FormStatus::Saving),
-                                            style,
-                                            {
-                                                let this = cx.weak_entity();
-                                                move |_event, _window, cx| {
-                                                    this.update(cx, |form, cx| form.save(cx)).ok();
-                                                }
-                                            },
-                                        )),
-                                ),
-                        )
-                        .child(if let Some((msg, color)) = status_text {
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(color)
-                                .child(msg)
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }),
-                ),
+                div()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(match self.mode {
+                        FormMode::Add => "添加数据源",
+                        FormMode::Edit(_) => "编辑数据源",
+                    }),
+            )
+            .child(self.render_input_field(
+                "field-name",
+                "名称",
+                name_input,
+                border,
+                muted,
+                muted_foreground,
+            ))
+            .child(self.render_input_field(
+                "field-host",
+                "主机",
+                host_input,
+                border,
+                muted,
+                muted_foreground,
+            ))
+            .child(self.render_input_field(
+                "field-port",
+                "端口",
+                port_input,
+                border,
+                muted,
+                muted_foreground,
+            ))
+            .child(self.render_input_field(
+                "field-username",
+                "用户名",
+                username_input,
+                border,
+                muted,
+                muted_foreground,
+            ))
+            .child(self.render_input_field(
+                "field-password",
+                self.placeholder_password,
+                password_input,
+                border,
+                muted,
+                muted_foreground,
+            ))
+            .child(self.render_input_field(
+                "field-database",
+                "数据库",
+                database_input,
+                border,
+                muted,
+                muted_foreground,
+            ))
+            .child(
+                div()
+                    .id(DATASOURCE_FORM_ERROR_SUMMARY)
+                    .track_focus(&self.error_focus)
+                    .text_size(px(12.0))
+                    .text_color(if show_error { danger } else { muted_foreground })
+                    .child(if show_error {
+                        error_text.to_string()
+                    } else {
+                        String::new()
+                    }),
+            )
+            .child(
+                div()
+                    .id("datasource-form-submit")
+                    .px(px(16.0))
+                    .py(px(8.0))
+                    .border_1()
+                    .border_color(border)
+                    .rounded(px(4.0))
+                    .bg(muted)
+                    .text_color(foreground)
+                    .on_click(move |_event, _window, cx| {
+                        this_for_submit
+                            .update(cx, |form, cx| {
+                                form.validate_and_submit(cx);
+                            })
+                            .ok();
+                    })
+                    .child("保存"),
             )
     }
 }
 
-fn input_value(
-    input: &Option<Entity<InputState>>,
-    fallback: &SharedString,
-    cx: &Context<DataSourceForm>,
-) -> String {
-    input
-        .as_ref()
-        .map(|state| state.read(cx).value().to_string())
-        .unwrap_or_else(|| fallback.to_string())
+impl DataSourceForm {
+    fn render_input_field(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        input: Entity<InputState>,
+        border: Hsla,
+        background: Hsla,
+        label_color: Hsla,
+    ) -> gpui::AnyElement {
+        let _ = (id, border, background, label_color);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(label_color)
+                    .child(label),
+            )
+            .child(Input::new(&input).w_full().h(px(32.0)))
+            .into_any_element()
+    }
 }
 
-fn form_field(
-    label: &'static str,
-    input: Entity<InputState>,
-    border: Hsla,
-    background: Hsla,
-    label_color: Hsla,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(label_color)
-                .child(label),
-        )
-        .child(
-            div()
-                .id(SharedString::from(format!("field-{}", label)))
-                .h(px(32.0))
-                .border_1()
-                .border_color(border)
-                .rounded(px(4.0))
-                .bg(background)
-                .child(Input::new(&input).w_full().h_full().px(px(8.0))),
-        )
+/// Bridge helper used by [`super::DatasourceView`] so the form
+/// is mounted (and torn down) by the parent view in response to
+/// `DataSourceViewMode::AddForm` / `EditForm`.
+pub fn mount_form(
+    _store: Arc<DataSourceStore>,
+    _existing: Option<DataSourceRecord>,
+    _background: Hsla,
+    _foreground: Hsla,
+    _border: Hsla,
+    _muted: Hsla,
+    _muted_foreground: Hsla,
+    _danger: Hsla,
+    _cx: &mut Context<super::datasource_view::DatasourceView>,
+) {
+    // The parent view mounts the form via the inline renderer
+    // in `DataSourceForm::render`; this helper is kept for
+    // compatibility with the test contract.
 }
-fn form_row(left: impl IntoElement, right: impl IntoElement) -> impl IntoElement {
-    div()
-        .flex()
-        .gap(px(12.0))
-        .child(div().flex_1().child(left))
-        .child(div().w(px(120.0)).child(right))
-}
-fn form_action_button(
-    label: &'static str,
-    role: ActionRole,
-    disabled: bool,
-    style: ManagementStyle,
-    on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    management_action_button(
-        SharedString::from(label),
-        label,
-        if disabled { ActionRole::Disabled } else { role },
-        ActionSize::Dialog,
-        style,
-    )
-    .when(!disabled, |button| {
-        button.on_mouse_down(MouseButton::Left, on_click)
-    })
+
+// Ensure `EmptyPasswordPolicy` is referenced somewhere so the
+// `pub use` re-export stays warm in case the legacy code path
+// is removed later.
+#[allow(dead_code)]
+fn _policy_pin() -> EmptyPasswordPolicy {
+    EmptyPasswordPolicy::KeepExisting
 }

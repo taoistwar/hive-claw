@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-07-22 T005 当前基线契约
+
+- [x] 固定三个本地计时边界：Agent 决策解析到本地动作调度（T122，p95≤200ms）、Tool 校验完成到执行器启动（T103，p95≤50ms）、100 节点 no-op DAG 调度（T093，p95≤100ms）。外部 LLM、网络和用户 Function/Plugin 执行耗时必须排除并单列。
+- [x] 每个目标固定预热 10 次、测量 100 次，使用 nearest-rank 计算 p50/p95/p99；基线格式版本为 `1`，fixture 为 `hivegui-local-runtime-v1`。
+- [x] 环境指纹包含 OS、架构、精确 `rustc --version`、debug/release profile、CPU 型号和逻辑 CPU 数；指纹、fixture、目标定义或样本数不一致时拒绝比较，不得静默更新基线。
+- [x] 基线路径固定为 `crates/hivegui/benches/baselines/v1/<target>/<environment>.json`，且必须记录 reviewer、审批日期和源 revision。当前三个入口尚未实现，因此没有伪造 no-op 样本或基线文件。
+- [x] 首个基线只能来自所属任务首次获批的 Green 结果；后续 p50/p95/p99 任一项相对基线严格超过 10% 即阻断。仅当例外同时记录 signer、理由、影响范围和未过期复核日期时才可放行。
+- [x] 共用入口同时支持同步和异步本地闭包；`cargo bench -p hivegui --bench local_runtime` 在 T093/T103/T122 前只输出 Pending manifest，不采集占位耗时、不自动写文件。
+
+以下 2026-06-15 条目是旧规格的需求质量审阅记录；其中 50 节点、旧任务号和旧预算不得覆盖上述当前契约。
+
+---
+
+## 2026-06-15 历史需求质量审阅
+
 ## Performance Metrics Clarity
 
 - [x] CHK001 SC-001 要求"首次启动后 3 分钟内完成代理配置并开始对话"——"开始对话"的精确定义是什么（发送第一条消息？收到第一个 token？完成首次完整回复？）[Clarity, Spec §SC-001]

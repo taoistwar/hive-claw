@@ -1,5 +1,7 @@
 # Comprehensive Checklist: Agent Runtime（Capability-based WASM Plugin Runtime）
 
+> **历史边界（2026-07-23）：** 涉及原管理端测试聊天、admin Chat/SSE、30 天 admin 会话保留或 SC-010 的条目已 superseded，仅保留历史，不再参与现役 004 验收。
+
 **Purpose**: 正式级需求质量检查清单（40+ 项），覆盖安全、API、运行时、性能、边缘案例、非功能需求全维度。用于作者自查，确保 spec/plan/tasks 中的需求描述完整、清晰、一致、可度量。
 **Created**: 2026-05-28
 **Feature**: [spec.md](../spec.md) | [plan.md](../plan.md) | [tasks.md](../tasks.md)

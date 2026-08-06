@@ -107,7 +107,9 @@ impl LlmStore {
     }
 
     async fn table_has_column(&self, table: &str, column: &str) -> Result<bool> {
-        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+        // `table` is the verified internal table name from the LLM store, not
+        // user input, so it is safe to interpolate into the PRAGMA query.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.iter().any(|row| {

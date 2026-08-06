@@ -9,6 +9,7 @@ use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use tracing::info;
 
+use crate::datasource::mysql_client::{IdentifierKind, MysqlIdentifier};
 use crate::datasource::{
     ColumnInfo, ConstraintInfo, DataSource, ForeignKeyInfo, IndexInfo, MysqlClient, ReferenceInfo,
     Store, TableData, TableDataRequest, TriggerInfo,
@@ -296,8 +297,8 @@ impl TableViewer {
                 ds_clone.port,
                 &ds_clone.username,
                 &password,
-                &database,
-                &table,
+                &MysqlIdentifier::new_trusted(database.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(table.clone(), IdentifierKind::Table),
             )
             .await;
             match result {
@@ -504,9 +505,15 @@ impl OpenTable {
                 }
             };
 
-            let result =
-                MysqlClient::query_columns(&ds.host, ds.port, &ds.username, &password, &db, &tbl)
-                    .await;
+            let result = MysqlClient::query_columns(
+                &ds.host,
+                ds.port,
+                &ds.username,
+                &password,
+                &MysqlIdentifier::new_trusted(db.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(tbl.clone(), IdentifierKind::Table),
+            )
+            .await;
             match result {
                 Ok(cols) => {
                     this.update(cx, |v, cx| {
@@ -570,8 +577,15 @@ impl OpenTable {
                 }
             };
 
-            let result =
-                MysqlClient::query_ddl(&ds.host, ds.port, &ds.username, &password, &db, &tbl).await;
+            let result = MysqlClient::query_ddl(
+                &ds.host,
+                ds.port,
+                &ds.username,
+                &password,
+                &MysqlIdentifier::new_trusted(db.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(tbl.clone(), IdentifierKind::Table),
+            )
+            .await;
             match result {
                 Ok(ddl) => {
                     this.update(cx, |v, cx| {
@@ -648,12 +662,12 @@ impl OpenTable {
             };
 
             let req = TableDataRequest {
-                where_clause: if where_clause.is_empty() {
+                where_fragment: if where_clause.is_empty() {
                     None
                 } else {
                     Some(where_clause)
                 },
-                order_by: if order_by.is_empty() {
+                order_fragment: if order_by.is_empty() {
                     None
                 } else {
                     Some(order_by)
@@ -665,19 +679,19 @@ impl OpenTable {
             // Build SQL for display
             let escaped_db = Self::escape_identifier(&db);
             let escaped_table = Self::escape_identifier(&tbl);
-            let sql = if let Some(ref wc) = req.where_clause {
+            let sql = if let Some(ref wc) = req.where_fragment {
                 let mut s = format!(
                     "SELECT * FROM `{}`.`{}` WHERE {}",
                     escaped_db, escaped_table, wc
                 );
-                if let Some(ref ob) = req.order_by {
+                if let Some(ref ob) = req.order_fragment {
                     s.push_str(&format!(" ORDER BY {}", ob));
                 }
                 s.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
                 s
             } else {
                 let mut s = format!("SELECT * FROM `{}`.`{}`", escaped_db, escaped_table);
-                if let Some(ref ob) = req.order_by {
+                if let Some(ref ob) = req.order_fragment {
                     s.push_str(&format!(" ORDER BY {}", ob));
                 }
                 s.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
@@ -690,8 +704,8 @@ impl OpenTable {
                 ds.port,
                 &ds.username,
                 &password,
-                &db,
-                &tbl,
+                &MysqlIdentifier::new_trusted(db.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(tbl.clone(), IdentifierKind::Table),
                 &req,
             )
             .await;

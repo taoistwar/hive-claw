@@ -5,7 +5,10 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 # Tasks: Agent Runtime（Capability-based WASM Plugin Runtime）
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：**
+> - `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。
+> - US6 管理端测试聊天及其 admin session/SSE API、UI、表和测试已由 `81a84fe` 移除，属于 **Legacy / Superseded** 历史任务；已勾选仅表示当时完成，不表示当前必须存在。不得恢复 `/api/admin-chat*` 或 `/api/chat/sessions*`。
+> - 现行普通用户聊天由 `web-user`、`/api/assistant`、`/api/newsession`、`/api/messages` 和 `chat_*_user` 表承载，属于后续外部 Assistant API 范围。
 
 **Input**: Design documents from `/specs/004-agent-runtime/`
 **Prerequisites**: plan.md (required), spec.md (required), research.md, data-model.md, contracts/
@@ -28,7 +31,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
   - US4 (P1)        — Capability 鉴权（与 US1/US2 同等重要）
   - US3 (P2)        — Workflow DAG
   - US5 (P2)        — Agent 多层编排 + 路由
-  - US6 (P2)        — 测试聊天（SSE）
+  - US6 (P2)        — 管理端测试聊天（SSE，历史，已 superseded）
   - US7 (P3)        — Category / Tag
   ============================================================================
 -->
@@ -47,7 +50,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T149 [P] 创建 `crates/hiveweb/.env.example` 集中声明 004 新增 env var（在 003 已有基础上），共 15 项：
   - **Plugin 上传 & 调用**：`PLUGIN_MAX_BYTES=16777216`、`PLUGIN_CALL_TIMEOUT_MS=33000`、`PLUGIN_CALL_MAX_MEMORY_MB=128`、`PLUGIN_CALL_FUEL=10000000000`
   - **Instance Pool**：`PLUGIN_POOL_MAX_PER_PLUGIN=8`、`PLUGIN_POOL_MAX_TOTAL=64`、`PLUGIN_POOL_IDLE_TIMEOUT_SEC=600`、`PLUGIN_POOL_ACQUIRE_TIMEOUT_MS=5000`
-  - **Agent / Chat**：`AGENT_MAX_HOPS=5`、`CHAT_RETENTION_DAYS=30`、`CHAT_SSE_MAX_CONCURRENT_PER_ADMIN=2`
+  - **Agent**：`AGENT_MAX_HOPS=5`；原 `CHAT_RETENTION_DAYS=30` / `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN=2` 属 admin Chat 历史设计，已 superseded
   - **LLM / Audit**：`LLM_PRESETS_PATH=./llm_presets.toml`、`LLM_NODE_TIMEOUT_MS=25000`、`LLM_CHAIN_TIMEOUT_MS=45000`、`AUDIT_RETENTION_DAYS=90`
   DEPLOYMENT.md 同步更新；每个 env 加注释指向对应 FR / research 段。
 
@@ -69,7 +72,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T011 [P] 创建 V013 workflows + nodes + edges 表 `crates/hiveweb/migrations/V013__workflows.sql`
 - [x] T012 [P] 创建 V014 tools + skills 表 `crates/hiveweb/migrations/V014__tools_skills.sql`（注意 skills 是 markdown 模式）
 - [x] T013 [P] 创建 V015 agents + agent_tools + agent_skills + agent_permissions 表 `crates/hiveweb/migrations/V015__agents.sql`（含 model_preset 列）
-- [x] T014 [P] 创建 V016 chat_sessions + chat_messages 表 `crates/hiveweb/migrations/V016__chat.sql`（chat_sessions 含 `admin_phone_snapshot` / `admin_nickname_snapshot` 快照列，admin 删除后保留发起者追溯，data-model 不变量 #12）
+- [x] T014 [P] **[Legacy/Superseded]** 创建 V016 `chat_sessions` + `chat_messages` 表 `crates/hiveweb/migrations/V016__chat.sql`（chat_sessions 含 `admin_phone_snapshot` / `admin_nickname_snapshot` 快照列，admin 删除后保留发起者追溯，data-model 不变量 #12）；该历史实现后续已删除，不得恢复
 - [x] T015 [P] 创建 V017 runtime_audit_logs 表 `crates/hiveweb/migrations/V017__runtime_audit_logs.sql`
 - [x] T016 [P] 创建 V018 seed main agent + 5 内置 function（kind=1） `crates/hiveweb/migrations/V018__seed.sql`
 - [x] T017 在 `crates/hiveweb-admin/src/bin/migrate.rs` 中注册 V008–V018 entries（不可并行：修改同一文件）
@@ -103,7 +106,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T022 [P] Tool 模型 `crates/hiveweb-admin/src/models/tool.rs`（含 source, is_always, category_id, required_capabilities）
 - [x] T023 [P] Skill 模型（markdown 模式：content + frontmatter）`crates/hiveweb-admin/src/models/skill.rs`（含 is_always, category_id, required_capabilities）
 - [x] T024 [P] Agent 模型 `crates/hiveweb-admin/src/models/agent.rs`（含 model_preset、parent_agent_id、depth）
-- [x] T025 [P] ChatSession/ChatMessage 模型 `crates/hiveweb-admin/src/models/chat.rs`
+- [x] T025 [P] **[Legacy/Superseded]** admin ChatSession/ChatMessage 模型 `crates/hiveweb-admin/src/models/chat.rs`（后续已删除）
 - [x] T026 [P] RuntimeAuditLog 模型 `crates/hiveweb-admin/src/models/runtime_audit_log.rs`
 - [x] T187 [P] RecommendedGame 模型 `crates/hiveweb-admin/src/models/recommended_game.rs`（含 name, reply, reason, game_id, game_name, tag, game_category, game_image, sort_value）
 - [x] T188 [P] Admin/AdminAuditLog/LoginRecord 模型 `crates/hiveweb-admin/src/models/admin.rs`、`login_record.rs`（含 role enum）
@@ -119,7 +122,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T033 在 `crates/hiveweb-admin/src/runtime/mod.rs` 暴露上述子模块，并 `pub use` 关键类型
 - [x] T034 在 `crates/hiveweb-admin/src/lib.rs` 增加 `pub mod runtime;`
 - [x] T035 在 `crates/hiveweb-admin/src/runtime/startup.rs` 新建 `pub async fn init_runtime_state(config: &Config) -> Result<Arc<RuntimeState>>` 函数，按 plan §Startup Initialization Order 的 12 步顺序执行；在 `crates/hiveweb-admin/src/bin/hiveweb.rs` 的 `main()` 中调用此函数初始化 `AppState.runtime_state`；任一前置失败 panic 退出码 1
-- [x] T189 [P] Orchestrator `crates/hiveweb-admin/src/runtime/orchestrator.rs`：完整实现 `run_session()` 多 hop loop + SSE 事件流 + tool calling 路由
+- [x] T189 [P] Orchestrator `crates/hiveweb-admin/src/runtime/orchestrator.rs`：完整实现 `run_session()` 多 hop loop + tool calling 路由；其中原管理端 SSE 输出面已 superseded，运行时编排仍可被现行调用方复用
 - [x] T190 [P] Builtin tools `crates/hiveweb-admin/src/runtime/builtin_tools.rs`：启动期注册 builtin tools 到 ToolRegistry
 - [x] T191 [P] Builtin function handlers `crates/hiveweb-admin/src/runtime/builtins.rs`：5 个 builtin function 实现（format_template / json_parse / json_stringify / text_regex_match / chat_respond）
 - [x] T192 [P] WASM exports 工具 `crates/hiveweb-admin/src/runtime/wasm_exports.rs`：解析/校验 WASM imports 段
@@ -144,7 +147,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **⚠️ CRITICAL**: 这些任务必须先以红灯状态提交（CI 标记失败），然后才允许动对应实现任务。
 
-### 后端契约测试（HTTP REST + host_call ABI + SSE）
+### 后端契约测试（HTTP REST + host_call ABI；原 admin SSE 项已 superseded）
 
 - [x] T037 [P] Contract test — 已由 interleaved `contract_plugin.rs` 覆盖（含 4093 引用阻塞 case）
 - [x] T038 [P] Contract test — 已由 interleaved 实现覆盖
@@ -203,7 +206,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ### 🚨 分析 v5 补漏 — FR-031 / SC-009 / FR-027 / FR-029 缺失测试
 
-- [x] T164 [P] [US6] Integration test `crates/hiveweb/tests/it_chat_session_ownership.rs`：① admin-A 创建 session → admin-B 尝试 POST messages → 403；② admin-A 可正常读写；③ Super 可读其它 admin 的 session 消息；④ 非 Super 读其它 admin 的 session → 403（FR-027 v7 会话所有权与隔离）
+- [x] T164 [P] [US6] **[Legacy/Superseded]** Integration test `crates/hiveweb/tests/it_chat_session_ownership.rs`：① admin-A 创建 session → admin-B 尝试 POST messages → 403；② admin-A 可正常读写；③ Super 可读其它 admin 的 session 消息；④ 非 Super 读其它 admin 的 session → 403（FR-027 v7 会话所有权与隔离）；该测试随管理端 Chat 删除，不得恢复其 Super 跨会话语义
 - [x] T165 [P] [US1] Integration test `crates/hiveweb/tests/it_plugin_delete_race.rs`：并发模拟 — Thread A 尝试软删除 Plugin（被 Function 引用）的同时 Thread B 新建 Function 引用该 Plugin；两层防御：① 软删除 transaction `SELECT ... FOR UPDATE` 锁住 Plugin + `SELECT COUNT(*) FROM functions` 同事务内查；② 新建 Function 的 INSERT 前二次校验 `deleted_at`；验证 100 场景无漏删（SC-009 race window）
 - [x] T166 [P] [US4] Integration test `crates/hiveweb/tests/it_plugin_memory_limit.rs`：构造 Plugin 分配 > 128 MB（`PLUGIN_CALL_MAX_MEMORY_MB`），验证被强制中止 + 5004 + 审计写入 + 实例不入池（FR-031）
 - [x] T167 [P] [US4] Integration test `crates/hiveweb/tests/it_wasm_sha256_verify.rs`：① 上传正常 Plugin → 记录 DB sha256；② 手动篡改对象存储中的 WASM 文件（翻转 1 byte）；③ 调用该 Plugin → 宿主 GET 后重算 sha256 ≠ DB 值 → 拒绝实例化 + 写 audit `outcome=error` + 通知运维（FR-029 v7 加载前校验）
@@ -346,7 +349,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 **Goal**：Agent 树（main + 多层专家）+ LLM 路由 + hard-rule 兜底。
 
-**Independent Test**：main 配 `coding-expert` 子 Agent → 问"Rust 异步"→ SSE 看到 routed 事件 → 最终 rust-expert 回复。
+**Independent Test**：main 配 `coding-expert` 子 Agent → 通过现行调用方问"Rust 异步"→ runtime audit/tracing 显示 routed → 最终 rust-expert 回复；不依赖已移除的 admin SSE UI。
 
 - [x] T116 [P] [US5] Agent service `crates/hiveweb-admin/src/services/agent.rs`：CRUD + tree + depth 校验（违反 → 5006）+ main protection（DELETE → 5001；非 Super 修改 → 2001）+ dangerous capability 授予的 Super 校验 + model_preset 存在性校验（启动加载的 preset 集合；未命中 → 5007 `ModelPresetUnknown`）
 - [x] T117 [P] [US5] Agent API `crates/hiveweb-admin/src/api/agent.rs`：含 `GET /api/agents/model-presets`
@@ -364,28 +367,31 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ---
 
-## Phase 8: User Story 6 — 测试聊天（SSE）（P2）
+## Phase 8: User Story 6 — 管理端测试聊天（SSE）（历史，已 Superseded）
 
-**Goal**：管理员在 Web 上输入文字，看到流式增量回复，可见 routed 事件。
+> 本阶段完整保留任务编号与当时实现事实，仅用于追溯。对应 API/UI/admin 表和测试后来由 `81a84fe` 删除，所有条目均非现行待办，禁止按这些路径恢复。当前用户聊天的同名 runtime/retention 能力属于后续外部 Assistant API，不会使这些 admin 任务重新生效。
 
-**Independent Test**：输入"你好"→ SSE token 流 → done；输入触发路由的问题 → routed → 子 Agent token → done。
+**历史 Goal**：管理员在 Web 上输入文字，看到流式增量回复，可见 routed 事件。
 
-- [x] T126 [P] [US6] Chat service `crates/hiveweb-admin/src/services/chat.rs`：session CRUD + message persist + history 拉取
-- [x] T127 [US6] Chat API `crates/hiveweb-admin/src/api/chat.rs`：`POST /api/chat/sessions/:id/messages` 返回 `Sse<impl Stream<Item = Event>>`
+**历史 Independent Test（已 superseded）**：输入"你好"→ SSE token 流 → done；输入触发路由的问题 → routed → 子 Agent token → done。
+
+- [x] T126 [P] [US6] **[Legacy/Superseded]** Chat service `crates/hiveweb-admin/src/services/chat.rs`：session CRUD + message persist + history 拉取
+- [x] T127 [US6] **[Legacy/Superseded]** Chat API `crates/hiveweb-admin/src/api/chat.rs`：`POST /api/chat/sessions/:id/messages` 返回 `Sse<impl Stream<Item = Event>>`
+  - 以下 T127 子项均为已失效的历史契约，不是现行实现要求：
   - **响应 headers**（production-critical 防 reverse proxy 缓冲）：`Cache-Control: no-cache, no-transform` / `Connection: keep-alive` / `X-Accel-Buffering: no`（axum::response::sse::Sse::keep_alive 配合自定义 headers）
   - **Keep-alive**：每 15s 发送 SSE comment `: ping\n\n` 维持连接（绕过中间代理 30s 默认空闲超时）
   - **事件类型**：6 种正向事件（`token` / `tool_call` / `tool_result` / `routed` / `fallback_used` / `done`）+ `error`（与 `done` 互斥，作为异常流终点）
   - **会话所有权校验**（FR-027 v7）：JWT.admin_id == session.admin_id；不匹配 → 403；Super 例外但仍走显式判定
   - **并发限制**（CHK232）：bypass `RateLimit` 中间件；用独立计数器：同一 admin 同时活跃 SSE 流 > `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN`（默认 2）→ 立即返 429 + code 4291
-- [x] T128 [US6] `runtime/orchestrator::run_session()`：history+user msg 多 hop loop + 7 种 SSE 事件（6 种正向 + `error`）；user msg 流前 persist；assistant 由 finalize 写入；中断时 assistant 不入库
-- [x] T129 [P] [US6] `web-admin/src/services/chat.ts`：EventSource wrapper（解析 token / tool_call / routed / done / error）
-- [x] T130 [P] [US6] `web-admin/src/components/ChatStream.tsx`：7 种 SSE 事件渲染（`token` 增量、`tool_call`/`tool_result` 卡片对、`routed` 切换分隔条、`fallback_used` 模型切换提示、`done` 终态、`error` 错误展示）；"正在思考…" 占位（提交后到首事件之间）；30s 无响应超时降级；SSE 中途断开 → "连接中断 + 重新发送" 按钮（user 消息已 persist，assistant 中断内容不写库）
-- [x] T131 [US6] `web-admin/src/pages/ChatPage.tsx`：会话列表 + 当前对话区域
-- [x] T132 [P] [US6] cron 任务 `crates/hiveweb-admin/src/bin/chat_retention.rs`：按 `CHAT_RETENTION_DAYS` 删超期 session（级联清 message）；注册为 `chat-retention` bin target
-- [x] T161 [P] [US6] [SC-008] axe 检测 `web-admin/src/components/__tests__/a11y_chat.test.tsx`：覆盖 ChatPage / ChatStream，0 critical/serious
-- [x] T163 [P] [US6] Integration test `crates/hiveweb/tests/it_sse_concurrency.rs`：3 个测试用例 — 并发限制 (429+4291)、释放后重试成功、per-admin 隔离计数器
+- [x] T128 [US6] **[Legacy/Superseded]** `runtime/orchestrator::run_session()`：history+user msg 多 hop loop + 7 种 SSE 事件（6 种正向 + `error`）；user msg 流前 persist；assistant 由 finalize 写入；中断时 assistant 不入库
+- [x] T129 [P] [US6] **[Legacy/Superseded]** `web-admin/src/services/chat.ts`：EventSource wrapper（解析 token / tool_call / routed / done / error）
+- [x] T130 [P] [US6] **[Legacy/Superseded]** `web-admin/src/components/ChatStream.tsx`：7 种 SSE 事件渲染（`token` 增量、`tool_call`/`tool_result` 卡片对、`routed` 切换分隔条、`fallback_used` 模型切换提示、`done` 终态、`error` 错误展示）；"正在思考…" 占位（提交后到首事件之间）；30s 无响应超时降级；SSE 中途断开 → "连接中断 + 重新发送" 按钮（user 消息已 persist，assistant 中断内容不写库）
+- [x] T131 [US6] **[Legacy/Superseded]** `web-admin/src/pages/ChatPage.tsx`：会话列表 + 当前对话区域
+- [x] T132 [P] [US6] **[Legacy/Superseded]** cron 任务 `crates/hiveweb-admin/src/bin/chat_retention.rs`：按 `CHAT_RETENTION_DAYS` 删超期 session（级联清 message）；注册为 `chat-retention` bin target
+- [x] T161 [P] [US6] [SC-008] **[Legacy/Superseded]** axe 检测 `web-admin/src/components/__tests__/a11y_chat.test.tsx`：覆盖 ChatPage / ChatStream，0 critical/serious
+- [x] T163 [P] [US6] **[Legacy/Superseded]** Integration test `crates/hiveweb/tests/it_sse_concurrency.rs`：3 个测试用例 — 并发限制 (429+4291)、释放后重试成功、per-admin 隔离计数器
 
-**Checkpoint**：完整对话可演示；T043 / T065 / T161 转绿；SC-010 端到端可测。
+**历史 Checkpoint（已 superseded）**：当时完整对话可演示；T043 / T065 / T161 转绿；SC-010 端到端可测。此结果不代表相关组件当前仍应存在。
 
 ---
 
@@ -470,11 +476,11 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - [x] T154 [P] [SC-002] Plugin 列表 + 三维检索基准 `crates/hiveweb/benches/plugin_list.rs`：500 条 Plugin 数据集下 list + filter + FULLTEXT search 各 p95 ≤ 1 秒
 - [x] T155 [P] [SC-003] Workflow 保存 + 校验基准 `crates/hiveweb/benches/workflow_save.rs`：50 节点 DAG 的 PUT graph（含 cycle detection + mapping 校验）p95 ≤ 1 秒
 - [x] T156 [P] [SC-006] Agent 路由决策端到端基准 `crates/hiveweb/benches/agent_route.rs`：含 1 次 LLM 决策调用的路由 p95 ≤ 1.5 秒（mock LLM provider 固定 800ms 响应以隔离 LLM 外部延迟）
-- [x] T168 [P] [SC-010] 端到端聊天基准 `crates/hiveweb/benches/chat_e2e.rs`：完整 SSE 对话流程（user msg → session create → orchestrator run_session → SSE token/done 事件消费），mock LLM provider 固定 800ms 响应，p95 ≤ 8 秒；结果写入 perf-evidence.md
+- [x] T168 [P] [SC-010] **[Legacy/Superseded]** 端到端聊天基准 `crates/hiveweb/benches/chat_e2e.rs`：完整 SSE 对话流程（user msg → session create → orchestrator run_session → SSE token/done 事件消费），mock LLM provider 固定 800ms 响应，p95 ≤ 8 秒；结果写入 perf-evidence.md；该 admin Chat 目标不再是 004 现行验收项
 - [x] T143 ~~更新 quickstart.md~~ — 已在 analyze 整改阶段直接落地（ModelPreset 下拉、Skill markdown 步骤）
 - [x] T144 ~~修订 contracts/api.md Skills~~ — 已在 analyze 整改阶段直接落地（markdown 模式、+ 4094 OptimisticLockConflict、+ 5008 BuiltinSkillProtected）
 - [x] T145 [P] 添加 audit log 保留 cron `crates/hiveweb-admin/src/bin/audit_retention.rs`：默认保留 **90 天**（可配 `AUDIT_RETENTION_DAYS` env，与 spec FR-022 对齐），每日扫描清理超期 `runtime_audit_logs` 行；注册为 `audit-retention` bin
-- [x] T146 [P] 文档化危险 capability 授予流程 → `specs/004-agent-runtime/SECURITY.md`（含 capability auth chain / 上传 pipeline / SSE 所有权 / 9 known gaps）
+- [x] T146 [P] 文档化危险 capability 授予流程 → `specs/004-agent-runtime/SECURITY.md`（capability auth chain / 上传 pipeline 仍现役；原 admin SSE 所有权章节已 superseded）
 - [x] T147 [P] 在 `web-admin/src/pages/DashboardPage.tsx` 加 RuntimePoolCard（in_use / idle / created_total / cache_misses + reset_failures alert thresholds）
 - [x] T148 [P] CHANGELOG 更新 + tasks.md 标记 → `specs/004-agent-runtime/CHANGELOG.md`
 - [x] T232 [P] 数据种子脚本 `crates/hiveweb-admin/src/bin/seed.rs`：填充测试数据（categories, capabilities, sample plugins/functions/tools/skills/agents）
@@ -491,7 +497,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - US1 / US2 / US4 互相基本独立（US2 的 ToolRegistry 注册依赖 US4 的 invoker 完成；US2 的 custom function 调用依赖 US4 的 dispatcher） → 推荐顺序 US1 → US4 → US2，或 US1 / US4 并行后再 US2
 - US3 依赖 US2（节点是 Function）
 - US5 依赖 US2 + US4（Agent 用 Tool 与 Capability）
-- US6 依赖 US5
+- US6 原 admin Chat 曾依赖 US5；该阶段现已 superseded
 - US7 独立，可任意 phase 后插入
 - Polish 在所有 user story 完成后
 
@@ -520,7 +526,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 - 加 US3 Workflow → demo 复杂编排
 - 加 US5 Agent 多层 → demo 路由
-- 加 US6 SSE chat → demo 完整对话
+- 原“加 US6 SSE chat → demo 完整对话”增量已 superseded，不恢复
 - 加 US7 Category/Tag → 运营组织能力
 - Polish → 性能 / a11y / 文档
 
@@ -528,20 +534,20 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 ## Task Summary
 
-- **Total Tasks**: 237（含 analyze v1 整改 T149–T161 + analyze v3 整改 T162 pool/stats + T163 SSE 并发测试 + analyze v5 补漏 T164–T167 + analyze v6 补漏 T168 + V019–V038 迁移 T170–T186 + Admin Center / Dashboard / RecommendedGame T187–T237）
+- **Total Historical Tasks**: 237（计数保留；其中 US6、T163/T164/T168 等 admin Chat 项已 superseded）
 - **Setup (Phase 1)**: 5 + 1（T149 集中 15 个 env vars）
 - **Foundational (Phase 2)**: 31 + 3 跨切乐观锁（T150/T151/T152）= 34
 - **Database Migrations V019–V038**: 17（T170–T186）
-- **Tests (Phase 2.5)**: 33 + 1 SSE 并发（T163）= 34；已由 interleaved 实现覆盖（`it_dispatcher.rs` / `contract_plugin.rs` 等）；**分析 v5 补漏 4 项**：T164 会话所有权 / T165 race window / T166 memory limit / T167 sha256 校验
+- **Tests (Phase 2.5)**: 历史计数 33 + 1 admin SSE 并发（T163）= 34；T163/T164 已 superseded，其余覆盖记录保持不变
 - **US1 Plugin**: 9 + 1 a11y（T157）
 - **US2 Function/Tool/Skill**: 16 + 1 a11y（T158）
 - **US4 Capability**: 13 + 1 pool/stats 端点（T162）
 - **US3 Workflow**: 8 + 1 a11y（T159）
 - **US5 Agent**: 10 + 1 a11y（T160）
-- **US6 Chat**: 7 + 1 a11y（T161）
+- **US6 admin Chat**: 历史 7 + 1 a11y（T161），全部 superseded
 - **US7 Category/Tag**: 4
 - **Admin Center / Dashboard / RecommendedGame (Phase 9.5)**: 32（T193–T224）
-- **Polish (Phase 10)**: 12 + 5 perf bench（T153–T156 + T168）= 17；T143/T144 已就地完成
+- **Polish (Phase 10)**: 历史计数 12 + 5 perf bench（T153–T156 + T168）= 17；其中 T168 已 superseded
 
 **Parallel Opportunities**: 180+ 任务标 [P]
 **Independent MVP**: US1 + US2 + US4（共 38 + 1 metrics 实现任务 + 33 红灯 + 3 乐观锁 + 1 env 配置）
@@ -552,21 +558,21 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 | --- | --- | --- |
 | 8 个新 env var | T149 | 描述扩写到 15 项 |
 | GET /api/runtime/pool/stats 端点 | T162 新增 | US4 加 1 任务 |
-| SSE 6 事件（+tool_result/+fallback_used）+ headers + 15s ping | T065, T127, T130 | 描述扩写 |
+| 原 admin SSE 6 事件（+tool_result/+fallback_used）+ headers + 15s ping | T065, T127, T130 | 历史整改，已 superseded |
 | SC-009 race window FOR UPDATE | T070 | 描述扩写到 5 个子步骤 |
 | WASM imports 静态检查 | T037, T070 | 测试 + 实现描述都扩写 |
 | Startup Init Order 12 步 | T035 | 描述扩写 |
-| chat_sessions snapshot 列 | T014 | 描述扩写 |
+| 原 admin `chat_sessions` snapshot 列 | T014 | 历史整改，已 superseded |
 | Tool schema 深度等值 | T040, T082 | 测试 + 实现描述都扩写 |
 | 5009 PoolBusy 错误码 | T050 | 测试描述扩写覆盖 |
-| 4291 SSE concurrency 错误码 | T163 新增 | US6 加 1 任务 |
+| 4291 admin SSE concurrency 错误码 | T163 新增 | 历史整改，已 superseded |
 | workflow edge mapping schema | T108 | 描述扩写 |
 
 ### Analyze v5 整改任务覆盖矩阵（cross-artifact gap 到 task 映射）
 
 | Spec Gap | 影响 task | 整改方式 |
 | --- | --- | --- |
-| FR-027 会话所有权（admin_id 校验） | T164 新增 | US6 加 session 所有权集成测试 |
+| FR-027 原 admin 会话所有权（admin_id 校验） | T164 新增 | 历史整改，已 superseded |
 | FR-031 Plugin memory limit 128 MB | T166 新增 | US4 加 memory limit 集成测试 |
 | SC-009 race window 并发防护 | T165 新增 | US1 加 delete race 集成测试 |
 | FR-029 WASM 加载前 sha256 校验 | T167 新增 | US4 加 sha256 mismatch 集成测试 |
@@ -576,7 +582,7 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 
 | Spec Gap | 影响 task | 整改方式 |
 | --- | --- | --- |
-| SC-010 端到端聊天无 perf bench | T168 新增 | Phase 10 加 chat_e2e.rs 基准 |
+| SC-010 原 admin 端到端聊天无 perf bench | T168 新增 | 历史整改，已 superseded |
 | FR-026 合并入 FR-003 | spec.md 编辑 | FR-026 保留为交叉引用，FR-003 扩写适用范围 |
 | plan.md [NEEDS CLARIFICATION] 占位 | plan.md 编辑 | 确认 T005+T138 覆盖，移除占位 |
 
@@ -591,9 +597,9 @@ description: "Task list for Agent Runtime (Capability-based WASM plugin runtime)
 - Skill = markdown 内容，**不**走 OpenAI tool-calling 路径
 - 危险 capability 授予 + main Agent 编辑 = Super-only（在 service 层强制 + 前端 hide-if-not-Super）
 - `db.execute` / `db.query` 永远走 named query；自由 SQL 0 暴露面
-- **当前状态**：所有 237 个任务已完成 [x]。项目处于可生产状态。
+- **当前状态**：237 个历史任务均保留 `[x]` 完成记录；其中明确标注 Legacy/Superseded 的 admin Chat 与 RecommendedGame 条目不属于当前交付面，不能据其完成状态推断代码应继续存在。
 - **新增实体**（未在原始 spec 中但已实现）：`RecommendedGame`（推荐游戏管理）、`Admin`/`AdminAuditLog`/`LoginRecord`（003-admin-center）、`Dashboard`（统计面板）、`Capability`（CRUD 管理）、`RuntimeAuditLog`（运行时审计日志）
 - **新增页面**：Dashboard、Capability、LoginPage、AdminPage、AdminAuditLogPage、RuntimeAuditLogPage、LoginRecordPage、RecommendedGamePage
 - **新增运行时组件**：orchestrator、builtins、builtin_tools、wasm_exports
-- **新增 bin 工具**：seed、seed_bench、create_super_admin（除已有的 migrate/chat_retention/audit_retention）
+- **新增 bin 工具**：seed、seed_bench、create_super_admin（另有 migrate/audit_retention；当前 `chat_retention` 面向普通用户表，不恢复 admin Chat）
 - **Admin/RBAC/审计**：003-admin-center 的 Admin CRUD、LoginRecord、AdminAuditLog、RBAC 权限、Super Admin 保护已在 Phase 9.5 中记录；相关测试 contract_admin.rs / contract_auth.rs / contract_dashboard.rs / it_rbac.rs / it_login_record.rs / it_lockout.rs / it_super_admin_guard.rs 已记录在 Phase 2.5

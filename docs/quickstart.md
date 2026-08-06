@@ -14,7 +14,7 @@
 - Node.js 18+（前端项目需要）。
 - MySQL 8.0+（管理中心后端需要）。
 - Redis 7+（管理中心后端缓存需要）。
-- （可选）MinIO 或 S3 兼容存储（文件上传需要）。
+- （可选）Rustfs（S3 兼容，文件上传需要）。
 
 ### Linux 额外依赖
 
@@ -44,7 +44,7 @@ cargo build --workspace
 首次构建会解析工作空间、下载依赖，并在 `target/debug/` 下生成二进制文件：
 
 - `target/debug/hiveclaw` — Agent 运行时
-- `target/debug/hivegui` — GUI 客户端
+- `target/debug/hivegui` — 独立桌面本地 Agent
 
 此步骤不会修改任何受源代码控制的文件（SC-005）。
 
@@ -73,26 +73,29 @@ curl -sS -X POST http://127.0.0.1:8686/v1/responses \
 
 响应格式参见 `contracts/openresponses-v1.md` 中的 `Response — synchronous` 部分。
 
-## 4. 启动 GUI 客户端 — HiveGUI（终端 B）
+## 4. 启动独立本地 Agent — HiveGUI（终端 B）
 
 ```bash
-# 可选：指定 HiveClaw 地址
-# export HIVECLAW_URL=http://127.0.0.1:8686
-
 cargo run -p hivegui
 ```
 
-原生窗口打开后将看到：
+HiveGUI 与云端 HiveWeb Agent 彼此独立，只复用编译期代码、模型和 ABI
+契约。HiveGUI 不读取 HiveWeb/HiveClaw 地址作为启动前提，不请求 HiveWeb，
+本地执行失败时也不回退到 HiveWeb；它可以按用户配置直接访问外部 LLM
+或 MySQL 数据源。`specs/011-hivegui-standalone-mode/` 记录该运行边界的实现
+与验收状态。
+
+原生窗口打开后，按 011 目标将看到：
 
 - 主面板上的对话区域。
-- 两个可导航的区块：**Day+1 工具** 和 **Hour+1 工具**，每个区块显示中文空状态提示（"暂无工具"，参见 `crates/hivegui/src/ui/strings_zh.rs` 中的正式文案）。
+- Home、Ai、Tools 三个顶层入口，以及本地 Agent 和资源管理界面。
 
 在对话区域输入消息并发送，应看到：
 
 1. 你的消息出现在对话线程中，标记为本人发送。
-2. 进行中的加载指示器（FR-008）。
-3. HiveClaw 的占位回复在约 3 秒内出现在下方（SC-002 预算）。
-4. 只有在收到回复后，发送按钮才会重新启用（FR-008a）。
+2. HiveGUI 在本地从唯一默认根 Agent 启动编排。
+3. HiveGUI 直接调用用户配置的 LLM，并在本地执行 Tool、Workflow 和 Plugin。
+4. 会话与执行状态使用设备本地密钥加密保存。
 
 ## 5. 日志位置
 
@@ -103,15 +106,16 @@ cargo run -p hivegui
 
   日志按天滚动。每行包含一个 JSON 对象，字段包括：`timestamp`、`level`、`target`、`conversation_id`、`request_id`、`operation`、`outcome`、`duration_ms`（遵循 FR-012b 和宪法原则 VI）。
 
-## 6. 测试失败路径
+## 6. 验证 HiveGUI 本地独立性
 
-在 HiveGUI 运行时，停止 HiveClaw（在终端 A 按 Ctrl-C）。在 HiveGUI 中发送另一条消息，应看到：
+保持 HiveWeb 与 HiveClaw 未配置且不运行，启动网络观测后，在 HiveGUI 中
+使用 mock LLM 或用户配置的 LLM 完成一次包含本地 Tool 的 Agent 对话。验收
+结果必须同时满足：
 
-- 该轮对话显示清晰的中文错误提示（"HiveClaw 不可达，请检查服务是否运行"，参见 `strings_zh.rs` 的最终文案）。
-- 失败对话上出现可见的**重试**操作按钮（规范 Edge Cases / FR-008a）。
-- 无自动重试，需手动点击。
-
-重启 HiveClaw，点击失败的对话上的**重试**按钮，占位回复应正常返回。
+- HiveGUI 正常启动、管理资源并完成本地编排。
+- 网络观测中没有发往 HiveWeb 的请求。
+- 外部 LLM 或本地执行资源失败时，界面显示可定位的错误，且不回退到 HiveWeb。
+- 回复、结束对话和直接子 Agent 路由属于运行时控制，不会出现在 Tool 数据中。
 
 ---
 
@@ -232,7 +236,8 @@ npm run lint
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `HIVECLAW_BIND_ADDR` | 监听地址 | 127.0.0.1:8686 |
-| `HIVECLAW_URL` | HiveGUI 连接地址 | http://127.0.0.1:8686 |
+
+HiveGUI 不接受或读取 HiveWeb/HiveClaw URL 作为运行前置配置。
 
 ### HiveWeb 后端环境变量
 
@@ -290,7 +295,7 @@ docker compose --profile observability up -d
 ### MySQL
 
 ```bash
-docker run -d --restart=always --name agent_mysql_stack -p 33060:3306 -e MYSQL_ROOT_PASSWORD='ai123456' mysql:5.7.41
+docker run -d --restart=always --name agent_mysql_stack -p 33060:3306 -e MYSQL_ROOT_PASSWORD='ai123456' mysql:8.0
 ```
 
 ---
@@ -301,9 +306,10 @@ docker run -d --restart=always --name agent_mysql_stack -p 33060:3306 -e MYSQL_R
 
 通常是缺少系统库（`libxkbcommon-dev`、`libvulkan-dev`），请重新检查第 1 节的 Linux 额外依赖。
 
-### HiveGUI 立即显示"HiveClaw 不可达"
+### HiveGUI 是否需要先启动 HiveWeb 或 HiveClaw
 
-HiveClaw 未运行，或 `HIVECLAW_URL` 指向错误地址。使用第 3 节的 `curl` 命令验证。
+不需要。HiveGUI 是独立本地 Agent；若启动或本地执行路径要求 HiveWeb/HiveClaw
+URL、发起 HiveWeb 请求或在失败时回退到 HiveWeb，应按 011 规格视为缺陷。
 
 ### 日志目录为空
 
@@ -365,9 +371,9 @@ docker run -p 3300:3300 hiveweb
 
 以下功能**不在** v1 范围内：
 
-- 不持久化对话历史（关闭 HiveGUI 即丢失对话，此为设计预期）。
-- Day+1 和 Hour+1 工具系列均为空（设计预期）。
-- 无认证、无多用户、无共享部署（FR-015）。
+- HiveGUI 与 HiveWeb 之间的数据同步、远程调用或失败回退。
+- 自动注册消息回复、结束对话或子 Agent 路由 Tool；这些是本地运行时控制。
+- 多用户或共享式 HiveGUI 部署。
 - 无 Windows 构建（v1 范围外）。
 - 管理中心的完整功能参见 `specs/003-admin-center/`。
 
@@ -375,7 +381,7 @@ docker run -p 3300:3300 hiveweb
 
 ## 14. 功能特性一览
 
-- ✅ Agent 运行时（HiveClaw）与 GUI 客户端（HiveGUI）
+- ✅ 云端 HiveWeb Agent 与独立本地 HiveGUI Agent（仅代码复用，HiveGUI 不请求 HiveWeb）
 - ✅ 管理员登录（JWT 认证）
 - ✅ 管理员账号管理（增删改查）
 - ✅ 角色权限控制（普通/系统/超级管理员）

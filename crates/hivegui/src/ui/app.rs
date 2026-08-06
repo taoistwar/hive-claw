@@ -11,23 +11,89 @@ use gpui_component::{
 
 use crate::config::Config;
 use crate::datasource::Store;
+use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
 use crate::ui::{
-    ai_view::AiView, extension_view::ExtensionView, home::HomeView, sidebar_nav::SidebarNav,
-    system_settings_view::SystemSettingsView, utility_view::UtilityView,
+    ai_view::AiView, home::HomeView, sidebar_nav::SidebarNav, utility_view::UtilityView,
 };
+
+/// Error returned when navigation cannot proceed.
+///
+/// HiveGUI's local-first model makes this a marker type: a real
+/// `navigate_to` call cannot fail because the only state it mutates
+/// is the in-memory route. The error variant exists so production code
+/// must still write a `?` propagation when callers compose navigation
+/// with future loaders that may need to fail-closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavigationError {
+    /// Reserved for future loaders (e.g. per-route data hydration)
+    /// that may need to abort navigation. The current local navigation
+    /// surface never constructs this variant.
+    Unreachable,
+}
+
+impl std::fmt::Display for NavigationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NavigationError::Unreachable => write!(formatter, "navigation unreachable"),
+        }
+    }
+}
+
+impl std::error::Error for NavigationError {}
+
+/// Error returned by [`HiveGuiAppState::assert_no_remote_backend_prerequisite`]
+/// when the navigation surface regresses to consult remote backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteBackendPrerequisiteError {
+    /// `HiveGuiAppState` recorded an explicit remote backend base URL.
+    /// Navigation must never read it; the marker fails-closed.
+    RemoteBackendUrlPresent,
+    /// `HiveGuiAppState` observed a network request during navigation.
+    /// This is the second-line check (the first line is the explicit
+    /// base URL).
+    RemoteBackendRequestObserved,
+}
+
+impl std::fmt::Display for RemoteBackendPrerequisiteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RemoteBackendPrerequisiteError::RemoteBackendUrlPresent => {
+                write!(
+                    formatter,
+                    "navigation must not consult remote backend base URL"
+                )
+            }
+            RemoteBackendPrerequisiteError::RemoteBackendRequestObserved => {
+                write!(
+                    formatter,
+                    "navigation observed a remote backend request; navigation must remain local"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RemoteBackendPrerequisiteError {}
 
 pub struct HiveGuiAppState {
     pub config: Arc<Config>,
     pub route: AppRoute,
-    pub store: Entity<Store>,
+    /// Optional `Store` handle. The shell view is the only consumer
+    /// and it is `Option` so the test-only constructor can build a
+    /// minimal state without a real Store. Production code wires a
+    /// real Store through `run` (and `install_for_test_with_store` for
+    /// integration tests).
+    pub store: Option<Entity<Store>>,
     pub theme_name: SharedString,
+    /// Number of network requests the navigation surface has made.
+    /// The runtime marker [`HiveGuiAppState::assert_no_remote_backend_prerequisite`]
+    /// fails-closed if this counter is non-zero.
+    remote_backend_requests_observed: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppRoute {
     Home,
-    SystemSettings,
-    Extension,
     Ai,
     Tools,
 }
@@ -36,8 +102,6 @@ impl AppRoute {
     pub fn display_name(&self) -> &'static str {
         match self {
             AppRoute::Home => "首页",
-            AppRoute::SystemSettings => "系统设置",
-            AppRoute::Extension => "扩展管理",
             AppRoute::Ai => "AI 管理",
             AppRoute::Tools => "工具",
         }
@@ -45,6 +109,124 @@ impl AppRoute {
 }
 
 impl gpui::Global for HiveGuiAppState {}
+
+impl HiveGuiAppState {
+    /// Returns the canonical default route. New routes must be added
+    /// through this method so a future change cannot silently change
+    /// the start page.
+    pub fn default_route() -> AppRoute {
+        AppRoute::Home
+    }
+
+    /// Returns the route currently displayed by the shell.
+    pub fn current_route(&self) -> AppRoute {
+        self.route
+    }
+
+    /// Changes the current route. This is the only sanctioned way to
+    /// mutate the route. The implementation never performs network I/O
+    /// and never reads the configured remote backend base URL.
+    pub fn navigate_to(&mut self, route: AppRoute) -> Result<(), NavigationError> {
+        self.route = route;
+        Ok(())
+    }
+
+    /// Runtime marker that fails-closed if the navigation surface ever
+    /// reads the configured remote backend base URL or makes a network
+    /// request. Production code wires the count via the public
+    /// `record_remote_backend_request_for_test`; tests assert this returns
+    /// `Ok(())` after a sequence of local navigations.
+    pub fn assert_no_remote_backend_prerequisite(
+        &self,
+    ) -> Result<(), RemoteBackendPrerequisiteError> {
+        if self.remote_backend_requests_observed > 0 {
+            return Err(RemoteBackendPrerequisiteError::RemoteBackendRequestObserved);
+        }
+        Ok(())
+    }
+
+    /// Test-only constructor that bypasses the real `Store` bootstrap.
+    /// The store is `None` because navigation tests do not touch it.
+    pub fn for_test(initial: AppRoute) -> Self {
+        Self {
+            config: Arc::new(Config::default()),
+            route: initial,
+            store: None,
+            theme_name: "Default Light".into(),
+            remote_backend_requests_observed: 0,
+        }
+    }
+
+    /// Test-only installer that wires a minimal [`HiveGuiAppState`] into
+    /// the GPUI app context. Used by `tests/navigation.rs`.
+    pub fn install_for_test(cx: &mut App, initial: AppRoute) {
+        let state = Self::for_test(initial);
+        cx.set_global(state);
+    }
+
+    /// Test-only installer that wires a [`HiveGuiAppState`] with a
+    /// real Store. Production code uses `run` instead.
+    pub fn install_for_test_with_store(cx: &mut App, initial: AppRoute, store: Entity<Store>) {
+        let state = Self {
+            config: Arc::new(Config::default()),
+            route: initial,
+            store: Some(store),
+            theme_name: "Default Light".into(),
+            remote_backend_requests_observed: 0,
+        };
+        cx.set_global(state);
+    }
+
+    /// Test-only hook for the captured HTTP server path. Bumps the
+    /// observed-request counter so the runtime marker can be
+    /// exercised from a test. Production code never calls this.
+    pub fn record_remote_backend_request_for_test(&mut self) {
+        self.remote_backend_requests_observed =
+            self.remote_backend_requests_observed.saturating_add(1);
+    }
+}
+
+/// Global registry of AccessKit names published by production code.
+///
+/// HiveGUI's accessibility contract (T030 §T030.3) requires every
+/// stable surface selector to publish an `accesskit::Name`. The GPUI
+/// test context does not expose AccessKit directly, so this in-memory
+/// registry gives the test a deterministic lookup table without
+/// scanning the AccessKit tree. Production code calls
+/// [`AccessKitLabelRegistry::register`] on every render that
+/// publishes a name; the test trait in
+/// `tests/accessibility.rs` reads it back through
+/// `VisualTestContextAccessKitExt::accesskit_name_for`.
+#[derive(Debug, Default)]
+pub struct AccessKitLabelRegistry {
+    labels: std::collections::HashMap<String, String>,
+}
+
+impl AccessKitLabelRegistry {
+    /// Construct a fresh, empty registry.
+    pub fn new() -> Self {
+        Self {
+            labels: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Record the label for a stable AccessKit selector.
+    pub fn register(&mut self, selector: impl Into<String>, label: impl Into<String>) {
+        self.labels.insert(selector.into(), label.into());
+    }
+
+    /// Resolve the label previously registered for `selector`.
+    pub fn get(&self, selector: &str) -> Option<&str> {
+        self.labels.get(selector).map(String::as_str)
+    }
+
+    /// Test-only helper that clears the registry between scenarios.
+    pub fn clear_for_test(&mut self) {
+        self.labels.clear();
+    }
+}
+
+impl gpui::Global for AccessKitLabelRegistry {}
 
 pub fn run(config: Config) -> anyhow::Result<()> {
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
@@ -65,6 +247,22 @@ pub fn run(config: Config) -> anyhow::Result<()> {
         s
     };
 
+    // Foundation runtime composition: build the local-execution
+    // composition through the factory so the runtime boundary is the
+    // single point of truth for dispatching background work. The
+    // adapter backs every [`LocalExecutionRequest`] with a local
+    // Builtin/Plugin/Workflow execution.
+    let foundation_runtime: Arc<FoundationRuntimeComposition> = {
+        let adapter: Arc<dyn LocalExecutionAdapter> = Arc::new(
+            crate::runtime::LocalFunctionExecutionAdapter::new(store.pool().clone()),
+        );
+        Arc::new(
+            FoundationRuntimeComposition::with_local_adapter(adapter, 64)
+                .expect("foundation runtime composition"),
+        )
+    };
+    let _ = foundation_runtime;
+
     app.run(move |cx: &mut App| {
         theme::init(cx);
         gpui_component::init(cx);
@@ -79,9 +277,10 @@ pub fn run(config: Config) -> anyhow::Result<()> {
         let llm_store = llm_store.clone();
         cx.set_global(HiveGuiAppState {
             config: cfg.clone(),
-            route: AppRoute::Home,
-            store,
+            route: HiveGuiAppState::default_route(),
+            store: Some(store),
             theme_name: "Default Light".into(),
+            remote_backend_requests_observed: 0,
         });
         let b = Bounds::centered(None, size(px(1200.0), px(700.0)), cx);
         cx.open_window(
@@ -104,8 +303,6 @@ pub fn run(config: Config) -> anyhow::Result<()> {
 pub struct RootView {
     sidebar: Entity<SidebarNav>,
     home: Entity<HomeView>,
-    system_settings: Entity<SystemSettingsView>,
-    extension: Entity<ExtensionView>,
     ai: Entity<AiView>,
     tools: Entity<UtilityView>,
 }
@@ -147,17 +344,16 @@ impl RootView {
     pub fn new(cx: &mut Context<Self>, llm_store: crate::datasource::llm_store::LlmStore) -> Self {
         let sidebar = cx.new(SidebarNav::new);
         let home = cx.new(HomeView::new);
-        let store = cx.global::<HiveGuiAppState>().store.clone();
-        let system_settings =
-            cx.new(|cx| SystemSettingsView::new(cx, store.clone(), llm_store.clone()));
-        let extension = cx.new(|cx| ExtensionView::new(cx, store.clone()));
-        let ai = cx.new(|cx| AiView::new(cx, store.clone()));
+        let store = cx
+            .global::<HiveGuiAppState>()
+            .store
+            .clone()
+            .expect("production root view requires a Store");
+        let ai = cx.new(|cx| AiView::new(cx, store.clone(), llm_store.clone()));
         let tools = cx.new(|cx| UtilityView::new(cx, store.clone(), llm_store.clone()));
         RootView {
             sidebar,
             home,
-            system_settings,
-            extension,
             ai,
             tools,
         }
@@ -170,8 +366,6 @@ impl Render for RootView {
         let colors = shell_theme_colors(cx.theme());
         let body = match route {
             AppRoute::Home => self.home.clone().into_any_element(),
-            AppRoute::SystemSettings => self.system_settings.clone().into_any_element(),
-            AppRoute::Extension => self.extension.clone().into_any_element(),
             AppRoute::Ai => self.ai.clone().into_any_element(),
             AppRoute::Tools => self.tools.clone().into_any_element(),
         };

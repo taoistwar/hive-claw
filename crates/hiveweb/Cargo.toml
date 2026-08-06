@@ -17,11 +17,13 @@ clap = { workspace = true }
 
 # Database — 004 加 json feature 以便序列化 JSON 列
 sqlx = { workspace = true, features = [
-  "runtime-tokio-rustls",
-  "mysql",
   "chrono",
   "json",
+  "macros",
+  "mysql",
+  "runtime-tokio",
   "rust_decimal",
+  "tls-rustls-ring-webpki",
 ] }
 rust_decimal = { workspace = true }
 syntect = { workspace = true }

@@ -142,8 +142,7 @@ impl SkillView {
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll
-            .set_offset(point(px(0.0), px(0.0)));
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
         self.error_message = None;
@@ -400,16 +399,28 @@ impl Render for SkillView {
                             .child(
                                 list_header(style)
                                     .child(list_header_cell(Some(col_widths[0]), style).child("ID"))
-                                    .child(list_header_cell(Some(col_widths[1]), style).child("名称"))
-                                    .child(list_header_cell(Some(col_widths[2]), style).child("Identifier"))
-                                    .child(list_header_cell(Some(col_widths[3]), style).child("描述"))
-                                    .child(list_header_cell(Some(col_widths[4]), style).child("操作")),
+                                    .child(
+                                        list_header_cell(Some(col_widths[1]), style).child("名称"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[2]), style)
+                                            .child("Identifier"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[3]), style).child("描述"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[4]), style).child("操作"),
+                                    ),
                             )
                             .children(self.items.iter().map(|item| {
                                 let id = item.id;
                                 let ic = item.clone();
                                 list_row(style)
-                                    .child(list_cell(Some(col_widths[0]), style).child(format!("{}", item.id)))
+                                    .child(
+                                        list_cell(Some(col_widths[0]), style)
+                                            .child(format!("{}", item.id)),
+                                    )
                                     .child(
                                         list_cell(Some(col_widths[1]), style)
                                             .text_size(px(13.0))
@@ -500,12 +511,15 @@ impl Render for SkillView {
                                     ActionSize::Page,
                                     style,
                                 )
-                                .on_mouse_down(MouseButton::Left, {
-                                    let t = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        t.update(cx, |v, cx| v.prev_page(cx)).ok();
-                                    }
-                                }),
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.prev_page(cx)).ok();
+                                        }
+                                    },
+                                ),
                             )
                             .child(div().text_size(px(13.0)).child(format!(
                                 "第 {} / {} 页",
@@ -524,12 +538,15 @@ impl Render for SkillView {
                                     ActionSize::Page,
                                     style,
                                 )
-                                .on_mouse_down(MouseButton::Left, {
-                                    let t = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        t.update(cx, |v, cx| v.next_page(cx)).ok();
-                                    }
-                                }),
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.next_page(cx)).ok();
+                                        }
+                                    },
+                                ),
                             ),
                     ),
             )
@@ -563,75 +580,81 @@ impl Render for SkillView {
                         theme.foreground,
                         theme.border,
                     )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            management_modal_scroll("skill-form-scroll", &self.form_scroll)
-                                .gap(px(12.0))
-                                .child(
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        management_modal_scroll("skill-form-scroll", &self.form_scroll)
+                            .gap(px(12.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_id.is_some() {
+                                        "编辑技能"
+                                    } else {
+                                        "添加技能"
+                                    }),
+                            )
+                            .child(form_field("Identifier *", identifier_input, theme))
+                            .child(form_field("名称 *", name_input, theme))
+                            .child(form_field("描述 *", description_input, theme))
+                            .child(form_field("Source", source_input, theme))
+                            .child(form_field("Content (Markdown) *", content_input, theme))
+                            .when_some(self.error_message.as_ref(), |this, err| {
+                                this.child(
                                     div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(if self.editing_id.is_some() {
-                                            "编辑技能"
-                                        } else {
-                                            "添加技能"
-                                        }),
+                                        .p(px(8.0))
+                                        .bg(theme.warning.opacity(0.15))
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme.warning)
+                                        .child(err.clone()),
                                 )
-                                .child(form_field("Identifier *", identifier_input, theme))
-                                .child(form_field("名称 *", name_input, theme))
-                                .child(form_field("描述 *", description_input, theme))
-                                .child(form_field("Source", source_input, theme))
-                                .child(form_field("Content (Markdown) *", content_input, theme))
-                                .when_some(self.error_message.as_ref(), |this, err| {
-                                    this.child(
-                                        div()
-                                            .p(px(8.0))
-                                            .bg(theme.warning.opacity(0.15))
-                                            .rounded(px(4.0))
-                                            .text_size(px(12.0))
-                                            .text_color(theme.warning)
-                                            .child(err.clone()),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .justify_end()
-                                        .gap(px(8.0))
-                                        .child(
-                                            action_button(
-                                                "cancel",
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        action_button(
+                                            "cancel",
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.hide_form(cx)).ok();
                                                 }
-                                            }),
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "save",
+                                            "保存",
+                                            ActionRole::Main,
+                                            ActionSize::Dialog,
+                                            style,
                                         )
-                                        .child(
-                                            action_button(
-                                                "save",
-                                                "保存",
-                                                ActionRole::Main,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.save(cx)).ok();
                                                 }
-                                            }),
+                                            },
                                         ),
-                                ),
-                        ),
+                                    ),
+                            ),
+                    ),
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
@@ -751,12 +774,21 @@ impl Render for SkillView {
     }
 }
 
-fn form_field(label: &'static str, input: Entity<InputState>, theme: &gpui_component::theme::Theme) -> impl IntoElement {
+fn form_field(
+    label: &'static str,
+    input: Entity<InputState>,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .child(div().text_size(px(13.0)).text_color(theme.foreground).child(label))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme.foreground)
+                .child(label),
+        )
         .child(
             Input::new(&input)
                 .w_full()

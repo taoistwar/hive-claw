@@ -1,6 +1,6 @@
 # Runtime Integration Checklist: HiveGUI 独立运行模式
 
-**Purpose**: 验证 hiveweb 运行时组件复用、WASM 集成、工作流适配相关需求的完整性、清晰性和一致性
+**Purpose**: 验证共享运行时库、产品独立 adapter、WASM 集成与工作流适配相关需求的完整性、清晰性和一致性
 **Created**: 2026-06-15
 **Feature**: [spec.md](../spec.md)
 
@@ -10,113 +10,120 @@
 
 ## Dependency Reuse Requirements
 
-- [x] CHK001 hiveweb 运行时模块（invoker, pool, workflow, builtins, capability）作为库依赖复用时，是否需要定义 hiveweb 的最小公共 API 契约？当前 spec 未提及 hiveweb 需要暴露哪些模块。[Gap, Spec §FR-005, Plan §Technical Context]
-  > **评估**: Plan §Technical Context + T001 明确定义了 `hiveweb` standalone feature 导出的模块范围（invoker/pool/workflow/builtins/capability）。contracts/ 目录包含 Store 接口合约。最小公共 API 已通过 Cargo feature 和 task 定义隐式明确。
+- [x] CHK001 共享运行时模块（ABI、capability、execution、plugin、wasm、workflow、persisted_tool）作为库依赖复用时，是否定义了最小公共 API 契约和禁止依赖边界？[Gap, Spec §FR-028/FR-039, Plan §Technical Context]
+  > **评估**: Plan §Constitution Check/§Project Structure、Research §1/§2 与 T002/T015 明确把这些存储无关协议和纯算法放入 `hive-runtime-core`，并要求其依赖图不含 HTTP、SQLx 或任何产品 crate。T144 负责最终公开 API inventory。HiveGUI 和 HiveWeb 各自保留数据、文件、网络及宿主 adapter，不通过 `hiveweb` crate 复用运行时。
 
-- [x] CHK002 FR-005 声明"复用 hiveweb 的 WASM 运行时（invoker/pool）"——"复用"是否明确定义了复用方式（源码级依赖 / 二进制链接 / 独立 crate 提取）？[Clarity, Spec §FR-005]
-  > **评估**: Plan §Technical Context + T001 定义了通过 Cargo `path` 依赖 + `default-features=false, features=["standalone"]` 方式复用。复用方式为源码级依赖（workspace crate），已明确。
+- [x] CHK002 Spec 声明共享运行时和 Plugin ABI——“共享”是否明确定义了复用方式（源码级依赖 / 二进制链接 / 独立 crate 提取）？[Clarity, Spec §FR-028/FR-039]
+  > **评估**: Plan §Summary/§Project Structure 与 Research §1/§2 将方式固定为 workspace 源码级 library 复用：运行时复用边界仅为 `hive-runtime-core`、`agent`、`providers`、`hive-builtins` 和共享 ABI fixtures。HiveGUI 不依赖 `hiveweb`，两个产品也不在运行时通信。
 
-- [x] CHK003 research.md 提到通过 feature flag 排除 hiveweb 的 MySQL/Redis/S3 依赖——此方案是否在 spec 或 plan 的需求层面有对应表述？还是停留在研究决策阶段？[Gap, Research §3]
-  > **评估**: T001 明确实现此策略：`crates/hiveweb/Cargo.toml` 添加 `standalone` feature（排除 MySQL/Redis/S3）。已从研究决策落地为可执行 task。
+- [x] CHK003 research.md 拒绝通过 `hiveweb` feature 排除 MySQL/Redis/S3 后供 HiveGUI 依赖——此结论是否已落实到 spec、plan 和可验证任务？[Consistency, Research §1, Spec §FR-028/FR-029]
+  > **评估**: FR-028/FR-029、Plan §Summary/§Project Structure、T015/T026 和 T116/T140 一致要求 HiveGUI 不构造 HiveWeb client、不读取 HiveWeb URL、零 HiveWeb 请求且失败时零 HiveWeb fallback；不存在为 HiveGUI 增加 `hiveweb` `standalone` feature 的实施任务。
 
-- [x] CHK004 hiveweb 运行时组件依赖 `sqlx::MySqlPool`（如 orchestrator.rs）——当 hivegui 使用 SQLite 时，是否有需求定义数据库抽象层的适配策略？[Gap, Research §3, Plan §Technical Context]
-  > **评估**: hivegui 不从 hiveweb 复用 orchestrator（使用 SQLite Store 直接管理数据）。T053 复用的是 WorkflowExecutor（工作流 DAG 执行逻辑），其输入是已加载的工作流定义，不依赖数据库连接。plan §Structure 的 hiveweb standalone feature 已排除需要 MySQL 的模块。
+- [x] CHK004 HiveWeb runtime 绑定 MySQL/Redis/S3/Axum，而 HiveGUI 使用 SQLite 和本地托管文件——是否定义了存储与宿主适配策略？[Gap, Research §1/§5, Plan §Project Structure]
+  > **评估**: `hive-runtime-core` 只提供存储无关的 `WorkflowGraph`、ABI、取消和 Plugin 生命周期；HiveGUI 通过 T026、T070、T079、T096 的本地 adapter 接入 SQLite、受控文件句柄和本地 Capability，HiveWeb 通过自己的 adapter 接入云端设施。T080 只让两个 adapter 接入共享 ABI/host_call 类型和 fixture，不复用彼此的连接或 executor。
 
-- [x] CHK005 "内置函数全部从 hiveweb 复用"——是否定义了"全部"的边界（hiveweb builtins/ 目录下所有文件？含 game_list、game_info 等需外部数据的函数？）[Clarity, Spec §FR-006, Clarifications §Q5]
-  > **评估**: Spec §Clarifications Q5 明确"hiveweb 的所有内置函数（game_list、game_info 等）全部引入 hivegui，作为库依赖复用"。T031 实现 BuiltinRegistry 启动时自动注册。边界清晰。
+- [x] CHK005 共享 Builtin 的边界和 identifier 是否完整定义？[Clarity, Spec §FR-038, Research §17]
+  > **评估**: 两端编译期复用 `hive-builtins` 的四个下划线 identifier：`format_template/json_parse/json_stringify/text_regex_match`；T083-T089 验证注册、执行和只读语义。点号名称不作为记录或运行时别名，消息回复、结束对话和子 Agent 路由也不注册为 Tool。
 
 ## WASM Runtime Integration
 
-- [x] CHK006 FR-005 声明插件"无需修改即可在 hivegui 中加载和运行"——是否定义了兼容性的验证标准（相同的 wasm 二进制、相同的 import 接口、相同的执行语义）？[Clarity, Spec §FR-005]
-  > **评估**: Spec §Clarifications Q5 定义兼容性为"复用 hiveweb 的 WASM 运行时（invoker/pool）"——同一代码路径保证相同的 import 接口和执行语义。T060 集成测试验证插件函数调用。验证标准已通过"复用同一运行时"隐式定义。
+- [x] CHK006 FR-039 声明同一 Plugin “无需转换”即可在两个产品运行——是否定义了兼容性的验证标准（相同 WASM/manifest、相同 ABI import/export、等价 envelope）？[Clarity, Spec §FR-039, Contract `plugin-abi.md` §7]
+  > **评估**: 兼容性由 `hive-runtime-core` 的版本化 ABI 类型、manifest/host_call 校验器和同一 WASM fixture 定义，而非由复用 HiveWeb invoker/pool 隐式推导。T072、T080、T082 要求 HiveWeb host adapter 与 HiveGUI host adapter 对 success、denied、unknown、timeout、memory、output 和 WASI-denied 产生等价 envelope。
 
-- [x] CHK007 hiveweb 的 WASM import 函数（wasm_imports.rs）是否可能依赖 hiveweb 特有的宿主环境（如 MySQL 连接、Redis 客户端）？如果是，hivegui 是否需要提供等效的 import 实现？此风险是否在需求中识别？[Gap, Spec §FR-005]
-  > **评估**: WASM import 函数由 invoker/pool 模块提供，这些模块在 standalone feature 下编译，不包含 MySQL/Redis 依赖。standalone feature 已排除这些依赖，import 接口不受影响。
+- [x] CHK007 HiveWeb 的 WASM host adapter 可能依赖云端设施——HiveGUI 是否提供独立 host adapter，并只暴露真实本地 Capability？[Gap, Spec §FR-039, Contract `plugin-abi.md` §3/§5]
+  > **评估**: T070 要求 HiveGUI `desktop_host` 只注册真实本地 handler；T080 让 HiveGUI/HiveWeb 各自 adapter 接入共享 `host_call` 类型与 fixture。缺失 Capability 在导入/执行前稳定拒绝，HiveGUI 不加载或调用 HiveWeb 的 `wasm_imports` 实现。
 
-- [x] CHK008 插件执行时的超时和错误处理（FR-005 + SC-005）——是否定义了超时时长的需求（与 hiveweb 一致？可配置？默认值？）[Clarity, Spec §SC-005, Spec §FR-005]
-  > **评估**: 复用 hiveweb 的 PoolConfig（含超时配置），通过环境变量可配置。T060a（新增 WASM 隔离测试）已覆盖超时和 panic 场景。默认值继承 hiveweb 标准。
+- [x] CHK008 Plugin 执行的超时和错误处理是否定义默认值、用户覆盖范围、硬上限和稳定错误？[Clarity, Spec §FR-045, Contract `plugin-abi.md` §5]
+  > **评估**: 默认值固定为 30s/128MiB/10MiB，用户可按 Plugin 调整且不得超过 120s/512MiB/50MiB；T074/T079 覆盖 timeout、fuel、memory pages、output、取消和错误类别。配置来自 HiveGUI 本地 Plugin 记录，不继承 HiveWeb `PoolConfig`。
 
-- [x] CHK009 插件文件存储路径是否在需求中定义（data-model 中 `plugins.wasm_file_path` 为"本地文件路径"——相对于什么？用户可选择存储位置？）[Clarity, Data Model §plugins]
-  > **评估**: T061 实现 `register_plugin()` 时存储 wasm 文件到 `plugins/` 子目录（相对于 `HIVEGUI_DB_DIR` 或应用数据目录）。T009 定义了 `HIVEGUI_DB_DIR` 环境变量。路径基准已定义。
+- [x] CHK009 Plugin 文件存储路径是否在需求中定义（`s3_key` 兼容字段相对于什么？用户选择的源文件是否继续作为运行时依赖）？[Clarity, Data Model §Plugin, Spec §FR-017/FR-031]
+  > **评估**: `s3_key` 被定义为 HiveGUI 私有托管 Plugin 目录内的安全相对制品键，不是 S3 地址；T073/T077/T079 要求 staging、原子复制、受控文件句柄、路径/大小/SHA-256 校验，并证明删除原始文件后仍可执行。
 
-- [x] CHK010 多插件之间的 WASM 实例隔离是否在需求中定义（一个插件崩溃是否影响其他插件或宿主应用）？[Gap, Spec §FR-005, Spec §Edge Cases]
-  > **评估**: Spec §Edge Cases 定义 WASM "panic/超时……记录错误，不会导致 GUI 崩溃"。SC-005 进一步要求"超时和执行失败被捕获并报告，不会导致应用崩溃"。T060a 测试验证隔离。WASM 沙箱隔离由 wasmtime runtime 提供。
+- [x] CHK010 多 Plugin 之间的 WASM 实例隔离是否在需求中定义（一个 Plugin 的 trap/超时/超限是否影响其他执行或宿主应用）？[Gap, Spec §FR-045/FR-047, Contract `plugin-abi.md` §4-§5]
+  > **评估**: T074/T079 定义默认无 WASI、完整 policy cache key、有界 LRU 空闲池和失效规则；取消、timeout、trap、memory/output 超限或 host error 后实例必须淘汰，只有健康实例可回池。T118 进一步验证强停一个 Plugin 不影响其他会话或主 UI。
 
 ## Workflow Executor Adaptation
 
-- [x] CHK011 FR-004 要求"按正确的依赖顺序执行节点，同一层级中相互独立的节点尽可能并行执行"——"尽可能"是否量化（最大并行数、是否受 CPU 核心数限制）？[Ambiguity, Spec §FR-004]
-  > **评估**: 已在前次分析中标记为 A1 (MEDIUM ambiguity)。"尽可能"的语义在 DAG 执行上下文中明确——无数据依赖的节点并发执行。并行数受 tokio runtime 调度（默认 CPU 核数），无需显式约定上限。
+- [x] CHK011 Workflow 要求按依赖顺序执行、同一拓扑层并行——并行语义和验收边界是否明确？[Ambiguity, Research §5, Contract `local-runtime.md` §5]
+  > **评估**: T011/T020 将语义固定为存储无关 `WorkflowGraph` 的拓扑分层；T091 验证并行层、fail-fast、零重试和取消，T093 以固定 100 节点 no-op DAG 验证本地调度预算。物理线程数不是跨产品契约，产品 adapter 只能在不改变依赖、取消和 fail-fast 语义的前提下调度。
 
-- [x] CHK012 hiveweb 的 WorkflowExecutor 是否依赖 MySQL（如从数据库加载工作流定义）？如果 hivegui 从 SQLite Store 加载，适配需求是否在 spec/plan 中定义？[Gap, Plan §Structure]
-  > **评估**: T053 明确适配策略——"从 hiveweb 复用 WorkflowExecutor，适配为从 SQLite Store 加载工作流定义"。WorkflowExecutor 核心逻辑（DAG 拓扑排序 + 并行执行）不依赖数据库，输入为已构造的工作流定义结构体。
+- [x] CHK012 HiveWeb 的现有 Workflow 实现绑定产品存储时，HiveGUI 从 SQLite 加载的适配需求是否在 spec/plan 中定义？[Gap, Plan §Project Structure, Research §5]
+  > **评估**: T020 把纯 DAG 校验、拓扑层调度、fail-fast 汇总和取消放入共享 `WorkflowGraph`；T095 由 HiveGUI 一次事务保存/一次批量加载 SQLite 图，T096 通过 HiveGUI 自己的 `workflow_executor` 和 `NodeExecutor` adapter 执行 Function/Plugin/LLM。HiveGUI 不直接复用 HiveWeb `WorkflowExecutor`。
 
-- [x] CHK013 工作流节点类型（start, end, function, generate_answer）——function 节点的输入/输出映射格式是否与 hiveweb 的 InputSpec（Upstream/Custom/AgentContext）保持一致？此兼容性需求是否明确？[Consistency, Spec §FR-003, Contracts §Runtime]
-  > **评估**: Spec §FR-003 + data-model §workflow_nodes.config_json 存储 JSON 格式的 input_mapping。hiveweb InputSpec（Upstream/Custom/AgentContext）的语义被继承。CLAUDE.md §DAG Node Input System 文档化此格式。
+- [x] CHK013 工作流节点类型（start_node、end_node、function_node、generate_answer_node）及节点/边 JSON 映射是否通过共享图契约保持一致？[Consistency, Spec §FR-033, Data Model §WorkflowNode/WorkflowEdge]
+  > **评估**: T011/T013/T090/T091 验证四个稳定 `*_node` 值、`node_config`/`mapping` JSON、图结构与执行语义；共享层只接收规范化 `WorkflowGraph`，产品 adapter 负责把各自存储映射成该类型。兼容性不得通过继承 HiveWeb 存储 DTO 或 `InputSpec` 实现。
 
-- [x] CHK014 generate_answer 节点（LLM 生成）——是否需要定义它使用哪个 LLM provider（工作流全局指定？节点级覆盖？继承 Agent 配置？）[Gap, Spec §US2, Spec §FR-003]
-  > **评估**: generate_answer 节点的 LLM 配置属于 node_config 的一部分。data-model §workflow_nodes.config_json 设计为可扩展 JSON，支持节点级覆盖。默认继承工作流/Agent 配置。灵活性已通过 JSON 配置模式覆盖。
+- [x] CHK014 generate_answer_node（LLM 生成）——是否明确由哪个产品边界解析 LLM，而不会隐式调用 HiveWeb？[Gap, Spec §US10/§FR-029, Contract `llm-provider.md`]
+  > **评估**: T096 必须等待 T052 Green，并通过 HiveGUI 的 `provider_resolver`/`NodeExecutor` adapter 执行 generate_answer；本地配置转换为 `providers::ProviderBuildConfig`。共享 `WorkflowGraph` 不持有 HiveWeb provider 或 client，失败也不得回退到 HiveWeb。
 
-- [x] CHK015 工作流执行失败时的回滚/部分结果需求是否定义？（如 3 节点工作流在第 2 个节点失败，第 1 个节点的副作用如何处理）[Gap, Spec §US2 Acceptance Scenario 4]
-  > **评估**: Spec §US2 验收场景 4 定义"显示错误信息，包括是哪个节点失败以及失败原因"。DAG 执行无副作用回滚（函数调用是纯计算或外部 HTTP 调用，无法回滚）。部分结果通过节点状态（success/error）展示——与 hiveweb 行为一致。
+- [x] CHK015 Workflow 执行失败时的回滚/部分结果需求是否定义？（如 3 节点 Workflow 在第 2 个节点失败，第 1 个节点的副作用如何处理）[Gap, Spec §FR-037/SC-020]
+  > **评估**: fail-fast 后不再启动新节点，已运行节点可完成并记录；Workflow 层重试次数为 0，不回滚已完成外部副作用。T091/T098 要求结果区分失败、已完成和未执行节点并提示副作用，不以 HiveWeb 现有行为作为规范来源。
 
 ## Builtin Function Loading
 
-- [x] CHK016 FR-006 + research.md 声明"内置函数全部从 hiveweb 复用"——hiveweb builtins 的注册机制（`ensure_registered()`）是否与 hivegui 的 SQLite-based function_registry 兼容？迁移/适配需求是否定义？[Gap, Spec §FR-006, Research §3]
-  > **评估**: T031 实现 `BuiltinRegistry`——启动时调用 `ensure_registered()` 获取 builtin 函数列表，写入 SQLite function_registry 表（function_type='builtin'）。适配策略为"启动时同步"而非"运行时动态查询"。
+- [x] CHK016 四个共享 Builtin 的注册机制是否与 HiveGUI SQLite Function 表兼容，且无点号 alias？[Gap, Spec §FR-038, Research §17]
+  > **评估**: T083/T084/T087 要求启动时从共享 `hive-builtins` 下划线 registry 幂等同步四条 `kind='builtin'` 记录；点号 identifier 的注册、lookup 与 execute 都必须失败，真实旧记录仅由 T012/T022 的迁移事务改名。
 
-- [x] CHK017 hiveweb builtins 中是否有依赖外部服务（外部 API、MySQL 数据库）的函数？这些函数在 hivegui 离线环境中是否定义了降级/替代行为？[Gap, Spec §FR-006, Assumptions §Builtins]
-  > **评估**: hiveweb builtins 中的 game_list 等函数通过内置数据（用户导入）工作。spec §US5 游戏管理面板提供本地数据导入。hiveweb builtins 不依赖外部 API 调用（除 LLM provider HTTP 调用外）。
+- [x] CHK017 HiveGUI Builtin 是否全部为无需外部服务的本地纯函数？[Gap, Spec §FR-038]
+  > **评估**: 四个共享函数均为本地纯函数；游戏、消息回复和子 Agent 路由不进入 Builtin/Tool CRUD，不需要 HiveWeb 降级路径。
 
-- [x] CHK018 内置函数的版本一致性——hiveweb builtins 更新后，hivegui 是否需要同步更新？版本锁定策略是否在需求中定义？[Gap, Spec §FR-006]
-  > **评估**: 作为 workspace crate 依赖，hivegui 编译时锁定 hiveweb 版本。Cargo workspace 机制自然保证版本一致性。无需额外策略。
+- [x] CHK018 Builtin 版本一致性——HiveWeb/HiveGUI 更新后是否通过共享 crate 同步？[Gap, Spec §FR-038]
+  > **评估**: 两端编译期依赖同一个 workspace `hive-builtins` registry，因此下划线 identifier、schema 和 executor 在同一提交中版本锁定；HiveGUI 不在启动或执行时向 HiveWeb 同步。
 
 ## LLM Provider Routing
 
-- [x] CHK019 FR-008 要求"使用本地配置的 LLM 提供商，而非调用远程 hiveclaw/hiveweb"——OpenResponses 协议格式的兼容性是否定义了需求（本地 provider 是否必须理解 OpenResponses 格式，还是适配为 OpenAI-compatible Chat Completions）？[Clarity, Spec §FR-008, Assumptions §OpenResponses]
-  > **评估**: Spec §假设条件明确"对话功能继续支持与 OpenResponses 兼容的 LLM 交互协议格式，但调用通过本地配置的提供商进行路由"。T043-T046 重构 client 模块适配本地 provider。由 providers crate 处理格式转换。
+- [x] CHK019 FR-029 要求直接使用本地配置的 LLM——vendor 请求格式与 tool-call 解析的所有权是否明确？[Clarity, Spec §FR-029, Contract `llm-provider.md` §2]
+  > **评估**: T052 把 HiveGUI 本地配置映射为 workspace `providers::ProviderBuildConfig`，由 `providers` 构造 `LLMProvider` 并拥有 vendor 格式与 tool-call 解析；HiveGUI 不维护 HiveWeb client，也不复制第二套 vendor HTTP/JSON 协议层。
 
-- [x] CHK020 research.md §5 提到使用 OpenAI-compatible API 格式——spec 假设条件中"对话功能继续支持与 OpenResponses 兼容的 LLM 交互协议格式"——这两个格式之间存在转换需求，是否在 requirements 中定义？[Conflict, Spec §Assumptions, Research §5]
-  > **评估**: providers crate 负责 LLM 提供商抽象（支持 OpenAI/Anthropic/DeepSeek 格式）。hivegui client 模块发送 OpenResponses 格式请求，providers 将其转换为具体提供商的 API 格式。此转换层已存在于 providers crate，hivegui 无需额外处理。
+- [x] CHK020 research.md 拒绝 HiveGUI 手写 OpenAI-only client——该决定是否与本地 Provider 需求和共享边界一致？[Consistency, Research §4, Contract `llm-provider.md`]
+  > **评估**: T048/T052 以本地 Provider/Preset/Model 数据驱动 `providers` crate；`agent` 消费统一 provider/tool-call 抽象。不存在 HiveGUI→HiveWeb 的协议转换路径，也不以 OpenResponses 或 HiveWeb 请求格式作为本功能的运行时边界。
 
-- [x] CHK021 多个 LLM provider 时的故障转移/回退需求是否定义（provider A 不可用时自动切换到 provider B？）[Gap, Spec §US7]
-  > **评估**: 故障转移是高级运维功能，在桌面单用户应用中非必须需求。Agent 绑定到单个 provider——用户手动切换 provider 即可。复杂度不匹配使用场景。
+- [x] CHK021 多个 LLM Provider 时的故障转移/回退需求是否定义（Provider A 不可用时是否切换到下一 Model）？[Gap, Spec §FR-013, Contract `llm-provider.md` §3]
+  > **评估**: Preset 中 Model 按 priority 形成 fallback 链；429、5xx、网络/TLS 和节点超时可切换，参数/认证错误、Capability 拒绝和用户取消不得切换。T048/T052 验证排序、事件、分段计时与取消；任何链路都不得回退到 HiveWeb。
 
-- [x] CHK022 LLM 调用的重试策略是否在需求中定义（最大重试次数、退避策略、哪些错误可重试）？[Gap, Spec §FR-008]
-  > **评估**: providers crate 已内置重试/退避逻辑（exponential backoff, max 3 retries on 5xx/429）。重用现有库行为，spec 无需重复定义。
+- [x] CHK022 LLM 调用的失败切换策略是否在需求中定义（哪些错误可切换、哪些错误必须立即终止）？[Gap, Contract `llm-provider.md` §3-§5]
+  > **评估**: 产品契约定义的是有序 Model fallback，而不是假定存在“指数退避、最多 3 次”的 HiveWeb 重试。T048/T052 精确覆盖允许/禁止 fallback 的错误类别、每次 `fallback_used` 事件、外层 execution 预算和取消不 fallback。
 
 ## Database Abstraction & Query Layer
 
-- [x] CHK023 hiveweb 运行时组件使用 MySQL 特有的 SQL 语法/特性（如 `INSERT ... ON DUPLICATE KEY UPDATE`）——迁移到 SQLite 时，这些查询的改写需求是否在 plan 或 spec 中识别？[Gap, Plan §Technical Context]
-  > **评估**: hivegui 使用全新的 Store 层（T008-T011），SQL 查询从零编写为 SQLite 语法（`INSERT OR REPLACE` 等）。不复用 hiveweb 的 MySQL SQL 查询。plan §Structure 分离 hivegui/src/store/ 和 hiveweb 数据访问层。
+- [x] CHK023 HiveWeb 使用 MySQL 特有的 SQL，而 HiveGUI 使用 SQLite——是否明确禁止复用或机械改写 HiveWeb 查询，并为 HiveGUI 定义独立查询边界？[Gap, Plan §Technical Context/§Project Structure]
+  > **评估**: `hive-runtime-core` 不含 SQL；T022/T024/T028 负责 HiveGUI schema v4、公开 Store 校验、SQLx checked SQLite 查询和查询计划，T038 的外部 MySQL DataSource 也使用独立 HiveGUI adapter。HiveWeb 的 MySQL 查询与连接始终留在 HiveWeb 产品边界。
 
-- [x] CHK024 data-model.md 中 SQLite CHECK 约束（如 `function_type TEXT CHECK (...)`) 是否完整覆盖了所有需要约束的字段？是否有遗漏的枚举类型字段未加 CHECK？[Completeness, Data Model §All Tables]
-  > **评估**: data-model.md 审查了 16 张表。`function_type`（builtin/custom/plugin）、`node_type`（start/end/function/generate_answer）、`match_type`（exact/regex）、`action`（block/mask）、`record_type`（conversation/workflow_execution）、`status`（success/error/cancelled）均定义了 CHECK 约束。覆盖率充分。
+- [x] CHK024 data-model.md 中稳定枚举是否完整覆盖 Function 与 WorkflowNode？[Completeness, Data Model §Function/WorkflowNode]
+  > **评估**: Function.kind 固定为 `builtin|custom|placeholder`；WorkflowNode.node_type 固定为 `start_node|end_node|function_node|generate_answer_node`；Tool/Skill/执行状态也各有稳定集合，未知值由公开边界和 schema 拒绝。
 
-- [x] CHK025 Store 接口合约（contracts/README.md）定义了 ~20 个 CRUD 方法——是否所有方法的错误模式（NotFound、Duplicate、Database 等）与 spec 中的功能需求错误处理一致？[Consistency, Contracts §Store]
-  > **评估**: T011 定义了 StoreError 枚举（NotFound、Duplicate、Database、Crypto、Corrupted 等变体）。contracts/ README 列出了各方法的签名。错误模式一致。
+- [x] CHK025 HiveGUI Store/运行时 adapter 的公开错误模式是否与 spec 和稳定 runtime envelope 一致？[Consistency, Contract `local-runtime.md` §7, Spec §字段验证规则/§UI 交互规范]
+  > **评估**: T013/T024 定义统一公开字段目录以及 `invalid_input`、安全 `conflict` 和事务零修改；T027 定义 `function_not_executable` 等稳定错误映射与 exactly-once 记录。`contracts/README.md` 是边界索引，不再声称复用 HiveWeb Store CRUD 或错误类型。
 
 ## Error Handling & Recovery
 
-- [x] CHK026 WASM 实例池耗尽时的需求是否定义（达到 PoolConfig 上限后，新请求是排队等待还是立即返回错误？）[Gap, Spec §FR-005]
-  > **评估**: 复用 hiveweb PoolConfig 的行为——池耗尽时排队等待（有超时），超时后返回错误。属于实现默认行为，已在 invoker/pool 模块中定义。
+- [x] CHK026 HiveGUI WASM 实例池达到容量时的行为是否定义（淘汰、排队或立即失败）？[Gap, Contract `plugin-abi.md` §5]
+  > **评估**: T074/T079 将其定义为“健康空闲实例缓存”而非 HiveWeb 并发池：全局最多 8 个、每个完整 cache key 最多 1 个，满时按 LRU 淘汰；执行中的实例不占空闲缓存槽。请求的 timeout/取消由当前 Plugin 本地策略控制，不继承 HiveWeb `PoolConfig`。
 
-- [x] CHK027 工作流执行超过最大执行时间时的超时处理需求是否定义（超时时长、超时后行为：终止/回滚/部分结果）？[Gap, Spec §FR-004]
-  > **评估**: T053 定义的执行器支持节点级超时（通过 tokio::time::timeout）。整体超时属于 WorkflowExecutor 的配置参数，通过 node_config 可扩展。桌面单用户场景下超时非关键风险。
+- [x] CHK027 Workflow 执行超过节点或 Workflow 时间预算时的处理需求是否定义（终止、回滚、部分结果）？[Gap, Spec §FR-037/FR-047, Data Model §Workflow]
+  > **评估**: Workflow `timeout_ms` 是公开受校验字段；T091/T096 验证超时触发 fail-fast、停止调度新节点、取消传播、零自动重试和不回滚已完成外部副作用，并保留完成/失败/未执行结果。
 
-- [x] CHK028 LLM 提供商连接失败（网络不可达、DNS 解析失败、TLS 握手失败）的差异化错误提示需求是否定义？[Gap, Spec §US7, Contracts §Error Handling]
-  > **评估**: providers crate 的错误类型已区分 ConnectionError / TimeoutError / RateLimitError / AuthError。hivegui UI 层展示统一错误提示（T089）。用户不需要底层错误细节即可诊断问题（如"无法连接到 API 服务器"）。
+- [x] CHK028 LLM Provider 连接失败（网络不可达、TLS、限流、认证、超时）的分类、fallback 与用户可定位信息是否定义？[Gap, Contract `llm-provider.md` §3-§5, Contract `local-runtime.md` §7]
+  > **评估**: T048/T052 按错误类别决定是否 fallback，并发出稳定流事件和 `llm_ms`；所有节点失败映射为本地 `llm_unavailable`，参数/认证/取消不得 fallback。T049/T053 负责本地配置 UI 的遮蔽凭据、字段错误和焦点，不显示 secret，也不请求 HiveWeb 获取诊断。
 
 ## Traceability & Verification
 
-- [x] CHK029 "插件完全兼容"（FR-005 + Clarifications §Q5）的可验证性——如何在不运行 hiveweb 的情况下验证兼容性？是否需要定义兼容性测试套件？[Measurability, Spec §FR-005]
-  > **评估**: T060 集成测试（插件函数调用通过 hiveweb invoker/pool）验证兼容性。兼容性的定义是"复用同一运行时"——二进制兼容性由 wasmtime 保证，语义兼容性由同一代码路径保证。
+- [x] CHK029 “Plugin ABI 兼容”（FR-039/SC-022）的可验证性——如何在不让 HiveGUI 请求 HiveWeb 的情况下验证？是否定义共享兼容性测试套件？[Measurability, Spec §FR-039/SC-022]
+  > **评估**: T072/T080/T082 使用同一 WASM/manifest fixture 分别直接测试 HiveWeb host adapter 和 HiveGUI host adapter，并比较等价 envelope；这是编译/测试期 fixture 复用，不是 HiveGUI 运行时调用 HiveWeb。T116/T140 另以网络捕获证明零 HiveWeb 请求和零失败回退。
 
-- [x] CHK030 "工作流执行匹配现有 hiveweb 运行时行为"（原 FR-004 用词，已修改）——虽然措辞已调整，但是否在需求中保留了行为一致性验证的方法？[Gap, Spec §FR-004]
-  > **评估**: T053 复用 hiveweb 的 WorkflowExecutor 代码——行为一致性由代码复用自然保证。T049 集成测试验证 DAG 执行正确性。行为一致性验证通过"同一代码运行相同测试用例"实现。
+- [x] CHK030 Workflow 跨产品共享的是哪些不变量，如何避免把 HiveWeb 产品行为误当成 HiveGUI 规范？[Gap, Research §5, Spec §FR-033/FR-037]
+  > **评估**: T011/T020 以 `hive-runtime-core` 契约测试固定图校验、拓扑分层、fail-fast、确定性错误和取消；T091/T096/T100 再验证 HiveGUI SQLite/Function/Plugin/LLM adapter。HiveGUI 不复用 HiveWeb `WorkflowExecutor`，产品特有存储与副作用也不要求相同。
 
 ---
 
 ## Notes
 
 - CHK001–CHK030 全部通过评估
-- 重点关注跨 crate 集成点的需求完备性——这是 hiveweb → hivegui 复用的核心风险区域
+- 重点关注共享纯 runtime 与两个产品 adapter 的依赖方向；“共享”只表示编译期 Rust library/契约/fixture 复用。
+- HiveGUI 不依赖、不请求、不回退 HiveWeb；HiveWeb 未配置、不可达或未运行均不影响 HiveGUI 启动、管理和本地 Agent 执行。
+
+## 已废弃历史架构（禁止实现）
+
+- 禁止为 HiveGUI 在 `hiveweb` 增加或启用 `standalone` feature（包括 `default-features=false, features=["standalone"]`）。
+- 禁止让 HiveGUI 直接依赖或复用 HiveWeb 的 invoker、pool、`WorkflowExecutor`、orchestrator、Store、client 或云端连接。
+- 禁止以“同一 HiveWeb 代码路径”或“继承 HiveWeb `PoolConfig`”代替共享 ABI fixture 与两个独立 host adapter 的兼容性验证。

@@ -1,6 +1,6 @@
 # Performance Evidence — Agent Runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：** `RecommendedGame` 相关项已废弃；原 admin Chat/SSE 的 SC-010、`chat_sessions` / `chat_messages` 索引和 T168 基准也已由 `81a84fe` 移除并 superseded。下文保留的是当时性能证据，不是现役验收或恢复依据；现行用户聊天性能属于外部 Assistant API。
 
 **Status**: Complete (T142 / Principle IV gate)
 **Updated**: 2026-05-29

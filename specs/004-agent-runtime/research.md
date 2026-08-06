@@ -1,5 +1,7 @@
 # Research: Agent Runtime — 关键技术决策
 
+> **范围更新（2026-07-23）：** 第 8、10 节记录的管理端测试聊天 SSE/API/admin 表方案已由 `81a84fe` 移除并 superseded；不得恢复 `/api/admin-chat*` 或 `/api/chat/sessions*`。现行普通用户聊天由 `web-user` 调用 `/api/assistant`、`/api/newsession`、`/api/messages`，使用 `chat_sessions_user` / `chat_messages_user`，详细契约属于 `007-external-assistant-api` 与当前实现。
+
 **Created**: 2026-05-26
 **Status**: Phase 0 output
 
@@ -181,9 +183,9 @@ return results[terminal_node]
 | 429 Rate limit | ✅ | 立即切下一节点 |
 | 5xx / network / TLS error | ✅ | 立即切下一节点 |
 | 单节点墙钟超时（默认 `LLM_NODE_TIMEOUT_MS = 25000` ≤ FR-030 30s） | ✅ | 立即切下一节点 |
-| **整条链总耗时上限** `LLM_CHAIN_TIMEOUT_MS = 45000` | — | 触发即 SSE `error` 5xxx ，停止继续 fallback（防止 8 个节点 × 25s = 200s 失控）|
+| **整条链总耗时上限** `LLM_CHAIN_TIMEOUT_MS = 45000` | — | 触发即向当前调用方返回错误并停止 fallback（防止 8 个节点 × 25s = 200s 失控）|
 
-**SSE 可见性**：fallback 切换**对客户端可见**——在 chat SSE 流中插入一个 `fallback_used` 事件（`{ "from": "openai-gpt-4o-mini", "to": "anthropic-claude-haiku", "reason": "429" }`）。原因：让用户知道当前回答可能由备用模型生成（accuracy expectation 不同）。该事件非必收，client 即使忽略也不影响后续 `token` / `done` 事件。
+**调用方可见性**：FallbackProvider 仍记录切换审计，但原管理端 chat SSE 的 `fallback_used` 客户端事件已 superseded。现行调用方是否暴露 fallback 信息由自身 API 契约决定。
 
 **审计**：每次 fallback 切换写 `runtime_audit_logs` 一行（`event_type=llm_fallback`、`outcome=success`、payload_summary 含 from/to/reason）；整链失败写一行 `event_type=llm_invoke`、`outcome=error`。
 
@@ -193,23 +195,11 @@ return results[terminal_node]
 
 ---
 
-## 8. 流式回复
+## 8. 流式回复（Legacy / Superseded）
 
-**Decision**: **SSE**（Server-Sent Events），axum 的 `Sse` extractor。
+原决议选择 axum SSE，为管理端测试聊天提供增量事件。该入口、UI 与协议已移除，不再是 004 的现行传输决策，也不得据此恢复 `/api/chat/sessions*` 或 `/api/admin-chat*`。
 
-**Rationale**:
-- 单向 server-to-client，正好匹配 chat 场景
-- 协议简单、HTTP-friendly、过 CDN 无问题
-- 浏览器原生 EventSource 支持
-
-**Alternatives considered**:
-- **WebSocket**：双向冗余，需要心跳；后端复杂度上升
-- **Long-polling**：体验差
-- **Server-Streamed HTTP（chunked）**：与 SSE 区别仅事件名规范
-
-**Implementation notes**:
-- Endpoint `POST /api/chat/sessions/:id/messages` → 返回 `text/event-stream`
-- 事件类型：`token`（增量文本）、`tool_call`（路由到子 Agent / 调 Tool）、`done`（结束）、`error`
+现行 `/api/assistant` 对 `web-user` 返回完整 JSON 消息；orchestrator 内部即使使用事件流组织执行，也不构成客户端可见的 SSE 契约。
 
 ---
 
@@ -224,15 +214,9 @@ return results[terminal_node]
 
 ---
 
-## 10. 聊天会话持久化
+## 10. 聊天会话持久化（Legacy 决议与现行边界）
 
-**Decision**: 独立表 `chat_sessions` + `chat_messages`，messages JSON 列存"role/content/tool_calls"复合结构。
-
-**Rationale**:
-- 独立表便于按 user_id 分页 / 软删除 / 保留期清理
-- JSON 列 vs row-per-message：JSON 简化模型；查询限于"按会话拉全部"，无需复杂查询
-
-**Retention**: 默认 30 天（可配置），超期 cron 清理（[NEEDS CLARIFICATION：spec §Assumptions 待 clarify]）。
+原 `chat_sessions` + `chat_messages` admin 表设计已 superseded，表也已删除。现行普通用户聊天使用 `chat_sessions_user` + `chat_messages_user`，以 `user_id` 绑定所有权；该模型的演进、保留期和 API 查询语义由外部 Assistant API 特性负责，不由 004 重新定义。
 
 ---
 
@@ -252,7 +236,7 @@ return results[terminal_node]
 
 ## 12. 测试策略（Principle II 前置考虑）
 
-- **Contract tests**：HTTP 端点（plugin/function/workflow/tool/skill/agent/chat）形状、错误码、鉴权
+- **Contract tests**：现行 004 HTTP 端点（plugin/function/workflow/tool/skill/agent）形状、错误码、鉴权；原 admin chat 合约测试已 superseded
 - **Host ABI contract**：用 Rust PDK 写极小 plugin（仓内 examples/）做集成测试夹具
 - **Capability denial**：Agent without capability X → 调 X → 必返特定错误；100% 覆盖每个 capability
 - **Workflow topology**：dijkstra-like 校验（含 cycle detection）

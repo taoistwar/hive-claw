@@ -1,5 +1,7 @@
 # Security / Capability Requirements Quality Checklist: Agent Runtime
 
+> **历史边界（2026-07-23）：** 涉及 admin Chat 会话所有权、SSE 错误或聊天 PII/保留期的条目已随管理端测试聊天删除而 superseded；现行用户聊天安全契约属于外部 Assistant API。
+
 **Purpose**: 验证 `specs/004-agent-runtime/spec.md` 中 Security / Capability 相关需求的**完整性 / 清晰度 / 一致性 / 可测量性**。004 的核心创新在 capability-based zero-trust，需求层一个漏洞 = 生产环境的一类漏洞。
 **Created**: 2026-05-26
 **Feature**: [specs/004-agent-runtime/spec.md](file:///home/developer/agent/hive-claw/specs/004-agent-runtime/spec.md)

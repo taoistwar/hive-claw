@@ -17,6 +17,7 @@ members = [
     "crates/templates",
     "crates/utils",
     "crates/hive-builtins",
+    "crates/hive-runtime-core",
     "crates/hiveclaw",
     "crates/hivegui",
     "crates/hiveweb",
@@ -32,7 +33,7 @@ default-members = ["crates/cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97.1"
 license = "Apache-2.0"
 repository = "https://github.com/taoistwar/hive-claw"
 
@@ -48,6 +49,7 @@ axum = { version = "0.8", default-features = false, features = [
     "multipart",
 ] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "=0.7.18", default-features = false, features = ["rt"] }
 tower = "0.4"
 tower-http = { version = "0.6", features = [
     "limit",
@@ -71,8 +73,8 @@ eventsource-stream = "0.2"
 # platform backend (macOS / Linux / web) without #[cfg] gating at the callsite.
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = ["font-kit"] , rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "49f4b4fb57553daa89310370a97b37f7ff9d2323" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "49f4b4fb57553daa89310370a97b37f7ff9d2323" }
 # Serde / JSON
 base64 = "0.22"
 mime_guess = { version = "2", features = ["rev-mappings"] }
@@ -109,26 +111,31 @@ unicode-segmentation = "1"
 assert_cmd = "2"
 
 # Data source management (HiveGUI)
-mysql_async = "0.34"
-sqlx = { version = "0.8", default-features = false, features = [
-    "derive",
-    "runtime-tokio-rustls",
-    "sqlite",
-    "mysql",
-    "chrono",
-    "rust_decimal",
+mysql_async = { version = "=0.36.2", default-features = false, features = [
+    "minimal",
+    "native-tls-tls",
 ] }
+sqlx = { version = "=0.9.0", default-features = false }
 rust_decimal = "1.33"
 chacha20poly1305 = "0.10"
 zeroize = "1"
 dirs = "5"
+age = { version = "=0.12.1", default-features = false }
+tar = { version = "=0.4.46", default-features = false }
+extism = { version = "=1.30.0", default-features = false }
+wasmtime = { version = "=43.0.2", default-features = false, features = ["anyhow"] }
 syntect = "5"
 
 # Admin center (hiveweb)
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager", "sentinel"] }
 jsonwebtoken = "9"
 bcrypt = "0.15"
-aws-sdk-s3 = "1"
+aws-sdk-s3 = { version = "=1.133.0", default-features = false, features = [
+    "default-https-client",
+    "http-1x",
+    "rt-tokio",
+    "sigv4a",
+] }
 aws-config = "1"
 dotenvy = "0.15"
 
@@ -147,6 +154,16 @@ globset = "0.4"
 clap = { version = "4", features = ["derive"] }
 rustyline = "15"
 env_logger = "0.11"
+
+[patch.crates-io]
+# Reviewable local copy of wayland-scanner that pins quick-xml to a
+# version that does not pull in the advisories the foundation CI is
+# required to reject (RUSTSEC-2026-0194 / 0195). The copy lives in
+# third_party/wayland-scanner and is rebuilt by the CI step that
+# runs `cargo vendor`-equivalent logic. Approved by the Feature 011
+# security checklist.
+wayland-scanner = { path = "third_party/wayland-scanner" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

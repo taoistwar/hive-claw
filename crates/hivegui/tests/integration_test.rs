@@ -2667,7 +2667,7 @@ async fn test_schema_version_management() -> Result<()> {
 
     // 验证版本已更新
     let new_version = get_current_version(&pool).await?;
-    assert_eq!(new_version, 1);
+    assert_eq!(new_version, 2);
 
     // 验证 schema_versions 表存在
     let tables: Vec<String> = sqlx::query_scalar(
@@ -2680,7 +2680,7 @@ async fn test_schema_version_management() -> Result<()> {
     // 再次运行迁移，版本应保持不变
     run_migrations(&pool).await?;
     let final_version = get_current_version(&pool).await?;
-    assert_eq!(final_version, 1);
+    assert_eq!(final_version, 2);
 
     Ok(())
 }
@@ -2783,7 +2783,7 @@ async fn test_migration_rollback() -> Result<()> {
     // 第一次迁移
     run_migrations(&pool).await?;
     let version_after_first = get_current_version(&pool).await?;
-    assert_eq!(version_after_first, 1);
+    assert_eq!(version_after_first, 2);
 
     // 创建一些数据
     Tag::create(&pool, "Migration Test Tag".to_string(), None).await?;
@@ -2793,7 +2793,7 @@ async fn test_migration_rollback() -> Result<()> {
     // 再次运行迁移（应该是幂等的）
     run_migrations(&pool).await?;
     let version_after_second = get_current_version(&pool).await?;
-    assert_eq!(version_after_second, 1);
+    assert_eq!(version_after_second, 2);
 
     // 验证数据仍然存在
     let tag_count_after = Tag::count(&pool, None).await?;

@@ -1,0 +1,1 @@
+{"abi_version":"hive-extism/v1","exports":[{"input":"json","name":"echo","output":"json"},{"input":"json","name":"fs_roundtrip","output":"json"},{"input":"json","name":"full_demo","output":"json"},{"input":"json","name":"http_get","output":"json"},{"input":"json","name":"ping","output":"json"}],"required_capabilities":["fs.read","fs.write","log.emit","network.http","time.now"]}

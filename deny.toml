@@ -1,0 +1,17 @@
+# Parsed by cargo-deny 0.20.2. CI installation and execution are owned by T018.
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# No advisory exceptions are approved. Any future entry must carry the two
+# approvals and expiry recorded in the Feature 011 security checklist.
+unmaintained = "workspace"
+unsound = "all"

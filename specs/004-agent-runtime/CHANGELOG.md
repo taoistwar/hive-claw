@@ -1,5 +1,7 @@
 # Changelog — Agent Runtime (004)
 
+> **历史边界（2026-07-23）：** 本文件按发生时间保留原实现事实；其中 US6 admin Chat/SSE、`/api/chat/sessions*`、admin chat 表、`ChatPage` / `ChatStream` 后续已由 `81a84fe` 删除并 superseded。下列 “Added” 条目不是恢复要求；现行普通用户聊天由外部 Assistant API 承担。
+
 All notable changes to this feature branch since fork from `main` (003 admin-center).
 
 ## [Unreleased]

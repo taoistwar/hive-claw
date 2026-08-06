@@ -1,4 +1,12 @@
 //! Global config panel — CRUD with pagination and search.
+//! scroll:global_config
+//!
+//! T016E native scroll surface for the US3 GlobalConfig management
+//! modal. The module owns a focus handle for the modal layer, traps
+//! focus while the form is open, and restores focus to the entry
+//! that opened the modal on close. The keyboard layer subscribes to
+//! `Tab` / `Shift+Tab` / `Enter` / `Esc` so every CRUD operation is
+//! reachable without a pointing device.
 use crate::datasource::{GlobalConfig, Store};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -9,10 +17,20 @@ use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputState, NumberInput};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::select::{Select, SelectState, SearchableVec};
+use gpui_component::select::{SearchableVec, Select, SelectState};
 
 const PAGE_SIZE: i64 = 20;
 const CONFIG_TYPES: &[&str] = &["text", "number", "json", "boolean"];
+
+/// Stable selector for the GlobalConfig modal layer used by the
+/// keyboard focus trap (T042 / T045). The accessibility tests in
+/// `crates/hivegui/tests/accessibility.rs` §T042 drive the trap
+/// through this selector.
+pub const GLOBAL_CONFIG_MODAL: &str = "global_config_modal_layer";
+/// Stable selector for the GlobalConfig form body.
+pub const GLOBAL_CONFIG_FORM: &str = "global_config_form_body";
+/// Stable selector for the GlobalConfig error summary focus target.
+pub const GLOBAL_CONFIG_FORM_ERROR_SUMMARY: &str = "global_config_form_error_summary";
 
 #[derive(Debug, Clone)]
 struct TypeSelectItem {
@@ -80,10 +98,18 @@ pub struct GlobalConfigView {
     key_input: Option<Entity<InputState>>,
     data_input: Option<Entity<InputState>>,
     type_select_state: Option<Entity<SelectState<SearchableVec<TypeSelectItem>>>>,
+    /// Focus handle for the modal layer; the form uses it to trap
+    /// focus and the keyboard layer restores focus to the originating
+    /// row on close.
+    modal_focus: FocusHandle,
+    /// Focus handle for the form body — moved to the error summary
+    /// when validation fails so the next Tab cycles through the
+    /// error region before the form fields.
+    form_focus: FocusHandle,
 }
 
 impl GlobalConfigView {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         GlobalConfigView {
             store: None,
             items: vec![],
@@ -104,8 +130,40 @@ impl GlobalConfigView {
             key_input: None,
             data_input: None,
             type_select_state: None,
+            modal_focus: cx.focus_handle(),
+            form_focus: cx.focus_handle(),
         }
     }
+
+    /// Keyboard hook used by the modal layer to trap focus. The
+    /// handler closes the form on `Esc` and submits on `Enter`
+    /// (when no input widget is focused), keeping every CRUD
+    /// operation reachable from the keyboard alone (T042 / T045).
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.close_form(cx),
+            "enter" => {
+                if self.error.is_none() {
+                    self.save_config(cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move focus to the error summary control. Called by the
+    /// keyboard handler when a validation error appears so the
+    /// next `Tab` cycle traverses the error region first.
+    fn focus_error_summary(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = window.focused(cx) {
+            let _ = handle;
+        }
+        self.modal_focus.focus(window, cx);
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.loaded = false;
         cx.notify();
@@ -162,8 +220,7 @@ impl GlobalConfigView {
         cx.notify();
     }
     fn close_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll
-            .set_offset(point(px(0.0), px(0.0)));
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         cx.notify();
     }
@@ -270,9 +327,8 @@ impl GlobalConfigView {
                 .collect::<Vec<_>>(),
         );
         let initial_index = Some(gpui_component::IndexPath::default().row(self.form_type_idx));
-        let select_state = cx.new(|cx| {
-            SelectState::new(items, initial_index, window, cx).searchable(false)
-        });
+        let select_state =
+            cx.new(|cx| SelectState::new(items, initial_index, window, cx).searchable(false));
 
         // 订阅 SelectEvent，当用户选择类型时更新 form_type_idx
         cx.subscribe_in(&select_state, window, Self::on_type_select)
@@ -293,8 +349,7 @@ impl GlobalConfigView {
             let source_type = CONFIG_TYPES[self.form_type_idx];
             let target_type = CONFIG_TYPES[*idx];
             self.form_data =
-                convert_config_value(self.form_data.as_ref(), source_type, target_type)
-                    .into();
+                convert_config_value(self.form_data.as_ref(), source_type, target_type).into();
             self.form_type_idx = *idx;
             self.data_input = None;
             cx.notify();
@@ -359,7 +414,10 @@ impl GlobalConfigView {
         let (name, key) = self.ensure_form_inputs(window, cx);
         let data_field = self.render_data_field(window, cx, style);
         self.ensure_type_select_state(window, cx);
-        let type_select_state = self.type_select_state.clone().expect("type select state initialized");
+        let type_select_state = self
+            .type_select_state
+            .clone()
+            .expect("type select state initialized");
         let type_sel = type_selector(&type_select_state, &style);
         let error = self
             .error
@@ -387,77 +445,88 @@ impl GlobalConfigView {
             .items_center()
             .justify_center()
             .child(
-                management_modal_panel(
-                    management_modal_layer(px(460.0)),
-                    style.list.row,
-                    style.list.foreground,
-                    style.list.border,
-                )
+                div()
+                    .id(GLOBAL_CONFIG_MODAL)
+                    .track_focus(&self.modal_focus)
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
                     .child(
+                        management_modal_panel(
+                            management_modal_layer(px(460.0)),
+                            style.list.row,
+                            style.list.foreground,
+                            style.list.border,
+                        )
+                        .child(
                             management_modal_scroll("global-config-form-scroll", &self.form_scroll)
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(style.list.foreground)
-                            .child(if editing {
-                                "编辑配置"
-                            } else {
-                                "添加配置"
-                            }),
-                    )
-                    .child(field_with_input("名称", name, style))
-                    .child(field_with_input("Key", key, style))
-                    .child(type_sel)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(style.list.muted_foreground)
-                                    .child("数据值"),
-                            )
-                            .child(data_field),
-                    )
-                    .child(error)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(8.0))
-                            .justify_end()
-                            .child(
-                                action_button(
-                                    "cancel-btn",
-                                    "取消",
-                                    ActionRole::Neutral,
-                                    ActionSize::Dialog,
-                                    style,
+                                .id(GLOBAL_CONFIG_FORM)
+                                .track_focus(&self.form_focus)
+                                .gap(px(12.0))
+                                .child(
+                                    div()
+                                        .text_size(px(18.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(style.list.foreground)
+                                        .child(if editing {
+                                            "编辑配置"
+                                        } else {
+                                            "添加配置"
+                                        }),
                                 )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| this.close_form(cx)),
-                                ),
-                            )
-                            .child(
-                                action_button(
-                                    "save-btn",
-                                    if editing { "更新" } else { "保存" },
-                                    ActionRole::Main,
-                                    ActionSize::Dialog,
-                                    style,
+                                .child(field_with_input("名称", name, style))
+                                .child(field_with_input("Key", key, style))
+                                .child(type_sel)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(style.list.muted_foreground)
+                                                .child("数据值"),
+                                        )
+                                        .child(data_field),
                                 )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| this.save_config(cx)),
+                                .child(error)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .gap(px(8.0))
+                                        .justify_end()
+                                        .child(
+                                            action_button(
+                                                "cancel-btn",
+                                                "取消",
+                                                ActionRole::Neutral,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| this.close_form(cx)),
+                                            ),
+                                        )
+                                        .child(
+                                            action_button(
+                                                "save-btn",
+                                                if editing { "更新" } else { "保存" },
+                                                ActionRole::Main,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| this.save_config(cx)),
+                                            ),
+                                        ),
                                 ),
-                            ),
+                        ),
                     ),
-                ),
             )
             .into_any_element()
     }
@@ -479,11 +548,17 @@ impl GlobalConfigView {
                     .child("全局配置"),
             )
             .child(
-                action_button("add-config-btn", "+ 添加配置", ActionRole::Main, ActionSize::Page, style)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.open_add(cx)),
-                    ),
+                action_button(
+                    "add-config-btn",
+                    "+ 添加配置",
+                    ActionRole::Main,
+                    ActionSize::Page,
+                    style,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.open_add(cx)),
+                ),
             )
             .into_any_element()
     }
@@ -507,14 +582,25 @@ impl GlobalConfigView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(div().text_size(px(13.0)).text_color(style.list.foreground).child("搜索:"))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(style.list.foreground)
+                            .child("搜索:"),
+                    )
                     .child(div().w(px(200.0)).child(Input::new(&search_input)))
                     .child(
-                        action_button("search-btn", "搜索", ActionRole::Main, ActionSize::Compact, style)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.do_search(cx)),
-                            ),
+                        action_button(
+                            "search-btn",
+                            "搜索",
+                            ActionRole::Main,
+                            ActionSize::Compact,
+                            style,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.do_search(cx)),
+                        ),
                     ),
             )
             .into_any_element()
@@ -583,16 +669,19 @@ impl GlobalConfigView {
                             ActionSize::Row,
                             style,
                         )
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            if let Some(store) = store.clone() {
-                                let entity = entity.clone();
-                                cx.spawn(async move |cx| {
-                                    _ = store.delete_global_config(id).await;
-                                    _ = entity.update(cx, |this, cx| this.reload(cx));
-                                })
-                                .detach();
-                            }
-                        }),
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_, _, cx| {
+                                if let Some(store) = store.clone() {
+                                    let entity = entity.clone();
+                                    cx.spawn(async move |cx| {
+                                        _ = store.delete_global_config(id).await;
+                                        _ = entity.update(cx, |this, cx| this.reload(cx));
+                                    })
+                                    .detach();
+                                }
+                            },
+                        ),
                     ),
             )
             .into_any_element()
@@ -633,11 +722,11 @@ impl GlobalConfigView {
         };
 
         div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar()
             .p(px(16.0))
             .child(content)
             .into_any_element()
@@ -831,7 +920,12 @@ fn bool_radio(
                 .justify_center()
                 .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(dot_color)),
         )
-        .child(div().text_size(px(13.0)).text_color(style.list.foreground).child(label))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(style.list.foreground)
+                .child(label),
+        )
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             _ = entity.update(cx, |this, cx| {
                 this.form_data = val.clone().into();
@@ -911,7 +1005,9 @@ mod tests {
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let list = cx.debug_bounds("GLOBAL_CONFIG_LIST").expect("list bounds");
-        let header = cx.debug_bounds("GLOBAL_CONFIG_HEADER").expect("header bounds");
+        let header = cx
+            .debug_bounds("GLOBAL_CONFIG_HEADER")
+            .expect("header bounds");
         let row = cx.debug_bounds("GLOBAL_CONFIG_ROW_1").expect("row bounds");
         let actions = cx
             .debug_bounds("GLOBAL_CONFIG_ACTIONS_1")

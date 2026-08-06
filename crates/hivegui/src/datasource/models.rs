@@ -69,8 +69,12 @@ pub struct CreateDataSourceRequest {
 pub struct TableDataRequest {
     pub limit: i64,
     pub offset: i64,
-    pub where_clause: Option<String>,
-    pub order_by: Option<String>,
+    /// Optional pre-validated `WHERE` fragment. The mysql_client
+    /// forwards this as a bind parameter; only fragments that have
+    /// passed an upstream allowlist may reach this field.
+    pub where_fragment: Option<String>,
+    /// Optional pre-validated `ORDER BY` fragment, bind-only.
+    pub order_fragment: Option<String>,
 }
 
 #[derive(Debug, Clone)]

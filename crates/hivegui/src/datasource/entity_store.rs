@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use sqlx::{Pool, Row, Sqlite};
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
 /// FR-025: 自动重试机制 - 指数退避重试临时性错误
 /// 重试策略：最多 3 次，间隔 1s, 2s, 4s
@@ -452,7 +453,16 @@ pub async fn restore_from_backup(pool: &Pool<Sqlite>, backup_path: &str) -> Resu
                 .unwrap_or("");
             let parent_agent_id = agent.get("parent_agent_id").and_then(|v| v.as_i64());
             let depth = agent.get("depth").and_then(|v| v.as_i64()).unwrap_or(0);
+            let is_default = agent
+                .get("is_default")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let model_preset = agent.get("model_preset").and_then(|v| v.as_str());
+            let name_normalized = agent
+                .get("name_normalized")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| name.to_lowercase());
             let created_at = agent
                 .get("created_at")
                 .and_then(|v| v.as_str())
@@ -462,7 +472,7 @@ pub async fn restore_from_backup(pool: &Pool<Sqlite>, backup_path: &str) -> Resu
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            sqlx::query("INSERT INTO agents (id, identifier, name, description, system_prompt, parent_agent_id, depth, model_preset, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO agents (id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, name_normalized, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(id)
                 .bind(identifier)
                 .bind(name)
@@ -470,7 +480,9 @@ pub async fn restore_from_backup(pool: &Pool<Sqlite>, backup_path: &str) -> Resu
                 .bind(system_prompt)
                 .bind(parent_agent_id)
                 .bind(depth)
+                .bind(is_default)
                 .bind(model_preset)
+                .bind(name_normalized)
                 .bind(created_at)
                 .bind(updated_at)
                 .execute(&mut *tx)
@@ -581,6 +593,18 @@ fn validate_color(color: &str) -> Result<()> {
         return Err(anyhow::anyhow!("颜色只能包含十六进制字符 (0-9, A-F)"));
     }
     Ok(())
+}
+
+/// Normalize a tag name for the `tags.normalized_name` index.
+/// Mirrors the pipeline in `tag_store::normalize` (NFKC + lower
+/// case) but is duplicated here so the runtime `Tag` CRUD stays
+/// independent of `tag_store` (the runtime store is the legacy
+/// synchronous path; the typed `TagStore` is the new contract).
+fn tag_normalized_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfkc: String = name.nfkc().collect();
+    let nfc: String = nfkc.nfc().collect();
+    nfc.to_lowercase()
 }
 
 // Tag 数据结构
@@ -732,6 +756,7 @@ pub struct Agent {
     pub system_prompt: String,
     pub parent_agent_id: Option<i64>,
     pub depth: i64,
+    pub is_default: bool,
     pub model_preset: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -746,17 +771,21 @@ impl Tag {
         offset: i64,
     ) -> Result<Vec<Tag>> {
         let tags = if let Some(search_term) = search {
+            let normalized = tag_normalized_name(&search_term);
             sqlx::query_as::<_, Tag>(
-                "SELECT id, name, color, created_at FROM tags WHERE name LIKE ? ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, name, color, created_at FROM tags \
+                 WHERE normalized_name LIKE ? \
+                 ORDER BY normalized_name LIMIT ? OFFSET ?",
             )
-            .bind(format!("%{}%", search_term))
+            .bind(format!("%{}%", normalized))
             .bind(limit)
             .bind(offset)
             .fetch_all(pool)
             .await?
         } else {
             sqlx::query_as::<_, Tag>(
-                "SELECT id, name, color, created_at FROM tags ORDER BY name LIMIT ? OFFSET ?",
+                "SELECT id, name, color, created_at FROM tags \
+                 ORDER BY normalized_name LIMIT ? OFFSET ?",
             )
             .bind(limit)
             .bind(offset)
@@ -768,8 +797,9 @@ impl Tag {
 
     pub async fn count(pool: &Pool<Sqlite>, search: Option<String>) -> Result<i64> {
         let count = if let Some(search_term) = search {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tags WHERE name LIKE ?")
-                .bind(format!("%{}%", search_term))
+            let normalized = tag_normalized_name(&search_term);
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tags WHERE normalized_name LIKE ?")
+                .bind(format!("%{}%", normalized))
                 .fetch_one(pool)
                 .await?
         } else {
@@ -798,12 +828,15 @@ impl Tag {
 
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
+        let normalized = tag_normalized_name(&name);
         let result = sqlx::query_scalar::<_, i64>(
-            "INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?) RETURNING id",
+            "INSERT INTO tags (name, color, normalized_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
         )
         .bind(&name)
         .bind(&color)
-        .bind(now)
+        .bind(&normalized)
+        .bind(now.clone())
+        .bind(&now)
         .fetch_one(pool)
         .await;
 
@@ -829,12 +862,18 @@ impl Tag {
         }
 
         let start = Instant::now();
-        let result = sqlx::query("UPDATE tags SET name = ?, color = ? WHERE id = ?")
-            .bind(&name)
-            .bind(&color)
-            .bind(id)
-            .execute(pool)
-            .await;
+        let now = Utc::now().to_rfc3339();
+        let normalized = tag_normalized_name(&name);
+        let result = sqlx::query(
+            "UPDATE tags SET name = ?, color = ?, normalized_name = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&name)
+        .bind(&color)
+        .bind(&normalized)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await;
 
         result.map_err(|e| handle_unique_constraint_error(e, "name", &name))?;
 
@@ -1054,11 +1093,17 @@ impl Category {
     pub async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
         let start = Instant::now();
 
-        // 将子分类的 parent_id 置为 NULL（级联解绑）
-        sqlx::query("UPDATE categories SET parent_id = NULL WHERE parent_id = ?")
-            .bind(id)
-            .execute(pool)
-            .await?;
+        // Reject deletion when child categories still reference this one.
+        let child_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM categories WHERE parent_id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
+        if child_count > 0 {
+            return Err(anyhow::anyhow!(
+                "无法删除分类：还存在 {child_count} 个子分类"
+            ));
+        }
 
         sqlx::query("DELETE FROM categories WHERE id = ?")
             .bind(id)
@@ -2303,11 +2348,11 @@ impl Agent {
     ) -> Result<Vec<Agent>> {
         let agents = if let Some(s) = search {
             sqlx::query_as::<_, Agent>(
-                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, model_preset, created_at, updated_at FROM agents WHERE name LIKE ? OR identifier LIKE ? ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, created_at, updated_at FROM agents WHERE name LIKE ? OR identifier LIKE ? ORDER BY name LIMIT ? OFFSET ?"
             ).bind(format!("%{}%", s)).bind(format!("%{}%", s)).bind(limit).bind(offset).fetch_all(pool).await?
         } else {
             sqlx::query_as::<_, Agent>(
-                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, model_preset, created_at, updated_at FROM agents ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, created_at, updated_at FROM agents ORDER BY name LIMIT ? OFFSET ?"
             ).bind(limit).bind(offset).fetch_all(pool).await?
         };
         Ok(agents)
@@ -2332,7 +2377,7 @@ impl Agent {
 
     pub async fn get(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Agent>> {
         let a = sqlx::query_as::<_, Agent>(
-            "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, model_preset, created_at, updated_at FROM agents WHERE id = ?"
+            "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, created_at, updated_at FROM agents WHERE id = ?"
         ).bind(id).fetch_optional(pool).await?;
         Ok(a)
     }
@@ -2484,6 +2529,7 @@ impl Agent {
 
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Agent {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        let is_default_i64: i64 = row.try_get("is_default")?;
         Ok(Agent {
             id: row.try_get("id")?,
             identifier: row.try_get("identifier")?,
@@ -2492,6 +2538,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Agent {
             system_prompt: row.try_get("system_prompt")?,
             parent_agent_id: row.try_get("parent_agent_id")?,
             depth: row.try_get("depth")?,
+            is_default: is_default_i64 != 0,
             model_preset: row.try_get("model_preset")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
@@ -3031,8 +3078,8 @@ pub async fn export_all_data(pool: &Pool<Sqlite>, output_path: &str) -> Result<(
 }
 
 /// FR-027: 数据库 Schema 版本管理
-/// 当前版本: 1.0
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+/// 当前版本: 2.0
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 /// 获取当前数据库 schema 版本
 pub async fn get_current_version(pool: &Pool<Sqlite>) -> Result<i64> {
@@ -3116,6 +3163,55 @@ async fn migrate_old_plugins_table(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+async fn init_workflow_graph_tables(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+            node_key TEXT NOT NULL,
+            node_type TEXT NOT NULL DEFAULT 'function_node',
+            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL,
+            position_x REAL NOT NULL DEFAULT 0,
+            position_y REAL NOT NULL DEFAULT 0,
+            node_config TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(workflow_id, node_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+            src_node_key TEXT NOT NULL,
+            dst_node_key TEXT NOT NULL,
+            mapping TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(workflow_id, src_node_key, dst_node_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_nodes_workflow ON workflow_nodes(workflow_id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id)",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 /// 运行数据库迁移
 pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
     let current_version = get_current_version(pool).await?;
@@ -3175,28 +3271,103 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
         tracing::info!("迁移 v1 完成");
     }
 
-    // 未来版本迁移可以在这里添加
-    // if current_version < 2 { ... }
+    if current_version < 2 {
+        tracing::info!("执行迁移: v1 -> v2 (添加 DAG 节点和连线表)");
+        init_workflow_graph_tables(pool).await?;
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO schema_versions (version, applied_at, description) VALUES (?, ?, ?)",
+        )
+        .bind(2i64)
+        .bind(&now)
+        .bind("添加 DAG 节点和连线表：workflow_nodes, workflow_edges")
+        .execute(pool)
+        .await?;
+
+        tracing::info!("迁移 v2 完成");
+    }
 
     tracing::info!("数据库迁移完成");
     Ok(())
 }
 
+/// Idempotently back-fill the `tags.normalized_name` and
+/// `tags.updated_at` columns required by the T058 contract. The
+/// `tags_normalized_name_idx` index is rebuilt afterwards so a
+/// legacy v1 database still produces the indexed plan asserted
+/// by the T055 Red test.
+async fn upgrade_tags_table_columns(pool: &Pool<Sqlite>) -> Result<()> {
+    let columns = sqlx::query("SELECT name FROM pragma_table_info('tags')")
+        .fetch_all(pool)
+        .await?;
+    let has_normalized = columns
+        .iter()
+        .any(|row| row.try_get::<String, _>("name").unwrap_or_default() == "normalized_name");
+    let has_updated_at = columns
+        .iter()
+        .any(|row| row.try_get::<String, _>("name").unwrap_or_default() == "updated_at");
+
+    if !has_normalized {
+        sqlx::query("ALTER TABLE tags ADD COLUMN normalized_name TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+    if !has_updated_at {
+        sqlx::query("ALTER TABLE tags ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+
+    // Back-fill `normalized_name` for every existing row using the
+    // same NFKC + lower-case pipeline the runtime store uses. The
+    // pipeline is intentionally duplicated here (no async dep on
+    // `tag_store` to keep migration self-contained).
+    sqlx::query(
+        "UPDATE tags \
+         SET normalized_name = LOWER(name) \
+         WHERE normalized_name = '' OR normalized_name IS NULL",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("DROP INDEX IF EXISTS idx_tags_name")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS tags_normalized_name_idx ON tags (normalized_name)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// 初始化所有新增实体表
 pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
-    // tags 表
+    // Enable ON DELETE CASCADE/SET NULL for all FK constraints created
+    // below. SQLite defaults to OFF per connection.
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(pool)
+        .await?;
+
+    // tags 表 — T058 requires `normalized_name` + `updated_at` for the
+    // `tags_normalized_name_idx` EXPLAIN contract. `CREATE TABLE IF NOT
+    // EXISTS` does not retro-fit an existing table, so the migration
+    // function below adds the columns / index when the table is opened
+    // with the legacy v1 schema.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             color TEXT,
-            created_at TEXT NOT NULL
+            normalized_name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT ''
         )
         "#,
     )
     .execute(pool)
     .await?;
+    upgrade_tags_table_columns(pool).await?;
 
     // categories 表（支持树形层级）
     sqlx::query(
@@ -3363,7 +3534,10 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
             system_prompt TEXT NOT NULL DEFAULT '',
             parent_agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
             depth INTEGER NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0,
             model_preset TEXT,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            name_normalized TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -3372,46 +3546,88 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // workflow_nodes 表（DAG 节点）
+    // Migration: ensure is_default / category_id / name_normalized exist
+    // on pre-existing databases. The CREATE TABLE above uses
+    // IF NOT EXISTS, so legacy schemas miss the columns added later.
+    let agent_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM PRAGMA_TABLE_INFO('agents')")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    if !agent_columns.iter().any(|name| name == "is_default") {
+        sqlx::query("ALTER TABLE agents ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
+    if !agent_columns.iter().any(|name| name == "category_id") {
+        sqlx::query("ALTER TABLE agents ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL")
+            .execute(pool)
+            .await
+            .ok();
+    }
+    if !agent_columns.iter().any(|name| name == "name_normalized") {
+        sqlx::query("ALTER TABLE agents ADD COLUMN name_normalized TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+
+    // agent_tools 关联表
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS workflow_nodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-            node_key TEXT NOT NULL,
-            node_type TEXT NOT NULL DEFAULT 'function_node',
-            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL,
-            position_x REAL NOT NULL DEFAULT 0,
-            position_y REAL NOT NULL DEFAULT 0,
-            node_config TEXT,
+        CREATE TABLE IF NOT EXISTS agent_tools (
+            agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            tool_id INTEGER NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
             created_at TEXT NOT NULL,
-            UNIQUE(workflow_id, node_key)
+            PRIMARY KEY (agent_id, tool_id)
         )
         "#,
     )
     .execute(pool)
     .await?;
 
-    // workflow_edges 表（DAG 连线）
+    // agent_skills 关联表
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS workflow_edges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            workflow_id INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-            src_node_key TEXT NOT NULL,
-            dst_node_key TEXT NOT NULL,
-            mapping TEXT NOT NULL DEFAULT '{}',
-            UNIQUE(workflow_id, src_node_key, dst_node_key)
+        CREATE TABLE IF NOT EXISTS agent_skills (
+            agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (agent_id, skill_id)
         )
         "#,
     )
     .execute(pool)
     .await?;
+
+    // agent_capabilities 关联表
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_capabilities (
+            agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            capability_name TEXT NOT NULL REFERENCES capabilities(name) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (agent_id, capability_name)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // unique-default 守护索引 (T115 唯一默认根不变量)
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_is_default_unique \
+         ON agents(is_default) WHERE is_default = 1",
+    )
+    .execute(pool)
+    .await
+    .ok();
+
+    // DAG 节点和连线表
+    init_workflow_graph_tables(pool).await?;
 
     // 创建索引
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
-        .execute(pool)
-        .await?;
+    // tags 索引由 init_tables 末尾的 `tags_normalized_name_idx` 维护
+    // (T058 contract). 这里不再单独建 idx_tags_name 以避免重复。
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_categories_slug ON categories(slug)")
         .execute(pool)
         .await?;
@@ -3442,7 +3658,50 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+
     use super::*;
+
+    #[tokio::test]
+    async fn migration_adds_dag_tables_to_existing_v1_database() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE schema_versions (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("v1 schema version table");
+        sqlx::query(
+            "INSERT INTO schema_versions (version, applied_at, description) VALUES (1, '', 'v1')",
+        )
+        .execute(&pool)
+        .await
+        .expect("v1 schema version");
+
+        run_migrations(&pool).await.expect("upgrade v1 database");
+
+        assert_eq!(get_current_version(&pool).await.unwrap(), 2);
+        for table in ["workflow_nodes", "workflow_edges"] {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name = ?",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(exists, "migration must create {table}");
+        }
+    }
 
     #[test]
     fn test_validate_identifier_valid() {
@@ -3564,4 +3823,1494 @@ mod tests {
         assert!(validate_color("#FF00000").is_err());
         assert!(validate_color("#GG0000").is_err());
     }
+}
+
+// =====================================================================
+// US13 T124: typed `AgentStore` public boundary.
+//
+// The legacy `Agent` struct above remains the runtime "wide row"
+// shape used by the recovery/restore path. The typed store
+// surfaces only validated, search-indexed, hierarchy-respecting
+// operations the UI / runtime call. Both shapes share the same
+// underlying `agents` table and association tables; the typed
+// store enforces the agent-hierarchy invariants the spec requires:
+//   * identifier uniqueness;
+//   * system_prompt non-empty and ≤ 1MiB;
+//   * model_preset must reference an existing LlmPreset.name when
+//     present;
+//   * parent_agent_id forms a tree of depth ≤ 10 with no cycle;
+//   * at most one default root (parent_agent_id IS NULL) Agent at
+//     any time, with first Agent auto-defaulted and a transactional
+//     replacement when switching;
+//   * the three resource association tables
+//     (agent_tools, agent_skills, agent_capabilities) accept
+//     deduplicated references and surface stable conflict
+//     envelopes.
+// =====================================================================
+
+/// Maximum allowed Agent depth (root = 0). The T124 spec requires
+/// the Store to refuse hierarchies deeper than this.
+pub const AGENT_MAX_DEPTH: i64 = 10;
+
+/// Fixed page size for Agent list / search.
+pub const AGENT_PAGE_SIZE: i64 = 20;
+
+/// Failure mode for the typed Agent store. The variant
+/// intentionally carries only safe values (no SQL fragments, no
+/// raw row content). UI MUST receive the [`AgentStoreError::field`]
+/// and reuse the [`AgentStoreError::references`] for the
+/// `conflict { shape: "references" }` envelope; raw values are
+/// never returned to callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStoreErrorKind {
+    /// Caller supplied an invalid value.
+    InvalidInput {
+        /// Field that failed validation.
+        field: String,
+        /// Stable reason code.
+        reason: String,
+    },
+    /// Caller requested creation/update that collides with an
+    /// existing row.
+    Conflict(AgentConflict),
+    /// The requested Agent does not exist.
+    NotFound,
+    /// The new parent would form a cycle or exceed the depth
+    /// ceiling.
+    HierarchyViolation {
+        /// Stable reason code (`cycle` or `depth_exceeded`).
+        reason: String,
+        /// Optional references to the offending parent.
+        references: Vec<String>,
+    },
+    /// Underlying SQL error with a sanitized cause.
+    Backend(String),
+}
+
+/// Conflict envelope returned by the Agent store. The shape
+/// (value vs references) is preserved so the UI can render
+/// either a "duplicate identifier" prompt or a "referenced by
+/// other Agent" prompt without leaking the offending value or
+/// row count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentConflict {
+    /// `identifier` is not unique.
+    DuplicateIdentifier {
+        /// Existing identifier.
+        value: String,
+    },
+    /// Trying to delete / unset the default Agent before a
+    /// replacement is designated.
+    DefaultReplacementRequired {
+        /// Default Agent identifier that is being deleted.
+        value: String,
+    },
+}
+
+impl AgentConflict {
+    /// Field that triggered the conflict.
+    pub fn field(&self) -> &'static str {
+        match self {
+            Self::DuplicateIdentifier { .. } => "identifier",
+            Self::DefaultReplacementRequired { .. } => "is_default",
+        }
+    }
+    /// Stable reason code.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::DuplicateIdentifier { .. } => "duplicate",
+            Self::DefaultReplacementRequired { .. } => "replacement_required",
+        }
+    }
+    /// Conflict shape.
+    pub fn shape(&self) -> &'static str {
+        match self {
+            Self::DuplicateIdentifier { .. } => "value",
+            Self::DefaultReplacementRequired { .. } => "references",
+        }
+    }
+}
+
+/// Stable error envelope returned by the Agent store.
+#[derive(Debug, Error)]
+#[error("agent store error: {kind:?}")]
+pub struct AgentStoreError {
+    /// Error variant.
+    pub kind: AgentStoreErrorKind,
+}
+
+impl AgentStoreError {
+    /// Field that triggered the failure, when known.
+    pub fn field(&self) -> &str {
+        match &self.kind {
+            AgentStoreErrorKind::InvalidInput { field, .. } => field.as_str(),
+            AgentStoreErrorKind::Conflict(conflict) => conflict.field(),
+            AgentStoreErrorKind::NotFound => "id",
+            AgentStoreErrorKind::HierarchyViolation { .. } => "parent_agent_id",
+            AgentStoreErrorKind::Backend(_) => "",
+        }
+    }
+
+    /// Stable reason code, when known.
+    pub fn reason(&self) -> &str {
+        match &self.kind {
+            AgentStoreErrorKind::InvalidInput { reason, .. } => reason.as_str(),
+            AgentStoreErrorKind::Conflict(conflict) => conflict.reason(),
+            AgentStoreErrorKind::NotFound => "not_found",
+            AgentStoreErrorKind::HierarchyViolation { reason, .. } => reason.as_str(),
+            AgentStoreErrorKind::Backend(_) => "backend",
+        }
+    }
+
+    /// Reference identifiers returned with a `references` conflict
+    /// or hierarchy violation. UI MAY show these; the values are
+    /// pre-trimmed to safe Agent identifiers.
+    pub fn references(&self) -> &[String] {
+        match &self.kind {
+            AgentStoreErrorKind::Conflict(AgentConflict::DefaultReplacementRequired { value }) => {
+                std::slice::from_ref(value)
+            }
+            AgentStoreErrorKind::HierarchyViolation { references, .. } => references.as_slice(),
+            _ => &[],
+        }
+    }
+}
+
+impl From<AgentConflict> for AgentStoreError {
+    fn from(conflict: AgentConflict) -> Self {
+        Self {
+            kind: AgentStoreErrorKind::Conflict(conflict),
+        }
+    }
+}
+
+/// Validated input to a typed `AgentStore::create` call.
+#[derive(Debug, Clone)]
+pub struct AgentInput {
+    identifier: String,
+    name: String,
+    description: Option<String>,
+    system_prompt: String,
+    parent_agent_id: Option<i64>,
+    is_default: bool,
+    model_preset: Option<String>,
+    category_id: Option<i64>,
+    tool_ids: Vec<i64>,
+    skill_ids: Vec<i64>,
+    capability_names: Vec<String>,
+}
+
+impl AgentInput {
+    /// Construct a new root Agent input. The Store computes the
+    /// depth and handles the `is_default` invariant.
+    pub fn new_root(
+        identifier: impl Into<String>,
+        name: impl Into<String>,
+        system_prompt: impl Into<String>,
+    ) -> Result<Self, AgentStoreError> {
+        let identifier = identifier.into();
+        let name = name.into();
+        let system_prompt = system_prompt.into();
+        if identifier.trim().is_empty() {
+            return Err(invalid("identifier", "empty"));
+        }
+        if identifier.len() > 255 {
+            return Err(invalid("identifier", "too_long"));
+        }
+        if !identifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(invalid("identifier", "invalid_charset"));
+        }
+        if name.trim().is_empty() {
+            return Err(invalid("name", "empty"));
+        }
+        if name.len() > 255 {
+            return Err(invalid("name", "too_long"));
+        }
+        if system_prompt.trim().is_empty() {
+            return Err(invalid("system_prompt", "empty"));
+        }
+        if system_prompt.len() > 1024 * 1024 {
+            return Err(invalid("system_prompt", "too_long"));
+        }
+        Ok(Self {
+            identifier,
+            name,
+            description: None,
+            system_prompt,
+            parent_agent_id: None,
+            is_default: false,
+            model_preset: None,
+            category_id: None,
+            tool_ids: Vec::new(),
+            skill_ids: Vec::new(),
+            capability_names: Vec::new(),
+        })
+    }
+
+    /// Set the description.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Set the explicit parent. `None` means "this is a root".
+    pub fn with_parent(mut self, parent_agent_id: Option<i64>) -> Self {
+        self.parent_agent_id = parent_agent_id;
+        self
+    }
+
+    /// Request the default flag. The Store enforces the unique
+    /// default root invariant, so callers SHOULD pass `true` only
+    /// for the first Agent or after explicitly replacing an
+    /// existing default.
+    pub fn with_default(mut self, is_default: bool) -> Self {
+        self.is_default = is_default;
+        self
+    }
+
+    /// Bind the model preset by `LlmPreset.name`.
+    pub fn with_model_preset(mut self, preset: impl Into<String>) -> Self {
+        self.model_preset = Some(preset.into());
+        self
+    }
+
+    /// Bind a category.
+    pub fn with_category(mut self, category_id: i64) -> Self {
+        self.category_id = Some(category_id);
+        self
+    }
+
+    /// Set the explicit Tool association list.
+    pub fn with_tools(mut self, tool_ids: impl IntoIterator<Item = i64>) -> Self {
+        self.tool_ids = tool_ids.into_iter().collect();
+        self
+    }
+
+    /// Set the explicit Skill association list.
+    pub fn with_skills(mut self, skill_ids: impl IntoIterator<Item = i64>) -> Self {
+        self.skill_ids = skill_ids.into_iter().collect();
+        self
+    }
+
+    /// Set the explicit Capability association list.
+    pub fn with_capabilities(mut self, capability_names: impl IntoIterator<Item = String>) -> Self {
+        self.capability_names = capability_names.into_iter().collect();
+        self
+    }
+
+    /// Identifier.
+    pub fn identifier(&self) -> &str {
+        &self.identifier
+    }
+    /// Name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// System prompt.
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+    /// Optional description.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    /// Optional parent.
+    pub fn parent_agent_id(&self) -> Option<i64> {
+        self.parent_agent_id
+    }
+    /// Requested default flag.
+    pub fn is_default(&self) -> bool {
+        self.is_default
+    }
+    /// Model preset name, if any.
+    pub fn model_preset(&self) -> Option<&str> {
+        self.model_preset.as_deref()
+    }
+    /// Category id, if any.
+    pub fn category_id(&self) -> Option<i64> {
+        self.category_id
+    }
+    /// Tool ids.
+    pub fn tool_ids(&self) -> &[i64] {
+        &self.tool_ids
+    }
+    /// Skill ids.
+    pub fn skill_ids(&self) -> &[i64] {
+        &self.skill_ids
+    }
+    /// Capability names.
+    pub fn capability_names(&self) -> &[String] {
+        &self.capability_names
+    }
+}
+
+/// Persisted Agent record returned by the typed store.
+#[derive(Debug, Clone)]
+pub struct AgentRecord {
+    id: i64,
+    identifier: String,
+    name: String,
+    description: Option<String>,
+    system_prompt: String,
+    parent_agent_id: Option<i64>,
+    depth: i64,
+    is_default: bool,
+    model_preset: Option<String>,
+    category_id: Option<i64>,
+    tool_ids: Vec<i64>,
+    skill_ids: Vec<i64>,
+    capability_names: Vec<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl AgentRecord {
+    /// Database id.
+    pub fn id(&self) -> i64 {
+        self.id
+    }
+    /// Identifier.
+    pub fn identifier(&self) -> &str {
+        &self.identifier
+    }
+    /// Name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Description.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    /// System prompt.
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+    /// Parent id (None for root Agents).
+    pub fn parent_agent_id(&self) -> Option<i64> {
+        self.parent_agent_id
+    }
+    /// Computed depth (root = 0).
+    pub fn depth(&self) -> i64 {
+        self.depth
+    }
+    /// Whether this is the unique default Agent.
+    pub fn is_default(&self) -> bool {
+        self.is_default
+    }
+    /// Model preset.
+    pub fn model_preset(&self) -> Option<&str> {
+        self.model_preset.as_deref()
+    }
+    /// Category.
+    pub fn category_id(&self) -> Option<i64> {
+        self.category_id
+    }
+    /// Explicit Tool ids.
+    pub fn tool_ids(&self) -> &[i64] {
+        &self.tool_ids
+    }
+    /// Explicit Skill ids.
+    pub fn skill_ids(&self) -> &[i64] {
+        &self.skill_ids
+    }
+    /// Explicit Capability names.
+    pub fn capability_names(&self) -> &[String] {
+        &self.capability_names
+    }
+    /// Created-at timestamp (RFC3339).
+    pub fn created_at(&self) -> &str {
+        &self.created_at
+    }
+    /// Updated-at timestamp (RFC3339).
+    pub fn updated_at(&self) -> &str {
+        &self.updated_at
+    }
+}
+
+/// Filter for Agent list / search.
+#[derive(Debug, Clone, Default)]
+pub struct AgentFilter {
+    /// Optional normalized search term (NFKC + lower-case, max 255 chars).
+    pub search: Option<String>,
+    /// Page number (1-based).
+    pub page: i64,
+    /// Page size (must equal [`AGENT_PAGE_SIZE`]).
+    pub page_size: i64,
+}
+
+impl AgentFilter {
+    /// First page with the fixed page size.
+    pub fn first() -> Self {
+        Self {
+            search: None,
+            page: 1,
+            page_size: AGENT_PAGE_SIZE,
+        }
+    }
+    /// Builder: search term.
+    pub fn with_search(mut self, term: impl Into<String>) -> Self {
+        self.search = Some(term.into());
+        self
+    }
+    /// Builder: page.
+    pub fn with_page(mut self, page: i64) -> Self {
+        self.page = page;
+        self
+    }
+}
+
+/// Paged Agent results.
+#[derive(Debug, Clone)]
+pub struct AgentPage {
+    records: Vec<AgentRecord>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+impl AgentPage {
+    /// Records in the current page.
+    pub fn records(&self) -> &[AgentRecord] {
+        &self.records
+    }
+    /// Total record count matching the filter.
+    pub fn total(&self) -> i64 {
+        self.total
+    }
+    /// 1-based page number.
+    pub fn page(&self) -> i64 {
+        self.page
+    }
+    /// Page size used.
+    pub fn page_size(&self) -> i64 {
+        self.page_size
+    }
+}
+
+/// Helper: build an InvalidInput error envelope.
+fn invalid(field: &str, reason: &str) -> AgentStoreError {
+    AgentStoreError {
+        kind: AgentStoreErrorKind::InvalidInput {
+            field: field.to_string(),
+            reason: reason.to_string(),
+        },
+    }
+}
+
+fn normalize_agent_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfkc: String = name.nfkc().collect();
+    let nfc: String = nfkc.nfc().collect();
+    nfc.to_lowercase()
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db) = error {
+        if let Some(code) = db.code() {
+            return code == "2067" || code == "1555";
+        }
+        let msg = db.message().to_ascii_lowercase();
+        return msg.contains("unique constraint failed") || msg.contains("unique index");
+    }
+    false
+}
+
+/// Typed Agent store. The handle is a thin wrapper around the
+/// `agents` table; every public method runs inside a single
+/// transaction so the `is_default` invariant, hierarchy
+/// validation and association writes are atomic.
+#[derive(Debug, Clone)]
+pub struct AgentStore {
+    pool: Pool<Sqlite>,
+}
+
+impl AgentStore {
+    /// Open a new typed Agent store over the given pool.
+    pub fn new(pool: Pool<Sqlite>) -> Result<Self, AgentStoreError> {
+        Ok(Self { pool })
+    }
+
+    /// Underlying pool.
+    pub fn pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+
+    /// Create a new Agent. The depth is computed from the parent;
+    /// the first Agent in the database is automatically the
+    /// default. Switching the default must use
+    /// [`AgentStore::set_default`].
+    pub async fn create(&self, input: AgentInput) -> Result<AgentRecord, AgentStoreError> {
+        validate_input(&input)?;
+        let now = Utc::now().to_rfc3339();
+        let normalized = normalize_agent_name(&input.name);
+
+        // Compute depth and check the cycle invariant before
+        // mutating the database.
+        let computed_depth = match input.parent_agent_id {
+            None => 0,
+            Some(parent_id) => {
+                let parent = self.fetch_one(parent_id).await?.ok_or(AgentStoreError {
+                    kind: AgentStoreErrorKind::NotFound,
+                })?;
+                if parent.depth + 1 > AGENT_MAX_DEPTH {
+                    return Err(AgentStoreError {
+                        kind: AgentStoreErrorKind::HierarchyViolation {
+                            reason: "depth_exceeded".to_string(),
+                            references: vec![parent.identifier.clone()],
+                        },
+                    });
+                }
+                parent.depth + 1
+            }
+        };
+
+        // Reference checks for FK / model_preset / category.
+        self.validate_references(&input).await?;
+
+        let mut tx = self.pool.begin().await.map_err(backend_error)?;
+
+        // First Agent in the table auto-defaults, regardless of
+        // the input. The unique-default invariant is enforced by
+        // both the application logic here and the partial unique
+        // index `idx_agents_is_default_unique`.
+        let is_first_agent: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        let effective_is_default = input.is_default || is_first_agent == 0;
+
+        if effective_is_default {
+            // Atomically clear the previous default (if any).
+            sqlx::query("UPDATE agents SET is_default = 0 WHERE is_default = 1")
+                .execute(&mut *tx)
+                .await
+                .map_err(backend_error)?;
+        }
+
+        let insert_result = sqlx::query(
+            "INSERT INTO agents \
+             (identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, name_normalized, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&input.identifier)
+        .bind(&input.name)
+        .bind(&input.description)
+        .bind(&input.system_prompt)
+        .bind(input.parent_agent_id)
+        .bind(computed_depth)
+        .bind(if effective_is_default { 1_i64 } else { 0_i64 })
+        .bind(&input.model_preset)
+        .bind(input.category_id)
+        .bind(&normalized)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await;
+
+        let exec_result = match insert_result {
+            Ok(result) => result,
+            Err(error) => {
+                if is_unique_violation(&error) {
+                    return Err(AgentStoreError {
+                        kind: AgentStoreErrorKind::Conflict(AgentConflict::DuplicateIdentifier {
+                            value: input.identifier.clone(),
+                        }),
+                    });
+                }
+                return Err(backend_error(error));
+            }
+        };
+
+        let new_id = exec_result.last_insert_rowid();
+
+        // Write the three association tables.
+        for tool_id in dedup_i64(&input.tool_ids) {
+            sqlx::query(
+                "INSERT OR IGNORE INTO agent_tools (agent_id, tool_id, created_at) VALUES (?, ?, ?)",
+            )
+            .bind(new_id)
+            .bind(tool_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        }
+        for skill_id in dedup_i64(&input.skill_ids) {
+            sqlx::query(
+                "INSERT OR IGNORE INTO agent_skills (agent_id, skill_id, created_at) VALUES (?, ?, ?)",
+            )
+            .bind(new_id)
+            .bind(skill_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        }
+        for capability in dedup_string(&input.capability_names) {
+            sqlx::query(
+                "INSERT OR IGNORE INTO agent_capabilities (agent_id, capability_name, created_at) VALUES (?, ?, ?)",
+            )
+            .bind(new_id)
+            .bind(&capability)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        }
+
+        tx.commit().await.map_err(backend_error)?;
+
+        self.fetch_one(new_id).await?.ok_or(AgentStoreError {
+            kind: AgentStoreErrorKind::NotFound,
+        })
+    }
+
+    /// Update an existing Agent. Cycles, depth, FK and unique
+    /// invariants are checked inside the transaction.
+    pub async fn update(&self, id: i64, input: AgentInput) -> Result<AgentRecord, AgentStoreError> {
+        validate_input(&input)?;
+        let now = Utc::now().to_rfc3339();
+        let normalized = normalize_agent_name(&input.name);
+
+        let existing = self.fetch_one(id).await?.ok_or(AgentStoreError {
+            kind: AgentStoreErrorKind::NotFound,
+        })?;
+
+        // Cycle + depth check: walking up from the new parent must
+        // not reach `id`. The walk uses indexed reads of
+        // `parent_agent_id`.
+        if let Some(parent_id) = input.parent_agent_id {
+            if parent_id == id {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::HierarchyViolation {
+                        reason: "cycle".to_string(),
+                        references: vec![existing.identifier.clone()],
+                    },
+                });
+            }
+            if self.would_form_cycle(id, parent_id).await? {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::HierarchyViolation {
+                        reason: "cycle".to_string(),
+                        references: vec![existing.identifier.clone()],
+                    },
+                });
+            }
+            let parent = self.fetch_one(parent_id).await?.ok_or(AgentStoreError {
+                kind: AgentStoreErrorKind::NotFound,
+            })?;
+            // The new depth is parent.depth + 1, but the existing
+            // subtree also shifts. Compute the delta and re-apply
+            // it to every descendant in one transaction.
+            let new_depth = parent.depth + 1;
+            if new_depth > AGENT_MAX_DEPTH {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::HierarchyViolation {
+                        reason: "depth_exceeded".to_string(),
+                        references: vec![parent.identifier.clone()],
+                    },
+                });
+            }
+            // Subtree deltas are applied below in the same
+            // transaction.
+            self.validate_references(&input).await?;
+            let mut tx = self.pool.begin().await.map_err(backend_error)?;
+            apply_subtree_depth_shift(&mut tx, id, new_depth - existing.depth, AGENT_MAX_DEPTH)
+                .await?;
+            update_row(&mut tx, id, &input, &normalized, &now, existing.is_default).await?;
+            replace_associations(&mut tx, id, &input, &now).await?;
+            tx.commit().await.map_err(backend_error)?;
+        } else {
+            self.validate_references(&input).await?;
+            let mut tx = self.pool.begin().await.map_err(backend_error)?;
+            // Promote to root: depth 0 and shift the entire
+            // subtree to remain ≤ AGENT_MAX_DEPTH.
+            apply_subtree_depth_shift(&mut tx, id, -existing.depth, AGENT_MAX_DEPTH).await?;
+            update_row(&mut tx, id, &input, &normalized, &now, existing.is_default).await?;
+            replace_associations(&mut tx, id, &input, &now).await?;
+            tx.commit().await.map_err(backend_error)?;
+        }
+
+        self.fetch_one(id).await?.ok_or(AgentStoreError {
+            kind: AgentStoreErrorKind::NotFound,
+        })
+    }
+
+    /// Delete an Agent. The Agent's children are reparented to the
+    /// deleted Agent's parent (i.e. `parent_agent_id` is set to the
+    /// deleted Agent's parent); the cascade does not touch the
+    /// subtree beyond that. A delete of the default Agent is
+    /// refused unless `replacement_id` is supplied and references
+    /// an existing root Agent.
+    pub async fn delete(
+        &self,
+        id: i64,
+        replacement_id: Option<i64>,
+    ) -> Result<(), AgentStoreError> {
+        let existing = self.fetch_one(id).await?.ok_or(AgentStoreError {
+            kind: AgentStoreErrorKind::NotFound,
+        })?;
+        // Resolve the replacement record BEFORE opening the
+        // transaction. With a single-connection test pool, doing
+        // the fetch inside the transaction would deadlock.
+        let replacement_needs_promotion: Option<AgentRecord> = if existing.is_default {
+            match replacement_id {
+                Some(replacement) => {
+                    let record = self.fetch_one(replacement).await?.ok_or(AgentStoreError {
+                        kind: AgentStoreErrorKind::NotFound,
+                    })?;
+                    if !record.is_default && record.parent_agent_id.is_some() {
+                        return Err(AgentStoreError {
+                            kind: AgentStoreErrorKind::InvalidInput {
+                                field: "replacement_id".to_string(),
+                                reason: "must_be_root".to_string(),
+                            },
+                        });
+                    }
+                    Some(record)
+                }
+                None => {
+                    return Err(AgentStoreError {
+                        kind: AgentStoreErrorKind::Conflict(
+                            AgentConflict::DefaultReplacementRequired {
+                                value: existing.identifier.clone(),
+                            },
+                        ),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+        let mut tx = self.pool.begin().await.map_err(backend_error)?;
+        if let Some(replacement) = &replacement_needs_promotion {
+            if !replacement.is_default {
+                sqlx::query("UPDATE agents SET is_default = 0 WHERE id = ?")
+                    .bind(existing.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(backend_error)?;
+                sqlx::query("UPDATE agents SET is_default = 1 WHERE id = ?")
+                    .bind(replacement.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(backend_error)?;
+            }
+        }
+        // Reparent children to the deleted agent's parent.
+        sqlx::query("UPDATE agents SET parent_agent_id = ? WHERE parent_agent_id = ?")
+            .bind(existing.parent_agent_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        sqlx::query("DELETE FROM agents WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        tx.commit().await.map_err(backend_error)?;
+        Ok(())
+    }
+
+    /// Atomically replace the default Agent. The new default MUST
+    /// be an existing root Agent (`parent_agent_id IS NULL`).
+    pub async fn set_default(&self, new_default_id: i64) -> Result<AgentRecord, AgentStoreError> {
+        let new_default = self
+            .fetch_one(new_default_id)
+            .await?
+            .ok_or(AgentStoreError {
+                kind: AgentStoreErrorKind::NotFound,
+            })?;
+        if new_default.parent_agent_id.is_some() {
+            return Err(AgentStoreError {
+                kind: AgentStoreErrorKind::InvalidInput {
+                    field: "id".to_string(),
+                    reason: "must_be_root".to_string(),
+                },
+            });
+        }
+        let mut tx = self.pool.begin().await.map_err(backend_error)?;
+        sqlx::query("UPDATE agents SET is_default = 0 WHERE is_default = 1")
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        sqlx::query("UPDATE agents SET is_default = 1 WHERE id = ?")
+            .bind(new_default_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend_error)?;
+        tx.commit().await.map_err(backend_error)?;
+        self.fetch_one(new_default_id)
+            .await?
+            .ok_or(AgentStoreError {
+                kind: AgentStoreErrorKind::NotFound,
+            })
+    }
+
+    /// Fetch the unique default root Agent, if any.
+    pub async fn default_agent(&self) -> Result<Option<AgentRecord>, AgentStoreError> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM agents WHERE is_default = 1 ORDER BY id ASC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(backend_error)?;
+        match row {
+            Some((id,)) => self.fetch_one(id).await,
+            None => Ok(None),
+        }
+    }
+
+    /// List the direct children of a given Agent id, in stable
+    /// identifier order.
+    pub async fn list_children(&self, parent_id: i64) -> Result<Vec<AgentRecord>, AgentStoreError> {
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM agents WHERE parent_agent_id = ? ORDER BY identifier ASC",
+        )
+        .bind(parent_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_error)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id,) in rows {
+            if let Some(record) = self.fetch_one(id).await? {
+                out.push(record);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch a single Agent by id, with all three association
+    /// sets loaded.
+    pub async fn fetch_one(&self, id: i64) -> Result<Option<AgentRecord>, AgentStoreError> {
+        let row: Option<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> =
+            sqlx::query_as(
+                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
+                 FROM agents WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend_error)?;
+        let Some((
+            id,
+            identifier,
+            name,
+            description,
+            system_prompt,
+            parent_agent_id,
+            depth,
+            is_default_i64,
+            model_preset,
+            category_id,
+            created_at,
+            updated_at,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let tool_ids = load_tool_ids(&self.pool, id).await?;
+        let skill_ids = load_skill_ids(&self.pool, id).await?;
+        let capability_names = load_capability_names(&self.pool, id).await?;
+        Ok(Some(AgentRecord {
+            id,
+            identifier,
+            name,
+            description,
+            system_prompt,
+            parent_agent_id,
+            depth,
+            is_default: is_default_i64 != 0,
+            model_preset,
+            category_id,
+            tool_ids,
+            skill_ids,
+            capability_names,
+            created_at,
+            updated_at,
+        }))
+    }
+
+    /// Search / page Agents. `page_size` MUST equal
+    /// [`AGENT_PAGE_SIZE`].
+    pub async fn search(&self, filter: &AgentFilter) -> Result<AgentPage, AgentStoreError> {
+        if filter.page < 1 {
+            return Err(invalid("page", "out_of_range"));
+        }
+        if filter.page_size != AGENT_PAGE_SIZE {
+            return Err(invalid("page_size", "fixed_value_required"));
+        }
+        if let Some(search) = filter.search.as_ref() {
+            if search.is_empty() {
+                return Err(invalid("search", "empty"));
+            }
+            if search.len() > 255 {
+                return Err(invalid("search", "too_long"));
+            }
+            if search.chars().any(|c| c.is_control()) {
+                return Err(invalid("search", "control_character"));
+            }
+        }
+        let offset = (filter.page - 1) * filter.page_size;
+        let normalized_search = filter.search.as_deref().map(normalize_agent_name);
+
+        let (records, total) = if let Some(ref norm) = normalized_search {
+            let pattern = format!("%{norm}%");
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ?",
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend_error)?;
+            let rows: Vec<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> = sqlx::query_as(
+                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
+                 FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ? \
+                 ORDER BY name ASC LIMIT ? OFFSET ?",
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(filter.page_size)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?;
+            let records = hydrate_many(&self.pool, rows).await?;
+            (records, total)
+        } else {
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            let rows: Vec<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> = sqlx::query_as(
+                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
+                 FROM agents ORDER BY name ASC LIMIT ? OFFSET ?",
+            )
+            .bind(filter.page_size)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?;
+            let records = hydrate_many(&self.pool, rows).await?;
+            (records, total)
+        };
+        Ok(AgentPage {
+            records,
+            total,
+            page: filter.page,
+            page_size: filter.page_size,
+        })
+    }
+
+    /// Count records matching the filter (no paging).
+    pub async fn count(&self, filter: &AgentFilter) -> Result<i64, AgentStoreError> {
+        if let Some(ref search) = filter.search {
+            if search.is_empty() {
+                return Err(invalid("search", "empty"));
+            }
+            if search.len() > 255 {
+                return Err(invalid("search", "too_long"));
+            }
+        }
+        if let Some(search) = filter.search.as_deref() {
+            let norm = normalize_agent_name(search);
+            let pattern = format!("%{norm}%");
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ?",
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend_error)?;
+            Ok(count)
+        } else {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            Ok(count)
+        }
+    }
+
+    /// Fetch all children of the given parent (depth = 1).
+    pub async fn direct_children(
+        &self,
+        parent_agent_id: i64,
+    ) -> Result<Vec<AgentRecord>, AgentStoreError> {
+        let rows: Vec<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> = sqlx::query_as(
+            "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
+             FROM agents WHERE parent_agent_id = ? ORDER BY name ASC",
+        )
+        .bind(parent_agent_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_error)?;
+        hydrate_many(&self.pool, rows).await
+    }
+
+    /// EXPLAIN QUERY PLAN of the search query (used by the
+    /// query-plan contract).
+    pub async fn explain_search_plan(
+        &self,
+        filter: &AgentFilter,
+    ) -> Result<Vec<String>, AgentStoreError> {
+        let normalized_search = filter.search.as_deref().map(normalize_agent_name);
+        let offset = (filter.page.max(1) - 1) * filter.page_size.max(AGENT_PAGE_SIZE);
+        let page_size = filter.page_size.max(AGENT_PAGE_SIZE);
+        let rows: Vec<(String,)> = if let Some(norm) = normalized_search {
+            let pattern = format!("%{norm}%");
+            sqlx::query_as("EXPLAIN QUERY PLAN SELECT id FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ? ORDER BY name ASC LIMIT ? OFFSET ?")
+                .bind(pattern.clone())
+                .bind(pattern)
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(backend_error)?
+        } else {
+            sqlx::query_as(
+                "EXPLAIN QUERY PLAN SELECT id FROM agents ORDER BY name ASC LIMIT ? OFFSET ?",
+            )
+            .bind(page_size)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?
+        };
+        Ok(rows.into_iter().map(|(detail,)| detail).collect())
+    }
+
+    /// Whether assigning `parent_id` to `agent_id` would create a
+    /// cycle. The walk uses indexed `parent_agent_id` reads.
+    async fn would_form_cycle(
+        &self,
+        agent_id: i64,
+        parent_id: i64,
+    ) -> Result<bool, AgentStoreError> {
+        let mut current: Option<i64> = Some(parent_id);
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(agent_id);
+        while let Some(id) = current {
+            if id == agent_id {
+                return Ok(true);
+            }
+            if !visited.insert(id) {
+                return Ok(false);
+            }
+            let next: Option<Option<i64>> =
+                sqlx::query_scalar("SELECT parent_agent_id FROM agents WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+            current = match next {
+                Some(value) => value,
+                None => return Ok(false),
+            };
+        }
+        Ok(false)
+    }
+
+    /// Validate that any FK / model_preset / category references
+    /// in the input are real. Zero-modification invariant: this
+    /// runs inside the caller's transaction and either errors
+    /// before any write or completes successfully.
+    async fn validate_references(&self, input: &AgentInput) -> Result<(), AgentStoreError> {
+        if let Some(preset) = input.model_preset.as_deref() {
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_presets WHERE name = ?")
+                .bind(preset)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            if exists == 0 {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::InvalidInput {
+                        field: "model_preset".to_string(),
+                        reason: "not_found".to_string(),
+                    },
+                });
+            }
+        }
+        if let Some(category_id) = input.category_id {
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM categories WHERE id = ?")
+                .bind(category_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            if exists == 0 {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::InvalidInput {
+                        field: "category_id".to_string(),
+                        reason: "not_found".to_string(),
+                    },
+                });
+            }
+        }
+        for tool_id in &input.tool_ids {
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tools WHERE id = ?")
+                .bind(tool_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            if exists == 0 {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::InvalidInput {
+                        field: "tool_ids".to_string(),
+                        reason: "not_found".to_string(),
+                    },
+                });
+            }
+        }
+        for skill_id in &input.skill_ids {
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills WHERE id = ?")
+                .bind(skill_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            if exists == 0 {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::InvalidInput {
+                        field: "skill_ids".to_string(),
+                        reason: "not_found".to_string(),
+                    },
+                });
+            }
+        }
+        for capability in &input.capability_names {
+            let exists: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM capabilities WHERE name = ?")
+                    .bind(capability)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+            if exists == 0 {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::InvalidInput {
+                        field: "capability_names".to_string(),
+                        reason: "not_found".to_string(),
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+// ===== Private helpers used by the typed AgentStore =====
+
+fn validate_input(input: &AgentInput) -> Result<(), AgentStoreError> {
+    if input.identifier.trim().is_empty() {
+        return Err(invalid("identifier", "empty"));
+    }
+    if input.identifier.len() > 255 {
+        return Err(invalid("identifier", "too_long"));
+    }
+    if !input
+        .identifier
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(invalid("identifier", "invalid_charset"));
+    }
+    if input.name.trim().is_empty() {
+        return Err(invalid("name", "empty"));
+    }
+    if input.name.len() > 255 {
+        return Err(invalid("name", "too_long"));
+    }
+    if let Some(ref desc) = input.description {
+        if desc.len() > 2000 {
+            return Err(invalid("description", "too_long"));
+        }
+        if desc.chars().any(|c| c.is_control()) {
+            return Err(invalid("description", "control_character"));
+        }
+    }
+    if input.system_prompt.trim().is_empty() {
+        return Err(invalid("system_prompt", "empty"));
+    }
+    if input.system_prompt.len() > 1024 * 1024 {
+        return Err(invalid("system_prompt", "too_long"));
+    }
+    if input.system_prompt.chars().any(|c| c.is_control()) {
+        return Err(invalid("system_prompt", "control_character"));
+    }
+    Ok(())
+}
+
+fn backend_error(error: sqlx::Error) -> AgentStoreError {
+    AgentStoreError {
+        kind: AgentStoreErrorKind::Backend(error.to_string()),
+    }
+}
+
+fn AgentStoreKind_NotFound() -> AgentStoreError {
+    AgentStoreError {
+        kind: AgentStoreErrorKind::NotFound,
+    }
+}
+
+fn dedup_i64(values: &[i64]) -> Vec<i64> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        if seen.insert(*value) {
+            out.push(*value);
+        }
+    }
+    out
+}
+
+fn dedup_string(values: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+async fn load_tool_ids(pool: &Pool<Sqlite>, agent_id: i64) -> Result<Vec<i64>, AgentStoreError> {
+    let rows: Vec<(i64,)> =
+        sqlx::query_as("SELECT tool_id FROM agent_tools WHERE agent_id = ? ORDER BY tool_id ASC")
+            .bind(agent_id)
+            .fetch_all(pool)
+            .await
+            .map_err(backend_error)?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+async fn load_skill_ids(pool: &Pool<Sqlite>, agent_id: i64) -> Result<Vec<i64>, AgentStoreError> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT skill_id FROM agent_skills WHERE agent_id = ? ORDER BY skill_id ASC",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(backend_error)?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+async fn load_capability_names(
+    pool: &Pool<Sqlite>,
+    agent_id: i64,
+) -> Result<Vec<String>, AgentStoreError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT capability_name FROM agent_capabilities WHERE agent_id = ? ORDER BY capability_name ASC",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(backend_error)?;
+    Ok(rows.into_iter().map(|(name,)| name).collect())
+}
+
+async fn hydrate_many(
+    pool: &Pool<Sqlite>,
+    rows: Vec<(
+        i64,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<i64>,
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+        String,
+        String,
+    )>,
+) -> Result<Vec<AgentRecord>, AgentStoreError> {
+    let mut out = Vec::with_capacity(rows.len());
+    for (
+        id,
+        identifier,
+        name,
+        description,
+        system_prompt,
+        parent_agent_id,
+        depth,
+        is_default_i64,
+        model_preset,
+        category_id,
+        created_at,
+        updated_at,
+    ) in rows
+    {
+        let tool_ids = load_tool_ids(pool, id).await?;
+        let skill_ids = load_skill_ids(pool, id).await?;
+        let capability_names = load_capability_names(pool, id).await?;
+        out.push(AgentRecord {
+            id,
+            identifier,
+            name,
+            description,
+            system_prompt,
+            parent_agent_id,
+            depth,
+            is_default: is_default_i64 != 0,
+            model_preset,
+            category_id,
+            tool_ids,
+            skill_ids,
+            capability_names,
+            created_at,
+            updated_at,
+        });
+    }
+    Ok(out)
+}
+
+async fn update_row(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: i64,
+    input: &AgentInput,
+    normalized: &str,
+    now: &str,
+    keep_default: bool,
+) -> Result<(), AgentStoreError> {
+    let result = sqlx::query(
+        "UPDATE agents SET identifier=?, name=?, description=?, system_prompt=?, parent_agent_id=?, model_preset=?, category_id=?, name_normalized=?, updated_at=?, is_default=? WHERE id=?",
+    )
+    .bind(&input.identifier)
+    .bind(&input.name)
+    .bind(&input.description)
+    .bind(&input.system_prompt)
+    .bind(input.parent_agent_id)
+    .bind(&input.model_preset)
+    .bind(input.category_id)
+    .bind(normalized)
+    .bind(now)
+    .bind(if keep_default { 1_i64 } else { 0_i64 })
+    .bind(id)
+    .execute(&mut **tx)
+    .await;
+    if let Err(error) = result {
+        if is_unique_violation(&error) {
+            return Err(AgentStoreError {
+                kind: AgentStoreErrorKind::Conflict(AgentConflict::DuplicateIdentifier {
+                    value: input.identifier.clone(),
+                }),
+            });
+        }
+        return Err(backend_error(error));
+    }
+    Ok(())
+}
+
+async fn replace_associations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: i64,
+    input: &AgentInput,
+    now: &str,
+) -> Result<(), AgentStoreError> {
+    sqlx::query("DELETE FROM agent_tools WHERE agent_id = ?")
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(backend_error)?;
+    sqlx::query("DELETE FROM agent_skills WHERE agent_id = ?")
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(backend_error)?;
+    sqlx::query("DELETE FROM agent_capabilities WHERE agent_id = ?")
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(backend_error)?;
+    for tool_id in dedup_i64(&input.tool_ids) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO agent_tools (agent_id, tool_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(id)
+        .bind(tool_id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(backend_error)?;
+    }
+    for skill_id in dedup_i64(&input.skill_ids) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO agent_skills (agent_id, skill_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(id)
+        .bind(skill_id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(backend_error)?;
+    }
+    for capability in dedup_string(&input.capability_names) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO agent_capabilities (agent_id, capability_name, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(id)
+        .bind(&capability)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(backend_error)?;
+    }
+    Ok(())
+}
+
+async fn apply_subtree_depth_shift(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    root_id: i64,
+    delta: i64,
+    max_depth: i64,
+) -> Result<(), AgentStoreError> {
+    if delta == 0 {
+        return Ok(());
+    }
+    // BFS from the root, capping the depth at `max_depth`.
+    let mut frontier = vec![root_id];
+    while let Some(id) = frontier.pop() {
+        let current_depth: Option<i64> =
+            sqlx::query_scalar("SELECT depth FROM agents WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(backend_error)?;
+        if let Some(depth) = current_depth {
+            let new_depth = depth + delta;
+            if new_depth < 0 || new_depth > max_depth {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::HierarchyViolation {
+                        reason: "depth_exceeded".to_string(),
+                        references: Vec::new(),
+                    },
+                });
+            }
+            sqlx::query("UPDATE agents SET depth = ? WHERE id = ?")
+                .bind(new_depth)
+                .bind(id)
+                .execute(&mut **tx)
+                .await
+                .map_err(backend_error)?;
+            let children: Vec<(i64,)> =
+                sqlx::query_as("SELECT id FROM agents WHERE parent_agent_id = ?")
+                    .bind(id)
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(backend_error)?;
+            for (child_id,) in children {
+                frontier.push(child_id);
+            }
+        }
+    }
+    Ok(())
 }

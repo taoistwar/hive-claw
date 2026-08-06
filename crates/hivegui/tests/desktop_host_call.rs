@@ -4,32 +4,36 @@ use hivegui::runtime::{DesktopHostDispatcher, PluginExecutor};
 
 #[tokio::test]
 async fn host_call_uses_standard_permission_and_unknown_capability_errors() {
-    let denied = DesktopHostDispatcher::dispatch(
-        r#"{"capability":"network.http","args":{"method":"GET","url":"http://127.0.0.1"}}"#,
-        &[],
-    )
-    .await;
+    let dispatcher = DesktopHostDispatcher::default();
+    let denied = dispatcher
+        .dispatch(
+            r#"{"capability":"network.http","args":{"method":"GET","url":"http://127.0.0.1"}}"#,
+            &[],
+        )
+        .await;
     let denied: serde_json::Value = serde_json::from_str(&denied).expect("parse denied reply");
     assert_eq!(denied["ok"], false);
     assert_eq!(denied["code"], 4030);
     assert!(denied.get("data").is_none());
 
-    let wrong_name = DesktopHostDispatcher::dispatch(
-        r#"{"capability":"network.http","args":{}}"#,
-        &["net".to_string()],
-    )
-    .await;
+    let wrong_name = dispatcher
+        .dispatch(
+            r#"{"capability":"network.http","args":{}}"#,
+            &["net".to_string()],
+        )
+        .await;
     let wrong_name: serde_json::Value =
         serde_json::from_str(&wrong_name).expect("parse wrong-name reply");
     let message = wrong_name["message"].as_str().expect("denial message");
     assert!(message.contains("network.http"));
     assert!(message.contains("当前已选 Capability：net"));
 
-    let unknown = DesktopHostDispatcher::dispatch(
-        r#"{"capability":"unknown.capability","args":{}}"#,
-        &["unknown.capability".to_string()],
-    )
-    .await;
+    let unknown = dispatcher
+        .dispatch(
+            r#"{"capability":"unknown.capability","args":{}}"#,
+            &["unknown.capability".to_string()],
+        )
+        .await;
     let unknown: serde_json::Value = serde_json::from_str(&unknown).expect("parse unknown reply");
     assert_eq!(unknown["ok"], false);
     assert_eq!(unknown["code"], 4045);
@@ -62,7 +66,9 @@ async fn network_http_capability_forwards_the_request_and_response() {
         }
     })
     .to_string();
-    let reply = DesktopHostDispatcher::dispatch(&envelope, &["network.http".to_string()]).await;
+    let reply = DesktopHostDispatcher::default()
+        .dispatch(&envelope, &["network.http".to_string()])
+        .await;
     server.await.expect("test server completes");
 
     let reply: serde_json::Value = serde_json::from_str(&reply).expect("parse host reply");

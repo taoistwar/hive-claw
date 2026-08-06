@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-HiveClaw is a multi-agent AI platform with a web admin center, plugin/WASM runtime, and desktop GUI. The backend is a Rust monorepo with a React/TypeScript admin frontend (`web-admin/`).
+HiveClaw is a multi-agent AI platform with a web admin center, plugin/WASM runtime, and desktop GUI. The backend is a Rust monorepo with a React/TypeScript admin frontend (`web-admin/`). HiveWeb is the cloud-hosted Agent and HiveGUI is an independent desktop-local Agent: they may reuse compile-time code and contracts, but HiveGUI must never request or fall back to HiveWeb.
 
 ## Build & Test Commands
 
@@ -51,7 +51,7 @@ cargo check -p hiveweb
 | `hiveweb` | **Admin center backend** — Axum HTTP server, REST API, orchestrator, runtime |
 | `agent` | **Agent framework** — AgentLoop, AgentContext (state carrier), tools, hooks |
 | `providers` | **LLM abstraction** — OpenAI/Anthropic/DeepSeek providers, streaming, retry |
-| `hivegui` | Desktop GUI (gpui-based, needs system libraries) |
+| `hivegui` | Independent desktop-local Agent (gpui-based, needs system libraries; no HiveWeb runtime dependency) |
 | `hiveclaw` | OpenResponses-compatible agent placeholder |
 | `cli` | CLI entry point (default workspace member) |
 | `nanobot` | Legacy Python-based agent (Docker, being phased out) |
@@ -115,4 +115,4 @@ Workflow nodes resolve input via `input_mapping` (stored in `node_config.input_m
 
 - Branch naming: `NNN-feature-name` (e.g., `004-agent-runtime`)
 - Feature specs live in `specs/<NNN-feature-name>/` with spec.md, plan.md, tasks.md
-- Constitution at `.specify/memory/constitution.md` (v1.3.0) — authoritative governance
+- Constitution at `.specify/memory/constitution.md` (v1.4.0) — authoritative governance

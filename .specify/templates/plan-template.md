@@ -19,7 +19,7 @@
 
 **Language/Version**: [e.g., Rust 1.85 (backend), TypeScript 5.x (frontend) or NEEDS CLARIFICATION]
 **Primary Dependencies**: [e.g., gpui (desktop), React (web), axum (API) or NEEDS CLARIFICATION]
-**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
+**Storage / Runtime Profile**: [e.g., HiveWeb MySQL 8.0+/Redis/Rustfs; HiveGUI desktop-local SQLite/encrypted sessions/managed files; or N/A]
 **Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]
 **Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
 **Project Type**: [e.g., library/cli/web-service/mobile-app/compiler/desktop-app or NEEDS CLARIFICATION]
@@ -31,7 +31,10 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+[Gates determined based on constitution file. Explicitly identify the selected
+Technology Stack profile, strict TDD Red/review/Green sequencing, tracked
+performance baselines and the >10% regression gate, required CI checks, and
+every mandatory safeguard or deviation.]
 
 ## Project Structure
 
@@ -96,9 +99,11 @@ directories captured above]
 
 ## Complexity Tracking
 
-> **Fill ONLY if Constitution Check has violations that must be justified**
+> **Fill ONLY if Constitution Check has deviations that must be justified.**
+> Choices explicitly authorized by a named Technology Stack profile belong in
+> the Constitution Check with safeguard evidence, not in this table.
 
-| Violation | Why Needed | Simpler Alternative Rejected Because |
-|-----------|------------|-------------------------------------|
-| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
-| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+| Deviation | Why Needed | Simpler Alternative Rejected Because | Maintenance / Review-Expertise Impact |
+|-----------|------------|-------------------------------------|---------------------------------------|
+| [e.g., 4th project] | [current need] | [why 3 projects insufficient] | [owner, upgrade burden, required reviewers] |
+| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] | [long-term maintenance and review impact] |

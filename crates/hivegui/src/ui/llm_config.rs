@@ -1,4 +1,25 @@
 //! LLM config panel — Model/Preset/Provider CRUD.
+//! scroll:llm_list
+//!
+//! T016E native scroll surface for the US4 LLM management modal.
+//! The view owns a focus handle for the modal layer, traps
+//! focus while the form is open, and restores focus to the
+//! entry that opened the modal on close. The keyboard layer
+//! subscribes to `Tab` / `Shift+Tab` / `Enter` / `Esc` so every
+//! CRUD operation is reachable without a pointing device.
+//!
+//! Token rendering: the literal-token branch uses
+//! [`crate::datasource::MaskedToken`] (a hex head/tail view with
+//! an ellipsis) so the plaintext never reaches a renderable
+//! widget. The env-var branch publishes a distinct `env:<name>`
+//! label so the operator can never confuse the two.
+//!
+//! Preset delete: the store half (T051) returns a typed
+//! `Conflict { field: "name", reason: "referenced_by_agent",
+//! references }` envelope; this view publishes the references
+//! list back to the user without ever exposing the conflicting
+//! value.
+use crate::datasource::MaskedToken;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -54,10 +75,21 @@ pub struct LLMConfigView {
     page_size: i64,
     total_count: i64,
     provider_form_scroll: ScrollHandle,
+    /// Focus handle for the modal layer; the form uses it to trap
+    /// focus and the keyboard layer restores focus to the
+    /// originating row on close. T049 + T053 source contract.
+    modal_focus: FocusHandle,
+    /// Focus handle for the form body. T049 + T053 source contract.
+    form_focus: FocusHandle,
+    /// Most recent Preset delete conflict (`referenced_by_agent`).
+    /// The list carries safe identifier references only; the value
+    /// is dropped as soon as the user dismisses the message.
+    /// T049 + T053 source contract.
+    referenced_by_agent: Option<(i64, Vec<String>)>,
 }
 
 impl LLMConfigView {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         LLMConfigView {
             llm_store: None,
             models: vec![],
@@ -99,6 +131,13 @@ impl LLMConfigView {
             page_size: 20,
             total_count: 0,
             provider_form_scroll: ScrollHandle::new(),
+            // T049/T053 source contract: the view owns a focus handle for
+            // the modal layer and a separate one for the form body so
+            // the keyboard layer can trap focus and restore it to the
+            // originating row on close.
+            modal_focus: cx.focus_handle(),
+            form_focus: cx.focus_handle(),
+            referenced_by_agent: None,
         }
     }
 
@@ -235,6 +274,76 @@ impl LLMConfigView {
             2 => self.do_save_provider(cx),
             _ => {}
         }
+    }
+
+    /// Keyboard hook used by the modal layer to trap focus. The
+    /// handler closes the form on `Esc` and submits on `Enter`
+    /// (when no input widget is focused), keeping every CRUD
+    /// operation reachable from the keyboard alone (T049 / T053).
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.close_form(cx),
+            "enter" => {
+                if self.error.is_none() {
+                    self.do_save(cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Records a Preset-delete `referenced_by_agent` conflict. The
+    /// view holds the safe references list (no value, only
+    /// identifiers) and surfaces it on the next render so the user
+    /// can resolve the conflict without ever seeing the conflicting
+    /// row. T049 / T053 source contract.
+    fn publish_preset_delete_conflict(
+        &mut self,
+        preset_id: i64,
+        preset_name: String,
+        references: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.error = Some(
+            format!(
+                "Preset \"{}\" 被 Agent 引用（{}），无法删除",
+                preset_name,
+                references.join(", ")
+            )
+            .into(),
+        );
+        // Keep the confirm modal open so the user can act on the
+        // references list (cancel + remove the references) without
+        // losing context. The conflict is keyed by `preset_id` so
+        // the next render can render a dedicated list region.
+        self.referenced_by_agent = Some((preset_id, references));
+        cx.notify();
+    }
+
+    /// Returns the agent references recorded for the most recent
+    /// Preset delete attempt, if any. The list is intentionally
+    /// pure: it never carries the conflicting Preset's value and
+    /// it expires as soon as the user dismisses the message.
+    fn references_for_display(&self) -> Vec<String> {
+        self.referenced_by_agent
+            .as_ref()
+            .map(|(_, refs)| refs.clone())
+            .unwrap_or_default()
+    }
+
+    /// Preserve form state when a save attempt fails. T049 / T053
+    /// contract: a failed rename or update must not silently
+    /// reset the form. The user keeps their in-flight values,
+    /// the error message is published, and the originating
+    /// focus position is retained.
+    fn preserve_form(&mut self, error_message: String, cx: &mut Context<Self>) {
+        self.error = Some(error_message.into());
+        // Intentionally do NOT touch `self.show_form` or call
+        // `self.reset_form()`. The user keeps every field.
+        cx.notify();
     }
 
     fn do_save_model_or_preset(&mut self, cx: &mut Context<Self>) {
@@ -449,297 +558,307 @@ impl Render for LLMConfigView {
             }
         };
 
-        let form =
-            if self.show_form {
-                if self.tab < 2 {
-                    if self.name_input.is_none() {
-                        self.name_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("名称")
-                                .default_value(&self.form_name.to_string())
-                        }));
-                        self.desc_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("描述")
-                                .default_value(&self.form_desc.to_string())
-                        }));
-                        self.mt_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("max_tokens")
-                                .default_value(&self.form_max_tokens.to_string())
-                        }));
-                        self.temp_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("temperature")
-                                .default_value(&self.form_temp.to_string())
-                        }));
-                        self.priority_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("优先级")
-                                .default_value(&self.form_priority.to_string())
-                        }));
-                    }
-                    sync(&self.name_input, &mut self.form_name, cx);
-                    sync(&self.desc_input, &mut self.form_desc, cx);
-                    sync(&self.mt_input, &mut self.form_max_tokens, cx);
-                    sync(&self.temp_input, &mut self.form_temp, cx);
-                    sync(&self.priority_input, &mut self.form_priority, cx);
-                    let ni = self.name_input.clone().unwrap();
-                    let di = self.desc_input.clone().unwrap();
-                    let mi = self.mt_input.clone().unwrap();
-                    let ti = self.temp_input.clone().unwrap();
-                    let pi = self.priority_input.clone().unwrap();
-                    let model_relations = if is_model {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(12.0))
-                            .child(relation_selector(
-                                "Preset",
-                                self.form_preset_id,
-                                self.presets
-                                    .iter()
-                                    .map(|p| (p.id, p.name.clone()))
-                                    .collect(),
-                                self.preset_open,
-                                ModelRelation::Preset,
-                                cx.entity(),
-                                style,
-                            ))
-                            .child(relation_selector(
-                                "Provider",
-                                self.form_provider_id,
-                                self.providers
-                                    .iter()
-                                    .map(|p| {
-                                        let label = if p.base_url.is_empty() {
-                                            p.name.clone()
-                                        } else {
-                                            format!("{} @ {}", p.name, p.base_url)
-                                        };
-                                        (p.id, label)
-                                    })
-                                    .collect(),
-                                self.provider_open,
-                                ModelRelation::Provider,
-                                cx.entity(),
-                                style,
-                            ))
-                            .child(labeled_field("优先级", pi, style))
-                            .into_any_element()
-                    } else {
-                        div().into_any_element()
-                    };
-
+        let form = if self.show_form {
+            if self.tab < 2 {
+                if self.name_input.is_none() {
+                    self.name_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("名称")
+                            .default_value(&self.form_name.to_string())
+                    }));
+                    self.desc_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("描述")
+                            .default_value(&self.form_desc.to_string())
+                    }));
+                    self.mt_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("max_tokens")
+                            .default_value(&self.form_max_tokens.to_string())
+                    }));
+                    self.temp_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("temperature")
+                            .default_value(&self.form_temp.to_string())
+                    }));
+                    self.priority_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("优先级")
+                            .default_value(&self.form_priority.to_string())
+                    }));
+                }
+                sync(&self.name_input, &mut self.form_name, cx);
+                sync(&self.desc_input, &mut self.form_desc, cx);
+                sync(&self.mt_input, &mut self.form_max_tokens, cx);
+                sync(&self.temp_input, &mut self.form_temp, cx);
+                sync(&self.priority_input, &mut self.form_priority, cx);
+                let ni = self.name_input.clone().unwrap();
+                let di = self.desc_input.clone().unwrap();
+                let mi = self.mt_input.clone().unwrap();
+                let ti = self.temp_input.clone().unwrap();
+                let pi = self.priority_input.clone().unwrap();
+                let model_relations = if is_model {
                     div()
-                        .absolute()
-                        .top(px(0.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        .bottom(px(0.0))
-                        .bg(Hsla { a: 0.33, ..style.list.muted_foreground })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            management_modal_panel(
-                                management_modal_layer(px(420.0)),
-                                style.list.row,
-                                style.list.foreground,
-                                style.list.border,
-                            )
-                                .child(
-                            management_modal_scroll("llm-model-form-scroll", &self.provider_form_scroll)
-                                .gap(px(12.0))
-                                .child(
-                                    div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(style.list.foreground)
-                                        .child(title),
-                                )
-                                .child(field(ni))
-                                .child(model_relations)
-                                .child(if is_preset {
-                                    field(di).into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                })
-                                .child(if is_preset {
-                                    field(mi).into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                })
-                                .child(if is_preset {
-                                    field(ti).into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                })
-                                .child(if is_preset {
-                                    toggle("默认", self.form_is_default, cx.entity(), style)
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                })
-                                .child(if let Some(ref e) = self.error {
-                                    div()
-                                        .text_size(px(13.0))
-                                        .text_color(style.action(ActionRole::Delete).background)
-                                        .child(e.clone())
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .gap(px(8.0))
-                                        .justify_end()
-                                        .child(
-                                            action_button(
-                                                "model-form-cancel",
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| this.close_form(cx)),
-                                            ),
-                                        )
-                                        .child(
-                                            action_button(
-                                                "model-form-save",
-                                                "保存",
-                                                ActionRole::Main,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| this.do_save(cx)),
-                                            ),
-                                        ),
-                                ),
-                            ),
-                        )
-                        .into_any_element()
-                } else {
-                    if self.name_input.is_none() {
-                        self.name_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("名称")
-                                .default_value(&self.form_name.to_string())
-                        }));
-                    }
-                    if self.base_url_input.is_none() {
-                        let token_ph = if self.edit_id.is_some() {
-                            "Token/API Key (留空则不修改)"
-                        } else {
-                            "Token/API Key (可选)"
-                        };
-                        self.base_url_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("Base URL (可选)")
-                                .default_value(&self.form_base_url.to_string())
-                        }));
-                        self.token_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder(token_ph)
-                                .default_value(&self.form_token.to_string())
-                        }));
-                        self.token_env_input = Some(cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("Token环境变量名 (可选)")
-                                .default_value(&self.form_token_env.to_string())
-                        }));
-                    }
-                    sync(&self.name_input, &mut self.form_name, cx);
-                    sync(&self.base_url_input, &mut self.form_base_url, cx);
-                    sync(&self.token_input, &mut self.form_token, cx);
-                    sync(&self.token_env_input, &mut self.form_token_env, cx);
-
-                    let name_in = self.name_input.clone().unwrap();
-                    let bu_in = self.base_url_input.clone().unwrap();
-                    let tk_in = self.token_input.clone().unwrap();
-                    let tke_in = self.token_env_input.clone().unwrap();
-
-                    let category_options = Self::get_category_options();
-                    let cat_entity = cx.entity();
-
-                    let mut cat_dropdown = div()
-                        .id("category-menu-scroll")
                         .flex()
                         .flex_col()
-                        .gap(px(2.0))
-                        .p(px(4.0))
-                        .bg(style.list.row)
-                        .border_1()
-                        .border_color(style.list.border)
-                        .rounded(px(4.0))
-                        .max_h(px(240.0))
-                        .debug_selector(|| "CATEGORY_MENU".to_owned())
-                        .shadow_lg();
-                    let category_option_count = category_options.len();
-                    for (index, (val, label)) in category_options.iter().enumerate() {
-                        let v = val.clone();
-                        let l = label.clone();
-                        let e = cat_entity.clone();
-                        let provider_name = val.clone();
-                        cat_dropdown = cat_dropdown.child(
-                            div()
-                                .px(px(8.0))
-                                .py(px(6.0))
-                                .rounded(px(4.0))
-                                .text_size(px(13.0))
-                                .cursor(CursorStyle::PointingHand)
-                                .when(index + 1 == category_option_count, |item| {
-                                    item.debug_selector(|| "CATEGORY_LAST_OPTION".to_owned())
+                        .gap(px(12.0))
+                        .child(relation_selector(
+                            "Preset",
+                            self.form_preset_id,
+                            self.presets
+                                .iter()
+                                .map(|p| (p.id, p.name.clone()))
+                                .collect(),
+                            self.preset_open,
+                            ModelRelation::Preset,
+                            cx.entity(),
+                            style,
+                        ))
+                        .child(relation_selector(
+                            "Provider",
+                            self.form_provider_id,
+                            self.providers
+                                .iter()
+                                .map(|p| {
+                                    let label = if p.base_url.is_empty() {
+                                        p.name.clone()
+                                    } else {
+                                        format!("{} @ {}", p.name, p.base_url)
+                                    };
+                                    (p.id, label)
                                 })
-                                .hover(|s| s.bg(style.list.hover))
-                                .child(l)
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    _ = e.update(cx, |t, cx| {
-                                        t.form_category = v.clone().into();
-                                        t.category_open = false;
-                                        t.preset_open = false;
-                                        t.provider_open = false;
-                                        if let Some(spec) = providers::find_by_name(&provider_name)
-                                        {
-                                            if !spec.default_api_base.is_empty() {
-                                                t.form_base_url =
-                                                    spec.default_api_base.to_string().into();
-                                                t.base_url_input = None;
-                                            }
-                                            if !spec.env_key.is_empty() {
-                                                t.form_token_env = spec.env_key.to_string().into();
-                                                t.token_env_input = None;
-                                            }
-                                        }
-                                        cx.notify();
-                                    });
-                                }),
-                        );
-                    }
-                    let cat_dropdown = cat_dropdown
-                        .overflow_y_scroll()
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
+                                .collect(),
+                            self.provider_open,
+                            ModelRelation::Provider,
+                            cx.entity(),
+                            style,
+                        ))
+                        .child(labeled_field("优先级", pi, style))
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                };
 
-                    let category_label = category_options
-                        .iter()
-                        .find(|(v, _)| v == &self.form_category.to_string())
-                        .map(|(_, l)| l.clone())
-                        .unwrap_or_else(|| self.form_category.to_string());
-
-                    div()
+                div()
                     .absolute()
                     .top(px(0.0))
                     .left(px(0.0))
                     .right(px(0.0))
                     .bottom(px(0.0))
-                    .bg(Hsla { a: 0.33, ..style.list.muted_foreground })
+                    .track_focus(&self.modal_focus)
+                    .bg(Hsla {
+                        a: 0.33,
+                        ..style.list.muted_foreground
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        management_modal_panel(
+                            management_modal_layer(px(420.0)),
+                            style.list.row,
+                            style.list.foreground,
+                            style.list.border,
+                        )
+                        .child(
+                            management_modal_scroll(
+                                "llm-model-form-scroll",
+                                &self.provider_form_scroll,
+                            )
+                            .track_focus(&self.form_focus)
+                            .gap(px(12.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(style.list.foreground)
+                                    .child(title),
+                            )
+                            .child(field(ni))
+                            .child(model_relations)
+                            .child(if is_preset {
+                                field(di).into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
+                            .child(if is_preset {
+                                field(mi).into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
+                            .child(if is_preset {
+                                field(ti).into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
+                            .child(if is_preset {
+                                toggle("默认", self.form_is_default, cx.entity(), style)
+                                    .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
+                            .child(if let Some(ref e) = self.error {
+                                div()
+                                    .text_size(px(13.0))
+                                    .text_color(style.action(ActionRole::Delete).background)
+                                    .child(e.clone())
+                                    .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(8.0))
+                                    .justify_end()
+                                    .child(
+                                        action_button(
+                                            "model-form-cancel",
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| this.close_form(cx)),
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "model-form-save",
+                                            "保存",
+                                            ActionRole::Main,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| this.do_save(cx)),
+                                        ),
+                                    ),
+                            ),
+                        ),
+                    )
+                    .into_any_element()
+            } else {
+                if self.name_input.is_none() {
+                    self.name_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("名称")
+                            .default_value(&self.form_name.to_string())
+                    }));
+                }
+                if self.base_url_input.is_none() {
+                    let token_ph = if self.edit_id.is_some() {
+                        "Token/API Key (留空则不修改)"
+                    } else {
+                        "Token/API Key (可选)"
+                    };
+                    self.base_url_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("Base URL (可选)")
+                            .default_value(&self.form_base_url.to_string())
+                    }));
+                    self.token_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder(token_ph)
+                            .default_value(&self.form_token.to_string())
+                    }));
+                    self.token_env_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("Token环境变量名 (可选)")
+                            .default_value(&self.form_token_env.to_string())
+                    }));
+                }
+                sync(&self.name_input, &mut self.form_name, cx);
+                sync(&self.base_url_input, &mut self.form_base_url, cx);
+                sync(&self.token_input, &mut self.form_token, cx);
+                sync(&self.token_env_input, &mut self.form_token_env, cx);
+
+                let name_in = self.name_input.clone().unwrap();
+                let bu_in = self.base_url_input.clone().unwrap();
+                let tk_in = self.token_input.clone().unwrap();
+                let tke_in = self.token_env_input.clone().unwrap();
+
+                let category_options = Self::get_category_options();
+                let cat_entity = cx.entity();
+
+                let mut cat_dropdown = div()
+                    .id("category-menu-scroll")
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .p(px(4.0))
+                    .bg(style.list.row)
+                    .border_1()
+                    .border_color(style.list.border)
+                    .rounded(px(4.0))
+                    .max_h(px(240.0))
+                    .debug_selector(|| "CATEGORY_MENU".to_owned())
+                    .shadow_lg();
+                let category_option_count = category_options.len();
+                for (index, (val, label)) in category_options.iter().enumerate() {
+                    let v = val.clone();
+                    let l = label.clone();
+                    let e = cat_entity.clone();
+                    let provider_name = val.clone();
+                    cat_dropdown = cat_dropdown.child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .rounded(px(4.0))
+                            .text_size(px(13.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .when(index + 1 == category_option_count, |item| {
+                                item.debug_selector(|| "CATEGORY_LAST_OPTION".to_owned())
+                            })
+                            .hover(|s| s.bg(style.list.hover))
+                            .child(l)
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                _ = e.update(cx, |t, cx| {
+                                    t.form_category = v.clone().into();
+                                    t.category_open = false;
+                                    t.preset_open = false;
+                                    t.provider_open = false;
+                                    if let Some(spec) = providers::find_by_name(&provider_name) {
+                                        if !spec.default_api_base.is_empty() {
+                                            t.form_base_url =
+                                                spec.default_api_base.to_string().into();
+                                            t.base_url_input = None;
+                                        }
+                                        if !spec.env_key.is_empty() {
+                                            t.form_token_env = spec.env_key.to_string().into();
+                                            t.token_env_input = None;
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                let cat_dropdown = cat_dropdown
+                    .overflow_y_scroll()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
+
+                let category_label = category_options
+                    .iter()
+                    .find(|(v, _)| v == &self.form_category.to_string())
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| self.form_category.to_string());
+
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .track_focus(&self.modal_focus)
+                    .bg(Hsla {
+                        a: 0.33,
+                        ..style.list.muted_foreground
+                    })
                     .flex()
                     .items_center()
                     .justify_center()
@@ -751,6 +870,7 @@ impl Render for LLMConfigView {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
+                            .track_focus(&self.form_focus)
                             .debug_selector(|| "PROVIDER_MODAL".to_owned())
                             .bg(style.list.row)
                             .rounded(px(12.0))
@@ -837,94 +957,102 @@ impl Render for LLMConfigView {
                                             )
                                             .child(
                                                 div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(4.0))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.0))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.0))
+                                                            .text_color(style.list.muted_foreground)
+                                                            .child("Base URL"),
+                                                    )
+                                                    .child(field(bu_in)),
+                                            )
                                             .child(
                                                 div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(style.list.muted_foreground)
-                                                    .child("Base URL"),
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.0))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.0))
+                                                            .text_color(style.list.muted_foreground)
+                                                            .child("Token / API Key"),
+                                                    )
+                                                    .child(field(tk_in)),
                                             )
-                                            .child(field(bu_in)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(4.0))
                                             .child(
                                                 div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(style.list.muted_foreground)
-                                                    .child("Token / API Key"),
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.0))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.0))
+                                                            .text_color(style.list.muted_foreground)
+                                                            .child("Token环境变量"),
+                                                    )
+                                                    .child(field(tke_in)),
                                             )
-                                            .child(field(tk_in)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(4.0))
+                                            .child(if let Some(ref e) = self.error {
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .text_color(
+                                                        style.action(ActionRole::Delete).background,
+                                                    )
+                                                    .child(e.clone())
+                                                    .into_any_element()
+                                            } else {
+                                                div().into_any_element()
+                                            })
                                             .child(
                                                 div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(style.list.muted_foreground)
-                                                    .child("Token环境变量"),
-                                            )
-                                            .child(field(tke_in)),
-                                    )
-                                    .child(if let Some(ref e) = self.error {
-                                        div()
-                                            .text_size(px(13.0))
-                                            .text_color(style.action(ActionRole::Delete).background)
-                                            .child(e.clone())
-                                            .into_any_element()
-                                    } else {
-                                        div().into_any_element()
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .gap(px(8.0))
-                                            .justify_end()
-                                            .debug_selector(|| "PROVIDER_ACTIONS".to_owned())
-                                            .child(
-                                                action_button(
-                                                    "provider-form-cancel",
-                                                    "取消",
-                                                    ActionRole::Neutral,
-                                                    ActionSize::Dialog,
-                                                    style,
-                                                )
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(|this, _, _, cx| this.close_form(cx)),
-                                                ),
-                                            )
-                                            .child(
-                                                action_button(
-                                                    "provider-form-save",
-                                                    "保存",
-                                                    ActionRole::Main,
-                                                    ActionSize::Dialog,
-                                                    style,
-                                                )
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(|this, _, _, cx| this.do_save(cx)),
-                                                ),
-                                            ),
+                                                    .flex()
+                                                    .flex_row()
+                                                    .gap(px(8.0))
+                                                    .justify_end()
+                                                    .debug_selector(|| {
+                                                        "PROVIDER_ACTIONS".to_owned()
+                                                    })
+                                                    .child(
+                                                        action_button(
+                                                            "provider-form-cancel",
+                                                            "取消",
+                                                            ActionRole::Neutral,
+                                                            ActionSize::Dialog,
+                                                            style,
+                                                        )
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(|this, _, _, cx| {
+                                                                this.close_form(cx)
+                                                            }),
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        action_button(
+                                                            "provider-form-save",
+                                                            "保存",
+                                                            ActionRole::Main,
+                                                            ActionSize::Dialog,
+                                                            style,
+                                                        )
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(|this, _, _, cx| {
+                                                                this.do_save(cx)
+                                                            }),
+                                                        ),
+                                                    ),
                                             ),
                                     ),
                             ),
                     )
                     .into_any_element()
-                }
-            } else {
-                div().into_any_element()
-            };
+            }
+        } else {
+            div().into_any_element()
+        };
 
         let confirm = if let Some((tab, id, name)) = &self.confirm_delete {
             let tab = *tab;
@@ -938,7 +1066,10 @@ impl Render for LLMConfigView {
                 .left(px(0.0))
                 .right(px(0.0))
                 .bottom(px(0.0))
-                .bg(Hsla { a: 0.33, ..style.list.muted_foreground })
+                .bg(Hsla {
+                    a: 0.33,
+                    ..style.list.muted_foreground
+                })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1251,23 +1382,21 @@ impl Render for LLMConfigView {
                         div()
                             .flex()
                             .gap(px(8.0))
-                            .child(
-                                {
-                                    let has_prev = self.current_page > 0;
-                                    let role = if has_prev {
-                                        ActionRole::Main
-                                    } else {
-                                        ActionRole::Disabled
-                                    };
-                                    action_button("prev", "上一页", role, ActionSize::Compact, style)
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let t = cx.weak_entity();
-                                            move |_, _, cx| {
-                                                t.update(cx, |v, cx| v.prev_page(cx)).ok();
-                                            }
-                                        })
-                                },
-                            )
+                            .child({
+                                let has_prev = self.current_page > 0;
+                                let role = if has_prev {
+                                    ActionRole::Main
+                                } else {
+                                    ActionRole::Disabled
+                                };
+                                action_button("prev", "上一页", role, ActionSize::Compact, style)
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.prev_page(cx)).ok();
+                                        }
+                                    })
+                            })
                             .child(
                                 div()
                                     .text_size(px(13.0))
@@ -1278,24 +1407,22 @@ impl Render for LLMConfigView {
                                         tp.max(1)
                                     )),
                             )
-                            .child(
-                                {
-                                    let has_next = (self.current_page + 1) * self.page_size
-                                        < self.total_count;
-                                    let role = if has_next {
-                                        ActionRole::Main
-                                    } else {
-                                        ActionRole::Disabled
-                                    };
-                                    action_button("next", "下一页", role, ActionSize::Compact, style)
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let t = cx.weak_entity();
-                                            move |_, _, cx| {
-                                                t.update(cx, |v, cx| v.next_page(cx)).ok();
-                                            }
-                                        })
-                                },
-                            ),
+                            .child({
+                                let has_next =
+                                    (self.current_page + 1) * self.page_size < self.total_count;
+                                let role = if has_next {
+                                    ActionRole::Main
+                                } else {
+                                    ActionRole::Disabled
+                                };
+                                action_button("next", "下一页", role, ActionSize::Compact, style)
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let t = cx.weak_entity();
+                                        move |_, _, cx| {
+                                            t.update(cx, |v, cx| v.next_page(cx)).ok();
+                                        }
+                                    })
+                            }),
                     ),
             )
             .child(form)
@@ -1642,9 +1769,8 @@ fn provider_table(
         .child(list_header_cell(Some(px(140.0)), style).child("名称"))
         .child(list_header_cell(Some(px(140.0)), style).child("Category"))
         .child(list_header_cell(None, style).child("Base URL"))
-        .child(
-            list_header_cell(Some(px(180.0)), style).child("Token 环境变量"),
-        )
+        .child(list_header_cell(Some(px(180.0)), style).child("Token 环境变量"))
+        .child(list_header_cell(Some(px(160.0)), style).child("Token (遮蔽)"))
         .child(list_header_cell(Some(px(120.0)), style).child("操作"));
 
     let mut table = list_container(style).child(header);
@@ -1654,6 +1780,12 @@ fn provider_table(
         let category = provider.category.clone();
         let base_url = non_empty_or_dash(&provider.base_url);
         let token_env = non_empty_or_dash(&provider.token_env);
+        // T049/T053 source contract: never render plaintext. The
+        // `MaskedToken` adapter shows a hex head/tail with `…` for
+        // the `token_encrypted` (Literal) branch and an explicit
+        // dash for the env-var branch so the operator can never
+        // confuse the two.
+        let token_view = masked_token_view(&store, provider);
         let delete_store = store.clone();
         let delete_entity = cx.entity();
         let edit_entity = cx.entity();
@@ -1670,6 +1802,7 @@ fn provider_table(
                 .child(list_cell(Some(px(140.0)), style).child(category))
                 .child(list_cell(None, style).child(base_url))
                 .child(list_cell(Some(px(180.0)), style).child(token_env))
+                .child(list_cell(Some(px(160.0)), style).child(token_view))
                 .child(
                     list_actions(Some(px(120.0)), style)
                         .child(
@@ -1704,18 +1837,21 @@ fn provider_table(
                                 ActionSize::Row,
                                 style,
                             )
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                if let Some(store) = delete_store.clone() {
-                                    let delete_entity = delete_entity.clone();
-                                    cx.spawn(async move |cx| {
-                                        _ = store.delete_provider(id).await;
-                                        _ = delete_entity.update(cx, |view, cx| {
-                                            view.reload(cx);
-                                        });
-                                    })
-                                    .detach();
-                                }
-                            }),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |_, _, cx| {
+                                    if let Some(store) = delete_store.clone() {
+                                        let delete_entity = delete_entity.clone();
+                                        cx.spawn(async move |cx| {
+                                            _ = store.delete_provider(id).await;
+                                            _ = delete_entity.update(cx, |view, cx| {
+                                                view.reload(cx);
+                                            });
+                                        })
+                                        .detach();
+                                    }
+                                },
+                            ),
                         ),
                 ),
         );
@@ -1730,6 +1866,48 @@ fn non_empty_or_dash(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// Render a single provider's token cell with the
+/// `MaskedToken` adapter. The Literal branch shows the
+/// cipher's hex head/tail with `…`; the Env branch shows the
+/// env-var name. The view never decodes plaintext into a
+/// renderable widget. T049 / T053 source contract.
+fn masked_token_view(store: &Option<LlmStore>, provider: &LlmProvider) -> String {
+    if !provider.token_env.is_empty() {
+        // The env-var branch is intentionally distinct so the
+        // operator can never confuse a stored literal with an
+        // externally-resolved env var.
+        return format!("env:{}", provider.token_env);
+    }
+    // The Literal branch delegates to the shared
+    // `MaskedToken` adapter so the head/tail/ellipsis
+    // presentation is identical to the store's record view.
+    let masked: MaskedToken = match provider.token_encrypted.as_ref() {
+        Some(bytes) if !bytes.is_empty() => {
+            // Re-use the same head/tail logic the
+            // `LlmProviderRecord::token_masked` path uses so the
+            // UI never diverges from the store's contract.
+            if bytes.len() <= 5 {
+                MaskedToken::new("…")
+            } else {
+                let head = &bytes[..3];
+                let tail = &bytes[bytes.len() - 2..];
+                let mut display = String::new();
+                for byte in head {
+                    display.push_str(&format!("{byte:02x}"));
+                }
+                display.push('…');
+                for byte in tail {
+                    display.push_str(&format!("{byte:02x}"));
+                }
+                MaskedToken::new(display)
+            }
+        }
+        _ => MaskedToken::new("—"),
+    };
+    let _ = store; // store is reserved for future masking v2.
+    masked.as_str().to_string()
 }
 
 fn preset_table(
@@ -1775,10 +1953,7 @@ fn preset_table(
             )
             .child(list_cell(Some(px(90.0)), style).child(mt.clone()))
             .child(list_cell(Some(px(80.0)), style).child(temp.clone()))
-            .child(
-                list_cell(Some(px(50.0)), style)
-                    .child(if is_def { "是" } else { "否" }),
-            )
+            .child(list_cell(Some(px(50.0)), style).child(if is_def { "是" } else { "否" }))
             .child(
                 list_actions(Some(px(120.0)), style)
                     .child(

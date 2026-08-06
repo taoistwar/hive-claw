@@ -6,17 +6,31 @@ mod tests {
     use crate::services::game_service::{
         create_game, delete_game, get_game_by_id, list_games, update_game,
     };
-    use crate::utils::error::AppError;
-    use sqlx::MySqlPool;
+
+    use sqlx::{
+        MySqlPool,
+        mysql::{MySqlConnectOptions, MySqlPoolOptions},
+    };
 
     const TEST_PREFIX: &str = "svc_test_";
 
+    // Opt-in legacy DB suite runbook:
+    //   Provision and migrate a disposable MySQL database using deployment
+    //   tooling that verifies the target and does not load a repository .env.
+    //   export TEST_DATABASE_URL='mysql://.../disposable_db'
+    //   cargo test -p hiveweb --lib services::game_service_test -- --ignored --test-threads=1
     async fn pool() -> MySqlPool {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "mysql://root:root@localhost:3306/hive_claw".to_string());
+        let url = std::env::var("TEST_DATABASE_URL")
+            .expect("legacy game DB tests require a disposable TEST_DATABASE_URL");
         sqlx::MySqlPool::connect(&url)
             .await
-            .expect("DB connect failed")
+            .expect("disposable test DB connect failed")
+    }
+
+    async fn closed_lazy_pool() -> MySqlPool {
+        let pool = MySqlPoolOptions::new().connect_lazy_with(MySqlConnectOptions::new());
+        pool.close().await;
+        pool
     }
 
     async fn cleanup(pool: &MySqlPool) {
@@ -35,7 +49,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_name_empty() {
-        let p = pool().await;
+        let p = closed_lazy_pool().await;
         let r = create_game(
             &p,
             CreateGameRequest {
@@ -50,7 +64,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_name_whitespace() {
-        let p = pool().await;
+        let p = closed_lazy_pool().await;
         let r = create_game(
             &p,
             CreateGameRequest {
@@ -65,7 +79,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_name_too_long() {
-        let p = pool().await;
+        let p = closed_lazy_pool().await;
         let r = create_game(
             &p,
             CreateGameRequest {
@@ -80,7 +94,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_aliases_empty() {
-        let p = pool().await;
+        let p = closed_lazy_pool().await;
         let r = create_game(
             &p,
             CreateGameRequest {
@@ -95,7 +109,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_alias_too_long() {
-        let p = pool().await;
+        let p = closed_lazy_pool().await;
         let r = create_game(
             &p,
             CreateGameRequest {
@@ -110,7 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_aliases_too_many() {
-        let p = pool().await;
+        let p = closed_lazy_pool().await;
         let aliases: Vec<_> = (0..21).map(|i| format!("a{}", i)).collect();
         let r = create_game(
             &p,
@@ -125,6 +139,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn create_success() {
         let p = pool().await;
         cleanup(&p).await;
@@ -144,6 +159,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn create_dedup_aliases() {
         let p = pool().await;
         cleanup(&p).await;
@@ -166,6 +182,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn create_dup_name() {
         let p = pool().await;
         cleanup(&p).await;
@@ -193,6 +210,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn create_dup_alias_global() {
         let p = pool().await;
         cleanup(&p).await;
@@ -220,6 +238,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn get_by_id_ok() {
         let p = pool().await;
         cleanup(&p).await;
@@ -239,12 +258,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn get_by_id_not_found() {
         let p = pool().await;
         assert!(get_game_by_id(&p, 999_999).await.unwrap().is_none());
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn list_empty() {
         let p = pool().await;
         let r = list_games(&p, 1, 10, Some("no_such_term_xyz"))
@@ -255,6 +276,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn list_search_by_alias() {
         let p = pool().await;
         cleanup(&p).await;
@@ -276,6 +298,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn list_pagination() {
         let p = pool().await;
         cleanup(&p).await;
@@ -308,6 +331,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn update_name_only() {
         let p = pool().await;
         cleanup(&p).await;
@@ -336,6 +360,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn update_aliases_only() {
         let p = pool().await;
         cleanup(&p).await;
@@ -363,6 +388,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn update_both() {
         let p = pool().await;
         cleanup(&p).await;
@@ -391,6 +417,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn update_no_fields() {
         let p = pool().await;
         cleanup(&p).await;
@@ -418,6 +445,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn update_not_found() {
         let p = pool().await;
         let r = update_game(
@@ -434,6 +462,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn update_dup_alias() {
         let p = pool().await;
         cleanup(&p).await;
@@ -470,6 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn delete_ok() {
         let p = pool().await;
         cleanup(&p).await;
@@ -488,6 +518,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn delete_cascade() {
         let p = pool().await;
         cleanup(&p).await;
@@ -512,6 +543,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a migrated disposable TEST_DATABASE_URL; run with --ignored --test-threads=1"]
     async fn delete_not_found() {
         let p = pool().await;
         assert!(!delete_game(&p, 999_999).await.unwrap());

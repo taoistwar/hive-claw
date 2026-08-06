@@ -355,18 +355,17 @@ pub async fn list_hooks_enriched(
                     .await
                     .unwrap_or(None);
             }
-        } else if hook.action_type == "call_workflow" {
-            if let Some(wid) = hook
+        } else if hook.action_type == "call_workflow"
+            && let Some(wid) = hook
                 .action_params
                 .get("workflow_id")
                 .and_then(|v| v.as_i64())
-            {
-                wf_name = sqlx::query_scalar("SELECT name FROM workflows WHERE id = ?")
-                    .bind(wid)
-                    .fetch_optional(pool)
-                    .await
-                    .unwrap_or(None);
-            }
+        {
+            wf_name = sqlx::query_scalar("SELECT name FROM workflows WHERE id = ?")
+                .bind(wid)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None);
         }
 
         enriched.push(AgentHookEnriched {

@@ -37,10 +37,7 @@ pub fn safe_filename(input: &str) -> String {
         return "upload.bin".into();
     }
     // Drop directory components (handle both separators).
-    let base = input
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(input);
+    let base = input.rsplit(['/', '\\']).next().unwrap_or(input);
     let cleaned = UNSAFE_CHARS.replace_all(base, "_").to_string();
     let trimmed = cleaned.trim_start_matches('.').trim();
     if trimmed.is_empty() {

@@ -81,9 +81,7 @@ impl FileTokenStorage {
             return Some(tok);
         }
         if self.import_codex_cli {
-            if let Some(tok) = read_codex_cli_token(&Self::codex_cli_path()) {
-                return Some(tok);
-            }
+            return read_codex_cli_token(&Self::codex_cli_path());
         }
         None
     }
@@ -244,8 +242,10 @@ mod tests {
 
     #[test]
     fn expired_detection_obeys_epoch() {
-        let mut t = OAuthToken::default();
-        t.expires = 1; // 1970
+        let mut t = OAuthToken {
+            expires: 1, // 1970
+            ..OAuthToken::default()
+        };
         assert!(t.is_expired());
         t.expires = 0;
         assert!(!t.is_expired());

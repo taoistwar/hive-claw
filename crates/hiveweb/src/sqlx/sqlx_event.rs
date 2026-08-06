@@ -1,10 +1,9 @@
 use std::borrow::BorrowMut;
 use tracing::field::{Field, Visit};
 
-/// Internal shared types for parsing sqlx::query tracing events.
-/// Not exposed in the public API — used by both `SqlxLayer` and `SlowQueryLayer`.
-
 /// Fields extracted from a `sqlx::query` tracing event.
+///
+/// Internal to the shared parser used by both `SqlxLayer` and `SlowQueryLayer`.
 #[derive(Debug, Default)]
 pub(crate) struct SqlxQueryFields {
     /// The query summary — first 4 words of the SQL statement.

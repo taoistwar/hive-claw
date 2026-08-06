@@ -267,7 +267,7 @@ impl RedisConfig {
 
 enum RedisClientInner {
     Direct(Client),
-    Sentinel(SentinelRedisClient),
+    Sentinel(Box<SentinelRedisClient>),
 }
 
 struct SentinelResolverConfig {
@@ -496,13 +496,13 @@ pub async fn create_client(config: RedisConfig) -> anyhow::Result<RedisClient> {
                     .context("Redis Sentinel master discovery timed out")?
                     .context("Redis Sentinel master discovery failed")?;
 
-            RedisClientInner::Sentinel(SentinelRedisClient::new(
+            RedisClientInner::Sentinel(Box::new(SentinelRedisClient::new(
                 resolver,
                 current_master,
                 preferred_node,
                 sentinel_refresh_interval,
                 sentinel_refresh_timeout,
-            ))
+            )))
         }
     };
     let client = RedisClient {

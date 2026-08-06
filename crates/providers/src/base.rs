@@ -215,7 +215,7 @@ fn sanitize_empty_content_one(mut msg: Value) -> Value {
                         && map
                             .get("text")
                             .and_then(|v| v.as_str())
-                            .map_or(true, |s| s.is_empty())
+                            .is_none_or(|s| s.is_empty())
                     {
                         changed = true;
                         continue;
@@ -336,13 +336,11 @@ pub fn enforce_role_alternation(messages: &[Value]) -> Vec<Value> {
             Some("user") | Some("tool")
         )
     });
-    if !merged.is_empty() && !has_user_or_tool {
-        if let Some(mut recovered) = last_popped {
-            if let Some(obj) = recovered.as_object_mut() {
-                obj.insert("role".into(), Value::String("user".into()));
-            }
-            merged.push(recovered);
+    if let Some(mut recovered) = last_popped.filter(|_| !merged.is_empty() && !has_user_or_tool) {
+        if let Some(obj) = recovered.as_object_mut() {
+            obj.insert("role".into(), Value::String("user".into()));
         }
+        merged.push(recovered);
     }
 
     // Ensure first non-system message isn't a bare assistant.
@@ -414,25 +412,29 @@ pub fn strip_image_content(messages: &[Value]) -> Option<Vec<Value>> {
 /// Mutates the content lists of the original message dicts so that
 /// callers holding references to those dicts also see the stripped
 /// version. Returns true if any images were found and replaced.
+#[expect(
+    clippy::ptr_arg,
+    reason = "public provider API accepts Vec to match mutable request message containers"
+)]
 pub fn strip_image_content_inplace(messages: &mut Vec<Value>) -> bool {
     let mut found = false;
     for msg in messages.iter_mut() {
-        if let Some(content) = msg.get_mut("content") {
-            if let Value::Array(blocks) = content {
-                for b in blocks.iter_mut() {
-                    if let Some(obj) = b.as_object_mut() {
-                        if obj.get("type").and_then(|v| v.as_str()) == Some("image_url") {
-                            found = true;
-                            let path = obj
-                                .get("_meta")
-                                .and_then(|m| m.get("path"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let placeholder = image_placeholder_text(path, "[image omitted]");
-                            *b = json!({"type": "text", "text": placeholder});
-                        }
-                    }
-                }
+        let Some(Value::Array(blocks)) = msg.get_mut("content") else {
+            continue;
+        };
+        for b in blocks.iter_mut() {
+            let Some(obj) = b.as_object_mut() else {
+                continue;
+            };
+            if obj.get("type").and_then(|v| v.as_str()) == Some("image_url") {
+                found = true;
+                let path = obj
+                    .get("_meta")
+                    .and_then(|m| m.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let placeholder = image_placeholder_text(path, "[image omitted]");
+                *b = json!({"type": "text", "text": placeholder});
             }
         }
     }
@@ -440,19 +442,30 @@ pub fn strip_image_content_inplace(messages: &mut Vec<Value>) -> bool {
 }
 
 /// Extract tool name from either OpenAI or Anthropic-style tool schemas.
+#[allow(
+    dead_code,
+    reason = "retained as the provider-neutral companion to cache marker selection"
+)]
 fn tool_name(tool: &Value) -> String {
     if let Some(name) = tool.get("name").and_then(|v| v.as_str()) {
         return name.to_string();
     }
-    if let Some(fn_obj) = tool.get("function").and_then(|v| v.as_object()) {
-        if let Some(fname) = fn_obj.get("name").and_then(|v| v.as_str()) {
-            return fname.to_string();
-        }
+    if let Some(fname) = tool
+        .get("function")
+        .and_then(|v| v.as_object())
+        .and_then(|fn_obj| fn_obj.get("name"))
+        .and_then(|v| v.as_str())
+    {
+        return fname.to_string();
     }
     String::new()
 }
 
 /// Return cache marker indices: builtin/MCP boundary and tail index.
+#[expect(
+    dead_code,
+    reason = "retained for provider-neutral builtin and MCP cache boundary selection"
+)]
 fn tool_cache_marker_indices(tools: &[Value]) -> Vec<usize> {
     if tools.is_empty() {
         return vec![];
@@ -485,20 +498,17 @@ pub fn sanitize_request_messages(
         .iter()
         .map(|msg| {
             if let Some(obj) = msg.as_object() {
-                let clean: Map<String, Value> = obj
+                let mut clean: Map<String, Value> = obj
                     .iter()
                     .filter(|(k, _)| allowed_keys.contains(*k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let mut clean_val = Value::Object(clean);
-                if let Some(obj) = clean_val.as_object_mut() {
-                    if obj.get("role").and_then(|v| v.as_str()) == Some("assistant")
-                        && !obj.contains_key("content")
-                    {
-                        obj.insert("content".into(), Value::Null);
-                    }
+                if clean.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                    && !clean.contains_key("content")
+                {
+                    clean.insert("content".into(), Value::Null);
                 }
-                clean_val
+                Value::Object(clean)
             } else {
                 msg.clone()
             }
@@ -523,12 +533,11 @@ pub fn extract_retry_after_from_headers(headers: &Value) -> Option<f64> {
         None
     }
 
-    if let Some(retry_ms_str) = header_value(headers, "retry-after-ms") {
-        if let Ok(value) = retry_ms_str.parse::<f64>() {
-            if value > 0.0 {
-                return Some(value / 1000.0);
-            }
-        }
+    if let Some(value) = header_value(headers, "retry-after-ms")
+        .and_then(|retry_ms_str| retry_ms_str.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+    {
+        return Some(value / 1000.0);
     }
 
     let retry_after_str = header_value(headers, "retry-after")?;
@@ -537,10 +546,8 @@ pub fn extract_retry_after_from_headers(headers: &Value) -> Option<f64> {
         return None;
     }
 
-    if retry_after_text.parse::<f64>().is_ok() {
-        if let Ok(seconds) = retry_after_text.parse::<f64>() {
-            return Some(to_retry_seconds(seconds, Some("s")));
-        }
+    if let Ok(seconds) = retry_after_text.parse::<f64>() {
+        return Some(to_retry_seconds(seconds, Some("s")));
     }
 
     None
@@ -722,15 +729,11 @@ fn to_retry_seconds(value: f64, unit: Option<&str>) -> f64 {
 
 /// Preferred delay source: explicit `error_retry_after_s` > `retry_after` > text.
 pub fn pick_delay(resp: &LLMResponse) -> Option<f64> {
-    if let Some(v) = resp.error_retry_after_s {
-        if v > 0.0 {
-            return Some(v);
-        }
+    if let Some(v) = resp.error_retry_after_s.filter(|v| *v > 0.0) {
+        return Some(v);
     }
-    if let Some(v) = resp.retry_after {
-        if v > 0.0 {
-            return Some(v);
-        }
+    if let Some(v) = resp.retry_after.filter(|v| *v > 0.0) {
+        return Some(v);
     }
     extract_retry_after_from_text(resp.content.as_deref())
 }
@@ -762,6 +765,10 @@ pub enum RetryMode {
 }
 
 impl RetryMode {
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "inherent parser intentionally defaults unknown values instead of returning Result"
+    )]
     pub fn from_str(s: &str) -> Self {
         if s == "persistent" {
             Self::Persistent
@@ -811,15 +818,13 @@ pub trait LLMProvider: Send + Sync {
         &self,
         req: ChatRequest,
         on_delta: Option<StreamDeltaCallback>,
-        on_tool_call_delta: Option<ToolCallDeltaCallback>,
+        _on_tool_call_delta: Option<ToolCallDeltaCallback>,
     ) -> LLMResponse {
         let response = self.chat(req).await;
-        if let Some(cb) = on_delta {
-            if let Some(text) = response.content.clone() {
-                if !text.is_empty() {
-                    cb(text);
-                }
-            }
+        if let Some((cb, text)) =
+            on_delta.zip(response.content.clone().filter(|text| !text.is_empty()))
+        {
+            cb(text);
         }
         response
     }
@@ -851,8 +856,6 @@ pub trait LLMProvider: Send + Sync {
         let mut last_error_key: Option<String> = None;
         let mut identical_count: u32 = 0;
         let mut last_response: Option<LLMResponse>;
-        let mut images_stripped = false;
-
         loop {
             attempt += 1;
             let response = self.chat(req.clone()).await;
@@ -876,9 +879,8 @@ pub trait LLMProvider: Send + Sync {
 
             if !is_transient_response(&response) {
                 // Non-transient error: try stripping images and retrying once immediately
-                if !images_stripped && strip_image_content_inplace(&mut req.messages) {
+                if strip_image_content_inplace(&mut req.messages) {
                     warn!("Non-transient LLM error with image content, retrying without images");
-                    images_stripped = true;
                     let result = self.chat(req.clone()).await;
                     if result.finish_reason != "error" {
                         // Permanently strip images from the original messages so
@@ -990,8 +992,6 @@ pub trait LLMProvider: Send + Sync {
         let mut last_error_key: Option<String> = None;
         let mut identical_count: u32 = 0;
         let mut last_response: Option<LLMResponse>;
-        let mut images_stripped = false;
-
         loop {
             attempt += 1;
             let response = self
@@ -1017,9 +1017,8 @@ pub trait LLMProvider: Send + Sync {
 
             if !is_transient_response(&response) {
                 // Non-transient error: try stripping images and retrying once immediately
-                if !images_stripped && strip_image_content_inplace(&mut req.messages) {
+                if strip_image_content_inplace(&mut req.messages) {
                     warn!("Non-transient LLM error with image content, retrying without images");
-                    images_stripped = true;
                     let result = self
                         .chat_stream(req.clone(), on_delta.clone(), on_tool_call_delta.clone())
                         .await;

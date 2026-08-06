@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
@@ -13,11 +13,11 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings};
 use crate::registry::ChannelEntry;
 
 /// DingTalk channel configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DingTalkConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -29,22 +29,15 @@ pub struct DingTalkConfig {
     pub allow_from: Vec<String>,
 }
 
-impl Default for DingTalkConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            client_id: String::new(),
-            client_secret: String::new(),
-            allow_from: Vec::new(),
-        }
-    }
-}
-
 /// DingTalk stream mode channel.
 pub struct DingTalkChannel {
     config: DingTalkConfig,
     bus: MessageBus,
     running: Arc<AtomicBool>,
+    #[expect(
+        dead_code,
+        reason = "reserved for staged inbound media transcription integration"
+    )]
     transcription: TranscriptionSettings,
     access_token: tokio::sync::Mutex<Option<(String, f64)>>,
 }
@@ -66,8 +59,12 @@ impl DingTalkChannel {
         })
     }
 
+    #[expect(
+        dead_code,
+        reason = "reserved for staged DingTalk authentication integration"
+    )]
     async fn get_access_token(&self) -> Result<String, String> {
-        let mut token_guard = self.access_token.lock().await;
+        let token_guard = self.access_token.lock().await;
         if let Some((token, expires_at)) = token_guard.as_ref() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

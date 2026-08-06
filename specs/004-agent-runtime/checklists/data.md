@@ -37,7 +37,7 @@
 ## 外键策略 (ON DELETE) 一致性
 
 - [x] CHK138 是否每个 FK 的 ON DELETE 选择（CASCADE / SET NULL / RESTRICT）都在 spec / data-model 给出明确**理由**而非只是 DDL 文字？[Completeness, data-model §V014..V016]
-- [x] CHK139 `functions.plugin_id ON DELETE RESTRICT` 与 Plugin 软删除（FR-007）是否冲突？— 软删除是 deleted_at IS NOT NULL，不是物理删除；FK 不会拦。但 service 层规则是否在 spec 显式（"被未删除 Function 引用的 Plugin 不能软删"）？[Clarity, data-model §V012 + FR-007]
+- [x] CHK139 `functions.plugin_id ON DELETE RESTRICT` 与 Plugin 软删除（FR-007）是否冲突？— 软删除是 deleted_at IS NOT NULL，不是物理删除；FK 不会拦。但 service 层规则是否在 spec 显式（"被任何现存 Function 引用的 Plugin 不能软删"；Function 无 deleted_at）？[Clarity, data-model §V012 + FR-007]
 - [x] CHK140 `agents.parent_agent_id ON DELETE RESTRICT` 与"删除有子 Agent 的 Agent → 4093"是否一致？data-model 不变量 #2 是否覆盖？[Consistency, data-model §V015 + contracts §9 DELETE]
 - [x] CHK141 `tools.function_id` / `tools.workflow_id` ON DELETE RESTRICT 与"被 Tool 引用的 Function/Workflow 不能删"的 service 层规则是否对齐？[Consistency, data-model §V014]
 - [x] CHK142 `chat_sessions.admin_id ON DELETE SET NULL` 与 FR-027 "session 绑定 admin_id" 是否冲突？admin 删除后 session 还能被 Super 访问吗？[Clarity, Gap, FR-027 v7] — ✅ data-model §V016 加 snapshot 列 + 所有权语义注释（admin 删后 admin_id IS NULL → 仅 Super 可访问）
@@ -104,7 +104,7 @@
 
 - [x] CHK177 spec SC-005 (Pool 命中 p95 ≤ 50ms / 冷启动 ≤ 300ms) 的"命中" 定义是否在 data-model / spec 明示（实例已在 `PluginPool::idle` 而非 created）？[Measurability, FR-029]
 - [x] CHK178 spec SC-007 (capability denial 100% 准确) 的"准确"可测量吗？是否定义 audit log 抽样验证方法？[Measurability, FR-003 / TM-1]
-- [x] CHK179 SC-009 (Plugin 软删除引用检查 100% 准确) 的边界：如果检查时刻 Function 未删除但 Plugin 软删后并发创建了引用 Function —— 是否在 spec 定义 race window？[Edge Case, Gap] — ✅ spec SC-009 补 Race window 规避段：`SELECT ... FOR UPDATE` 锁定 + Function INSERT 时二次校验 deleted_at + rollback；两层防御
+- [x] CHK179 SC-009 (Plugin 软删除引用检查 100% 准确) 的边界：如果检查时刻 Plugin 尚无引用，但软删与新建引用 Function 并发 —— 是否在 spec 定义 race window？[Edge Case, Gap] — ✅ spec SC-009 补 Race window 规避段：删除 transaction 使用 `FOR UPDATE`，创建 transaction 使用 `FOR SHARE`，两条路径锁定同一 Plugin 行；创建侧检查 deleted_at 并在同一事务写入，失败 rollback + 4093
 
 ## Dependencies & Assumptions
 

@@ -74,10 +74,12 @@ fn content_blocks(content: &Value, for_tool_result: bool) -> Vec<Value> {
                     item_type,
                     Some("text") | Some("input_text") | Some("output_text")
                 ) {
-                    if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
-                        if !text.is_empty() {
-                            blocks.push(json!({"text": text}));
-                        }
+                    if let Some(text) = obj
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .filter(|text| !text.is_empty())
+                    {
+                        blocks.push(json!({"text": text}));
                     }
                     continue;
                 }
@@ -144,7 +146,7 @@ fn system_blocks(content: &Value) -> Vec<Value> {
     content_blocks(content, false)
         .into_iter()
         .filter(|b| {
-            b.as_object().map_or(false, |o| {
+            b.as_object().is_some_and(|o| {
                 o.contains_key("text")
                     || o.contains_key("cachePoint")
                     || o.contains_key("guardContent")
@@ -220,10 +222,8 @@ fn assistant_blocks(msg: &Value) -> Vec<Value> {
 
     if let Some(thinking_list) = msg.get("thinking_blocks").and_then(|v| v.as_array()) {
         for thinking in thinking_list {
-            if thinking.as_object().is_some() {
-                if let Some(reasoning) = reasoning_block(thinking) {
-                    blocks.push(reasoning);
-                }
+            if let Some(reasoning) = reasoning_block(thinking) {
+                blocks.push(reasoning);
             }
         }
     }
@@ -235,7 +235,10 @@ fn assistant_blocks(msg: &Value) -> Vec<Value> {
             }
         } else if let Value::Array(items) = content {
             for block in content_blocks(content, false) {
-                if block.as_object().map_or(false, |o| o.contains_key("text")) {
+                if block
+                    .as_object()
+                    .is_some_and(|object| object.contains_key("text"))
+                {
                     blocks.push(block);
                 }
             }
@@ -262,9 +265,9 @@ fn has_tool_use(msg: &Value) -> bool {
         return false;
     };
     content.iter().any(|block| {
-        block.as_object().map_or(false, |o| {
-            o.contains_key("toolUse") || o.contains_key("toolResult")
-        })
+        block
+            .as_object()
+            .is_some_and(|o| o.contains_key("toolUse") || o.contains_key("toolResult"))
     })
 }
 
@@ -307,23 +310,19 @@ fn merge_consecutive(messages: Vec<Value>) -> Vec<Value> {
             break;
         }
     }
-    if merged.is_empty() {
-        if let Some(popped) = last_popped {
-            if !has_tool_use(&popped) {
-                merged.push(json!({
-                    "role": "user",
-                    "content": popped.get("content").cloned().unwrap_or(json!([{"text": "(empty)"}]))
-                }));
-            }
-        }
+    if let Some(popped) = last_popped.filter(|popped| merged.is_empty() && !has_tool_use(popped)) {
+        merged.push(json!({
+            "role": "user",
+            "content": popped.get("content").cloned().unwrap_or(json!([{"text": "(empty)"}]))
+        }));
     }
-    if let Some(first) = merged.first() {
-        if first.get("role").and_then(|v| v.as_str()) == Some("assistant") && !has_tool_use(first) {
-            merged.insert(
-                0,
-                json!({"role": "user", "content": [{"text": "(conversation continued)"}]}),
-            );
-        }
+    if merged.first().is_some_and(|first| {
+        first.get("role").and_then(|v| v.as_str()) == Some("assistant") && !has_tool_use(first)
+    }) {
+        merged.insert(
+            0,
+            json!({"role": "user", "content": [{"text": "(conversation continued)"}]}),
+        );
     }
     merged
 }
@@ -425,9 +424,9 @@ fn contains_tool_blocks(messages: &[Value]) -> bool {
             return false;
         };
         content.iter().any(|block| {
-            block.as_object().map_or(false, |o| {
-                o.contains_key("toolUse") || o.contains_key("toolResult")
-            })
+            block
+                .as_object()
+                .is_some_and(|o| o.contains_key("toolUse") || o.contains_key("toolResult"))
         })
     })
 }
@@ -467,13 +466,11 @@ fn adaptive_thinking(reasoning_effort: Option<&str>) -> Option<Value> {
         return None;
     }
     let mut thinking = json!({"type": "adaptive"});
-    if effort != "adaptive" {
-        if let Some(obj) = thinking.as_object_mut() {
-            obj.insert(
-                "effort".into(),
-                Value::String(reasoning_effort?.to_string()),
-            );
-        }
+    if let Some(obj) = thinking.as_object_mut().filter(|_| effort != "adaptive") {
+        obj.insert(
+            "effort".into(),
+            Value::String(reasoning_effort?.to_string()),
+        );
     }
     Some(thinking)
 }
@@ -515,21 +512,28 @@ fn parse_reasoning(block: &Value) -> (Option<String>, Option<Value>) {
     let Some(reasoning) = block.get("reasoningContent").and_then(|v| v.as_object()) else {
         return (None, None);
     };
-    if let Some(text_obj) = reasoning.get("reasoningText").and_then(|v| v.as_object()) {
-        if let Some(text) = text_obj.get("text").and_then(|v| v.as_str()) {
-            let signature = text_obj
-                .get("signature")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            return (
-                Some(text.to_string()),
-                Some(json!({
-                    "type": "thinking",
-                    "thinking": text,
-                    "signature": signature,
-                })),
-            );
-        }
+    let reasoning_text = reasoning
+        .get("reasoningText")
+        .and_then(|value| value.as_object())
+        .and_then(|text_obj| {
+            text_obj
+                .get("text")
+                .and_then(|value| value.as_str())
+                .map(|text| (text_obj, text))
+        });
+    if let Some((text_obj, text)) = reasoning_text {
+        let signature = text_obj
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return (
+            Some(text.to_string()),
+            Some(json!({
+                "type": "thinking",
+                "thinking": text,
+                "signature": signature,
+            })),
+        );
     }
     if let Some(redacted) = reasoning.get("redactedContent") {
         return (
@@ -736,10 +740,11 @@ impl BedrockProvider {
         }
 
         let mut additional: Map<String, Value> = Map::new();
-        if uses_adaptive_thinking_only(&model_id) {
-            if let Some(thinking) = adaptive_thinking(req.reasoning_effort.as_deref()) {
-                additional.insert("thinking".into(), thinking);
-            }
+        let thinking = uses_adaptive_thinking_only(&model_id)
+            .then(|| adaptive_thinking(req.reasoning_effort.as_deref()))
+            .flatten();
+        if let Some(thinking) = thinking {
+            additional.insert("thinking".into(), thinking);
         }
         if !self.cfg.extra_body.is_empty() {
             deep_merge(&mut additional, &self.cfg.extra_body);
@@ -760,10 +765,12 @@ impl BedrockProvider {
                 tc.insert("toolChoice".into(), choice);
             }
             tool_config = Some(Value::Object(tc));
-        } else if let Some(msgs) = kwargs.get("messages").and_then(|v| v.as_array()) {
-            if contains_tool_blocks(msgs) {
-                tool_config = Some(json!({"tools": [noop_tool()]}));
-            }
+        } else if kwargs
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .is_some_and(|messages| contains_tool_blocks(messages))
+        {
+            tool_config = Some(json!({"tools": [noop_tool()]}));
         }
         if let Some(tc) = tool_config {
             kwargs.insert("toolConfig".into(), tc);
@@ -772,6 +779,10 @@ impl BedrockProvider {
         (model_id, kwargs)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "stream event parsing updates several independent accumulators and a callback"
+    )]
     fn parse_stream_event(
         event: &Value,
         content_parts: &mut Vec<String>,
@@ -787,48 +798,51 @@ impl BedrockProvider {
                 .get("contentBlockIndex")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as usize;
-            if let Some(start) = data.get("start").and_then(|v| v.as_object()) {
-                if let Some(tool_use) = start.get("toolUse").and_then(|v| v.as_object()) {
-                    let mut buf = Map::new();
-                    buf.insert(
-                        "id".into(),
-                        Value::String(
-                            tool_use
-                                .get("toolUseId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        ),
-                    );
-                    buf.insert(
-                        "name".into(),
-                        Value::String(
-                            tool_use
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        ),
-                    );
-                    buf.insert("input".into(), Value::String(String::new()));
-                    tool_buffers.insert(idx, buf);
-                    if let Some(ref cb) = on_tool_call_delta {
-                        let id = tool_use
+            if let Some(tool_use) = data
+                .get("start")
+                .and_then(|v| v.as_object())
+                .and_then(|start| start.get("toolUse"))
+                .and_then(|tool_use| tool_use.as_object())
+            {
+                let mut buf = Map::new();
+                buf.insert(
+                    "id".into(),
+                    Value::String(
+                        tool_use
                             .get("toolUseId")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
-                            .to_string();
-                        let name = tool_use
+                            .to_string(),
+                    ),
+                );
+                buf.insert(
+                    "name".into(),
+                    Value::String(
+                        tool_use
                             .get("name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
-                            .to_string();
-                        let mut delta = serde_json::Map::new();
-                        delta.insert("call_id".into(), Value::String(id));
-                        delta.insert("name".into(), Value::String(name));
-                        delta.insert("arguments_delta".into(), Value::String(String::new()));
-                        cb(delta);
-                    }
+                            .to_string(),
+                    ),
+                );
+                buf.insert("input".into(), Value::String(String::new()));
+                tool_buffers.insert(idx, buf);
+                if let Some(cb) = on_tool_call_delta {
+                    let id = tool_use
+                        .get("toolUseId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = tool_use
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mut delta = serde_json::Map::new();
+                    delta.insert("call_id".into(), Value::String(id));
+                    delta.insert("name".into(), Value::String(name));
+                    delta.insert("arguments_delta".into(), Value::String(String::new()));
+                    cb(delta);
                 }
             }
             return None;
@@ -852,10 +866,11 @@ impl BedrockProvider {
                         m.insert("input".into(), Value::String(String::new()));
                         m
                     });
-                    if let Some(input_delta) = tool_delta.get("input").and_then(|v| v.as_str()) {
-                        if let Some(Value::String(existing)) = buf.get_mut("input") {
-                            existing.push_str(input_delta);
-                        }
+                    if let (Some(input_delta), Some(Value::String(existing))) = (
+                        tool_delta.get("input").and_then(|v| v.as_str()),
+                        buf.get_mut("input"),
+                    ) {
+                        existing.push_str(input_delta);
                     }
                 }
                 if let Some(reasoning) = delta.get("reasoningContent").and_then(|v| v.as_object()) {
@@ -1126,7 +1141,7 @@ impl LLMProvider for BedrockProvider {
         let mut state: Map<String, Value> = Map::new();
 
         for event in &events {
-            if let Some(delta) = Self::parse_stream_event(
+            let delta = Self::parse_stream_event(
                 event,
                 &mut content_parts,
                 &mut reasoning_parts,
@@ -1135,10 +1150,9 @@ impl LLMProvider for BedrockProvider {
                 &mut reasoning_buffers,
                 &mut state,
                 on_tool_call_delta.as_ref(),
-            ) {
-                if let Some(cb) = &on_delta {
-                    cb(delta);
-                }
+            );
+            if let (Some(delta), Some(cb)) = (delta, on_delta.as_ref()) {
+                cb(delta);
             }
         }
 

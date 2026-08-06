@@ -45,31 +45,20 @@ const KIMI_THINKING_MODELS: &[&str] = &["kimi-k2.5", "kimi-k2.6", "k2.6-code-pre
 
 fn is_kimi_thinking(model: &str) -> bool {
     let name = model.to_ascii_lowercase();
-    if KIMI_THINKING_MODELS.contains(&name.as_str()) {
-        return true;
-    }
-    if let Some((_, tail)) = name.rsplit_once('/') {
-        if KIMI_THINKING_MODELS.contains(&tail) {
-            return true;
-        }
-    }
-    false
+    KIMI_THINKING_MODELS.contains(&name.as_str())
+        || name
+            .rsplit_once('/')
+            .is_some_and(|(_, tail)| KIMI_THINKING_MODELS.contains(&tail))
 }
 
 fn uses_openrouter_attribution(spec: Option<&ProviderSpec>, api_base: &str) -> bool {
-    if let Some(s) = spec {
-        if s.name == "openrouter" {
-            return true;
-        }
-    }
-    api_base.to_ascii_lowercase().contains("openrouter")
+    spec.is_some_and(|s| s.name == "openrouter")
+        || api_base.to_ascii_lowercase().contains("openrouter")
 }
 
 fn supports_temperature(model: &str, reasoning_effort: Option<&str>) -> bool {
-    if let Some(r) = reasoning_effort {
-        if r.to_ascii_lowercase() != "none" {
-            return false;
-        }
+    if reasoning_effort.is_some_and(|r| !r.eq_ignore_ascii_case("none")) {
+        return false;
     }
     let m = model.to_ascii_lowercase();
     !(m.contains("gpt-5") || m.contains("o1") || m.contains("o3") || m.contains("o4"))
@@ -299,12 +288,14 @@ impl OpenAICompatProvider {
         let mut m = req_model
             .map(String::from)
             .unwrap_or_else(|| self.cfg.default_model.clone());
-        if let Some(spec) = self.cfg.spec {
-            if spec.strip_model_prefix {
-                if let Some((_, tail)) = m.rsplit_once('/') {
-                    m = tail.to_string();
-                }
-            }
+        if let Some(tail) = self
+            .cfg
+            .spec
+            .filter(|spec| spec.strip_model_prefix)
+            .and_then(|_| m.rsplit_once('/'))
+            .map(|(_, tail)| tail.to_string())
+        {
+            m = tail;
         }
         m
     }
@@ -405,14 +396,12 @@ impl OpenAICompatProvider {
             }
         }
 
-        if let Some(tools) = &req.tools {
-            if !tools.is_empty() {
-                body.insert("tools".into(), Value::Array(tools.clone()));
-                body.insert(
-                    "tool_choice".into(),
-                    Self::tool_choice_to_value(req.tool_choice.as_ref()),
-                );
-            }
+        if let Some(tools) = req.tools.as_ref().filter(|tools| !tools.is_empty()) {
+            body.insert("tools".into(), Value::Array(tools.clone()));
+            body.insert(
+                "tool_choice".into(),
+                Self::tool_choice_to_value(req.tool_choice.as_ref()),
+            );
         }
 
         // Merge user-configured extra_body last so it can override defaults
@@ -507,11 +496,9 @@ fn extract_usage(response: &Value) -> HashMap<String, i64> {
         for seg in path.iter() {
             current = current.and_then(|v| v.get(*seg));
         }
-        if let Some(v) = current.and_then(|v| v.as_i64()) {
-            if v > 0 {
-                out.insert("cached_tokens".into(), v);
-                break;
-            }
+        if let Some(v) = current.and_then(|v| v.as_i64()).filter(|v| *v > 0) {
+            out.insert("cached_tokens".into(), v);
+            break;
         }
     }
     out
@@ -595,12 +582,14 @@ pub(crate) fn parse_response(body: &Value) -> LLMResponse {
         if i == 0 {
             finish_reason = fr.clone();
         }
-        if let Some(tcs) = m.get("tool_calls").and_then(|v| v.as_array()) {
-            if !tcs.is_empty() {
-                raw_tool_calls.extend(tcs.clone());
-                if fr == "tool_calls" || fr == "stop" {
-                    finish_reason = fr;
-                }
+        if let Some(tcs) = m
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .filter(|tcs| !tcs.is_empty())
+        {
+            raw_tool_calls.extend(tcs.clone());
+            if fr == "tool_calls" || fr == "stop" {
+                finish_reason = fr;
             }
         }
         if content.is_none() {
@@ -780,10 +769,11 @@ pub fn from_env(
     let mut cfg = OpenAICompatConfig::new(default_model);
     if let Some(spec) = spec {
         cfg = cfg.with_spec(spec);
-        if !spec.env_key.is_empty() {
-            if let Ok(v) = std::env::var(spec.env_key) {
-                cfg = cfg.with_api_key(v);
-            }
+        if let Some(v) = (!spec.env_key.is_empty())
+            .then(|| std::env::var(spec.env_key).ok())
+            .flatten()
+        {
+            cfg = cfg.with_api_key(v);
         }
     }
     Arc::new(OpenAICompatProvider::new(cfg))

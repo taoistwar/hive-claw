@@ -119,11 +119,9 @@ pub fn format_tool_hints(tool_calls: &[ToolCallView]) -> String {
     // Collapse repeats.
     let mut hints: Vec<(String, u32)> = Vec::new();
     for hint in formatted {
-        if let Some(last) = hints.last_mut() {
-            if last.0 == hint {
-                last.1 += 1;
-                continue;
-            }
+        if let Some(last) = hints.last_mut().filter(|last| last.0 == hint) {
+            last.1 += 1;
+            continue;
         }
         hints.push((hint, 1));
     }
@@ -151,17 +149,17 @@ fn extract_arg(tc: &ToolCallView, key_args: &[&str]) -> Option<String> {
     let args = get_args(tc);
     let obj = args.as_object()?;
     for key in key_args {
-        if let Some(v) = obj.get(*key).and_then(Value::as_str) {
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
+        if let Some(v) = obj
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+        {
+            return Some(v.to_string());
         }
     }
     for v in obj.values() {
-        if let Some(s) = v.as_str() {
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+        if let Some(s) = v.as_str().filter(|s| !s.is_empty()) {
+            return Some(s.to_string());
         }
     }
     None

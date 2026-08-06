@@ -216,13 +216,7 @@ impl DeviceFlow {
             .send()
             .await
             .ok()
-            .and_then(|resp| {
-                if resp.status().is_success() {
-                    Some(resp)
-                } else {
-                    None
-                }
-            })
+            .filter(|resp| resp.status().is_success())
             .map(|resp| async move {
                 resp.json::<Value>().await.ok().and_then(|body| {
                     body.get("login")
@@ -329,10 +323,12 @@ impl GitHubCopilotProvider {
             .unwrap_or(0);
         {
             let guard = self.cache.read().await;
-            if let Some(tok) = &guard.token {
-                if now_ms + (EXPIRY_SKEW_SECONDS as i64) * 1_000 < guard.expires_at_ms {
-                    return Ok(tok.clone());
-                }
+            if let Some(tok) = guard
+                .token
+                .as_ref()
+                .filter(|_| now_ms + (EXPIRY_SKEW_SECONDS as i64) * 1_000 < guard.expires_at_ms)
+            {
+                return Ok(tok.clone());
             }
         }
 

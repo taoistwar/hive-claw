@@ -11,7 +11,6 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use sqlx::MySqlPool;
 
 use crate::api::AppState;
 use crate::models::Role;
@@ -131,7 +130,6 @@ async fn update_global_config(
 
     svc::update(&state.pool, id, meta)
         .await
-        .map(|cfg| cfg)
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
 }

@@ -384,7 +384,6 @@ pub async fn fetch_top_filtered(
             let needed = 10 - result.len();
             let fill: Vec<RecommendedGame> = remaining
                 .choose_multiple(&mut rng, needed.min(remaining.len()))
-                .into_iter()
                 .cloned()
                 .cloned()
                 .collect();

@@ -24,6 +24,7 @@ const DEFAULT_MAX_HISTORY: usize = 1000;
 
 const HISTORY_ENTRY_HARD_CAP: usize = 64_000;
 const RAW_ARCHIVE_MAX_CHARS: usize = 16_000;
+#[expect(dead_code, reason = "retained as the archive summary size policy")]
 const ARCHIVE_SUMMARY_MAX_CHARS: usize = 8_000;
 
 static LEGACY_ENTRY_START: Lazy<Regex> =
@@ -180,16 +181,18 @@ impl MemoryStore {
     }
 
     fn next_cursor(&self) -> i64 {
-        if let Ok(s) = std::fs::read_to_string(&self.cursor_file) {
-            if let Ok(v) = s.trim().parse::<i64>() {
-                return v + 1;
-            }
+        if let Some(v) = std::fs::read_to_string(&self.cursor_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+        {
+            return v + 1;
         }
         self.warn_corrupted_entries();
-        if let Some(last) = self.read_last_entry() {
-            if let Some(c) = valid_cursor(last.get("cursor")) {
-                return c + 1;
-            }
+        if let Some(c) = self
+            .read_last_entry()
+            .and_then(|last| valid_cursor(last.get("cursor")))
+        {
+            return c + 1;
         }
         self.iter_valid_entries().map(|(_, c)| c).max().unwrap_or(0) + 1
     }
@@ -225,25 +228,25 @@ impl MemoryStore {
     fn warn_corrupted_entries(&self) {
         let mut poisoned: Option<String> = None;
         for entry in self.read_entries() {
-            if let Some(raw) = entry.get("cursor") {
-                if valid_cursor(Some(raw)).is_none() {
-                    poisoned = Some(raw.to_string());
-                    break;
-                }
+            if let Some(raw) = entry
+                .get("cursor")
+                .filter(|raw| valid_cursor(Some(raw)).is_none())
+            {
+                poisoned = Some(raw.to_string());
+                break;
             }
         }
-        if let Some(p) = poisoned {
-            if !self.corruption_logged.load(Ordering::Relaxed)
+        if let Some(p) = poisoned.filter(|_| {
+            !self.corruption_logged.load(Ordering::Relaxed)
                 && self
                     .corruption_logged
                     .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
-            {
-                log::warn!(
-                    "history.jsonl contains a non-int cursor ({}); dropping it. Usually caused by an external writer; further occurrences suppressed.",
-                    p,
-                );
-            }
+        }) {
+            log::warn!(
+                "history.jsonl contains a non-int cursor ({}); dropping it. Usually caused by an external writer; further occurrences suppressed.",
+                p,
+            );
         }
     }
 
@@ -254,7 +257,7 @@ impl MemoryStore {
         let reader = BufReader::new(file);
         reader
             .lines()
-            .flatten()
+            .map_while(Result::ok)
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
             .collect()
@@ -378,11 +381,13 @@ impl MemoryStore {
         let entries = self.parse_legacy_history(&legacy_text);
         if !entries.is_empty() {
             let _ = self.write_entries(&entries);
-            if let Some(last) = entries.last() {
-                if let Some(cur) = last.get("cursor").and_then(|v| v.as_i64()) {
-                    let _ = std::fs::write(&self.cursor_file, cur.to_string());
-                    let _ = std::fs::write(&self.dream_cursor_file, cur.to_string());
-                }
+            if let Some(cur) = entries
+                .last()
+                .and_then(|last| last.get("cursor"))
+                .and_then(|v| v.as_i64())
+            {
+                let _ = std::fs::write(&self.cursor_file, cur.to_string());
+                let _ = std::fs::write(&self.dream_cursor_file, cur.to_string());
             }
         }
         let backup = self.next_legacy_backup_path();
@@ -436,7 +441,7 @@ impl MemoryStore {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .and_then(|s| DateTime::from_timestamp(s, 0))
-            .unwrap_or_else(|| chrono::Utc::now());
+            .unwrap_or_else(chrono::Utc::now);
         now.with_timezone(&Local)
             .format("%Y-%m-%d %H:%M")
             .to_string()
@@ -478,13 +483,7 @@ fn split_legacy_history_chunks(text: &str) -> Vec<String> {
             let mut tmp = current.clone();
             let _ = std::mem::replace(&mut current, vec![line]);
             // flush previous
-            chunks.push(
-                tmp.drain(..)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .trim()
-                    .to_string(),
-            );
+            chunks.push(std::mem::take(&mut tmp).join("\n").trim().to_string());
             saw_blank = false;
             continue;
         }

@@ -300,7 +300,7 @@ impl GitStore {
                 let sha: String = sha.chars().take(8).collect();
                 // Trim timezone seconds if desired; leave as-is to keep
                 // lossless parsing for downstream consumers.
-                let ts = ts.chars().take(16).collect::<String>().replace(' ', " ");
+                let ts = ts.chars().take(16).collect::<String>();
                 CommitInfo {
                     sha,
                     message: msg,
@@ -394,13 +394,14 @@ impl GitStore {
                 .unwrap_or(0)
         };
         for line in out.lines() {
-            if let Some(rest) = line.strip_prefix("author-time ") {
-                if let Ok(ts) = rest.trim().parse::<i64>() {
-                    let days = ts / 86_400;
-                    ages.push(LineAge {
-                        age_days: (now_days - days).max(0),
-                    });
-                }
+            if let Some(timestamp) = line
+                .strip_prefix("author-time ")
+                .and_then(|rest| rest.trim().parse::<i64>().ok())
+            {
+                let days = timestamp / 86_400;
+                ages.push(LineAge {
+                    age_days: (now_days - days).max(0),
+                });
             }
         }
         ages

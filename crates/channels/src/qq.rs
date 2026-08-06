@@ -372,12 +372,8 @@ impl QQChannel {
             "file_data": file_data_b64,
             "srv_send_msg": srv_send_msg,
         });
-        if file_type != QQ_FILE_TYPE_IMAGE {
-            if let Some(n) = file_name {
-                if !n.is_empty() {
-                    payload["file_name"] = Value::String(n.into());
-                }
-            }
+        if let Some(n) = file_name.filter(|n| file_type != QQ_FILE_TYPE_IMAGE && !n.is_empty()) {
+            payload["file_name"] = Value::String(n.into());
         }
         let client = self.ensure_http().await?;
         let resp = client
@@ -445,7 +441,7 @@ impl QQChannel {
             .as_ref()
             .and_then(|u| {
                 u.path_segments()
-                    .and_then(|s| s.last().map(|s| s.to_string()))
+                    .and_then(|mut s| s.next_back().map(|s| s.to_string()))
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "file.bin".into());
@@ -745,11 +741,12 @@ impl QQChannel {
 
         // Optional ack (best-effort).
         if !self.config.ack_message.is_empty() {
-            if let Err(e) = self
+            match self
                 .send_text_only(&chat_id, is_group, Some(&id), &self.config.ack_message)
                 .await
             {
-                debug!("QQ ack message failed for chat_id={chat_id}: {e}");
+                Ok(_) => {}
+                Err(e) => debug!("QQ ack message failed for chat_id={chat_id}: {e}"),
             }
         }
 
@@ -1021,7 +1018,7 @@ impl Channel for QQChannel {
     }
 
     fn default_config() -> serde_json::Map<String, Value> {
-        serde_json::to_value(&QQConfig::default())
+        serde_json::to_value(QQConfig::default())
             .ok()
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default()
@@ -1086,7 +1083,7 @@ impl Channel for QQChannel {
                         .ok()
                         .and_then(|u| {
                             u.path_segments()
-                                .and_then(|s| s.last().map(|s| s.to_string()))
+                                .and_then(|mut s| s.next_back().map(|s| s.to_string()))
                         })
                         .or_else(|| {
                             std::path::Path::new(media_ref)
@@ -1115,7 +1112,7 @@ impl Channel for QQChannel {
                         .ok()
                         .and_then(|u| {
                             u.path_segments()
-                                .and_then(|s| s.last().map(|s| s.to_string()))
+                                .and_then(|mut s| s.next_back().map(|s| s.to_string()))
                         })
                         .or_else(|| {
                             std::path::Path::new(media_ref)
@@ -1175,14 +1172,15 @@ fn unix_millis() -> u128 {
 }
 
 fn expand_tilde(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
-    } else if p == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home.to_string_lossy().into_owned();
-        }
+    if let Some(expanded) = p.strip_prefix("~/").and_then(|rest| {
+        dirs::home_dir().map(|home| home.join(rest).to_string_lossy().into_owned())
+    }) {
+        return expanded;
+    }
+    if p == "~" {
+        return dirs::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.to_string());
     }
     p.to_string()
 }

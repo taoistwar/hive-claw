@@ -14,6 +14,20 @@ use crate::services::agent::{AgentContent, ToolRef};
 use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
+type SkillTestToolRow = (
+    i64,
+    String,
+    String,
+    String,
+    i8,
+    Option<i64>,
+    Option<i64>,
+    Value,
+    Option<i64>,
+    Option<String>,
+    Option<Value>,
+);
+
 #[derive(Debug, Deserialize)]
 pub struct TestSkillRequest {
     pub message: String,
@@ -63,19 +77,7 @@ pub async fn run_skill_test(
     }
 
     // 2. 加载 all tools（全部工具暴露给 Skill 测试，让 Skill 有机会调用任何工具）
-    let tool_rows: Vec<(
-        i64,
-        String,
-        String,
-        String,
-        i8,
-        Option<i64>,
-        Option<i64>,
-        Value,
-        Option<i64>,
-        Option<String>,
-        Option<Value>,
-    )> = sqlx::query_as(
+    let tool_rows: Vec<SkillTestToolRow> = sqlx::query_as(
         r#"SELECT t.id, t.identifier, t.name, t.description, t.kind,
                       t.function_id, t.workflow_id, t.input_schema,
                       f.plugin_id, f.plugin_export,
@@ -264,7 +266,7 @@ pub async fn run_skill_test(
         let outcome = handle_workspace_tool(deps, &ctx, tool_ref, &tc, 0, agent_ctx).await;
 
         let (success, content, error) = match outcome {
-            o if matches!(o.payload, Value::Object(_)) && !o.payload.get("error").is_some() => {
+            o if matches!(o.payload, Value::Object(_)) && o.payload.get("error").is_none() => {
                 (true, o.payload, None)
             }
             o => {

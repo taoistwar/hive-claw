@@ -93,16 +93,14 @@ pub fn convert_messages(messages: &[Value]) -> (String, Vec<Value>) {
             }
             "user" => input.push(convert_user_message(&content)),
             "assistant" => {
-                if let Some(s) = content.as_str() {
-                    if !s.is_empty() {
-                        input.push(json!({
-                            "type":"message",
-                            "role":"assistant",
-                            "content":[{"type":"output_text","text":s}],
-                            "status":"completed",
-                            "id": format!("msg_{idx}"),
-                        }));
-                    }
+                if let Some(s) = content.as_str().filter(|s| !s.is_empty()) {
+                    input.push(json!({
+                        "type":"message",
+                        "role":"assistant",
+                        "content":[{"type":"output_text","text":s}],
+                        "status":"completed",
+                        "id": format!("msg_{idx}"),
+                    }));
                 }
                 if let Some(tcs) = msg.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tcs {

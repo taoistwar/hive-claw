@@ -204,12 +204,13 @@ impl AgentRunner {
         let mut updated: Option<Vec<Value>> = None;
         for (idx, msg) in messages.iter().enumerate() {
             if let Some(role) = msg.get("role").and_then(Value::as_str) {
-                if role == "assistant" {
-                    if let Some(tcs) = msg.get("tool_calls").and_then(Value::as_array) {
-                        for tc in tcs {
-                            if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                                declared.insert(id.to_string());
-                            }
+                if let Some(tcs) = (role == "assistant")
+                    .then(|| msg.get("tool_calls").and_then(Value::as_array))
+                    .flatten()
+                {
+                    for tc in tcs {
+                        if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                            declared.insert(id.to_string());
                         }
                     }
                 }
@@ -220,7 +221,7 @@ impl AgentRunner {
                         .unwrap_or("");
                     if !tid.is_empty() && !declared.contains(tid) {
                         if updated.is_none() {
-                            updated = Some(messages[..idx].iter().map(|m| m.clone()).collect());
+                            updated = Some(messages[..idx].to_vec());
                         }
                         continue;
                     }
@@ -253,10 +254,11 @@ impl AgentRunner {
                             }
                         }
                     }
-                } else if role == "tool" {
-                    if let Some(tid) = msg.get("tool_call_id").and_then(Value::as_str) {
-                        fulfilled.insert(tid.to_string());
-                    }
+                } else if let Some(tid) = (role == "tool")
+                    .then(|| msg.get("tool_call_id").and_then(Value::as_str))
+                    .flatten()
+                {
+                    fulfilled.insert(tid.to_string());
                 }
             }
         }
@@ -275,11 +277,13 @@ impl AgentRunner {
         for (assistant_idx, call_id, name) in missing {
             let mut insert_at = assistant_idx + 1 + offset;
             while insert_at < updated.len() {
-                if let Some(role) = updated[insert_at].get("role").and_then(Value::as_str) {
-                    if role == "tool" {
-                        insert_at += 1;
-                        continue;
-                    }
+                if updated[insert_at]
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .is_some_and(|role| role == "tool")
+                {
+                    insert_at += 1;
+                    continue;
                 }
                 break;
             }
@@ -389,10 +393,8 @@ impl AgentRunner {
             _ => return messages,
         };
 
-        let provider_max: u32 = spec.max_tokens.unwrap_or_else(|| {
-            // Fallback — provider generation max_tokens not directly accessible here
-            4096
-        });
+        // Fallback — provider generation max_tokens not directly accessible here.
+        let provider_max: u32 = spec.max_tokens.unwrap_or(4096);
 
         let budget = spec.context_block_limit.unwrap_or_else(|| {
             context_window
@@ -424,7 +426,7 @@ impl AgentRunner {
             return messages;
         }
 
-        let system_tokens: usize = system.iter().map(|m| estimate_message_tokens(m)).sum();
+        let system_tokens: usize = system.iter().map(estimate_message_tokens).sum();
         let remaining_budget: usize =
             std::cmp::max(128, budget as usize).saturating_sub(system_tokens);
 
@@ -516,17 +518,22 @@ impl AgentRunner {
 
         let mut injected: Vec<Value> = Vec::new();
         for item in items {
-            if let Some(role) = item.get("role").and_then(Value::as_str) {
-                if role == "user" && item.get("content").is_some() {
-                    injected.push(item);
-                    continue;
-                }
+            if item
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| role == "user")
+                && item.get("content").is_some()
+            {
+                injected.push(item);
+                continue;
             }
             // Try extracting text content
-            if let Some(text) = item.get("content").and_then(Value::as_str) {
-                if !text.trim().is_empty() {
-                    injected.push(serde_json::json!({ "role": "user", "content": text }));
-                }
+            if let Some(text) = item
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+            {
+                injected.push(serde_json::json!({ "role": "user", "content": text }));
             }
         }
 
@@ -665,17 +672,18 @@ impl AgentRunner {
             // Extract reasoning and clean content (matches Python lines 297-306)
             let (reasoning_text, cleaned_content) = extract_reasoning(
                 response.reasoning_content.as_deref(),
-                response.thinking_blocks.as_ref().map(|v| v.as_slice()),
+                response.thinking_blocks.as_deref(),
                 response.content.as_deref(),
             );
             let mut response = response;
             response.content = cleaned_content.clone();
-            if let Some(ref rt) = reasoning_text {
-                if !rt.is_empty() && !ctx.streamed_reasoning {
-                    hook.emit_reasoning(Some(rt)).await;
-                    hook.emit_reasoning_end().await;
-                    ctx.streamed_reasoning = true;
-                }
+            if let Some(rt) = reasoning_text
+                .as_ref()
+                .filter(|rt| !rt.is_empty() && !ctx.streamed_reasoning)
+            {
+                hook.emit_reasoning(Some(rt)).await;
+                hook.emit_reasoning_end().await;
+                ctx.streamed_reasoning = true;
             }
 
             ctx.response = Some(response.clone());
@@ -872,7 +880,7 @@ impl AgentRunner {
                         retry_response,
                         empty_retries,
                         length_recoveries,
-                        iteration as u32,
+                        iteration,
                         injection_cycles,
                         &mut had_injections,
                         &mut usage,
@@ -913,7 +921,7 @@ impl AgentRunner {
                     response,
                     empty_retries,
                     length_recoveries,
-                    iteration as u32,
+                    iteration,
                     injection_cycles,
                     &mut had_injections,
                     &mut usage,
@@ -1042,10 +1050,9 @@ impl AgentRunner {
             };
             await_hook_after_iteration(hook, &mut ctx).await;
 
-            let (cont, cycles) = self
+            let (cont, _) = self
                 .try_drain_injections(spec, &mut messages, None, injection_cycles, None, spec)
                 .await;
-            injection_cycles = cycles;
             if cont {
                 *had_injections = true;
             }
@@ -1076,10 +1083,9 @@ impl AgentRunner {
             };
             await_hook_after_iteration(hook, &mut ctx).await;
 
-            let (cont, cycles) = self
+            let (cont, _) = self
                 .try_drain_injections(spec, &mut messages, None, injection_cycles, None, spec)
                 .await;
-            injection_cycles = cycles;
             if cont {
                 *had_injections = true;
             }
@@ -1259,8 +1265,10 @@ impl AgentRunner {
                     let hook = hook.clone();
                     async move {
                         while let Some(delta) = delta_rx.recv().await {
-                            let mut ctx = AgentHookContext::default();
-                            ctx.streamed_content = true;
+                            let mut ctx = AgentHookContext {
+                                streamed_content: true,
+                                ..AgentHookContext::default()
+                            };
                             hook.on_stream(&mut ctx, &delta).await;
                         }
                     }
@@ -1299,7 +1307,9 @@ impl AgentRunner {
                             .collect();
                         tracker.apply_final_call_ids(&tool_call_values).await;
                     } else {
-                        let _ = tracker.error_unmatched(&[], "Tool call did not complete.");
+                        tracker
+                            .error_unmatched(&[], "Tool call did not complete.")
+                            .await;
                     }
                 }
 
@@ -1318,11 +1328,9 @@ impl AgentRunner {
                         while let Some(_delta) = delta_rx.recv().await {
                             let buf = acc_ref.lock().unwrap().clone();
                             let (thinking, cleaned) = extract_think(&buf);
-                            if let Some(t) = thinking {
-                                if !t.is_empty() {
-                                    let _ = reasoning_tx2.send(t);
-                                    reasoning_open = true;
-                                }
+                            if let Some(t) = thinking.filter(|t| !t.is_empty()) {
+                                let _ = reasoning_tx2.send(t);
+                                reasoning_open = true;
                             }
                             if reasoning_open {
                                 if cleaned.is_empty() || cleaned.len() <= prev_clean_len {
@@ -1395,7 +1403,9 @@ impl AgentRunner {
                             .collect();
                         tracker.apply_final_call_ids(&tool_call_values).await;
                     } else {
-                        let _ = tracker.error_unmatched(&[], "Tool call did not complete.");
+                        tracker
+                            .error_unmatched(&[], "Tool call did not complete.")
+                            .await;
                     }
                 }
 
@@ -1464,7 +1474,7 @@ impl AgentRunner {
         let mut current: Vec<ToolCallRequest> = Vec::new();
         for tc in tool_calls {
             let tool = spec.tools.get(&tc.name).await;
-            let can_batch = tool.as_ref().map_or(false, |t| t.concurrency_safe());
+            let can_batch = tool.as_ref().is_some_and(|t| t.concurrency_safe());
             if can_batch {
                 current.push(tc.clone());
                 continue;
@@ -1525,10 +1535,8 @@ impl AgentRunner {
                 tc,
                 workspace_violation_counts,
             ) {
-                if let Some(f) = &fatal_opt {
-                    if spec.fail_on_tool_error {
-                        return (payload.clone(), evt, Some(f.clone()));
-                    }
+                if let Some(f) = fatal_opt.as_ref().filter(|_| spec.fail_on_tool_error) {
+                    return (payload.clone(), evt, Some(f.clone()));
                 }
                 return (payload, evt, None);
             }
@@ -1700,15 +1708,14 @@ async fn await_hook_after_iteration(hook: &Arc<dyn AgentHook>, ctx: &mut AgentHo
 fn append_model_error_placeholder(messages: &mut Vec<Value>) {
     // Only append placeholder if the last message is NOT already an assistant
     // message without tool_calls (matches Python _append_model_error_placeholder)
-    if let Some(last) = messages.last() {
-        if last.get("role").and_then(Value::as_str) == Some("assistant")
+    if messages.last().is_some_and(|last| {
+        last.get("role").and_then(Value::as_str) == Some("assistant")
             && !last
                 .get("tool_calls")
                 .map(|v| !v.is_null())
                 .unwrap_or(false)
-        {
-            return;
-        }
+    }) {
+        return;
     }
     messages.push(serde_json::json!({
         "role": "assistant",
@@ -1910,8 +1917,8 @@ fn repeated_workspace_violation_error(
         count,
     );
     let target = signature
-        .splitn(2, "violation:")
-        .nth(1)
+        .split_once("violation:")
+        .map(|x| x.1)
         .unwrap_or(&signature);
     Some(format!(
         "Error: refusing repeated workspace-bypass attempts.\n\

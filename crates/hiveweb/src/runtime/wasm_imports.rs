@@ -39,7 +39,6 @@ pub fn scan_wasm_imports(bytes: &[u8], allowed: &[&str]) -> Result<(), AppError>
 
         if section_id == 2 {
             // Import section
-            let section_start = pos;
             let (num_imports, new_pos) = read_unsigned_leb128(bytes, pos).ok_or_else(|| {
                 AppError::BadRequest("WASM 格式错误：无法读取 import count".into())
             })?;
@@ -69,12 +68,6 @@ pub fn scan_wasm_imports(bytes: &[u8], allowed: &[&str]) -> Result<(), AppError>
 
                 let full_import = format!("{}.{}", module, name);
                 found_imports.push(full_import);
-            }
-
-            // 跳过 section 剩余部分（理论上不应该有）
-            let section_end = section_start + section_size as usize;
-            if pos < section_end {
-                pos = section_end;
             }
             break;
         } else {
@@ -133,7 +126,7 @@ fn read_unsigned_leb128(bytes: &[u8], mut pos: usize) -> Option<(u32, usize)> {
 /// - 0x03 (global): valtype (1 byte) + mut (1 byte)
 fn skip_import_desc(bytes: &[u8], pos: usize, kind: u8) -> Result<usize, AppError> {
     let mkerr = |name: &str| {
-        AppError::BadRequest(format!("WASM 格式错误：无法读取 import descriptor {name}").into())
+        AppError::BadRequest(format!("WASM 格式错误：无法读取 import descriptor {name}"))
     };
 
     match kind {

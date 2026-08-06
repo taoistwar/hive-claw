@@ -1,14 +1,12 @@
-/// Streaming renderer for CLI output.
-///
-/// Uses Rich Live with `transient=true` for in-place markdown updates during
-/// streaming. After the live display stops, a final clean render is printed
-/// so the content persists on screen. `transient=true` ensures the live
-/// area is erased before `stop()` returns, avoiding the duplication bug
-/// that plagued earlier approaches.
-use std::fmt::Write as _;
-use std::io::Write as _;
+//! Streaming renderer for CLI output.
+//!
+//! Uses Rich Live with `transient=true` for in-place markdown updates during
+//! streaming. After the live display stops, a final clean render is printed
+//! so the content persists on screen. `transient=true` ensures the live
+//! area is erased before `stop()` returns, avoiding the duplication bug
+//! that plagued earlier approaches.
 
-use tokio::sync::Mutex;
+use std::io::Write as _;
 
 /// Erase a transient status line before printing persistent output.
 fn clear_current_line() {
@@ -29,6 +27,10 @@ fn clear_current_line() {
 /// ecosystem. This implementation uses TODO placeholders for the actual
 /// spinner rendering.
 pub struct ThinkingSpinner {
+    #[expect(
+        dead_code,
+        reason = "retained for the staged spinner rendering implementation"
+    )]
     bot_name: String,
     active: bool,
 }

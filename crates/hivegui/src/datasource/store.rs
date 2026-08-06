@@ -1457,7 +1457,7 @@ impl Store {
             Ok(key)
         } else {
             let key = Crypto::generate_key();
-            std::fs::write(&key_path, &key)?;
+            std::fs::write(&key_path, key)?;
             Ok(key)
         }
     }

@@ -155,6 +155,12 @@ impl AuditRecord {
 /// context's audit log.
 pub struct AuditLogger;
 
+impl Default for AuditLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuditLogger {
     /// Create a new `AuditLogger`.
     pub fn new() -> Self {
@@ -162,6 +168,10 @@ impl AuditLogger {
     }
 
     /// Record a tool call in the audit log.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps audit schema fields explicit"
+    )]
     pub fn record_tool_call(
         &self,
         audit_log: &mut Vec<AuditRecord>,
@@ -184,6 +194,10 @@ impl AuditLogger {
     }
 
     /// Record a skill execution in the audit log.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps audit schema fields explicit"
+    )]
     pub fn record_skill_execution(
         &self,
         audit_log: &mut Vec<AuditRecord>,
@@ -206,6 +220,10 @@ impl AuditLogger {
     }
 
     /// Record a state change in the audit log.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps audit schema fields explicit"
+    )]
     pub fn record_state_change(
         &self,
         audit_log: &mut Vec<AuditRecord>,
@@ -229,6 +247,10 @@ impl AuditLogger {
     }
 
     /// Record an agent delegation in the audit log.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps audit schema fields explicit"
+    )]
     pub fn record_delegation(
         &self,
         audit_log: &mut Vec<AuditRecord>,

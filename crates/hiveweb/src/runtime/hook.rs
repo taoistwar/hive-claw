@@ -709,10 +709,10 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
     // Apply metadata updates (e.g., agent_loop_break)
     if let Some(metadata) = updates.get("metadata").and_then(|v| v.as_object()) {
         for (key, val) in metadata {
-            if let Some(s) = val.as_str() {
-                if let Err(e) = agent_ctx.set_metadata(key.clone(), s.to_string()) {
-                    tracing::warn!("Failed to apply _agent_context_updates metadata: {e}");
-                }
+            if let Some(s) = val.as_str()
+                && let Err(e) = agent_ctx.set_metadata(key.clone(), s.to_string())
+            {
+                tracing::warn!("Failed to apply _agent_context_updates metadata: {e}");
             }
         }
     }

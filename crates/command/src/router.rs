@@ -107,7 +107,7 @@ impl CommandRouter {
 
     pub fn prefix(&mut self, pfx: impl Into<String>, handler: Handler) {
         self.prefix.push((pfx.into(), handler));
-        self.prefix.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        self.prefix.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
     }
 
     pub fn intercept(&mut self, handler: Handler) {

@@ -87,7 +87,7 @@ fn compile_glob(pattern: &str) -> Option<GlobMatcher> {
 }
 
 fn is_ignored_component(comp: &str) -> bool {
-    IGNORE_DIRS.iter().any(|d| *d == comp)
+    IGNORE_DIRS.contains(&comp)
 }
 
 fn iter_files(root: &Path) -> impl Iterator<Item = PathBuf> {
@@ -105,10 +105,10 @@ fn iter_files(root: &Path) -> impl Iterator<Item = PathBuf> {
 }
 
 fn display_path(target: &Path, root: &Path, workspace: Option<&Path>) -> String {
-    if let Some(ws) = workspace {
-        if let Ok(rel) = target.strip_prefix(ws) {
-            return rel.to_string_lossy().replace('\\', "/");
-        }
+    if let Some(ws) = workspace
+        && let Ok(rel) = target.strip_prefix(ws)
+    {
+        return rel.to_string_lossy().replace('\\', "/");
     }
     target
         .strip_prefix(root)
@@ -153,6 +153,10 @@ fn paginate<T: Clone>(items: &[T], limit: Option<usize>, offset: usize) -> (Vec<
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "retained for the pending paginated search-result footer"
+)]
 fn pagination_note(limit: Option<usize>, offset: usize, truncated: bool) -> Option<String> {
     if truncated {
         return match limit {
@@ -299,10 +303,10 @@ impl Tool for GrepTool {
                 .unwrap_or(&file_path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if let Some(gm) = &glob_matcher {
-                if !(gm.is_match(&rel_path) || gm.is_match(name)) {
-                    continue;
-                }
+            if let Some(gm) = &glob_matcher
+                && !(gm.is_match(&rel_path) || gm.is_match(name))
+            {
+                continue;
             }
             if !matches_type(name, &type_kind) {
                 continue;
@@ -357,11 +361,11 @@ impl Tool for GrepTool {
                         if seen_content_matches <= offset {
                             continue;
                         }
-                        if let Some(l) = limit {
-                            if blocks.len() >= l {
-                                truncated = true;
-                                break;
-                            }
+                        if let Some(l) = limit
+                            && blocks.len() >= l
+                        {
+                            truncated = true;
+                            break;
                         }
                         let block =
                             format_block(&display, &lines, line_no, context_before, context_after);
@@ -375,11 +379,12 @@ impl Tool for GrepTool {
                     }
                 }
             }
-            if output_mode == "count" && file_had_match {
-                if !matching_files.iter().any(|f| f == &display) {
-                    matching_files.push(display.clone());
-                    file_mtimes.insert(display.clone(), mtime);
-                }
+            if output_mode == "count"
+                && file_had_match
+                && !matching_files.iter().any(|f| f == &display)
+            {
+                matching_files.push(display.clone());
+                file_mtimes.insert(display.clone(), mtime);
             }
             if truncated || size_truncated {
                 break 'outer;

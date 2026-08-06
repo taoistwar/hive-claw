@@ -40,10 +40,8 @@ pub fn ensure_nonempty_tool_result(tool_name: &str, content: Value) -> Value {
             if arr.is_empty() {
                 return Value::String(empty_tool_result_message(tool_name));
             }
-            if let Some(text) = stringify_text_blocks(arr) {
-                if text.trim().is_empty() {
-                    return Value::String(empty_tool_result_message(tool_name));
-                }
+            if stringify_text_blocks(arr).is_some_and(|text| text.trim().is_empty()) {
+                return Value::String(empty_tool_result_message(tool_name));
             }
             content
         }
@@ -125,7 +123,7 @@ pub fn repeated_external_lookup_error(
     }
     log::warn!(
         "Blocking repeated external lookup {} on attempt {}",
-        &sig.chars().take(160).collect::<String>(),
+        sig.chars().take(160).collect::<String>(),
         count,
     );
     Some(
@@ -135,7 +133,7 @@ pub fn repeated_external_lookup_error(
     )
 }
 
-/// Workspace-boundary violations are soft errors, with per-target throttling.
+// Workspace-boundary violations are soft errors, with per-target throttling.
 
 /// Normalize *raw* path so that equivalent spellings collide on the same key.
 fn normalize_violation_target(raw: &str) -> String {
@@ -159,21 +157,23 @@ pub fn workspace_violation_signature(tool_name: &str, arguments: &Value) -> Opti
     }
 
     if matches!(tool_name, "exec" | "shell") {
-        if let Some(cmd) = arguments.get("command").and_then(Value::as_str) {
-            let cmd = cmd.trim();
-            if !cmd.is_empty() {
-                if let Some(cap) = OUTSIDE_PATH_RE.captures(cmd) {
-                    if let Some(m) = cap.get(1) {
-                        return Some(normalize_violation_target(m.as_str()));
-                    }
-                }
-            }
+        let command_target = arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|cmd| !cmd.is_empty())
+            .and_then(|cmd| OUTSIDE_PATH_RE.captures(cmd))
+            .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()));
+        if let Some(target) = command_target {
+            return Some(normalize_violation_target(&target));
         }
-        if let Some(cwd) = arguments.get("working_dir").and_then(Value::as_str) {
-            let cwd = cwd.trim();
-            if !cwd.is_empty() {
-                return Some(normalize_violation_target(cwd));
-            }
+        if let Some(cwd) = arguments
+            .get("working_dir")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|cwd| !cwd.is_empty())
+        {
+            return Some(normalize_violation_target(cwd));
         }
     }
 
@@ -194,7 +194,7 @@ pub fn repeated_workspace_violation_error(
     }
     log::warn!(
         "Escalating repeated workspace bypass attempt {} (attempt {})",
-        &signature.chars().take(160).collect::<String>(),
+        signature.chars().take(160).collect::<String>(),
         count,
     );
     let target = signature.strip_prefix("violation:").unwrap_or(&signature);

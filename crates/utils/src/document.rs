@@ -170,11 +170,11 @@ pub fn extract_documents(
             .unwrap_or(false);
         if is_image {
             image_paths.push(path_str.clone());
-        } else if let Some(extracted) = extract_text(p, binary_extractor) {
-            if !extracted.starts_with("[error:") {
-                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                doc_texts.push(format!("[File: {name}]\n{extracted}"));
-            }
+        } else if let Some(extracted) =
+            extract_text(p, binary_extractor).filter(|text| !text.starts_with("[error:"))
+        {
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+            doc_texts.push(format!("[File: {name}]\n{extracted}"));
         }
     }
 

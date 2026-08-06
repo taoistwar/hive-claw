@@ -165,10 +165,12 @@ impl OpenAICodexProvider {
             Some(ToolChoice::Specific(v)) => v.clone(),
         };
 
-        if let Some(effort) = req.reasoning_effort.as_deref() {
-            if effort.to_lowercase() != "none" {
-                body["reasoning"] = json!({"effort": effort});
-            }
+        if let Some(effort) = req
+            .reasoning_effort
+            .as_deref()
+            .filter(|effort| !effort.eq_ignore_ascii_case("none"))
+        {
+            body["reasoning"] = json!({"effort": effort});
         }
         if let Some(tools) = req.tools.as_ref() {
             body["tools"] = Value::Array(convert_tools(tools));

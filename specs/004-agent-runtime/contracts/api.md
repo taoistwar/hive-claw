@@ -128,7 +128,7 @@ Response 201：plugin 对象。
 仅允许修改元数据（name / description / category_id / tags / author / repository_url）；不允许换 WASM 文件（要换则上传新 version）。
 
 ### DELETE /api/plugins/:id
-软删除。先校验 `SELECT COUNT(*) FROM functions WHERE plugin_id = ? AND deleted_at IS NULL` = 0；否则 4093（PluginInUse）。
+软删除。事务内先以 `SELECT ... FOR UPDATE` 锁住 Plugin，再校验 `SELECT COUNT(*) FROM functions WHERE plugin_id = ?` = 0；否则 4093（ResourceInUse）。Function 为硬删除模型（无 `functions.deleted_at`），因此所有现存 Function 记录都计入引用。并发的 Function 创建必须在其写事务内以 `SELECT id, deleted_at FROM plugins WHERE id = ? FOR SHARE` 参与同一行锁串行化；若 Plugin 已软删除则返回 4093。
 
 ---
 
@@ -139,7 +139,7 @@ Response 201：plugin 对象。
 | GET | `/api/functions` | filter: `?kind=builtin|custom`、`?search=`、`?category_id=`、`?tag_ids=` |
 | POST | `/api/functions` | builtin 由代码注册不开放 API；只允许 kind=custom |
 | PUT | `/api/functions/:id` | 仅允许修改 name / description / category / tags / schemas（注意：改 schema 是破坏性的，前端二次确认） |
-| DELETE | `/api/functions/:id` | builtin 拒绝；custom 软删除？暂硬删（无引用时） |
+| DELETE | `/api/functions/:id` | builtin 拒绝；custom 硬删除；被 workflow_nodes / tools 引用时返回 4093 |
 | POST | `/api/functions/:id/invoke` | RPC 式调用单个 Function（builtin 走宿主 handler，custom 走 WASM Plugin invoker） |
 
 Body for POST:

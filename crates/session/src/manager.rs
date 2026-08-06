@@ -16,6 +16,10 @@ use serde_json::Value;
 use config::{ensure_dir, get_legacy_sessions_dir};
 use utils::helpers::{find_legal_message_start, image_placeholder_text, safe_filename};
 
+#[expect(
+    dead_code,
+    reason = "reserved for the session file-cap policy without changing current persistence behavior"
+)]
 const FILE_MAX_MESSAGES: usize = 2000;
 const SESSION_PREVIEW_MAX_CHARS: usize = 120;
 
@@ -46,12 +50,11 @@ fn text_preview(content: &Value) -> String {
         let parts: Vec<String> = blocks
             .iter()
             .filter_map(|block| {
-                if let Some(obj) = block.as_object() {
-                    if obj.get("type").and_then(|v| v.as_str()) == Some("text") {
-                        return obj.get("text").and_then(|v| v.as_str()).map(String::from);
-                    }
+                let obj = block.as_object()?;
+                if obj.get("type").and_then(|v| v.as_str()) != Some("text") {
+                    return None;
                 }
-                None
+                obj.get("text").and_then(|v| v.as_str()).map(String::from)
             })
             .collect();
         parts.join(" ")
@@ -71,16 +74,20 @@ fn text_preview(content: &Value) -> String {
 /// Return display text for a message, scrubbing subagent announce bodies.
 fn message_preview_text(msg: &Value) -> String {
     let mut content = msg.get("content").cloned().unwrap_or(Value::Null);
-    if msg.get("injected_event").and_then(|v| v.as_str()) == Some("subagent_result") {
-        if let Some(s) = content.as_str() {
-            content =
-                Value::String(utils::subagent_channel_display::scrub_subagent_announce_body(s));
-        }
+    if let (Some("subagent_result"), Some(s)) = (
+        msg.get("injected_event").and_then(|v| v.as_str()),
+        content.as_str(),
+    ) {
+        content = Value::String(utils::subagent_channel_display::scrub_subagent_announce_body(s));
     }
     text_preview(&content)
 }
 
 /// Prepend `[Message Time: ...]` to user messages for relative-date reasoning.
+#[expect(
+    dead_code,
+    reason = "preserved for message-time annotation without enabling it in existing session flows"
+)]
 fn annotate_message_time(content: &str) -> String {
     let now = Local::now();
     let time_str = now.format("%Y-%m-%d %H:%M:%S %Z");
@@ -182,12 +189,11 @@ impl Session {
         for (i, m) in sliced.iter().enumerate() {
             if m.get("role").and_then(Value::as_str) == Some("user") {
                 start = i;
-                if i > 0 {
-                    if let Some(prev) = sliced.get(i - 1) {
-                        if prev.get("_channel_delivery").is_some() {
-                            start = i - 1;
-                        }
-                    }
+                if i.checked_sub(1)
+                    .and_then(|previous| sliced.get(previous))
+                    .is_some_and(|prev| prev.get("_channel_delivery").is_some())
+                {
+                    start = i - 1;
                 }
                 break;
             }
@@ -236,41 +242,39 @@ impl Session {
                 .unwrap_or(Value::String(String::new()));
 
             // Sanitize assistant replay text.
-            if role == "assistant" {
-                if let Some(s) = content.as_str() {
-                    content = Value::String(sanitize_assistant_replay_text(s));
-                }
+            if let ("assistant", Some(s)) = (role, content.as_str()) {
+                content = Value::String(sanitize_assistant_replay_text(s));
             }
 
             // Synthesize image breadcrumbs from persisted media kwarg.
-            if role == "user" {
-                if let Some(media) = message.get("media").and_then(Value::as_array) {
-                    if !media.is_empty() {
-                        if let Some(text) = content.as_str() {
-                            let breadcrumbs: Vec<String> = media
-                                .iter()
-                                .filter_map(|v| v.as_str().filter(|s| !s.is_empty()))
-                                .map(|p| image_placeholder_text(Some(p)))
-                                .collect();
-                            let merged = if text.is_empty() {
-                                breadcrumbs.join("\n")
-                            } else {
-                                format!("{text}\n{}", breadcrumbs.join("\n"))
-                            };
-                            content = Value::String(merged);
-                        }
-                    }
-                }
+            if let (true, Some(media), Some(text)) = (
+                role == "user",
+                message
+                    .get("media")
+                    .and_then(Value::as_array)
+                    .filter(|media| !media.is_empty()),
+                content.as_str(),
+            ) {
+                let breadcrumbs: Vec<String> = media
+                    .iter()
+                    .filter_map(|v| v.as_str().filter(|s| !s.is_empty()))
+                    .map(|p| image_placeholder_text(Some(p)))
+                    .collect();
+                let merged = if text.is_empty() {
+                    breadcrumbs.join("\n")
+                } else {
+                    format!("{text}\n{}", breadcrumbs.join("\n"))
+                };
+                content = Value::String(merged);
             }
 
             // Annotate user messages with persisted timestamp for relative-date reasoning.
-            if include_timestamps && role == "user" {
-                if let (Some(s), Some(ts)) = (
-                    content.as_str(),
-                    message.get("timestamp").and_then(|v| v.as_str()),
-                ) {
-                    content = Value::String(format!("[Message Time: {ts}]\n{s}"));
-                }
+            if let (true, Some(s), Some(ts)) = (
+                include_timestamps && role == "user",
+                content.as_str(),
+                message.get("timestamp").and_then(|v| v.as_str()),
+            ) {
+                content = Value::String(format!("[Message Time: {ts}]\n{s}"));
             }
 
             let mut entry = serde_json::Map::new();
@@ -609,7 +613,7 @@ impl SessionManager {
         let mut last_consolidated: usize = 0;
         let mut skipped = 0u32;
 
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             let line = line.trim().to_string();
             if line.is_empty() {
                 continue;
@@ -697,12 +701,12 @@ impl SessionManager {
         })?;
 
         // Directory fsync is best-effort: on Windows it is a no-op.
-        if fsync {
-            if let Some(parent) = path.parent() {
-                if let Ok(dir) = fs::File::open(parent) {
-                    let _ = dir.sync_all();
-                }
-            }
+        let parent_dir = match (fsync, path.parent()) {
+            (true, Some(parent)) => fs::File::open(parent).ok(),
+            _ => None,
+        };
+        if let Some(dir) = parent_dir {
+            let _ = dir.sync_all();
         }
 
         self.cache.insert(session.key.clone(), session);
@@ -983,10 +987,14 @@ mod tests {
             s.add_message(role, "x", HashMap::new());
         }
         s.retain_recent_legal_suffix(3);
-        assert!(s.messages.len() >= 3);
+        assert_eq!(s.messages.len(), 2);
         assert_eq!(
             s.messages[0].get("role").and_then(Value::as_str),
             Some("user")
+        );
+        assert_eq!(
+            s.messages[1].get("role").and_then(Value::as_str),
+            Some("assistant")
         );
     }
 }

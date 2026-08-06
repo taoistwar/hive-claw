@@ -318,18 +318,11 @@ async fn assistant_chat(
     // the persisted record via the JoinHandle, so we only need to detect early errors here.
     let mut first_error: Option<String> = None;
 
-    while let Some(result) = rx.recv().await {
-        match result {
-            Ok(event) => {
-                let sse_text = event_to_sse_text(&event);
-                let (event_type, data) = parse_sse_event(&sse_text);
-                if event_type.as_deref() == Some("error") {
-                    if first_error.is_none() {
-                        first_error = Some(data);
-                    }
-                }
-            }
-            Err(_) => {} // Infallible
+    while let Some(Ok(event)) = rx.recv().await {
+        let sse_text = event_to_sse_text(&event);
+        let (event_type, data) = parse_sse_event(&sse_text);
+        if event_type.as_deref() == Some("error") && first_error.is_none() {
+            first_error = Some(data);
         }
     }
 
@@ -378,7 +371,7 @@ async fn assistant_chat(
             .extensions
             .as_ref()
             .and_then(|v| v.as_array())
-            .map(|a| a.clone())
+            .cloned()
             .unwrap_or_default();
         exts.push(usage_ext);
         saved.extensions = Some(serde_json::Value::Array(exts));

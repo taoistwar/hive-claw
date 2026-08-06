@@ -217,6 +217,10 @@ impl MyTool {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "retained for the pending detailed subagent status view"
+    )]
     fn format_status(st: &SubagentStatus, indent: &str) -> String {
         let elapsed = st.started_at.elapsed().as_secs_f64();
         let tool_summary = st
@@ -370,18 +374,18 @@ impl MyTool {
             }
         }
 
-        if let Some(obj) = state_value.as_object() {
-            if let Some(usage) = obj.get("_last_usage") {
-                parts.push(Self::format_value(usage, "_last_usage"));
-            }
+        if let Some(obj) = state_value.as_object()
+            && let Some(usage) = obj.get("_last_usage")
+        {
+            parts.push(Self::format_value(usage, "_last_usage"));
         }
 
-        if let Some(obj) = state_value.as_object() {
-            if let Some(rv) = obj.get("_runtime_vars") {
-                if !rv.is_null() && !rv.as_object().map(|m| m.is_empty()).unwrap_or(true) {
-                    parts.push(Self::format_value(rv, "scratchpad"));
-                }
-            }
+        if let Some(obj) = state_value.as_object()
+            && let Some(rv) = obj.get("_runtime_vars")
+            && !rv.is_null()
+            && !rv.as_object().map(|m| m.is_empty()).unwrap_or(true)
+        {
+            parts.push(Self::format_value(rv, "scratchpad"));
         }
 
         parts.join("\n")
@@ -398,38 +402,33 @@ impl MyTool {
 
                 let (obj, err) = self.resolve_path(k);
                 if let Some(e) = err {
-                    if k == "scratchpad" {
-                        if let Some(obj) = self
+                    if k == "scratchpad"
+                        && let Some(obj) = self
                             .runtime_state
                             .read()
                             .unwrap()
                             .serialize_state()
                             .as_object()
                             .cloned()
-                        {
-                            if let Some(rv) = obj.get("_runtime_vars") {
-                                if !rv.is_null() {
-                                    return Self::format_value(rv, "scratchpad");
-                                }
-                                return "scratchpad is empty".into();
-                            }
+                        && let Some(rv) = obj.get("_runtime_vars")
+                    {
+                        if !rv.is_null() {
+                            return Self::format_value(rv, "scratchpad");
                         }
+                        return "scratchpad is empty".into();
                     }
-                    if !k.contains('.') {
-                        if let Some(obj) = self
+                    if !k.contains('.')
+                        && let Some(obj) = self
                             .runtime_state
                             .read()
                             .unwrap()
                             .serialize_state()
                             .as_object()
                             .cloned()
-                        {
-                            if let Some(rv) = obj.get("_runtime_vars").and_then(|v| v.as_object()) {
-                                if let Some(v) = rv.get(k) {
-                                    return Self::format_value(v, k);
-                                }
-                            }
-                        }
+                        && let Some(rv) = obj.get("_runtime_vars").and_then(|v| v.as_object())
+                        && let Some(v) = rv.get(k)
+                    {
+                        return Self::format_value(v, k);
                     }
                     return format!("Error: {}", e);
                 }
@@ -491,12 +490,12 @@ impl MyTool {
                 return format!("Error: {}", e);
             }
 
-            if let Some(mut parent) = parent {
-                if let Some(map) = parent.as_object_mut() {
-                    map.insert(leaf.to_string(), value.clone());
-                    self.audit("modify", &format!("{} = {:?}", key, value));
-                    return format!("Set {} = {:?}", key, value);
-                }
+            if let Some(mut parent) = parent
+                && let Some(map) = parent.as_object_mut()
+            {
+                map.insert(leaf.to_string(), value.clone());
+                self.audit("modify", &format!("{} = {:?}", key, value));
+                return format!("Set {} = {:?}", key, value);
             }
 
             self.audit("modify", &format!("{} = {:?}", key, value));
@@ -531,15 +530,15 @@ impl MyTool {
                         );
                     }
                 };
-                if let Some(min) = min_val {
-                    if num < min {
-                        return format!("Error: '{}' must be >= {}", key, min);
-                    }
+                if let Some(min) = min_val
+                    && num < min
+                {
+                    return format!("Error: '{}' must be >= {}", key, min);
                 }
-                if let Some(max) = max_val {
-                    if num > max {
-                        return format!("Error: '{}' must be <= {}", key, max);
-                    }
+                if let Some(max) = max_val
+                    && num > max
+                {
+                    return format!("Error: '{}' must be <= {}", key, max);
                 }
             }
             "string" => {
@@ -553,10 +552,10 @@ impl MyTool {
                         );
                     }
                 };
-                if let Some(min_len) = min_len {
-                    if s.len() < min_len {
-                        return format!("Error: '{}' must be at least {} characters", key, min_len);
-                    }
+                if let Some(min_len) = min_len
+                    && s.len() < min_len
+                {
+                    return format!("Error: '{}' must be at least {} characters", key, min_len);
                 }
             }
             _ => {}
@@ -600,17 +599,15 @@ impl MyTool {
             if old.is_string() || old.is_number() || old.is_boolean() {
                 let old_type = Self::value_type_name(&old);
                 let new_type = Self::value_type_name(value);
-                if old_type != new_type {
-                    if !(old_type == "float" && new_type == "integer") {
-                        self.audit(
-                            "modify",
-                            &format!(
-                                "REJECTED type mismatch {}: expects {}, got {}",
-                                key, old_type, new_type
-                            ),
-                        );
-                        return format!("Error: '{}' expects {}, got {}", key, old_type, new_type);
-                    }
+                if old_type != new_type && !(old_type == "float" && new_type == "integer") {
+                    self.audit(
+                        "modify",
+                        &format!(
+                            "REJECTED type mismatch {}: expects {}, got {}",
+                            key, old_type, new_type
+                        ),
+                    );
+                    return format!("Error: '{}' expects {}, got {}", key, old_type, new_type);
                 }
             }
 
@@ -622,11 +619,11 @@ impl MyTool {
             return format!("Set {} = {:?} (was {:?})", key, value, old);
         }
 
-        if value.is_array() || value.is_object() {
-            if let Some(err) = Self::validate_json_safe(value, 0) {
-                self.audit("modify", &format!("REJECTED {}: {}", key, err));
-                return format!("Error: {}", err);
-            }
+        if (value.is_array() || value.is_object())
+            && let Some(err) = Self::validate_json_safe(value, 0)
+        {
+            self.audit("modify", &format!("REJECTED {}: {}", key, err));
+            return format!("Error: {}", err);
         }
 
         if value.is_object() || value.is_array() {
@@ -675,12 +672,6 @@ impl MyTool {
             }
             Value::Object(map) => {
                 for (k, v) in map {
-                    if k.parse::<i64>().is_err()
-                        && k.parse::<f64>().is_err()
-                        && k != "true"
-                        && k != "false"
-                        && k != "null"
-                    {}
                     if let Some(err) = Self::validate_json_safe(v, depth + 1) {
                         return Some(format!("dict key '{}' contains {}", k, err));
                     }

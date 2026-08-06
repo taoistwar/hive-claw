@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
-use crate::api::{AppState, require_s3};
+use crate::api::AppState;
 use crate::runtime::capability::DispatchCtx;
 use crate::runtime::pool::{PerPluginMetrics, PoolMetrics};
 use crate::utils::error::{ApiResponse, AppError};

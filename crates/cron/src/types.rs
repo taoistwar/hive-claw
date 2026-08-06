@@ -3,18 +3,13 @@
 use serde::{Deserialize, Serialize};
 
 /// Discriminant of a [`CronSchedule`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleKind {
     At,
+    #[default]
     Every,
     Cron,
-}
-
-impl Default for ScheduleKind {
-    fn default() -> Self {
-        Self::Every
-    }
 }
 
 /// Schedule definition for a cron job.
@@ -36,17 +31,12 @@ pub struct CronSchedule {
 }
 
 /// Payload kind — what to do when the job runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadKind {
     SystemEvent,
+    #[default]
     AgentTurn,
-}
-
-impl Default for PayloadKind {
-    fn default() -> Self {
-        Self::AgentTurn
-    }
 }
 
 /// What to do when the job runs.

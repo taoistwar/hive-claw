@@ -140,24 +140,22 @@ impl AzureOpenAIProvider {
             body.insert("temperature".into(), json!(req.temperature as f64));
         }
 
-        if let Some(r) = reasoning {
-            if !r.is_empty() && r.to_lowercase() != "none" {
-                body.insert("reasoning".into(), json!({"effort": r}));
-                body.insert(
-                    "include".into(),
-                    Value::Array(vec![Value::String("reasoning.encrypted_content".into())]),
-                );
-            }
+        if let Some(r) = reasoning
+            .filter(|reasoning| !reasoning.is_empty() && reasoning.to_lowercase() != "none")
+        {
+            body.insert("reasoning".into(), json!({"effort": r}));
+            body.insert(
+                "include".into(),
+                Value::Array(vec![Value::String("reasoning.encrypted_content".into())]),
+            );
         }
 
-        if let Some(tools) = &req.tools {
-            if !tools.is_empty() {
-                body.insert("tools".into(), Value::Array(convert_tools(tools)));
-                body.insert(
-                    "tool_choice".into(),
-                    Self::tool_choice_to_value(req.tool_choice.as_ref()),
-                );
-            }
+        if let Some(tools) = req.tools.as_ref().filter(|tools| !tools.is_empty()) {
+            body.insert("tools".into(), Value::Array(convert_tools(tools)));
+            body.insert(
+                "tool_choice".into(),
+                Self::tool_choice_to_value(req.tool_choice.as_ref()),
+            );
         }
 
         Value::Object(body)
@@ -264,7 +262,9 @@ impl LLMProvider for AzureOpenAIProvider {
             }
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            return LLMResponse::error(format!("Error: malformed JSON response from Azure OpenAI"));
+            return LLMResponse::error(
+                "Error: malformed JSON response from Azure OpenAI".to_string(),
+            );
         };
         parse_response_output(&value)
     }

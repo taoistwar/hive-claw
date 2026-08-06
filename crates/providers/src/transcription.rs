@@ -20,17 +20,13 @@ pub trait TranscriptionProvider: Send + Sync {
     async fn transcribe(&self, file_path: &Path) -> String;
 }
 
-fn env_or<'a>(explicit: Option<&'a str>, keys: &[&str]) -> Option<String> {
-    if let Some(v) = explicit {
-        if !v.is_empty() {
-            return Some(v.to_string());
-        }
+fn env_or(explicit: Option<&str>, keys: &[&str]) -> Option<String> {
+    if let Some(v) = explicit.filter(|v| !v.is_empty()) {
+        return Some(v.to_string());
     }
     for k in keys {
-        if let Ok(v) = std::env::var(k) {
-            if !v.is_empty() {
-                return Some(v);
-            }
+        if let Some(v) = std::env::var(k).ok().filter(|v| !v.is_empty()) {
+            return Some(v);
         }
     }
     None

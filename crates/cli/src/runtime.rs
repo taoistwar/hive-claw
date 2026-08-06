@@ -8,18 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent::tools::MessageTool;
 use agent::{AgentLoop, BuiltinToolSet, LoopConfig, ToolFactoryConfig, ToolFactoryDeps};
 use bus::MessageBus;
-use config::schema::{Config, ProviderConfig};
+use config::schema::Config;
 use config::{get_config_path, paths::is_default_workspace, set_config_path};
-use providers::anthropic_provider::{AnthropicConfig, AnthropicProvider};
-use providers::azure_openai_provider::{AzureOpenAIConfig, AzureOpenAIProvider};
-use providers::bedrock_provider::{BedrockConfig, BedrockProvider};
-use providers::openai_codex_provider::{OpenAICodexConfig, OpenAICodexProvider};
-use providers::openai_compat_provider::{OpenAICompatConfig, OpenAICompatProvider};
-use providers::registry::{Backend, ProviderSpec, find_by_model, find_by_name};
-use providers::{GenerationSettings, GitHubCopilotProvider, LLMProvider};
 use session::SessionManager;
 use tokio::sync::Mutex;
 
@@ -151,15 +143,15 @@ impl LoopBundle {
 /// Expand a leading `~` / `~/` prefix to the user's HOME directory.
 pub fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    if s == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+    if s == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
     }
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = s.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
     path.to_path_buf()
 }

@@ -39,10 +39,8 @@ pub fn is_file_edit_tool(tool_name: &str) -> bool {
 }
 
 pub fn display_file_edit_path(path: &Path, workspace: Option<&Path>) -> String {
-    if let Some(workspace) = workspace {
-        if let Ok(rel) = path.strip_prefix(workspace) {
-            return rel.to_string_lossy().replace('\\', "/");
-        }
+    if let Some(rel) = workspace.and_then(|workspace| path.strip_prefix(workspace).ok()) {
+        return rel.to_string_lossy().replace('\\', "/");
     }
     path.to_string_lossy().replace('\\', "/")
 }
@@ -539,7 +537,7 @@ impl StreamingJsonStringField {
                 if self.unicode_remaining == 0 {
                     let decoded = u32::from_str_radix(&self.unicode_buffer, 16)
                         .ok()
-                        .and_then(|cp| char::from_u32(cp))
+                        .and_then(char::from_u32)
                         .unwrap_or('x');
                     self.unicode_buffer.clear();
                     self.mark_char(decoded);
@@ -642,29 +640,36 @@ impl StreamingFileEditState {
     }
 
     fn apply_delta(&mut self, payload: &serde_json::Value) {
-        if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
-            if !call_id.is_empty() {
-                self.call_id = call_id.to_string();
-            }
+        if let Some(call_id) = payload
+            .get("call_id")
+            .and_then(|value| value.as_str())
+            .filter(|call_id| !call_id.is_empty())
+        {
+            self.call_id = call_id.to_string();
         }
-        if let Some(name) = payload.get("name").and_then(|v| v.as_str()) {
-            if !name.is_empty() {
-                self.name = name.to_string();
-            }
+        if let Some(name) = payload
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|name| !name.is_empty())
+        {
+            self.name = name.to_string();
         }
-        if let Some(args) = payload.get("arguments") {
-            if let Some(args) = args.as_str() {
-                self.arguments = args.to_string();
-                self.content.reset();
-                self.old_text.reset();
-                self.new_text.reset();
-                return;
-            }
+        if let Some(args) = payload
+            .get("arguments")
+            .and_then(|arguments| arguments.as_str())
+        {
+            self.arguments = args.to_string();
+            self.content.reset();
+            self.old_text.reset();
+            self.new_text.reset();
+            return;
         }
-        if let Some(delta) = payload.get("arguments_delta").and_then(|v| v.as_str()) {
-            if !delta.is_empty() {
-                self.arguments.push_str(delta);
-            }
+        if let Some(delta) = payload
+            .get("arguments_delta")
+            .and_then(|value| value.as_str())
+            .filter(|delta| !delta.is_empty())
+        {
+            self.arguments.push_str(delta);
         }
     }
 
@@ -761,16 +766,16 @@ fn stream_key(payload: &serde_json::Value) -> String {
         if let Some(index) = index.as_i64() {
             return format!("idx:{}", index);
         }
-        if let Some(index) = index.as_str() {
-            if !index.is_empty() {
-                return format!("idx:{}", index);
-            }
+        if let Some(index) = index.as_str().filter(|index| !index.is_empty()) {
+            return format!("idx:{}", index);
         }
     }
-    if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
-        if !call_id.is_empty() {
-            return format!("id:{}", call_id);
-        }
+    if let Some(call_id) = payload
+        .get("call_id")
+        .and_then(|value| value.as_str())
+        .filter(|call_id| !call_id.is_empty())
+    {
+        return format!("id:{}", call_id);
     }
     String::new()
 }
@@ -796,15 +801,8 @@ fn extract_complete_json_string(source: &str, key: &str) -> Option<String> {
                         return None;
                     }
                     let digits: String = chars[i + 1..i + 5].iter().collect();
-                    if let Ok(cp) = u32::from_str_radix(&digits, 16) {
-                        if let Some(c) = char::from_u32(cp) {
-                            out.push(c);
-                        } else {
-                            return None;
-                        }
-                    } else {
-                        return None;
-                    }
+                    let code_point = u32::from_str_radix(&digits, 16).ok()?;
+                    out.push(char::from_u32(code_point)?);
                     i += 4;
                 }
                 _ => out.push(ch),
@@ -964,14 +962,9 @@ impl StreamingFileEditTracker {
     pub async fn apply_final_call_ids(&self, final_tool_calls: &[serde_json::Value]) {
         let mut states = self.states.lock().await;
         for tool_call in final_tool_calls {
-            if let Some(_canonical) = self
+            let _ = self
                 .canonical_call_id_for_inner(tool_call, &mut states)
-                .await
-            {
-                if let Some(id) = tool_call.get("id") {
-                    let _ = id;
-                }
-            }
+                .await;
         }
     }
 
@@ -1084,5 +1077,76 @@ mod tests {
             oversized: false,
         };
         assert!(!snap.countable());
+    }
+
+    #[tokio::test]
+    async fn error_unmatched_emits_error_event_and_waits_for_callback() {
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let error_ack = Arc::new(std::sync::Mutex::new(None));
+        let error_ready = Arc::new(tokio::sync::Notify::new());
+
+        let emit: EmitFn = {
+            let emitted = Arc::clone(&emitted);
+            let error_ack = Arc::clone(&error_ack);
+            let error_ready = Arc::clone(&error_ready);
+            Arc::new(move |events| {
+                let is_error = events.iter().any(|event| event["phase"] == "error");
+                emitted.lock().unwrap().extend(events);
+
+                let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+                if is_error {
+                    *error_ack.lock().unwrap() = Some(ack_tx);
+                    error_ready.notify_one();
+                } else {
+                    ack_tx.send(()).unwrap();
+                }
+                ack_rx
+            })
+        };
+
+        let tracker = Arc::new(StreamingFileEditTracker::new(None, emit));
+        tracker
+            .update(&json!({
+                "index": 0,
+                "call_id": "call-unmatched",
+                "name": "write_file",
+                "arguments": r#"{"path":"unmatched.txt","content":"hello"}"#,
+            }))
+            .await;
+
+        let error_task = {
+            let tracker = Arc::clone(&tracker);
+            tokio::spawn(async move {
+                tracker
+                    .error_unmatched(&[], "Tool call did not complete.")
+                    .await;
+            })
+        };
+
+        error_ready.notified().await;
+        assert!(
+            !error_task.is_finished(),
+            "error_unmatched must wait for the emit callback acknowledgement"
+        );
+
+        error_ack
+            .lock()
+            .unwrap()
+            .take()
+            .expect("error callback acknowledgement sender")
+            .send(())
+            .unwrap();
+        error_task.await.unwrap();
+
+        let emitted = emitted.lock().unwrap();
+        let event = emitted
+            .iter()
+            .find(|event| event["phase"] == "error")
+            .expect("unmatched edit error event");
+        assert_eq!(event["call_id"], "call-unmatched");
+        assert_eq!(event["tool"], "write_file");
+        assert_eq!(event["path"], "unmatched.txt");
+        assert_eq!(event["status"], "error");
+        assert_eq!(event["error"], "Tool call did not complete.");
     }
 }

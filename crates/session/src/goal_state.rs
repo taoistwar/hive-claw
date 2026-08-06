@@ -44,10 +44,11 @@ pub fn parse_goal_state(blob: Option<&Value>) -> Option<serde_json::Map<String, 
     if let Some(obj) = blob.as_object() {
         return Some(obj.clone());
     }
-    if let Some(s) = blob.as_str() {
-        if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(s) {
-            return Some(obj);
-        }
+    if let Some(Value::Object(obj)) = blob
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    {
+        return Some(obj);
     }
     None
 }
@@ -76,7 +77,7 @@ pub fn goal_state_runtime_lines(metadata: Option<&HashMap<String, Value>>) -> Ve
         return vec!["Goal: active (no objective text stored).".into()];
     }
 
-    let mut objective = if objective.len() > MAX_OBJECTIVE_IN_RUNTIME {
+    let objective = if objective.len() > MAX_OBJECTIVE_IN_RUNTIME {
         let truncated: String = objective.chars().take(MAX_OBJECTIVE_IN_RUNTIME).collect();
         let truncated = truncated.trim_end();
         format!("{truncated}\n\u{2026} (truncated)")
@@ -102,37 +103,37 @@ pub fn goal_state_ws_blob(metadata: Option<&HashMap<String, Value>>) -> serde_js
         .and_then(|m| session_goal_raw(Some(m)))
         .and_then(|v| parse_goal_state(Some(v)));
 
-    if let Some(goal) = goal {
-        if goal.get("status").and_then(|v| v.as_str()) == Some("active") {
-            let mut objective = goal
-                .get("objective")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+    if let Some(goal) =
+        goal.filter(|goal| goal.get("status").and_then(|v| v.as_str()) == Some("active"))
+    {
+        let mut objective = goal
+            .get("objective")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
 
-            if objective.len() > MAX_OBJECTIVE_WS {
-                let truncated: String = objective.chars().take(MAX_OBJECTIVE_WS).collect();
-                objective = format!("{}\u{2026}", truncated.trim_end());
-            }
-
-            let summary = goal
-                .get("ui_summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let summary: String = summary.chars().take(120).collect();
-
-            let mut blob = serde_json::Map::new();
-            blob.insert("active".into(), Value::Bool(true));
-            if !summary.is_empty() {
-                blob.insert("ui_summary".into(), Value::String(summary));
-            }
-            if !objective.is_empty() {
-                blob.insert("objective".into(), Value::String(objective));
-            }
-            return Value::Object(blob);
+        if objective.len() > MAX_OBJECTIVE_WS {
+            let truncated: String = objective.chars().take(MAX_OBJECTIVE_WS).collect();
+            objective = format!("{}\u{2026}", truncated.trim_end());
         }
+
+        let summary = goal
+            .get("ui_summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let summary: String = summary.chars().take(120).collect();
+
+        let mut blob = serde_json::Map::new();
+        blob.insert("active".into(), Value::Bool(true));
+        if !summary.is_empty() {
+            blob.insert("ui_summary".into(), Value::String(summary));
+        }
+        if !objective.is_empty() {
+            blob.insert("objective".into(), Value::String(objective));
+        }
+        return Value::Object(blob);
     }
 
     serde_json::json!({"active": false})

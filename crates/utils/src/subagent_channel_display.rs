@@ -1,9 +1,9 @@
-/// Strip internal subagent inject scaffolding for human-facing channel surfaces.
-///
-/// Persisted subagent announcements mirror `agent/subagent_announce.md`: header,
-/// full `Task:` assignment (model context), `Result:`, and a trailing model-only
-/// `Summarize…` instruction. External channels (embedded WebUI, session previews)
-/// should show only the header plus a truncated result body.
+//! Strip internal subagent inject scaffolding for human-facing channel surfaces.
+//!
+//! Persisted subagent announcements mirror `agent/subagent_announce.md`: header,
+//! full `Task:` assignment (model context), `Result:`, and a trailing model-only
+//! `Summarize…` instruction. External channels (embedded WebUI, session previews)
+//! should show only the header plus a truncated result body.
 
 /// Cap Result section length so WebSocket session replay stays readable; full text
 /// remains on disk for LLM replay (we only mutate outgoing API copies in websocket).

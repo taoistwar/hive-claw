@@ -14,11 +14,11 @@ use bus::MessageBus;
 use bus::OutboundMessage;
 use serde_json::Value;
 
-use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings, handle_inbound};
+use crate::base::{Channel, ChannelError, ChannelResult, TranscriptionSettings};
 use crate::registry::ChannelEntry;
 
 /// Mochat channel configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MochatConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -30,22 +30,15 @@ pub struct MochatConfig {
     pub allow_from: Vec<String>,
 }
 
-impl Default for MochatConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            server_url: String::new(),
-            token: String::new(),
-            allow_from: Vec::new(),
-        }
-    }
-}
-
 /// Mochat channel using Socket.IO.
 pub struct MochatChannel {
     config: MochatConfig,
     bus: MessageBus,
     running: Arc<AtomicBool>,
+    #[expect(
+        dead_code,
+        reason = "reserved for staged inbound media transcription integration"
+    )]
     transcription: TranscriptionSettings,
 }
 

@@ -14,7 +14,7 @@
 /// SQL formatting variants.
 ///
 /// ```rust
-/// use sqlx_demo::sql_formatter::{SqlFormat, format_sql};
+/// use hiveweb::sqlx::sql_formatter::{SqlFormat, format_sql};
 ///
 /// let raw = "\n\nSELECT id, name\nFROM users\nWHERE active = true\n";
 ///

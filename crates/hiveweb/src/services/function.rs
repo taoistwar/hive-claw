@@ -123,13 +123,18 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
     validate_schema(&meta.input_schema, "input_schema")?;
     validate_schema(&meta.output_schema, "output_schema")?;
 
-    // Plugin 必须存在且未软删
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
+
+    // 与 Plugin 软删除的 FOR UPDATE 互斥，确保校验和 Function 写入之间没有竞态窗口。
     let plugin_row: Option<(i64, Option<DateTime<Utc>>)> =
-        sqlx::query_as("SELECT id, deleted_at FROM plugins WHERE id = ?")
+        sqlx::query_as("SELECT id, deleted_at FROM plugins WHERE id = ? FOR SHARE")
             .bind(meta.plugin_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| AppError::Internal(format!("plugin lookup: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("plugin lock: {e}")))?;
     let Some((_, deleted_at)) = plugin_row else {
         return Err(AppError::NotFound(format!(
             "plugin id={} not found",
@@ -137,7 +142,7 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
         )));
     };
     if deleted_at.is_some() {
-        return Err(AppError::Conflict(format!(
+        return Err(AppError::ResourceInUse(format!(
             "plugin id={} 已软删除，无法绑定 Function",
             meta.plugin_id
         )));
@@ -157,7 +162,7 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
     .bind(&meta.plugin_export)
     .bind(meta.category_id)
     .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| {
         let msg = e.to_string();
@@ -176,10 +181,14 @@ pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Functio
         )
         .bind(tid)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(format!("tag bind: {e}")))?;
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("tx commit: {e}")))?;
 
     fetch_by_id(pool, id).await
 }

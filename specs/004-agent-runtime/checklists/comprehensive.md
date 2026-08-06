@@ -1,5 +1,7 @@
 # Comprehensive Checklist: Agent Runtime（Capability-based WASM Plugin Runtime）
 
+> **历史边界（2026-07-23）：** 涉及原管理端测试聊天、admin Chat/SSE、30 天 admin 会话保留或 SC-010 的条目已 superseded，仅保留历史，不再参与现役 004 验收。
+
 **Purpose**: 正式级需求质量检查清单（40+ 项），覆盖安全、API、运行时、性能、边缘案例、非功能需求全维度。用于作者自查，确保 spec/plan/tasks 中的需求描述完整、清晰、一致、可度量。
 **Created**: 2026-05-28
 **Feature**: [spec.md](../spec.md) | [plan.md](../plan.md) | [tasks.md](../tasks.md)
@@ -27,10 +29,10 @@
 
 - [x] CHK013 - "大文件 Plugin" 上限 16 MB 是否与 `PLUGIN_MAX_BYTES` env var 绑定，并定义默认值和可调范围？[Clarity, Spec §Edge Cases]
 - [x] CHK014 - "单次 Plugin 调用硬超时 30 秒" 是否与双层 timeout（fuel-based + tokio wall-clock）的实现方式对齐？[Clarity, Spec §FR-030]
-- [x] CHK015 - "Plugin 单次调用内存上限 128 MB" 是否有明确的超限处理行为（中止 + audit + 实例不入池）？[Clarity, Spec §FR-031]
+- [x] CHK015 - "Plugin 单次调用内存上限 128 MiB" 是否有明确的超限处理行为（中止 + 安全 tracing + bounded best-effort DB runtime audit + 丢弃本次 fresh Store/Instance）？[Clarity, Spec §FR-032]
 - [x] CHK016 - "Agent 嵌套至多 10 层" 的深度计数方式是否明确（根 = 第 1 层 vs 根 = 0 层）？[Clarity, Spec §FR-023]
 - [x] CHK017 - "同会话路径超 5 跳自动终止" 的跳次计数是否明确定义（main→子=1 跳 vs 0 跳）？[Clarity, Spec §Edge Cases]
-- [x] CHK018 - `model_preset` 字段的 NULL 语义（走全局默认 preset）是否与启动期"正好 1 个 default = true"校验一致？[Clarity, Spec §FR-024]
+- [x] CHK018 - `model_preset` 字段是否明确只有 NULL 走全局默认 preset，显式未知值 fail closed，并与启动期"正好 1 个 default = true"校验一致？[Clarity, Spec §FR-025]
 - [x] CHK019 - "并发同时编辑同一 Workflow/Agent" 的乐观锁实现是否明确定义 client 必须携带的字段和 409 响应格式？[Clarity, Spec §Edge Cases]
 - [x] CHK020 - CapabilityPicker 对 System 角色"不渲染" vs "disabled" 的区分是否在 spec 和 UI 契约中一致表达？[Clarity, Spec §FR-022 v6]
 - [x] CHK021 - "30 天聊天历史保留" 的 cron 任务执行时间和级联删除行为是否明确？[Clarity, Spec §Assumptions]
@@ -40,7 +42,7 @@
 - [x] CHK022 - spec §FR-003 "子 Agent 不继承父 Agent permissions" 与 plan §Complexity Tracking 偏离 11 是否一致？[Consistency]
 - [x] CHK023 - spec §FR-028 SSE 事件定义（done/error 互斥）与 tasks §T127 的 6 种事件类型 + error 是否一致？[Consistency]
 - [x] CHK024 - spec §FR-022 "main 不可删除" 与 SC-008 "100% 拒绝" 以及 tasks §T116 的 5001 错误码是否一致？[Consistency]
-- [x] CHK025 - spec §Clarifications 32 "Plugin 实例可跨 Agent/Session 复用" 与 §FR-029 "归还前 reset linear memory" 是否一致？[Consistency]
+- [x] CHK025 - spec 的 `CompiledPlugin` 跨 Agent/Session 缓存与 §FR-029 fresh Store/Instance 隔离是否一致？[Consistency]
 - [x] CHK026 - spec §FR-027 "JWT.admin_id == session.admin_id" 的 403 行为与 contracts/api.md 的会话所有权契约是否一致？[Consistency]
 - [x] CHK027 - spec §FR-025 "route_to_subagent 必须直接子 Agent" 与 tasks §T119 的 child-only routing 校验是否一致？[Consistency]
 - [x] CHK028 - spec §Edge Cases "WASM 编译失败不写入对象存储" 与 tasks §T070 的上传期校验流程是否一致？[Consistency]
@@ -51,7 +53,7 @@
 - [x] CHK030 - SC-004 "host_call 鉴权+转发 p95 ≤ 5ms" 的度量边界是否可客观验证（从 dispatcher 收到字节到准备调用 capability handler）？[Measurability, Spec §SC-004]
 - [x] CHK031 - SC-005 "Pool 命中 p95 ≤ 50ms / 冷启动 p95 ≤ 300ms" 的"命中"与"冷启动"定义是否可用于压测脚本自动判定？[Measurability, Spec §SC-005]
 - [x] CHK032 - SC-007 "越权 100% 拒绝" 是否有明确的测试方法（测试用例数 / 场景覆盖）？[Measurability, Spec §SC-007]
-- [x] CHK033 - SC-009 "软删除引用检查 100% 准确" 是否与 spec §SC-009 的 Race window 两层防御（FOR UPDATE + 二次校验）对齐？[Measurability, Spec §SC-009]
+- [x] CHK033 - SC-009 "软删除引用检查 100% 准确" 是否与 spec §SC-009 的 Race window 互斥锁协议（删除 `FOR UPDATE` + 创建 `FOR SHARE` 持锁至 INSERT/COMMIT）及 T165 的 100 轮/两种受控交错对齐？[Measurability, Spec §SC-009]
 - [x] CHK034 - SC-010 "端到端对话 p95 ≤ 8 秒" 是否明确标注含 1 次 LLM 调用，并将 LLM 外部延迟与宿主延迟分离度量？[Measurability, Spec §SC-010, Plan §偏离 4]
 
 ## 场景覆盖（Scenario Coverage）
@@ -59,7 +61,7 @@
 - [x] CHK035 - Plugin 文件在对象存储中丢失（外部清理）的场景是否有需求定义？[Coverage, Edge Case, Spec §Edge Cases]
 - [x] CHK036 - Workflow 节点入参映射缺失字段的场景是否有保存期校验需求？[Coverage, Edge Case, Spec §Edge Cases]
 - [x] CHK037 - Agent 路由死循环（A→B→A）的场景是否有运行时检测 + 自动终止 + audit 需求？[Coverage, Exception Flow, Spec §Edge Cases]
-- [x] CHK038 - LLM 调用失败时 FallbackProvider 链全部失败的降级场景是否有 SSE error 事件需求？[Coverage, Exception Flow, Spec §Assumptions]
+- [x] CHK038 - FallbackProvider 整链失败是否由现行调用方返回 typed error，并与可选的应用层本地文本兜底分开记录？[Coverage, Exception Flow, Spec §Assumptions] — ✅ provider 链失败=`llm_invoke/error`；本地文本=`llm_local_fallback`；原 admin SSE 已 superseded
 - [x] CHK039 - 并发同时编辑同一 Workflow/Agent 的乐观锁冲突场景是否有 409 响应需求？[Coverage, Edge Case, Spec §Edge Cases]
 - [x] CHK040 - 内置 Function 与定制 Function 标识符冲突的场景是否有注册期拒绝需求？[Coverage, Edge Case, Spec §Edge Cases]
 - [x] CHK041 - SSE 连接中途断开的 UX 场景是否有明确的"连接中断 + 重新发送"按钮需求？[Coverage, UX, Spec §FR-028]
@@ -75,9 +77,9 @@
 - [x] CHK048 - 危险 capability 在 CapabilityPicker 中对 System 角色隐藏（非 Super 不渲染）的需求是否与后端校验一致？[Edge Case, Security, Spec §FR-022 v6]
 - [x] CHK049 - 聊天内容上限 64 KB 是否有明确的截断/拒绝行为？[Edge Case, Spec §TM-4]
 - [x] CHK050 - WASM 加载前 sha256 校验不一致的场景是否有"拒绝 + audit + 通知运维"需求？[Edge Case, Security, Spec §FR-029 v7]
-- [x] CHK051 - Plugin 调用超时后实例不入池（被中断的实例不再可信）的需求是否明确？[Edge Case, Spec §FR-030]
-- [x] CHK052 - 启动期 llm_presets 缺少 default = true 的场景是否有 panic 退出需求？[Edge Case, Plan §Startup Initialization Order]
-- [x] CHK053 - audit log 中超期行（> 90 天）的清理 cron 是否有需求定义？[Edge Case, Spec §TM-5]
+- [x] CHK051 - Plugin 调用超时后是否丢弃被中断的 fresh Store/Instance，并 cancellation-safe 地释放 invocation slot？[Edge Case, Spec §FR-030]
+- [x] CHK052 - 启动期 llm_presets 缺少 default = true 时是否在监听前静态安全报错并非零退出，而不 panic？[Edge Case, Plan §Startup Initialization Order]
+- [x] CHK053 - runtime audit log 中超过可配置保留期（默认 36500 天 / 100 年）的清理 cron 是否有需求定义？[Edge Case, Spec §TM-5]
 
 ## 非功能需求质量（Non-Functional Requirements Quality）
 
@@ -100,7 +102,7 @@
 
 ## 歧义与冲突（Ambiguities & Conflicts）
 
-- [x] CHK067 - "正在思考…" 占位符的 30 秒超时是否与 LLM 单次调用超时（30s）+ FallbackProvider 链总超时存在歧义？[Ambiguity, Spec §FR-028 / §Assumptions]
+- [x] CHK067 - LLM 单节点、普通整链及 Plugin 内 `llm.invoke` deadline 是否无歧义？[Ambiguity, Spec §FR-025 / research §7] — ✅ 25s/node、45s/ordinary-chain、25s/`llm.invoke` chain；原“正在思考”UI 已 superseded
 - [x] CHK068 - `db.execute` / `db.query` 仅允许命名查询的需求是否在 contracts/host-functions.md 中有具体的 named query schema 定义？[Ambiguity, Spec §FR-001]
 - [x] CHK069 - "skill markdown 内容可插值引用 Function/Workflow 调用结果" 的模板语法是否有明确定义？[Ambiguity, Spec §FR-021]
 - [x] CHK070 - `model_preset` 切换时已有的活跃会话是否受影响（继续用旧 preset vs 切换到新 preset）？[Ambiguity, Spec §FR-024]
@@ -126,27 +128,27 @@
 | CHK013 | spec §Edge Cases 明确 16 MB + `PLUGIN_MAX_BYTES` env |
 | CHK014 | FR-030 v7 明确双层 timeout（fuel + tokio wall-clock） |
 | CHK016 | data-model `depth` 注释 main=0 / 子=parent+1 |
-| CHK018 | spec §Clarifications + plan §Startup "正好1个default=true → panic" |
+| CHK018 | spec §Clarifications + plan §Startup "正好1个default=true；违反时静态安全错误 + listener 前非零退出" |
 | CHK019 | spec §Edge Cases + contracts §8 4094 OptimisticLockConflict |
 | CHK020 | FR-022 v7 "不渲染（不是 disabled）" + 后端再校验 |
 | CHK022 | FR-003 一致性 — plan 无偏离 11；"子不继承父"全文一致 |
 | CHK024 | FR-022 + SC-008 + contracts 5001 三处一致 |
-| CHK025 | FR-003 "可跨 Agent 复用" + FR-029 "归还前 reset" 逻辑自洽 |
+| CHK025 | FR-029 仅复用 `CompiledPlugin`，每次调用 fresh Store/Instance，memory/global/table 不跨调用 |
 | CHK026 | FR-027 v7 JWT.admin_id == session.admin_id 与 contracts §Chat 一致 |
 | CHK027 | FR-025 hard-rule ④ + T119 child-only routing 一致 |
 | CHK028 | spec §Edge Cases "WASM 编译失败不写入对象存储" + FR-005 上传期校验一致 |
 | CHK030 | SC-004 含"度量边界"段 |
 | CHK031 | SC-005 含"度量定义"段 |
-| CHK033 | SC-009 含"Race window 规避"段 |
+| CHK033 | SC-009 含互斥锁协议，T165 含 100 轮随机竞态及两种受控交错 |
 | CHK034 | SC-010 + plan §偏离 4 分离宿主/LLM 延迟 |
 | CHK035 | spec §Edge Cases "Plugin 文件在对象存储中丢失"场景 |
 | CHK036 | spec §Edge Cases "Workflow 节点入参映射缺失" + 保存时校验 |
 | CHK037 | spec §Edge Cases 5 跳 + FR-025 循环检测 + audit |
-| CHK038 | research §7 整链失败 → SSE error；FR-028 error 事件 |
+| CHK038 | research §7 整链失败 → 现行调用方 typed error；provider/local fallback 分开审计；原 SSE 已 superseded |
 | CHK039 | spec §Edge Cases 乐观锁 + contracts 4094 |
 | CHK040 | spec §Edge Cases "禁止注册同名定制函数" |
 | CHK041 | FR-028 §客户端 UX 契约 "连接中断 + 重新发送" |
-| CHK042 | FR-029 §Pool 容量与行为 "丢弃实例 + reset_failures + audit" |
+| CHK042 | FR-029 §Pool 容量与行为：调用结束丢弃 fresh Store/Instance；兼容 `reset_failures` 预期恒为 0 |
 | CHK043 | FR-029 §Pool 容量与行为 5009 PoolBusy |
 | CHK044 | FR-027 §Rate-limit 兼容 429 + 4291 |
 | CHK045 | spec US7 + contracts §3 Tags 4091 + 引用计数 |
@@ -156,8 +158,8 @@
 | CHK049 | contracts §8 content 64KB → 4001 |
 | CHK050 | FR-029 v7 "拒绝实例化 + audit + 通知运维" |
 | CHK051 | FR-030 v7 "被中断的实例不再可信，不入池" |
-| CHK052 | plan §Startup "违反 → panic" |
-| CHK053 | data-model §V017 "保留 ≥ 90 天" + plan §Startup step 11 audit_retention cron |
+| CHK052 | plan §Startup "LLM registry 违反 → 静态安全错误 + listener 前非零退出，不 panic" |
+| CHK053 | data-model §V032 "默认保留 36500 天（100 年，可配置）" + plan §Startup step 11 audit_retention cron |
 | CHK055 | spec §Threat Model TM-1..5 + FR 映射完整 |
 | CHK056 | plan §Principle VI "每次 host_call / Workflow / Agent / LLM emit 结构化日志" |
 | CHK060 | contracts §10 keep-alive 15s + 4 个 response headers |

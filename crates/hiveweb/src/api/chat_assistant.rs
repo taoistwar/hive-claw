@@ -23,7 +23,7 @@
 use axum::response::sse::Event;
 use axum::{
     Router,
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -38,10 +38,12 @@ use crate::api::AppState;
 use crate::api::chat_common;
 use crate::api::chat_common::{SseConcurrencyGuard, SseSlotConfig, try_acquire_slot};
 use crate::cache::redis::RedisClient;
+use crate::middleware::request_id::RequestId;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::services::chat_user as svc;
 use crate::services::membership;
 use crate::services::user_auth;
-use crate::utils::error::AppError;
+use crate::utils::error::{AppError, codes};
 
 /// 预共享密钥，从环境变量 ASSISTANT_SECRET 懒加载
 static SECRET: OnceLock<String> = OnceLock::new();
@@ -80,6 +82,7 @@ pub struct AssistantRequest {
 
 async fn assistant_chat(
     State(state): State<AppState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
     headers: axum::http::HeaderMap,
     Query(params): Query<HashMap<String, String>>,
     body: String,
@@ -138,10 +141,9 @@ async fn assistant_chat(
     }
 
     // 4b. Sensitive word filter — input check (010-sensitive-word-filter)
-    if let Some(hit) = state.sensitive_filter.check(&req.message) {
+    if state.sensitive_filter.check(&req.message).is_some() {
         tracing::info!(
             user_id = req.user_id,
-            triggered_word = %hit.word(),
             "Assistant input blocked by sensitive filter"
         );
         return AppError::SensitiveWordBlocked(
@@ -161,40 +163,46 @@ async fn assistant_chat(
     };
 
     // 5. 获取 cloud_user 信息并校验用户是否存在（缓存优先）
-    let cloud_info = match membership::get_cloud_user_info_cached(
-        &state.redis,
-        ext_pool,
-        req.user_id,
-    )
-    .await
-    {
-        Ok(Some(info)) => info,
-        Ok(None) => {
-            return AppError::BadRequest("User not found".into())
-                .into_response::<()>()
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!(user_id = req.user_id, error = %e, "get_cloud_user_info_cached 查询失败");
-            return AppError::Internal("用户数据查询失败，请稍后重试".into())
-                .into_response::<()>()
-                .into_response();
-        }
-    };
+    let cloud_info =
+        match membership::get_cloud_user_info_cached(&state.redis, ext_pool, req.user_id).await {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                return AppError::BadRequest("User not found".into())
+                    .into_response::<()>()
+                    .into_response();
+            }
+            Err(_) => {
+                tracing::error!(
+                    user_id = req.user_id,
+                    error_kind = "cloud_user_query_failed",
+                    "get_cloud_user_info_cached 查询失败"
+                );
+                return AppError::Internal("用户数据查询失败，请稍后重试".into())
+                    .into_response::<()>()
+                    .into_response();
+            }
+        };
 
     // 6. 获取会员等级 & 判断是否 VIP
     let is_vip = membership::check_vip_membership(ext_pool, req.user_id)
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(user_id = req.user_id, error = %e, "membership::check_vip_membership 查询失败，降级为非VIP");
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                user_id = req.user_id,
+                error_kind = "membership_query_failed",
+                "membership::check_vip_membership 查询失败，降级为非VIP"
+            );
             false
         });
     tracing::debug!(user_id = req.user_id, is_vip, "用户 VIP 状态");
     // 7. 日访问次数限流（从外部 cc_config 获取配置，Redis 缓存优先）
     let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "cc_config 限流配置查询失败，使用默认值");
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                error_kind = "rate_limit_config_query_failed",
+                "cc_config 限流配置查询失败，使用默认值"
+            );
             None
         })
         .unwrap_or_default();
@@ -226,9 +234,14 @@ async fn assistant_chat(
                 .into_response();
         }
     };
-    // 8. SSE concurrency guard
+    // 8. Per-user Assistant request concurrency guard
     if !try_acquire_slot(req.user_id, SseSlotConfig::USER).await {
-        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        rollback_daily_limit(
+            &state.redis,
+            &limit_key,
+            "assistant concurrency slot unavailable",
+        )
+        .await;
         return AppError::SseConcurrencyExceeded("并发会话过多，请关闭其它对话窗口后重试".into())
             .into_response::<()>()
             .into_response();
@@ -241,7 +254,7 @@ async fn assistant_chat(
     let (uid, nickname) = (Some(cloud_info.0.as_str()), Some(cloud_info.1.as_str()));
 
     if let Err(e) = user_auth::ensure_user_exists(&state.pool, req.user_id, uid, nickname).await {
-        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        rollback_daily_limit(&state.redis, &limit_key, "assistant user sync failed").await;
         return AppError::Internal(format!("user sync: {e}"))
             .into_response::<()>()
             .into_response();
@@ -251,7 +264,7 @@ async fn assistant_chat(
     let session = match svc::get_or_create_session_user(&state.pool, req.user_id).await {
         Ok(s) => s,
         Err(e) => {
-            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            rollback_daily_limit(&state.redis, &limit_key, "assistant session lookup failed").await;
             return e.into_response::<()>().into_response();
         }
     };
@@ -261,7 +274,12 @@ async fn assistant_chat(
     if let Err(e) =
         svc::append_user_message_user(&state.pool, session_id, req.user_id, &req.message).await
     {
-        let _ = decr_daily_limit(&state.redis, &limit_key).await;
+        rollback_daily_limit(
+            &state.redis,
+            &limit_key,
+            "assistant user message persistence failed",
+        )
+        .await;
         return e.into_response::<()>().into_response();
     }
 
@@ -275,9 +293,11 @@ async fn assistant_chat(
             .unwrap_or_default();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel();
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
+        execution_context: RuntimeExecutionContext::best_effort(Some(request_id), Some(session_id)),
         pool: pool.clone(),
         redis: state.redis.clone(),
         s3: state.s3.clone(),
@@ -301,9 +321,11 @@ async fn assistant_chat(
             history,
             user_content,
             tx,
+            error_tx,
         )
         .await
     });
+    let _request_child_task = crate::shutdown::AbortTaskOnDrop::new(handle.abort_handle());
 
     // 客户端断开时取消 orchestrator
     struct CancelGuard(Arc<AtomicBool>);
@@ -314,31 +336,28 @@ async fn assistant_chat(
     }
     let _guard = CancelGuard(cancel);
 
-    // Drain SSE events; the orchestrator already saved the assistant message and returns
-    // the persisted record via the JoinHandle, so we only need to detect early errors here.
-    let mut first_error: Option<String> = None;
-
-    while let Some(Ok(event)) = rx.recv().await {
-        let sse_text = event_to_sse_text(&event);
-        let (event_type, data) = parse_sse_event(&sse_text);
-        if event_type.as_deref() == Some("error") && first_error.is_none() {
-            first_error = Some(data);
-        }
-    }
+    // Drain internal streaming events. Terminal errors travel over a separate typed channel so
+    // this synchronous endpoint never has to parse an `Event` debug representation.
+    while rx.recv().await.is_some() {}
 
     // If run_session_user emitted an error, roll back quota and return error
-    if let Some(err_msg) = &first_error {
-        let _ = decr_daily_limit(&state.redis, &limit_key).await;
-        return AppError::Internal(err_msg.clone())
-            .into_response::<()>()
-            .into_response();
+    if let Some(error) = error_rx.recv().await {
+        return rollback_quota_and_build_error_response(error, || {
+            decr_daily_limit(&state.redis, &limit_key)
+        })
+        .await;
     }
 
     // Ensure the spawned task completes and grab the saved ChatMessageUser record
     let saved = match handle.await {
         Ok(msg) => msg,
         Err(e) => {
-            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            rollback_daily_limit(
+                &state.redis,
+                &limit_key,
+                "assistant orchestrator join failed",
+            )
+            .await;
             return AppError::Internal(format!("orchestrator join: {e}"))
                 .into_response::<()>()
                 .into_response();
@@ -348,7 +367,12 @@ async fn assistant_chat(
     let mut saved = match saved {
         Some(m) => m,
         None => {
-            let _ = decr_daily_limit(&state.redis, &limit_key).await;
+            rollback_daily_limit(
+                &state.redis,
+                &limit_key,
+                "assistant response was not persisted",
+            )
+            .await;
             return AppError::Internal("assistant message was not persisted".into())
                 .into_response::<()>()
                 .into_response();
@@ -380,76 +404,39 @@ async fn assistant_chat(
     axum::Json(saved).into_response()
 }
 
-/// Extract the SSE-formatted text from an axum 0.7 `Event` by parsing its Debug output.
-///
-/// axum 0.7's `Event` stores data in a `pub(crate) buffer: BytesMut` field,
-/// which does not expose its contents publicly. We recover the raw SSE text
-/// by parsing the `Debug` representation of the struct.
-fn event_to_sse_text(event: &Event) -> String {
-    let debug = format!("{:?}", event);
-    // Debug format: Event { buffer: b"event: ...\ndata: ...\n", flags: EventFlags(N) }
-    if let Some(start) = debug.find("buffer: b\"") {
-        let rest = &debug[start + 10..]; // skip "buffer: b\""
-        if let Some(end) = rest.rfind('"') {
-            let escaped = &rest[..end];
-            return unescape_bytesmut_debug(escaped);
-        }
+fn app_error_from_orchestrator(error: crate::runtime::orchestrator::OrchestratorError) -> AppError {
+    if error.message.trim().is_empty() {
+        return AppError::Internal("Malformed orchestrator error".into());
     }
-    String::new()
+
+    match error.code {
+        codes::HOOK_EXECUTION_TIMEOUT => AppError::HookExecutionTimeout(error.message),
+        codes::HOOK_BLOCKING_FAILED => AppError::HookBlockingFailed(error.message),
+        _ => AppError::Internal(error.message),
+    }
 }
 
-/// Unescape a string produced by `bytes::BytesMut`'s `Debug` implementation.
-///
-/// Collects bytes into a `Vec<u8>` so that multi-byte UTF-8 sequences (e.g. Chinese
-/// characters) are reconstructed correctly, then converts via `String::from_utf8_lossy`.
-fn unescape_bytesmut_debug(s: &str) -> String {
-    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => bytes.push(b'\n'),
-                Some('r') => bytes.push(b'\r'),
-                Some('t') => bytes.push(b'\t'),
-                Some('\\') => bytes.push(b'\\'),
-                Some('"') => bytes.push(b'"'),
-                Some('0') => bytes.push(b'\0'),
-                Some('x') => {
-                    // hex escape: \xNN
-                    let h1 = chars.next().unwrap_or('0');
-                    let h2 = chars.next().unwrap_or('0');
-                    if let Ok(b) = u8::from_str_radix(&format!("{h1}{h2}"), 16) {
-                        bytes.push(b);
-                    }
-                }
-                Some(other) => {
-                    bytes.push(b'\\');
-                    // Push the character as UTF-8 bytes
-                    let mut buf = [0u8; 4];
-                    bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
-                }
-                None => bytes.push(b'\\'),
-            }
-        } else {
-            // ASCII-range chars in debug output are literal bytes
-            bytes.push(c as u8);
-        }
+async fn rollback_quota_and_build_error_response<F, Fut, E>(
+    error: crate::runtime::orchestrator::OrchestratorError,
+    rollback: F,
+) -> Response
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
+    let orchestrator_code = error.code;
+    if rollback().await.is_err() {
+        tracing::error!(
+            orchestrator_code,
+            error_kind = "quota_rollback_failed",
+            "assistant quota rollback failed"
+        );
     }
-    String::from_utf8_lossy(&bytes).into_owned()
-}
 
-/// Parse a single SSE-formatted event text into (event_type, data).
-fn parse_sse_event(sse_text: &str) -> (Option<String>, String) {
-    let mut event_type = None;
-    let mut data = String::new();
-    for line in sse_text.lines() {
-        if let Some(rest) = line.strip_prefix("event: ") {
-            event_type = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("data: ") {
-            data = rest.to_string();
-        }
-    }
-    (event_type, data)
+    app_error_from_orchestrator(error)
+        .into_response::<()>()
+        .into_response()
 }
 
 // ── 日访问次数限流（Redis） ──
@@ -467,16 +454,19 @@ async fn check_and_incr_daily_limit(
 ) -> Result<i64, Option<String>> {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Redis connection failed: {e}");
+        Err(_) => {
+            tracing::error!(
+                error_kind = "redis_connection_failed",
+                "Redis connection failed"
+            );
             return Err(None);
         }
     };
 
     let current: i64 = match conn.incr(key, 1).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("Redis INCR failed: {e}");
+        Err(_) => {
+            tracing::error!(error_kind = "redis_increment_failed", "Redis INCR failed");
             return Err(None);
         }
     };
@@ -488,7 +478,12 @@ async fn check_and_incr_daily_limit(
 
     if current > max_times {
         // rollback: 超限不计入
-        let _: Result<(), _> = conn.decr(key, 1).await;
+        if conn.decr::<_, _, i64>(key, 1).await.is_err() {
+            tracing::error!(
+                error_kind = "quota_rollback_failed",
+                "assistant over-limit quota rollback failed"
+            );
+        }
         let max_times = max_times - 1;
         return Err(Some(format!(
             "Daily limit reached ({}/{})",
@@ -500,16 +495,25 @@ async fn check_and_incr_daily_limit(
 }
 
 /// 配额回滚：LLM 调用失败或内部错误时 DECR 计数器
-async fn decr_daily_limit(redis: &RedisClient, key: &str) -> Result<(), ()> {
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Redis DECR connection failed: {e}");
-            return Err(());
-        }
-    };
-    let _: Result<i64, _> = conn.decr(key, 1).await;
-    Ok(())
+async fn decr_daily_limit(redis: &RedisClient, key: &str) -> Result<(), String> {
+    let mut conn = redis
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|error| format!("Redis DECR connection failed: {error}"))?;
+    conn.decr::<_, _, i64>(key, 1)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("Redis DECR failed: {error}"))
+}
+
+async fn rollback_daily_limit(redis: &RedisClient, key: &str, reason: &'static str) {
+    if decr_daily_limit(redis, key).await.is_err() {
+        tracing::error!(
+            reason,
+            error_kind = "quota_rollback_failed",
+            "assistant quota rollback failed"
+        );
+    }
 }
 
 /// 计算到指定重置时间点剩余的秒数（UTC）。
@@ -585,8 +589,12 @@ async fn assistant_quota(
                 .into_response::<()>()
                 .into_response();
         }
-        Err(e) => {
-            tracing::error!(user_id, error = %e, "quota: get_cloud_user_info_cached failed");
+        Err(_) => {
+            tracing::error!(
+                user_id,
+                error_kind = "cloud_user_query_failed",
+                "quota: get_cloud_user_info_cached failed"
+            );
             return AppError::Internal("Query failed".into())
                 .into_response::<()>()
                 .into_response();
@@ -596,15 +604,22 @@ async fn assistant_quota(
     // 5. 获取会员等级 & 限流配置
     let is_vip = membership::check_vip_membership(ext_pool, user_id)
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(user_id, error = %e, "quota: check_vip_membership failed");
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                user_id,
+                error_kind = "membership_query_failed",
+                "quota: check_vip_membership failed"
+            );
             false
         });
     tracing::debug!(user_id, is_vip, "quota: user VIP status");
     let limit_config = membership::get_ai_assistant_chat_limit_config(ext_pool)
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "quota: limit config failed, using default");
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                error_kind = "rate_limit_config_query_failed",
+                "quota: limit config failed, using default"
+            );
             None
         })
         .unwrap_or_default();
@@ -632,8 +647,11 @@ async fn assistant_quota(
 async fn read_daily_limit(redis: &RedisClient, key: &str) -> i64 {
     let mut conn = match redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Redis GET connection failed: {e}");
+        Err(_) => {
+            tracing::error!(
+                error_kind = "redis_connection_failed",
+                "Redis GET connection failed"
+            );
             return 0;
         }
     };
@@ -646,6 +664,90 @@ async fn read_daily_limit(redis: &RedisClient, key: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use http_body_util::BodyExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body should be readable")
+            .to_bytes();
+        serde_json::from_slice(&bytes).expect("response body should be JSON")
+    }
+
+    #[tokio::test]
+    async fn hook_timeout_response_preserves_6004_and_rolls_back_once() {
+        let rollback_count = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&rollback_count);
+        let response = rollback_quota_and_build_error_response(
+            crate::runtime::orchestrator::OrchestratorError {
+                code: codes::HOOK_EXECUTION_TIMEOUT,
+                message: "Hook「slow-hook」阻塞模式执行超时".into(),
+            },
+            move || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, &'static str>(())
+            },
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], codes::HOOK_EXECUTION_TIMEOUT);
+        assert_eq!(body["message"], "Hook「slow-hook」阻塞模式执行超时");
+        assert_eq!(rollback_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn hook_blocking_failure_response_preserves_6005_without_nested_json() {
+        let rollback_count = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&rollback_count);
+        let response = rollback_quota_and_build_error_response(
+            crate::runtime::orchestrator::OrchestratorError {
+                code: codes::HOOK_BLOCKING_FAILED,
+                message: "Hook「guard-hook」阻塞模式执行失败".into(),
+            },
+            move || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, &'static str>(())
+            },
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], codes::HOOK_BLOCKING_FAILED);
+        assert_eq!(body["message"], "Hook「guard-hook」阻塞模式执行失败");
+        assert!(!body["message"].as_str().unwrap().starts_with('{'));
+        assert_eq!(rollback_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_orchestrator_error_falls_back_to_5000_and_rolls_back_once() {
+        let rollback_count = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&rollback_count);
+        let response = rollback_quota_and_build_error_response(
+            crate::runtime::orchestrator::OrchestratorError {
+                code: codes::HOOK_BLOCKING_FAILED,
+                message: "  ".into(),
+            },
+            move || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>("simulated Redis failure")
+            },
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], codes::INTERNAL);
+        assert_eq!(body["message"], "Internal server error");
+        assert_ne!(body["message"], "simulated Redis failure");
+        assert_eq!(rollback_count.load(Ordering::SeqCst), 1);
+    }
 
     // ── T025: 签名校验（纯函数，无需外部依赖） ──
 

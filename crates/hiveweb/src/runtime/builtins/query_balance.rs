@@ -109,8 +109,11 @@ async fn handle_discount(
     let result = try_handle_discount(user_id, ext_pool, agent_ctx).await;
     match result {
         Ok(r) => Ok(r),
-        Err(e) => {
-            tracing::warn!(error = %e, "[handle_discount] failed, returning no discount");
+        Err(_) => {
+            tracing::warn!(
+                error_kind = "discount_lookup_failed",
+                "[handle_discount] failed, returning no discount"
+            );
             Ok(serde_json::json!({ "message": "暂无产品优惠活动" }))
         }
     }
@@ -132,28 +135,36 @@ async fn try_handle_discount(
         .and_then(|ac| ac.get_user_metadata("channel"))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| BuiltinError::Exec("channel 未配置".into()))?;
-    tracing::debug!(%client_type, %channel, "[handle_discount] step1: client_type & channel");
+    tracing::debug!(
+        client_type_bytes = client_type.len(),
+        channel_bytes = channel.len(),
+        "[handle_discount] step1: client_type & channel"
+    );
 
     // 2. 读取 AIDiscountedProducts 配置
     let config = crate::services::membership::get_discounted_products_config(ext_pool)
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "AIDiscountedProducts 配置查询失败");
+            tracing::warn!(
+                error_kind = "discount_config_query_failed",
+                "AIDiscountedProducts 配置查询失败"
+            );
             BuiltinError::Exec(e.to_string())
         })?
         .ok_or_else(|| {
             tracing::warn!("AIDiscountedProducts 配置未找到");
             BuiltinError::Exec("AIDiscountedProducts 配置未找到".into())
         })?;
-    tracing::debug!(config = %config, "[handle_discount] step2: AIDiscountedProducts config");
+    tracing::debug!(
+        config_field_count = config.as_object().map_or(0, serde_json::Map::len),
+        "[handle_discount] step2: AIDiscountedProducts config metadata"
+    );
 
     // 3. 导航 JSON: client_type → channel → products
     let discount = resolve_discount_products(&config, &client_type, &channel)?;
     tracing::debug!(
-        ?discount,
-        "[handle_discount] step3: resolved discount for {}/{}",
-        client_type,
-        channel
+        discount_field_count = discount.as_object().map_or(0, serde_json::Map::len),
+        "[handle_discount] step3: resolved discount"
     );
     if discount.as_object().is_none_or(|o| o.is_empty()) {
         return Ok(serde_json::json!({
@@ -264,7 +275,12 @@ pub async fn query_balance_async_impl(
     let need_coins = matches!(category, "coins" | "benefits");
     let need_disk = matches!(category, "disk" | "benefits");
     let need_duration = matches!(category, "duration_card" | "benefits");
-    tracing::debug!(%user_id, %category, need_coins, need_disk, need_duration, "[query_balance] step0: start");
+    tracing::debug!(
+        need_coins,
+        need_disk,
+        need_duration,
+        "[query_balance] step0: start"
+    );
 
     // ★ discount: 从配置表 + 资费表获取优惠产品信息
     if category == "discount" {
@@ -276,16 +292,16 @@ pub async fn query_balance_async_impl(
         let row = crate::services::membership::query_coins_balance(ext_pool, user_id)
             .await
             .map_err(|e| {
-                tracing::error!(user_id = %user_id, error = %e, "金币查询失败");
+                tracing::error!(error_kind = "coin_balance_query_failed", "金币查询失败");
                 BuiltinError::Exec(format!("金币查询失败: {e}"))
             })?;
         if row.is_none() {
-            tracing::debug!(%user_id, "[query_balance] step1 coins: no data");
+            tracing::debug!("[query_balance] step1 coins: no data");
             return Ok(json!({
                 "message": "暂无该用户的资产数据，请稍后再试"
             }));
         }
-        tracing::debug!(%user_id, ?row, "[query_balance] step1 coins: row");
+        tracing::debug!(row_present = row.is_some(), "[query_balance] step1 coins");
         row
     } else {
         None
@@ -296,10 +312,10 @@ pub async fn query_balance_async_impl(
         let row = crate::services::membership::query_disk_balance(ext_pool, user_id)
             .await
             .map_err(|e| {
-                tracing::error!(user_id = %user_id, error = %e, "云硬盘查询失败");
+                tracing::error!(error_kind = "disk_balance_query_failed", "云硬盘查询失败");
                 BuiltinError::Exec(format!("云硬盘查询失败: {e}"))
             })?;
-        tracing::debug!(%user_id, ?row, "[query_balance] step1.2 disk: row");
+        tracing::debug!(row_present = row.is_some(), "[query_balance] step1.2 disk");
         row // disk 可能为空（用户无云硬盘），不在这里报错
     } else {
         None
@@ -310,10 +326,13 @@ pub async fn query_balance_async_impl(
         crate::services::membership::query_membership_subscriptions(ext_pool, user_id)
             .await
             .map_err(|e| {
-                tracing::error!(user_id = %user_id, error = %e, "会员订阅查询失败");
+                tracing::error!(error_kind = "membership_query_failed", "会员订阅查询失败");
                 BuiltinError::Exec(format!("会员订阅查询失败: {e}"))
             })?;
-    tracing::debug!(%user_id, count = membership_subscriptions.len(), "[query_balance] step1.5 membership: {} rows", membership_subscriptions.len());
+    tracing::debug!(
+        count = membership_subscriptions.len(),
+        "[query_balance] step1.5 membership"
+    );
 
     // Serialize membership+subscription rows to JSON
     let mut membership_json: Vec<Value> = membership_subscriptions
@@ -343,17 +362,23 @@ pub async fn query_balance_async_impl(
     if membership_json.is_empty() {
         membership_json.push(json!({ "level_name": "普通用户" }));
     }
-    tracing::debug!(?membership_json, "[query_balance] step1.5 membership_json");
+    tracing::debug!(
+        membership_count = membership_json.len(),
+        "[query_balance] step1.5 membership metadata"
+    );
 
     // 1.8 查询时长卡（仅 duration_card / benefits 需要）
     let duration_cards = if need_duration {
         let cards = crate::services::membership::query_duration_cards(ext_pool, user_id)
             .await
             .map_err(|e| {
-                tracing::error!(user_id = %user_id, error = %e, "时长卡查询失败");
+                tracing::error!(error_kind = "duration_card_query_failed", "时长卡查询失败");
                 BuiltinError::Exec(format!("时长卡查询失败: {e}"))
             })?;
-        tracing::debug!(%user_id, count = cards.len(), "[query_balance] step1.8 duration_cards: {} rows", cards.len());
+        tracing::debug!(
+            count = cards.len(),
+            "[query_balance] step1.8 duration_cards"
+        );
         cards
     } else {
         Vec::new()
@@ -377,18 +402,21 @@ pub async fn query_balance_async_impl(
         })
         .collect();
     tracing::debug!(
-        ?duration_card_json,
-        "[query_balance] step1.8 duration_card_json"
+        duration_card_count = duration_card_json.len(),
+        "[query_balance] step1.8 duration_card metadata"
     );
 
     // Resolve game_label_list codes to human-readable names via cc_label
-    if need_duration && !duration_card_json.is_empty() {
-        if let Err(e) =
+    if need_duration
+        && !duration_card_json.is_empty()
+        && let Err(_error) =
             crate::services::membership::resolve_game_label_names(ext_pool, &mut duration_card_json)
                 .await
-        {
-            tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
-        }
+    {
+        tracing::warn!(
+            error_kind = "game_label_resolution_failed",
+            "[query_balance] resolve_game_label_names failed"
+        );
     }
 
     let has_membership = !membership_subscriptions.is_empty();
@@ -452,7 +480,10 @@ pub async fn query_balance_async_impl(
             "disk_status_text": disk_status_text,
         })
     };
-    tracing::debug!(?reply, "[query_balance] step3: reply");
+    tracing::debug!(
+        reply_field_count = reply.as_object().map_or(0, serde_json::Map::len),
+        "[query_balance] step3: reply metadata"
+    );
 
     if let Value::Object(ref mut map) = result {
         // 构造扩展卡片
@@ -514,7 +545,10 @@ pub async fn query_balance_async_impl(
         };
 
         let payload = build_payload();
-        tracing::debug!(?payload, "[query_balance] step4: payload");
+        tracing::debug!(
+            payload_field_count = payload.as_object().map_or(0, serde_json::Map::len),
+            "[query_balance] step4: payload metadata"
+        );
         extension_list.push(json!({
             "content_type": "card",
             "category": category,
@@ -533,7 +567,10 @@ pub async fn query_balance_async_impl(
         map.insert("_agent_context_updates".into(), updates);
     }
 
-    tracing::debug!(?result, "[query_balance] step5: final result");
+    tracing::debug!(
+        result_field_count = result.as_object().map_or(0, serde_json::Map::len),
+        "[query_balance] step5: final result metadata"
+    );
 
     Ok(result)
 }

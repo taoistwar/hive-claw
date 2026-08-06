@@ -1,7 +1,8 @@
 //! Workflow service (T108 / US3)
 //!
 //! Workflow = metadata + 节点 + 边。
-//! - metadata CRUD (identifier / name / description / timeout_ms)
+//! - metadata CRUD (identifier / name / description / timeout_ms / category /
+//!   required capabilities / tags)
 //! - graph GET/PUT：全量替换 nodes + edges
 //! - 校验：
 //!   * 所有 function_id 必须存在
@@ -17,13 +18,56 @@ use sqlx::MySqlPool;
 use std::collections::{HashMap, HashSet};
 
 use crate::models::{NodeType, Workflow, WorkflowEdge, WorkflowNode};
+use crate::runtime::input_source::AGENT_CONTEXT_UPDATES_KEY;
 use crate::utils::error::AppError;
+
+pub const DEFAULT_WORKFLOW_TIMEOUT_MS: i32 = 33_000;
+pub const MIN_WORKFLOW_TIMEOUT_MS: i32 = 1_000;
+pub const MAX_WORKFLOW_TIMEOUT_MS: i32 = 330_000;
+const CREATE_WORKFLOW_SQL: &str = "INSERT INTO workflows (identifier, name, description, end_description, timeout_ms, category_id, input_schema, required_capabilities) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+const UPDATE_WORKFLOW_SQL: &str = r#"UPDATE workflows SET
+              name = COALESCE(?, name),
+              description = COALESCE(?, description),
+              end_description = COALESCE(?, end_description),
+              timeout_ms = COALESCE(?, timeout_ms),
+              category_id = COALESCE(?, category_id),
+              required_capabilities = COALESCE(?, required_capabilities)
+           WHERE id = ?"#;
+const RESERVED_OUTPUT_SCHEMA_MESSAGE: &str =
+    "Workflow output_schema 不得声明内部保留字段「_agent_context_updates」";
+
+fn validate_timeout_ms(timeout_ms: Option<i32>) -> Result<Option<i32>, AppError> {
+    if let Some(timeout_ms) = timeout_ms
+        && !(MIN_WORKFLOW_TIMEOUT_MS..=MAX_WORKFLOW_TIMEOUT_MS).contains(&timeout_ms)
+    {
+        return Err(AppError::BadRequest(format!(
+            "timeout_ms 必须在 {MIN_WORKFLOW_TIMEOUT_MS} 到 {MAX_WORKFLOW_TIMEOUT_MS} 毫秒之间"
+        )));
+    }
+    Ok(timeout_ms)
+}
+
+fn validate_workflow_output_schema(output_schema: Option<&Value>) -> Result<(), AppError> {
+    let declares_reserved_field = output_schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(Value::as_object)
+        .is_some_and(|properties| properties.contains_key(AGENT_CONTEXT_UPDATES_KEY));
+
+    if declares_reserved_field {
+        return Err(AppError::WorkflowMappingInvalid(
+            RESERVED_OUTPUT_SCHEMA_MESSAGE.to_string(),
+        ));
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateMeta {
     pub identifier: String,
     pub name: String,
     pub description: Option<String>,
+    pub end_description: Option<String>,
     pub timeout_ms: Option<i32>,
     pub category_id: Option<i64>,
     pub required_capabilities: Option<Vec<String>>,
@@ -35,6 +79,7 @@ pub struct CreateMeta {
 pub struct UpdateMeta {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub end_description: Option<String>,
     pub timeout_ms: Option<i32>,
     pub category_id: Option<i64>,
     pub required_capabilities: Option<Vec<String>>,
@@ -134,30 +179,125 @@ pub struct GraphPut {
     pub edges: Vec<GraphEdge>,
 }
 
+fn virtual_start_node(workflow: &Workflow) -> GraphNode {
+    let input_schema = workflow
+        .input_schema
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+    let mut position = serde_json::json!({"x": 100, "y": 300});
+    if let Some(object) = position.as_object_mut() {
+        object.insert("input_schema".to_string(), input_schema);
+        if let Some(start_description) = &workflow.start_description {
+            object.insert(
+                "start_description".to_string(),
+                Value::String(start_description.clone()),
+            );
+        }
+    }
+
+    GraphNode {
+        id: None,
+        node_key: "start".to_string(),
+        node_type: NodeType::StartNode,
+        function_id: None,
+        position: Some(position),
+        node_config: None,
+    }
+}
+
+fn virtual_end_node(workflow: &Workflow) -> GraphNode {
+    let mut position = serde_json::json!({"x": 100, "y": 600});
+    if let Some(object) = position.as_object_mut() {
+        if let Some(output_schema) = &workflow.output_schema {
+            object.insert("output_schema".to_string(), output_schema.clone());
+        }
+        if let Some(end_description) = &workflow.end_description {
+            object.insert(
+                "end_description".to_string(),
+                Value::String(end_description.clone()),
+            );
+        }
+    }
+
+    GraphNode {
+        id: None,
+        node_key: "end".to_string(),
+        node_type: NodeType::EndNode,
+        function_id: None,
+        position: Some(position),
+        node_config: None,
+    }
+}
+
+fn graph_start_metadata(workflow: &Workflow, graph: &GraphPut) -> (Option<Value>, Option<String>) {
+    let start_node = graph
+        .nodes
+        .iter()
+        .find(|node| node.node_type == NodeType::StartNode || node.node_key == "start");
+    let input_schema = start_node
+        .and_then(|node| node.position.as_ref())
+        .and_then(|position| position.get("input_schema"))
+        .cloned()
+        .or_else(|| workflow.input_schema.clone())
+        .or_else(|| Some(serde_json::json!({ "type": "object", "properties": {} })));
+    let start_description = start_node
+        .and_then(|node| node.position.as_ref())
+        .and_then(|position| position.get("start_description"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| workflow.start_description.clone());
+
+    (input_schema, start_description)
+}
+
+fn graph_end_metadata(workflow: &Workflow, graph: &GraphPut) -> (Option<Value>, Option<String>) {
+    let end_node = graph
+        .nodes
+        .iter()
+        .find(|node| node.node_type == NodeType::EndNode || node.node_key == "end");
+    let output_schema = end_node
+        .and_then(|node| node.position.as_ref())
+        .and_then(|position| position.get("output_schema"))
+        .cloned()
+        .or_else(|| workflow.output_schema.clone());
+    let end_description = end_node
+        .and_then(|node| node.position.as_ref())
+        .and_then(|position| position.get("end_description"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| workflow.end_description.clone());
+
+    (output_schema, end_description)
+}
+
 // ============================== CRUD metadata ==============================
 
 pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<Workflow, AppError> {
+    let timeout_ms = validate_timeout_ms(meta.timeout_ms)?.unwrap_or(DEFAULT_WORKFLOW_TIMEOUT_MS);
     let default_schema = serde_json::json!({ "type": "object", "properties": {} });
-    let res = sqlx::query(
-        "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id, input_schema, required_capabilities) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&meta.identifier)
-    .bind(&meta.name)
-    .bind(&meta.description)
-    .bind(meta.timeout_ms.unwrap_or(300000))
-    .bind(meta.category_id)
-    .bind(&default_schema)
-    .bind(meta.required_capabilities.as_ref().map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))))
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        let m = e.to_string();
-        if m.contains("Duplicate") {
-            AppError::Conflict(format!("workflow identifier 已存在：{}", meta.identifier))
-        } else {
-            AppError::Internal(format!("workflow insert: {e}"))
-        }
-    })?;
+    let res = sqlx::query(CREATE_WORKFLOW_SQL)
+        .bind(&meta.identifier)
+        .bind(&meta.name)
+        .bind(&meta.description)
+        .bind(&meta.end_description)
+        .bind(timeout_ms)
+        .bind(meta.category_id)
+        .bind(&default_schema)
+        .bind(
+            meta.required_capabilities
+                .as_ref()
+                .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            let m = e.to_string();
+            if m.contains("Duplicate") {
+                AppError::Conflict(format!("workflow identifier 已存在：{}", meta.identifier))
+            } else {
+                AppError::Internal(format!("workflow insert: {e}"))
+            }
+        })?;
     let id = res.last_insert_id() as i64;
     apply_tags(pool, id, &meta.tag_ids).await?;
     fetch_by_id(pool, id).await
@@ -322,30 +462,24 @@ pub async fn list(
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Workflow, AppError> {
+    let timeout_ms = validate_timeout_ms(meta.timeout_ms)?;
     crate::services::optimistic_lock::check_and_bump(pool, "workflows", id, meta.updated_at)
         .await?;
-    sqlx::query(
-        r#"UPDATE workflows SET
-              name = COALESCE(?, name),
-              description = COALESCE(?, description),
-              timeout_ms = COALESCE(?, timeout_ms),
-              category_id = COALESCE(?, category_id),
-              required_capabilities = COALESCE(?, required_capabilities)
-           WHERE id = ?"#,
-    )
-    .bind(&meta.name)
-    .bind(&meta.description)
-    .bind(meta.timeout_ms)
-    .bind(meta.category_id)
-    .bind(
-        meta.required_capabilities
-            .as_ref()
-            .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Internal(format!("workflow update: {e}")))?;
+    sqlx::query(UPDATE_WORKFLOW_SQL)
+        .bind(&meta.name)
+        .bind(&meta.description)
+        .bind(&meta.end_description)
+        .bind(timeout_ms)
+        .bind(meta.category_id)
+        .bind(
+            meta.required_capabilities
+                .as_ref()
+                .map(|c| serde_json::to_value(c).unwrap_or(Value::Array(vec![]))),
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("workflow update: {e}")))?;
 
     if let Some(ref tag_ids) = meta.tag_ids {
         apply_tags(pool, id, tag_ids).await?;
@@ -409,40 +543,10 @@ pub async fn fetch_graph(pool: &MySqlPool, id: i64) -> Result<WorkflowGraph, App
         nodes.iter().map(|n| (n.id, n.node_key.clone())).collect();
 
     // 构造起始节点
-    let input_schema = wf
-        .input_schema
-        .clone()
-        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
-    let mut start_position = serde_json::json!({"x": 100, "y": 300});
-    if let Some(obj) = start_position.as_object_mut() {
-        obj.insert("input_schema".to_string(), input_schema);
-    }
-
-    let start_node = GraphNode {
-        id: None,
-        node_key: "start".to_string(),
-        node_type: NodeType::StartNode,
-        function_id: None,
-        position: Some(start_position),
-        node_config: None,
-    };
+    let start_node = virtual_start_node(&wf);
 
     // 构造结束节点
-    let mut end_position = serde_json::json!({"x": 100, "y": 600});
-    if let Some(ref schema) = wf.output_schema {
-        if let Some(obj) = end_position.as_object_mut() {
-            obj.insert("output_schema".to_string(), schema.clone());
-        }
-    }
-
-    let end_node = GraphNode {
-        id: None,
-        node_key: "end".to_string(),
-        node_type: NodeType::EndNode,
-        function_id: None,
-        position: Some(end_position),
-        node_config: None,
-    };
+    let end_node = virtual_end_node(&wf);
 
     let db_nodes: Vec<GraphNode> = nodes
         .into_iter()
@@ -525,31 +629,9 @@ pub async fn put_graph(
     let wf = fetch_by_id(pool, id).await?;
 
     // 分离起始节点、结束节点和需要入库的节点
-    let start_node = graph
-        .nodes
-        .iter()
-        .find(|n| n.node_type == NodeType::StartNode || n.node_key == "start");
-    let start_input_schema = start_node
-        .and_then(|n| n.position.as_ref())
-        .and_then(|p| p.get("input_schema"))
-        .cloned()
-        .or_else(|| wf.input_schema.clone())
-        .or_else(|| Some(serde_json::json!({ "type": "object", "properties": {} })));
-    let start_desc = start_node
-        .and_then(|n| n.position.as_ref())
-        .and_then(|p| p.get("start_description").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .or_else(|| wf.start_description.clone());
-
-    let end_node = graph
-        .nodes
-        .iter()
-        .find(|n| n.node_type == NodeType::EndNode || n.node_key == "end");
-    let end_output_schema = end_node
-        .and_then(|n| n.position.as_ref())
-        .and_then(|p| p.get("output_schema"))
-        .cloned()
-        .or_else(|| wf.output_schema.clone());
+    let (start_input_schema, start_desc) = graph_start_metadata(&wf, &graph);
+    let (end_output_schema, end_description) = graph_end_metadata(&wf, &graph);
+    validate_workflow_output_schema(end_output_schema.as_ref())?;
 
     // 需要入库的节点：function_node + generate_answer_node（start/end 是虚拟节点不入库）
     let db_nodes: Vec<&GraphNode> = graph
@@ -645,12 +727,12 @@ pub async fn put_graph(
             .push(e.dst_node_key.as_str());
     }
 
-    if !db_nodes.is_empty() {
-        if let Some(cycle) = detect_cycle(&adjacency) {
-            return Err(AppError::DagCycle(format!(
-                "工作流中存在环，请检查节点 {cycle:?} 之间的连线"
-            )));
-        }
+    if !db_nodes.is_empty()
+        && let Some(cycle) = detect_cycle(&adjacency)
+    {
+        return Err(AppError::DagCycle(format!(
+            "工作流中存在环，请检查节点 {cycle:?} 之间的连线"
+        )));
     }
 
     // 4. mapping 校验：仅检查 function_node 的 required input
@@ -722,14 +804,13 @@ pub async fn put_graph(
     // 5. 聚合 required_capabilities（仅 function_node）
     let mut all_caps: HashSet<String> = HashSet::new();
     for n in &db_nodes {
-        if let Some(fid) = n.function_id {
-            if let Some((_, _, Some(caps))) = function_schemas.get(&fid) {
-                if let Some(arr) = caps.as_array() {
-                    for v in arr {
-                        if let Some(s) = v.as_str() {
-                            all_caps.insert(s.to_string());
-                        }
-                    }
+        if let Some(fid) = n.function_id
+            && let Some((_, _, Some(caps))) = function_schemas.get(&fid)
+            && let Some(arr) = caps.as_array()
+        {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    all_caps.insert(s.to_string());
                 }
             }
         }
@@ -750,14 +831,15 @@ pub async fn put_graph(
         .await
         .map_err(|e| AppError::Internal(format!("tx begin: {e}")))?;
 
-    // 更新 workflow 的 required_capabilities, input_schema, output_schema
+    // 更新 workflow 的 required_capabilities、起止节点 schema 与描述
     sqlx::query(
-        "UPDATE workflows SET required_capabilities = ?, input_schema = ?, start_description = ?, output_schema = ? WHERE id = ?"
+        "UPDATE workflows SET required_capabilities = ?, input_schema = ?, start_description = ?, output_schema = ?, end_description = ? WHERE id = ?"
     )
     .bind(&workflow_caps)
     .bind(&start_input_schema)
     .bind(&start_desc)
     .bind(&end_output_schema)
+    .bind(&end_description)
     .bind(id)
     .execute(&mut *tx)
     .await
@@ -897,5 +979,281 @@ mod tests {
     fn self_loop() {
         let adj = key_to_str(&[("X", &["X"])]);
         assert!(detect_cycle(&adj).is_some());
+    }
+
+    #[test]
+    fn workflow_default_timeout_matches_the_public_contract() {
+        assert_eq!(DEFAULT_WORKFLOW_TIMEOUT_MS, 33_000);
+    }
+
+    #[test]
+    fn workflow_timeout_validation_is_inclusive_and_rejects_out_of_range() {
+        assert_eq!(validate_timeout_ms(None).unwrap(), None);
+        assert_eq!(validate_timeout_ms(Some(1_000)).unwrap(), Some(1_000));
+        assert_eq!(validate_timeout_ms(Some(330_000)).unwrap(), Some(330_000));
+
+        assert!(matches!(
+            validate_timeout_ms(Some(999)),
+            Err(AppError::BadRequest(_))
+        ));
+        assert!(matches!(
+            validate_timeout_ms(Some(330_001)),
+            Err(AppError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn workflow_metadata_contract_keeps_category_capabilities_and_tags() {
+        let create: CreateMeta = serde_json::from_value(serde_json::json!({
+            "identifier": "daily-report",
+            "name": "Daily report",
+            "description": "Build the daily report",
+            "timeout_ms": 42_000,
+            "category_id": 7,
+            "required_capabilities": ["db.query", "llm.invoke"],
+            "tag_ids": [2, 3]
+        }))
+        .unwrap();
+        assert_eq!(create.category_id, Some(7));
+        assert_eq!(
+            create.required_capabilities.as_deref(),
+            Some(["db.query".to_string(), "llm.invoke".to_string()].as_slice())
+        );
+        assert_eq!(create.tag_ids, vec![2, 3]);
+
+        let update: UpdateMeta = serde_json::from_value(serde_json::json!({
+            "name": "Daily report v2",
+            "timeout_ms": 43_000,
+            "category_id": 8,
+            "required_capabilities": ["db.query"],
+            "tag_ids": [4],
+            "updated_at": "2026-07-24T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(update.category_id, Some(8));
+        assert_eq!(
+            update.required_capabilities.as_deref(),
+            Some(["db.query".to_string()].as_slice())
+        );
+        assert_eq!(update.tag_ids, Some(vec![4]));
+    }
+
+    #[test]
+    fn workflow_end_description_round_trips_through_post_put_and_get_dtos() {
+        let create: CreateMeta = serde_json::from_value(serde_json::json!({
+            "identifier": "daily-report",
+            "name": "Daily report",
+            "end_description": "Report complete"
+        }))
+        .unwrap();
+        assert_eq!(
+            create.end_description.as_deref(),
+            Some("Report complete"),
+            "POST /workflows must accept end_description"
+        );
+
+        let update: UpdateMeta = serde_json::from_value(serde_json::json!({
+            "end_description": "Updated closing message",
+            "updated_at": "2026-07-24T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(
+            update.end_description.as_deref(),
+            Some("Updated closing message"),
+            "PUT /workflows/:id must accept end_description"
+        );
+
+        let workflow = Workflow {
+            id: 1,
+            identifier: "daily-report".to_string(),
+            name: "Daily report".to_string(),
+            description: None,
+            timeout_ms: DEFAULT_WORKFLOW_TIMEOUT_MS,
+            category_id: None,
+            input_schema: None,
+            start_description: None,
+            output_schema: None,
+            end_description: Some("Report complete".to_string()),
+            required_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let response = serde_json::to_value(workflow).unwrap();
+        assert_eq!(
+            response["end_description"], "Report complete",
+            "GET /workflows/:id must serialize end_description"
+        );
+        assert!(
+            CREATE_WORKFLOW_SQL.contains("end_description"),
+            "POST /workflows must persist end_description"
+        );
+        assert!(
+            UPDATE_WORKFLOW_SQL.contains("end_description"),
+            "PUT /workflows/:id must persist end_description"
+        );
+    }
+
+    #[test]
+    fn workflow_graph_virtual_end_node_round_trips_end_description() {
+        let workflow = Workflow {
+            id: 1,
+            identifier: "daily-report".to_string(),
+            name: "Daily report".to_string(),
+            description: None,
+            timeout_ms: DEFAULT_WORKFLOW_TIMEOUT_MS,
+            category_id: None,
+            input_schema: None,
+            start_description: None,
+            output_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {"report": {"type": "string"}}
+            })),
+            end_description: Some("Report complete".to_string()),
+            required_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let end_node = virtual_end_node(&workflow);
+        let end_position = end_node
+            .position
+            .as_ref()
+            .and_then(Value::as_object)
+            .expect("virtual end node must expose metadata through position");
+        assert_eq!(
+            end_position.get("end_description").and_then(Value::as_str),
+            Some("Report complete"),
+            "GET /workflows/:id/graph must expose Workflow.end_description on the virtual end node"
+        );
+
+        let graph = GraphPut {
+            nodes: vec![GraphNode {
+                id: None,
+                node_key: "end".to_string(),
+                node_type: NodeType::EndNode,
+                function_id: None,
+                position: Some(serde_json::json!({
+                    "x": 100,
+                    "y": 600,
+                    "output_schema": {"type": "object"},
+                    "end_description": "Updated closing message"
+                })),
+                node_config: None,
+            }],
+            edges: vec![],
+        };
+        let (_, end_description) = graph_end_metadata(&workflow, &graph);
+        assert_eq!(
+            end_description.as_deref(),
+            Some("Updated closing message"),
+            "PUT /workflows/:id/graph must persist end_description from the virtual end node"
+        );
+    }
+
+    #[test]
+    fn workflow_graph_virtual_start_node_round_trips_start_description() {
+        let workflow = Workflow {
+            id: 1,
+            identifier: "daily-report".to_string(),
+            name: "Daily report".to_string(),
+            description: None,
+            timeout_ms: DEFAULT_WORKFLOW_TIMEOUT_MS,
+            category_id: None,
+            input_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {"topic": {"type": "string"}}
+            })),
+            start_description: Some("What should the report cover?".to_string()),
+            output_schema: None,
+            end_description: None,
+            required_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let start_node = virtual_start_node(&workflow);
+        let start_position = start_node
+            .position
+            .as_ref()
+            .and_then(Value::as_object)
+            .expect("virtual start node must expose metadata through position");
+        assert_eq!(
+            start_position
+                .get("start_description")
+                .and_then(Value::as_str),
+            Some("What should the report cover?"),
+            "GET /workflows/:id/graph must expose Workflow.start_description on the virtual start node"
+        );
+
+        let updated_graph = GraphPut {
+            nodes: vec![GraphNode {
+                id: None,
+                node_key: "start".to_string(),
+                node_type: NodeType::StartNode,
+                function_id: None,
+                position: Some(serde_json::json!({
+                    "x": 100,
+                    "y": 300,
+                    "input_schema": {"type": "object"},
+                    "start_description": "Updated opening message"
+                })),
+                node_config: None,
+            }],
+            edges: vec![],
+        };
+        let (_, updated_description) = graph_start_metadata(&workflow, &updated_graph);
+        assert_eq!(
+            updated_description.as_deref(),
+            Some("Updated opening message"),
+            "PUT /workflows/:id/graph must persist start_description from the virtual start node"
+        );
+
+        let omitted_graph = GraphPut {
+            nodes: vec![GraphNode {
+                id: None,
+                node_key: "start".to_string(),
+                node_type: NodeType::StartNode,
+                function_id: None,
+                position: Some(serde_json::json!({
+                    "x": 100,
+                    "y": 300,
+                    "input_schema": {"type": "object"}
+                })),
+                node_config: None,
+            }],
+            edges: vec![],
+        };
+        let (_, preserved_description) = graph_start_metadata(&workflow, &omitted_graph);
+        assert_eq!(
+            preserved_description.as_deref(),
+            Some("What should the report cover?"),
+            "omitting start_description must preserve the existing Workflow metadata"
+        );
+    }
+
+    #[test]
+    fn workflow_output_schema_rejects_reserved_agent_context_updates_field() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "_agent_context_updates": {"type": "object"}
+            }
+        });
+
+        let error = validate_workflow_output_schema(Some(&schema))
+            .expect_err("reserved runtime output field must be rejected");
+
+        assert_eq!(
+            error.code(),
+            crate::utils::error::codes::WORKFLOW_MAPPING_INVALID
+        );
+        assert_eq!(
+            crate::utils::error::http_status_for_code(error.code()),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            error.message(),
+            "Workflow output_schema 不得声明内部保留字段「_agent_context_updates」"
+        );
     }
 }

@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from 'reactflow';
 interface StartNodeData {
   node_key: string;
   input_schema?: Record<string, unknown> | null;
+  start_description?: string | null;
   execution_result?: unknown;
 }
 
@@ -88,6 +89,21 @@ export function StartNode({ data, selected }: NodeProps<StartNodeData>) {
         <div style={{ fontSize: 11, color: '#9254de', background: '#f0e6ff', borderRadius: 4, padding: '2px 6px', alignSelf: 'flex-start' }}>
           {varCount} 个输入变量
         </div>
+        {data.start_description && (
+          <div
+            title={data.start_description}
+            style={{
+              maxWidth: 220,
+              overflow: 'hidden',
+              color: '#8c8c8c',
+              fontSize: 11,
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {data.start_description}
+          </div>
+        )}
         {hasResult && (
           <div style={{
             fontSize: 11,

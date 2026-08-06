@@ -1,6 +1,12 @@
 # API Contract Quality Checklist: 004-agent-runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：** `RecommendedGame` 相关项已废弃；所有 `/api/chat/sessions*`、admin Chat/SSE 所有权/并发条目也已由 `81a84fe` 移除并 superseded。相关未勾选项已失效，不是现役缺口；不得据此恢复管理端 Chat。
+>
+> **迁移编号更新（2026-07-24）：** 本清单中 V019–V038、V013
+> Workflow、V014 Tool/Skill、V015 Agent 等编号引用是历史评审坐标，已
+> superseded。当前物理链为 V001–V033（V013 空号）；Workflow/Tool/Skill/
+> Agent 的实际基础迁移分别是 V010/V011/V012，V032/V033 分别是 runtime
+> audit / Workflow timeout default。旧编号问题不得转化为新建或重命名 SQL。
 
 **Purpose**: Validate that the HTTP API contracts (api.md + host-functions.md) are complete, consistent, and unambiguous — cross-referenced against spec.md, data-model.md, SECURITY.md, and perf-evidence.md
 **Created**: 2026-05-29
@@ -122,6 +128,15 @@
 - [ ] CHK068 — Is the Dashboard stats response schema documented (plugin/function/workflow/agent/tool/skill/chat counts + recent activity list)? [Completeness, api.md vs spec.md FR-034]
 - [ ] CHK069 — Is the Admin password change endpoint documented (separate from general Admin PUT, or combined)? [Completeness, api.md §Admin vs data-model.md §V001]
 - [ ] CHK070 — Is the Admin role change protection documented (cannot demote Super, cannot delete Super)? [Completeness, api.md §Admin vs SECURITY.md §4 main agent protections (analogous)]
+
+## 2026-07-24 Remediation
+
+- [x] CHK071 — Workflow POST/PUT 是否列出实际
+  `category_id` / `required_capabilities` / `tag_ids` / `updated_at` 字段，并
+  明确 timeout `1000..=330000`、POST 默认 33000 和 tag 省略/清空语义？
+  — ✅ api.md §6 已同步当前 service 请求结构
+- [x] CHK072 — Runtime audit RangePicker 是否要求 RFC3339 UTC，而不是无
+  offset 的本地时间？— ✅ api.md §9c 要求管理端使用 `toISOString()`
 
 ## Notes
 

@@ -556,7 +556,12 @@ export default function WorkflowPage() {
           destroyOnHidden
           width={560}
         >
-          <Form form={createForm} layout="vertical" onFinish={onCreate}>
+          <Form
+            form={createForm}
+            layout="vertical"
+            initialValues={{ timeout_ms: 33000 }}
+            onFinish={onCreate}
+          >
             <Form.Item name="identifier" label="identifier" rules={[{ required: true }]}>
               <Input placeholder="ingest" />
             </Form.Item>

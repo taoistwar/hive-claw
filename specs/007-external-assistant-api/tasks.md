@@ -107,6 +107,7 @@ description: "Task list for External Assistant API"
 - [x] T033 🔴 [US1] 单元测试 — 时间/TTL 计算（seconds_until_midnight >0 且 ≤86400）
 - [ ] T034 🔴 [US3] 集成测试 — 跨天重置 ⚠️ 需完整基础设施
 - [ ] T035 🔴 [US3] 集成测试 — 并发限流准确性 ⚠️ 需完整基础设施
+  - 质量基线仅补 `chat_common` 的离线计数器测试（上限、用户隔离、RAII 释放）；HTTP 4291、Assistant 接线及外部 DB/LLM 场景仍未验收，因此 T035 保持 Pending。
 
 ---
 

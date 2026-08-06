@@ -1,24 +1,31 @@
 //! Hook execution engine — runs agent lifecycle hooks during orchestrator execution.
 //!
-//! Hooks are **read-only observers**: execution outcomes are emitted as structured
-//! tracing events and never persisted or injected into agent state.
+//! Hook execution outcomes are emitted as structured tracing and never persisted.
+//! Function/Workflow actions read a serialized AgentContext snapshot and may apply
+//! only the controlled `_agent_context_updates` contract to the current execution.
 
 use aws_sdk_s3::Client as S3Client;
 use chrono::Utc;
+use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::models::agent_hook::AgentHook;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 
 use crate::cache::redis::RedisClient;
+
+const DEFAULT_WEBHOOK_RETRY_MAX: usize = 3;
+const WEBHOOK_RETRY_BACKOFF_SECS: [u64; 3] = [1, 2, 4];
 
 /// Context passed to each hook invocation.
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +49,9 @@ pub struct HookContext {
 /// Dependencies needed by hook actions (call_function, call_workflow).
 #[derive(Clone)]
 pub struct HookDeps {
+    /// Correlation inherited from the parent runtime, permanently restricted
+    /// to tracing-only for every nested Hook action.
+    pub execution_context: RuntimeExecutionContext,
     /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
     pub s3: Option<S3Client>,
     pub llm: Arc<LlmRegistry>,
@@ -60,7 +70,6 @@ pub struct HookDeps {
 /// Blocking mode: first failure aborts the agent flow and returns `Err`.
 #[tracing::instrument(skip(pool, hooks, ctx, deps), fields(
     agent_id = %ctx.agent_id,
-    identifier = %ctx.identifier,
     trigger_point = %point,
     session_id = %ctx.session_id
 ))]
@@ -85,17 +94,34 @@ pub async fn run_hooks(
         let start = Instant::now();
         let timeout_ms = hook.timeout_ms.max(1000) as u64;
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            execute_hook_action(hook, ctx, pool.clone(), deps),
-        )
-        .await;
+        // Webhook attempts own one timeout covering DNS, pinned-client
+        // construction and send. Wrapping the same future here would create
+        // equal-deadline cancellation races that can prevent retry scheduling.
+        let result = if hook.action_type == "http_webhook" {
+            Ok(execute_hook_action(hook, ctx, pool.clone(), deps).await)
+        } else {
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                execute_hook_action(hook, ctx, pool.clone(), deps),
+            )
+            .await
+        };
 
         let elapsed = start.elapsed().as_millis() as i32;
 
         match result {
             Ok(Ok(())) => {
                 trace_hook_exec(hook, ctx, point, "success", None, Some(elapsed));
+            }
+            Ok(Err(error)) if error.is_timeout() => {
+                trace_hook_exec(hook, ctx, point, "timeout", Some("timeout"), Some(elapsed));
+
+                if hook.blocking_mode {
+                    return Err(HookError::Timeout(format!(
+                        "Hook「{}」阻塞模式执行超时",
+                        hook.name
+                    )));
+                }
             }
             Ok(Err(e)) => {
                 trace_hook_exec(
@@ -108,9 +134,8 @@ pub async fn run_hooks(
                 );
 
                 if hook.blocking_mode {
-                    return Err(HookError::BlockingFailed(format!(
-                        "Hook「{}」阻塞模式执行失败: {}",
-                        hook.name, e
+                    return Err(HookError::BlockingFailed(blocking_failure_message(
+                        &hook.name, &e,
                     )));
                 }
                 // Non-blocking: continue with next hook
@@ -142,7 +167,7 @@ async fn execute_hook_action(
         "call_function" => execute_call_function(hook, ctx, pool, deps).await,
         "call_workflow" => execute_call_workflow(hook, ctx, pool, deps).await,
         "http_webhook" => execute_http_webhook(hook, ctx).await,
-        other => Err(ActionError(format!("Unknown action type: {other}"))),
+        other => Err(ActionError::failed(format!("Unknown action type: {other}"))),
     }
 }
 
@@ -156,7 +181,7 @@ async fn execute_call_function(
         .action_params
         .get("function_id")
         .and_then(|v| v.as_i64())
-        .ok_or_else(|| ActionError("call_function: function_id is required".into()))?;
+        .ok_or_else(|| ActionError::failed("call_function: function_id is required"))?;
 
     // Query function info from DB
     let func_row: Option<(String, i8, Option<i64>, Option<String>)> = sqlx::query_as(
@@ -165,51 +190,52 @@ async fn execute_call_function(
     .bind(function_id)
     .fetch_optional(pool.as_ref())
     .await
-    .map_err(|e| ActionError(format!("function lookup: {e}")))?;
+    .map_err(|e| ActionError::failed(format!("function lookup: {e}")))?;
 
     let Some((func_ident, func_kind, plugin_id, plugin_export)) = func_row else {
-        return Err(ActionError(format!(
+        return Err(ActionError::failed(format!(
             "call_function: function id={function_id} 不存在"
         )));
     };
 
-    // 只传 AgentContext snapshot，不再序列化 HookContext（避免与 _agent_context 重复）
-    let mut function_input = serde_json::json!({});
-    inject_agent_context_snapshot(&mut function_input, &deps.agent_ctx);
+    // Both action types receive the same trusted HookContext fields. Runtime
+    // values override configured args, and `_agent_context` is injected last.
+    let function_input = build_hook_action_input(&hook.action_params, ctx, &deps.agent_ctx)?;
 
     match func_kind {
         1 if plugin_id.is_none() => {
             // Builtin function — direct call
             let Some(builtin) = super::builtins::lookup(&func_ident) else {
-                return Err(ActionError(format!(
+                return Err(ActionError::failed(format!(
                     "call_function: builtin「{func_ident}」handler 未找到"
                 )));
             };
             let bctx = super::builtins::BuiltinContext {
+                execution_context: Some(deps.execution_context.clone()),
                 pool: &pool,
                 ext_pool: deps.ext_pool.as_ref(),
                 redis: deps.redis.as_ref(),
                 agent_ctx: Some(Arc::clone(&deps.agent_ctx)),
                 llm: Some(&deps.llm),
-                agent_id: None,
+                agent_id: Some(ctx.agent_id),
             };
             let output = (builtin.handler)(function_input, &bctx)
-                .map_err(|e| ActionError(format!("builtin function 执行失败: {e}")))?;
+                .map_err(|e| ActionError::failed(format!("builtin function 执行失败: {e}")))?;
             // ★ Apply AgentContext updates from function output
             apply_agent_context_updates(&deps.agent_ctx, &output);
         }
         1 | 2 => {
             // Plugin-based or custom function — via invoker
             let Some(pid) = plugin_id else {
-                return Err(ActionError("call_function: function 缺 plugin_id".into()));
+                return Err(ActionError::failed("call_function: function 缺 plugin_id"));
             };
             let Some(ref export) = plugin_export else {
-                return Err(ActionError(
-                    "call_function: function 缺 plugin_export".into(),
+                return Err(ActionError::failed(
+                    "call_function: function 缺 plugin_export",
                 ));
             };
             let input_json = serde_json::to_string(&function_input)
-                .map_err(|e| ActionError(format!("args serialize: {e}")))?;
+                .map_err(|e| ActionError::failed(format!("args serialize: {e}")))?;
             // 查询当前 agent 的 capability 权限
             let perms: Vec<String> =
                 sqlx::query_as("SELECT capability FROM agent_permissions WHERE agent_id = ?")
@@ -219,8 +245,7 @@ async fn execute_call_function(
                     .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
                     .unwrap_or_default();
             let dispatch_ctx = DispatchCtx {
-                request_id: None,
-                session_id: Some(ctx.session_id),
+                execution_context: deps.execution_context.for_hook(),
                 agent_id: ctx.agent_id,
                 plugin_id: pid,
                 function_id: Some(function_id),
@@ -239,14 +264,14 @@ async fn execute_call_function(
                     dispatch_ctx,
                 )
                 .await
-                .map_err(|e| ActionError(format!("plugin invoke failed: {e}")))?;
+                .map_err(|e| ActionError::failed(format!("plugin invoke failed: {e}")))?;
             // ★ Parse output and apply AgentContext updates
             if let Ok(output_val) = serde_json::from_str::<Value>(&output_str) {
                 apply_agent_context_updates(&deps.agent_ctx, &output_val);
             }
         }
         _ => {
-            return Err(ActionError(format!(
+            return Err(ActionError::failed(format!(
                 "call_function: function「{func_ident}」kind={func_kind} 不支持"
             )));
         }
@@ -264,14 +289,9 @@ async fn execute_call_workflow(
         .action_params
         .get("workflow_id")
         .and_then(|v| v.as_i64())
-        .ok_or_else(|| ActionError("call_workflow: workflow_id is required".into()))?;
+        .ok_or_else(|| ActionError::failed("call_workflow: workflow_id is required"))?;
 
-    // Build input from hook context + AgentContext snapshot
-    let mut workflow_input =
-        serde_json::to_value(ctx).map_err(|e| ActionError(format!("context serialize: {e}")))?;
-
-    // ★ Inject AgentContext snapshot for workflow read access
-    inject_agent_context_snapshot(&mut workflow_input, &deps.agent_ctx);
+    let workflow_input = build_hook_action_input(&hook.action_params, ctx, &deps.agent_ctx)?;
 
     // 查询当前 agent 的 capability 权限
     let perms: Vec<String> =
@@ -283,6 +303,7 @@ async fn execute_call_workflow(
             .unwrap_or_default();
 
     let executor_deps = super::workflow::ExecutorDeps {
+        execution_context: deps.execution_context.for_hook(),
         pool: (*pool).clone(),
         s3: deps.s3.clone(),
         registry: Arc::clone(&deps.registry),
@@ -302,7 +323,7 @@ async fn execute_call_workflow(
             Arc::clone(&deps.agent_ctx),
         )
         .await
-        .map_err(|e| ActionError(format!("workflow execute: {e}")))?;
+        .map_err(|e| ActionError::failed(format!("workflow execute: {e}")))?;
 
     // ★ Apply AgentContext updates from workflow output
     apply_agent_context_updates(&deps.agent_ctx, &outcome.end_value);
@@ -311,16 +332,6 @@ async fn execute_call_workflow(
 }
 
 async fn execute_http_webhook(hook: &AgentHook, ctx: &HookContext) -> Result<(), ActionError> {
-    let url = hook
-        .action_params
-        .get("webhook_url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ActionError("webhook_url is required for http_webhook".into()))?;
-
-    if !url.starts_with("https://") {
-        return Err(ActionError("Webhook URL must use HTTPS".into()));
-    }
-
     let payload = json!({
         "agent_identifier": ctx.identifier,
         "session_id": ctx.session_id,
@@ -333,127 +344,235 @@ async fn execute_http_webhook(hook: &AgentHook, ctx: &HookContext) -> Result<(),
         "client_version": ctx.client_version,
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(
-            hook.timeout_ms.max(1000) as u64
-        ))
-        .build()
-        .map_err(|e| ActionError(format!("webhook client: {e}")))?;
-
-    let mut req = client.post(url).json(&payload);
-
-    if let Some(headers) = hook
-        .action_params
-        .get("headers")
-        .and_then(|v| v.as_object())
-    {
-        for (key, val) in headers {
-            if let Some(v_str) = val.as_str() {
-                if key.contains('\r')
-                    || key.contains('\n')
-                    || v_str.contains('\r')
-                    || v_str.contains('\n')
-                {
-                    return Err(ActionError("Header contains illegal characters".into()));
-                }
-                if key
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                {
-                    req = req.header(key.as_str(), v_str);
-                }
-            }
-        }
+    let result = send_webhook_once(hook, &payload).await;
+    if webhook_attempt_is_retryable(&result) {
+        // Scheduling occurs synchronously before the initial attempt returns,
+        // so run_hooks cannot cancel the retry decision.
+        spawn_webhook_retry(hook, ctx, &payload);
     }
 
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => Ok(()),
-        Ok(resp) => {
-            spawn_webhook_retry(hook, ctx, &payload);
-            Err(ActionError(format!(
-                "Webhook returned HTTP {}",
-                resp.status()
-            )))
+    match result {
+        Ok(status) if status.is_success() => Ok(()),
+        Ok(status) => Err(ActionError::failed(format!(
+            "Webhook returned HTTP {status}"
+        ))),
+        Err(error) if error.is_retryable() => {
+            let timed_out = error.is_timeout();
+            if timed_out {
+                Err(ActionError::timeout(
+                    "Webhook attempt timed out — pending async retry",
+                ))
+            } else {
+                Err(ActionError::failed(
+                    "Webhook connection failed — pending async retry",
+                ))
+            }
         }
-        Err(_e) => {
-            spawn_webhook_retry(hook, ctx, &payload);
-            Err(ActionError(
-                "Webhook connection failed — pending async retry".into(),
-            ))
+        Err(WebhookRequestError::Policy) | Err(WebhookRequestError::Header) => Err(
+            ActionError::failed("Webhook target or headers rejected by outbound policy"),
+        ),
+        Err(_) => Err(ActionError::failed("Webhook request failed without retry")),
+    }
+}
+
+#[derive(Debug)]
+enum WebhookRequestError {
+    Timeout,
+    Policy,
+    ResolveUnavailable,
+    Header,
+    Client,
+    Request(reqwest::Error),
+}
+
+impl From<super::capabilities::network_http::OutboundTargetError> for WebhookRequestError {
+    fn from(error: super::capabilities::network_http::OutboundTargetError) -> Self {
+        match error {
+            super::capabilities::network_http::OutboundTargetError::Policy(_) => Self::Policy,
+            super::capabilities::network_http::OutboundTargetError::ResolveUnavailable(_) => {
+                Self::ResolveUnavailable
+            }
         }
     }
 }
 
-fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
+impl WebhookRequestError {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Policy => "policy",
+            Self::ResolveUnavailable => "resolve_unavailable",
+            Self::Header => "header",
+            Self::Client => "client",
+            Self::Request(error) => webhook_error_kind(error),
+        }
+    }
+
+    fn is_timeout(&self) -> bool {
+        matches!(self, Self::Timeout) || matches!(self, Self::Request(error) if error.is_timeout())
+    }
+
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Timeout | Self::ResolveUnavailable => true,
+            Self::Request(error) => error.is_connect() || error.is_timeout(),
+            Self::Policy | Self::Header | Self::Client => false,
+        }
+    }
+}
+
+fn webhook_attempt_is_retryable(result: &Result<StatusCode, WebhookRequestError>) -> bool {
+    matches!(result, Err(error) if error.is_retryable())
+}
+
+async fn run_webhook_attempt_with_timeout<T, F>(
+    timeout_ms: u64,
+    future: F,
+) -> Result<T, WebhookRequestError>
+where
+    F: Future<Output = Result<T, WebhookRequestError>>,
+{
+    tokio::time::timeout(Duration::from_millis(timeout_ms), future)
+        .await
+        .map_err(|_| WebhookRequestError::Timeout)?
+}
+
+/// Send exactly one Webhook attempt through the same resolve-all, public-IP,
+/// DNS-pinned and no-redirect transport used by `network.http`.
+///
+/// This function resolves again for every retry. A retry therefore cannot
+/// silently fall back to reqwest's default DNS or redirect behavior.
+async fn send_webhook_once(
+    hook: &AgentHook,
+    payload: &Value,
+) -> Result<StatusCode, WebhookRequestError> {
+    run_webhook_attempt_with_timeout(
+        hook.timeout_ms.max(1000) as u64,
+        send_webhook_once_inner(hook, payload),
+    )
+    .await
+}
+
+async fn send_webhook_once_inner(
+    hook: &AgentHook,
+    payload: &Value,
+) -> Result<StatusCode, WebhookRequestError> {
     let url = hook
         .action_params
         .get("webhook_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .and_then(Value::as_str)
+        .ok_or(WebhookRequestError::Policy)?;
+    let target = super::capabilities::network_http::resolve_outbound_target(
+        url,
+        super::capabilities::network_http::OutboundScheme::HttpsOnly,
+    )
+    .await
+    .map_err(WebhookRequestError::from)?;
+    let client = super::capabilities::network_http::pinned_outbound_client_for_attempt(&target)
+        .map_err(|_| WebhookRequestError::Client)?;
+    let mut request = client.post(target.url).json(payload);
+
+    if let Some(raw_headers) = hook.action_params.get("headers") {
+        let headers = raw_headers.as_object().ok_or(WebhookRequestError::Header)?;
+        for (name, value) in headers {
+            let value = value.as_str().ok_or(WebhookRequestError::Header)?;
+            let (name, value) =
+                super::capabilities::network_http::parse_outbound_header(name, value)
+                    .map_err(|_| WebhookRequestError::Header)?;
+            request = request.header(name, value);
+        }
+    }
+
+    request
+        .send()
+        .await
+        .map(|response| response.status())
+        .map_err(WebhookRequestError::Request)
+}
+
+fn parse_webhook_retry_max(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value <= WEBHOOK_RETRY_BACKOFF_SECS.len())
+        .unwrap_or(DEFAULT_WEBHOOK_RETRY_MAX)
+}
+
+fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
     let payload = payload.clone();
     let hook = hook.clone();
     let ctx = ctx.clone();
-    let max_retries = std::env::var("HOOK_WEBHOOK_RETRY_MAX")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3u32);
+    let configured_retry_max = std::env::var("HOOK_WEBHOOK_RETRY_MAX").ok();
+    let max_retries = parse_webhook_retry_max(configured_retry_max.as_deref());
+    if max_retries == 0 {
+        return;
+    }
 
     tokio::spawn(async move {
-        for attempt in 0..max_retries {
-            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+        for (attempt, backoff_secs) in WEBHOOK_RETRY_BACKOFF_SECS
+            .iter()
+            .copied()
+            .take(max_retries)
+            .enumerate()
+        {
+            tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
             let attempt_number = attempt + 1;
-            match reqwest::Client::new()
-                .post(&url)
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
+            match send_webhook_once(&hook, &payload).await {
+                Ok(status) if status.is_success() => {
                     tracing::info!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
                         hook_id = hook.id,
-                        hook_name = %hook.name,
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
                         outcome = "success",
                         attempt = attempt_number,
                         max_retries,
-                        http_status = resp.status().as_u16(),
+                        http_status = status.as_u16(),
                         request_id = %ctx.request_id,
                         "Hook Webhook retry completed"
                     );
                     return;
                 }
-                Ok(resp) => {
+                Ok(status) => {
                     tracing::warn!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
                         hook_id = hook.id,
-                        hook_name = %hook.name,
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
                         outcome = "error",
                         attempt = attempt_number,
                         max_retries,
-                        http_status = resp.status().as_u16(),
+                        http_status = status.as_u16(),
                         request_id = %ctx.request_id,
                         error_kind = "http_status",
                         "Hook Webhook retry failed"
                     );
+                    return;
+                }
+                Err(error) if !error.is_retryable() => {
+                    tracing::warn!(
+                        event = "hook_webhook_retry",
+                        agent_id = ctx.agent_id,
+                        hook_id = hook.id,
+                        session_id = ctx.session_id,
+                        trigger_point = %ctx.trigger_point,
+                        action_type = %hook.action_type,
+                        outcome = "error",
+                        attempt = attempt_number,
+                        max_retries,
+                        request_id = %ctx.request_id,
+                        error_kind = error.kind(),
+                        "Hook Webhook retry stopped after non-retryable failure"
+                    );
+                    return;
                 }
                 Err(error) => {
                     tracing::warn!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
                         hook_id = hook.id,
-                        hook_name = %hook.name,
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -461,7 +580,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                         attempt = attempt_number,
                         max_retries,
                         request_id = %ctx.request_id,
-                        error_kind = webhook_error_kind(&error),
+                        error_kind = error.kind(),
                         "Hook Webhook retry failed"
                     );
                 }
@@ -470,9 +589,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
         tracing::warn!(
             event = "hook_webhook_retry",
             agent_id = ctx.agent_id,
-            agent_identifier = %ctx.identifier,
             hook_id = hook.id,
-            hook_name = %hook.name,
             session_id = ctx.session_id,
             trigger_point = %ctx.trigger_point,
             action_type = %hook.action_type,
@@ -501,9 +618,7 @@ fn trace_hook_exec(
             tracing::$level!(
                 event = "hook_execution",
                 agent_id = ctx.agent_id,
-                agent_identifier = %ctx.identifier,
                 hook_id = hook.id,
-                hook_name = %hook.name,
                 session_id = ctx.session_id,
                 trigger_point,
                 action_type = %hook.action_type,
@@ -606,6 +721,32 @@ pub(crate) fn inject_agent_context_snapshot(input: &mut Value, agent_ctx: &Agent
     }
 }
 
+/// Build a Hook Function/Workflow action input from configured `args` and
+/// trusted runtime fields. Runtime fields keep their existing values when a
+/// configured arg uses the same key, and the runtime `_agent_context` snapshot
+/// is always injected last so it cannot be forged by configuration.
+fn build_hook_action_input(
+    action_params: &Value,
+    ctx: &HookContext,
+    agent_ctx: &AgentContext,
+) -> Result<Value, ActionError> {
+    let mut input = action_params
+        .get("args")
+        .and_then(Value::as_object)
+        .cloned()
+        .map(Value::Object)
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+
+    let runtime_fields = serde_json::to_value(ctx)
+        .map_err(|error| ActionError::failed(format!("context serialize: {error}")))?;
+    if let (Value::Object(input), Value::Object(runtime_fields)) = (&mut input, runtime_fields) {
+        input.extend(runtime_fields);
+    }
+
+    inject_agent_context_snapshot(&mut input, agent_ctx);
+    Ok(input)
+}
+
 /// Extract `_agent_context_updates` from a function/workflow output and
 /// apply them back to the AgentContext.
 ///
@@ -648,13 +789,23 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 "StateChanges" => Category::StateChanges,
                 "SubagentResults" => Category::SubagentResults,
                 _ => {
-                    tracing::warn!("Unknown category in _agent_context_updates: {category_str}");
+                    tracing::warn!(
+                        error_kind = "unknown_agent_context_category",
+                        category_bytes = category_str.len(),
+                        "Unknown category in _agent_context_updates"
+                    );
                     continue;
                 }
             };
 
-            if let Err(e) = agent_ctx.set_record(cat, key.to_string(), value, source, iteration) {
-                tracing::warn!("Failed to apply _agent_context_updates record: {e}");
+            if agent_ctx
+                .set_record(cat, key.to_string(), value, source, iteration)
+                .is_err()
+            {
+                tracing::warn!(
+                    error_kind = "agent_context_set_record_failed",
+                    "Failed to apply _agent_context_updates record"
+                );
             }
         }
     }
@@ -700,8 +851,11 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 ext.get("reply").cloned(),
                 data,
             );
-            if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
-                tracing::warn!("Failed to apply _agent_context_updates extension: {e}");
+            if agent_ctx.add_extension(id.to_string(), content).is_err() {
+                tracing::warn!(
+                    error_kind = "agent_context_add_extension_failed",
+                    "Failed to apply _agent_context_updates extension"
+                );
             }
         }
     }
@@ -709,10 +863,13 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
     // Apply metadata updates (e.g., agent_loop_break)
     if let Some(metadata) = updates.get("metadata").and_then(|v| v.as_object()) {
         for (key, val) in metadata {
-            if let Some(s) = val.as_str() {
-                if let Err(e) = agent_ctx.set_metadata(key.clone(), s.to_string()) {
-                    tracing::warn!("Failed to apply _agent_context_updates metadata: {e}");
-                }
+            if let Some(s) = val.as_str()
+                && agent_ctx.set_metadata(key.clone(), s.to_string()).is_err()
+            {
+                tracing::warn!(
+                    error_kind = "agent_context_set_metadata_failed",
+                    "Failed to apply _agent_context_updates metadata"
+                );
             }
         }
     }
@@ -736,11 +893,230 @@ impl std::fmt::Display for HookError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionErrorKind {
+    Failed,
+    Timeout,
+}
+
 #[derive(Debug)]
-struct ActionError(String);
+struct ActionError {
+    message: String,
+    kind: ActionErrorKind,
+}
+
+impl ActionError {
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: ActionErrorKind::Failed,
+        }
+    }
+
+    fn timeout(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: ActionErrorKind::Timeout,
+        }
+    }
+
+    fn is_timeout(&self) -> bool {
+        self.kind == ActionErrorKind::Timeout
+    }
+}
+
+fn blocking_failure_message(hook_name: &str, _source: &ActionError) -> String {
+    // The source may contain SQL, URLs, provider responses, or Plugin details.
+    // It is intentionally excluded from the external 6005 response.
+    format!("Hook「{hook_name}」阻塞模式执行失败")
+}
 
 impl std::fmt::Display for ActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ActionError, HookContext, WEBHOOK_RETRY_BACKOFF_SECS, WebhookRequestError,
+        blocking_failure_message, build_hook_action_input, parse_webhook_retry_max,
+        run_webhook_attempt_with_timeout, webhook_attempt_is_retryable,
+    };
+    use crate::runtime::capabilities::network_http::OutboundTargetError;
+    use agent::context::{AgentContext, ContextConfig, UserInput};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn agent_context() -> AgentContext {
+        AgentContext::new(
+            "hook-action-input-test".to_string(),
+            UserInput {
+                raw_text: "trusted runtime input".to_string(),
+                session_id: Some("session-1".to_string()),
+                message_id: Some("message-1".to_string()),
+                timestamp: chrono::Utc::now(),
+                metadata: HashMap::new(),
+            },
+            ContextConfig::default(),
+        )
+    }
+
+    fn hook_context() -> HookContext {
+        HookContext {
+            agent_id: 42,
+            identifier: "trusted-agent".to_string(),
+            session_id: 84,
+            actor_id: 21,
+            request_id: "d3c43d20-65f8-4f50-8f80-c526c127c6cc".to_string(),
+            trigger_point: "before_agent_start".to_string(),
+            message: "trusted message".to_string(),
+            channel: "api".to_string(),
+            client_type: "web".to_string(),
+            client_version: "1.2.3".to_string(),
+        }
+    }
+
+    #[test]
+    fn blocking_failure_message_excludes_downstream_error_details() {
+        let source =
+            ActionError::failed("sensitive-sentinel mysql://user:password@db.example/internal");
+        let message = blocking_failure_message("guard-hook", &source);
+
+        assert_eq!(message, "Hook「guard-hook」阻塞模式执行失败");
+        assert!(!message.contains("sensitive-sentinel"));
+        assert!(!message.contains("password"));
+    }
+
+    #[test]
+    fn function_action_input_merges_trusted_hook_context_and_overwrites_forged_values() {
+        let params = json!({
+            "function_id": 7,
+            "args": {
+                "template": "Hello, {{name}}",
+                "name": "Hive",
+                "agent_id": 999,
+                "request_id": "forged-request-id",
+                "_agent_context": {"user_input": {"raw_text": "forged"}}
+            }
+        });
+
+        let input = build_hook_action_input(&params, &hook_context(), &agent_context()).unwrap();
+
+        assert_eq!(input["template"], "Hello, {{name}}");
+        assert_eq!(input["name"], "Hive");
+        assert_eq!(input["agent_id"], 42);
+        assert_eq!(input["request_id"], "d3c43d20-65f8-4f50-8f80-c526c127c6cc");
+        assert_eq!(input["trigger_point"], "before_agent_start");
+        assert_eq!(
+            input["_agent_context"]["user_input"]["raw_text"],
+            "trusted runtime input"
+        );
+    }
+
+    #[test]
+    fn workflow_action_input_merges_args_without_overwriting_runtime_hook_fields() {
+        let params = json!({
+            "workflow_id": 9,
+            "args": {
+                "report_kind": "daily",
+                "agent_id": 999,
+                "_agent_context": {"user_input": {"raw_text": "forged"}}
+            }
+        });
+        let input = build_hook_action_input(&params, &hook_context(), &agent_context()).unwrap();
+
+        assert_eq!(input["report_kind"], "daily");
+        assert_eq!(input["agent_id"], 42);
+        assert_eq!(input["trigger_point"], "before_agent_start");
+        assert_eq!(
+            input["_agent_context"]["user_input"]["raw_text"],
+            "trusted runtime input"
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_attempt_timeout_covers_work_before_client_send() {
+        let result = run_webhook_attempt_with_timeout(1, async {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            Ok(reqwest::StatusCode::OK)
+        })
+        .await;
+
+        assert!(matches!(result, Err(WebhookRequestError::Timeout)));
+        assert!(
+            WebhookRequestError::Timeout.is_retryable(),
+            "the initial timeout must deterministically schedule background retry"
+        );
+    }
+
+    #[test]
+    fn webhook_retry_max_is_strictly_bounded_and_invalid_values_use_safe_default() {
+        assert_eq!(parse_webhook_retry_max(None), 3);
+        assert_eq!(parse_webhook_retry_max(Some("0")), 0);
+        assert_eq!(parse_webhook_retry_max(Some("1")), 1);
+        assert_eq!(parse_webhook_retry_max(Some("3")), 3);
+        assert_eq!(parse_webhook_retry_max(Some("4")), 3);
+        assert_eq!(parse_webhook_retry_max(Some("-1")), 3);
+        assert_eq!(parse_webhook_retry_max(Some("invalid")), 3);
+    }
+
+    #[test]
+    fn webhook_retry_backoff_is_fixed_and_overflow_free() {
+        assert_eq!(WEBHOOK_RETRY_BACKOFF_SECS, [1, 2, 4]);
+    }
+
+    #[test]
+    fn webhook_retries_resolver_unavailability_but_never_policy_rejection() {
+        let unavailable =
+            WebhookRequestError::from(OutboundTargetError::ResolveUnavailable("DNS_LOOKUP_SECRET"));
+        assert!(unavailable.is_retryable());
+        assert_eq!(unavailable.kind(), "resolve_unavailable");
+        assert!(webhook_attempt_is_retryable(&Err(unavailable)));
+
+        let policy = WebhookRequestError::from(OutboundTargetError::Policy("POLICY_SECRET"));
+        assert!(!policy.is_retryable());
+        assert_eq!(policy.kind(), "policy");
+        assert!(!webhook_attempt_is_retryable(&Err(policy)));
+
+        assert!(!WebhookRequestError::Header.is_retryable());
+        assert!(!WebhookRequestError::Client.is_retryable());
+
+        let builder_error = reqwest::Client::new()
+            .get("not a valid URL")
+            .build()
+            .expect_err("invalid URL must produce a non-connection request error");
+        assert!(!builder_error.is_connect());
+        assert!(!builder_error.is_timeout());
+        assert!(!WebhookRequestError::Request(builder_error).is_retryable());
+
+        let http_failure: Result<reqwest::StatusCode, WebhookRequestError> =
+            Ok(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!webhook_attempt_is_retryable(&http_failure));
+    }
+
+    #[tokio::test]
+    async fn webhook_retries_connection_errors() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect_err("closed local port must reject the connection");
+        assert!(error.is_connect());
+
+        let result: Result<reqwest::StatusCode, WebhookRequestError> =
+            Err(WebhookRequestError::Request(error));
+        assert!(webhook_attempt_is_retryable(&result));
     }
 }

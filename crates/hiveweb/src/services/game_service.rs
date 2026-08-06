@@ -603,8 +603,11 @@ pub async fn get_single_external_game_info_cached(
     match cache_helper::cached_get::<Option<ExternalGameInfo>>(redis, &key).await {
         Ok(Some(cached)) => return Ok(cached),
         Ok(None) => {} // cache miss
-        Err(e) => {
-            tracing::debug!(%key, error = %e, "cache read failed, falling back to DB")
+        Err(_) => {
+            tracing::debug!(
+                error_kind = "cache_read_failed",
+                "cache read failed, falling back to DB"
+            )
         }
     }
 
@@ -621,8 +624,11 @@ pub async fn get_single_external_game_info_cached(
     } else {
         cache_helper::TTL_GAME_INFO_NOT_FOUND
     };
-    if let Err(e) = cache_helper::cached_set(redis, &key, &result, ttl).await {
-        tracing::debug!(%key, error = %e, "cache write failed");
+    if cache_helper::cached_set(redis, &key, &result, ttl)
+        .await
+        .is_err()
+    {
+        tracing::debug!(error_kind = "cache_write_failed", "cache write failed");
     }
 
     Ok(result)
@@ -730,7 +736,10 @@ limit ?"#,
         .await
         .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
     tracing::debug!(
-        %client_type, %channel, %category_name, %limit,
+        client_type_bytes = client_type.len(),
+        channel_bytes = channel.len(),
+        category_name_bytes = category_name.len(),
+        limit,
         result_count = rows.len(),
         "fetch_logic_game_ids_by_tag done"
     );

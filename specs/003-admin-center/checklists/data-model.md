@@ -33,7 +33,10 @@
 - [ ] CHK015 Are the `RolePermission` entries consistent with the spec's role descriptions? Spec §US3 says System admin sees the delete button "禁用状态或不可见", but `RolePermission.System` does not include `admin-delete` at all — clarify whether System has the delete menu hidden vs disabled. [Consistency, Spec §US3, §RolePermission]
 - [ ] CHK016 Are the `updated_at` semantics consistent between the entity description ("最后更新时间") and the DDL (`ON UPDATE CURRENT_TIMESTAMP`) — does `last_login_at` change bump `updated_at`? [Consistency, Spec §Admin]
 - [ ] CHK017 Are uniqueness requirements consistent — entity says "phone 唯一索引", DDL uses `UNIQUE` + a non-unique `INDEX idx_phone (phone)`. Is the redundant secondary index intentional? [Consistency, Spec §Admin]
-- [ ] CHK018 Are the validation rules consistent with spec assumptions? Spec assumes "密码长度 6-20 位, 支持字母和数字组合"; `validate_password()` checks length only. Is the alphanumeric requirement intentional or dropped? [Conflict, Spec §Assumptions]
+- [x] CHK018 Are the validation rules consistent with spec assumptions? ✅ The
+  contract and example count 6-20 Unicode characters and require at least one
+  ASCII letter and digit; frontend and backend reuse the same mandatory policy.
+  [Resolved, Spec §Assumptions]
 
 ## Acceptance Criteria Quality — Constraints
 

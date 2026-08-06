@@ -1,33 +1,39 @@
 /// <reference types="vitest/globals" />
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { App as AntdApp } from 'antd';
 import { MemoryRouter } from 'react-router-dom';
 import LoginForm from '../LoginForm';
 
-// T026k — Phase 2.5 RED.
+// T026k — Phase 2.5 component contract.
 // These tests assert the contract documented in spec.md §US1 acceptance scenarios.
 
-const loginMock = vi.fn();
+const loginAdminMock = vi.fn();
 
 vi.mock('../../hooks/useAuth', () => ({
   useAuth: () => ({
+    admin: null,
     user: null,
-    login: loginMock,
+    loginAdmin: loginAdminMock,
     logout: vi.fn(),
     isAuthenticated: false,
+    isAdmin: false,
+    isUser: false,
   }),
 }));
 
 const renderForm = () =>
   render(
-    <MemoryRouter>
-      <LoginForm />
-    </MemoryRouter>,
+    <AntdApp>
+      <MemoryRouter>
+        <LoginForm />
+      </MemoryRouter>
+    </AntdApp>,
   );
 
 beforeEach(() => {
-  loginMock.mockReset();
+  loginAdminMock.mockReset();
 });
 
 describe('LoginForm', () => {
@@ -37,7 +43,7 @@ describe('LoginForm', () => {
     await userEvent.click(submit);
     expect(await screen.findByText(/请输入手机号/)).toBeInTheDocument();
     expect(await screen.findByText(/请输入密码/)).toBeInTheDocument();
-    expect(loginMock).not.toHaveBeenCalled();
+    expect(loginAdminMock).not.toHaveBeenCalled();
   });
 
   it('rejects malformed phone numbers (spec §FR-001, data-model phone regex)', async () => {
@@ -48,20 +54,22 @@ describe('LoginForm', () => {
     await userEvent.type(password, 'whatever');
     await userEvent.click(screen.getByRole('button', { name: /登\s*录|login/i }));
     expect(await screen.findByText(/请输入有效的11位手机号/)).toBeInTheDocument();
-    expect(loginMock).not.toHaveBeenCalled();
+    expect(loginAdminMock).not.toHaveBeenCalled();
   });
 
-  it('calls login() with the entered credentials on submit (spec §US1 AS-1)', async () => {
-    loginMock.mockResolvedValueOnce(undefined);
+  it('calls loginAdmin() with the entered credentials on submit (spec §US1 AS-1)', async () => {
+    loginAdminMock.mockResolvedValueOnce(undefined);
     renderForm();
     await userEvent.type(screen.getByPlaceholderText(/手机号/), '18810154696');
     await userEvent.type(screen.getByPlaceholderText(/密码/), 'admin123');
     await userEvent.click(screen.getByRole('button', { name: /登\s*录|login/i }));
-    expect(loginMock).toHaveBeenCalledWith('18810154696', 'admin123');
+    await waitFor(() =>
+      expect(loginAdminMock).toHaveBeenCalledWith('18810154696', 'admin123'),
+    );
   });
 
-  it('surfaces the backend error message when login() rejects (spec §US1 AS-2)', async () => {
-    loginMock.mockRejectedValueOnce({ response: { data: { message: '密码错误' } } });
+  it('surfaces the backend error message when loginAdmin() rejects (spec §US1 AS-2)', async () => {
+    loginAdminMock.mockRejectedValueOnce({ response: { data: { message: '密码错误' } } });
     renderForm();
     await userEvent.type(screen.getByPlaceholderText(/手机号/), '18810154696');
     await userEvent.type(screen.getByPlaceholderText(/密码/), 'bad');

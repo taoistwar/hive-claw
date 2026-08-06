@@ -5,8 +5,11 @@
 //!   - `mint_jwt(...)` — produces a Bearer token for a given admin id + role
 //!   - `SeededAdmin` — RAII-style admin row that deletes itself on drop
 //!
-//! All helpers require `DATABASE_URL` plus the Redis variables for either direct
-//! or Sentinel mode. If absent, the test fails with a clear "Phase 2.5 RED" message.
+//! All helpers require a disposable `TEST_DATABASE_URL` plus Redis and S3
+//! variables supplied directly by the test process. This harness never loads a
+//! `.env` file. The database must be loopback-hosted and named `hiveweb_test`
+//! (or use the `hiveweb_test_` prefix) so cleanup-capable tests fail closed
+//! instead of connecting to a normal database.
 
 #![allow(dead_code)]
 
@@ -18,24 +21,47 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
-use sqlx::MySqlPool;
+use sqlx::{MySqlPool, mysql::MySqlConnectOptions};
 use tower::ServiceExt;
 
 pub use hiveweb::utils::jwt::create_admin_token;
 pub use hiveweb::utils::jwt::create_user_token;
 
+fn test_database_url() -> Result<String> {
+    let url = std::env::var("TEST_DATABASE_URL").map_err(|_| {
+        anyhow!("TEST_DATABASE_URL must be set to an explicitly disposable MySQL database")
+    })?;
+    let options = url
+        .parse::<MySqlConnectOptions>()
+        .map_err(|error| anyhow!("TEST_DATABASE_URL is not a valid MySQL URL: {error}"))?;
+    let host = options.get_host();
+    if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
+        return Err(anyhow!(
+            "refusing non-loopback MySQL host `{host}` in TEST_DATABASE_URL"
+        ));
+    }
+    let database = options
+        .get_database()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            anyhow!("TEST_DATABASE_URL must name an explicitly disposable HiveWeb test database")
+        })?;
+
+    let database_lower = database.to_ascii_lowercase();
+    if database_lower != "hiveweb_test" && !database_lower.starts_with("hiveweb_test_") {
+        return Err(anyhow!(
+            "refusing database `{database}`: TEST_DATABASE_URL must use `hiveweb_test` or the `hiveweb_test_` prefix"
+        ));
+    }
+
+    Ok(url)
+}
+
 /// Build the test instance of the full axum router wired against the live
 /// MySQL/Redis/S3 backends. Returns `Err` when required env vars are missing
 /// so the calling test fails with a descriptive message.
 pub async fn test_app() -> Result<Router> {
-    dotenvy::dotenv_override().ok();
-
-    let database_url = std::env::var("DATABASE_URL").map_err(|_| {
-        anyhow!(
-            "Phase 2.5 RED: DATABASE_URL not set. \
-             Run `./scripts/dev-up.sh -d` and export DATABASE_URL."
-        )
-    })?;
+    let database_url = test_database_url()?;
     let pool = hiveweb::db::connection::create_pool(&database_url).await?;
     let redis = hiveweb::cache::redis::create_from_env().await?;
     let s3 = hiveweb::storage::s3::create_client().await?;
@@ -46,15 +72,13 @@ pub async fn test_app() -> Result<Router> {
         Some(s3),
         None,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),
+        std::sync::Arc::new(hiveweb::runtime::LlmRegistry::new()),
     ))
 }
 
-/// Open a direct MySQL pool from `DATABASE_URL` for seed / cleanup operations.
+/// Open a direct MySQL pool from `TEST_DATABASE_URL` for seed / cleanup operations.
 pub async fn test_pool() -> Result<MySqlPool> {
-    dotenvy::dotenv_override().ok();
-
-    let url = std::env::var("DATABASE_URL")
-        .map_err(|_| anyhow!("Phase 2.5 RED: DATABASE_URL not set"))?;
+    let url = test_database_url()?;
     Ok(MySqlPool::connect(&url).await?)
 }
 

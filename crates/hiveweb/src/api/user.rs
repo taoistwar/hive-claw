@@ -141,8 +141,8 @@ async fn list_users(
         }
         match qc.fetch_one(&state.pool).await {
             Ok(t) => t,
-            Err(e) => {
-                tracing::error!(error=%e, "count users failed");
+            Err(_) => {
+                tracing::error!(error_kind = "user_count_query_failed", "count users failed");
                 return AppError::Internal("Service unavailable".into()).into_response();
             }
         }
@@ -173,8 +173,8 @@ async fn list_users(
             .bind(((q.page - 1) * q.page_size) as i64);
         match qr.fetch_all(&state.pool).await {
             Ok(u) => u,
-            Err(e) => {
-                tracing::error!(error=%e, "list users failed");
+            Err(_) => {
+                tracing::error!(error_kind = "user_list_query_failed", "list users failed");
                 return AppError::Internal("Service unavailable".into()).into_response();
             }
         }
@@ -222,8 +222,8 @@ async fn create_user(
         .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error=%e, "create user failed");
+        Err(_) => {
+            tracing::error!(error_kind = "user_create_failed", "create user failed");
             return AppError::Internal("Failed to create user".into()).into_response();
         }
     };
@@ -236,8 +236,11 @@ async fn create_user(
     .await
     {
         Ok(u) => ApiResponse::success(u.into()),
-        Err(e) => {
-            tracing::error!(error=%e, "fetch created user failed");
+        Err(_) => {
+            tracing::error!(
+                error_kind = "created_user_query_failed",
+                "fetch created user failed"
+            );
             AppError::Internal("Failed to fetch created user".into()).into_response()
         }
     }

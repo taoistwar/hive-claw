@@ -4,13 +4,13 @@ import { render, screen } from '@testing-library/react';
 import AdminTable from '../AdminTable';
 import type { Admin } from '../../services/admin';
 
-// T026m — Phase 2.5 RED.
+// T026m — Phase 2.5 component contract.
 // Pagination + role-based button visibility (spec §US3 AS-1..3, FR-005, FR-010, FR-018).
 
-const userRef: { current: { role: number } | null } = { current: null };
+const adminRef: { current: { role: number } | null } = { current: null };
 
 vi.mock('../../hooks/useAuth', () => ({
-  useAuth: () => ({ user: userRef.current }),
+  useAuth: () => ({ admin: adminRef.current }),
 }));
 
 const sampleAdmin: Admin = {
@@ -48,7 +48,7 @@ const baseProps = {
 
 describe('AdminTable', () => {
   it('renders the columns mandated by FR-010 (ID, phone, nickname, status, created, last login)', () => {
-    userRef.current = { role: 3 };
+    adminRef.current = { role: 3 };
     render(<AdminTable {...baseProps} />);
     // 文本可能同时出现在表头和 filter Form.Item label 中，因此用
     // getAllByText 而非 getByText（后者 ≥2 命中即抛错）。
@@ -63,7 +63,7 @@ describe('AdminTable', () => {
   });
 
   it('hides action buttons entirely for Normal admins (spec §US3 AS-1, hidden-not-disabled convention)', () => {
-    userRef.current = { role: 1 };
+    adminRef.current = { role: 1 };
     render(<AdminTable {...baseProps} />);
     expect(screen.queryByRole('button', { name: /编辑/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument();
@@ -71,7 +71,7 @@ describe('AdminTable', () => {
   });
 
   it('hides only the delete button for System admins (spec §US3 AS-2, post-2026-05-26 convention)', () => {
-    userRef.current = { role: 2 };
+    adminRef.current = { role: 2 };
     render(<AdminTable {...baseProps} />);
     expect(screen.queryAllByRole('button', { name: /编辑/ }).length).toBeGreaterThan(0);
     expect(screen.queryAllByRole('button', { name: /禁用|启用/ }).length).toBeGreaterThan(0);
@@ -79,14 +79,14 @@ describe('AdminTable', () => {
   });
 
   it('shows all action buttons for Super admins (spec §US3 AS-3)', () => {
-    userRef.current = { role: 3 };
+    adminRef.current = { role: 3 };
     render(<AdminTable {...baseProps} />);
     expect(screen.queryAllByRole('button', { name: /编辑/ }).length).toBeGreaterThan(0);
     expect(screen.queryAllByRole('button', { name: /删除/ }).length).toBeGreaterThan(0);
   });
 
   it('reflects the page size + total provided by props (spec §Edge-cases pagination)', () => {
-    userRef.current = { role: 3 };
+    adminRef.current = { role: 3 };
     render(<AdminTable {...baseProps} pagination={{ current: 1, pageSize: 10, total: 123 }} />);
     // antd renders total as e.g. "共 123 条" via showTotal — assert via regex.
     expect(screen.getByText(/123/)).toBeInTheDocument();

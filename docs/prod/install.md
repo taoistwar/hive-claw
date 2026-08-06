@@ -193,6 +193,9 @@ sudo editor /opt/hive-claw/config/llm_presets.toml
 - API Key 的环境变量名由每个 provider 的 `api_key_env` 指定，并非固定为
   `LLM_API_KEY`。例如 `api_key_env = "OPENAI_API_KEY"` 时，需要在 `.env` 中配置
   `OPENAI_API_KEY=...`。
+- 只要配置了 `api_key_env`，对应环境变量就必须存在且包含非空值；名称绝不会被
+  当作 API Key 字面量。默认 preset 缺少引用凭据时 HiveWeb 在监听端口前非零退出，
+  非默认 preset 则静态告警并跳过。仅本地、明确无需鉴权的 provider 可省略该字段。
 - 配置文件只引用环境变量名，不要直接写 API Key。
 
 ## 7. 数据库迁移
@@ -219,15 +222,23 @@ sudo -u hiveclaw ./bin/migrate
 
 ```bash
 cd /opt/hive-claw
-sudo -u hiveclaw ./bin/create-super-admin \
-  --phone '<11位手机号>' \
-  --password '<生产专用强密码>' \
-  --nickname '<管理员昵称>'
+read -r -s -p 'Bootstrap password: ' HIVEWEB_BOOTSTRAP_PASSWORD
+printf '\n'
+printf '%s\n' "$HIVEWEB_BOOTSTRAP_PASSWORD" | \
+  sudo -u hiveclaw ./bin/create-super-admin \
+    --phone '<11位手机号>' \
+    --nickname '<管理员昵称>' \
+    --password-stdin
+unset HIVEWEB_BOOTSTRAP_PASSWORD
 ```
 
-密码会以 bcrypt 哈希写入 `admins.password_hash`。不要复制测试环境的默认管理员密码。
-命令参数可能出现在 shell 历史或短暂出现在进程列表中，执行后应清理历史记录，并在
-首次登录后通过修改密码接口轮换。重复手机号只更新昵称，不会重置已有密码。
+密码必须为 6–20 个 Unicode 字符，并同时包含至少一个 ASCII 字母和数字；它不会
+进入 argv、shell 历史、进程列表或命令输出，并通过正式密码工具以 bcrypt 哈希写入
+`admins.password_hash`。也可使用由 `hiveclaw` 用户持有、权限 0600、无软/硬链接的
+`--password-file`。
+
+该命令是一次性 INSERT bootstrap。重复手机号会以非零状态失败，不更新昵称或密码，
+也不打印成功提示。首次登录后的密码轮换必须通过认证的修改密码流程完成。
 
 ## 9. systemd 服务
 

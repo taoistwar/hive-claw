@@ -10,6 +10,8 @@ mod common;
 
 use std::sync::Arc;
 
+use hiveweb::runtime::RuntimeExecutionContext;
+use hiveweb::runtime::capabilities::rate_limit::CapabilityRateLimits;
 use hiveweb::runtime::capability::{
     self, CapabilityRegistry, DispatchCtx, DispatcherDeps, NETWORK_HTTP, TIME_NOW,
 };
@@ -23,10 +25,10 @@ async fn t046_unknown_capability_returns_4045() -> anyhow::Result<()> {
         s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
+        rate_limits: Arc::new(CapabilityRateLimits::new()),
     };
     let ctx = DispatchCtx {
-        request_id: None,
-        session_id: None,
+        execution_context: RuntimeExecutionContext::best_effort(None, None),
         agent_id: 1, // main agent
         plugin_id: 9999,
         function_id: None,
@@ -52,6 +54,7 @@ async fn t047_known_but_not_granted_returns_4030() -> anyhow::Result<()> {
         s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
+        rate_limits: Arc::new(CapabilityRateLimits::new()),
     };
 
     // 准备：确保 main agent (id=1) 没有 network.http 授权
@@ -61,8 +64,7 @@ async fn t047_known_but_not_granted_returns_4030() -> anyhow::Result<()> {
         .await?;
 
     let ctx = DispatchCtx {
-        request_id: None,
-        session_id: None,
+        execution_context: RuntimeExecutionContext::best_effort(None, None),
         agent_id: 1,
         plugin_id: 9999,
         function_id: None,
@@ -88,6 +90,7 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
         s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
+        rate_limits: Arc::new(CapabilityRateLimits::new()),
     };
 
     // 准备：给 main agent (id=1) 临时授权 time.now
@@ -97,8 +100,7 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
         .await?;
 
     let ctx = DispatchCtx {
-        request_id: None,
-        session_id: None,
+        execution_context: RuntimeExecutionContext::best_effort(None, None),
         agent_id: 1,
         plugin_id: 9999,
         function_id: None,
@@ -131,10 +133,10 @@ async fn t049_bad_envelope_returns_4000() -> anyhow::Result<()> {
         s3: Some(s3),
         registry: Arc::new(CapabilityRegistry::new()),
         llm: Arc::new(hiveweb::runtime::LlmRegistry::new()),
+        rate_limits: Arc::new(CapabilityRateLimits::new()),
     };
     let ctx = DispatchCtx {
-        request_id: None,
-        session_id: None,
+        execution_context: RuntimeExecutionContext::best_effort(None, None),
         agent_id: 1,
         plugin_id: 9999,
         function_id: None,

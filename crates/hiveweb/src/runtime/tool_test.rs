@@ -2,17 +2,41 @@
 //!
 //! 为单个 Tool 创建隔离测试环境：加载目标 Tool + Always Tools + Always Skills → 执行单轮对话 → 返回结果
 
-use providers::{ChatRequest, RetryMode};
+use providers::{ChatRequest, LLMProvider, LlmCallOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use super::orchestrator::{OrchestratorDeps, build_tools_schema_simple, handle_workspace_tool};
+use crate::runtime::execution_context::RuntimeExecutionContext;
+use crate::runtime::llm::{LlmAdapterError, LlmRegistry};
+use crate::runtime::llm_audit::{LlmAuditGuard, LlmAuditSource};
 use crate::services::agent::{AgentContent, ToolRef};
-use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{AgentContext, ContextConfig, UserInput};
+
+const TOOL_TEST_LOG_DIR: &str = "/tmp/tool_test_logs";
+const MAX_TRACE_ID_LEN: usize = 64;
+
+pub fn generate_tool_test_trace_id() -> String {
+    format!("tool_test_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn is_safe_trace_id(trace_id: &str) -> bool {
+    !trace_id.is_empty()
+        && trace_id.len() <= MAX_TRACE_ID_LEN
+        && trace_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn tool_test_log_path(trace_id: &str) -> Option<PathBuf> {
+    if !is_safe_trace_id(trace_id) {
+        return None;
+    }
+    Some(Path::new(TOOL_TEST_LOG_DIR).join(format!("{trace_id}.log")))
+}
 
 type ToolTestRow = (
     i64,
@@ -56,6 +80,94 @@ pub struct TestToolCallOutcome {
     pub error: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ToolTestError {
+    #[error("model preset unknown: {0}")]
+    ModelPresetUnknown(String),
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl From<String> for ToolTestError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+struct ResolvedToolTestLlmTarget {
+    provider: Arc<dyn LLMProvider>,
+    model: String,
+    preset_name: String,
+    max_tokens: u32,
+    temperature: f32,
+}
+
+trait ToolTestLlmRegistry {
+    fn resolve_preset(
+        &self,
+        requested_preset: Option<&str>,
+    ) -> Result<(String, u32, f32), LlmAdapterError>;
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError>;
+}
+
+impl ToolTestLlmRegistry for LlmRegistry {
+    fn resolve_preset(
+        &self,
+        requested_preset: Option<&str>,
+    ) -> Result<(String, u32, f32), LlmAdapterError> {
+        let entry = self.resolve(requested_preset)?;
+        Ok((entry.name.clone(), entry.max_tokens, entry.temperature))
+    }
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+        LlmRegistry::build_chain(self, preset_name)
+    }
+}
+
+fn resolve_tool_test_llm_target<R: ToolTestLlmRegistry + ?Sized>(
+    registry: &R,
+    execution_context: &RuntimeExecutionContext,
+    tool_id: i64,
+    requested_preset: Option<&str>,
+) -> Result<ResolvedToolTestLlmTarget, ToolTestError> {
+    let (preset_name, max_tokens, temperature) = match registry.resolve_preset(requested_preset) {
+        Ok(preset) => preset,
+        Err(LlmAdapterError::Unknown(name)) => {
+            let mut audit = LlmAuditGuard::new(
+                execution_context.clone(),
+                None,
+                requested_preset,
+                LlmAuditSource::ToolTest { tool_id },
+            );
+            audit.finish_model_preset_unknown();
+            return Err(ToolTestError::ModelPresetUnknown(name));
+        }
+        Err(error) => {
+            return Err(ToolTestError::Failed(format!(
+                "LLM preset resolution failed: {error}"
+            )));
+        }
+    };
+    let (provider, model) = registry
+        .build_chain(Some(&preset_name))
+        .map_err(|error| ToolTestError::Failed(format!("LLM provider: {error}")))?;
+
+    Ok(ResolvedToolTestLlmTarget {
+        provider,
+        model,
+        preset_name,
+        max_tokens,
+        temperature,
+    })
+}
+
 #[derive(Clone)]
 pub struct DebugLogger {
     trace_id: Option<String>,
@@ -65,31 +177,29 @@ pub struct DebugLogger {
 impl DebugLogger {
     pub fn new(trace_id: Option<String>) -> Self {
         Self {
-            trace_id,
+            trace_id: trace_id.filter(|trace_id| is_safe_trace_id(trace_id)),
             lines: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn log(&self, msg: &str) {
         let line = format!("[tool_test] {}", msg);
-        if !crate::app_mode::get().is_production() {
-            if let Some(ref tid) = self.trace_id {
-                let _ = std::fs::create_dir_all("/tmp/tool_test_logs");
-                let path = format!("/tmp/tool_test_logs/{}.log", tid);
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .and_then(|mut f| {
-                        use std::io::Write;
-                        writeln!(f, "{}", line)
-                    });
-            }
+        if !crate::app_mode::get().is_production()
+            && let Some(path) = self.trace_id.as_deref().and_then(tool_test_log_path)
+        {
+            let _ = std::fs::create_dir_all(TOOL_TEST_LOG_DIR);
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "{}", line)
+                });
         }
         if let Ok(mut lines) = self.lines.lock() {
-            lines.push(line.clone());
+            lines.push(line);
         }
-        println!("{}", line);
     }
 
     pub fn dump(&self) -> String {
@@ -106,11 +216,12 @@ pub async fn run_tool_test(
     deps: &OrchestratorDeps,
     tool_id: i64,
     req: TestToolRequest,
-) -> Result<TestToolResult, String> {
+) -> Result<TestToolResult, ToolTestError> {
     let logger = DebugLogger::new(req.trace_id.clone());
     logger.log(&format!(
-        "START tool_id={} message={}",
-        tool_id, req.message
+        "START tool_id={} message_bytes={}",
+        tool_id,
+        req.message.len()
     ));
     // 1. 查询目标 tool
     let tool_row: Option<ToolTestRow> = sqlx::query_as(
@@ -142,12 +253,11 @@ pub async fn run_tool_test(
     )) = tool_row
     else {
         logger.log(&format!("FAIL: tool id={} not found", tool_id));
-        return Err(format!("tool id={tool_id} not found"));
+        return Err(ToolTestError::Failed(format!(
+            "tool id={tool_id} not found"
+        )));
     };
-    logger.log(&format!(
-        "STEP1 OK: tool found id={} identifier={} kind={}",
-        tid, t_ident, t_kind
-    ));
+    logger.log(&format!("STEP1 OK: tool found id={} kind={}", tid, t_kind));
 
     let t_caps: Vec<String> = t_caps_raw
         .and_then(|v| serde_json::from_value(v).ok())
@@ -265,11 +375,20 @@ pub async fn run_tool_test(
     ));
 
     // 5. 构建 LLM request
-    let (provider, model) = deps
-        .llm
-        .build_primary(ctx.model_preset.as_deref())
-        .map_err(|e| format!("LLM provider: {e}"))?;
-    logger.log(&format!("STEP5 OK: LLM provider built, model={}", model));
+    let requested_preset = ctx.model_preset.as_deref();
+    let ResolvedToolTestLlmTarget {
+        provider,
+        model,
+        preset_name: resolved_preset,
+        max_tokens,
+        temperature,
+    } = resolve_tool_test_llm_target(
+        deps.llm.as_ref(),
+        &deps.execution_context,
+        tool_id,
+        requested_preset,
+    )?;
+    logger.log("STEP5 OK: LLM provider built");
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
 
@@ -281,8 +400,8 @@ pub async fn run_tool_test(
     let chat_req = ChatRequest {
         model: Some(model),
         messages,
-        max_tokens: 4096,
-        temperature: 0.7,
+        max_tokens,
+        temperature,
         tools: if tools_schema.is_empty() {
             None
         } else {
@@ -296,51 +415,29 @@ pub async fn run_tool_test(
         chat_req.tools.is_some()
     ));
 
-    let llm_started = Instant::now();
-    logger.log("STEP7: calling chat_stream_with_retry...");
+    let mut llm_audit = LlmAuditGuard::new(
+        deps.execution_context.clone(),
+        None,
+        Some(&resolved_preset),
+        LlmAuditSource::ToolTest { tool_id },
+    );
+    let options = LlmCallOptions::default().with_fallback_callback(llm_audit.on_fallback());
+    logger.log("STEP7: calling chat_stream_with_options...");
     let resp = provider
-        .chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None)
+        .chat_stream_with_options(chat_req, None, None, options)
         .await;
-    let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
+    llm_audit.finish_response(&resp);
     logger.log(&format!(
-        "STEP7 DONE: LLM responded in {}ms, is_error={}, content_len={}",
-        llm_elapsed_ms,
+        "STEP7 DONE: LLM responded, is_error={}, content_len={}",
         resp.is_error(),
         resp.content.as_ref().map(|s| s.len()).unwrap_or(0)
     ));
 
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
-        logger.log(&format!("FAIL: LLM error: {}", err_msg));
-        runtime_audit::record(AuditRecord {
-            request_id: None,
-            session_id: None,
-            agent_id: None,
-            plugin_id: None,
-            function_id: None,
-            capability: None,
-            event_type: "llm_invoke",
-            outcome: "error",
-            elapsed_ms: Some(llm_elapsed_ms),
-            error_message: Some(&err_msg),
-            payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
-        });
-        return Err(format!("LLM error: {}", err_msg));
+        logger.log("FAIL: LLM invocation failed");
+        return Err(ToolTestError::Failed(format!("LLM error: {err_msg}")));
     }
-
-    runtime_audit::record(AuditRecord {
-        request_id: None,
-        session_id: None,
-        agent_id: None,
-        plugin_id: None,
-        function_id: None,
-        capability: None,
-        event_type: "llm_invoke",
-        outcome: "success",
-        elapsed_ms: Some(llm_elapsed_ms),
-        error_message: None,
-        payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
-    });
     logger.log(&format!(
         "STEP7 OK: LLM success, tool_calls_count={}",
         resp.tool_calls.len()
@@ -365,25 +462,21 @@ pub async fn run_tool_test(
         let tool_name = tc.name.clone();
         let args = tc.arguments.clone();
         logger.log(&format!(
-            "STEP9.{}: executing tool '{}' with args={}",
+            "STEP9.{}: executing tool with arg_count={}",
             idx,
-            tool_name,
-            serde_json::to_string(&args).unwrap_or_default()
+            args.len()
         ));
 
         let tool_ref = ctx.tools.iter().find(|t| t.identifier == tc.name);
         let Some(tool_ref) = tool_ref else {
-            logger.log(&format!(
-                "STEP9.{}: FAIL: tool '{}' not found in context",
-                idx, tc.name
-            ));
+            logger.log(&format!("STEP9.{}: FAIL: tool not found in context", idx));
             records.push(TestToolCallRecord {
                 tool_name,
                 arguments: Value::Object(args),
                 result: TestToolCallOutcome {
                     success: false,
                     content: Value::Null,
-                    error: Some(format!("tool '{}' not found in test context", tc.name)),
+                    error: Some("tool not found in test context".into()),
                 },
             });
             continue;
@@ -406,13 +499,9 @@ pub async fn run_tool_test(
         ));
         let outcome = handle_workspace_tool(deps, &ctx, tool_ref, tc, 0, agent_ctx).await;
         logger.log(&format!(
-            "STEP9.{}: handle_workspace_tool returned, payload_keys={:?}",
+            "STEP9.{}: handle_workspace_tool returned, payload_field_count={}",
             idx,
-            outcome
-                .payload
-                .as_object()
-                .map(|o| o.keys().collect::<Vec<_>>())
-                .unwrap_or_default()
+            outcome.payload.as_object().map_or(0, serde_json::Map::len)
         ));
 
         let (success, content, error) = match outcome {
@@ -449,4 +538,138 @@ pub async fn run_tool_test(
         has_tool_calls: true,
         tool_calls: records,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DebugLogger, MAX_TRACE_ID_LEN, ToolTestError, ToolTestLlmRegistry,
+        generate_tool_test_trace_id, resolve_tool_test_llm_target, tool_test_log_path,
+    };
+    use crate::runtime::execution_context::RuntimeExecutionContext;
+    use crate::runtime::llm::LlmAdapterError;
+    use async_trait::async_trait;
+    use providers::{ChatRequest, LLMProvider, LLMResponse};
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NeverCalledProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LLMProvider for NeverCalledProvider {
+        fn default_model(&self) -> String {
+            "global-default-must-not-run".to_string()
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> LLMResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            LLMResponse::default()
+        }
+    }
+
+    struct UnknownPresetRegistry {
+        provider: Arc<NeverCalledProvider>,
+        build_calls: AtomicUsize,
+    }
+
+    impl ToolTestLlmRegistry for UnknownPresetRegistry {
+        fn resolve_preset(
+            &self,
+            requested_preset: Option<&str>,
+        ) -> Result<(String, u32, f32), LlmAdapterError> {
+            Err(LlmAdapterError::Unknown(
+                requested_preset.unwrap_or("global-default").to_string(),
+            ))
+        }
+
+        fn build_chain(
+            &self,
+            _preset_name: Option<&str>,
+        ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+            self.build_calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Arc::clone(&self.provider) as Arc<dyn LLMProvider>,
+                "global-default-model".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn explicit_empty_and_unknown_tool_test_presets_are_typed_without_default_provider() {
+        let provider = Arc::new(NeverCalledProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let registry = UnknownPresetRegistry {
+            provider: Arc::clone(&provider),
+            build_calls: AtomicUsize::new(0),
+        };
+        let execution_context =
+            RuntimeExecutionContext::best_effort(Some("tool-test-unknown".into()), None).for_hook();
+
+        for requested_preset in ["", "removed-preset"] {
+            let error = match resolve_tool_test_llm_target(
+                &registry,
+                &execution_context,
+                17,
+                Some(requested_preset),
+            ) {
+                Ok(_) => panic!("explicit unknown preset must fail closed"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                ToolTestError::ModelPresetUnknown(name) if name == requested_preset
+            ));
+        }
+
+        assert_eq!(registry.build_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn generated_trace_id_has_fixed_safe_character_set() {
+        let trace_id = generate_tool_test_trace_id();
+        assert!(trace_id.len() <= MAX_TRACE_ID_LEN);
+        assert!(
+            trace_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        );
+    }
+
+    #[test]
+    fn trace_id_rejects_path_traversal_and_unsafe_characters() {
+        for unsafe_id in [
+            "../escape",
+            "..%2fescape",
+            "nested/path",
+            "nested\\path",
+            "/absolute",
+            "with space",
+            "query?token=secret",
+            "",
+        ] {
+            assert!(tool_test_log_path(unsafe_id).is_none(), "{unsafe_id}");
+            assert!(
+                DebugLogger::new(Some(unsafe_id.into()))
+                    .trace_id()
+                    .is_none()
+            );
+        }
+        assert!(tool_test_log_path(&"a".repeat(MAX_TRACE_ID_LEN + 1)).is_none());
+    }
+
+    #[test]
+    fn safe_trace_id_stays_inside_log_directory() {
+        let trace_id = generate_tool_test_trace_id();
+        let path = tool_test_log_path(&trace_id).expect("generated trace id must be safe");
+        assert_eq!(path.parent(), Some(Path::new("/tmp/tool_test_logs")));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(format!("{trace_id}.log").as_str())
+        );
+    }
 }

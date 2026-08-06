@@ -105,6 +105,7 @@ async fn spa_fallback_does_not_handle_backend_routes() {
         None,
         None,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),
+        std::sync::Arc::new(hiveweb::runtime::LlmRegistry::new()),
     );
     let app = web_admin::serve_dist(app, &dist);
 

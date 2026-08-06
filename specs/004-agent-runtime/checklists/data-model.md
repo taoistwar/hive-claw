@@ -1,6 +1,12 @@
 # Data Model Quality Checklist: 004-agent-runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：** `RecommendedGame` 相关项已废弃；原 admin `chat_sessions` / `chat_messages`、admin snapshot/Super 所有权条目也已由 `81a84fe` 移除并 superseded。相关未勾选项已失效，不是现役缺口。
+>
+> **迁移编号更新（2026-07-24）：** 下列 V019–V038 与旧 V008–V018
+> 映射问题均为历史 checklist 发现，已由 data-model §2 标记
+> Historical/Merged。物理 SQL / `MIGRATIONS` 的现行链是 V001–V033，
+> V013 空号，V032 runtime audit，V033 timeout default；不得为回答这些
+> 历史问题创建或重命名迁移。
 
 **Purpose**: Validate that the data model (data-model.md) is complete, consistent, and unambiguous — cross-referenced against spec.md, contracts/api.md, SECURITY.md, perf-evidence.md, and tasks.md
 **Created**: 2026-05-29
@@ -92,7 +98,7 @@
 - [ ] CHK050 — Does `runtime_audit_logs` record sufficient fields to support SECURITY.md §6 SSE chat ownership auditing (session_id, agent_id, capability, outcome)? [Completeness, data-model.md §2 V017 vs SECURITY.md §6]
 - [ ] CHK051 — Does `admin_audit_logs` record sufficient fields for all admin CRUD operations (actor, action, entity_type, entity_id, old_values, new_values, ip, user_agent)? [Completeness, data-model.md §2 V006 vs spec.md FR-023 audit requirements]
 - [ ] CHK052 — Is the `sha256` field on plugins (V011) documented with its purpose (WASM integrity verification before instantiate, SECURITY.md TM-1)? [Completeness, data-model.md §2 V011 vs SECURITY.md §1 TM-1]
-- [ ] CHK053 — Does the data model support the audit retention policy (AUDIT_RETENTION_DAYS = 90, CHAT_RETENTION_DAYS = 30) documented in SECURITY.md §7? [Completeness, data-model.md §2 V016/V017 vs SECURITY.md §7]
+- [ ] CHK053 — Does the data model support the configurable runtime audit retention policy (AUDIT_RETENTION_DAYS defaults to 36500 days / 100 years) documented in SECURITY.md §7? [Completeness, data-model.md §V032 vs SECURITY.md §7]
 
 ## Edge Cases & Boundary Conditions
 
@@ -114,6 +120,14 @@
 - [ ] CHK063 — Does every API endpoint in api.md that returns entity data have its response fields aligned with the corresponding table schema in data-model.md? [Consistency, api.md all sections vs data-model.md §2]
 - [ ] CHK064 — Does the capability static registry in data-model.md §6 (11 capabilities) match the host-functions.md §4 capability list (8 capabilities, 11 variants)? [Consistency, data-model.md §6 vs host-functions.md §4]
 - [ ] CHK065 — Are the error codes referenced in invariants (5007, 5002, 4093, 4030, 2001) consistent with the error code table in api.md §Errors? [Consistency, data-model.md §4 Invariants vs api.md §Errors]
+
+## 2026-07-24 Migration Remediation
+
+- [x] CHK066 — 物理迁移清单是否与 SQL 文件及
+  `migrate.rs::MIGRATIONS` 一致，并明确 V013 空号、V032 runtime audit、
+  V033 timeout default？— ✅ data-model §2 已列 V001–V033
+- [x] CHK067 — 旧 V019–V038 Agent Runtime 扩展是否明确标记为
+  Historical/Merged，且禁止据此新建/重命名 SQL？— ✅ data-model §2.1/2.2
 
 ## Notes
 

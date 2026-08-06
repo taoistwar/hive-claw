@@ -1,10 +1,13 @@
 # Data Model: Agent Runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：**
+> - `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。
+> - 原 `chat_sessions` / `chat_messages` admin 表及管理端测试聊天已由 `81a84fe` 移除并 superseded；不得恢复这些表、`/api/admin-chat*` 或 `/api/chat/sessions*`。
+> - 现行普通用户聊天使用 `chat_sessions_user` / `chat_messages_user` 并按 `user_id` 隔离，属于外部 Assistant API 的数据面。
 
 **Created**: 2026-05-26
-**Last Updated**: 2026-05-29
-**Status**: Up-to-date with migrations V001–V038
+**Last Updated**: 2026-07-24
+**Status**: 004 runtime model current；聊天部分已同步后续用户表/legacy 删除边界
 
 ---
 
@@ -30,8 +33,8 @@
 | AgentSkill（多对多） | `agent_skills` | agent_id, skill_id |
 | AgentPermission | `agent_permissions` | agent_id, capability_name |
 | Taggable（通用 polymorphic） | `taggings` | tag_id + entity_type + entity_id |
-| ChatSession | `chat_sessions` | admin_id（操作者） |
-| ChatMessage | `chat_messages` | session_id |
+| ChatSessionUser（外部 Assistant API） | `chat_sessions_user` | user_id（普通用户） |
+| ChatMessageUser（外部 Assistant API） | `chat_messages_user` | session_id, user_id |
 | RuntimeAuditLog | `runtime_audit_logs` | session_id?, agent_id, plugin_id, capability |
 | RecommendedGame | `recommended_games` | — |
 
@@ -39,7 +42,78 @@ Capability 是**代码内静态注册表**，`capabilities` 表只存描述/危�
 
 ---
 
-## 2. 详细字段 + DDL（迁移按顺序）
+## 2. 物理迁移链（SQL / `MIGRATIONS` 为唯一真值）
+
+当前可执行迁移由 `crates/hiveweb/migrations/*.sql` 与
+`crates/hiveweb/src/bin/migrate.rs::MIGRATIONS` 共同定义。注册链为
+**V001–V033**，其中 **V013 是保留空号**：没有 SQL 文件，也不得为了补齐
+编号而新建或重命名迁移。
+
+| 版本 | 物理 SQL | 作用 |
+| --- | --- | --- |
+| V001 | `V001__create_admins_table.sql` | `admins` |
+| V002 | `V002__create_login_records_table.sql` | `login_records` |
+| V003 | `V003__seed_super_admin.sql` | 保留的 no-op 占位；Super 由 CLI 创建 |
+| V004 | `V004__audit_logs.sql` | `admin_audit_logs` |
+| V005 | `V005__categories.sql` | `categories` |
+| V006 | `V006__capabilities.sql` | `capabilities`（已含 `category_id`） |
+| V007 | `V007__tags.sql` | `tags`、`taggings` |
+| V008 | `V008__plugins.sql` | `plugins` |
+| V009 | `V009__functions.sql` | `functions`（已含 `required_capabilities`） |
+| V010 | `V010__workflows.sql` | `workflows`、`workflow_nodes`、`workflow_edges`；已含分类、输入/输出 schema、四类节点和 capabilities |
+| V011 | `V011__tools_skills.sql` | `tools`、`skills`；已含 `source`、`is_always`、分类和 capabilities |
+| V012 | `V012__agents.sql` | `agents` 与 tool/skill/permission 关联表 |
+| V013 | — | **保留空号；无文件、无注册项** |
+| V014 | `V014__seed.sql` | main Agent 与 Capability 元数据 seed |
+| V015 | `V015__recommended_games.sql` | legacy `recommended_games` |
+| V016 | `V016__seed_capability_categories.sql` | Capability 分类 seed 与回填 |
+| V017 | `V017__users_table.sql` | 普通用户 `users` |
+| V018 | `V018__split_chat_tables.sql` | `chat_sessions_user`、`chat_messages_user` |
+| V019 | `V019__create_global_configs.sql` | `global_configs` |
+| V020 | `V020__create_games_table.sql` | `games` |
+| V021 | `V021__create_game_alias_entries_table.sql` | `game_alias_entries` |
+| V022 | `V022__create_agent_hooks_table.sql` | `agent_hooks` |
+| V023 | `V023__create_hook_executions_table.sql` | `hook_executions` |
+| V024 | `V024__add_extensions_to_chat_messages_user.sql` | 用户消息 `extensions` |
+| V025 | `V025__create_sensitive_words.sql` | `sensitive_words` |
+| V026 | `V026__seed_sensitive_words.sql` | 敏感词 seed |
+| V027 | `V027__add_uid_nickname_to_users.sql` | 用户 `uid` / `nickname` |
+| V028 | `V028__drop_phone_password_status_from_users.sql` | 删除旧用户认证字段 |
+| V029 | `V029__game_category_json.sql` | 推荐游戏分类改为 JSON |
+| V030 | `V030__recommended_games_channel.sql` | `recommended_games_strategy` |
+| V031 | `V031__game_image_text.sql` | 推荐游戏图片字段改为 TEXT |
+| V032 | `V032__runtime_audit_logs.sql` | 非 Hook `runtime_audit_logs` |
+| V033 | `V033__normalize_workflow_timeout_default.sql` | Workflow DB 默认 timeout 规范化为 33000 ms |
+
+### 2.1 Agent Runtime 核心字段的实际归属
+
+旧设计曾把后补字段写成“V019–V038 扩展”。这些编号是历史规划标签，
+**不是当前仓库中的物理迁移**。当前字段已经合并到基础迁移：
+
+| 当前实体/字段 | 实际物理迁移 |
+| --- | --- |
+| Category | V005 |
+| Capability（含 `category_id`） | V006；分类 seed 为 V016 |
+| Tag / Tagging | V007 |
+| Plugin | V008 |
+| Function（含 `category_id`、`required_capabilities`） | V009 |
+| Workflow / Node / Edge（含 schema、描述、四类节点、`node_config`、分类、capabilities） | V010 |
+| Tool / Skill（含 `source`、`is_always`、分类、capabilities） | V011 |
+| Agent 与关联表 | V012；main seed 为 V014 |
+| Runtime audit | V032 |
+| Workflow timeout 默认值 33000 ms | V033（覆盖 V010 的历史初始默认） |
+
+Workflow service 在 POST / PUT 时还强制
+`timeout_ms ∈ 1000..=330000`；省略 POST timeout 时使用 33000 ms。数据库
+V033 与服务默认一致，但范围校验属于 service 层。
+
+### 2.2 历史设计快照（Superseded，不可执行）
+
+<details>
+<summary>展开查看旧的 V001–V038 规划草稿</summary>
+
+以下 DDL 仅保留用于解释早期评审记录。它不是迁移清单，也不得据此创建、
+补号或重命名 SQL；遇到冲突一律以上表和实际 SQL / `MIGRATIONS` 为准。
 
 ### V001 admins
 
@@ -367,40 +441,49 @@ CREATE TABLE agent_permissions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-### V016 chat
+### 现行用户聊天兼容边界（V018 + V024；原 V016 admin chat 已 Superseded）
+
+原 V016 admin chat DDL 不再有效，相关表已删除。当前表结构由后续外部 Assistant API 迁移维护；这里仅镜像与 Agent Runtime 的衔接字段，避免误把 legacy admin 表当成现役模型。
 
 ```sql
-CREATE TABLE chat_sessions (
+CREATE TABLE chat_sessions_user (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    admin_id BIGINT NULL COMMENT '发起测试的管理员；admin 删除后 SET NULL',
-    admin_phone_snapshot VARCHAR(11) NOT NULL DEFAULT '' COMMENT '快照',
-    admin_nickname_snapshot VARCHAR(20) NOT NULL DEFAULT '' COMMENT '快照',
+    user_id BIGINT NOT NULL COMMENT '关联的普通用户',
+    user_phone_snapshot VARCHAR(100) NOT NULL DEFAULT '' COMMENT '用户快照',
+    user_nickname_snapshot VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户快照',
     title VARCHAR(128) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_chat_sessions_admin (admin_id),
-    INDEX idx_chat_sessions_updated_at (updated_at DESC),
-    CONSTRAINT fk_chat_sessions_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE SET NULL
+    INDEX idx_chat_sessions_user_id (user_id),
+    INDEX idx_chat_sessions_user_updated_at (updated_at DESC),
+    CONSTRAINT fk_chat_sessions_user_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE chat_messages (
+CREATE TABLE chat_messages_user (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     session_id BIGINT NOT NULL,
-    seq INT NOT NULL COMMENT '会话内单调序号',
+    user_id BIGINT NOT NULL COMMENT '关联的普通用户',
     role VARCHAR(16) NOT NULL COMMENT 'user|assistant|tool|system',
     content TEXT NULL,
-    tool_calls JSON NULL COMMENT '[{tool_call_id, name, args}]',
-    routed_to_agent_id BIGINT NULL COMMENT '如果该消息触发了路由',
-    elapsed_ms INT NULL,
+    elapsed_ms INT NULL COMMENT 'assistant 消息耗时（毫秒）',
+    extensions JSON NULL COMMENT 'AgentContext 扩展数据',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_chat_msg_session_seq (session_id, seq),
-    INDEX idx_chat_messages_session (session_id, created_at),
-    CONSTRAINT fk_chat_msg_session FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    CONSTRAINT fk_chat_msg_routed FOREIGN KEY (routed_to_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+    INDEX idx_chat_messages_user_session (session_id, created_at),
+    INDEX idx_chat_messages_user_user_id (user_id),
+    CONSTRAINT fk_chat_msg_user_session
+        FOREIGN KEY (session_id) REFERENCES chat_sessions_user(id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_msg_user_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-### V017 runtime_audit_logs
+### V032 runtime_audit_logs
+
+该表保存非 Hook runtime audit 的脱敏、best-effort 持久化副本；同一事件
+始终先写 structured tracing。单 worker 有界队列满或 DB 失败时不阻塞主
+流程。Hook 执行保持 tracing-only。表无外键，确保资源删除后仍保留审计；
+`AUDIT_RETENTION_DAYS` 默认 36500 天（100 年，可配置）。
 
 ```sql
 CREATE TABLE runtime_audit_logs (
@@ -411,18 +494,19 @@ CREATE TABLE runtime_audit_logs (
     plugin_id BIGINT NULL,
     function_id BIGINT NULL,
     capability VARCHAR(64) NULL,
-    event_type VARCHAR(32) NOT NULL COMMENT 'capability_call|capability_denied|plugin_invoke|workflow_node|agent_route|llm_invoke',
+    event_type VARCHAR(32) NOT NULL COMMENT 'capability_call|capability_denied|plugin_invoke|workflow_node|agent_route|llm_invoke|llm_fallback|llm_local_fallback',
     outcome VARCHAR(16) NOT NULL COMMENT 'success|error|denied|timeout',
     elapsed_ms INT NULL,
     error_message VARCHAR(512) NULL,
     payload_summary JSON NULL COMMENT '入参 / 出参摘要（脱敏后）',
-    occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     INDEX idx_ral_request (request_id),
     INDEX idx_ral_session (session_id),
     INDEX idx_ral_agent (agent_id),
     INDEX idx_ral_occurred_at (occurred_at DESC),
     INDEX idx_ral_capability (capability, outcome)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Sanitized non-Hook runtime audit records';
 ```
 
 ### V018 seed
@@ -576,6 +660,8 @@ SET c.category_id = cat.id
 WHERE cat.slug IN ('network', 'fs', 's3', 'db', 'llm', 'secret', 'time', 'log', 'chat', 'exec', 'agent', 'cron');
 ```
 
+</details>
+
 ---
 
 ## 3. 关系图（简化）
@@ -583,7 +669,7 @@ WHERE cat.slug IN ('network', 'fs', 's3', 'db', 'llm', 'secret', 'time', 'log', 
 ```
 Admin --< LoginRecord
 Admin --< AdminAuditLog
-Admin --< ChatSession --< ChatMessage → Agent
+User --< ChatSessionUser --< ChatMessageUser
 
 Category --< Plugin >--*-- Tag
 Category --< Function >--*-- Tag
@@ -606,8 +692,6 @@ Category --< Capability
                   +--*-- Skill
                   +--*-- Capability (permissions)
                   |
-              ChatSession --< ChatMessage (routes_to Agent)
-                  |
                   v
         RuntimeAuditLog
 
@@ -626,10 +710,10 @@ RecommendedGame (独立实体)
 6. `workflow_edges` 不能形成环（service 层 DFS 校验）
 7. `agent_permissions.capability` 必须属于 `capabilities.name`（service 层 lookup）
 8. 危险 capability（`is_dangerous = 1`）只能由 role=1 Super 授予
-9. `chat_messages.seq` 在 `session_id` 内单调（DB UNIQUE 已表达）
-10. `agents.model_preset` 取值必须为启动期从 hiveweb `llm_presets.toml` 加载的命名 preset；service 层在保存时校验未知 preset → 5007 `ModelPresetUnknown`。子 Agent 不继承父的 preset；运行时解析顺序：当前 Agent.model_preset → 全局默认 preset
+9. （历史，已 superseded）原 admin `chat_messages.seq` 单调不变量已随表删除；现行 `chat_messages_user` 不定义 `seq`
+10. `agents.model_preset` 取值必须为启动期从 hiveweb `llm_presets.toml` 加载的命名 preset；service 层在保存时校验未知 preset → 5007 `ModelPresetUnknown`。子 Agent 不继承父的 preset；运行时只有 `model_preset IS NULL` 才选择全局 default。显式非 NULL 名称若在当前启动 registry 中未知（例如配置删除或无效 preset 被跳过），必须 fail closed，禁止回退 default
 11. `tools.kind=1`（function-wrap）时，`tools.input_schema` / `tools.output_schema` 必须**完全等于**其引用 function 的对应字段；service 层在 PUT/POST tools 时做深度 JSON 等值校验，不一致 → 5002 `Schema mismatch`。`tools.kind=2`（workflow-wrap）时，`tools.input_schema` 必须能赋值给 workflow 入口 function 的 input_schema（至少包含所有 required 字段且类型一致），output_schema 由编辑者声明（默认 = DAG 终点输出）
-12. `chat_sessions.admin_id IS NULL` 时（操作者已被删除），该 session 仅 Super 角色可读 / 可继续对话 / 可删除；普通管理员一律 403。snapshot 列用于审计追溯。service 层强制；DB 不加 CHECK
+12. `chat_sessions_user.user_id` 必须对应当前普通用户，API/service 同时校验 `session_id` 与 `user_id`；用户删除时会话/消息按 FK CASCADE 删除。不存在 admin/Super 跨用户读取例外
 13. `functions` 表**不支持软删除**（无 `deleted_at` 列）；任何 Function 的 DELETE 都是物理删除。前置检查：被 `workflow_nodes` / `tools` 引用时拒绝（4093）
 14. `skills` 不引用 Function/Workflow；删除前必须校验 `agent_skills` 引用计数 > 0 → 4093 拒绝
 15. `tools.source = 'builtin'` 的 Tool 不可编辑，只能包装 builtin Function (kind=1)
@@ -637,6 +721,7 @@ RecommendedGame (独立实体)
 17. `skills.is_always = 1` 的 Skill 对所有 Agent 自动加载，无需在 `agent_skills` 中建立关联
 18. `workflow_nodes.node_type = 'generate_answer_node'` 时，`function_id` 可为 NULL，`node_config` 中应包含 `system_prompt` 等 LLM 生成配置
 19. `workflow_nodes.node_type = 'start_node'` 或 `'end_node'` 时，`function_id` 可为 NULL
+20. 每个 `LlmPresetName` 的完整 provider chain 在启动期构造并缓存；provider 条目以 `(preset name, providers[] ordinal)` 作为稳定内部 identity，不能以可重复的 model 字符串作为映射键。`runtime_audit_logs.payload_summary` 中的 LLM 元数据只能包含 `actual_model`、`fallback_used`、静态 `reason` 与稳定 provider identity；provider fallback 使用 `llm_fallback`，应用层本地文本使用 `llm_local_fallback`
 
 ---
 
@@ -646,7 +731,7 @@ RecommendedGame (独立实体)
 - 高频路径：
   - `idx_plugins_category` + 标签经 `taggings (entity_type='plugin')` 关联
   - `idx_taggings_entity` 实现 "某 entity 的全部 tag" 反向查询
-  - `idx_chat_sessions_updated_at` 最近会话列表
+  - `idx_chat_sessions_user_updated_at` 普通用户最近会话列表（外部 Assistant API）
   - `idx_ral_occurred_at` + `idx_ral_capability` 用于 capability 鉴权审计的反查
   - `idx_workflows_category` / `idx_tools_category` / `idx_skills_category` / `idx_functions_category` 分类过滤
   - `idx_sort_value` 推荐游戏排序

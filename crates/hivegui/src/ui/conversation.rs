@@ -143,10 +143,10 @@ impl Render for ConversationView {
         // Sync editor text to the global pending_input mirror
         {
             let content = self.editor_input.read(cx).content().to_string();
-            if let Ok(mut p) = cx.global::<HiveGuiAppState>().pending_input.lock() {
-                if p.text != content {
-                    p.text = content;
-                }
+            if let Ok(mut p) = cx.global::<HiveGuiAppState>().pending_input.lock()
+                && p.text != content
+            {
+                p.text = content;
             }
         }
 
@@ -423,10 +423,10 @@ fn spawn_send(cx: &mut gpui::App) {
             },
         );
         // Clear the pending-input mirror as soon as the model accepted.
-        if r.is_ok() {
-            if let Ok(mut p) = app.pending_input.lock() {
-                *p = PendingInput::default();
-            }
+        if r.is_ok()
+            && let Ok(mut p) = app.pending_input.lock()
+        {
+            *p = PendingInput::default();
         }
         r.ok()
     });
@@ -666,10 +666,10 @@ fn set_transient_error(cx: &AsyncApp, msg: String) {
 
 fn remove_pending_attachment_global(idx: usize, cx: &mut gpui::App) {
     cx.update_global::<HiveGuiAppState, _>(|app, _cx| {
-        if let Ok(mut p) = app.pending_input.lock() {
-            if idx < p.attachments.len() {
-                p.attachments.remove(idx);
-            }
+        if let Ok(mut p) = app.pending_input.lock()
+            && idx < p.attachments.len()
+        {
+            p.attachments.remove(idx);
         }
     });
     cx.refresh_windows();

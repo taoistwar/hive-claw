@@ -1,6 +1,11 @@
 import { Modal, Form, Input, Select, Switch, Button, message } from 'antd';
 import { Admin, CreateAdminData, UpdateAdminData } from '../services/admin';
-import { validatePhone, validateNickname, validatePassword } from '../utils/validators';
+import {
+  PASSWORD_POLICY_MESSAGE,
+  validatePhone,
+  validateNickname,
+  validatePassword,
+} from '../utils/validators';
 
 interface AdminFormProps {
   visible: boolean;
@@ -114,9 +119,9 @@ const AdminForm: React.FC<AdminFormProps> = ({
               { required: true, message: '请输入密码' },
               {
                 validator: (_, value) =>
-                  validatePassword(value)
+                  typeof value === 'string' && validatePassword(value)
                     ? Promise.resolve()
-                    : Promise.reject(new Error('密码长度必须在6-20个字符之间')),
+                    : Promise.reject(new Error(PASSWORD_POLICY_MESSAGE)),
               },
             ]}
           >

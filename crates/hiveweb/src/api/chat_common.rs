@@ -1,4 +1,4 @@
-//! Shared chat utilities for admin and user chat APIs.
+//! Shared utilities for the user-facing chat APIs.
 //!
 //! Contains SSE concurrency control, query structs, common helpers, and MD5 sign verification.
 
@@ -123,4 +123,63 @@ where
     headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
 
     (StatusCode::OK, headers, sse).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    use super::*;
+
+    static NEXT_ACTOR_ID: AtomicI64 = AtomicI64::new(i64::MIN / 2);
+    const TEST_SLOT_CONFIG: SseSlotConfig = SseSlotConfig {
+        env_var: "HIVEWEB_TEST_SSE_SLOT_CAP_UNSET",
+        default_cap: 1,
+    };
+
+    async fn wait_for_release(actor_ids: &[i64]) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let released = {
+                    let counters = SSE_COUNTERS.lock().await;
+                    actor_ids
+                        .iter()
+                        .all(|actor_id| !counters.contains_key(actor_id))
+                };
+                if released {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("SSE concurrency guards should release their slots");
+    }
+
+    #[tokio::test]
+    async fn user_slots_enforce_limit_isolation_and_release() {
+        let first_actor = NEXT_ACTOR_ID.fetch_add(2, Ordering::Relaxed);
+        let second_actor = first_actor + 1;
+
+        assert!(try_acquire_slot(first_actor, TEST_SLOT_CONFIG).await);
+        let first_guard = SseConcurrencyGuard {
+            actor_id: first_actor,
+        };
+        assert!(!try_acquire_slot(first_actor, TEST_SLOT_CONFIG).await);
+
+        assert!(try_acquire_slot(second_actor, TEST_SLOT_CONFIG).await);
+        let second_guard = SseConcurrencyGuard {
+            actor_id: second_actor,
+        };
+
+        drop(first_guard);
+        drop(second_guard);
+        wait_for_release(&[first_actor, second_actor]).await;
+
+        assert!(try_acquire_slot(first_actor, TEST_SLOT_CONFIG).await);
+        drop(SseConcurrencyGuard {
+            actor_id: first_actor,
+        });
+        wait_for_release(&[first_actor]).await;
+    }
 }

@@ -1,0 +1,2 @@
+ALTER TABLE workflows
+    MODIFY COLUMN timeout_ms INT NOT NULL DEFAULT 33000;

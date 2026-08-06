@@ -483,8 +483,12 @@ async fn execute_recommendation(
     // 3c. 同步用户：确保 users 表存在该用户，避免 chat_sessions_user 外键约束失败
     let cloud_info = membership::get_cloud_user_info_cached(&state.redis, ext_pool, user_id)
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(user_id = user_id, error = %e, "get_cloud_user_info_cached failed");
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                user_id = user_id,
+                error_kind = "cloud_user_query_failed",
+                "get_cloud_user_info_cached failed"
+            );
             None
         });
 

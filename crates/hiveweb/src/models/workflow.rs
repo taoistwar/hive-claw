@@ -13,6 +13,7 @@ pub struct Workflow {
     pub input_schema: Option<serde_json::Value>,
     pub start_description: Option<String>,
     pub output_schema: Option<serde_json::Value>,
+    pub end_description: Option<String>,
     pub required_capabilities: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

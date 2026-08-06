@@ -33,8 +33,11 @@ where
     match cached_get::<T>(redis, key).await {
         Ok(Some(value)) => return Ok(value),
         Ok(None) => {} // cache miss
-        Err(e) => {
-            tracing::debug!(%key, error = %e, "cache read failed, falling back to DB");
+        Err(_) => {
+            tracing::debug!(
+                error_kind = "cache_read_failed",
+                "cache read failed, falling back to DB"
+            );
         }
     }
 
@@ -42,8 +45,8 @@ where
     let value = fetch().await?;
 
     // 3. Write to cache (best-effort)
-    if let Err(e) = cached_set(redis, key, &value, ttl_secs).await {
-        tracing::debug!(%key, error = %e, "cache write failed");
+    if cached_set(redis, key, &value, ttl_secs).await.is_err() {
+        tracing::debug!(error_kind = "cache_write_failed", "cache write failed");
     }
 
     Ok(value)

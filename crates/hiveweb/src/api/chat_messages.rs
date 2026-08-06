@@ -85,10 +85,9 @@ async fn list_messages(
     let params: MessagesBody = match serde_json::from_str::<MessagesBody>(&body) {
         Ok(p) => {
             tracing::debug!(
-                user_id = p.user_id,
-                date = ?p.date,
-                channel = ?p.channel,
-                client_type = ?p.client_type,
+                date_present = p.date.is_some(),
+                channel_present = p.channel.is_some(),
+                client_type_present = p.client_type.is_some(),
                 "list_messages: request parsed"
             );
             p
@@ -130,7 +129,7 @@ async fn list_messages(
         }
         None => chrono::Utc::now().naive_utc(),
     };
-    tracing::debug!(?cutoff, "list_messages: cutoff");
+    tracing::debug!("list_messages: cutoff resolved");
 
     // 4. 查询消息：user_id 匹配，且 created_at 在截止日期之前，取最近 10 条
     let mut messages: Vec<ChatMessageUser> =
@@ -143,8 +142,11 @@ async fn list_messages(
                 );
                 rows
             }
-            Err(e) => {
-                tracing::error!(error = %e, user_id = params.user_id, "failed to query messages");
+            Err(_) => {
+                tracing::error!(
+                    error_kind = "message_query_failed",
+                    "failed to query messages"
+                );
                 return AppError::Internal("Failed to query messages".into())
                     .into_response::<()>()
                     .into_response();
@@ -172,9 +174,8 @@ async fn list_messages(
     }
 
     tracing::debug!(
-        user_id = params.user_id,
-        client_type = ?params.client_type,
-        channel = ?params.channel,
+        client_type_present = params.client_type.is_some(),
+        channel_present = params.channel.is_some(),
         message_count = messages.len(),
         "list_messages: returning"
     );
@@ -186,21 +187,21 @@ async fn list_messages(
 fn count_game_cards(messages: &[ChatMessageUser]) -> usize {
     let mut count = 0;
     for msg in messages {
-        if let Some(ref exts) = msg.extensions {
-            if let Some(arr) = exts.as_array() {
-                for ext in arr {
-                    let ct = ext
-                        .get("content_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let pt = ext
-                        .get("payload")
-                        .and_then(|p| p.get("type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if ct == "card" && pt == "game" {
-                        count += 1;
-                    }
+        if let Some(ref exts) = msg.extensions
+            && let Some(arr) = exts.as_array()
+        {
+            for ext in arr {
+                let ct = ext
+                    .get("content_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let pt = ext
+                    .get("payload")
+                    .and_then(|p| p.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if ct == "card" && pt == "game" {
+                    count += 1;
                 }
             }
         }
@@ -225,24 +226,27 @@ async fn filter_unavailable_games(ext_pool: &sqlx::MySqlPool, messages: &mut [Ch
 
     let available = match game_service::filter_available_games(ext_pool, &game_ids).await {
         Ok(ids) => ids,
-        Err(e) => {
-            tracing::warn!(error = %e, "filter_available_games failed, keeping all game cards");
+        Err(_) => {
+            tracing::warn!(
+                error_kind = "available_game_filter_failed",
+                "filter_available_games failed, keeping all game cards"
+            );
             return;
         }
     };
 
     for msg in messages.iter_mut() {
-        if let Some(ref mut exts) = msg.extensions {
-            if let Some(arr) = exts.as_array_mut() {
-                let before = arr.len();
-                arr.retain(|ext| retain_game_card(ext, &available));
-                // 有游戏卡片被过滤时，提示已下架
-                if arr.len() < before {
-                    msg.content = Some("很遗憾，这款游戏暂未在平台上架".into());
-                }
-                if arr.is_empty() {
-                    *exts = serde_json::Value::Null;
-                }
+        if let Some(ref mut exts) = msg.extensions
+            && let Some(arr) = exts.as_array_mut()
+        {
+            let before = arr.len();
+            arr.retain(|ext| retain_game_card(ext, &available));
+            // 有游戏卡片被过滤时，提示已下架
+            if arr.len() < before {
+                msg.content = Some("很遗憾，这款游戏暂未在平台上架".into());
+            }
+            if arr.is_empty() {
+                *exts = serde_json::Value::Null;
             }
         }
     }
@@ -439,24 +443,17 @@ fn game_card_matches(info: &Value, client_type: &str, channel: &str) -> bool {
 
 /// 从 game 卡片的 info 中解析 game_id（支持字符串和数字类型）。
 fn parse_game_id(info: &Value) -> Option<i64> {
-    tracing::debug!(info = %info, "parse_game_id: input");
-    let id_val = info.get("id").inspect(|v| {
-        tracing::debug!(
-            ?v,
-            is_string = v.is_string(),
-            is_number = v.is_number(),
-            "parse_game_id: id raw value"
-        );
-    })?;
+    tracing::debug!(
+        info_field_count = info.as_object().map_or(0, serde_json::Map::len),
+        "parse_game_id: input metadata"
+    );
+    let id_val = info.get("id")?;
     let id = if let Some(s) = id_val.as_str() {
-        tracing::debug!(s, "parse_game_id: id as string");
         s.parse::<i64>().ok()
     } else {
-        let n = id_val.as_i64();
-        tracing::debug!(?n, "parse_game_id: id as number");
-        n
+        id_val.as_i64()
     };
-    tracing::debug!(?id, "parse_game_id: result");
+    tracing::debug!(id_present = id.is_some(), "parse_game_id: result");
     id
 }
 
@@ -487,10 +484,10 @@ async fn handle_single_game_card(
     };
 
     // 已匹配当前平台 → 无需处理
-    if let Some(i) = info {
-        if game_card_matches(i, client_type, channel) {
-            return;
-        }
+    if let Some(i) = info
+        && game_card_matches(i, client_type, channel)
+    {
+        return;
     }
 
     // 尝试刷新
@@ -506,14 +503,14 @@ async fn handle_single_game_card(
         None => None,
     };
 
-    if let Some(ref info_row) = refreshed {
-        if info_row.logic_game_id != 0 {
-            exts[idx]
-                .as_object_mut()
-                .unwrap()
-                .insert("payload".into(), build_game_card_payload(info_row));
-            return;
-        }
+    if let Some(ref info_row) = refreshed
+        && info_row.logic_game_id != 0
+    {
+        exts[idx]
+            .as_object_mut()
+            .unwrap()
+            .insert("payload".into(), build_game_card_payload(info_row));
+        return;
     }
 
     // 刷新失败 → 先提取游戏名（info 借用于 exts），再清空 extensions
@@ -582,14 +579,14 @@ async fn handle_multiple_game_cards(
             }
         };
         let fresh = fetch_fresh_game(ext_pool, game_id, client_type, channel, game_cache).await;
-        if let Some(info_row) = fresh {
-            if info_row.logic_game_id != 0 {
-                ext.as_object_mut()
-                    .unwrap()
-                    .insert("payload".into(), build_game_card_payload(&info_row));
-                any_refreshed = true;
-                continue;
-            }
+        if let Some(info_row) = fresh
+            && info_row.logic_game_id != 0
+        {
+            ext.as_object_mut()
+                .unwrap()
+                .insert("payload".into(), build_game_card_payload(&info_row));
+            any_refreshed = true;
+            continue;
         }
         // 刷新失败，记录游戏名
         if let Some(n) = game_card_name(info) {
@@ -613,7 +610,10 @@ async fn handle_multiple_game_cards(
 /// 找到第一个 game 卡片的索引和 info。
 fn find_game_card(exts: &[Value]) -> Option<(usize, Option<&Value>)> {
     exts.iter().enumerate().find_map(|(i, ext)| {
-        tracing::debug!(ext = %ext, "find_game_card: checking extension");
+        tracing::debug!(
+            extension_field_count = ext.as_object().map_or(0, serde_json::Map::len),
+            "find_game_card: checking extension metadata"
+        );
         let ct = ext
             .get("content_type")
             .and_then(|v| v.as_str())

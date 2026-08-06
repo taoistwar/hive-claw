@@ -1,115 +1,183 @@
-//! 对外 API 接口测试工具
+//! Developer-only Assistant API client.
 //!
-//! 用法:
-//!   cargo run -p hiveweb --bin api-test -- <METHOD> <path> '<json_body>' [host]
+//! Preferred usage keeps request bodies out of argv and shell history:
 //!
-//! 示例:
-//!   cargo run -p hiveweb --bin api-test -- GET /api/quota '{"user_id":448}' 172.16.208.113
-//!   cargo run -p hiveweb --bin api-test -- GET /api/quota '{"user_id":448}' https://cca.haimacloud.com/
-//!   cargo run -p hiveweb --bin api-test -- POST /api/newsession '{"user_id":448}'
-//!   cargo run -p hiveweb --bin api-test -- POST /api/messages '{"user_id":448,"channel":"app","client_type":"android"}'
-//!   cargo run -p hiveweb --bin api-test -- POST /api/assistant '{"user_id":448,"message":"你好","channel":"app","client_type":"android","client_version":"1.0.0"}' https://cca.haimacloud.com/
-//!   cargo run -p hiveweb --bin api-test -- POST /api/recommended-games/top '{"user_id":"448","channel":"app","client_type":"android","client_version":"1.0.0"}'
-//!   cargo run -p hiveweb --bin api-test -- POST /api/recommended-games/execute '{"user_id":"448","game_id":"1001","channel":"app","client_type":"android","client_version":"1.0.0"}'
+//! ```text
+//! trusted-request-body-producer | cargo run -p hiveweb --features dev-tools \
+//!   --bin api-test -- GET /api/quota --body-stdin --host https://example.test
+//! cargo run -p hiveweb --features dev-tools --bin api-test -- \
+//!   POST /api/newsession --body-file /run/secrets/request.json
+//! ```
 //!
-//! 环境变量:
-//!   HIVEWEB_PORT      — 未指定协议的 host 所使用的服务端口（默认 3000）
-//!   ASSISTANT_SECRET  — 签名密钥（未设置时不校验签名）
+//! The legacy `<METHOD> <path> <json_body> [host]` form remains temporarily
+//! compatible, but emits a deprecation warning.
+
+use std::collections::HashMap;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use std::collections::HashMap;
-use std::env;
+use clap::{ArgGroup, Parser};
+
+mod support;
+
+use support::secret_input::read_private_file;
+
+const MAX_BODY_INPUT_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Parser)]
+#[command(
+    about = "Send a signed request without printing request or response contents",
+    group(
+        ArgGroup::new("body_source")
+            .required(true)
+            .multiple(false)
+            .args(["body_stdin", "body_file", "legacy_body"])
+    )
+)]
+struct Cli {
+    #[arg(value_name = "METHOD")]
+    method: String,
+    #[arg(value_name = "PATH")]
+    path: String,
+    /// DEPRECATED: request body in argv. Prefer --body-stdin or --body-file.
+    #[arg(value_name = "JSON_BODY", hide = true)]
+    legacy_body: Option<String>,
+    /// Legacy positional host; valid only with the legacy positional body.
+    #[arg(value_name = "LEGACY_HOST", requires = "legacy_body")]
+    legacy_host: Option<String>,
+    /// Read the request body from piped standard input.
+    #[arg(long)]
+    body_stdin: bool,
+    /// Read the request body from a private file.
+    #[arg(long, value_name = "PATH")]
+    body_file: Option<PathBuf>,
+    /// Explicit request origin for safe body-input modes.
+    #[arg(
+        long,
+        value_name = "HTTP_OR_HTTPS_ORIGIN",
+        conflicts_with = "legacy_host"
+    )]
+    host: Option<String>,
+}
+
+fn read_bounded_body(mut reader: impl Read, input_name: &str) -> anyhow::Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(MAX_BODY_INPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("failed to read API request {input_name}"))?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_BODY_INPUT_BYTES as usize,
+        "API request body is too large"
+    );
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("API request body must be valid UTF-8"))
+}
+
+fn read_body_file(path: &Path) -> anyhow::Result<String> {
+    let bytes = read_private_file(path, MAX_BODY_INPUT_BYTES, "API request body")?;
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("API request body must be valid UTF-8"))
+}
+
+fn request_body(cli: &Cli) -> anyhow::Result<String> {
+    if cli.body_stdin {
+        anyhow::ensure!(
+            !std::io::stdin().is_terminal(),
+            "--body-stdin requires piped input; use a mode-0600 --body-file for interactive use"
+        );
+        read_bounded_body(std::io::stdin().lock(), "body")
+    } else if let Some(path) = cli.body_file.as_deref() {
+        read_body_file(path)
+    } else {
+        let body = cli
+            .legacy_body
+            .as_ref()
+            .context("request body source is required")?;
+        anyhow::ensure!(
+            body.len() <= MAX_BODY_INPUT_BYTES as usize,
+            "API request body is too large"
+        );
+        eprintln!(
+            "warning: positional request bodies are deprecated; use --body-stdin or --body-file"
+        );
+        Ok(body.clone())
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override().ok();
-    tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
+    let body = request_body(&cli)?;
+    let host = cli
+        .host
+        .as_deref()
+        .or(cli.legacy_host.as_deref())
+        .unwrap_or("127.0.0.1");
 
-    let method = env::args()
-        .nth(1)
-        .context("usage: api-test <METHOD> <path> <json_body> [host]")?;
-    let path = env::args()
-        .nth(2)
-        .context("usage: api-test <METHOD> <path> <json_body> [host]")?;
-    let body = env::args()
-        .nth(3)
-        .context("usage: api-test <METHOD> <path> <json_body> [host]")?;
-    let host = env::args().nth(4).unwrap_or_else(|| "127.0.0.1".into());
+    let port = std::env::var("HIVEWEB_PORT").unwrap_or_else(|_| "3000".into());
+    let secret = std::env::var("ASSISTANT_SECRET").unwrap_or_default();
+    let base_url = resolve_base_url(host, &port)?;
+    let method_upper = cli.method.to_uppercase();
 
-    let port = env::var("HIVEWEB_PORT").unwrap_or_else(|_| "3000".into());
-    let secret = env::var("ASSISTANT_SECRET").unwrap_or_default();
-    println!("secret='{}'", secret);
-    let base_url = resolve_base_url(&host, &port)?;
-
-    let method_upper = method.to_uppercase();
-
-    // Build sign body and request URL
-    let (sign_body, url) = match method_upper.as_str() {
+    // Build sign body and request URL without logging any intermediate value.
+    let url = match method_upper.as_str() {
         "GET" => {
-            // GET: parse JSON into flat key=value pairs, use as query string
             let params: HashMap<String, serde_json::Value> =
                 serde_json::from_str(&body).context("invalid JSON body")?;
-            let qs: Vec<String> = params
+            let query = params
                 .iter()
-                .map(|(k, v)| {
-                    let val = match v {
-                        serde_json::Value::String(s) => s.clone(),
+                .map(|(key, value)| {
+                    let value = match value {
+                        serde_json::Value::String(value) => value.clone(),
                         other => other.to_string(),
                     };
-                    format!("{}={}", k, val)
+                    format!("{key}={value}")
                 })
-                .collect();
-            let qs = qs.join("&");
-
-            // Sign body for GET is the query string (without sign param)
-            let sign_body = qs.clone();
-
-            let sign = make_sign(&secret, &path, &sign_body);
-            let url = format!("{base_url}{path}?{qs}&sign={sign}");
-            (sign_body, url)
+                .collect::<Vec<_>>()
+                .join("&");
+            let sign = make_sign(&secret, &cli.path, &query);
+            format!("{base_url}{}?{query}&sign={sign}", cli.path)
         }
         "POST" => {
             serde_json::from_str::<serde_json::Value>(&body).context("invalid JSON body")?;
-            let sign = make_sign(&secret, &path, &body);
-            let url = format!("{base_url}{path}?sign={sign}");
-            (body.clone(), url)
+            let sign = make_sign(&secret, &cli.path, &body);
+            format!("{base_url}{}?sign={sign}", cli.path)
         }
-        _ => anyhow::bail!("unsupported method: {method}. Use GET or POST."),
+        _ => anyhow::bail!("unsupported method. Use GET or POST."),
     };
 
     let client = reqwest::Client::new();
-    tracing::info!(method = %method_upper, %path, %base_url, %sign_body, "sending request");
-
-    println!("url:{}\nbody:{}", url, body);
-
-    let resp = match method_upper.as_str() {
-        "GET" => client.get(&url).send().await?,
-        "POST" => {
-            client
-                .post(&url)
-                .header("Content-Type", "application/json; charset=UTF-8")
-                .body(body)
-                .send()
-                .await?
-        }
+    let request = match method_upper.as_str() {
+        "GET" => client.get(&url),
+        "POST" => client
+            .post(&url)
+            .header("Content-Type", "application/json; charset=UTF-8")
+            .body(body),
         _ => unreachable!(),
     };
-
-    let status = resp.status();
-    let body_text = resp.text().await.context("failed to read response body")?;
-
-    // Pretty-print JSON responses
-    let display_body = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_text) {
-        serde_json::to_string_pretty(&val).unwrap_or(body_text)
-    } else {
-        body_text
-    };
-
-    println!("status: {status}");
-    println!();
-    println!("{display_body}");
-
+    let response = request
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("API test request failed"))?;
+    let status = response.status();
+    let response_body = response
+        .bytes()
+        .await
+        .map_err(|_| anyhow::anyhow!("failed to read API test response"))?;
+    println!(
+        "{}",
+        response_summary(&method_upper, status, &response_body)
+    );
     Ok(())
+}
+
+fn response_summary(method: &str, status: reqwest::StatusCode, response_body: &[u8]) -> String {
+    format!(
+        "method: {method}\nstatus: {status}\nresponse_bytes: {}",
+        response_body.len()
+    )
 }
 
 fn resolve_base_url(host: &str, port: &str) -> anyhow::Result<String> {
@@ -122,18 +190,15 @@ fn resolve_base_url(host: &str, port: &str) -> anyhow::Result<String> {
         format!("http://{host}:{port}")
     };
     let url = reqwest::Url::parse(&candidate).context("invalid host URL")?;
-
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https"),
-        "unsupported host URL scheme: {}. Use http or https.",
-        url.scheme()
+        "unsupported host URL scheme. Use http or https."
     );
     anyhow::ensure!(url.host_str().is_some(), "host URL must include a hostname");
     anyhow::ensure!(
         url.query().is_none() && url.fragment().is_none(),
         "host URL must not include a query string or fragment"
     );
-
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
@@ -141,27 +206,70 @@ fn make_sign(secret: &str, path: &str, body: &str) -> String {
     if secret.is_empty() {
         return String::new();
     }
-    let sign_string = format!("{}{}?body={}", secret, path, body);
-    let sign = format!("{:x}", md5::compute(sign_string.as_bytes()));
-    println!("sign data='{}'", sign_string);
-    println!("sign hash='{}'", sign);
-    sign
+    let sign_string = format!("{secret}{path}?body={body}");
+    format!("{:x}", md5::compute(sign_string.as_bytes()))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use clap::Parser;
+
     use super::*;
 
     #[test]
-    fn resolve_base_url_preserves_https_origin() {
-        assert_eq!(
-            resolve_base_url("https://cca.haimacloud.com/", "3000").unwrap(),
-            "https://cca.haimacloud.com"
+    fn parser_supports_safe_body_sources_and_legacy_compatibility() {
+        assert!(
+            Cli::try_parse_from(["api-test", "POST", "/api/assistant", "--body-stdin"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "api-test",
+                "POST",
+                "/api/assistant",
+                "--body-file",
+                "/run/secrets/request.json",
+                "--host",
+                "https://example.test",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "api-test",
+                "POST",
+                "/api/assistant",
+                "{}",
+                "https://example.test",
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["api-test", "POST", "/api/assistant"]).is_err());
+        assert!(
+            Cli::try_parse_from(["api-test", "POST", "/api/assistant", "{}", "--body-stdin",])
+                .is_err()
         );
     }
 
     #[test]
-    fn test_get_quota() {
+    fn bounded_body_reader_rejects_invalid_utf8_and_oversized_input() {
+        assert_eq!(
+            read_bounded_body(Cursor::new(b"{\"ok\":true}"), "body").unwrap(),
+            "{\"ok\":true}"
+        );
+        assert!(read_bounded_body(Cursor::new([0xff]), "body").is_err());
+        assert!(
+            read_bounded_body(
+                Cursor::new(vec![b'x'; MAX_BODY_INPUT_BYTES as usize + 1]),
+                "body",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn resolve_base_url_preserves_https_origin() {
         assert_eq!(
             resolve_base_url("https://cca.haimacloud.com/", "3000").unwrap(),
             "https://cca.haimacloud.com"
@@ -182,5 +290,19 @@ mod tests {
             resolve_base_url("172.16.208.113", "3000").unwrap(),
             "http://172.16.208.113:3000"
         );
+    }
+
+    #[test]
+    fn response_summary_never_contains_response_body() {
+        let summary = response_summary(
+            "POST",
+            reqwest::StatusCode::BAD_REQUEST,
+            b"SECRET_RESPONSE_BODY_SENTINEL",
+        );
+        assert_eq!(
+            summary,
+            "method: POST\nstatus: 400 Bad Request\nresponse_bytes: 29"
+        );
+        assert!(!summary.contains("SECRET_RESPONSE_BODY_SENTINEL"));
     }
 }

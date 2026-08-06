@@ -99,17 +99,17 @@ impl SensitiveFilter {
 
         // 1. Aho-Corasick exact match (fast path, O(n+m))
         let ac_guard = self.ac.read().expect("AC lock poisoned");
-        if let Some(ref ac) = *ac_guard {
-            if ac.find(text).is_some() {
-                // Get the matched word for logging
-                let patterns_guard = self.patterns.read().expect("patterns lock poisoned");
-                // Find which exact pattern matched first
-                for pattern in patterns_guard.iter() {
-                    if let SensitivePattern::Exact { word, .. } = pattern {
-                        if text.to_lowercase().contains(&word.to_lowercase()) {
-                            return Some(pattern.clone());
-                        }
-                    }
+        if let Some(ref ac) = *ac_guard
+            && ac.find(text).is_some()
+        {
+            // Get the matched word for logging
+            let patterns_guard = self.patterns.read().expect("patterns lock poisoned");
+            // Find which exact pattern matched first
+            for pattern in patterns_guard.iter() {
+                if let SensitivePattern::Exact { word, .. } = pattern
+                    && text.to_lowercase().contains(&word.to_lowercase())
+                {
+                    return Some(pattern.clone());
                 }
             }
         }
@@ -118,10 +118,10 @@ impl SensitiveFilter {
         // 2. Regex patterns (check individually)
         let patterns_guard = self.patterns.read().expect("patterns lock poisoned");
         for pattern in patterns_guard.iter() {
-            if let SensitivePattern::Regex { re, .. } = pattern {
-                if re.is_match(text) {
-                    return Some(pattern.clone());
-                }
+            if let SensitivePattern::Regex { re, .. } = pattern
+                && re.is_match(text)
+            {
+                return Some(pattern.clone());
             }
         }
 
@@ -145,11 +145,11 @@ impl SensitiveFilter {
                                 re,
                             });
                         }
-                        Err(e) => {
+                        Err(_) => {
                             tracing::warn!(
                                 id = row.id,
-                                word = %row.word,
-                                error = %e,
+                                word_bytes = row.word.len(),
+                                error_kind = "sensitive_regex_compile_failed",
                                 "Failed to compile regex sensitive word, skipping"
                             );
                         }
@@ -301,8 +301,11 @@ pub async fn create_sensitive_word(
         Ok(r) => {
             let id = r.last_insert_id() as i64;
             // Refresh cache
-            if let Err(e) = filter.refresh_cache(pool).await {
-                tracing::warn!(error = %e, "Failed to refresh filter cache after create");
+            if filter.refresh_cache(pool).await.is_err() {
+                tracing::warn!(
+                    error_kind = "sensitive_filter_cache_refresh_failed",
+                    "Failed to refresh filter cache after create"
+                );
             }
             let row: SensitiveWord = sqlx::query_as(
                 "SELECT id, word, match_mode, enabled, created_at, updated_at FROM sensitive_words WHERE id = ?",
@@ -375,8 +378,11 @@ pub async fn update_sensitive_word(
         })?;
 
     // Refresh cache
-    if let Err(e) = filter.refresh_cache(pool).await {
-        tracing::warn!(error = %e, "Failed to refresh filter cache after update");
+    if filter.refresh_cache(pool).await.is_err() {
+        tracing::warn!(
+            error_kind = "sensitive_filter_cache_refresh_failed",
+            "Failed to refresh filter cache after update"
+        );
     }
 
     let row: SensitiveWord = sqlx::query_as(
@@ -402,10 +408,11 @@ pub async fn delete_sensitive_word(
         .map_err(|e| AppError::Internal(format!("delete sensitive word: {e}")))?;
 
     let deleted = result.rows_affected() > 0;
-    if deleted {
-        if let Err(e) = filter.refresh_cache(pool).await {
-            tracing::warn!(error = %e, "Failed to refresh filter cache after delete");
-        }
+    if deleted && filter.refresh_cache(pool).await.is_err() {
+        tracing::warn!(
+            error_kind = "sensitive_filter_cache_refresh_failed",
+            "Failed to refresh filter cache after delete"
+        );
     }
     Ok(deleted)
 }

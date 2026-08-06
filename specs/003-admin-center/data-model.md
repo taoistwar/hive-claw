@@ -32,7 +32,7 @@
 
 **Validation Rules**:
 - 手机号必须唯一
-- 密码长度 6-20 位
+- 密码按 Unicode 字符计数，长度 6-20，并至少包含一个 ASCII 字母和数字
 - 角色只能是 Normal/System/Super
 - 状态只能是 Active/Disabled
 - 创建时间不可修改
@@ -182,10 +182,15 @@ fn validate_phone(phone: &str) -> Result<()> {
 ### 密码验证
 ```rust
 fn validate_password(password: &str) -> Result<()> {
-    if password.len() < 6 || password.len() > 20 {
-        return Err("密码长度必须为 6-20 位");
+    let character_count = password.chars().count();
+    if !(6..=20).contains(&character_count) {
+        return Err("密码长度必须为 6-20 个 Unicode 字符");
     }
-    // 可选：检查弱密码
+    if !password.chars().any(|c| c.is_ascii_alphabetic())
+        || !password.chars().any(|c| c.is_ascii_digit())
+    {
+        return Err("密码必须同时包含 ASCII 字母和数字");
+    }
     Ok(())
 }
 ```

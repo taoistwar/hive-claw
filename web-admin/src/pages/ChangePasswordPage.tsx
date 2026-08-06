@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Card, Form, Input, Button, message, Typography } from 'antd';
 import { LockOutlined } from '@ant-design/icons';
 import { changePassword } from '../services/auth';
+import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../utils/validators';
 
 const { Title, Text } = Typography;
 
@@ -91,11 +92,11 @@ const ChangePasswordPage: React.FC = () => {
             label="新密码"
             rules={[
               { required: true, message: '请输入新密码' },
-              { min: 6, message: '密码至少 6 个字符' },
-              { max: 20, message: '密码最多 20 个字符' },
               {
-                pattern: /^(?=.*[a-zA-Z])(?=.*\d)[a-zA-Z\d]{6,20}$/,
-                message: '密码必须包含字母和数字',
+                validator: (_, value) =>
+                  typeof value === 'string' && validatePassword(value)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error(PASSWORD_POLICY_MESSAGE)),
               },
             ]}
           >

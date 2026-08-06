@@ -51,7 +51,7 @@ MD5(ASSISTANT_SECRET + "/api/assistant" + "?body=" + 请求体 JSON 字符串)
 - VIP 用户：默认 **50 次/天**
 - 普通用户：默认 **5 次/天**
 - 可通过后台 `global_config` 的 `vip_ask_times` / `normal_ask_times` 动态配置
-- 同一用户同时只能有一个活跃会话（SSE 并发守卫）
+- 同一用户同时只能有一个活跃 Assistant 请求（按用户并发守卫）
 
 ## 示例请求
 
@@ -445,10 +445,19 @@ curl "http://localhost:3300/api/quota?sign=${SIGN}&user_id=${USER_ID}"
 |--------|-------------|-----------|------|
 | `0` | `200` | `success` | 请求成功 |
 | `4290` | `429` | `Daily limit reached (50/50)` | 日访问次数超限（括号内为 `total_times/total_times`） |
-| `4291` | `429` | `并发会话过多，请关闭其它对话窗口后重试` | 同一用户已有活跃 SSE 会话 |
+| `4291` | `429` | `并发会话过多，请关闭其它对话窗口后重试` | 同一用户已有活跃 Assistant 请求 |
 | `4009` | `400` | `内容安全警告：输入的文本数据可能包含不适当的内容！` | 敏感词过滤拦截 |
 | `4000` | `400` | 动态消息（如 `Invalid signature`、`User not found`、`user_id must be positive`、`message must not be empty` 等） | 参数校验/鉴权失败 |
+| `6004` | `408` | Hook 超时的普通文本消息 | 阻塞模式 Hook 执行超时，Agent 请求已中止 |
+| `6005` | `500` | Hook 失败的普通文本消息 | 阻塞模式 Hook 执行失败，Agent 请求已中止 |
 | `5000` | `500` | 动态消息（如 `Redis unavailable`、`Assistant service unavailable`、orchestrator 异常等） | 内部错误 |
+
+Hook 运行时错误由本接口直接返回同步 JSON，不提供管理聊天或 admin SSE 错误契约。发生阻塞 Hook 错误时：
+
+- 当日配额恰好回滚一次；若 Redis 回滚失败，只记录 tracing，不覆盖原错误。
+- `on_agent_error` 仍以 tracing-only 方式执行。
+- 跳过 `after_agent_end`，且不持久化 assistant 占位消息。
+- 内部错误码或消息无效时降级为 5000/HTTP 500。
 
 ### 错误响应示例
 
@@ -461,12 +470,30 @@ curl "http://localhost:3300/api/quota?sign=${SIGN}&user_id=${USER_ID}"
 }
 ```
 
-**SSE 并发冲突：**
+**并发请求冲突：**
 
 ```json
 {
   "code": 4291,
   "message": "并发会话过多，请关闭其它对话窗口后重试"
+}
+```
+
+**阻塞 Hook 超时：**
+
+```json
+{
+  "code": 6004,
+  "message": "Hook「slow-hook」阻塞模式执行超时"
+}
+```
+
+**阻塞 Hook 执行失败：**
+
+```json
+{
+  "code": 6005,
+  "message": "Hook「guard-hook」阻塞模式执行失败"
 }
 ```
 

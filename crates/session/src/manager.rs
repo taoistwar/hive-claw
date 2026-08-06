@@ -987,10 +987,14 @@ mod tests {
             s.add_message(role, "x", HashMap::new());
         }
         s.retain_recent_legal_suffix(3);
-        assert!(s.messages.len() >= 3);
+        assert_eq!(s.messages.len(), 2);
         assert_eq!(
             s.messages[0].get("role").and_then(Value::as_str),
             Some("user")
+        );
+        assert_eq!(
+            s.messages[1].get("role").and_then(Value::as_str),
+            Some("assistant")
         );
     }
 }

@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "HiveClaw Admin Center - Backend API service"
 
+[features]
+default = []
+dev-tools = []
+bench-tools = []
+
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["macros", "multipart"] }
@@ -75,6 +80,7 @@ bytes = { workspace = true }
 toml = "0.8"
 reqwest = { workspace = true }
 wasmparser = "0.221"
+libc = "0.2"
 
 # Internal workspace crates reused by Agent Runtime
 agent = { path = "../agent" }
@@ -87,6 +93,7 @@ tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 mime = "0.3"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+wat = "1"
 
 [[bench]]
 name = "host_call"
@@ -127,15 +134,22 @@ path = "src/bin/create_super_admin.rs"
 [[bin]]
 name = "seed"
 path = "src/bin/seed.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "seed-bench"
 path = "src/bin/seed_bench.rs"
+required-features = ["bench-tools"]
 
 [[bin]]
 name = "chat-retention"
 path = "src/bin/chat_retention.rs"
 
 [[bin]]
+name = "audit-retention"
+path = "src/bin/audit_retention.rs"
+
+[[bin]]
 name = "api-test"
 path = "src/bin/api_test.rs"
+required-features = ["dev-tools"]

@@ -1,10 +1,15 @@
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::cache::redis::RedisClient;
-use crate::runtime::llm::LlmRegistry;
-use providers::{ChatRequest, RetryMode};
+use crate::runtime::execution_context::RuntimeExecutionContext;
+use crate::runtime::llm::{LlmAdapterError, LlmRegistry};
+use crate::runtime::llm_audit::{
+    LlmAuditGuard, LlmAuditSource, LlmLocalFallbackReason, record_local_fallback,
+};
+use providers::{ChatRequest, LLMProvider, LLMResponse, LlmCallOptions};
 
 use super::{BuiltinContext, BuiltinError, BuiltinResult};
 
@@ -30,6 +35,7 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let redis = ctx.redis.cloned();
     let llm = ctx.llm.cloned();
     let agent_id = ctx.agent_id;
+    let execution_context = ctx.execution_context.clone();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current().block_on(async move {
             game_info_async_impl(
@@ -41,6 +47,7 @@ pub fn game_info(args: Value, ctx: &BuiltinContext) -> BuiltinResult {
                 &client_type,
                 llm.as_ref(),
                 agent_id,
+                execution_context.as_ref(),
                 target_client_type.as_deref(),
             )
             .await
@@ -65,15 +72,16 @@ async fn game_info_async_impl(
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
     agent_id: Option<i64>,
+    execution_context: Option<&RuntimeExecutionContext>,
     target_client_type: Option<&str>,
 ) -> BuiltinResult {
     // 1. Parse game_id from input — text → integer
     let game_id_str = args.get("game_id").and_then(|v| v.as_str()).unwrap_or("");
 
     tracing::debug!(
-        game_id_str = %game_id_str,
-        channel = %channel,
-        client_type = %client_type,
+        game_id_bytes = game_id_str.len(),
+        channel_bytes = channel.len(),
+        client_type_bytes = client_type.len(),
         has_llm = llm.is_some(),
         has_agent_id = agent_id.is_some(),
         "game_info called"
@@ -95,6 +103,7 @@ async fn game_info_async_impl(
                 client_type,
                 llm,
                 agent_id,
+                execution_context,
                 target_client_type,
             )
             .await;
@@ -117,7 +126,6 @@ async fn game_info_async_impl(
         Some(info) if info.logic_game_id != 0 => {
             tracing::debug!(
                 logic_game_id = %info.logic_game_id,
-                name = %info.name,
                 "game_info: found by direct lookup"
             );
             info
@@ -152,10 +160,8 @@ async fn game_info_async_impl(
         .filter(|t| !t.eq_ignore_ascii_case(client_type))
         .is_some();
 
-    if cross_platform {
-        if let Some(obj) = game_payload.as_object_mut() {
-            obj.remove("computer_id");
-        }
+    if cross_platform && let Some(obj) = game_payload.as_object_mut() {
+        obj.remove("computer_id");
     }
 
     let mut output = serde_json::json!({
@@ -172,20 +178,18 @@ async fn game_info_async_impl(
         "game_icon": game_info.game_icon,
     });
 
-    if cross_platform {
-        if let Some(obj) = output.as_object_mut() {
-            obj.remove("computer_id");
-            obj.insert(
-                "data".into(),
-                serde_json::Value::String(format!(
-                    "注意：游戏《{}》信息为 {} 客户端，与您当前使用的 {} 客户端，需要到{}客户端才能玩。",
-                    game_info.name,
-                    target_client_type.unwrap_or(""),
-                    client_type,
-                    target_client_type.unwrap_or(""),
-                )),
-            );
-        }
+    if cross_platform && let Some(obj) = output.as_object_mut() {
+        obj.remove("computer_id");
+        obj.insert(
+            "data".into(),
+            serde_json::Value::String(format!(
+                "注意：游戏《{}》信息为 {} 客户端，与您当前使用的 {} 客户端，需要到{}客户端才能玩。",
+                game_info.name,
+                target_client_type.unwrap_or(""),
+                client_type,
+                target_client_type.unwrap_or(""),
+            )),
+        );
     }
 
     // 6. 写入 AgentContext extensions
@@ -304,13 +308,14 @@ fn build_classification_prompt(context: &str, categories: &[(i64, String)]) -> S
 )]
 async fn handle_classify_and_list(
     args: Value,
-    _pool: &sqlx::MySqlPool,
+    pool: &sqlx::MySqlPool,
     ext_pool: Option<&sqlx::MySqlPool>,
     redis: Option<&RedisClient>,
     channel: &str,
     client_type: &str,
     llm: Option<&Arc<LlmRegistry>>,
-    _agent_id: Option<i64>,
+    agent_id: Option<i64>,
+    execution_context: Option<&RuntimeExecutionContext>,
     target_client_type: Option<&str>,
 ) -> BuiltinResult {
     // 1. 获取用户输入文本（从 args._agent_context.user_input.raw_text 读取）
@@ -356,18 +361,33 @@ async fn handle_classify_and_list(
                 "data": "未找到相关游戏"
             }));
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "fetch_categories failed, game_info classify aborted");
+        Err(_) => {
+            tracing::warn!(
+                error_kind = "category_query_failed",
+                "fetch_categories failed, game_info classify aborted"
+            );
             return Ok(serde_json::json!({
                 "found": false,
                 "data": "未找到相关游戏"
             }));
         }
     };
-    let category_id = match classify_game_category(&context, &categories, llm).await {
+    let category_id = match classify_game_category(
+        &context,
+        &categories,
+        pool,
+        llm,
+        agent_id,
+        execution_context,
+    )
+    .await?
+    {
         Some(id) => id,
         None => {
-            tracing::warn!(user_input = %user_input, "game_info classify returned None");
+            tracing::warn!(
+                user_input_bytes = user_input.len(),
+                "game_info classify returned None"
+            );
             return Ok(serde_json::json!({
                 "found": false,
                 "data": "未找到相关游戏"
@@ -383,9 +403,8 @@ async fn handle_classify_and_list(
         .unwrap_or_default();
 
     tracing::info!(
-        user_input = %user_input,
+        user_input_bytes = user_input.len(),
         category_id = %category_id,
-        category_name = %category_name,
         "game_info: LLM classified user input"
     );
 
@@ -400,12 +419,7 @@ async fn handle_classify_and_list(
     .await
     {
         Ok(ids) => {
-            tracing::debug!(
-                category_name = %category_name,
-                count = ids.len(),
-                game_ids = ?ids,
-                "game_info: fetched logic_game_ids"
-            );
+            tracing::debug!(count = ids.len(), "game_info: fetched logic_game_ids");
             if ids.is_empty() {
                 tracing::warn!(category_id = %category_id, "no logic_game_id found for tag");
                 return Ok(serde_json::json!({
@@ -415,8 +429,12 @@ async fn handle_classify_and_list(
             }
             ids
         }
-        Err(e) => {
-            tracing::error!(category_id = %category_id, error = %e, "fetch logic_game_ids failed");
+        Err(_) => {
+            tracing::error!(
+                category_id = %category_id,
+                error_kind = "game_id_query_failed",
+                "fetch logic_game_ids failed"
+            );
             return Ok(serde_json::json!({
                 "found": false,
                 "data": "未找到相关游戏"
@@ -461,7 +479,11 @@ async fn handle_classify_and_list(
     }
 
     if games.is_empty() {
-        tracing::warn!(category_id = %category_id, game_ids = ?game_ids, "game_info: all game lookups failed, no games to return");
+        tracing::warn!(
+            category_id = %category_id,
+            game_id_count = game_ids.len(),
+            "game_info: all game lookups failed, no games to return"
+        );
         return Ok(serde_json::json!({
             "found": false,
             "data": "未找到相关游戏"
@@ -554,98 +576,256 @@ async fn handle_classify_and_list(
 
 /// Call LLM to classify user input into one of the given categories.
 /// Returns the category ID on success, or `None` if classification failed.
+fn audit_local_game_fallback(
+    execution_context: Option<&RuntimeExecutionContext>,
+    agent_id: Option<i64>,
+    model_preset: Option<&str>,
+    reason: LlmLocalFallbackReason,
+) {
+    if let Some(execution_context) = execution_context {
+        record_local_fallback(
+            execution_context,
+            agent_id,
+            model_preset,
+            LlmAuditSource::BuiltinGameInfo,
+            reason,
+        );
+    }
+}
+
+trait GameInfoLlmRegistry {
+    fn resolve_preset_name(&self, preset_name: Option<&str>) -> Result<String, LlmAdapterError>;
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError>;
+}
+
+impl GameInfoLlmRegistry for LlmRegistry {
+    fn resolve_preset_name(&self, preset_name: Option<&str>) -> Result<String, LlmAdapterError> {
+        self.resolve(preset_name).map(|entry| entry.name.clone())
+    }
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+        LlmRegistry::build_chain(self, preset_name)
+    }
+}
+
+fn agent_model_preset_from_row(
+    row: Option<(Option<String>,)>,
+) -> Result<Option<String>, BuiltinError> {
+    row.map(|(preset,)| preset)
+        .ok_or_else(|| BuiltinError::Exec("当前 Agent 模型配置不可用".to_string()))
+}
+
+async fn load_agent_model_preset(
+    pool: &sqlx::MySqlPool,
+    agent_id: i64,
+) -> Result<Option<String>, BuiltinError> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT model_preset FROM agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| {
+                tracing::error!(
+                    error_kind = "agent_model_preset_lookup_failed",
+                    "game_info could not resolve the current Agent model preset"
+                );
+                BuiltinError::Exec("当前 Agent 模型配置不可用".to_string())
+            })?;
+    agent_model_preset_from_row(row)
+}
+
+fn finish_registry_failure(
+    execution_context: Option<&RuntimeExecutionContext>,
+    agent_id: Option<i64>,
+    requested_preset: Option<&str>,
+    error: LlmAdapterError,
+) -> BuiltinError {
+    let audit_preset = match &error {
+        LlmAdapterError::Unknown(name) => Some(name.as_str()),
+        _ => requested_preset,
+    };
+    if let Some(execution_context) = execution_context {
+        let mut audit = LlmAuditGuard::new(
+            execution_context.clone(),
+            agent_id,
+            audit_preset,
+            LlmAuditSource::BuiltinGameInfo,
+        );
+        if matches!(error, LlmAdapterError::Unknown(_)) {
+            audit.finish_model_preset_unknown();
+        } else {
+            audit.finish_response(&LLMResponse {
+                finish_reason: "error".to_string(),
+                error_kind: Some("registry_error".to_string()),
+                error_should_retry: Some(false),
+                ..Default::default()
+            });
+        }
+    }
+
+    match error {
+        LlmAdapterError::Unknown(name) => BuiltinError::ModelPresetUnknown(name),
+        _ => BuiltinError::Exec("LLM 模型配置不可用".to_string()),
+    }
+}
+
 async fn classify_game_category(
     user_input: &str,
     categories: &[(i64, String)],
+    pool: &sqlx::MySqlPool,
     llm: Option<&Arc<LlmRegistry>>,
-) -> Option<i64> {
+    agent_id: Option<i64>,
+    execution_context: Option<&RuntimeExecutionContext>,
+) -> Result<Option<i64>, BuiltinError> {
     tracing::debug!(
-        user_input = %user_input,
+        user_input_bytes = user_input.len(),
         category_count = categories.len(),
         has_llm = llm.is_some(),
         "classify_game_category: start"
     );
 
-    // 尝试 LLM 分类
-    if llm.is_none() {
+    let Some(llm) = llm else {
         tracing::debug!("classify_game_category: skipping LLM — llm registry not available");
-    }
-    if let Some(llm) = llm {
-        let prompt = build_classification_prompt(user_input, categories);
-        tracing::debug!(
-            prompt_len = prompt.len(),
-            "classify_game_category: built prompt"
+        audit_local_game_fallback(
+            execution_context,
+            agent_id,
+            None,
+            LlmLocalFallbackReason::ProviderUnavailable,
         );
+        return Ok(None);
+    };
 
-        let messages = vec![serde_json::json!({
-            "role": "user",
-            "content": prompt,
-        })];
+    let agent_id =
+        agent_id.ok_or_else(|| BuiltinError::Exec("当前 Agent 模型配置不可用".to_string()))?;
+    let model_preset = load_agent_model_preset(pool, agent_id).await?;
+    classify_game_category_for_preset(
+        user_input,
+        categories,
+        llm.as_ref(),
+        model_preset.as_deref(),
+        Some(agent_id),
+        execution_context,
+    )
+    .await
+}
 
-        match llm.build_primary(None) {
-            Ok((provider, model)) => {
-                let req = ChatRequest {
-                    model: Some(model.clone()),
-                    messages,
-                    max_tokens: 1024,
-                    temperature: 0.1,
-                    tools: None,
-                    tool_choice: None,
-                    reasoning_effort: None,
-                };
-                tracing::debug!(model = %model, "classify_game_category: calling LLM");
-                let resp = provider
-                    .chat_with_retry(req, RetryMode::Standard, None)
-                    .await;
-                let raw_content = resp.content.clone();
-                tracing::debug!(
-                    llm_response = ?raw_content,
-                    finish_reason = %resp.finish_reason,
-                    "classify_game_category: LLM response"
-                );
-                if let Some(content) = raw_content {
-                    let trimmed = content.trim().to_string();
-                    if !trimmed.is_empty() {
-                        // 尝试解析为数字 ID
-                        if let Ok(id) = trimmed.parse::<i64>() {
-                            if categories.iter().any(|(cid, _)| *cid == id) {
-                                tracing::debug!(category_id = %id, "classify_game_category: matched by ID");
-                                return Some(id);
-                            }
-                            tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
-                        }
-                        // 尝试按名称匹配
-                        let matched = categories.iter().find(|(_, name)| {
-                            trimmed.contains(name.as_str()) || name.contains(&trimmed)
-                        });
-                        if let Some((id, name)) = matched {
-                            tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
-                            return Some(*id);
-                        }
-                        tracing::debug!(llm_output = %trimmed, "classify_game_category: could not match LLM output to any category");
-                    } else {
-                        tracing::debug!("classify_game_category: LLM returned empty string");
-                    }
+async fn classify_game_category_for_preset<R: GameInfoLlmRegistry + ?Sized>(
+    user_input: &str,
+    categories: &[(i64, String)],
+    llm: &R,
+    model_preset: Option<&str>,
+    agent_id: Option<i64>,
+    execution_context: Option<&RuntimeExecutionContext>,
+) -> Result<Option<i64>, BuiltinError> {
+    let resolved_preset = llm.resolve_preset_name(model_preset).map_err(|error| {
+        finish_registry_failure(execution_context, agent_id, model_preset, error)
+    })?;
+    let prompt = build_classification_prompt(user_input, categories);
+    tracing::debug!(
+        prompt_len = prompt.len(),
+        "classify_game_category: built prompt"
+    );
+
+    let messages = vec![serde_json::json!({
+        "role": "user",
+        "content": prompt,
+    })];
+    let (provider, model) = llm.build_chain(Some(&resolved_preset)).map_err(|error| {
+        finish_registry_failure(execution_context, agent_id, Some(&resolved_preset), error)
+    })?;
+    let req = ChatRequest {
+        model: Some(model),
+        messages,
+        max_tokens: 1024,
+        temperature: 0.1,
+        tools: None,
+        tool_choice: None,
+        reasoning_effort: None,
+    };
+    tracing::debug!("classify_game_category: calling LLM");
+    let mut audit = execution_context.map(|execution_context| {
+        LlmAuditGuard::new(
+            execution_context.clone(),
+            agent_id,
+            Some(&resolved_preset),
+            LlmAuditSource::BuiltinGameInfo,
+        )
+    });
+    let mut options =
+        LlmCallOptions::with_timeouts(Duration::from_secs(25), Duration::from_secs(45));
+    if let Some(audit) = audit.as_ref() {
+        options = options.with_fallback_callback(audit.on_fallback());
+    }
+    let resp = provider.chat_with_options(req, options).await;
+    if let Some(audit) = audit.as_mut() {
+        audit.finish_response(&resp);
+    }
+    let raw_content = resp.content.clone();
+    tracing::debug!(
+        llm_response_bytes = raw_content.as_deref().map_or(0, str::len),
+        finish_reason = %resp.finish_reason,
+        "classify_game_category: LLM response"
+    );
+    if resp.is_error() {
+        audit_local_game_fallback(
+            execution_context,
+            agent_id,
+            Some(&resolved_preset),
+            LlmLocalFallbackReason::InvocationFailed,
+        );
+        return Ok(None);
+    }
+    if let Some(content) = raw_content {
+        let trimmed = content.trim().to_string();
+        if !trimmed.is_empty() {
+            if let Ok(id) = trimmed.parse::<i64>() {
+                if categories.iter().any(|(cid, _)| *cid == id) {
+                    tracing::debug!(category_id = %id, "classify_game_category: matched by ID");
+                    return Ok(Some(id));
                 }
-                tracing::warn!(
-                    user_input = %user_input,
-                    llm_response = ?resp.content,
-                    "LLM 分类失败或返回无效 ID"
-                );
+                tracing::debug!(category_id = %id, "classify_game_category: parsed ID not in category list");
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "build_primary 失败"
+            let matched = categories
+                .iter()
+                .find(|(_, name)| trimmed.contains(name.as_str()) || name.contains(&trimmed));
+            if let Some((id, _name)) = matched {
+                tracing::debug!(
+                    category_id = %id,
+                    "classify_game_category: matched by name"
                 );
+                return Ok(Some(*id));
             }
+            tracing::debug!(
+                llm_output_bytes = trimmed.len(),
+                "classify_game_category: could not match LLM output to any category"
+            );
+        } else {
+            tracing::debug!("classify_game_category: LLM returned empty string");
         }
     }
+    tracing::warn!(
+        user_input_bytes = user_input.len(),
+        llm_response_bytes = resp.content.as_deref().map_or(0, str::len),
+        "LLM 分类失败或返回无效 ID"
+    );
+    audit_local_game_fallback(
+        execution_context,
+        agent_id,
+        Some(&resolved_preset),
+        LlmLocalFallbackReason::EmptyResponse,
+    );
 
     tracing::debug!(
         "classify_game_category: no LLM available or classification failed, returning None"
     );
-    None
+    Ok(None)
 }
 
 pub const GAME_INFO_INPUT_SCHEMA: &str = r#"{
@@ -731,3 +911,259 @@ pub const GAME_INFO_OUTPUT_SCHEMA: &str = r#"{
     }
   }
 }"#;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        GameInfoLlmRegistry, agent_model_preset_from_row, classify_game_category_for_preset,
+    };
+    use crate::runtime::builtins::BuiltinError;
+    use crate::runtime::execution_context::RuntimeExecutionContext;
+    use crate::runtime::llm::LlmAdapterError;
+    use async_trait::async_trait;
+    use providers::{ChatRequest, LLMProvider, LLMResponse, LlmCallOptions};
+    use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct CapturingProvider {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<ChatRequest>>,
+        options: Mutex<Vec<(Duration, Duration, bool)>>,
+    }
+
+    impl CapturingProvider {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                options: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl LLMProvider for CapturingProvider {
+        fn default_model(&self) -> String {
+            "default-must-not-be-requested".to_string()
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> LLMResponse {
+            panic!("game_info must use the bounded chat_with_options API")
+        }
+
+        async fn chat_with_options(
+            &self,
+            request: ChatRequest,
+            options: LlmCallOptions,
+        ) -> LLMResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.requests.lock().expect("request lock").push(request);
+            self.options.lock().expect("options lock").push((
+                options.node_timeout,
+                options.chain_timeout,
+                options.on_fallback.is_some(),
+            ));
+            LLMResponse {
+                content: Some("2".to_string()),
+                finish_reason: "stop".to_string(),
+                actual_model: Some("selected-model".to_string()),
+                ..Default::default()
+            }
+        }
+    }
+
+    struct FakeRegistry {
+        provider: Arc<dyn LLMProvider>,
+        available: HashSet<String>,
+        default_name: String,
+        resolve_calls: Mutex<Vec<Option<String>>>,
+        build_calls: Mutex<Vec<Option<String>>>,
+    }
+
+    impl FakeRegistry {
+        fn new(provider: Arc<dyn LLMProvider>) -> Self {
+            Self {
+                provider,
+                available: ["global-default", "agent-premium"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                default_name: "global-default".to_string(),
+                resolve_calls: Mutex::new(Vec::new()),
+                build_calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl GameInfoLlmRegistry for FakeRegistry {
+        fn resolve_preset_name(
+            &self,
+            preset_name: Option<&str>,
+        ) -> Result<String, LlmAdapterError> {
+            self.resolve_calls
+                .lock()
+                .expect("resolve lock")
+                .push(preset_name.map(str::to_string));
+            let name = preset_name.unwrap_or(&self.default_name);
+            if self.available.contains(name) {
+                Ok(name.to_string())
+            } else {
+                Err(LlmAdapterError::Unknown(name.to_string()))
+            }
+        }
+
+        fn build_chain(
+            &self,
+            preset_name: Option<&str>,
+        ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+            self.build_calls
+                .lock()
+                .expect("build lock")
+                .push(preset_name.map(str::to_string));
+            let name = preset_name.ok_or(LlmAdapterError::NoDefault)?;
+            if !self.available.contains(name) {
+                return Err(LlmAdapterError::Unknown(name.to_string()));
+            }
+            Ok((Arc::clone(&self.provider), format!("{name}-primary-model")))
+        }
+    }
+
+    fn tracing_only_context(request_id: &str) -> RuntimeExecutionContext {
+        RuntimeExecutionContext::best_effort(Some(request_id.to_string()), Some(17)).for_hook()
+    }
+
+    fn categories() -> Vec<(i64, String)> {
+        vec![(1, "动作".to_string()), (2, "策略".to_string())]
+    }
+
+    #[tokio::test]
+    async fn explicit_agent_preset_selects_that_chain_and_never_the_global_default() {
+        let provider = CapturingProvider::new();
+        let registry = FakeRegistry::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+        let selected = classify_game_category_for_preset(
+            "想玩策略游戏",
+            &categories(),
+            &registry,
+            Some("agent-premium"),
+            Some(9),
+            Some(&tracing_only_context("game-info-agent-preset")),
+        )
+        .await
+        .expect("classification");
+
+        assert_eq!(selected, Some(2));
+        assert_eq!(
+            registry
+                .resolve_calls
+                .lock()
+                .expect("resolve lock")
+                .as_slice(),
+            [Some("agent-premium".to_string())]
+        );
+        assert_eq!(
+            registry.build_calls.lock().expect("build lock").as_slice(),
+            [Some("agent-premium".to_string())]
+        );
+        let requests = provider.requests.lock().expect("request lock");
+        assert_eq!(
+            requests[0].model.as_deref(),
+            Some("agent-premium-primary-model")
+        );
+        drop(requests);
+        assert_eq!(
+            provider.options.lock().expect("options lock").as_slice(),
+            [(Duration::from_secs(25), Duration::from_secs(45), true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn database_null_is_the_only_value_that_selects_the_global_default() {
+        let provider = CapturingProvider::new();
+        let registry = FakeRegistry::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+        let selected = classify_game_category_for_preset(
+            "想玩策略游戏",
+            &categories(),
+            &registry,
+            None,
+            Some(9),
+            Some(&tracing_only_context("game-info-default-preset")),
+        )
+        .await
+        .expect("classification");
+
+        assert_eq!(selected, Some(2));
+        assert_eq!(
+            registry
+                .resolve_calls
+                .lock()
+                .expect("resolve lock")
+                .as_slice(),
+            [None]
+        );
+        assert_eq!(
+            registry.build_calls.lock().expect("build lock").as_slice(),
+            [Some("global-default".to_string())]
+        );
+        assert_eq!(
+            provider.requests.lock().expect("request lock")[0]
+                .model
+                .as_deref(),
+            Some("global-default-primary-model")
+        );
+    }
+
+    #[test]
+    fn agent_row_preserves_null_and_explicit_values_but_missing_agent_cannot_default() {
+        assert_eq!(
+            agent_model_preset_from_row(Some((None,))).expect("NULL preset"),
+            None
+        );
+        assert_eq!(
+            agent_model_preset_from_row(Some((Some("agent-premium".to_string()),)))
+                .expect("explicit preset")
+                .as_deref(),
+            Some("agent-premium")
+        );
+        assert_eq!(
+            agent_model_preset_from_row(Some((Some(String::new()),)))
+                .expect("explicit empty remains explicit")
+                .as_deref(),
+            Some("")
+        );
+        assert!(matches!(
+            agent_model_preset_from_row(None),
+            Err(BuiltinError::Exec(message)) if message == "当前 Agent 模型配置不可用"
+        ));
+    }
+
+    #[tokio::test]
+    async fn explicit_empty_or_unknown_preset_is_typed_and_never_builds_or_locally_falls_back() {
+        for requested in ["", "removed-preset"] {
+            let provider = CapturingProvider::new();
+            let registry = FakeRegistry::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+            let error = classify_game_category_for_preset(
+                "must not run",
+                &categories(),
+                &registry,
+                Some(requested),
+                Some(9),
+                Some(&tracing_only_context("game-info-unknown-preset")),
+            )
+            .await
+            .expect_err("unknown preset must fail closed instead of locally falling back");
+            assert!(matches!(
+                error,
+                BuiltinError::ModelPresetUnknown(name) if name == requested
+            ));
+
+            assert!(
+                registry.build_calls.lock().expect("build lock").is_empty(),
+                "unknown preset must fail before provider construction"
+            );
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        }
+    }
+}

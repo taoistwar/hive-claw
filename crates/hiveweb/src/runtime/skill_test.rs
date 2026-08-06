@@ -2,16 +2,17 @@
 //!
 //! 为单个 Skill 创建隔离测试环境：加载目标 Skill + Always Tools + Always Skills → 执行单轮对话 → 返回结果
 
-use providers::{ChatRequest, RetryMode};
+use providers::{ChatRequest, LLMProvider, LlmCallOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::sync::Arc;
-use std::time::Instant;
 
 use super::orchestrator::{OrchestratorDeps, build_tools_schema_simple, handle_workspace_tool};
+use crate::runtime::execution_context::RuntimeExecutionContext;
+use crate::runtime::llm::{LlmAdapterError, LlmRegistry};
+use crate::runtime::llm_audit::{LlmAuditGuard, LlmAuditSource};
 use crate::services::agent::{AgentContent, ToolRef};
-use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{AgentContext, ContextConfig, UserInput};
 
 type SkillTestToolRow = (
@@ -55,12 +56,100 @@ pub struct TestSkillToolCallOutcome {
     pub error: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SkillTestError {
+    #[error("model preset unknown: {0}")]
+    ModelPresetUnknown(String),
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl From<String> for SkillTestError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+struct ResolvedSkillTestLlmTarget {
+    provider: Arc<dyn LLMProvider>,
+    model: String,
+    preset_name: String,
+    max_tokens: u32,
+    temperature: f32,
+}
+
+trait SkillTestLlmRegistry {
+    fn resolve_preset(
+        &self,
+        requested_preset: Option<&str>,
+    ) -> Result<(String, u32, f32), LlmAdapterError>;
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError>;
+}
+
+impl SkillTestLlmRegistry for LlmRegistry {
+    fn resolve_preset(
+        &self,
+        requested_preset: Option<&str>,
+    ) -> Result<(String, u32, f32), LlmAdapterError> {
+        let entry = self.resolve(requested_preset)?;
+        Ok((entry.name.clone(), entry.max_tokens, entry.temperature))
+    }
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+        LlmRegistry::build_chain(self, preset_name)
+    }
+}
+
+fn resolve_skill_test_llm_target<R: SkillTestLlmRegistry + ?Sized>(
+    registry: &R,
+    execution_context: &RuntimeExecutionContext,
+    skill_id: i64,
+    requested_preset: Option<&str>,
+) -> Result<ResolvedSkillTestLlmTarget, SkillTestError> {
+    let (preset_name, max_tokens, temperature) = match registry.resolve_preset(requested_preset) {
+        Ok(preset) => preset,
+        Err(LlmAdapterError::Unknown(name)) => {
+            let mut audit = LlmAuditGuard::new(
+                execution_context.clone(),
+                None,
+                requested_preset,
+                LlmAuditSource::SkillTest { skill_id },
+            );
+            audit.finish_model_preset_unknown();
+            return Err(SkillTestError::ModelPresetUnknown(name));
+        }
+        Err(error) => {
+            return Err(SkillTestError::Failed(format!(
+                "LLM preset resolution failed: {error}"
+            )));
+        }
+    };
+    let (provider, model) = registry
+        .build_chain(Some(&preset_name))
+        .map_err(|error| SkillTestError::Failed(format!("LLM provider: {error}")))?;
+
+    Ok(ResolvedSkillTestLlmTarget {
+        provider,
+        model,
+        preset_name,
+        max_tokens,
+        temperature,
+    })
+}
+
 pub async fn run_skill_test(
     pool: &MySqlPool,
     deps: &OrchestratorDeps,
     skill_id: i64,
     req: TestSkillRequest,
-) -> Result<TestSkillResult, String> {
+) -> Result<TestSkillResult, SkillTestError> {
     // 1. 查询目标 skill
     let skill_row: Option<(String,)> = sqlx::query_as("SELECT content FROM skills WHERE id = ?")
         .bind(skill_id)
@@ -69,11 +158,13 @@ pub async fn run_skill_test(
         .map_err(|e| format!("skill lookup: {e}"))?;
 
     let Some((skill_content,)) = skill_row else {
-        return Err(format!("skill id={skill_id} not found"));
+        return Err(SkillTestError::Failed(format!(
+            "skill id={skill_id} not found"
+        )));
     };
 
     if skill_content.trim().is_empty() {
-        return Err("skill content 不能为空".into());
+        return Err(SkillTestError::Failed("skill content 不能为空".into()));
     }
 
     // 2. 加载 all tools（全部工具暴露给 Skill 测试，让 Skill 有机会调用任何工具）
@@ -157,10 +248,19 @@ pub async fn run_skill_test(
     };
 
     // 5. 构建 LLM request
-    let (provider, model) = deps
-        .llm
-        .build_primary(ctx.model_preset.as_deref())
-        .map_err(|e| format!("LLM provider: {e}"))?;
+    let requested_preset = ctx.model_preset.as_deref();
+    let ResolvedSkillTestLlmTarget {
+        provider,
+        model,
+        preset_name: resolved_preset,
+        max_tokens,
+        temperature,
+    } = resolve_skill_test_llm_target(
+        deps.llm.as_ref(),
+        &deps.execution_context,
+        skill_id,
+        requested_preset,
+    )?;
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
 
@@ -172,8 +272,8 @@ pub async fn run_skill_test(
     let chat_req = ChatRequest {
         model: Some(model),
         messages,
-        max_tokens: 4096,
-        temperature: 0.7,
+        max_tokens,
+        temperature,
         tools: if tools_schema.is_empty() {
             None
         } else {
@@ -183,43 +283,22 @@ pub async fn run_skill_test(
         reasoning_effort: None,
     };
 
-    let llm_started = Instant::now();
+    let mut llm_audit = LlmAuditGuard::new(
+        deps.execution_context.clone(),
+        None,
+        Some(&resolved_preset),
+        LlmAuditSource::SkillTest { skill_id },
+    );
+    let options = LlmCallOptions::default().with_fallback_callback(llm_audit.on_fallback());
     let resp = provider
-        .chat_stream_with_retry(chat_req, None, None, RetryMode::Standard, None)
+        .chat_stream_with_options(chat_req, None, None, options)
         .await;
-    let llm_elapsed_ms = llm_started.elapsed().as_millis() as i32;
+    llm_audit.finish_response(&resp);
 
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
-        runtime_audit::record(AuditRecord {
-            request_id: None,
-            session_id: None,
-            agent_id: None,
-            plugin_id: None,
-            function_id: None,
-            capability: None,
-            event_type: "llm_invoke",
-            outcome: "error",
-            elapsed_ms: Some(llm_elapsed_ms),
-            error_message: Some(&err_msg),
-            payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
-        });
-        return Err(format!("LLM error: {}", err_msg));
+        return Err(SkillTestError::Failed(format!("LLM error: {err_msg}")));
     }
-
-    runtime_audit::record(AuditRecord {
-        request_id: None,
-        session_id: None,
-        agent_id: None,
-        plugin_id: None,
-        function_id: None,
-        capability: None,
-        event_type: "llm_invoke",
-        outcome: "success",
-        elapsed_ms: Some(llm_elapsed_ms),
-        error_message: None,
-        payload_summary: Some(json!({"mode": "skill_test", "skill_id": skill_id})),
-    });
 
     let assistant_content = resp.content.unwrap_or_default();
     let tool_calls = resp.tool_calls;
@@ -246,7 +325,7 @@ pub async fn run_skill_test(
                 result: TestSkillToolCallOutcome {
                     success: false,
                     content: Value::Null,
-                    error: Some(format!("tool '{}' not found in test context", tc.name)),
+                    error: Some("tool not found in test context".into()),
                 },
             });
             continue;
@@ -295,4 +374,91 @@ pub async fn run_skill_test(
         has_tool_calls: true,
         tool_calls: records,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SkillTestError, SkillTestLlmRegistry, resolve_skill_test_llm_target};
+    use crate::runtime::execution_context::RuntimeExecutionContext;
+    use crate::runtime::llm::LlmAdapterError;
+    use async_trait::async_trait;
+    use providers::{ChatRequest, LLMProvider, LLMResponse};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NeverCalledProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LLMProvider for NeverCalledProvider {
+        fn default_model(&self) -> String {
+            "global-default-must-not-run".to_string()
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> LLMResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            LLMResponse::default()
+        }
+    }
+
+    struct UnknownPresetRegistry {
+        provider: Arc<NeverCalledProvider>,
+        build_calls: AtomicUsize,
+    }
+
+    impl SkillTestLlmRegistry for UnknownPresetRegistry {
+        fn resolve_preset(
+            &self,
+            requested_preset: Option<&str>,
+        ) -> Result<(String, u32, f32), LlmAdapterError> {
+            Err(LlmAdapterError::Unknown(
+                requested_preset.unwrap_or("global-default").to_string(),
+            ))
+        }
+
+        fn build_chain(
+            &self,
+            _preset_name: Option<&str>,
+        ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+            self.build_calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Arc::clone(&self.provider) as Arc<dyn LLMProvider>,
+                "global-default-model".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn explicit_empty_and_unknown_skill_test_presets_are_typed_without_default_provider() {
+        let provider = Arc::new(NeverCalledProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let registry = UnknownPresetRegistry {
+            provider: Arc::clone(&provider),
+            build_calls: AtomicUsize::new(0),
+        };
+        let execution_context =
+            RuntimeExecutionContext::best_effort(Some("skill-test-unknown".into()), None)
+                .for_hook();
+
+        for requested_preset in ["", "removed-preset"] {
+            let error = match resolve_skill_test_llm_target(
+                &registry,
+                &execution_context,
+                19,
+                Some(requested_preset),
+            ) {
+                Ok(_) => panic!("explicit unknown preset must fail closed"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                SkillTestError::ModelPresetUnknown(name) if name == requested_preset
+            ));
+        }
+
+        assert_eq!(registry.build_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
 }

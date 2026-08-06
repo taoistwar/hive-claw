@@ -12,7 +12,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -21,6 +21,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::api::AppState;
+use crate::middleware::request_id::RequestId;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::services::workflow::{self as svc, CreateMeta, GraphPut, UpdateMeta};
 use crate::utils::error::{ApiResponse, AppError};
 
@@ -219,8 +221,49 @@ fn build_user_input_metadata(ui: &ExecuteUserInput) -> agent::context::UserInput
     }
 }
 
+fn build_execute_response_data(
+    workflow_id: i64,
+    outcome: crate::runtime::workflow::ExecuteOutcome,
+    elapsed_ms: i32,
+    agent_context: Option<Value>,
+) -> Value {
+    let node_results: HashMap<String, Value> = outcome
+        .node_results
+        .into_iter()
+        .map(|(node_key, mut result)| {
+            if let Value::Object(ref mut fields) = result {
+                fields.remove(crate::runtime::input_source::AGENT_CONTEXT_UPDATES_KEY);
+            }
+            (node_key, result)
+        })
+        .collect();
+
+    serde_json::json!({
+        "workflow_id": workflow_id,
+        "outputs": outcome.end_value,
+        "node_results": node_results,
+        "node_inputs": outcome.node_inputs,
+        "node_agent_contexts": outcome.node_agent_contexts,
+        "elapsed_ms": elapsed_ms,
+        "agent_context": agent_context,
+    })
+}
+
+fn workflow_execute_error_response(
+    error: crate::runtime::workflow::WorkflowError,
+) -> ApiResponse<()> {
+    match error {
+        crate::runtime::workflow::WorkflowError::ModelPresetUnknown(name) => {
+            AppError::ModelPresetUnknown(format!("模型 preset「{name}」不存在，请重新选择"))
+                .into_response()
+        }
+        error => AppError::Internal(format!("workflow execute: {error}")).into_response(),
+    }
+}
+
 async fn execute_workflow(
     State(state): State<AppState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
     Path(id): Path<i64>,
     Json(body): Json<ExecuteBody>,
 ) -> Result<ApiResponse<Value>, ApiResponse<()>> {
@@ -234,8 +277,8 @@ async fn execute_workflow(
     let agent_ctx: Arc<AgentContext> = match body.user_input {
         Some(ref ui) => {
             tracing::info!(
-                actor_id = ?ui.actor_id,
-                raw_text = ?ui.raw_text,
+                actor_id_present = ui.actor_id.is_some(),
+                raw_text_bytes = ui.raw_text.as_deref().map_or(0, str::len),
                 "execute_workflow: 使用前端提供的 UserInput 构建 AgentContext"
             );
             Arc::new(AgentContext::new(
@@ -261,6 +304,7 @@ async fn execute_workflow(
     };
 
     let deps = ExecutorDeps {
+        execution_context: RuntimeExecutionContext::best_effort(Some(request_id), None),
         pool: state.pool.clone(),
         s3: state.s3.clone(),
         registry: std::sync::Arc::clone(&state.runtime_state.capabilities),
@@ -287,39 +331,106 @@ async fn execute_workflow(
             agent_ctx.clone(),
         )
         .await
-        .map_err(|e| AppError::Internal(format!("workflow execute: {e}")).into_response())?;
+        .map_err(workflow_execute_error_response)?;
 
     // ★ Apply AgentContext updates from the end node output
     apply_agent_context_updates(&agent_ctx, &outcome.end_value);
     // Store end node result as WorkflowResults
-    if let Err(e) = agent_ctx.set_record(
-        Category::WorkflowResults,
-        "end".to_string(),
-        outcome.end_value.clone(),
-        "workflow_node".to_string(),
-        0,
-    ) {
+    if agent_ctx
+        .set_record(
+            Category::WorkflowResults,
+            "end".to_string(),
+            outcome.end_value.clone(),
+            "workflow_node".to_string(),
+            0,
+        )
+        .is_err()
+    {
         tracing::warn!(
-            error = %e,
+            error_kind = "agent_context_set_record_failed",
             "execute_workflow: 写回 WorkflowResults 失败"
         );
     }
 
     let agent_context_snapshot = match agent_ctx.snapshot() {
         Ok(snapshot) => serde_json::to_value(&snapshot).ok(),
-        Err(e) => {
-            tracing::warn!(error = %e, "execute_workflow: AgentContext snapshot 失败");
+        Err(_) => {
+            tracing::warn!(
+                error_kind = "agent_context_snapshot_failed",
+                "execute_workflow: AgentContext snapshot 失败"
+            );
             None
         }
     };
 
     let elapsed_ms = t0.elapsed().as_millis() as i32;
-    Ok(ApiResponse::success(serde_json::json!({
-        "workflow_id": id,
-        "node_results": outcome.node_results,
-        "node_inputs": outcome.node_inputs,
-        "node_agent_contexts": outcome.node_agent_contexts,
-        "elapsed_ms": elapsed_ms,
-        "agent_context": agent_context_snapshot,
-    })))
+    Ok(ApiResponse::success(build_execute_response_data(
+        id,
+        outcome,
+        elapsed_ms,
+        agent_context_snapshot,
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_execute_response_data, workflow_execute_error_response};
+    use crate::runtime::workflow::{ExecuteOutcome, WorkflowError};
+    use crate::utils::error::{codes, http_status_for_code};
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn execute_response_preserves_every_public_workflow_output_shape() {
+        for output in [
+            json!({"answer": "ok"}),
+            json!("primitive result"),
+            json!({"alpha": {"answer": "a"}, "zeta": {"answer": "z"}}),
+        ] {
+            let data = build_execute_response_data(
+                7,
+                ExecuteOutcome {
+                    end_value: output.clone(),
+                    node_results: HashMap::from([(
+                        "final".to_string(),
+                        json!({
+                            "raw": true,
+                            "_agent_context_updates": {
+                                "metadata": {"private": "value"}
+                            }
+                        }),
+                    )]),
+                    node_inputs: HashMap::new(),
+                    node_agent_contexts: HashMap::new(),
+                },
+                42,
+                None,
+            );
+
+            assert_eq!(data["workflow_id"], 7);
+            assert_eq!(data["outputs"], output);
+            assert_eq!(data["node_results"]["final"], json!({"raw": true}));
+            assert_eq!(
+                data["node_results"]["final"].get("_agent_context_updates"),
+                None
+            );
+            assert_eq!(data["elapsed_ms"], 42);
+        }
+    }
+
+    #[test]
+    fn unknown_model_preset_maps_to_the_typed_workflow_api_error() {
+        let response = workflow_execute_error_response(WorkflowError::ModelPresetUnknown(
+            "missing".to_string(),
+        ));
+
+        assert_eq!(response.code, codes::MODEL_PRESET_UNKNOWN);
+        assert_eq!(
+            http_status_for_code(response.code),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(response.message.contains("missing"));
+        assert!(!response.message.contains("workflow execute:"));
+    }
 }

@@ -46,14 +46,11 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
         .await;
 
     match row {
-        Ok(Some(membership)) => {
+        Ok(Some(_membership)) => {
             tracing::debug!(
                 operation = "check_vip_membership",
                 outcome = "membership_found",
                 user_id,
-                membership_id = membership.id,
-                membership_level = ?membership.membership_level,
-                effective_end_time = ?membership.effective_end_time,
                 duration_ms = started_at.elapsed().as_millis(),
                 "finished checking VIP membership"
             );
@@ -74,7 +71,7 @@ pub async fn check_vip_membership(pool: &MySqlPool, user_id: i64) -> Result<bool
                 operation = "check_vip_membership",
                 outcome = "query_error",
                 user_id,
-                error = %error,
+                error_kind = "membership_query_failed",
                 duration_ms = started_at.elapsed().as_millis(),
                 "failed to check VIP membership"
             );
@@ -336,10 +333,10 @@ pub async fn resolve_game_label_names(
     for card in duration_card_json.iter() {
         if let Some(list) = card.get("game_label_list").and_then(|v| v.as_array()) {
             for item in list {
-                if let Some(code) = item.as_str() {
-                    if !codes.contains(&code.to_string()) {
-                        codes.push(code.to_string());
-                    }
+                if let Some(code) = item.as_str()
+                    && !codes.contains(&code.to_string())
+                {
+                    codes.push(code.to_string());
                 }
             }
         }

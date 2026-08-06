@@ -16,7 +16,7 @@ mod query_balance;
 mod support_card;
 mod text_regex_match;
 mod tools;
-mod rag_answer;
+pub mod rag_answer;
 
 use serde_json::Value;
 use sqlx::MySqlPool;

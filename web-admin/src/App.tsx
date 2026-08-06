@@ -25,6 +25,7 @@ import Layout from './components/Layout'
 import { AuthProvider } from './hooks/useAuth'
 import { ThemeProvider, useTheme } from './hooks/useTheme'
 import { WEB_ADMIN_BASE_PATH } from './config/basePath'
+import KnowledgeQueryPage from './pages/KnowledgeQueryPage'
 
 const THEME_TOKENS = {
   dark: {
@@ -170,6 +171,7 @@ function AppRoutes() {
           <Route path="global-configs" element={<GlobalConfigPage />} />
           {/* @deprecated 游戏别名管理已废弃，仅为兼容历史链接保留路由。 */}
           <Route path="game-aliases" element={<GameAliasPage />} />
+          <Route path="knowledge-query" element={<KnowledgeQueryPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

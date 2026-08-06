@@ -16,6 +16,7 @@ import {
   StarOutlined,
   ApartmentOutlined,
   FileTextOutlined,
+  SearchOutlined,
   KeyOutlined,
   SunOutlined,
   MoonOutlined,
@@ -64,6 +65,11 @@ const AppLayout: React.FC = () => {
                   icon: <TagsOutlined />,
                   // @deprecated 仅为兼容历史数据保留入口。
                   label: '游戏别名管理（已废弃）',
+                },
+                {
+                  key: '/knowledge-query',
+                  icon: <SearchOutlined />,
+                  label: '知识库查询',
                 },
               ],
             },

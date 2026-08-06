@@ -20,21 +20,21 @@ pub const ENV_RAGFLOW_TOP_K: &str = "RAGFLOW_TOP_K";
 pub const ENV_RAGFLOW_PAGE_SIZE: &str = "RAGFLOW_PAGE_SIZE";
 
 #[derive(Debug, Serialize)]
-struct RetrievalRequest {
-    question: String,
+pub struct RetrievalRequest {
+    pub question: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    dataset_ids: Vec<String>,
+    pub dataset_ids: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    document_ids: Vec<String>,
-    page: Option<u32>,
-    page_size: Option<u32>,
-    similarity_threshold: Option<f32>,
-    vector_similarity_weight: Option<f32>,
-    top_k: Option<u32>,
+    pub document_ids: Vec<String>,
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+    pub similarity_threshold: Option<f32>,
+    pub vector_similarity_weight: Option<f32>,
+    pub top_k: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    rerank_id: Option<String>,
-    keyword: Option<bool>,
-    highlight: Option<bool>,
+    pub rerank_id: Option<String>,
+    pub keyword: Option<bool>,
+    pub highlight: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -299,7 +299,7 @@ fn split_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn env_num(key: &str) -> Option<u32> {
+pub fn env_num(key: &str) -> Option<u32> {
     env::var(key).ok().and_then(|raw| raw.parse::<u32>().ok())
 }
 

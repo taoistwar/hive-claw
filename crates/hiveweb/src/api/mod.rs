@@ -19,6 +19,7 @@ pub mod health;
 pub mod newsession;
 pub mod plugin;
 pub mod recommended_game;
+pub mod rag_search;
 pub mod runtime;
 pub mod sensitive_word;
 pub mod skill;
@@ -202,6 +203,7 @@ pub fn create_router(
         // Mixed module: legacy /game-aliases plus active /external-games.
         .merge(game::router())
         .merge(sensitive_word::router())
+        .merge(rag_search::router())
         .layer(middleware::from_fn(admin_auth_middleware))
         .layer(middleware::from_fn_with_state(
             rate_limit_state,

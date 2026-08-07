@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           rustup show
 
-          expected_release="release: 1.97.1"
+          expected_release="release: 1.95.0"
           rustc_details="$(rustc --version --verbose)"
           cargo_details="$(cargo --version --verbose)"
 
@@ -51,12 +51,12 @@ jobs:
           printf '%s\n' "$cargo_details"
 
           if ! grep -Fqx -- "$expected_release" <<<"$rustc_details"; then
-            echo "::error::expected rustc 1.97.1" >&2
+            echo "::error::expected rustc 1.95.0" >&2
             exit 1
           fi
 
           if ! grep -Fqx -- "$expected_release" <<<"$cargo_details"; then
-            echo "::error::expected cargo 1.97.1" >&2
+            echo "::error::expected cargo 1.95.0" >&2
             exit 1
           fi
 

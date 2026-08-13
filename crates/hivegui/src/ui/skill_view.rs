@@ -1,3 +1,9 @@
+//! Skill management panel.
+//! scroll:skill_list
+//!
+//! Keep this panel keyboard-accessible and focus-trap compatible:
+//! modal and form selectors are exported as constants so source-contract
+//! tests can drive a stable interaction path.
 use crate::datasource::{Store, entity_store::Skill};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -9,6 +15,11 @@ use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
+
+/// Stable modal selector for the skill form overlay.
+pub const SKILL_MODAL: &str = "skill-modal";
+/// Stable form selector for the skill form container.
+pub const SKILL_FORM: &str = "skill-form";
 
 pub struct SkillView {
     store: Entity<Store>,
@@ -24,16 +35,23 @@ pub struct SkillView {
     form_identifier: String,
     form_name: String,
     form_description: String,
+    form_frontmatter: String,
     form_content: String,
     form_source: String,
+    form_is_always: bool,
     error_message: Option<String>,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
     description_input: Option<Entity<InputState>>,
+    frontmatter_input: Option<Entity<InputState>>,
     source_input: Option<Entity<InputState>>,
     content_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
+    /// Focus handle for the modal layer.
+    modal_focus: FocusHandle,
+    /// Focus handle for the form body.
+    form_focus: FocusHandle,
 }
 
 impl SkillView {
@@ -52,16 +70,21 @@ impl SkillView {
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
+            form_frontmatter: String::new(),
             form_content: String::new(),
             form_source: "workspace".into(),
+            form_is_always: false,
             error_message: None,
             confirm_delete_id: None,
             identifier_input: None,
             name_input: None,
             description_input: None,
+            frontmatter_input: None,
             source_input: None,
             content_input: None,
             search_input: None,
+            modal_focus: cx.focus_handle(),
+            form_focus: cx.focus_handle(),
         };
         v.load(cx);
         v
@@ -115,6 +138,27 @@ impl SkillView {
                 .placeholder("输入 Markdown 内容")
                 .default_value(&self.form_content)
         }));
+        self.frontmatter_input = Some(cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("前置元数据 JSON（可选）")
+                .default_value(&self.form_frontmatter)
+        }));
+    }
+
+    /// Keyboard handler for the modal overlay. Esc closes the form,
+    /// Enter submits when the form is visible and no in-form validation
+    /// error is currently blocking the action.
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.hide_form(cx),
+            "enter" => {
+                self.save(cx);
+            }
+            _ => {}
+        }
     }
 
     fn show_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -123,8 +167,10 @@ impl SkillView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
+        self.form_frontmatter.clear();
         self.form_content.clear();
         self.form_source = "workspace".into();
+        self.form_is_always = false;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
@@ -135,8 +181,10 @@ impl SkillView {
         self.form_identifier = item.identifier.clone();
         self.form_name = item.name.clone();
         self.form_description = item.description.clone();
+        self.form_frontmatter = item.frontmatter.unwrap_or_default();
         self.form_content = item.content.clone();
         self.form_source = item.source.clone();
+        self.form_is_always = item.is_always;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
@@ -145,10 +193,13 @@ impl SkillView {
         self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
+        self.form_frontmatter.clear();
+        self.form_is_always = false;
         self.error_message = None;
         self.identifier_input = None;
         self.name_input = None;
         self.description_input = None;
+        self.frontmatter_input = None;
         self.source_input = None;
         self.content_input = None;
         cx.notify();
@@ -163,6 +214,9 @@ impl SkillView {
         }
         if let Some(ref inp) = self.description_input {
             self.form_description = inp.read(cx).value().to_string();
+        }
+        if let Some(ref inp) = self.frontmatter_input {
+            self.form_frontmatter = inp.read(cx).value().to_string();
         }
         if let Some(ref inp) = self.source_input {
             self.form_source = inp.read(cx).value().to_string();
@@ -183,8 +237,17 @@ impl SkillView {
         let idf = self.form_identifier.clone();
         let name = self.form_name.clone();
         let desc = self.form_description.clone();
+        let frontmatter = {
+            let trimmed = self.form_frontmatter.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        };
         let content = self.form_content.clone();
         let src = self.form_source.clone();
+        let is_always = self.form_is_always;
 
         if let Some(eid) = self.editing_id {
             cx.spawn(async move |this, cx| {
@@ -194,10 +257,10 @@ impl SkillView {
                     idf,
                     name,
                     desc,
-                    None,
+                    frontmatter,
                     content,
                     src,
-                    false,
+                    is_always,
                     None,
                     None,
                 )
@@ -227,10 +290,10 @@ impl SkillView {
                     idf,
                     name,
                     desc,
-                    None,
+                    frontmatter,
                     content,
                     src,
-                    false,
+                    is_always,
                     None,
                     None,
                 )
@@ -394,7 +457,14 @@ impl Render for SkillView {
                             .text_size(px(14.0))
                             .child("暂无数据")
                     } else {
-                        let col_widths = [px(60.0), px(120.0), px(100.0), px(150.0), px(120.0)];
+                        let col_widths = [
+                            px(60.0),
+                            px(110.0),
+                            px(90.0),
+                            px(120.0),
+                            px(160.0),
+                            px(110.0),
+                        ];
                         list_container(style)
                             .child(
                                 list_header(style)
@@ -410,7 +480,11 @@ impl Render for SkillView {
                                         list_header_cell(Some(col_widths[3]), style).child("描述"),
                                     )
                                     .child(
-                                        list_header_cell(Some(col_widths[4]), style).child("操作"),
+                                        list_header_cell(Some(col_widths[4]), style)
+                                            .child("是否常驻"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[5]), style).child("操作"),
                                     ),
                             )
                             .children(self.items.iter().map(|item| {
@@ -438,7 +512,11 @@ impl Render for SkillView {
                                             .child(item.description.clone()),
                                     )
                                     .child(
-                                        list_actions(Some(col_widths[4]), style)
+                                        list_cell(Some(col_widths[4]), style)
+                                            .child(if item.is_always { "是" } else { "否" }),
+                                    )
+                                    .child(
+                                        list_actions(Some(col_widths[5]), style)
                                             .child(
                                                 action_button(
                                                     ("edit", id as u64),
@@ -550,112 +628,162 @@ impl Render for SkillView {
                             ),
                     ),
             )
-            .when(self.show_form, |this| {
+            .when(self.show_form, {
                 let identifier_input = self.identifier_input.clone().unwrap();
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
                 let source_input = self.source_input.clone().unwrap();
                 let content_input = self.content_input.clone().unwrap();
-                this.child(
-                    div()
-                        .absolute()
-                        .top(px(0.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        .bottom(px(0.0))
-                        .bg(theme.overlay)
-                        .opacity(0.3)
-                        .cursor(CursorStyle::PointingHand)
-                        .on_mouse_down(MouseButton::Left, {
-                            let t = cx.weak_entity();
-                            move |_, _, cx| {
-                                t.update(cx, |v, cx| v.hide_form(cx)).ok();
-                            }
-                        }),
-                )
-                .child(
-                    management_modal_panel(
-                        management_modal_layer(px(550.0)),
-                        theme.popover,
-                        theme.foreground,
-                        theme.border,
+                let frontmatter_input = self.frontmatter_input.clone().unwrap();
+                |root| {
+                    root.child(
+                        div()
+                            .absolute()
+                            .top(px(0.0))
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            .bottom(px(0.0))
+                            .track_focus(&self.modal_focus)
+                            .bg(theme.overlay)
+                            .opacity(0.3)
+                            .cursor(CursorStyle::PointingHand)
+                            .on_mouse_down(MouseButton::Left, {
+                                let t = cx.weak_entity();
+                                move |_, _, cx| {
+                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                }
+                            }),
                     )
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
                     .child(
-                        management_modal_scroll("skill-form-scroll", &self.form_scroll)
-                            .gap(px(12.0))
-                            .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(if self.editing_id.is_some() {
-                                        "编辑技能"
-                                    } else {
-                                        "添加技能"
-                                    }),
-                            )
-                            .child(form_field("Identifier *", identifier_input, theme))
-                            .child(form_field("名称 *", name_input, theme))
-                            .child(form_field("描述 *", description_input, theme))
-                            .child(form_field("Source", source_input, theme))
-                            .child(form_field("Content (Markdown) *", content_input, theme))
-                            .when_some(self.error_message.as_ref(), |this, err| {
-                                this.child(
+                        management_modal_panel(
+                            management_modal_layer(px(550.0)),
+                            theme.popover,
+                            theme.foreground,
+                            theme.border,
+                        )
+                        .track_focus(&self.form_focus)
+                        .debug_selector(|| SKILL_MODAL.to_owned())
+                        .id(SKILL_MODAL)
+                        .on_key_down(cx.listener(|v, event, window, cx| {
+                            v.on_key_down(event, window, cx);
+                        }))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            management_modal_scroll("skill-form-scroll", &self.form_scroll)
+                                .id(SKILL_FORM)
+                                .gap(px(12.0))
+                                .child(
                                     div()
-                                        .p(px(8.0))
-                                        .bg(theme.warning.opacity(0.15))
-                                        .rounded(px(4.0))
-                                        .text_size(px(12.0))
-                                        .text_color(theme.warning)
-                                        .child(err.clone()),
+                                        .text_size(px(18.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(if self.editing_id.is_some() {
+                                            "编辑技能"
+                                        } else {
+                                            "添加技能"
+                                        }),
                                 )
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.0))
-                                    .child(
-                                        action_button(
-                                            "cancel",
-                                            "取消",
-                                            ActionRole::Neutral,
-                                            ActionSize::Dialog,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
+                                .child(form_field("Identifier *", identifier_input, theme))
+                                .child(form_field("名称 *", name_input, theme))
+                                .child(form_field("描述 *", description_input, theme))
+                                .child(form_field("Source", source_input, theme))
+                                .child(form_field("Frontmatter", frontmatter_input, theme))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .child(div().text_size(px(13.0)).child("始终注入"))
+                                        .child(if self.form_is_always {
+                                            action_button(
+                                                "toggle-always",
+                                                "是",
+                                                ActionRole::Main,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| {
+                                                        v.form_is_always = false;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            })
+                                        } else {
+                                            action_button(
+                                                "toggle-always",
+                                                "否",
+                                                ActionRole::Neutral,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let t = cx.weak_entity();
+                                                move |_, _, cx| {
+                                                    t.update(cx, |v, cx| {
+                                                        v.form_is_always = true;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            })
+                                        }),
+                                )
+                                .child(form_field("Content (Markdown) *", content_input, theme))
+                                .when_some(self.error_message.as_ref(), |scroll, err| {
+                                    scroll.child(
+                                        div()
+                                            .p(px(8.0))
+                                            .bg(theme.warning.opacity(0.15))
+                                            .rounded(px(4.0))
+                                            .text_size(px(12.0))
+                                            .text_color(theme.warning)
+                                            .child(err.clone()),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .justify_end()
+                                        .gap(px(8.0))
+                                        .child(
+                                            action_button(
+                                                "cancel",
+                                                "取消",
+                                                ActionRole::Neutral,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.hide_form(cx)).ok();
                                                 }
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        action_button(
-                                            "save",
-                                            "保存",
-                                            ActionRole::Main,
-                                            ActionSize::Dialog,
-                                            style,
+                                            }),
                                         )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
+                                        .child(
+                                            action_button(
+                                                "save",
+                                                "保存",
+                                                ActionRole::Main,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.save(cx)).ok();
                                                 }
-                                            },
+                                            }),
                                         ),
-                                    ),
-                            ),
-                    ),
-                )
+                                ),
+                        ),
+                    )
+                }
             })
             .when(self.confirm_delete_id.is_some(), |this| {
                 let _id = self.confirm_delete_id.unwrap();

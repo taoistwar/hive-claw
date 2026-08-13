@@ -10,6 +10,7 @@ use std::str::FromStr;
 use clap::Parser;
 use rand::RngCore;
 use sqlx::mysql::MySqlConnectOptions;
+use hiveweb::db::sql_safety::audit_sql;
 
 const DEFAULT_ADMINS: usize = 100;
 const DEFAULT_LOGINS_PER_ADMIN: usize = 100;
@@ -144,7 +145,8 @@ async fn main() -> anyhow::Result<()> {
                     "(?, ?, ?, NOW() - INTERVAL FLOOR(RAND()*720) HOUR, '127.0.0.1', 1, NULL)",
                 );
             }
-            let mut query = sqlx::query(&sql);
+            let audited_sql = audit_sql(sql);
+            let mut query = sqlx::query(audited_sql);
             for _ in chunk {
                 query = query.bind(admin_id).bind(&phone).bind(&nickname);
             }

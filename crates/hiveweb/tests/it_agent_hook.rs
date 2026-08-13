@@ -536,6 +536,7 @@ async fn t017_workflow_hook_executes_on_after_agent_end() -> anyhow::Result<()> 
 #[tokio::test]
 async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
     use hiveweb::runtime::capability::CapabilityRegistry;
+    use hiveweb::runtime::execution_context::RuntimeExecutionContext;
     use hiveweb::runtime::hook::{HookContext, HookDeps, run_hooks};
     use hiveweb::runtime::invoker::Invoker;
     use hiveweb::runtime::llm::LlmRegistry;
@@ -568,6 +569,7 @@ async fn t054_hook_scheduling_overhead_benchmark() -> anyhow::Result<()> {
         invoker: Arc::new(Invoker::new(instance_pool)),
         ext_pool: None,
         redis: None,
+        execution_context: RuntimeExecutionContext::best_effort(None, None),
         agent_ctx,
     };
 
@@ -654,6 +656,7 @@ async fn t056_execution_history_endpoint_is_removed() -> anyhow::Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn t057_hook_execution_does_not_persist_history() -> anyhow::Result<()> {
     use hiveweb::runtime::capability::CapabilityRegistry;
+    use hiveweb::runtime::execution_context::RuntimeExecutionContext;
     use hiveweb::runtime::hook::{HookContext, HookDeps, run_hooks};
     use hiveweb::runtime::invoker::Invoker;
     use hiveweb::runtime::llm::LlmRegistry;
@@ -717,6 +720,7 @@ async fn t057_hook_execution_does_not_persist_history() -> anyhow::Result<()> {
         invoker: Arc::new(Invoker::new(InstancePool::new(PoolConfig::from_env()))),
         ext_pool: None,
         redis: None,
+        execution_context: RuntimeExecutionContext::best_effort(Some(request_id.clone()), Some(57)),
         agent_ctx,
     };
     let ctx = HookContext {

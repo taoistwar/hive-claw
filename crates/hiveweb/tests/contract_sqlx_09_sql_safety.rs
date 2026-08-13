@@ -244,7 +244,7 @@ fn optimistic_lock_identifiers_are_a_closed_exact_ten_table_enum() {
     assert_eq!(
         OptimisticLockTable::ALL
             .iter()
-            .map(OptimisticLockTable::as_str)
+            .map(|table| table.as_str())
             .collect::<Vec<_>>(),
         expected.iter().map(|(_, table)| *table).collect::<Vec<_>>(),
         "ALL must not omit or add an optimistic-lock table"

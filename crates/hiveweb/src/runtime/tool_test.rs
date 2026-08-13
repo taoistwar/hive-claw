@@ -8,8 +8,10 @@ use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use uuid::Uuid;
 
 use super::orchestrator::{OrchestratorDeps, build_tools_schema_simple, handle_workspace_tool};
+use crate::runtime::llm::LlmAdapterError;
 use crate::services::agent::{AgentContent, ToolRef};
 use crate::services::runtime_audit::{self, AuditRecord};
 use agent::context::{AgentContext, ContextConfig, UserInput};
@@ -40,6 +42,16 @@ pub struct TestToolResult {
     pub assistant_content: String,
     pub has_tool_calls: bool,
     pub tool_calls: Vec<TestToolCallRecord>,
+}
+
+#[derive(Debug)]
+pub enum ToolTestError {
+    ModelPresetUnknown(String),
+    Failed(String),
+}
+
+pub fn generate_tool_test_trace_id() -> String {
+    Uuid::new_v4().to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -106,8 +118,9 @@ pub async fn run_tool_test(
     deps: &OrchestratorDeps,
     tool_id: i64,
     req: TestToolRequest,
-) -> Result<TestToolResult, String> {
-    let logger = DebugLogger::new(req.trace_id.clone());
+) -> Result<TestToolResult, ToolTestError> {
+    let trace_id = req.trace_id.unwrap_or_else(generate_tool_test_trace_id);
+    let logger = DebugLogger::new(Some(trace_id));
     logger.log(&format!(
         "START tool_id={} message={}",
         tool_id, req.message
@@ -125,7 +138,7 @@ pub async fn run_tool_test(
     .bind(tool_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| format!("tool lookup: {e}"))?;
+        .map_err(|e| ToolTestError::Failed(format!("tool lookup: {e}")))?;
 
     let Some((
         tid,
@@ -142,7 +155,7 @@ pub async fn run_tool_test(
     )) = tool_row
     else {
         logger.log(&format!("FAIL: tool id={} not found", tool_id));
-        return Err(format!("tool id={tool_id} not found"));
+        return Err(ToolTestError::Failed(format!("tool id={tool_id} not found")));
     };
     logger.log(&format!(
         "STEP1 OK: tool found id={} identifier={} kind={}",
@@ -166,7 +179,7 @@ pub async fn run_tool_test(
     .bind(tool_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| format!("always tools: {e}"))?;
+        .map_err(|e| ToolTestError::Failed(format!("always tools: {e}")))?;
     logger.log(&format!(
         "STEP2 OK: loaded {} always_tools",
         always_tools.len()
@@ -222,7 +235,7 @@ pub async fn run_tool_test(
     let skills: Vec<(String,)> = sqlx::query_as("SELECT content FROM skills WHERE is_always = 1")
         .fetch_all(pool)
         .await
-        .map_err(|e| format!("always skills: {e}"))?;
+        .map_err(|e| ToolTestError::Failed(format!("always skills: {e}")))?;
     logger.log(&format!("STEP3 OK: loaded {} skills", skills.len()));
 
     let mut system_prompt = format!(
@@ -267,8 +280,11 @@ pub async fn run_tool_test(
     // 5. 构建 LLM request
     let (provider, model) = deps
         .llm
-        .build_primary(ctx.model_preset.as_deref())
-        .map_err(|e| format!("LLM provider: {e}"))?;
+        .build_chain(ctx.model_preset.as_deref())
+        .map_err(|e| match e {
+            LlmAdapterError::Unknown(name) => ToolTestError::ModelPresetUnknown(name),
+            _ => ToolTestError::Failed(format!("LLM provider: {e}")),
+        })?;
     logger.log(&format!("STEP5 OK: LLM provider built, model={}", model));
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
@@ -312,25 +328,26 @@ pub async fn run_tool_test(
     if resp.is_error() {
         let err_msg = resp.content.clone().unwrap_or_else(|| "unknown".into());
         logger.log(&format!("FAIL: LLM error: {}", err_msg));
-        runtime_audit::record(AuditRecord {
-            request_id: None,
-            session_id: None,
-            agent_id: None,
-            plugin_id: None,
-            function_id: None,
-            capability: None,
-            event_type: "llm_invoke",
-            outcome: "error",
-            elapsed_ms: Some(llm_elapsed_ms),
-            error_message: Some(&err_msg),
-            payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
-        });
-        return Err(format!("LLM error: {}", err_msg));
+        runtime_audit::record(
+            &deps.execution_context,
+            AuditRecord {
+                agent_id: None,
+                plugin_id: None,
+                function_id: None,
+                capability: None,
+                event_type: "llm_invoke",
+                outcome: "error",
+                elapsed_ms: Some(llm_elapsed_ms),
+                error_message: Some(&err_msg),
+                payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
+            },
+        );
+        return Err(ToolTestError::Failed(format!("LLM error: {}", err_msg)));
     }
 
-    runtime_audit::record(AuditRecord {
-        request_id: None,
-        session_id: None,
+    runtime_audit::record(
+        &deps.execution_context,
+        AuditRecord {
         agent_id: None,
         plugin_id: None,
         function_id: None,
@@ -340,7 +357,8 @@ pub async fn run_tool_test(
         elapsed_ms: Some(llm_elapsed_ms),
         error_message: None,
         payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
-    });
+        },
+    );
     logger.log(&format!(
         "STEP7 OK: LLM success, tool_calls_count={}",
         resp.tool_calls.len()

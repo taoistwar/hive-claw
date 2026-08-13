@@ -117,6 +117,16 @@ Background cron: `cargo run --bin audit-retention` (deploy as systemd unit /
 kubernetes cronjob). Each pass deletes rows where `occurred_at < NOW() -
 INTERVAL N DAY`.
 
+生产库与归档库应采用独立账号，并至少执行：
+
+```sql
+GRANT INSERT, SELECT ON hiveweb.runtime_audit_logs TO 'hiveweb_audit_writer'@'%';
+REVOKE UPDATE, DELETE ON hiveweb.runtime_audit_logs FROM 'hiveweb_audit_writer'@'%';
+GRANT DELETE ON hiveweb.runtime_audit_logs TO 'hiveweb_audit_retention'@'%';
+```
+
+`audit-retention` worker 应使用 `AUDIT_RETENTION_DATABASE_URL` 访问 `DELETE` 专用账号。
+
 现行 `chat_messages_user` 由父表 `chat_sessions_user` 级联删除；`chat-retention` 的具体保留期属于外部 Assistant API 运行配置，不继承已 superseded 的 admin Chat 所有权契约。
 
 ## 8. Environment variable surface (security-relevant subset)

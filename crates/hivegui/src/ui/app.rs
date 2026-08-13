@@ -9,8 +9,10 @@ use gpui_component::{
     theme::{self, Theme, ThemeRegistry},
 };
 
+use crate::agent::local_agent::LocalAgentRuntime;
 use crate::config::Config;
 use crate::datasource::Store;
+use crate::runtime::diagnostics::ExecutionEventCollector;
 use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
 use crate::ui::{
     ai_view::AiView, home::HomeView, sidebar_nav::SidebarNav, utility_view::UtilityView,
@@ -158,10 +160,11 @@ impl HiveGuiAppState {
     }
 
     /// Test-only installer that wires a minimal [`HiveGuiAppState`] into
-    /// the GPUI app context. Used by `tests/navigation.rs`.
+    /// the GPUI app context together with the globals used by the shell.
+    /// Used by `tests/navigation.rs`.
     pub fn install_for_test(cx: &mut App, initial: AppRoute) {
         let state = Self::for_test(initial);
-        cx.set_global(state);
+        install_app_globals(cx, state);
     }
 
     /// Test-only installer that wires a [`HiveGuiAppState`] with a
@@ -174,7 +177,7 @@ impl HiveGuiAppState {
             theme_name: "Default Light".into(),
             remote_backend_requests_observed: 0,
         };
-        cx.set_global(state);
+        install_app_globals(cx, state);
     }
 
     /// Test-only hook for the captured HTTP server path. Bumps the
@@ -228,6 +231,11 @@ impl AccessKitLabelRegistry {
 
 impl gpui::Global for AccessKitLabelRegistry {}
 
+fn install_app_globals(cx: &mut App, state: HiveGuiAppState) {
+    cx.set_global(state);
+    cx.set_global(AccessKitLabelRegistry::new());
+}
+
 pub fn run(config: Config) -> anyhow::Result<()> {
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     let cfg = Arc::new(config);
@@ -261,6 +269,9 @@ pub fn run(config: Config) -> anyhow::Result<()> {
                 .expect("foundation runtime composition"),
         )
     };
+    let local_agent_runtime =
+        Arc::new(LocalAgentRuntime::new(store.pool().clone()).expect("local agent runtime"));
+    let execution_event_collector = Arc::new(ExecutionEventCollector::new());
     let _ = foundation_runtime;
 
     app.run(move |cx: &mut App| {
@@ -275,13 +286,18 @@ pub fn run(config: Config) -> anyhow::Result<()> {
 
         let store = cx.new(|_| store);
         let llm_store = llm_store.clone();
-        cx.set_global(HiveGuiAppState {
-            config: cfg.clone(),
-            route: HiveGuiAppState::default_route(),
-            store: Some(store),
-            theme_name: "Default Light".into(),
-            remote_backend_requests_observed: 0,
-        });
+        let local_agent_runtime = local_agent_runtime.clone();
+        let execution_event_collector = execution_event_collector.clone();
+        install_app_globals(
+            cx,
+            HiveGuiAppState {
+                config: cfg.clone(),
+                route: HiveGuiAppState::default_route(),
+                store: Some(store),
+                theme_name: "Default Light".into(),
+                remote_backend_requests_observed: 0,
+            },
+        );
         let b = Bounds::centered(None, size(px(1200.0), px(700.0)), cx);
         cx.open_window(
             WindowOptions {
@@ -290,7 +306,14 @@ pub fn run(config: Config) -> anyhow::Result<()> {
                 ..Default::default()
             },
             move |window, cx| {
-                let inner = cx.new(|cx| RootView::new(cx, llm_store.clone()));
+                let inner = cx.new(|cx| {
+                    RootView::new(
+                        cx,
+                        llm_store.clone(),
+                        local_agent_runtime.clone(),
+                        execution_event_collector.clone(),
+                    )
+                });
                 cx.new(|cx| gpui_component::Root::new(inner, window, cx))
             },
         )
@@ -341,7 +364,12 @@ fn shell_theme_colors(theme: &Theme) -> ShellThemeColors {
 }
 
 impl RootView {
-    pub fn new(cx: &mut Context<Self>, llm_store: crate::datasource::llm_store::LlmStore) -> Self {
+    pub fn new(
+        cx: &mut Context<Self>,
+        llm_store: crate::datasource::llm_store::LlmStore,
+        local_agent_runtime: Arc<LocalAgentRuntime>,
+        execution_event_collector: Arc<ExecutionEventCollector>,
+    ) -> Self {
         let sidebar = cx.new(SidebarNav::new);
         let home = cx.new(HomeView::new);
         let store = cx
@@ -349,7 +377,15 @@ impl RootView {
             .store
             .clone()
             .expect("production root view requires a Store");
-        let ai = cx.new(|cx| AiView::new(cx, store.clone(), llm_store.clone()));
+        let ai = cx.new(|cx| {
+            AiView::new(
+                cx,
+                store.clone(),
+                llm_store.clone(),
+                local_agent_runtime,
+                execution_event_collector,
+            )
+        });
         let tools = cx.new(|cx| UtilityView::new(cx, store.clone(), llm_store.clone()));
         RootView {
             sidebar,

@@ -260,7 +260,7 @@ impl Render for DatasourceListView {
         let this_for_next = cx.weak_entity();
         let this_for_prev = cx.weak_entity();
         let store = self.store.clone();
-        let mut root = div()
+        let root = div()
             .id("datasource-view-root")
             .track_focus(&self.list_focus)
             .on_key_down(move |event, window, cx| {

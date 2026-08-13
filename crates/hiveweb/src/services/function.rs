@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::Function;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -261,7 +263,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
          {where_sql} ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
     );
 
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)> (count_sql);
     if let Some(k) = filter.kind {
         count_q = count_q.bind(k);
     }
@@ -315,7 +318,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         plugin_identifier: Option<String>,
     }
 
-    let mut list_q = sqlx::query_as::<_, Row>(&list_sql);
+    let list_sql = audit_sql(list_sql);
+    let mut list_q = sqlx::query_as::<_, Row>(list_sql);
     if let Some(k) = filter.kind {
         list_q = list_q.bind(k);
     }
@@ -424,7 +428,7 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Funct
         ));
     }
 
-    crate::services::optimistic_lock::check_and_bump(pool, "functions", id, meta.updated_at)
+    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Functions, id, meta.updated_at)
         .await?;
 
     if !is_builtin {

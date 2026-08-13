@@ -16,7 +16,9 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use std::collections::{HashMap, HashSet};
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::{NodeType, Workflow, WorkflowEdge, WorkflowNode};
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -275,7 +277,8 @@ pub async fn list(
 
     let count_sql = format!("SELECT COUNT(*) FROM workflows w {where_sql}");
 
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)> (count_sql);
     if let Some(ref pattern) = search_pattern {
         count_q = count_q
             .bind(pattern)
@@ -295,7 +298,8 @@ pub async fn list(
         "SELECT w.* FROM workflows w {where_sql} ORDER BY w.created_at DESC LIMIT ? OFFSET ?"
     );
 
-    let mut q = sqlx::query_as::<_, Workflow>(&list_sql);
+    let list_sql = audit_sql(list_sql);
+    let mut q = sqlx::query_as::<_, Workflow>(list_sql);
     if let Some(ref pattern) = search_pattern {
         q = q.bind(pattern).bind(pattern).bind(pattern).bind(pattern);
     }
@@ -322,7 +326,7 @@ pub async fn list(
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Workflow, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, "workflows", id, meta.updated_at)
+    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Workflows, id, meta.updated_at)
         .await?;
     sqlx::query(
         r#"UPDATE workflows SET
@@ -600,7 +604,7 @@ pub async fn put_graph(
         let sql = format!(
             "SELECT id, input_schema, output_schema, required_capabilities FROM functions WHERE id IN ({placeholders})"
         );
-        let mut q = sqlx::query_as::<_, (i64, Value, Value, Option<Value>)>(&sql);
+        let mut q = sqlx::query_as::<_, (i64, Value, Value, Option<Value>)>(audit_sql(sql));
         for fid in &function_ids {
             q = q.bind(fid);
         }

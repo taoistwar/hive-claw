@@ -1,17 +1,23 @@
 //! AI 管理视图 - 统一承载 AI、扩展和系统配置管理。
-use crate::datasource::Store;
-use crate::datasource::llm_store::LlmStore;
-use crate::ui::{
-    agent_view::AgentView, capability_view::CapabilityView, category_view::CategoryView,
-    function_view::FunctionView, global_config::GlobalConfigView, llm_config::LLMConfigView,
-    plugin_view::PluginView, settings_view::SettingsView, skill_view::SkillView, tag_view::TagView,
-    tool_view::ToolView, workflow_view::WorkflowView,
-};
+use std::sync::Arc;
+
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::tab::{Tab, TabBar};
 
-fn ai_management_tab_labels() -> [&'static str; 12] {
+use crate::agent::local_agent::LocalAgentRuntime;
+use crate::datasource::Store;
+use crate::datasource::llm_store::LlmStore;
+use crate::runtime::diagnostics::ExecutionEventCollector;
+use crate::ui::{
+    agent_view::AgentView, capability_view::CapabilityView, category_view::CategoryView,
+    conversation_view::ConversationView, function_view::FunctionView,
+    global_config::GlobalConfigView, llm_config::LLMConfigView, plugin_view::PluginView,
+    settings_view::SettingsView, skill_view::SkillView, tag_view::TagView, tool_view::ToolView,
+    workflow_view::WorkflowView,
+};
+
+fn ai_management_tab_labels() -> [&'static str; 13] {
     [
         "Agent",
         "工具",
@@ -23,6 +29,7 @@ fn ai_management_tab_labels() -> [&'static str; 12] {
         "Capabilities",
         "分类",
         "标签",
+        "会话",
         "数据管理",
         "全局配置",
     ]
@@ -40,12 +47,19 @@ pub struct AiView {
     capability_view: Entity<CapabilityView>,
     category_view: Entity<CategoryView>,
     tag_view: Entity<TagView>,
+    conversation_view: Entity<ConversationView>,
     settings_view: Entity<SettingsView>,
     global_config: Entity<GlobalConfigView>,
 }
 
 impl AiView {
-    pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
+    pub fn new(
+        cx: &mut Context<Self>,
+        store: Entity<Store>,
+        llm_store: LlmStore,
+        local_agent_runtime: Arc<LocalAgentRuntime>,
+        execution_event_collector: Arc<ExecutionEventCollector>,
+    ) -> Self {
         let agent_view = cx.new(|cx| AgentView::new(store.clone(), cx));
         let tool_view = cx.new(|cx| ToolView::new(store.clone(), cx));
         let skill_view = cx.new(|cx| SkillView::new(store.clone(), cx));
@@ -60,8 +74,15 @@ impl AiView {
         let capability_view = cx.new(|cx| CapabilityView::new(store.clone(), cx));
         let category_view = cx.new(|cx| CategoryView::new(store.clone(), cx));
         let tag_view = cx.new(|cx| TagView::new(store.clone(), cx));
+        let conversation_view = cx.new(|cx| {
+            ConversationView::new(
+                cx,
+                Some(local_agent_runtime.as_ref().clone()),
+                execution_event_collector.clone(),
+            )
+        });
         let settings_view = cx.new(|cx| {
-            let mut view = SettingsView::new(cx);
+            let mut view = SettingsView::new(cx, Some(execution_event_collector.clone()));
             view.set_store(store.read(cx).clone());
             view
         });
@@ -83,6 +104,7 @@ impl AiView {
             capability_view,
             category_view,
             tag_view,
+            conversation_view,
             settings_view,
             global_config,
         }
@@ -125,8 +147,9 @@ impl Render for AiView {
                         7 => self.capability_view.clone().into_any_element(),
                         8 => self.category_view.clone().into_any_element(),
                         9 => self.tag_view.clone().into_any_element(),
-                        10 => self.settings_view.clone().into_any_element(),
-                        11 => self.global_config.clone().into_any_element(),
+                        10 => self.conversation_view.clone().into_any_element(),
+                        11 => self.settings_view.clone().into_any_element(),
+                        12 => self.global_config.clone().into_any_element(),
                         _ => div().into_any_element(),
                     }),
             )
@@ -152,6 +175,7 @@ mod tests {
                 "Capabilities",
                 "分类",
                 "标签",
+                "会话",
                 "数据管理",
                 "全局配置",
             ]

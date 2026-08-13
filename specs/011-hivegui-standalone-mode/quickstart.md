@@ -22,6 +22,50 @@ rustup target add wasm32-unknown-unknown
 cargo check -p hivegui --lib
 ```
 
+### 复制执行清单（可直接复现）
+
+```bash
+# 进入项目根目录
+cd /home/developer/agent/gpui-claw/hive-claw-worktree
+
+# 本地快速启动前置
+git status --short
+git diff --check
+cargo fmt --all -- --check
+rustup target add wasm32-unknown-unknown
+
+# 先验 red/依赖门禁
+cargo test -p hivegui --test logging_contract -- --nocapture
+cargo test -p hive-runtime-core --test capability_contract -- --nocapture
+cargo test -p hive-runtime-core --test persisted_tool_contract -- --nocapture
+cargo test -p hivegui --test sqlite_health_contract -- --nocapture
+cargo test -p hivegui --test plugin_artifact_schema_contract -- --nocapture
+
+# 快速核验：独立运行与关键契约
+cargo test -p hivegui --test hiveweb_independence -- --nocapture
+cargo test -p hivegui --test function_test_execution -- --nocapture
+cargo test -p hivegui --test workflow_execution -- --nocapture
+cargo test -p hivegui --test plugin_compatibility -- --nocapture
+
+# 可复现 fixture
+cargo test -p hivegui --test migration_compatibility -- --nocapture
+cargo test -p hivegui --test backup_restore -- --nocapture
+
+# 本地 SQLx 离线元数据与安全扫描
+SQLX_OFFLINE=true cargo sqlx prepare --workspace --check
+cargo deny check advisories
+
+# 完整验收
+cargo test -p hive-runtime-core
+cargo test -p hivegui --tests
+
+# 启动独立 GUI（确认主流程）
+hivegui_test_root="$(mktemp -d)"
+XDG_DATA_HOME="$hivegui_test_root/data" \
+HIVEGUI_LOG_DIR="$hivegui_test_root/logs" \
+cargo run -p hivegui
+```
+
 ## 2. Protect the workspace
 
 当前分支可能包含未提交 HiveGUI 修改。开始每个 TDD 批次前先检查范围：
@@ -240,7 +284,7 @@ cargo test -p hivegui --test sqlite_health_contract -- --nocapture
 cargo test -p hivegui --test ci_security_contract -- --nocapture
 ```
 
-预期：每个含过滤或关联条件的生产查询的 EXPLAIN 计划都命中预期索引并覆盖过滤/关联列，非小型表没有未经批准的扫描；小型固定表/metadata 例外完整记录表大小、理由、审批者、到期日和复核结论。`hivegui-nfkc-casefold-v1` 必须逐标量使用官方 Unicode 17.0.0 `NFKC_CF` 映射并以 Unicode 17.0.0 NFC 收口；contract 同时验证 `unicode-normalization` 的 `UNICODE_VERSION=(17,0,0)`、官方源文件/生成表校验值与 golden fixture，原始非空 search 规范化为空返回 `empty_after_normalization`，1/2/3+ 字符分别命中 short-gram/FTS 索引且 tokenizer/ID 不可用时 fail-closed。Category、Agent 资源、Workflow 整图及会话消息/执行批量加载的查询次数不随数据量线性增长。SQLite 动态值只 bind，MySQL 值使用 prepared bind，数据库/表/列名只由精确 metadata allowlist 后的 `MysqlIdentifier` 序列化。v4 关系表、公开 DTO/Store/UI 只包含规格白名单，不出现 Tag 任意关系入口。公开 Store/导入边界覆盖三种 Function.kind、四种 `*_node`、点号 Builtin 负例、DataSource、GlobalConfig、LlmProvider、LlmPreset、分页/搜索和 Plugin 数值限制，拒绝 NUL/控制字符并保证零修改；分页/搜索错误的稳定 reason 精确为 `page=0 → out_of_range`、`page_size!=20 → fixed_value_required`、`search>255 → too_long`、`NUL/控制字符 → control_character` 和 `非空规范化为空 → empty_after_normalization`；重复 identifier 以及 Category children、Provider→Model、Plugin→Function、Function→Workflow/Tool、默认 Agent、Preset→Agent 冲突均返回精确安全 envelope 且零修改。LlmProvider 持久化只使用 `category/base_url/token_encrypted/token_env`，旧字段仅在迁移 fixture 中出现；设备密钥异常不会被静默替换；第二实例被拒绝；临时存储错误严格按1s/2s/4s重试；v1 日志经可注入时钟验证每条记录实际不超过 7×24 小时且总量不超过 100,000,000 bytes，`cause_summary` 中央脱敏且同一内部错误只在处理边界记录一次；CI 中固定版本 secret/dependency/SQLx 检查均为阻断步骤。
+预期：每个含过滤或关联条件的生产查询的 EXPLAIN 计划都命中预期索引并覆盖过滤/关联列，非小型表没有未经批准的扫描；小型固定表/metadata 例外完整记录表大小、理由、审批者、到期日和复核条件总结。`hivegui-nfkc-casefold-v1` 必须逐标量使用官方 Unicode 17.0.0 `NFKC_CF` 映射并以 Unicode 17.0.0 NFC 收口；contract 同时验证 `unicode-normalization` 的 `UNICODE_VERSION=(17,0,0)`、官方源文件/生成表校验值与 golden fixture，原始非空 search 规范化为空返回 `empty_after_normalization`，1/2/3+ 字符分别命中 short-gram/FTS 索引且 tokenizer/ID 不可用时 fail-closed。Category、Agent 资源、Workflow 整图及会话消息/执行批量加载的查询次数不随数据量线性增长。SQLite 动态值只 bind，MySQL 值使用 prepared bind，数据库/表/列名只由精确 metadata allowlist 后的 `MysqlIdentifier` 序列化。v4 关系表、公开 DTO/Store/UI 只包含规格白名单，不出现 Tag 任意关系入口。公开 Store/导入边界覆盖三种 Function.kind、四种 `*_node`、点号 Builtin 负例、DataSource、GlobalConfig、LlmProvider、LlmPreset、分页/搜索和 Plugin 数值限制，拒绝 NUL/控制字符并保证零修改；分页/搜索错误的稳定 reason 精确为 `page=0 → out_of_range`、`page_size!=20 → fixed_value_required`、`search>255 → too_long`、`NUL/控制字符 → control_character` 和 `非空规范化为空 → empty_after_normalization`；重复 identifier 以及 Category children、Provider→Model、Plugin→Function、Function→Workflow/Tool、默认 Agent、Preset→Agent 冲突均返回精确安全 envelope 且零修改。LlmProvider 持久化只使用 `category/base_url/token_encrypted/token_env`，旧字段仅在迁移 fixture 中出现；设备密钥异常不会被静默替换；第二实例被拒绝；临时存储错误严格按1s/2s/4s重试；v1 日志经可注入时钟验证每条记录实际不超过 7×24 小时且总量不超过 100,000,000 bytes，`cause_summary` 中央脱敏且同一内部错误只在处理边界记录一次；CI 中固定版本 secret/dependency/SQLx 检查均为阻断步骤。
 
 固定性能数据集还必须验证：DataSource/LLM/Tag/Category/Capability/Plugin/Function/Workflow/Tool/Skill/Agent CRUD p95≤1s、连接测试5秒超时、搜索/翻页 p95≤500ms，以及100+ Category 从加载到可见 p95≤200ms。每项记录版本化基线与环境指纹并比较 p50/p95/p99；任何无明确签字、记录理由、影响范围和到期复核日期的 >10% 回归都阻断。
 

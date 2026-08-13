@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::api::AppState;
+use crate::db::sql_safety::audit_sql;
 use crate::models::User;
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
@@ -120,7 +121,7 @@ async fn list_users(
     );
 
     let total: (i64,) = {
-        let mut qc = sqlx::query_as(&count_sql);
+        let mut qc = sqlx::query_as(audit_sql(count_sql.clone()));
         if let Some(id) = q.id {
             qc = qc.bind(id);
         }
@@ -149,7 +150,7 @@ async fn list_users(
     };
 
     let users: Vec<User> = {
-        let mut qr = sqlx::query_as(&list_sql);
+        let mut qr = sqlx::query_as(audit_sql(list_sql.clone()));
         if let Some(id) = q.id {
             qr = qr.bind(id);
         }

@@ -112,6 +112,29 @@ impl TurnContent {
         self
     }
 
+    /// Add explicit and `is_always` skill descriptors in order.
+    ///
+    /// Explicit skills come first, then `always` skills. Id conflicts
+    /// deduplicate by `identifier`; the first occurrence wins so list
+    /// order is deterministic and stable.
+    pub fn with_skills(
+        mut self,
+        explicit_skills: impl IntoIterator<Item = SkillDescriptor>,
+        always_skills: impl IntoIterator<Item = SkillDescriptor>,
+    ) -> Self {
+        for skill in explicit_skills {
+            if !self.skills.iter().any(|s| s.identifier == skill.identifier) {
+                self.skills.push(skill);
+            }
+        }
+        for skill in always_skills {
+            if !self.skills.iter().any(|s| s.identifier == skill.identifier) {
+                self.skills.push(skill);
+            }
+        }
+        self
+    }
+
     /// Add a capability descriptor.
     pub fn with_capability(mut self, capability: CapabilityDescriptor) -> Self {
         if !self.capabilities.iter().any(|c| c.name == capability.name) {

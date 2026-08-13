@@ -1,15 +1,15 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-specs/004-agent-runtime/plan.md
+specs/011-hivegui-standalone-mode/plan.md
 
 Supporting design artifacts for the active feature:
-- specs/004-agent-runtime/spec.md
-- specs/004-agent-runtime/research.md
-- specs/004-agent-runtime/data-model.md
-- specs/004-agent-runtime/contracts/api.md
-- specs/004-agent-runtime/contracts/host-functions.md
-- specs/004-agent-runtime/quickstart.md
+- specs/011-hivegui-standalone-mode/spec.md
+- specs/011-hivegui-standalone-mode/research.md
+- specs/011-hivegui-standalone-mode/data-model.md
+- specs/011-hivegui-standalone-mode/contracts/api.md
+- specs/011-hivegui-standalone-mode/contracts/host-functions.md
+- specs/011-hivegui-standalone-mode/quickstart.md
 
 Constitution (always authoritative; cite, do not contradict):
 .specify/memory/constitution.md (v1.4.0)

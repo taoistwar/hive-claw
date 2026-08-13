@@ -471,6 +471,38 @@ impl TableViewer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use gpui::{SharedString, TestAppContext, VisualTestContext, px, size};
+
+    use super::{OpenTable, TableViewer};
+
+    #[gpui::test]
+    fn query_errors_are_visible_instead_of_leaving_an_empty_tab(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let window = cx.open_window(size(px(720.0), px(480.0)), |_, cx| {
+            let mut viewer = TableViewer::new(cx);
+            let mut table = OpenTable::new("AgentRuns".to_owned(), "FixtureDb".to_owned());
+            table.error = Some(SharedString::from(
+                "加载列失败: mysql transport error: fixture",
+            ));
+            viewer.open_tables.push(table);
+            viewer
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            visual.debug_bounds("TABLE_VIEWER_QUERY_ERROR").is_some(),
+            "a failed Columns/DDL/Data query must render an actionable error instead of a blank tab"
+        );
+    }
+}
+
 impl OpenTable {
     fn load_columns_async(
         &mut self,
@@ -797,6 +829,22 @@ impl Render for TableViewer {
         let active_tab = t.active_tab.clone();
 
         col = col.child(self.render_sub_tabs(&active_tab, this.clone(), palette));
+
+        if let Some(error) = t.error.clone() {
+            col = col.child(
+                div()
+                    .debug_selector(|| "TABLE_VIEWER_QUERY_ERROR".to_owned())
+                    .mx(px(16.0))
+                    .mt(px(8.0))
+                    .p(px(10.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(palette.danger)
+                    .text_size(px(12.0))
+                    .text_color(palette.danger)
+                    .child(error),
+            );
+        }
 
         if t.loading {
             col = col.child(

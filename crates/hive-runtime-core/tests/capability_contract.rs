@@ -192,25 +192,56 @@ fn persisted_tool_roundtrip_is_byte_stable() {
 
 #[test]
 fn hive_runtime_core_has_no_product_storage_or_transport_dependencies() {
-    // The test file lives in `crates/hive-runtime-core/tests/` and the
-    // only allowed dependencies are: `hive_runtime_core` itself, std,
-    // and pure-algorithm / serialisation / time crates. No product
-    // Store, no SQLx, no HTTP, no HiveWeb.
-    //
-    // We enforce this at compile time by failing if any forbidden crate
-    // is reachable from this integration test. The simplest, robust
-    // check is to enumerate the direct dependencies of the test target
-    // via a list of allowed crate names; any foreign name in scope
-    // triggers a build error elsewhere. Here we record the contract
-    // for the human reviewer and assert the test still links.
-    let allowed: &[&str] = &["hive_runtime_core", "serde", "serde_json", "thiserror"];
-    for name in allowed {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let body = std::fs::read_to_string(&path).expect("read own manifest");
-        let re = format!("name = \"{name}\"");
-        assert!(
-            body.contains(&re),
-            "hive-runtime-core must not depend on `{name}`"
-        );
+    // The production dependency graph is intentionally strict so this
+    // shared contract crate can be used by both HiveGUI and HiveWeb without
+    // pulling in transport/store-specific dependencies.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let body = std::fs::read_to_string(&manifest).expect("read own manifest");
+
+    let production_dependencies = dependency_names_in_section(&body, "dependencies");
+    let dev_dependencies = dependency_names_in_section(&body, "dev-dependencies");
+
+    let expected_production = ["serde", "serde_json", "thiserror"];
+    let expected_dev = ["serde", "serde_json"];
+
+    let expected_production: BTreeSet<_> = expected_production
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let expected_dev: BTreeSet<_> = expected_dev.into_iter().map(str::to_owned).collect();
+
+    assert_eq!(
+        production_dependencies, expected_production,
+        "hive-runtime-core production deps must stay storage/transport independent"
+    );
+    assert_eq!(
+        dev_dependencies, expected_dev,
+        "hive-runtime-core dev deps must remain test-only pure schema dependencies"
+    );
+}
+
+fn dependency_names_in_section(manifest_body: &str, section: &str) -> BTreeSet<String> {
+    let mut in_section = false;
+    let mut result = BTreeSet::new();
+    let header = format!("[{section}]");
+    for line in manifest_body.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line == header;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _value)) = line.split_once('=') {
+            let name = name.trim();
+            if !name.is_empty() {
+                result.insert(name.to_string());
+            }
+        }
     }
+    result
 }

@@ -13,9 +13,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::Plugin;
 use crate::runtime::{registered_imports, scan_wasm_imports};
 use crate::storage::s3;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 const WASM_MAGIC: &[u8; 4] = b"\0asm";
@@ -342,14 +344,16 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<PluginList, Ap
         }};
     }
 
-    let count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     let total: i64 = bind_filter_params!(count_q, &filter)
         .fetch_one(pool)
         .await
         .map(|(c,)| c)
         .map_err(|e| AppError::Internal(format!("plugin count: {e}")))?;
 
-    let list_q = sqlx::query_as::<_, Plugin>(&list_sql);
+    let list_sql = audit_sql(list_sql);
+    let list_q = sqlx::query_as::<_, Plugin>(list_sql);
     let rows: Vec<Plugin> = bind_filter_params!(list_q, &filter)
         .bind(filter.limit)
         .bind(filter.offset)
@@ -385,7 +389,7 @@ async fn fetch_tags(pool: &MySqlPool, plugin_id: i64) -> Result<Vec<TagSummary>,
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Plugin, AppError> {
     // 1. 乐观锁
-    crate::services::optimistic_lock::check_and_bump(pool, "plugins", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Plugins, id, meta.updated_at).await?;
 
     // 2. 字段更新（部分字段）
     sqlx::query(

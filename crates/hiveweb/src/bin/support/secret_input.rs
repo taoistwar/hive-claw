@@ -2,6 +2,11 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 /// Opens and validates a private input file using the opened descriptor.
 ///
 /// On Unix, `O_NOFOLLOW` closes the symlink race before the file is opened.
@@ -9,11 +14,9 @@ use std::path::Path;
 /// the open cannot redirect the read to a different inode.
 #[cfg(unix)]
 fn open_private_file(path: &Path, input_name: &str) -> anyhow::Result<File> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-
     let file = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(|_| anyhow::anyhow!("failed to open private {input_name} file"))?;
     let metadata = file
@@ -25,7 +28,7 @@ fn open_private_file(path: &Path, input_name: &str) -> anyhow::Result<File> {
     );
     anyhow::ensure!(
         metadata.uid() == unsafe { libc::geteuid() },
-        "private {input_name} file must be owned by the current user"
+        "private {input_name} file must be owned by current uid"
     );
     anyhow::ensure!(
         metadata.permissions().mode() & 0o077 == 0,

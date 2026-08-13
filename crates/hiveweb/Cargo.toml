@@ -39,6 +39,7 @@ jsonwebtoken = { workspace = true }
 bcrypt = { workspace = true }
 md5 = "0.7"
 rand = "0.8"
+libc = "0.2"
 
 # Object storage (S3 compatible)
 aws-sdk-s3 = { workspace = true }
@@ -90,6 +91,7 @@ tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 mime = "0.3"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+wat = "1"
 
 [[bench]]
 name = "host_call"
@@ -130,10 +132,12 @@ path = "src/bin/create_super_admin.rs"
 [[bin]]
 name = "seed"
 path = "src/bin/seed.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "seed-bench"
 path = "src/bin/seed_bench.rs"
+required-features = ["bench-tools"]
 
 [[bin]]
 name = "chat-retention"
@@ -142,6 +146,9 @@ path = "src/bin/chat_retention.rs"
 [[bin]]
 name = "api-test"
 path = "src/bin/api_test.rs"
+required-features = ["dev-tools"]
 
 [features]
 standalone = []
+dev-tools = []
+bench-tools = []

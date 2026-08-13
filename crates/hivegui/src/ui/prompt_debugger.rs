@@ -1,7 +1,7 @@
 //! LLM 提示词调试工具 — 三栏布局：LLM 设置 / 消息编辑 / 结果展示。
 
 use crate::datasource::entity_store::Tool as DbTool;
-use crate::datasource::llm_store::{LlmModel, LlmProvider, LlmStore};
+use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
 use gpui::*;
@@ -31,6 +31,48 @@ impl gpui_component::searchable_list::SearchableListItem for ModelSelectItem {
     fn value(&self) -> &Self::Value {
         &self.id
     }
+}
+
+/// Preset 选择器条目
+#[derive(Debug, Clone)]
+struct PresetSelectItem {
+    id: i64,
+    label: String,
+}
+
+impl gpui_component::searchable_list::SearchableListItem for PresetSelectItem {
+    type Value = i64;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.label.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+}
+
+fn models_for_preset(models: &[LlmModel], preset_id: Option<i64>) -> Vec<&LlmModel> {
+    let Some(preset_id) = preset_id else {
+        return Vec::new();
+    };
+
+    models
+        .iter()
+        .filter(|model| model.preset_id == Some(preset_id))
+        .collect()
+}
+
+fn valid_model_selection(
+    models: &[LlmModel],
+    preset_id: Option<i64>,
+    selected_model_id: Option<i64>,
+) -> Option<i64> {
+    selected_model_id.filter(|selected_model_id| {
+        models_for_preset(models, preset_id)
+            .iter()
+            .any(|model| model.id == *selected_model_id)
+    })
 }
 
 /// 消息角色
@@ -118,21 +160,17 @@ enum RightPanelTab {
     History,
 }
 
-/// 右键菜单项
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContextMenuItem {
-    View,
-    Apply,
-}
-
 pub struct PromptDebugger {
     store: Entity<Store>,
     llm_store: LlmStore,
     crypto: Crypto,
     // 左侧：LLM 设置
+    presets: Vec<LlmPreset>,
     models: Vec<LlmModel>,
     providers: Vec<LlmProvider>,
+    selected_preset_id: Option<i64>,
     selected_model_id: Option<i64>,
+    preset_select_state: Option<Entity<SelectState<SearchableVec<PresetSelectItem>>>>,
     model_select_state: Option<Entity<SelectState<SearchableVec<ModelSelectItem>>>>,
     temperature: f64,
     max_tokens: u32,
@@ -179,8 +217,8 @@ pub struct PromptDebugger {
     selected_record_ids: HashSet<u64>,
     comparing_records: Vec<ExecutionRecord>,
     history_scroll: ScrollHandle,
-    // 右键菜单
-    context_menu: Option<(u64, gpui::Point<Pixels>)>, // (record_id, position)
+    // 右键菜单（记录 ID + 窗口坐标）
+    context_menu: Option<(u64, Point<Pixels>)>,
     // 查看/对比弹出窗口
     show_view_modal: bool,
     view_records: Vec<ExecutionRecord>,
@@ -190,6 +228,13 @@ pub struct PromptDebugger {
 
 impl PromptDebugger {
     pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
+        let mut this = Self::new_unloaded(cx, store, llm_store);
+        this.load_data(cx);
+        this.load_history();
+        this
+    }
+
+    fn new_unloaded(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
         let crypto = llm_store.crypto().clone();
         let style = ManagementStyle::from_theme(cx.theme());
         let temp_input = None;
@@ -198,13 +243,16 @@ impl PromptDebugger {
         let presence_penalty_input = None;
         let frequency_penalty_input = None;
         let thinking_budget_input = None;
-        let mut this = Self {
+        Self {
             store,
             llm_store,
             crypto,
+            presets: vec![],
             models: vec![],
             providers: vec![],
+            selected_preset_id: None,
             selected_model_id: None,
+            preset_select_state: None,
             model_select_state: None,
             temperature: 0.7,
             max_tokens: 2048,
@@ -257,28 +305,38 @@ impl PromptDebugger {
             view_records: vec![],
             view_scroll: ScrollHandle::default(),
             show_only_diff: false,
-        };
-        this.load_data(cx);
-        this.load_history();
-        this
+        }
     }
 
     fn load_data(&mut self, cx: &mut Context<Self>) {
         let llm_store = self.llm_store.clone();
         let store = self.store.read(cx).clone();
         cx.spawn(async move |this, cx| {
+            let presets = llm_store.list_presets().await.unwrap_or_default();
             let models = llm_store.list_models().await.unwrap_or_default();
             let providers = llm_store.list_providers().await.unwrap_or_default();
             let available_tools = DbTool::list(store.pool(), None, 100, 0)
                 .await
                 .unwrap_or_default();
             _ = this.update(cx, |this, cx| {
+                this.presets = presets;
                 this.models = models;
                 this.providers = providers;
                 this.available_tools = available_tools;
-                if this.selected_model_id.is_none() {
-                    this.selected_model_id = this.models.first().map(|m| m.id);
+                if !this
+                    .selected_preset_id
+                    .is_some_and(|id| this.presets.iter().any(|preset| preset.id == id))
+                {
+                    this.selected_preset_id = None;
                 }
+                this.selected_model_id = valid_model_selection(
+                    &this.models,
+                    this.selected_preset_id,
+                    this.selected_model_id,
+                );
+                // 首帧可能已为尚未加载的数据创建了空 SelectState；数据到达后重建。
+                this.preset_select_state = None;
+                this.model_select_state = None;
                 this.loaded = true;
                 this.style = ManagementStyle::from_theme(cx.theme());
                 cx.notify();
@@ -287,13 +345,46 @@ impl PromptDebugger {
         .detach();
     }
 
+    /// 懒初始化 Preset 下拉列表（需要 &mut Window）
+    fn ensure_preset_select_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preset_select_state.is_some() {
+            return;
+        }
+
+        let items: SearchableVec<PresetSelectItem> = SearchableVec::new(
+            self.presets
+                .iter()
+                .map(|preset| PresetSelectItem {
+                    id: preset.id,
+                    label: if preset.is_default != 0 {
+                        format!("{}（默认）", preset.name)
+                    } else {
+                        preset.name.clone()
+                    },
+                })
+                .collect::<Vec<_>>(),
+        );
+        let initial_index = self
+            .selected_preset_id
+            .and_then(|id| self.presets.iter().position(|preset| preset.id == id))
+            .map(|index| gpui_component::IndexPath::default().row(index));
+        let select_state =
+            cx.new(|cx| SelectState::new(items, initial_index, window, cx).searchable(true));
+
+        cx.subscribe_in(&select_state, window, Self::on_preset_select)
+            .detach();
+
+        self.preset_select_state = Some(select_state);
+    }
+
     /// 懒初始化模型下拉列表（需要 &mut Window）
     fn ensure_model_select_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.model_select_state.is_some() {
             return;
         }
+        let models = models_for_preset(&self.models, self.selected_preset_id);
         let items: SearchableVec<ModelSelectItem> = SearchableVec::new(
-            self.models
+            models
                 .iter()
                 .map(|m| {
                     let provider_label = m
@@ -312,7 +403,7 @@ impl PromptDebugger {
         );
         let initial_index = self
             .selected_model_id
-            .and_then(|sid| self.models.iter().position(|m| m.id == sid))
+            .and_then(|sid| models.iter().position(|m| m.id == sid))
             .map(|ix| gpui_component::IndexPath::default().row(ix));
         let select_state =
             cx.new(|cx| SelectState::new(items, initial_index, window, cx).searchable(true));
@@ -324,6 +415,25 @@ impl PromptDebugger {
         self.model_select_state = Some(select_state);
     }
 
+    /// Preset 选择事件处理。切换 Preset 时清除旧模型，避免跨 Preset 使用模型。
+    fn on_preset_select(
+        &mut self,
+        _: &Entity<SelectState<SearchableVec<PresetSelectItem>>>,
+        event: &gpui_component::select::SelectEvent<SearchableVec<PresetSelectItem>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gpui_component::select::SelectEvent::Confirm(preset_id) = event;
+        let preset_id =
+            (*preset_id).filter(|id| self.presets.iter().any(|preset| preset.id == *id));
+        if self.selected_preset_id != preset_id {
+            self.selected_preset_id = preset_id;
+            self.selected_model_id = None;
+            self.model_select_state = None;
+        }
+        cx.notify();
+    }
+
     /// 模型选择事件处理
     fn on_model_select(
         &mut self,
@@ -332,10 +442,10 @@ impl PromptDebugger {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let gpui_component::select::SelectEvent::Confirm(Some(model_id)) = event {
-            self.selected_model_id = Some(*model_id);
-            cx.notify();
-        }
+        let gpui_component::select::SelectEvent::Confirm(model_id) = event;
+        self.selected_model_id =
+            valid_model_selection(&self.models, self.selected_preset_id, *model_id);
+        cx.notify();
     }
 
     fn add_message(&mut self, role: MessageRole) {
@@ -632,6 +742,7 @@ impl PromptDebugger {
         self.execution_history.clear();
         self.selected_record_ids.clear();
         self.comparing_records.clear();
+        self.context_menu = None;
         self.save_history();
     }
 
@@ -670,12 +781,10 @@ impl PromptDebugger {
         self.show_only_diff = !self.show_only_diff;
     }
 
-    /// 显示右键菜单
-    fn show_context_menu(&mut self, record_id: u64, position: gpui::Point<Pixels>) {
+    fn show_context_menu(&mut self, record_id: u64, position: Point<Pixels>) {
         self.context_menu = Some((record_id, position));
     }
 
-    /// 隐藏右键菜单
     fn hide_context_menu(&mut self) {
         self.context_menu = None;
     }
@@ -724,15 +833,41 @@ impl PromptDebugger {
 // UI 渲染组件
 // ──────────────────────────────────────────────
 
-/// 模型选择器（Select 下拉列表）
-fn model_selector(
-    select_state: &Entity<SelectState<SearchableVec<ModelSelectItem>>>,
+/// Preset 选择器（Select 下拉列表）
+fn preset_selector(
+    select_state: &Entity<SelectState<SearchableVec<PresetSelectItem>>>,
     style: &ManagementStyle,
 ) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
         .gap(px(4.0))
+        .debug_selector(|| "PROMPT_DEBUGGER_PRESET_SELECTOR".to_owned())
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(style.list.muted_foreground)
+                .child("Preset"),
+        )
+        .child(
+            div()
+                .w_full()
+                .debug_selector(|| "PROMPT_DEBUGGER_PRESET_SELECT_TRIGGER".to_owned())
+                .child(Select::new(select_state).placeholder("请选择 Preset")),
+        )
+}
+
+/// 模型选择器（Select 下拉列表）
+fn model_selector(
+    select_state: &Entity<SelectState<SearchableVec<ModelSelectItem>>>,
+    preset_selected: bool,
+    style: &ManagementStyle,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .debug_selector(|| "PROMPT_DEBUGGER_MODEL_SELECTOR".to_owned())
         .child(
             div()
                 .text_size(px(12.0))
@@ -742,7 +877,16 @@ fn model_selector(
         .child(
             div()
                 .w_full()
-                .child(Select::new(select_state).placeholder("请选择模型")),
+                .debug_selector(|| "PROMPT_DEBUGGER_MODEL_SELECT_TRIGGER".to_owned())
+                .child(
+                    Select::new(select_state)
+                        .placeholder(if preset_selected {
+                            "请选择模型"
+                        } else {
+                            "请先选择 Preset"
+                        })
+                        .disabled(!preset_selected),
+                ),
         )
 }
 
@@ -833,7 +977,9 @@ fn param_control_with_tooltip(
 
 /// 左侧 LLM 设置面板
 fn settings_panel(
+    preset_select_state: &Entity<SelectState<SearchableVec<PresetSelectItem>>>,
     model_select_state: &Entity<SelectState<SearchableVec<ModelSelectItem>>>,
+    preset_selected: bool,
     temp_input: &Entity<InputState>,
     max_tokens_input: &Entity<InputState>,
     top_p_input: &Entity<InputState>,
@@ -859,7 +1005,9 @@ fn settings_panel(
                 .mb(px(12.0))
                 .child("LLM 设定"),
         )
-        .child(model_selector(model_select_state, style))
+        .child(preset_selector(preset_select_state, style))
+        .child(div().mt(px(12.0)))
+        .child(model_selector(model_select_state, preset_selected, style))
         .child(div().mt(px(12.0)))
         .child(thinking_toggle(thinking_enabled, entity.clone(), style))
         .child(div().mt(px(8.0)))
@@ -1647,7 +1795,6 @@ fn right_panel(
     history_count: usize,
     history: &[ExecutionRecord],
     selected_ids: &HashSet<u64>,
-    context_menu: &Option<(u64, gpui::Point<Pixels>)>,
     style: &ManagementStyle,
     entity: Entity<PromptDebugger>,
 ) -> impl IntoElement {
@@ -1863,6 +2010,10 @@ fn right_panel(
             panel = panel.child(
                 div()
                     .id(SharedString::from(format!("history-record-{}", record.id)))
+                    .debug_selector({
+                        let record_id = record.id;
+                        move || format!("PROMPT_HISTORY_RECORD_{record_id}")
+                    })
                     .flex()
                     .items_center()
                     .gap(px(6.0))
@@ -1943,82 +2094,120 @@ fn right_panel(
         }
     }
 
-    // 右键菜单
-    if let Some((record_id, position)) = context_menu {
-        panel = panel.child(
+    panel
+}
+
+/// 历史记录右键菜单。
+///
+/// `MouseDownEvent::position` 是窗口坐标，因此菜单必须挂在窗口级浮层中；如果把它作为
+/// 右侧滚动面板的绝对子元素，坐标会被右栏原点再次偏移并被滚动区域裁剪。
+fn history_context_menu(
+    record_id: u64,
+    position: Point<Pixels>,
+    style: &ManagementStyle,
+    entity: Entity<PromptDebugger>,
+    window: &Window,
+) -> impl IntoElement {
+    let dismiss_on_left = entity.downgrade();
+    let dismiss_on_right = entity.downgrade();
+    let entity_for_view = entity.downgrade();
+    let entity_for_apply = entity.downgrade();
+    let view_selector = format!("PROMPT_HISTORY_VIEW_{record_id}");
+    let apply_selector = format!("PROMPT_HISTORY_APPLY_{record_id}");
+
+    deferred(
+        anchored().child(
             div()
-                .absolute()
-                .top(position.y)
-                .left(position.x)
-                .w(px(120.0))
-                .bg(style.list.row)
-                .border_1()
-                .border_color(style.list.border)
-                .rounded(px(6.0))
-                .shadow_md()
-                .p(px(4.0))
-                .on_mouse_down(MouseButton::Left, {
-                    let entity = entity.clone();
-                    move |_, _, cx| {
-                        _ = entity.update(cx, |view, cx| {
-                            view.hide_context_menu();
-                            cx.notify();
-                        });
-                    }
+                .w(window.bounds().size.width)
+                .h(window.bounds().size.height)
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    _ = dismiss_on_left.update(cx, |view, cx| {
+                        view.hide_context_menu();
+                        cx.notify();
+                    });
+                })
+                .on_mouse_down(MouseButton::Right, move |_, _, cx| {
+                    cx.stop_propagation();
+                    _ = dismiss_on_right.update(cx, |view, cx| {
+                        view.hide_context_menu();
+                        cx.notify();
+                    });
                 })
                 .child(
-                    div()
-                        .px(px(8.0))
-                        .py(px(6.0))
-                        .rounded(px(4.0))
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.bg(style.action(ActionRole::Neutral).hover))
-                        .text_size(px(12.0))
-                        .child("查看")
-                        .on_mouse_down(MouseButton::Left, {
-                            let entity = entity.clone();
-                            let record_id = *record_id;
-                            move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
-                                    view.open_view_record(record_id);
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                )
-                .child(
-                    div()
-                        .mt(px(4.0))
-                        .px(px(8.0))
-                        .py(px(6.0))
-                        .rounded(px(4.0))
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.bg(style.action(ActionRole::Neutral).hover))
-                        .text_size(px(12.0))
-                        .child("回填")
-                        .on_mouse_down(MouseButton::Left, {
-                            let entity = entity.clone();
-                            let record_id = *record_id;
-                            move |_, window, cx| {
-                                _ = entity.update(cx, |view, cx| {
-                                    // 先克隆记录，释放不可变借用
-                                    if let Some(record) = view
-                                        .execution_history
-                                        .iter()
-                                        .find(|r| r.id == record_id)
-                                        .cloned()
-                                    {
-                                        view.apply_record(&record, window, cx);
-                                    }
-                                    cx.notify();
-                                });
-                            }
-                        }),
+                    anchored()
+                        .position(position)
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(
+                            div()
+                                .w(px(120.0))
+                                .bg(style.list.row)
+                                .border_1()
+                                .border_color(style.list.border)
+                                .rounded(px(6.0))
+                                .shadow_md()
+                                .p(px(4.0))
+                                .debug_selector(|| "PROMPT_HISTORY_CONTEXT_MENU".to_owned())
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .child(
+                                    div()
+                                        .px(px(8.0))
+                                        .py(px(6.0))
+                                        .rounded(px(4.0))
+                                        .cursor(CursorStyle::PointingHand)
+                                        .hover(|this| {
+                                            this.bg(style.action(ActionRole::Neutral).hover)
+                                        })
+                                        .text_size(px(12.0))
+                                        .debug_selector(move || view_selector.clone())
+                                        .child("查看")
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            _ = entity_for_view.update(cx, |view, cx| {
+                                                view.open_view_record(record_id);
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .px(px(8.0))
+                                        .py(px(6.0))
+                                        .rounded(px(4.0))
+                                        .cursor(CursorStyle::PointingHand)
+                                        .hover(|this| {
+                                            this.bg(style.action(ActionRole::Neutral).hover)
+                                        })
+                                        .text_size(px(12.0))
+                                        .debug_selector(move || apply_selector.clone())
+                                        .child("回填")
+                                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                            _ = entity_for_apply.update(cx, |view, cx| {
+                                                if let Some(record) = view
+                                                    .execution_history
+                                                    .iter()
+                                                    .find(|record| record.id == record_id)
+                                                    .cloned()
+                                                {
+                                                    view.apply_record(&record, window, cx);
+                                                } else {
+                                                    view.hide_context_menu();
+                                                }
+                                                cx.notify();
+                                            });
+                                        }),
+                                ),
+                        ),
                 ),
-        );
-    }
-
-    panel
+        ),
+    )
+    .with_priority(1)
 }
 
 /// 单条记录卡片（查看模式）
@@ -2306,6 +2495,7 @@ fn view_modal(
         .bottom_0()
         .left_0()
         .right_0()
+        .debug_selector(|| "PROMPT_HISTORY_VIEW_MODAL".to_owned())
         .bg(gpui::rgba(0x00000080))
         .flex()
         .items_center()
@@ -2476,13 +2666,26 @@ impl PromptDebugger {
             }
         }
 
-        let model = match self
-            .selected_model_id
-            .and_then(|id| self.models.iter().find(|m| m.id == id))
+        let preset_id = match self
+            .selected_preset_id
+            .filter(|id| self.presets.iter().any(|preset| preset.id == *id))
         {
+            Some(id) => id,
+            None => {
+                self.call_state = CallState::Error("请先选择 Preset".into());
+                cx.notify();
+                return;
+            }
+        };
+
+        let model = match self.selected_model_id.and_then(|id| {
+            self.models
+                .iter()
+                .find(|model| model.id == id && model.preset_id == Some(preset_id))
+        }) {
             Some(m) => m.clone(),
             None => {
-                self.call_state = CallState::Error("请先选择一个模型".into());
+                self.call_state = CallState::Error("请选择当前 Preset 下的模型".into());
                 cx.notify();
                 return;
             }
@@ -2735,7 +2938,8 @@ impl Render for PromptDebugger {
             }));
         }
 
-        // 懒初始化模型下拉列表
+        // 懒初始化 Preset 和模型下拉列表
+        self.ensure_preset_select_state(window, cx);
         self.ensure_model_select_state(window, cx);
 
         let temp_input = self.temp_input.clone().unwrap();
@@ -2744,6 +2948,7 @@ impl Render for PromptDebugger {
         let presence_penalty_input = self.presence_penalty_input.clone().unwrap();
         let frequency_penalty_input = self.frequency_penalty_input.clone().unwrap();
         let thinking_budget_input = self.thinking_budget_input.clone().unwrap();
+        let preset_select_state = self.preset_select_state.clone().unwrap();
         let model_select_state = self.model_select_state.clone().unwrap();
 
         div()
@@ -2759,7 +2964,9 @@ impl Render for PromptDebugger {
                     .flex_1()
                     .min_h_0()
                     .child(settings_panel(
+                        &preset_select_state,
                         &model_select_state,
+                        self.selected_preset_id.is_some(),
                         &temp_input,
                         &max_tokens_input,
                         &top_p_input,
@@ -2790,7 +2997,6 @@ impl Render for PromptDebugger {
                         self.execution_history.len(),
                         &self.execution_history,
                         &self.selected_record_ids,
-                        &self.context_menu,
                         &style,
                         cx.entity(),
                     )),
@@ -2977,12 +3183,31 @@ impl Render for PromptDebugger {
             } else {
                 div().into_any_element()
             })
+            .child(if let Some((record_id, position)) = self.context_menu {
+                history_context_menu(record_id, position, &style, cx.entity(), window)
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DebugMessage, MessageRole};
+    use super::{DebugMessage, MessageRole, models_for_preset, valid_model_selection};
+    use crate::datasource::llm_store::LlmModel;
+
+    fn model(id: i64, preset_id: i64, priority: i32) -> LlmModel {
+        LlmModel {
+            id,
+            name: format!("model-{id}"),
+            preset_id: Some(preset_id),
+            provider_id: Some(1),
+            priority,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
 
     #[test]
     fn message_role_labels() {
@@ -3052,16 +3277,62 @@ mod tests {
         assert_eq!(msgs[0].id, 1);
         assert_eq!(msgs[1].id, 2);
     }
+
+    #[test]
+    fn model_selection_requires_a_preset_and_filters_to_its_models() {
+        let models = vec![model(11, 1, 0), model(12, 1, 10), model(21, 2, 0)];
+
+        assert!(models_for_preset(&models, None).is_empty());
+        assert_eq!(
+            models_for_preset(&models, Some(1))
+                .iter()
+                .map(|model| model.id)
+                .collect::<Vec<_>>(),
+            vec![11, 12]
+        );
+        assert_eq!(
+            models_for_preset(&models, Some(2))
+                .iter()
+                .map(|model| model.id)
+                .collect::<Vec<_>>(),
+            vec![21]
+        );
+    }
+
+    #[test]
+    fn switching_preset_invalidates_the_previous_model() {
+        let models = vec![model(11, 1, 0), model(21, 2, 0)];
+
+        assert_eq!(valid_model_selection(&models, Some(1), Some(11)), Some(11));
+        assert_eq!(valid_model_selection(&models, Some(2), Some(11)), None);
+        assert_eq!(valid_model_selection(&models, None, Some(11)), None);
+    }
 }
 
 #[cfg(test)]
 mod geometry_tests {
+    use super::{
+        CallState, DebugMessage, ExecutionRecord, MessageRole, ModelSelectItem, PresetSelectItem,
+        PromptDebugger, model_selector, preset_selector,
+    };
+    use crate::datasource::{Store, llm_store::LlmStore};
+    use crate::ui::management_style::ManagementStyle;
     use gpui::{
-        Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, TestAppContext,
-        VisualTestContext, Window, div, px, size,
+        AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, Modifiers,
+        MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
+        px, size,
+    };
+    use gpui_component::{
+        ActiveTheme,
+        select::{SearchableVec, SelectState},
     };
 
     struct PromptDebuggerTestView;
+
+    struct LlmSelectionTestView {
+        preset: Entity<SelectState<SearchableVec<PresetSelectItem>>>,
+        model: Entity<SelectState<SearchableVec<ModelSelectItem>>>,
+    }
 
     impl Render for PromptDebuggerTestView {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -3092,6 +3363,19 @@ mod geometry_tests {
         }
     }
 
+    impl Render for LlmSelectionTestView {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let style = ManagementStyle::from_theme(cx.theme());
+            div()
+                .w(px(220.0))
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(preset_selector(&self.preset, &style))
+                .child(model_selector(&self.model, false, &style))
+        }
+    }
+
     #[gpui::test]
     fn three_column_layout_dimensions(cx: &mut TestAppContext) {
         let window = cx.open_window(size(px(1200.0), px(700.0)), |_, _| PromptDebuggerTestView);
@@ -3113,5 +3397,150 @@ mod geometry_tests {
         assert_eq!(settings.right(), editor.left());
         assert_eq!(editor.right(), results.left());
         assert_eq!(settings.top(), results.top());
+    }
+
+    #[gpui::test]
+    fn preset_selector_precedes_and_gates_model_selector(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+        let window = cx.open_window(size(px(320.0), px(240.0)), |window, cx| {
+            let preset = cx.new(|cx| {
+                SelectState::new(
+                    SearchableVec::new(vec![PresetSelectItem {
+                        id: 1,
+                        label: "default".to_string(),
+                    }]),
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            let model = cx.new(|cx| {
+                SelectState::new(
+                    SearchableVec::new(vec![ModelSelectItem {
+                        id: 11,
+                        label: "model-11".to_string(),
+                    }]),
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            LlmSelectionTestView { preset, model }
+        });
+        cx.run_until_parked();
+
+        let typed_window = window.clone();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let preset = cx
+            .debug_bounds("PROMPT_DEBUGGER_PRESET_SELECTOR")
+            .expect("preset selector bounds");
+        let model = cx
+            .debug_bounds("PROMPT_DEBUGGER_MODEL_SELECTOR")
+            .expect("model selector bounds");
+        let model_trigger = cx
+            .debug_bounds("PROMPT_DEBUGGER_MODEL_SELECT_TRIGGER")
+            .expect("model select trigger bounds");
+
+        assert!(preset.bottom() <= model.top());
+        cx.simulate_click(model_trigger.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let model_is_focused = typed_window
+            .update(&mut cx, |view, window, cx| {
+                view.model.read(cx).focus_handle(cx).is_focused(window)
+            })
+            .expect("read model focus state");
+        assert!(!model_is_focused, "disabled model selector accepted focus");
+    }
+
+    #[gpui::test]
+    fn history_context_menu_opens_the_saved_result(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.execution_history = vec![ExecutionRecord {
+                id: 42,
+                timestamp: 1,
+                model_name: "history-model".to_string(),
+                temperature: 0.7,
+                max_tokens: 2048,
+                top_p: 1.0,
+                thinking_enabled: false,
+                thinking_budget: 1024,
+                messages: vec![DebugMessage {
+                    id: 1,
+                    role: MessageRole::User,
+                    content: "history prompt".to_string(),
+                }],
+                tools: vec![],
+                result: CallState::Success("historical result".to_string()),
+            }];
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window.clone();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let history_row = cx
+            .debug_bounds("PROMPT_HISTORY_RECORD_42")
+            .expect("history row bounds");
+
+        cx.simulate_mouse_down(
+            history_row.center(),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+
+        let view_item = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_42")
+            .expect("history context-menu view item");
+        let apply_item = cx
+            .debug_bounds("PROMPT_HISTORY_APPLY_42")
+            .expect("history context-menu apply item");
+        for item in [view_item, apply_item] {
+            assert!(item.left() >= px(0.0));
+            assert!(item.top() >= px(0.0));
+            assert!(item.right() <= px(1200.0));
+            assert!(item.bottom() <= px(700.0));
+        }
+
+        cx.simulate_click(view_item.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let (show_view_modal, viewed_record_id, viewed_result) = typed_window
+            .update(&mut cx, |view, _, _| {
+                let record = view.view_records.first();
+                (
+                    view.show_view_modal,
+                    record.map(|record| record.id),
+                    record.and_then(|record| match &record.result {
+                        CallState::Success(result) => Some(result.clone()),
+                        _ => None,
+                    }),
+                )
+            })
+            .expect("read history view state");
+        assert!(show_view_modal);
+        assert_eq!(viewed_record_id, Some(42));
+        assert_eq!(viewed_result.as_deref(), Some("historical result"));
+        assert!(cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_some());
     }
 }

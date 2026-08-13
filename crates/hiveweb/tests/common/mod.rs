@@ -117,6 +117,7 @@ async fn build_test_app(ext_pool: Option<MySqlPool>) -> Result<Router> {
         Some(s3),
         ext_pool,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),
+        std::sync::Arc::new(hiveweb::runtime::LlmRegistry::new()),
     ))
 }
 

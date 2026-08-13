@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::Tag;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -76,14 +78,15 @@ pub async fn list(
 
     let (rows, total) = if let Some(keyword) = q {
         let like = format!("%{keyword}%");
-        let count_sql = "SELECT COUNT(*) FROM tags WHERE name LIKE ?";
+        let count_sql = audit_sql("SELECT COUNT(*) FROM tags WHERE name LIKE ?".to_string());
         let total: (i64,) = sqlx::query_as(count_sql)
             .bind(&like)
             .fetch_one(pool)
             .await
             .map_err(|e| AppError::Internal(format!("tag count: {e}")))?;
         let sql = format!("{base_sql} WHERE t.name LIKE ? ORDER BY t.name LIMIT ? OFFSET ?");
-        let rows: Vec<Row> = sqlx::query_as(&sql)
+        let sql = audit_sql(sql);
+        let rows: Vec<Row> = sqlx::query_as(sql)
             .bind(&like)
             .bind(limit)
             .bind(offset)
@@ -92,13 +95,14 @@ pub async fn list(
             .map_err(|e| AppError::Internal(format!("tag list: {e}")))?;
         (rows, total.0)
     } else {
-        let count_sql = "SELECT COUNT(*) FROM tags";
+        let count_sql = audit_sql("SELECT COUNT(*) FROM tags".to_string());
         let total: (i64,) = sqlx::query_as(count_sql)
             .fetch_one(pool)
             .await
             .map_err(|e| AppError::Internal(format!("tag count: {e}")))?;
         let sql = format!("{base_sql} ORDER BY t.name LIMIT ? OFFSET ?");
-        let rows: Vec<Row> = sqlx::query_as(&sql)
+        let sql = audit_sql(sql);
+        let rows: Vec<Row> = sqlx::query_as(sql)
             .bind(limit)
             .bind(offset)
             .fetch_all(pool)
@@ -120,7 +124,7 @@ pub async fn list(
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tag, AppError> {
     if let Some(updated_at) = meta.updated_at {
-        crate::services::optimistic_lock::check_and_bump(pool, "tags", id, updated_at)
+        crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Tags, id, updated_at)
             .await
             .or_else(|e| {
                 // tags 表没有 updated_at 列；保留接口但跳过

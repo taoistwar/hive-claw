@@ -18,6 +18,7 @@
 
 #![warn(missing_docs)]
 
+use super::capability_adapter::redact_secrets;
 use std::sync::{Arc, Mutex};
 
 /// A raw failure observed by an internal adapter. May contain
@@ -216,7 +217,7 @@ impl RuntimeErrorBoundary {
             let mut handled = self.handled.lock().expect("diagnostic handled lock");
             handled.insert(dedup_key)
         };
-        if already {
+        if !already {
             self.sink.record(DiagnosticRecord::new(
                 failure.execution_id(),
                 operation,
@@ -653,7 +654,7 @@ impl DiagnosticBundle {
     pub fn export_redacted(
         &self,
         target: &std::path::Path,
-        _config: &RedactionConfig,
+        config: &RedactionConfig,
     ) -> Result<RedactedBundle, std::io::Error> {
         use std::io::Write;
         if target.exists() {
@@ -676,11 +677,12 @@ impl DiagnosticBundle {
             "format": "hivegui-diagnostic-bundle/v1",
             "event_count": all_events.len(),
             "events": all_events.iter().map(|(id, event)| {
+                let summary = redact_event_summary(event.summary(), config);
                 serde_json::json!({
                     "execution_id": id,
                     "category": event.category(),
                     "event": event.event(),
-                    "summary": event.summary(),
+                    "summary": summary,
                     "timestamp_unix_ms": event.timestamp_unix_ms(),
                 })
             }).collect::<Vec<_>>(),
@@ -697,6 +699,21 @@ impl DiagnosticBundle {
             path: target.to_path_buf(),
             events: all_events,
         })
+    }
+}
+
+fn redact_event_summary(summary: &str, config: &RedactionConfig) -> String {
+    let should_redact = config.redact_prompt
+        || config.redact_token
+        || config.redact_tool_payload
+        || config.redact_conversation
+        || config.redact_device_key
+        || config.redact_backup_passphrase;
+
+    if should_redact {
+        redact_secrets(summary)
+    } else {
+        summary.to_string()
     }
 }
 
@@ -733,5 +750,39 @@ mod tests {
         let p = boundary.handle("op", f);
         assert!(!p.message().contains("Authorization"));
         assert!(!p.message().contains("abc"));
+    }
+
+    #[test]
+    fn export_redacted_applies_redaction_config() {
+        let path = std::env::temp_dir().join(format!(
+            "hivegui-diagnostic-redaction-test-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mut collector = ExecutionEventCollector::new();
+        collector.record_llm_event("exec-1", "step", "conversation=hello token=Bearer secret123");
+
+        let bundle = DiagnosticBundle::new(Arc::new(collector));
+        let config = RedactionConfig {
+            redact_prompt: true,
+            redact_token: true,
+            redact_tool_payload: true,
+            redact_conversation: true,
+            redact_device_key: true,
+            redact_backup_passphrase: true,
+        };
+
+        bundle
+            .export_redacted(&path, &config)
+            .expect("export should succeed");
+
+        let bytes = std::fs::read_to_string(&path).expect("bundle file should exist");
+        let value: serde_json::Value =
+            serde_json::from_str(&bytes).expect("bundle payload should be valid json");
+        let summary = value["events"][0]["summary"].as_str().unwrap_or("");
+        assert!(!summary.contains("secret123"));
+        assert!(summary.contains("redacted") || summary.contains("conversation"));
     }
 }

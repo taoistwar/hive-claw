@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::{MySqlPool, Row};
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::LoginRecord;
 
 pub struct LoginRecordFilter {
@@ -97,7 +98,7 @@ async fn build_record_list_query(
     offset: u32,
     limit: u32,
 ) -> Result<Vec<LoginRecord>> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(audit_sql(sql.to_string()));
     for p in params {
         query = query.bind(p);
     }
@@ -111,7 +112,7 @@ async fn build_record_list_query(
 }
 
 async fn build_count_query(sql: &str, params: Vec<String>, pool: &MySqlPool) -> Result<u64> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(audit_sql(sql.to_string()));
     for p in params {
         query = query.bind(p);
     }

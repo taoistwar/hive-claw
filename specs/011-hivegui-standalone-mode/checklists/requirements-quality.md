@@ -120,4 +120,4 @@
 **待改进**: 3 项 ⚠️（非阻塞性，属于文档改进建议）
 **未覆盖**: 0 项 ❌
 
-**评估结论**: 61 项中 58 项已充分定义。剩余 3 项 ⚠️ 为后续文档改进：SQLite 版本约束、GPUI revision/API 稳定性和 chacha20poly1305 选择理由；identifier 唯一性的大小写语义与 name/identifier 同时命中的稳定总排序已在本轮闭合，日志、GUI 响应阈值、Agent depth 与 Preset/Provider 语义也不再列为待改进项。
+**评估条件总结**: 61 项中 58 项已充分定义。剩余 3 项 ⚠️ 为后续文档改进：SQLite 版本约束、GPUI revision/API 稳定性和 chacha20poly1305 选择理由；identifier 唯一性的大小写语义与 name/identifier 同时命中的稳定总排序已在本轮闭合，日志、GUI 响应阈值、Agent depth 与 Preset/Provider 语义也不再列为待改进项。

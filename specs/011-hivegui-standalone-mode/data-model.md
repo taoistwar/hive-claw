@@ -301,7 +301,7 @@ active -> missing/corrupt (derived health, not persisted state) -> re-import -> 
 - `agent_executions(session_id, started_at DESC)` 与 `agent_executions(status)` 支持恢复和诊断。
 - `workflow_nodes(workflow_id)`、`workflow_edges(workflow_id)` 支持一次加载完整 DAG，禁止逐节点 N+1 查询。
 - 用户输入不得通过字符串拼接进入 SQL。固定应用 schema SQL 使用 SQLx `query!`/`query_as!`/`query_scalar!` 及 offline metadata；有限结构变体只允许封闭 enum 和穷尽 `match` 选择静态 checked query，生产代码中的 SQLx `QueryBuilder`、运行时 SQL 字符串和任意动态标识符数量必须为 0。HiveGUI 外部 MySQL 浏览器使用 `mysql_async` prepared statement 绑定值；数据库名、表名和列名不能 bind，必须精确匹配从当前服务器 metadata 预先加载的 allowlist，并且只能由单一、经过测试、按上下文序列化的 `MysqlIdentifier` 类型写入查询。唯一运行时 SQLx 例外是 HiveWeb `named_queries.toml` 的单一 reviewed-config `AssertSqlSafe` 所有者。禁止直接使用用户文本、临时字符串格式化或分散的 escape helper 生成标识符。
-- 每个含过滤或关联条件的生产查询必须保存 SQLite `EXPLAIN QUERY PLAN` 或 MySQL `EXPLAIN` 验收证据，并由测试解析计划、断言全部过滤/关联列使用预期索引；FTS5 计划的 `VIRTUAL TABLE INDEX` 是有效索引访问，即使 detail 文本包含 `SCAN` 也不能据此单独判失败。非小型表出现未经批准的真实全表扫描、缺少预期 `SEARCH`/索引或计划无法判定时必须失败。小型固定表或 metadata 查询例外必须记录表大小、理由、审批者、到期日和复核结论。Agent 资源快照、Workflow 整图、Category 树，以及按会话批量加载 ChatMessage/AgentExecution 必须以查询计数测试证明无 N+1，测试环境检测到 N+1 时必须失败。会话列表、消息/执行记录加载、过期计数与清理、遗留 running 扫描必须分别验证其过滤、排序和关联索引。
+- 每个含过滤或关联条件的生产查询必须保存 SQLite `EXPLAIN QUERY PLAN` 或 MySQL `EXPLAIN` 验收证据，并由测试解析计划、断言全部过滤/关联列使用预期索引；FTS5 计划的 `VIRTUAL TABLE INDEX` 是有效索引访问，即使 detail 文本包含 `SCAN` 也不能据此单独判失败。非小型表出现未经批准的真实全表扫描、缺少预期 `SEARCH`/索引或计划无法判定时必须失败。小型固定表或 metadata 查询例外必须记录表大小、理由、审批者、到期日和复核条件总结。Agent 资源快照、Workflow 整图、Category 树，以及按会话批量加载 ChatMessage/AgentExecution 必须以查询计数测试证明无 N+1，测试环境检测到 N+1 时必须失败。会话列表、消息/执行记录加载、过期计数与清理、遗留 running 扫描必须分别验证其过滤、排序和关联索引。
 
 ## 10. 备份序列化
 

@@ -19,6 +19,7 @@ use crate::runtime::llm::LlmRegistry;
 use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 
 use crate::cache::redis::RedisClient;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 
 /// Context passed to each hook invocation.
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +45,7 @@ pub struct HookContext {
 pub struct HookDeps {
     /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
     pub s3: Option<S3Client>,
+    pub execution_context: RuntimeExecutionContext,
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
@@ -186,6 +188,7 @@ async fn execute_call_function(
                 )));
             };
             let bctx = super::builtins::BuiltinContext {
+                execution_context: Some(deps.execution_context.for_hook()),
                 pool: &pool,
                 ext_pool: deps.ext_pool.as_ref(),
                 redis: deps.redis.as_ref(),
@@ -219,8 +222,7 @@ async fn execute_call_function(
                     .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
                     .unwrap_or_default();
             let dispatch_ctx = DispatchCtx {
-                request_id: None,
-                session_id: Some(ctx.session_id),
+                execution_context: deps.execution_context.for_hook(),
                 agent_id: ctx.agent_id,
                 plugin_id: pid,
                 function_id: Some(function_id),
@@ -283,6 +285,7 @@ async fn execute_call_workflow(
             .unwrap_or_default();
 
     let executor_deps = super::workflow::ExecutorDeps {
+        execution_context: deps.execution_context.for_hook(),
         pool: (*pool).clone(),
         s3: deps.s3.clone(),
         registry: Arc::clone(&deps.registry),

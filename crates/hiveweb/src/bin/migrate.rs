@@ -13,6 +13,7 @@
 
 use sqlx::MySqlPool;
 use std::env;
+use hiveweb::db::sql_safety::audit_sql;
 
 struct Migration {
     version: &'static str,
@@ -193,7 +194,8 @@ async fn main() -> anyhow::Result<()> {
 
         println!("  → Applying {}", migration.version);
         for stmt in split_sql_statements(migration.sql) {
-            sqlx::query(&stmt).execute(&pool).await?;
+            let audited_sql = audit_sql(stmt);
+            sqlx::query(audited_sql).execute(&pool).await?;
         }
         sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
             .bind(migration.version)

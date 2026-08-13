@@ -8,7 +8,7 @@
 //! `SIDEBAR_A11Y-{key}` selectors exercised by `tests/accessibility.rs`.
 
 use gpui::{
-    Action, Anchor, AnyElement, App, Context, CursorStyle, FocusHandle, IntoElement, KeyBinding,
+    Anchor, AnyElement, App, Context, CursorStyle, FocusHandle, IntoElement, KeyBinding,
     KeyDownEvent, Render, SharedString, Window, actions, div, prelude::*, px,
 };
 use gpui_component::{
@@ -438,9 +438,11 @@ impl SidebarNav {
         let a11y_marker_id: SharedString = SharedString::from(format!("SIDEBAR_A11Y-{key_str}"));
         let focus_marker_for_debug = focus_marker_id.clone();
         let a11y_marker_for_debug = a11y_marker_id.clone();
+        let icon_marker_for_debug: SharedString =
+            SharedString::from(format!("SIDEBAR_ICON-{key_str}"));
         let label_for_a11y: SharedString = label.clone();
         let label_for_a11y_for_click: SharedString = label_for_a11y.clone();
-        let label_for_a11y_for_key: SharedString = label_for_a11y.clone();
+        let label_for_tooltip: SharedString = label_for_a11y.clone();
         let focus_marker_for_shrink = focus_marker_id.clone();
         let _ = focus_marker_for_shrink;
         // T030 §T030.3: publish the AccessKit name into the global
@@ -501,6 +503,15 @@ impl SidebarNav {
             .on_click(move |_event, _window, cx| {
                 dispatch_nav(cx, route, key_str, label_for_a11y_for_click.to_string());
             })
+            .child(
+                div()
+                    .debug_selector(move || icon_marker_for_debug.to_string())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(Icon::new(icon_name).large().text_color(foreground)),
+            )
+            .tooltip(move |window, cx| Tooltip::new(label_for_tooltip.clone()).build(window, cx))
             .child(
                 div()
                     .id(focus_marker_id)

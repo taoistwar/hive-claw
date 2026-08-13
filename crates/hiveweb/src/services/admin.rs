@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::{MySqlPool, Row};
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::{Admin, Role};
 
 pub struct AdminFilter {
@@ -115,7 +116,7 @@ async fn build_admin_list_query(
     offset: u32,
     limit: u32,
 ) -> Result<Vec<Admin>> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(audit_sql(sql.to_string()));
     query = bind_params(query, filter);
     let query = query.bind(limit as i64).bind(offset as i64);
     let rows = query.fetch_all(pool).await?;
@@ -127,7 +128,7 @@ async fn build_admin_list_query(
 }
 
 async fn build_count_query(sql: &str, filter: &AdminFilter, pool: &MySqlPool) -> Result<u64> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(audit_sql(sql.to_string()));
     query = bind_params(query, filter);
     let row = query.fetch_one(pool).await?;
     let count: i64 = row.get(0);

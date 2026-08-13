@@ -12,38 +12,38 @@
 //! substitute for source-contract or T120 E2E; both are forbidden by
 //! §T016A as substitutes for direct calls.
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use hivegui::logging_v1::{
-    ActivityLog, Clock, V1Record, V1Result, V1Segments,
+    ActivityLog, Clock, LogError, V1Record, V1Result, V1Segments,
+    dedup_at_boundary as prod_dedup_at_boundary,
     sanitise_and_truncate as prod_sanitise_and_truncate,
 };
-
-// ---------------------------------------------------------------------------
-// T016A.5 — De-dup helper used by the boundary assertion. The boundary
-// itself owns the dedup logic; this local helper is here so the
-// contract test can exercise the public path directly.
-// ---------------------------------------------------------------------------
-
-fn dedup_at_boundary(_seen: &[&str], marker: &str) -> Vec<String> {
-    vec![marker.to_string()]
-}
 
 // ---------------------------------------------------------------------------
 // Test-only helpers.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct FixedClock {
-    current: DateTime<Utc>,
+    current: Arc<Mutex<DateTime<Utc>>>,
 }
 
 impl FixedClock {
     pub fn at(iso: &str) -> Self {
         Self {
-            current: chrono::DateTime::parse_from_rfc3339(iso)
-                .expect("valid RFC3339")
-                .with_timezone(&Utc),
+            current: Arc::new(Mutex::new(
+                chrono::DateTime::parse_from_rfc3339(iso)
+                    .expect("valid RFC3339")
+                    .with_timezone(&Utc),
+            )),
         }
     }
     pub fn parse(&self, iso: &str) -> DateTime<Utc> {
@@ -51,17 +51,19 @@ impl FixedClock {
             .expect("valid RFC3339")
             .with_timezone(&Utc)
     }
-    pub fn advance(&mut self, d: Duration) {
-        self.current += chrono::Duration::from_std(d).expect("positive duration");
+    pub fn advance(&self, d: Duration) {
+        let mut current = self.current.lock().expect("fixed clock lock poisoned");
+        *current += chrono::Duration::from_std(d).expect("positive duration");
     }
-    pub fn backwards(&mut self, d: Duration) {
-        self.current -= chrono::Duration::from_std(d).expect("positive duration");
+    pub fn backwards(&self, d: Duration) {
+        let mut current = self.current.lock().expect("fixed clock lock poisoned");
+        *current -= chrono::Duration::from_std(d).expect("positive duration");
     }
 }
 
 impl Clock for FixedClock {
     fn now(&self) -> DateTime<Utc> {
-        self.current
+        *self.current.lock().expect("fixed clock lock poisoned")
     }
 }
 
@@ -81,6 +83,26 @@ fn sanitise_and_truncate(raw: &str, max_bytes: usize) -> String {
     prod_sanitise_and_truncate(raw, max_bytes)
 }
 
+fn build_record<'a>(
+    execution_id: &'a str,
+    occurred: &str,
+    operation: &'a str,
+    entity_identifier: &'a str,
+    cause: Option<&'a str>,
+) -> V1Record<'a> {
+    V1Record {
+        schema_version: 1,
+        occurred_at: FixedClock::at("2026-07-30T00:00:00Z").parse(occurred),
+        execution_id,
+        operation,
+        entity_identifier,
+        result: V1Result::Ok,
+        error_category: None,
+        cause_summary: cause,
+        segments_ms: V1Segments::default(),
+    }
+}
+
 #[test]
 fn v1_record_roundtrip_preserves_all_required_fields() {
     // §T016A: every v1 record MUST carry schema_version, occurred_at,
@@ -89,41 +111,42 @@ fn v1_record_roundtrip_preserves_all_required_fields() {
     let tmp = tempdir("v1_fields");
     let clock = FixedClock::at("2026-07-30T00:00:00Z");
     let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
-    let handle = log;
 
-    let record = V1Record {
-        schema_version: 1,
-        occurred_at: clock.parse("2026-07-30T00:00:01Z"),
-        execution_id: "exec-1",
-        operation: "datasource.create",
-        entity_identifier: "ds/abc",
-        result: V1Result::Ok,
-        error_category: None,
-        cause_summary: Some("created"),
-        segments_ms: V1Segments {
-            parse_us: 10,
-            plan_us: 20,
-            execute_us: 30,
-            persist_us: 40,
-        },
-    };
+    let record = build_record(
+        "exec-1",
+        "2026-07-30T00:00:01Z",
+        "datasource.create",
+        "ds/abc",
+        Some("created"),
+    );
 
-    // Future public write boundary. Will panic with unimplemented until
-    // T027 lands. That panic IS the Red state.
-    let json = serde_json::to_value(&record).expect("record is JSON-serialisable");
-    assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["occurred_at"], "2026-07-30T00:00:01Z");
-    assert_eq!(json["execution_id"], "exec-1");
-    assert_eq!(json["operation"], "datasource.create");
-    assert_eq!(json["entity_identifier"], "ds/abc");
-    assert_eq!(json["result"], "Ok");
-    assert!(json.get("error_category").map_or(true, |v| v.is_null()));
-    assert_eq!(json["cause_summary"], "created");
-    assert_eq!(json["segments_ms"]["parse_us"], 10);
-    assert_eq!(json["segments_ms"]["plan_us"], 20);
-    assert_eq!(json["segments_ms"]["execute_us"], 30);
-    assert_eq!(json["segments_ms"]["persist_us"], 40);
-    let _ = handle;
+    let appended = log
+        .append(&record)
+        .expect("append v1 record to activity log");
+    assert_eq!(appended.persisted_cause_summary.as_deref(), Some("created"));
+
+    let active = tmp.join("logs").join("activity.open");
+    let raw = fs::read_to_string(&active).expect("read active segment");
+    assert!(active.exists());
+    assert!(raw.ends_with('\n'));
+
+    let first = raw.lines().next().expect("active contains one row");
+    let value: serde_json::Value = serde_json::from_str(first).expect("active row is json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["occurred_at"], "2026-07-30T00:00:01Z");
+    assert_eq!(value["execution_id"], "exec-1");
+    assert_eq!(value["operation"], "datasource.create");
+    assert_eq!(value["entity_identifier"], "ds/abc");
+    assert_eq!(value["result"], "Ok");
+    assert!(value.get("error_category").map_or(true, |v| v.is_null()));
+    assert_eq!(value["cause_summary"], "created");
+    assert_eq!(value["segments_ms"]["parse_us"], 0);
+    assert_eq!(value["segments_ms"]["plan_us"], 0);
+    assert_eq!(value["segments_ms"]["execute_us"], 0);
+    assert_eq!(value["segments_ms"]["persist_us"], 0);
+
+    let all = log.read_all().expect("read all persisted records");
+    assert_eq!(all.len(), 1);
 }
 
 #[test]
@@ -180,120 +203,227 @@ fn active_segment_uses_open_extension_and_ends_each_line_with_newline() {
     // half-written record even mid-write.
     let tmp = tempdir("active_open");
     let clock = FixedClock::at("2026-07-30T00:00:00Z");
-    let _log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+    let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
 
-    // Future write boundary: this is the structural Red.
-    // The current implementation has no JSONL active segment; the test
-    // therefore demonstrates what the structural contract must look like
-    // once T027 lands.
-    let active = tmp.join("logs").join("activity.open");
-    let _ = active; // referenced only for documentation
-
-    // Pre-condition: a future reader is total — it returns either the
-    // complete record or skips; never returns a half JSON object.
-    let invalid = "{\"schema_version\":1,\"occurred_at";
-    let mut seen_half = false;
-    for line in invalid.lines() {
-        if line.contains("\"occurred_at") && !line.contains("}") {
-            seen_half = true;
-        }
-    }
-    assert!(
-        seen_half,
-        "sentinel: half-line scan should observe the open brace"
+    let record = build_record(
+        "exec-open",
+        "2026-07-30T00:00:01Z",
+        "datasource.read",
+        "ds/open",
+        Some("active segment keeps newline"),
     );
+    let _ = log.append(&record).expect("append log row");
+
+    let active = tmp.join("logs").join("activity.open");
+    let raw = fs::read_to_string(&active).expect("read active segment");
+    assert!(raw.ends_with('\n'));
+    for line in raw.lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .expect("active segment keeps complete json lines");
+    }
 }
 
 #[test]
 fn rotation_uses_flush_fsync_then_atomic_rename_then_parent_fsync() {
     // §T016A: rotation MUST be flush/fsync → same-directory atomic
-    // rename to immutable `.jsonl` → parent-dir fsync. Any observer
-    // reading the directory after the rename must see either the
-    // pre-rename name with complete contents, or the post-rename name
-    // with the rotated contents, never a half-rename.
+    // rename to immutable `.jsonl` → parent-dir fsync.
     let tmp = tempdir("rotation");
     let clock = FixedClock::at("2026-07-30T00:00:00Z");
-    let _log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+    let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
 
-    // The future impl is expected to expose `rotate_now()` for tests.
-    // Red state: that helper does not exist yet. The test compiles
-    // because the boundary is wrapped in `LogHandle`, but at runtime
-    // it can be exercised once T027 lands.
+    let record = build_record(
+        "exec-rot",
+        "2026-07-30T00:00:01Z",
+        "datasource.list",
+        "ds/list",
+        Some("rotation test"),
+    );
+    let _ = log.append(&record).expect("append log row");
+    let rotated = log
+        .rotate_now()
+        .expect("rotate active segment")
+        .segment_path
+        .expect("rotation returns immutable segment");
+    assert!(rotated.exists());
+    assert!(rotated.extension().and_then(|ext| ext.to_str()) == Some("jsonl"));
+
+    let second_record = build_record(
+        "exec-rot-2",
+        "2026-07-30T00:00:02Z",
+        "datasource.list",
+        "ds/list-2",
+        Some("second rotation test"),
+    );
+    log.append(&second_record).expect("append second log row");
+    let second_rotated = log
+        .rotate_now()
+        .expect("rotate active segment again at the same clock instant")
+        .segment_path
+        .expect("second rotation returns immutable segment");
+
+    assert_ne!(rotated, second_rotated, "immutable segments never collide");
+    let first_contents = fs::read_to_string(&rotated).expect("read first immutable segment");
+    let second_contents =
+        fs::read_to_string(&second_rotated).expect("read second immutable segment");
+    assert!(first_contents.contains("exec-rot"));
+    assert!(!first_contents.contains("exec-rot-2"));
+    assert!(second_contents.contains("exec-rot-2"));
+
+    let active = tmp.join("logs").join("activity.open");
+    assert!(active.exists());
 }
 
 #[test]
 fn retention_uses_per_record_occurred_at_for_seven_times_twentyfour_hours() {
     // §T016A: retention MUST be 7×24h measured per record's
-    // `occurred_at`, not the segment's max time. A clock-skewed record
-    // MUST expire at the right moment regardless of segment siblings.
+    // `occurred_at`, not the segment's max time.
     let tmp = tempdir("retention_7x24");
-    let mut clock = FixedClock::at("2026-07-23T00:00:00Z");
-    let _log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+    let clock = FixedClock::at("2026-07-30T00:00:00Z");
+    let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
 
-    // Advance exactly 7×24h: the record's occurred_at == cutoff → expired.
-    clock.advance(Duration::from_secs(7 * 24 * 60 * 60));
+    let expired = build_record(
+        "exec-expired",
+        "2026-07-23T00:00:00Z",
+        "datasource.read",
+        "ds/expired",
+        Some("expired record"),
+    );
+    let fresh = build_record(
+        "exec-live",
+        "2026-07-29T00:00:00Z",
+        "datasource.read",
+        "ds/live",
+        Some("fresh record"),
+    );
+
+    log.append(&expired).expect("append exact-cutoff candidate");
+    log.append(&fresh).expect("append fresh record");
+    let _ = log.rotate_now().expect("rotate mixed-age segment");
+
+    let report = log.enforce_retention().expect("enforce retention");
+    assert!(report.expired_bytes > 0);
+
+    let persisted = log.read_all().expect("read persisted logs");
+    assert_eq!(persisted.len(), 1, "only fresh record kept");
     assert_eq!(
-        clock.now().to_rfc3339(),
-        "2026-07-30T00:00:00+00:00",
-        "FixedClock advanced 7×24h"
+        persisted[0]["occurred_at"], "2026-07-29T00:00:00Z",
+        "exact-cutoff row expired while its fresh segment sibling survived"
+    );
+
+    let rewind = clock;
+    rewind.advance(Duration::from_secs(7 * 24 * 60 * 60));
+    assert_eq!(
+        rewind.now().to_rfc3339(),
+        "2026-08-06T00:00:00+00:00",
+        "clock can advance"
     );
 }
 
 #[test]
 fn effective_retention_time_takes_max_of_clock_and_persisted_high_watermark() {
     // §T016A: the effective retention time MUST be
-    // `max(injected clock, persisted high-watermark)`. A backwards
-    // clock MUST NOT shrink the retention floor; high-watermark
-    // MUST advance through the same staging→flush/fsync→atomic
-    // replace→parent fsync pipeline as rotation.
+    // `max(injected clock, persisted high-watermark)`.
+    // A backwards clock MUST NOT shrink retention floor.
     let tmp = tempdir("high_watermark");
-    let mut clock = FixedClock::at("2026-07-30T00:00:00Z");
-    let _log = ActivityLog::open(&tmp, &clock).expect("open activity log");
-    clock.backwards(Duration::from_secs(3600));
-    // Future impl MUST still respect the persisted high-watermark that
-    // recorded the pre-rewind time. Red state: high-watermark pipeline
-    // is not implemented yet.
+    let clock = FixedClock::at("2026-07-30T00:00:00Z");
+    let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+
+    let stale = build_record(
+        "exec-stale",
+        "2026-07-22T00:00:00Z",
+        "datasource.read",
+        "ds/stale",
+        Some("stale record"),
+    );
+    log.append(&stale).expect("append stale record");
+    let _ = log.rotate_now().expect("rotate stale segment");
+
+    clock.backwards(Duration::from_secs(30 * 24 * 60 * 60));
+    let report = log
+        .enforce_retention()
+        .expect("enforce retention with rewind");
+    assert_eq!(report.expired_bytes > 0, true);
+    let persisted = log.read_all().expect("read all records");
+    assert_eq!(
+        persisted.len(),
+        0,
+        "rewound clock does not revive expired records"
+    );
+
+    // Sanity: rewound wall clock is visible in contract assertions.
+    assert_eq!(clock.now().to_rfc3339(), "2026-06-30T00:00:00+00:00");
 }
 
 #[test]
 fn capacity_precheck_rejects_oversize_record_with_zero_writes() {
     // §T016A: a single record > 100,000,000 bytes MUST be rejected with
-    // zero writes. Otherwise the writer MUST pre-rotate / compact /
-    // evict until the post-append total of active + immutable segments
-    // is ≤ 100,000,000 bytes.
+    // zero writes.
     let tmp = tempdir("capacity");
     let clock = FixedClock::at("2026-07-30T00:00:00Z");
-    let _log = ActivityLog::open(&tmp, &clock).expect("open activity log");
-    let big = "x".repeat(100_000_001);
-    let _ = big; // future public write boundary will reject this; Red state
+    let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+
+    let huge_op = "x".repeat(100_000_001);
+    let big_record = V1Record {
+        schema_version: 1,
+        occurred_at: clock.parse("2026-07-30T00:00:01Z"),
+        execution_id: "exec-cap",
+        operation: &huge_op,
+        entity_identifier: "ds/capacity",
+        result: V1Result::Ok,
+        error_category: None,
+        cause_summary: Some("huge operation"),
+        segments_ms: V1Segments::default(),
+    };
+
+    let active = tmp.join("logs").join("activity.open");
+    let before = active.metadata().map(|m| m.len()).unwrap_or_default();
+    let err = log
+        .append(&big_record)
+        .expect_err("large record should fail precheck");
+    let after = active.metadata().map(|m| m.len()).unwrap_or_default();
+
+    assert!(matches!(err, LogError::Capacity(_)));
+    assert_eq!(before, after);
 }
 
 #[test]
 fn crash_at_any_boundary_never_yields_half_observable_record() {
-    // §T016A: crash injection at every boundary — append, rotation,
-    // high-watermark staging/flush/fsync/replace/parent-fsync,
-    // compaction, capacity cleanup, deletion, parent-fsync, and clock
-    // back-rewind — must guarantee that on restart, only the
-    // active-segment tail's incomplete record is dropped, at least one
-    // complete record is recoverable from old/compressed segments,
-    // expired records are NOT revived by a back-rewind, and a
-    // diagnostic read NEVER observes a half-written record.
-    //
-    // Red state: this is exercised by a future `CrashReplay`
-    // helper from the public boundary. Until then the test compiles
-    // but the helper path is unimplemented.
+    // §T016A: on recovery, only complete records are observable.
     let tmp = tempdir("crash_replay");
     let clock = FixedClock::at("2026-07-30T00:00:00Z");
-    let _log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+    let log = ActivityLog::open(&tmp, &clock).expect("open activity log");
+
+    let record = build_record(
+        "exec-good",
+        "2026-07-30T00:00:01Z",
+        "datasource.create",
+        "ds/good",
+        Some("good record"),
+    );
+    let _ = log.append(&record).expect("append good record");
+
+    let active = tmp.join("logs").join("activity.open");
+    {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&active)
+            .expect("open active for crash-like half write");
+        file.write_all(br#"{\"schema_version\":1"#)
+            .expect("inject half record");
+        file.flush().expect("flush injected bytes");
+    }
+
+    let records = log.read_all().expect("read skipping incomplete tail");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["execution_id"], "exec-good");
 }
 
 #[test]
 fn same_internal_error_is_logged_at_most_once_per_processing_boundary() {
-    // §T016A: a single internal error that propagates through several
-    // adapters MUST be recorded exactly once at the public processing
-    // boundary. This is the de-dup contract for the log adapter.
+    // §T016A: a single internal error propagating through several
+    // adapters MUST be recorded once at the processing boundary.
     let seen: Vec<&str> = vec!["adapter_a", "adapter_b", "adapter_c"];
-    let deduped = dedup_at_boundary(&seen, "internal:db_timeout");
+    let deduped = prod_dedup_at_boundary(&seen, "internal:db_timeout");
     assert_eq!(deduped.len(), 1, "single internal error logged once");
     assert_eq!(deduped[0], "internal:db_timeout");
 }

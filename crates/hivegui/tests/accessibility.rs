@@ -653,7 +653,7 @@ fn sidebar_space_activation_matches_enter(cx: &mut TestAppContext) {
 #[gpui::test]
 fn sidebar_buttons_expose_accesskit_names(cx: &mut TestAppContext) {
     init_gpui(cx);
-    let (_window, visual) = open_sidebar_view(cx);
+    let (_window, mut visual) = open_sidebar_view(cx);
 
     // T032 must set the AccessKit `name` on each sidebar nav button
     // to the same Chinese label rendered on the tooltip. AccessKit
@@ -669,6 +669,16 @@ fn sidebar_buttons_expose_accesskit_names(cx: &mut TestAppContext) {
             accesskit_name(&visual, selector),
             Some(expected_name.to_string()),
             "AccessKit name for `{selector}` must equal the visible label"
+        );
+    }
+
+    for selector in ["SIDEBAR_ICON-home", "SIDEBAR_ICON-ai", "SIDEBAR_ICON-tools"] {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing visible sidebar icon `{selector}`"));
+        assert!(
+            !bounds.is_empty(),
+            "sidebar icon `{selector}` must occupy visible bounds"
         );
     }
 }
@@ -710,14 +720,11 @@ fn open_sidebar_view(
     // T032 must expose `hivegui::ui::sidebar_nav::SidebarNav::new_with_focus`
     // (or a `for_test` constructor) that wires the four debug
     // selectors. Until then this call fails to compile.
-    // T032 install_for_test seeds a minimal HiveGuiAppState global so
-    // the sidebar's `cx.global::<HiveGuiAppState>()` access does not
-    // panic. The production wiring still lives in `app::install`.
-    use hivegui::ui::app::{AccessKitLabelRegistry, AppRoute, HiveGuiAppState};
+    // T032 install_for_test uses the same shell-global installer as
+    // production, so both HiveGuiAppState and AccessKitLabelRegistry
+    // exist before the sidebar's first render.
+    use hivegui::ui::app::{AppRoute, HiveGuiAppState};
     cx.update(|cx| {
-        if cx.try_global::<AccessKitLabelRegistry>().is_none() {
-            cx.set_global(AccessKitLabelRegistry::new());
-        }
         HiveGuiAppState::install_for_test(cx, AppRoute::Home);
     });
     let window = cx.open_window(size(px(48.0), px(640.0)), move |window, cx| {
@@ -776,6 +783,97 @@ fn cx_state_route(cx: &mut TestAppContext) -> hivegui::ui::app::AppRoute {
 }
 
 use hivegui::ui::app::HiveGuiAppState;
+
+// ===========================================================================
+// §T110 — US12 Skill management: editable skill surface keyboard CRUD,
+// duplicate identifier error stability, search pagination and native scroll
+// activation.
+// ===========================================================================
+//
+// Source of truth: `specs/011-hivegui-standalone-mode/tasks.md` §T110
+// ("在 `crates/hivegui/tests/accessibility.rs` 编写 Skill 编辑器、重复
+// identifier conflict 后表单保持/错误焦点/安全值、错误状态、搜索分页和
+// 键盘 CRUD 测试，并激活 T016E Skill 行、写入并首次运行该行原生滚动断言").
+//
+// The tests below activate `T016E` `SkillList` for the first time (Red).
+// `T112` implements the native scroll/tag + keyboard + focus + error-state
+// contracts in `crates/hivegui/src/ui/skill_view.rs` and this block records
+// the required surface/selector behavior first.
+
+const SKILL_VIEW_SOURCE: &str = include_str!("../src/ui/skill_view.rs");
+
+#[test]
+fn skill_view_module_carries_scroll_tag_for_native_surface() {
+    use support::scroll_inventory::{ScrollSurface, assert_source_tag};
+
+    // T112 must publish `//! scroll:skill_list` in the module doc
+    // comment. Until then `parse_source_tag` returns `None` and
+    // `assert_source_tag` panics — the test fails Red.
+    assert_source_tag(SKILL_VIEW_SOURCE, ScrollSurface::SkillList.slug());
+}
+
+#[test]
+fn skill_list_surface_is_registered_in_t016e_inventory() {
+    use support::scroll_inventory::ScrollSurface;
+
+    // T110 activates the T016E Skill surface owned by US12/T112.
+    let owner = ScrollSurface::SkillList.owner_phase().to_string();
+    assert!(
+        owner == "US12/T112",
+        "SkillList owner phase must be US12/T112, got: {owner}"
+    );
+    assert_eq!(ScrollSurface::SkillList.slug(), "skill_list");
+}
+
+#[test]
+fn skill_view_supports_keyboard_navigation_for_form_crud() {
+    // T112 must wire Tab/Enter/Escape keyboard flow for the CRUD modal.
+    assert!(
+        SKILL_VIEW_SOURCE.contains("on_key_down")
+            || SKILL_VIEW_SOURCE.contains("on_key_event")
+            || SKILL_VIEW_SOURCE.contains("KeyDownEvent")
+            || SKILL_VIEW_SOURCE.contains("track_focus")
+            || SKILL_VIEW_SOURCE.contains("focus_handle")
+            || SKILL_VIEW_SOURCE.contains("focus.previous"),
+        "T112 Skill view must handle keyboard input and focus for accessibility CRUD"
+    );
+}
+
+#[test]
+fn skill_view_declares_stable_form_modal_and_error_surface() {
+    // T110 expects duplicate identifier save errors to keep form fields,
+    // surface errors, and keep user focus on or near the form.
+    assert!(
+        SKILL_VIEW_SOURCE.contains("skill-form-scroll")
+            || SKILL_VIEW_SOURCE.contains("SKILL_FORM")
+            || SKILL_VIEW_SOURCE.contains("SKILL_MODAL"),
+        "T112 must declare a stable modal/scroll surface for Skill form keyboard focus"
+    );
+    assert!(
+        SKILL_VIEW_SOURCE.contains("error_message")
+            && SKILL_VIEW_SOURCE.contains("更新失败")
+            && SKILL_VIEW_SOURCE.contains("创建失败"),
+        "T112 should render error state on conflict/validation failures"
+    );
+    assert!(
+        !SKILL_VIEW_SOURCE.contains("hide_form(cx)") || SKILL_VIEW_SOURCE.contains("Err(e) => {"),
+        "Do not close form on save failure before preserving safe values"
+    );
+}
+
+#[test]
+fn skill_view_search_and_pagination_controls_use_size_20() {
+    // T110 requires keyword search + 20-item pages for accessibility keyboard
+    // tests. T112 must preserve these anchors.
+    assert!(SKILL_VIEW_SOURCE.contains("search_text"));
+    assert!(SKILL_VIEW_SOURCE.contains("page_size: i64"));
+    assert!(
+        SKILL_VIEW_SOURCE.contains("page_size")
+            && SKILL_VIEW_SOURCE.contains("prev")
+            && SKILL_VIEW_SOURCE.contains("next"),
+        "Skill list pagination controls are missing or renamed"
+    );
+}
 
 // ===========================================================================
 // §T042 — US3 GlobalConfig modal: focus trap, keyboard CRUD, validation

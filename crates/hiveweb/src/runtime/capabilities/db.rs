@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sqlx::{Column, MySqlPool, Row};
 use std::collections::HashMap;
+use crate::db::sql_safety::audit_sql;
 
 #[derive(Debug, Clone, Deserialize)]
 struct NamedQueryRaw {
@@ -157,7 +158,7 @@ pub async fn db_query(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Strin
     }
     let (sql, ordered) = bind_params(q, &args.params)?;
 
-    let mut built = sqlx::query(&sql);
+    let mut built = sqlx::query(audit_sql(sql));
     for v in &ordered {
         built = bind_value(built, v);
     }
@@ -214,7 +215,7 @@ pub async fn db_execute(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Str
         ));
     }
     let (sql, ordered) = bind_params(q, &args.params)?;
-    let mut built = sqlx::query(&sql);
+    let mut built = sqlx::query(audit_sql(sql));
     for v in &ordered {
         built = bind_value(built, v);
     }

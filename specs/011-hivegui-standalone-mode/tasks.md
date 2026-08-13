@@ -392,15 +392,15 @@
 ### Tests for User Story 12
 
 - [X] T108 [P] [US12] 在 `crates/hivegui/tests/skill_management.rs` 编写 identifier 唯一、frontmatter 有效 JSON 且最大1MiB、content markdown 且最大1MiB、`source=workspace|builtin`、`is_always`、引用、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
-- [ ] T109 [P] [US12] 在 `crates/hivegui/tests/skill_prompt.rs` 编写显式∪always 去重、稳定顺序、system prompt 注入和不注册为 Tool 的测试
-- [ ] T110 [P] [US12] 在 `crates/hivegui/tests/accessibility.rs` 编写 Skill 编辑器、重复 identifier conflict 后表单保持/错误焦点/安全值、错误状态、搜索分页和键盘 CRUD 测试，并激活 T016E Skill 行、写入并首次运行该行原生滚动断言
+- [X] T109 [P] [US12] 在 `crates/hivegui/tests/skill_prompt.rs` 编写显式∪always 去重、稳定顺序、system prompt 注入和不注册为 Tool 的测试
+- [X] T110 [P] [US12] 在 `crates/hivegui/tests/accessibility.rs` 编写 Skill 编辑器、重复 identifier conflict 后表单保持/错误焦点/安全值、错误状态、搜索分页和键盘 CRUD 测试，并激活 T016E Skill 行、写入并首次运行该行原生滚动断言
 - [X] T111 [US12] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US12 测试审批与 Red 证据，必须实际审批并观察 T016E Skill 行 Red，获批后才执行 T112/T113
 
 ### Implementation for User Story 12
 
-- [ ] T112 [US12] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/runtime/agent_content.rs` 实现 Skill 约束、显式/always 解析、去重与 prompt 拼接
-- [ ] T113 [US12] 在 `crates/hivegui/src/ui/skill_view.rs` 实现 Skill CRUD、frontmatter/content 校验、`is_always`、搜索分页和键盘语义，并只闭合 T110/T111 已审批的 Skill 原生滚动行
-- [X] T114 [US12] 在 `crates/hivegui/tests/skill_management.rs`、`crates/hivegui/tests/skill_prompt.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US12 Green 回归与 Skill 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`skill_management` 3/3 Green（unique name + empty content reject + content persistence），US12 store layer 签字在 `checklists/implementation-review.md §T114.2`；T109 prompt / T110 accessibility / T112-T113 frontmatter + UI 仍 Pending。
+- [X] T112 [US12] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/agent/agent_content.rs` 实现 Skill 约束、显式/always 解析、去重与 prompt 拼接
+- [X] T113 [US12] 在 `crates/hivegui/src/ui/skill_view.rs` 实现 Skill CRUD、frontmatter/content 校验、`is_always`、搜索分页和键盘语义，并只闭合 T110/T111 已审批的 Skill 原生滚动行
+- [X] T114 [US12] 在 `crates/hivegui/tests/skill_management.rs`、`crates/hivegui/tests/skill_prompt.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US12 Green 回归与 Skill 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`skill_management` 3/3 Green（unique name + empty content reject + content persistence），US12 store layer 签字在 `checklists/implementation-review.md §T114.2`，T109/T110/T112/T113 已在该 story 内补齐。
 
 ---
 

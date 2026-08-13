@@ -5,6 +5,7 @@ use crate::cache::redis::RedisClient;
 use crate::models::agent_hook::{AgentHook, CreateHookRequest, UpdateHookRequest};
 use crate::services::agent::MAIN_AGENT_IDENTIFIER;
 use crate::services::optimistic_lock;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 /// Enriched Hook response with resolved reference names for call_function/call_workflow.
@@ -142,7 +143,7 @@ pub async fn update_hook(
 
     // Validation is side-effect free; only bump the optimistic version after
     // the candidate action has passed policy.
-    optimistic_lock::check_and_bump(pool, "agent_hooks", hook_id, meta.updated_at)
+    optimistic_lock::check_and_bump(pool, OptimisticLockTable::AgentHooks, hook_id, meta.updated_at)
         .await
         .map_err(|_| {
             AppError::OptimisticLockConflict("Hook 配置已被他人修改，请刷新后重试".into())

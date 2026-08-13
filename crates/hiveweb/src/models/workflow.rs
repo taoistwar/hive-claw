@@ -32,7 +32,7 @@ pub enum NodeType {
 impl<'q> sqlx::Encode<'q, sqlx::MySql> for NodeType {
     fn encode_by_ref(
         &self,
-        buf: &mut <sqlx::MySql as sqlx::Database>::ArgumentBuffer<'q>,
+        buf: &mut <sqlx::MySql as sqlx::Database>::ArgumentBuffer,
     ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
         let s = match self {
             NodeType::FunctionNode => "function_node",

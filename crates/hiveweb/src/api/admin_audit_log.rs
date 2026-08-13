@@ -6,6 +6,7 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use crate::api::AppState;
+use crate::db::sql_safety::audit_sql;
 use crate::utils::error::{ApiResponse, AppError};
 
 #[derive(serde::Serialize)]
@@ -153,7 +154,7 @@ async fn execute_count_query(
     i64_params: &[i64],
     pool: &sqlx::MySqlPool,
 ) -> Result<u64, sqlx::Error> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(audit_sql(sql.to_string()));
     for p in string_params {
         query = query.bind(p);
     }
@@ -173,7 +174,7 @@ async fn execute_list_query(
     offset: u32,
     pool: &sqlx::MySqlPool,
 ) -> Result<Vec<sqlx::mysql::MySqlRow>, sqlx::Error> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(audit_sql(sql.to_string()));
     for p in string_params {
         query = query.bind(p);
     }

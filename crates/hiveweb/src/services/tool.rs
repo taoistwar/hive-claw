@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::Tool;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -347,7 +349,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
     let list_sql =
         format!("SELECT * FROM tools {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?");
 
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     if let Some(k) = filter.kind {
         count_q = count_q.bind(k);
     }
@@ -379,7 +382,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
         .map(|(c,)| c)
         .map_err(|e| AppError::Internal(format!("tool count: {e}")))?;
 
-    let mut list_q = sqlx::query_as::<_, Tool>(&list_sql);
+    let list_sql = audit_sql(list_sql);
+    let mut list_q = sqlx::query_as::<_, Tool>(list_sql);
     if let Some(k) = filter.kind {
         list_q = list_q.bind(k);
     }
@@ -427,7 +431,7 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<ToolListItem, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, "tools", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Tools, id, meta.updated_at).await?;
     let existing = fetch_by_id(pool, id).await?;
 
     if existing.source == "builtin" {

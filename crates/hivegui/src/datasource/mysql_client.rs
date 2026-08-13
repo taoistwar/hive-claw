@@ -29,8 +29,10 @@
 
 #![warn(missing_docs)]
 
+use std::fmt::Write as _;
+
 use mysql_async::prelude::*;
-use mysql_async::{Conn, Opts, OptsBuilder, Row};
+use mysql_async::{Conn, Opts, OptsBuilder, Row, Value};
 use thiserror::Error;
 
 use super::models::{
@@ -429,7 +431,6 @@ impl MysqlClient {
         password: &[u8],
         database: &MysqlIdentifier,
     ) -> Result<Vec<TableInfo>, MysqlConnectionError> {
-        let database_sql = database.to_sql(IdentifierContext::Database);
         let mut conn = Self::connect(host, port, username, password).await?;
         let rows: Vec<Row> = conn
             .exec(
@@ -437,7 +438,7 @@ impl MysqlClient {
                  FROM information_schema.TABLES \
                  WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' \
                  ORDER BY TABLE_NAME",
-                (database_sql,),
+                (database.name(),),
             )
             .await
             .map_err(map_query_error)?;
@@ -480,8 +481,6 @@ impl MysqlClient {
         database: &MysqlIdentifier,
         table: &MysqlIdentifier,
     ) -> Result<Vec<ColumnInfo>, MysqlConnectionError> {
-        let database_sql = database.to_sql(IdentifierContext::Database);
-        let table_sql = table.to_sql(IdentifierContext::Table);
         let mut conn = Self::connect(host, port, username, password).await?;
         let rows: Vec<Row> = conn
             .exec(
@@ -490,7 +489,7 @@ impl MysqlClient {
                  FROM information_schema.COLUMNS \
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
                  ORDER BY ORDINAL_POSITION",
-                (database_sql, table_sql),
+                (database.name(), table.name()),
             )
             .await
             .map_err(map_query_error)?;
@@ -554,13 +553,16 @@ impl MysqlClient {
         database: &MysqlIdentifier,
         table: &MysqlIdentifier,
     ) -> Result<String, MysqlConnectionError> {
+        reject_if_malformed(database.name())?;
+        reject_if_malformed(table.name())?;
         let database_sql = database.to_sql(IdentifierContext::Database);
         let table_sql = table.to_sql(IdentifierContext::Table);
+        let mut ddl_sql = String::from("SHOW CREATE TABLE ");
+        ddl_sql.push_str(&database_sql);
+        ddl_sql.push('.');
+        ddl_sql.push_str(&table_sql);
         let mut conn = Self::connect(host, port, username, password).await?;
-        let rows: Vec<Row> = conn
-            .exec("SHOW CREATE TABLE ?.?", (database_sql, table_sql))
-            .await
-            .map_err(map_query_error)?;
+        let rows: Vec<Row> = conn.exec(ddl_sql, ()).await.map_err(map_query_error)?;
 
         if let Some(row) = rows.first() {
             let ddl: Option<String> = row
@@ -576,12 +578,10 @@ impl MysqlClient {
         }
     }
 
-    /// Run a paginated table read with optional pre-validated
-    /// `WHERE` / `ORDER BY` fragments. The fragments MUST be passed
-    /// via `TableDataRequest` as bindable prepared-statement
-    /// parameters, never as raw SQL fragments; the source
-    /// contract forbids raw fragment strings in the public
-    /// boundary.
+    /// Run a paginated table read. Free-text `WHERE` / `ORDER BY`
+    /// fragments are rejected until the public boundary exposes a
+    /// typed query model; prepared-statement parameters cannot
+    /// represent SQL syntax.
     pub async fn query_table_data(
         host: &str,
         port: u16,
@@ -591,8 +591,19 @@ impl MysqlClient {
         table: &MysqlIdentifier,
         req: &TableDataRequest,
     ) -> Result<TableData, MysqlConnectionError> {
+        reject_if_malformed(database.name())?;
+        reject_if_malformed(table.name())?;
+        if req.where_fragment.is_some() || req.order_fragment.is_some() {
+            return Err(MysqlConnectionError::Protocol(
+                "free-text table filters and ordering are not supported".to_string(),
+            ));
+        }
+
         let database_sql = database.to_sql(IdentifierContext::Database);
         let table_sql = table.to_sql(IdentifierContext::Table);
+        let mut qualified_table = database_sql;
+        qualified_table.push('.');
+        qualified_table.push_str(&table_sql);
         let mut conn = Self::connect(host, port, username, password).await?;
 
         let limit = if req.limit > 0 {
@@ -601,26 +612,9 @@ impl MysqlClient {
             DEFAULT_QUERY_LIMIT
         };
 
-        // Count path — `where_fragment` and `order_fragment` are
-        // pre-validated `&str` constants (the type forbids
-        // user-derived text).
-        let count_sql = match (&req.where_fragment, &req.order_fragment) {
-            (Some(_where), _) => "SELECT COUNT(*) FROM ?.? WHERE ?",
-            (None, _) => "SELECT COUNT(*) FROM ?.?",
-        };
-        let count_params: mysql_async::Params = match &req.where_fragment {
-            Some(where_text) => (
-                database_sql.clone(),
-                table_sql.clone(),
-                where_text.to_string(),
-            )
-                .into(),
-            None => (database_sql.clone(), table_sql.clone()).into(),
-        };
-        let count_rows: Vec<Row> = conn
-            .exec(count_sql, count_params)
-            .await
-            .map_err(map_query_error)?;
+        let mut count_sql = String::from("SELECT COUNT(*) FROM ");
+        count_sql.push_str(&qualified_table);
+        let count_rows: Vec<Row> = conn.exec(count_sql, ()).await.map_err(map_query_error)?;
         let total_count: i64 = count_rows
             .first()
             .and_then(|row| match row.get_opt(0) {
@@ -629,43 +623,11 @@ impl MysqlClient {
             })
             .unwrap_or(0);
 
-        // Data path.
-        let data_sql = match (&req.where_fragment, &req.order_fragment) {
-            (Some(_), Some(_)) => "SELECT * FROM ?.? WHERE ? ORDER BY ? LIMIT ? OFFSET ?",
-            (Some(_), None) => "SELECT * FROM ?.? WHERE ? LIMIT ? OFFSET ?",
-            (None, Some(_)) => "SELECT * FROM ?.? ORDER BY ? LIMIT ? OFFSET ?",
-            (None, None) => "SELECT * FROM ?.? LIMIT ? OFFSET ?",
-        };
-        let data_params: mysql_async::Params = match (&req.where_fragment, &req.order_fragment) {
-            (Some(where_text), Some(order_text)) => (
-                database_sql.clone(),
-                table_sql.clone(),
-                where_text.to_string(),
-                order_text.to_string(),
-                limit,
-                req.offset,
-            )
-                .into(),
-            (Some(where_text), None) => (
-                database_sql.clone(),
-                table_sql.clone(),
-                where_text.to_string(),
-                limit,
-                req.offset,
-            )
-                .into(),
-            (None, Some(order_text)) => (
-                database_sql.clone(),
-                table_sql.clone(),
-                order_text.to_string(),
-                limit,
-                req.offset,
-            )
-                .into(),
-            (None, None) => (database_sql.clone(), table_sql.clone(), limit, req.offset).into(),
-        };
+        let mut data_sql = String::from("SELECT * FROM ");
+        data_sql.push_str(&qualified_table);
+        data_sql.push_str(" LIMIT ? OFFSET ?");
         let rows: Vec<Row> = conn
-            .exec(data_sql, data_params)
+            .exec(data_sql, (limit, req.offset))
             .await
             .map_err(map_query_error)?;
 
@@ -681,13 +643,11 @@ impl MysqlClient {
 
         let mut data_rows = Vec::new();
         for row in rows {
-            let values: Vec<Option<String>> = (0..columns.len())
-                .map(|i| match row.get_opt(i) {
-                    Some(Ok(v)) => Ok(v),
-                    Some(Err(err)) => Err(map_decode_error(err)),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<Option<String>>, MysqlConnectionError>>()?;
+            let values = row
+                .unwrap()
+                .into_iter()
+                .map(mysql_value_to_display)
+                .collect();
             data_rows.push(values);
         }
         let _ = conn.disconnect().await;
@@ -947,6 +907,53 @@ impl MysqlClient {
         }
         let _ = conn.disconnect().await;
         Ok(triggers)
+    }
+}
+
+fn mysql_value_to_display(value: Value) -> Option<String> {
+    match value {
+        Value::NULL => None,
+        Value::Bytes(bytes) => Some(mysql_bytes_to_display(bytes)),
+        Value::Int(value) => Some(value.to_string()),
+        Value::UInt(value) => Some(value.to_string()),
+        Value::Float(value) => Some(value.to_string()),
+        Value::Double(value) => Some(value.to_string()),
+        Value::Date(year, month, day, hour, minute, second, micros) => {
+            let mut rendered =
+                format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
+            if micros > 0 {
+                write!(&mut rendered, ".{micros:06}")
+                    .expect("formatting a MySQL date into a String cannot fail");
+            }
+            Some(rendered)
+        }
+        Value::Time(negative, days, hour, minute, second, micros) => {
+            let prefix = if negative { "-" } else { "" };
+            let total_hours = u64::from(days) * 24 + u64::from(hour);
+            let mut rendered = format!("{prefix}{total_hours:02}:{minute:02}:{second:02}");
+            if micros > 0 {
+                write!(&mut rendered, ".{micros:06}")
+                    .expect("formatting a MySQL time into a String cannot fail");
+            }
+            Some(rendered)
+        }
+    }
+}
+
+fn mysql_bytes_to_display(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => {
+            const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+            let bytes = error.into_bytes();
+            let mut rendered = String::with_capacity(2 + bytes.len() * 2);
+            rendered.push_str("0x");
+            for byte in bytes {
+                rendered.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+                rendered.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+            }
+            rendered
+        }
     }
 }
 

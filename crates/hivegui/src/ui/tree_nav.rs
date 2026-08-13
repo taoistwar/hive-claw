@@ -532,6 +532,7 @@ impl Render for TreeNav {
                             ActionSize::Compact,
                             style,
                         )
+                        .debug_selector(|| "DATASOURCE_ADD_BUTTON".to_owned())
                         .on_mouse_down(MouseButton::Left, {
                             let panel = this.clone();
                             move |_event, _window, cx| {
@@ -641,6 +642,10 @@ impl Render for TreeNav {
                                                 ActionSize::Row,
                                                 style,
                                             )
+                                            .debug_selector({
+                                                let id = *id;
+                                                move || format!("DATASOURCE_EDIT_BUTTON_{id}")
+                                            })
                                             .on_mouse_down(MouseButton::Left, {
                                                 let this_for_edit = this.clone();
                                                 let id = *id;
@@ -712,6 +717,13 @@ impl Render for TreeNav {
 
                                 let db_item = div()
                                     .id(format!("db-{id}-{db_name_owned}"))
+                                    .debug_selector({
+                                        let source_id = *id;
+                                        let database = db.name.clone();
+                                        move || {
+                                            format!("DATASOURCE_DATABASE_{source_id}_{database}")
+                                        }
+                                    })
                                     .flex()
                                     .items_center()
                                     .pl(px(20.0))
@@ -740,7 +752,10 @@ impl Render for TreeNav {
                                         let db_idx = db_idx;
                                         let source_id = *id;
                                         let db_name = db.name.clone();
-                                        move |_, _, cx| {
+                                        move |event, _, cx| {
+                                            if event.click_count > 1 {
+                                                return;
+                                            }
                                             this_for_db
                                                 .update(cx, |tree, cx| {
                                                     tree.toggle_database(source_idx, db_idx, cx);
@@ -776,6 +791,16 @@ impl Render for TreeNav {
                                             .id(format!(
                                                 "tbl-{id}-{db_name_owned}-{table_name_owned}"
                                             ))
+                                            .debug_selector({
+                                                let source_id = *id;
+                                                let database = db.name.clone();
+                                                let table = table.name.clone();
+                                                move || {
+                                                    format!(
+                                                        "DATASOURCE_TABLE_{source_id}_{database}_{table}"
+                                                    )
+                                                }
+                                            })
                                             .flex()
                                             .items_center()
                                             .pl(px(40.0))
@@ -827,5 +852,83 @@ impl Render for TreeNav {
         }
 
         col
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext, VisualTestContext,
+        px, size,
+    };
+
+    use super::{DatabaseNode, TableInfo, TreeNav, TreeNode};
+
+    #[gpui::test]
+    fn double_clicking_a_database_keeps_its_cached_tables_visible(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let window = cx.open_window(size(px(420.0), px(360.0)), |_, cx| {
+            let mut tree = TreeNav::new(cx);
+            tree.nodes = vec![TreeNode::DataSource {
+                id: 42,
+                name: "fixture".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: 3306,
+                username: "tester".to_owned(),
+                encrypted_password: Vec::new(),
+                expanded: true,
+                databases: vec![DatabaseNode {
+                    name: "FixtureDb".to_owned(),
+                    expanded: false,
+                    tables: vec![TableInfo {
+                        name: "AgentRuns".to_owned(),
+                        comment: None,
+                        engine: Some("InnoDB".to_owned()),
+                        row_count: Some(1),
+                    }],
+                }],
+            }];
+            tree
+        });
+        cx.run_until_parked();
+
+        let typed_window = window.clone();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let database = cx
+            .debug_bounds("DATASOURCE_DATABASE_42_FixtureDb")
+            .expect("database row bounds");
+
+        for click_count in [1, 2] {
+            cx.simulate_event(MouseDownEvent {
+                position: database.center(),
+                modifiers: Modifiers::default(),
+                button: MouseButton::Left,
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                position: database.center(),
+                modifiers: Modifiers::default(),
+                button: MouseButton::Left,
+                click_count,
+            });
+        }
+        cx.run_until_parked();
+
+        let expanded = typed_window
+            .update(&mut cx, |tree, _, _| match &tree.nodes[0] {
+                TreeNode::DataSource { databases, .. } => databases[0].expanded,
+            })
+            .expect("read database expansion state");
+        assert!(expanded, "a double click must leave the database expanded");
+        assert!(
+            cx.debug_bounds("DATASOURCE_TABLE_42_FixtureDb_AgentRuns")
+                .is_some(),
+            "the cached table row must remain visible after the double click"
+        );
     }
 }

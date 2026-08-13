@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
 
+use crate::db::sql_safety::audit_sql;
 use crate::cache::redis::RedisClient;
 #[allow(deprecated)]
 use crate::models::game::{
@@ -56,8 +57,8 @@ pub async fn list_games(
             (String::new(), vec![], vec![])
         };
 
-    let count_sql = format!("SELECT COUNT(DISTINCT g.id) FROM games g {}", where_clause);
-    let mut count_query = sqlx::query(&count_sql);
+    let count_sql = audit_sql(format!("SELECT COUNT(DISTINCT g.id) FROM games g {}", where_clause));
+    let mut count_query = sqlx::query(count_sql);
     for p in &count_params {
         count_query = count_query.bind(p);
     }
@@ -68,7 +69,7 @@ pub async fn list_games(
         .get(0);
 
     let offset = (page - 1) * page_size;
-    let data_sql = format!(
+    let data_sql = audit_sql(format!(
         "SELECT g.id, g.name, g.created_at, g.updated_at, COALESCE(JSON_ARRAYAGG(gae.alias), JSON_ARRAY()) AS aliases
          FROM games g
          LEFT JOIN game_alias_entries gae ON gae.game_id = g.id
@@ -77,8 +78,8 @@ pub async fn list_games(
          ORDER BY g.id DESC
          LIMIT ? OFFSET ?",
         where_clause
-    );
-    let mut data_query = sqlx::query(&data_sql);
+    ));
+    let mut data_query = sqlx::query(data_sql);
     for p in &data_params {
         data_query = data_query.bind(p);
     }
@@ -682,7 +683,7 @@ pub async fn filter_available_games(
         "SELECT id FROM cc_logic_game WHERE id IN ({}) AND status = 1",
         placeholders.join(",")
     );
-    let mut query = sqlx::query_as(&sql);
+    let mut query = sqlx::query_as(audit_sql(sql));
     for id in game_ids {
         query = query.bind(id);
     }
@@ -702,15 +703,14 @@ pub async fn fetch_logic_game_ids_by_tag(
     channel: &str,
     limit: i32,
 ) -> Result<Vec<i64>, String> {
-    let sql = format!(
-        r#"SELECT
+    let sql = r#"SELECT
   distinct z2.id
 FROM (
   SELECT t1.logic_game_id
   FROM (
     select * from cc_logic_game_wide where client_type=?
     AND JSON_CONTAINS (game_tags, JSON_OBJECT ('type', 1))
-    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('name', '{}'))
+    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('name', ?))
   ) t1
   LEFT JOIN (
     select * from cc_logic_game_exclude where client_type=? and channel=?
@@ -720,15 +720,14 @@ FROM (
   where t2.id is null AND t4.id is null
   group by t1.logic_game_id
 ) z1
-INNER JOIN (
+  INNER JOIN (
   select * from cc_logic_game where status = 1
-) z2 on z1.logic_game_id = z2.id
+    ) z2 on z1.logic_game_id = z2.id
 order by RAND()
-limit ?"#,
-        category_name
-    );
-    let rows: Vec<(i64,)> = sqlx::query_as(&sql)
+limit ?"#;
+    let rows: Vec<(i64,)> = sqlx::query_as(audit_sql(sql.to_string()))
         .bind(client_type)
+        .bind(category_name)
         .bind(client_type)
         .bind(channel)
         .bind(limit)

@@ -355,7 +355,13 @@ pub async fn update(
         _ => None,
     };
 
-    crate::services::optimistic_lock::check_and_bump(pool, "agents", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        crate::services::optimistic_lock::OptimisticLockTable::Agents,
+        id,
+        meta.updated_at,
+    )
+    .await?;
 
     let mut tx = pool
         .begin()

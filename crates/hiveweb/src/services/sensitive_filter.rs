@@ -16,6 +16,7 @@ use regex::{Regex, RegexBuilder};
 use sqlx::MySqlPool;
 use std::sync::{Arc, RwLock};
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::sensitive_word::SensitiveWord;
 
 // ── Pattern types ──
@@ -232,7 +233,8 @@ pub async fn list_sensitive_words(
 
     // Count
     let count_sql = format!("SELECT COUNT(*) FROM sensitive_words {}", where_clause);
-    let mut count_query = sqlx::query_scalar(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_query = sqlx::query_scalar(count_sql);
     for p in &count_params {
         count_query = count_query.bind(p);
     }
@@ -248,7 +250,8 @@ pub async fn list_sensitive_words(
          FROM sensitive_words {} ORDER BY id DESC LIMIT ? OFFSET ?",
         where_clause
     );
-    let mut data_query = sqlx::query_as::<_, SensitiveWord>(&data_sql);
+    let data_sql = audit_sql(data_sql);
+    let mut data_query = sqlx::query_as::<_, SensitiveWord>(data_sql);
     for p in &data_params {
         data_query = data_query.bind(p);
     }

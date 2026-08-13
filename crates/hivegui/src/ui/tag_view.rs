@@ -396,11 +396,10 @@ impl Render for TagView {
 
         // Subscribe to color picker changes
         if let Some(ref picker) = self.color_picker {
-            cx.subscribe_in(picker, window, |this, _state, event, _window, cx| {
-                if let ColorPickerEvent::Change(color) = event {
-                    if let Some(color) = color {
-                        this.form_color = color.to_hex();
-                    }
+            cx.subscribe_in(picker, window, |this, _state, event, _window, _cx| {
+                let ColorPickerEvent::Change(color) = event;
+                if let Some(color) = color {
+                    this.form_color = color.to_hex();
                 }
             })
             .detach();

@@ -69,11 +69,12 @@ pub struct CreateDataSourceRequest {
 pub struct TableDataRequest {
     pub limit: i64,
     pub offset: i64,
-    /// Optional pre-validated `WHERE` fragment. The mysql_client
-    /// forwards this as a bind parameter; only fragments that have
-    /// passed an upstream allowlist may reach this field.
+    /// Reserved `WHERE` fragment. The MySQL client currently
+    /// rejects non-empty values until filtering has a typed query
+    /// model; prepared-statement values cannot represent SQL syntax.
     pub where_fragment: Option<String>,
-    /// Optional pre-validated `ORDER BY` fragment, bind-only.
+    /// Reserved `ORDER BY` fragment, rejected while ordering lacks
+    /// a typed query model.
     pub order_fragment: Option<String>,
 }
 

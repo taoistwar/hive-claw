@@ -571,6 +571,16 @@ fn validate_description(description: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_content(content: &str) -> Result<()> {
+    if content.trim().is_empty() {
+        return Err(anyhow::anyhow!("content 不能为空"));
+    }
+    if content.len() > 1024 * 1024 {
+        return Err(anyhow::anyhow!("content 不能超过 1MB"));
+    }
+    Ok(())
+}
+
 fn validate_json(json: &str) -> Result<()> {
     if json.len() > 1024 * 1024 {
         return Err(anyhow::anyhow!("JSON 内容不能超过 1MB"));
@@ -2240,6 +2250,7 @@ impl Skill {
         validate_identifier(&identifier)?;
         validate_name(&name)?;
         validate_description(&description)?;
+        validate_content(&content)?;
         if let Some(ref fm) = frontmatter {
             validate_json(fm)?;
         }
@@ -2278,6 +2289,7 @@ impl Skill {
         validate_identifier(&identifier)?;
         validate_name(&name)?;
         validate_description(&description)?;
+        validate_content(&content)?;
         if let Some(ref fm) = frontmatter {
             validate_json(fm)?;
         }
@@ -3997,6 +4009,7 @@ pub struct AgentInput {
     category_id: Option<i64>,
     tool_ids: Vec<i64>,
     skill_ids: Vec<i64>,
+    always_skill_ids: Vec<i64>,
     capability_names: Vec<String>,
 }
 
@@ -4046,6 +4059,7 @@ impl AgentInput {
             category_id: None,
             tool_ids: Vec::new(),
             skill_ids: Vec::new(),
+            always_skill_ids: Vec::new(),
             capability_names: Vec::new(),
         })
     }
@@ -4095,6 +4109,12 @@ impl AgentInput {
         self
     }
 
+    /// Set the always-on Skill association list.
+    pub fn with_always_skills(mut self, skill_ids: impl IntoIterator<Item = i64>) -> Self {
+        self.always_skill_ids = skill_ids.into_iter().collect();
+        self
+    }
+
     /// Set the explicit Capability association list.
     pub fn with_capabilities(mut self, capability_names: impl IntoIterator<Item = String>) -> Self {
         self.capability_names = capability_names.into_iter().collect();
@@ -4141,6 +4161,10 @@ impl AgentInput {
     pub fn skill_ids(&self) -> &[i64] {
         &self.skill_ids
     }
+    /// Always-on skill ids.
+    pub fn always_skill_ids(&self) -> &[i64] {
+        &self.always_skill_ids
+    }
     /// Capability names.
     pub fn capability_names(&self) -> &[String] {
         &self.capability_names
@@ -4162,6 +4186,7 @@ pub struct AgentRecord {
     category_id: Option<i64>,
     tool_ids: Vec<i64>,
     skill_ids: Vec<i64>,
+    always_skill_ids: Vec<i64>,
     capability_names: Vec<String>,
     created_at: String,
     updated_at: String,
@@ -4215,6 +4240,10 @@ impl AgentRecord {
     /// Explicit Skill ids.
     pub fn skill_ids(&self) -> &[i64] {
         &self.skill_ids
+    }
+    /// Always-on skill ids.
+    pub fn always_skill_ids(&self) -> &[i64] {
+        &self.always_skill_ids
     }
     /// Explicit Capability names.
     pub fn capability_names(&self) -> &[String] {
@@ -4683,8 +4712,8 @@ impl AgentStore {
         Ok(out)
     }
 
-    /// Fetch a single Agent by id, with all three association
-    /// sets loaded.
+    /// Fetch a single Agent by id, with explicit and always-on
+    /// skill sets loaded.
     pub async fn fetch_one(&self, id: i64) -> Result<Option<AgentRecord>, AgentStoreError> {
         let row: Option<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> =
             sqlx::query_as(
@@ -4714,6 +4743,7 @@ impl AgentStore {
         };
         let tool_ids = load_tool_ids(&self.pool, id).await?;
         let skill_ids = load_skill_ids(&self.pool, id).await?;
+        let always_skill_ids = load_always_skill_ids(&self.pool).await?;
         let capability_names = load_capability_names(&self.pool, id).await?;
         Ok(Some(AgentRecord {
             id,
@@ -4728,6 +4758,7 @@ impl AgentStore {
             category_id,
             tool_ids,
             skill_ids,
+            always_skill_ids,
             capability_names,
             created_at,
             updated_at,
@@ -4981,6 +5012,21 @@ impl AgentStore {
                 });
             }
         }
+        for skill_id in dedup_i64(&input.always_skill_ids) {
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills WHERE id = ?")
+                .bind(skill_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error)?;
+            if exists == 0 {
+                return Err(AgentStoreError {
+                    kind: AgentStoreErrorKind::InvalidInput {
+                        field: "always_skill_ids".to_string(),
+                        reason: "not_found".to_string(),
+                    },
+                });
+            }
+        }
         for capability in &input.capability_names {
             let exists: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM capabilities WHERE name = ?")
@@ -5102,6 +5148,14 @@ async fn load_skill_ids(pool: &Pool<Sqlite>, agent_id: i64) -> Result<Vec<i64>, 
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+async fn load_always_skill_ids(pool: &Pool<Sqlite>) -> Result<Vec<i64>, AgentStoreError> {
+    let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM skills WHERE is_always = 1 ORDER BY id ASC")
+        .fetch_all(pool)
+        .await
+        .map_err(backend_error)?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 async fn load_capability_names(
     pool: &Pool<Sqlite>,
     agent_id: i64,
@@ -5151,6 +5205,7 @@ async fn hydrate_many(
     {
         let tool_ids = load_tool_ids(pool, id).await?;
         let skill_ids = load_skill_ids(pool, id).await?;
+        let always_skill_ids = load_always_skill_ids(pool).await?;
         let capability_names = load_capability_names(pool, id).await?;
         out.push(AgentRecord {
             id,
@@ -5165,6 +5220,7 @@ async fn hydrate_many(
             category_id,
             tool_ids,
             skill_ids,
+            always_skill_ids,
             capability_names,
             created_at,
             updated_at,

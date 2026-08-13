@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
 use crate::models::Category;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -98,7 +99,7 @@ pub async fn list_tree(pool: &MySqlPool) -> Result<Vec<CategoryNode>, AppError> 
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Category, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, "categories", id, meta.updated_at)
+    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Categories, id, meta.updated_at)
         .await?;
     sqlx::query(
         r#"UPDATE categories SET

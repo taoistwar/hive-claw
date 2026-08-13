@@ -60,6 +60,8 @@ pub struct TurnSnapshot {
     pub tool_ids: Vec<i64>,
     /// Resolved skill ids.
     pub skill_ids: Vec<i64>,
+    /// Resolved global always-on skill ids.
+    pub always_skill_ids: Vec<i64>,
     /// Resolved capability names.
     pub capability_names: Vec<String>,
     /// The child Agents that this Agent is allowed to route to.
@@ -78,6 +80,7 @@ impl TurnSnapshot {
             )))?;
         let tool_ids = agent.tool_ids().to_vec();
         let skill_ids = agent.skill_ids().to_vec();
+        let always_skill_ids = agent.always_skill_ids().to_vec();
         let capability_names = agent.capability_names().to_vec();
         let children = store
             .list_children(agent_id)
@@ -87,6 +90,7 @@ impl TurnSnapshot {
             agent,
             tool_ids,
             skill_ids,
+            always_skill_ids,
             capability_names,
             direct_children: children,
         })

@@ -113,6 +113,6 @@ Workflow nodes resolve input via `input_mapping` (stored in `node_config.input_m
 
 ## Git Workflow
 
-- Branch naming: `NNN-feature-name` (e.g., `004-agent-runtime`)
+- Branch naming: `NNN-feature-name` (e.g., `011-hivegui-standalone-mode`)
 - Feature specs live in `specs/<NNN-feature-name>/` with spec.md, plan.md, tasks.md
 - Constitution at `.specify/memory/constitution.md` (v1.4.0) — authoritative governance

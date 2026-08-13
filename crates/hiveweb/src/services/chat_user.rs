@@ -7,6 +7,7 @@
 
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::{ChatMessageUser, ChatSessionUser};
 use crate::services::chat::{SessionList, SessionListItem};
 use crate::utils::error::AppError;
@@ -140,28 +141,28 @@ pub async fn list_sessions_user(
         _ => ("", false),
     };
 
-    let count_sql = format!("{}{}", count_base, search_clause);
-    let list_sql = format!(
+    let count_sql = audit_sql(format!("{}{}", count_base, search_clause));
+    let list_sql = audit_sql(format!(
         "{}{} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
         list_base, search_clause
-    );
+    ));
 
-    let total: (i64,) = if bind_search {
-        sqlx::query_as(&count_sql)
-            .bind(user_id)
-            .bind(format!("%{}%", search.unwrap()))
-            .fetch_one(pool)
-            .await
-    } else {
-        sqlx::query_as(&count_sql)
-            .bind(user_id)
-            .fetch_one(pool)
-            .await
-    }
+        let total: (i64,) = if bind_search {
+            sqlx::query_as(count_sql)
+                .bind(user_id)
+                .bind(format!("%{}%", search.unwrap()))
+                .fetch_one(pool)
+                .await
+        } else {
+            sqlx::query_as(count_sql)
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+        }
     .map_err(|e| AppError::Internal(format!("user session count: {e}")))?;
 
-    let items: Vec<ChatSessionUser> = if bind_search {
-        sqlx::query_as(&list_sql)
+        let items: Vec<ChatSessionUser> = if bind_search {
+        sqlx::query_as(list_sql)
             .bind(user_id)
             .bind(format!("%{}%", search.unwrap()))
             .bind(limit)
@@ -169,7 +170,7 @@ pub async fn list_sessions_user(
             .fetch_all(pool)
             .await
     } else {
-        sqlx::query_as(&list_sql)
+        sqlx::query_as(list_sql)
             .bind(user_id)
             .bind(limit)
             .bind(offset)

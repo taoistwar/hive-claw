@@ -7,6 +7,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use super::cache_helper;
 use super::cache_helper::cached_or_fetch;
 use crate::cache::redis::RedisClient;
@@ -352,7 +353,7 @@ pub async fn resolve_game_label_names(
         "SELECT value, name FROM cc_label WHERE value IN ({})",
         placeholders.join(",")
     );
-    let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+    let mut query = sqlx::query_as::<_, (String, String)>(audit_sql(sql));
     for code in &codes {
         query = query.bind(code);
     }

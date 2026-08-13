@@ -16,7 +16,7 @@
 - [x] CHK002 Spec 声明共享运行时和 Plugin ABI——“共享”是否明确定义了复用方式（源码级依赖 / 二进制链接 / 独立 crate 提取）？[Clarity, Spec §FR-028/FR-039]
   > **评估**: Plan §Summary/§Project Structure 与 Research §1/§2 将方式固定为 workspace 源码级 library 复用：运行时复用边界仅为 `hive-runtime-core`、`agent`、`providers`、`hive-builtins` 和共享 ABI fixtures。HiveGUI 不依赖 `hiveweb`，两个产品也不在运行时通信。
 
-- [x] CHK003 research.md 拒绝通过 `hiveweb` feature 排除 MySQL/Redis/S3 后供 HiveGUI 依赖——此结论是否已落实到 spec、plan 和可验证任务？[Consistency, Research §1, Spec §FR-028/FR-029]
+- [x] CHK003 research.md 拒绝通过 `hiveweb` feature 排除 MySQL/Redis/S3 后供 HiveGUI 依赖——该条件是否已落实到 spec、plan 和可验证任务？[Consistency, Research §1, Spec §FR-028/FR-029]
   > **评估**: FR-028/FR-029、Plan §Summary/§Project Structure、T015/T026 和 T116/T140 一致要求 HiveGUI 不构造 HiveWeb client、不读取 HiveWeb URL、零 HiveWeb 请求且失败时零 HiveWeb fallback；不存在为 HiveGUI 增加 `hiveweb` `standalone` feature 的实施任务。
 
 - [x] CHK004 HiveWeb runtime 绑定 MySQL/Redis/S3/Axum，而 HiveGUI 使用 SQLite 和本地托管文件——是否定义了存储与宿主适配策略？[Gap, Research §1/§5, Plan §Project Structure]

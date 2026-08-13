@@ -371,9 +371,9 @@ impl RuntimeAuditFilter {
     }
 }
 
-fn push_filter_bindings<'args>(
-    query: &mut QueryBuilder<'args, MySql>,
-    filter: &'args RuntimeAuditFilter,
+fn push_filter_bindings(
+    query: &mut QueryBuilder<MySql>,
+    filter: &RuntimeAuditFilter,
 ) {
     let mut predicates = query.separated(" AND ");
     if let Some(value) = &filter.event_type {
@@ -402,7 +402,7 @@ fn push_filter_bindings<'args>(
     }
 }
 
-fn append_where<'args>(query: &mut QueryBuilder<'args, MySql>, filter: &'args RuntimeAuditFilter) {
+fn append_where(query: &mut QueryBuilder<MySql>, filter: &RuntimeAuditFilter) {
     if !filter.is_empty() {
         query.push(" WHERE ");
         push_filter_bindings(query, filter);

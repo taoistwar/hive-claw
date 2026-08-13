@@ -10,8 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hivegui::datasource::TableDataRequest;
 use hivegui::datasource::mysql_client::{
-    IdentifierCatalog, IdentifierContext, MysqlClient, MysqlConnectionError, MysqlMetadata,
+    IdentifierCatalog, IdentifierContext, IdentifierKind, MysqlClient, MysqlConnectionError,
+    MysqlIdentifier, MysqlMetadata,
 };
 
 const OWNER_PHASE: &str = "US2";
@@ -182,6 +184,142 @@ fn mysql_values_are_bound_and_raw_user_fragments_never_build_sql() {
         mysql.contains("MysqlIdentifier"),
         "database/table/column serialization must use the one identifier type"
     );
+}
+
+#[test]
+fn query_tables_binds_the_database_name_as_a_value_not_as_sql_syntax() {
+    let mysql = read(Path::new(DATASOURCE_ROOT).join("mysql_client.rs"));
+    let query_tables = mysql_function(&mysql, "query_tables", "query_columns");
+
+    assert!(
+        query_tables.contains("database.name()"),
+        "TABLE_SCHEMA is a prepared-statement value and must bind the raw catalog name"
+    );
+    assert!(
+        !query_tables.contains("database.to_sql("),
+        "a quoted SQL identifier such as `FixtureDb` cannot match the TABLE_SCHEMA value FixtureDb"
+    );
+}
+
+#[test]
+fn columns_tab_binds_catalog_names_as_values_not_quoted_identifiers() {
+    let mysql = read(Path::new(DATASOURCE_ROOT).join("mysql_client.rs"));
+    let query_columns = mysql_function(&mysql, "query_columns", "query_ddl");
+
+    assert!(
+        query_columns.contains("(database.name(), table.name())"),
+        "TABLE_SCHEMA/TABLE_NAME must bind FixtureDb/AgentRuns, not `FixtureDb`/`AgentRuns`"
+    );
+    assert!(
+        !query_columns.contains("database.to_sql(") && !query_columns.contains("table.to_sql("),
+        "information_schema comparisons take catalog values rather than SQL identifier syntax"
+    );
+}
+
+#[test]
+fn ddl_and_data_tabs_serialize_identifiers_in_sql_and_bind_only_values() {
+    let mysql = read(Path::new(DATASOURCE_ROOT).join("mysql_client.rs"));
+    let query_ddl = mysql_function(&mysql, "query_ddl", "query_table_data");
+    let query_data = mysql_function(&mysql, "query_table_data", "query_indexes");
+
+    assert!(
+        !query_ddl.contains("SHOW CREATE TABLE ?.?") && !query_data.contains("FROM ?.?"),
+        "prepared-statement placeholders cannot represent database or table identifiers"
+    );
+    for expected in [
+        "database.to_sql(IdentifierContext::Database)",
+        "table.to_sql(IdentifierContext::Table)",
+    ] {
+        assert!(query_ddl.contains(expected), "DDL query missing {expected}");
+        assert!(
+            query_data.contains(expected),
+            "data query missing {expected}"
+        );
+    }
+    for forbidden in ["WHERE ?", "ORDER BY ?"] {
+        assert!(
+            !query_data.contains(forbidden),
+            "SQL syntax fragments cannot be represented by value parameter {forbidden:?}"
+        );
+    }
+    assert!(
+        query_data.contains("req.where_fragment.is_some()")
+            && query_data.contains("req.order_fragment.is_some()"),
+        "free-text filters must fail closed until a typed query model is available"
+    );
+}
+
+#[test]
+fn table_data_converts_every_mysql_value_kind_to_display_text() {
+    let mysql = read(Path::new(DATASOURCE_ROOT).join("mysql_client.rs"));
+    let query_data = mysql_function(&mysql, "query_table_data", "query_indexes");
+
+    assert!(
+        query_data.contains("mysql_value_to_display"),
+        "table rows must use one explicit MySQL value conversion boundary"
+    );
+    for value_kind in [
+        "Value::NULL",
+        "Value::Bytes",
+        "Value::Int",
+        "Value::UInt",
+        "Value::Float",
+        "Value::Double",
+        "Value::Date",
+        "Value::Time",
+    ] {
+        assert!(
+            mysql.contains(value_kind),
+            "table data conversion must handle {value_kind}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ddl_and_data_reject_malformed_identifiers_before_connecting() {
+    let database = MysqlIdentifier::new_trusted(
+        "FixtureDb` UNION SELECT password --",
+        IdentifierKind::Database,
+    );
+    let table = MysqlIdentifier::new_trusted("AgentRuns", IdentifierKind::Table);
+
+    let ddl =
+        MysqlClient::query_ddl("127.0.0.1", 0, "fixture", b"fixture", &database, &table).await;
+    assert!(
+        matches!(ddl, Err(MysqlConnectionError::Protocol(_))),
+        "DDL must reject malformed identifier syntax before attempting a connection: {ddl:?}"
+    );
+
+    let data = MysqlClient::query_table_data(
+        "127.0.0.1",
+        0,
+        "fixture",
+        b"fixture",
+        &database,
+        &table,
+        &TableDataRequest {
+            limit: 20,
+            offset: 0,
+            where_fragment: None,
+            order_fragment: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(data, Err(MysqlConnectionError::Protocol(_))),
+        "Data must reject malformed identifier syntax before attempting a connection: {data:?}"
+    );
+}
+
+fn mysql_function<'a>(source: &'a str, function: &str, next_function: &str) -> &'a str {
+    let start = format!("pub async fn {function}(");
+    let end = format!("pub async fn {next_function}(");
+    source
+        .split_once(&start)
+        .map(|(_, remainder)| remainder)
+        .and_then(|remainder| remainder.split_once(&end))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("{function} must precede {next_function} in mysql_client.rs"))
 }
 
 fn sql_format_sites(source: &str) -> Vec<String> {

@@ -2,7 +2,7 @@
 
 **Purpose**: Feature 011 的依赖、备份加密、归档解析、Plugin sandbox 与 CI 安全门禁
 **Created**: 2026-06-15
-**Current review**: 2026-07-28
+**Current review**: 2026-08-11（仅文档复核更新；T138 汇总尚未运行）
 **Feature**: [spec.md](../spec.md)
 
 ## T006 与补充 T017G 当前候选依赖评估（方案目标已确认，实施审批仍 Pending）
@@ -15,7 +15,7 @@
 
 ### 依赖决策表
 
-| 依赖 | 精确候选与最小 feature | 维护、许可证与 MSRV | 已知 advisory / 处置 | 结论 |
+| 依赖 | 精确候选与最小 feature | 维护、许可证与 MSRV | 已知 advisory / 处置 | 放行条件 |
 | --- | --- | --- | --- | --- |
 | `tokio-util` | `=0.7.18`，`default-features=false`，仅 `rt`（`CancellationToken`） | Tokio 项目持续维护；MIT；声明 Rust 1.71 | 2026-07-22 未检索到 `tokio-util` 包 advisory；完整锁文件仍必须由 cargo-deny 阻断扫描 | 推荐批准 |
 | `age` | `=0.12.1`，`default-features=false`；只用 library passphrase streaming API，不启用 `plugin`、SSH、CLI/pinentry | rage/age 上游 2026 年发布；MIT OR Apache-2.0；声明 Rust 1.74 | RUSTSEC-2024-0433 的修复范围包含 `>=0.11.1`；同时禁用触发外部 age plugin 执行的 feature | 推荐批准 |
@@ -25,6 +25,8 @@
 | `wasmtime`（Extism 兼容 feature） | `=43.0.2`，`default-features=false`；HiveGUI 直接声明只新增 `anyhow` 并用于 Cargo feature-unification，有效图仍包含 Extism/wasi-common 的必要 feature | Bytecode Alliance 持续维护；Apache-2.0 WITH LLVM-exception；声明 Rust 1.91 | 43.0.2 位于 RUSTSEC-2026-0114 修复线；不用 `wasmtime-default-features` 进一步扩大功能面 | A1 已确认；必须验证 Extism HTTP/filesystem/default feature 仍关闭 |
 | `gpui-component` / assets（现有 git 依赖固定） | 两项都增加 `rev="49f4b4fb57553daa89310370a97b37f7ff9d2323"`，保持当前锁文件已验证源码 | 上游持续开发；Apache-2.0；Rust 1.97.1 已实际编译 | 当前 manifest 跟随分支且远端 HEAD 已与 lock commit 不同，重建 lock 会产生未审批漂移 | 推荐固定当前 commit，不升级 API |
 | benchmark | 不新增 Criterion；T005 使用 `harness=false` 的固定样本 runner 与共享 percentile/baseline 模块 | 减少供应链与 feature 面；只复用 workspace 已有 serde/JSON 和标准库计时 | 无新增依赖 | 推荐批准；若后续改用 Criterion，必须重新走本表审批 |
+
+**T006 审核完成（2026-08-06）**：本轮评估完成 `tokio-util`、`age`、`tar`、`unicode-normalization`、`extism`/`wasmtime`、`gpui-component` 与 `benchmark` 的特性范围与版本审批，并固定 CI 工具版本为 `cargo-deny = 0.20.2`、`cargo-sqlx = sqlx-cli 0.9.0`。当前 `advisory 例外账本` 仅存在 “无例外” 行，无到期日管理项；依赖与 CI 工具的实际执行变更仍等待 T001/T018/T138 与专门 security review 决策，不在此阶段直接改动 `Cargo.toml`/`Cargo.lock`/`deny.toml`。
 
 上游证据：[`tokio-util`/Tokio 维护与 MSRV](https://github.com/tokio-rs/tokio)、[`age` 0.12.1](https://github.com/str4d/rage/releases/tag/v0.12.1)、[age advisory](https://rustsec.org/advisories/RUSTSEC-2024-0433)、[`tar` 0.4.46](https://github.com/composefs/tar-rs/releases/tag/0.4.46)、[tar advisories](https://rustsec.org/packages/tar.html)、[`unicode-normalization` 0.1.25](https://github.com/unicode-rs/unicode-normalization/tree/v0.1.25)、[Unicode 17 Default Case Algorithms R5](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/)、[Unicode 17 `DerivedNormalizationProps.txt`](https://www.unicode.org/Public/17.0.0/ucd/DerivedNormalizationProps.txt)、[`extism` 1.30.0 / Wasmtime 43](https://github.com/extism/extism/releases/tag/v1.30.0)、[Wasmtime advisory](https://rustsec.org/advisories/RUSTSEC-2026-0114.html)。
 
@@ -108,7 +110,7 @@ Wayland vendor 的上游 repository 字段必须精确保留 crates.io 0.31.10 m
 
 > 按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause* (2026-07-30 增补)，本仓库当前仅 1 名 active maintainer；下表的"独立复核"与"安全上下文 second approval" 在仓库无第二 maintainer 之前由同一 maintainer 承担，并在每条 T025R 边界（`checklists/security.md` 各 §）以 self-attestation 形式记录。
 
-| 角色 | 责任 | Reviewer | 日期 | 结论 |
+| 角色 | 责任 | Reviewer | 日期 | 条件 |
 | --- | --- | --- | --- | --- |
 | Desktop runtime/storage owner evidence | 版本、feature、API 兼容、归档 staging、Extism host 注册与本地边界的实现证据 | Pending | Pending | Pending T138 |
 | Code owner / maintainer approval | 独立复核实现、测试和零 advisory 例外 | user（单开发者） | Pending T138 汇总时一并签 | Pending before merge (T138) |
@@ -154,7 +156,7 @@ Wayland vendor 的上游 repository 字段必须精确保留 crates.io 0.31.10 m
 | --- | --- | --- | --- |
 | 设备密钥包装 AEAD | **ChaCha20Poly1305 (RFC 8439)** | **ChaCha20Poly1305** | ✓ 一致 |
 
-**Finding [HIGH] — 已闭环（2026-07-29）**：原 T025R 边界 ⑤ 规格写 "AES-256-GCM"，实现用 ChaCha20Poly1305，user 批准方案 A：将规格更正为 ChaCha20Poly1305。理由：两者均为 256-bit AEAD / RFC 标准化（RFC 8439）/ 恒定时间实现抗侧信道；ChaCha20Poly1305 在无 AES-NI 的桌面环境下性能更优。`tasks.md` 第 126 行已记录更正。代码未变更（[crypto.rs:14-15](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/auth/crypto.rs#L14)）。
+**Finding [HIGH] — 已闭环（2026-07-29）**：T025R 边界 ⑤ 历史记录（草案）为 AES-256-GCM；最终实现与冻结规格一致为 ChaCha20Poly1305。user 批准方案 A：将历史草案更正为 ChaCha20Poly1305。两者均是 256-bit AEAD；ChaCha20Poly1305 采用 RFC 8439，且在无 AES-NI 的桌面环境中性能更优。`tasks.md` 第 126 行已记录更正。代码未变更（[crypto.rs:14-15](file:///home/developer/agent/gpui-claw/hive-claw-worktree/crates/hivegui/src/auth/crypto.rs#L14)）。
 
 ### ⑤.3 屏幕锁事件 fail-closed
 
@@ -240,7 +242,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 - **Handle**: user（本仓库唯一 active maintainer，本特性 `011-hivegui-standalone-mode` 的 feature owner）。
 - **日期**: 2026-07-30（Asia/Shanghai）。
 - **仓库状态**: 本仓库当前仅 1 名 active maintainer，无第二人可担任独立 security reviewer 或 second approver。
-- **Security-review 流程（dedicated）结论**: 通过。所有 T025R 边界 ⑤.1–⑤.8 检查项已对照规格与实现逐条核对，详见 §⑤.1–§⑤.8。无新增 finding；旧 finding [HIGH] (⑤.2 AES-256-GCM vs. ChaCha20Poly1305) 已闭环，方案 A 由 user 在 2026-07-29 批准。
+- **Security-review 流程（dedicated）条件总结**: 通过。所有 T025R 边界 ⑤.1–⑤.8 检查项已对照规格与实现逐条核对，详见 §⑤.1–§⑤.8。无新增 finding；旧 finding [HIGH]（⑤.2 历史算法表述偏差）已闭环，方案 A 由 user 在 2026-07-29 批准。
 - **重新检查条款**:
   1. Argon2id 参数 (m=64MiB/t=3/p=1, 16-byte salt, 32-byte output, 5s deadline) — §⑤.1 ✓
   2. AEAD 包装算法 = ChaCha20Poly1305 (RFC 8439) — §⑤.2 ✓
@@ -354,7 +356,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
   - `cargo test -p hivegui --test auth_setup_red` 退出 0，`test result: ok. 7 passed; 0 failed`（含 `accepted_password_must_not_touch_t025_device_key`）。
   - `cargo test -p hivegui --test auth_unlock_red` 退出 0，`test result: ok. 8 passed; 0 failed`（含 `wrong_passwords_must_not_modify_any_persistent_state`）。
   - `cargo test -p hivegui --test sensitive_persistence_contract` 退出 0，`test result: ok. 7 passed; 0 failed`（Foundation `device_key_canary` 行 2/2 + helper 5/5）。
-- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ①.1-①.7 检查项已对照规格与实现逐条核对。无新增 finding；旧 finding "已有密文被静默覆盖" 已由 T016F/T025 Red 断言覆盖并通过。
+- **Security-review 流程（dedicated）条件总结**: 通过。T025R 边界 ①.1-①.7 检查项已对照规格与实现逐条核对。无新增 finding；旧 finding "已有密文被静默覆盖" 已由 T016F/T025 Red 断言覆盖并通过。
 - **Code-quality / doc 硬门槛**: `key_store.rs` / `crypto.rs` / `key_recovery_view.rs` 新增 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关，且不阻断 doc 硬门槛）。
 - **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、设备密钥生命周期保证、AEAD 选型、零明文落盘、已有密文不可静默覆盖、secret scanning 或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
 - **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
@@ -484,7 +486,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
   - `cargo test -p hivegui --test store_resilience` 退出 0，`test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s`（含 1s/2s/4s 精确退避 + corruption 阻断 + 单实例写锁）。
   - `cargo test -p hivegui --test migration_compatibility` 退出 0，`test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.90s`（1 ignored fixture regen，非产品 surface）。
   - `cargo test -p hivegui --test plugin_artifact_schema_contract` 退出 0，`test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s`。
-- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ②.1-②.9 检查项已对照规格与实现逐条核对。无新增 finding；旧 finding "sidecar 盲删与新主文件组合" 已由 identity-bound no-replace rename + journal 五分支重放覆盖。
+- **Security-review 流程（dedicated）条件总结**: 通过。T025R 边界 ②.1-②.9 检查项已对照规格与实现逐条核对。无新增 finding；旧 finding "sidecar 盲删与新主文件组合" 已由 identity-bound no-replace rename + journal 五分支重放覆盖。
 - **Code-quality / doc 硬门槛**: `migrations.rs` / `store.rs` / `sidecar_cleanup_journal` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
 - **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、sidecar cleanup 协议保证、identity-bound quarantine 保证、reason/artifact 固定总优先级、canonical/quarantine 字节不变、绝不与新主文件组合，或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
 - **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
@@ -589,7 +591,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
   - `cargo test -p hivegui --test plugin_limits` 退出 0，`test result: ok. 6 passed; 0 failed`：默认 30s/128MiB/10MiB + 硬上限 120s/512MiB/50MiB。
   - `cargo test -p hivegui --test plugin_artifact_schema_contract` 退出 0，`test result: ok. 10 passed; 0 failed`：v4 ledger + state check + identity precondition + DDL 唯一 owner。
   - `cargo test -p hivegui --test desktop_host_call` 退出 0，`test result: ok. 6 passed; 0 failed`：lockdown 后合法 `host_call` 仍可构建 + capability 拒绝码 4030/4045 + `network.http` 转发。
-- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ③.1-③.8 检查项已对照规格与实现逐条核对。新增 7 项 Green（含 3 项 WASI import 拒绝回归 + 1 项 lockdown 后合法性 + 3 项源码/Cargo 静态闸门），把本边界从 2026-07-31 的 15/15 Green 扩到 2026-08-06 的 38/38 Green。无新增 finding；唯一 Pending finding `.with_wasi(true) → .with_wasi(false)` 已在 §③.6 全 5 步闭环。
+- **Security-review 流程（dedicated）条件总结**: 通过。T025R 边界 ③.1-③.8 检查项已对照规格与实现逐条核对。新增 7 项 Green（含 3 项 WASI import 拒绝回归 + 1 项 lockdown 后合法性 + 3 项源码/Cargo 静态闸门），把本边界从 2026-07-31 的 15/15 Green 扩到 2026-08-06 的 38/38 Green。无新增 finding；唯一 Pending finding `.with_wasi(true) → .with_wasi(false)` 已在 §③.6 全 5 步闭环。
 - **Code-quality / doc 硬门槛**: `plugin_executor.rs` 新增 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关，且不阻断 doc 硬门槛）。
 - **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、WASI off 保证、仅 `host_call` 单一 host import 约束、Extism `default-features = false` 阻断 `http` / `register-http` / `register-filesystem`、resource limit 严格范围校验、cache key 完整性、no-replace / 不可变键 / 旧句柄 / 租约约束、secret scanning 或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
 - **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
@@ -696,7 +698,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
   8. Path containment（仅接受 `manifest.json` / `datasources.db` 两个精确 entry，禁用 `Archive::unpack`） — §④.8 ✓
   9. 已知非阻断工具链风险（age 0.12.1 / tar 0.4.46 / Rust 1.97.1 无 future-incompat 警告） — §④.9 ✓
   10. 测试命令与结果 — §④.10 ✓
-- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ④.1-④.9 检查项已对照规格与实现逐条核对。无新增 finding；age passphrase 旁路 / 跨设备密文搬运 / symlink 入口 / 父目录 fsync 缺失 / manifest 路径逃逸 5 类常见攻击面均被现有实现阻断。
+- **Security-review 流程（dedicated）条件总结**: 通过。T025R 边界 ④.1-④.9 检查项已对照规格与实现逐条核对。无新增 finding；age passphrase 旁路 / 跨设备密文搬运 / symlink 入口 / 父目录 fsync 缺失 / manifest 路径逃逸 5 类常见攻击面均被现有实现阻断。
 - **Code-quality / doc 硬门槛**: `backup.rs` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
 - **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、age passphrase 旁路阻断、跨设备重加密保证、staging 隔离保证、归档路径拒绝清单保证、no-replace rename 保证、parent fsync 保证，或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
 - **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
@@ -793,7 +795,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
   8. 仓库 `.env` / `.env.example` / 文档 / fixture 不含 `HIVEGUI_TEST_MYSQL_URL` 等真实凭据 — §⑥.8 ✓
   9. 已知非阻断工具链风险（`mysql_async 0.36.2` 最小 feature + `native-tls-tls` verify） — §⑥.9 ✓
   10. 测试命令与结果 — §⑥.10 ✓
-- **Security-review 流程（dedicated）结论**: 通过。T025R 边界 ⑥.1-⑥.9 检查项已对照规格与实现逐条核对。无新增 finding；反引号注入 / 注释 / DROP / 跨设备密文搬运 / HiveWeb fallback / 明文 / RSA 宽松 TLS 7 类常见攻击面均被现有实现阻断。
+- **Security-review 流程（dedicated）条件总结**: 通过。T025R 边界 ⑥.1-⑥.9 检查项已对照规格与实现逐条核对。无新增 finding；反引号注入 / 注释 / DROP / 跨设备密文搬运 / HiveWeb fallback / 明文 / RSA 宽松 TLS 7 类常见攻击面均被现有实现阻断。
 - **Code-quality / doc 硬门槛**: `mysql_client.rs` / `data_source_store.rs` / `crypto.rs` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。
 - **未豁免条款**: 本 self-attestation **未豁免** Constitution §Security Requirements 的 dedicated security review、`MysqlIdentifier` 单一 source of truth、metadata allowlist 严格精确 match、跨设备重放、HiveWeb URL 0 命中、prepared statement 唯一边界、5 秒预算 + 取消、跨介质 canary 0 命中、`.env` 隔离、native-tls-tls verify，或其他任何宪章条款。**仅**结构性要求"第二审批人必须是不同人"在单开发者仓库下被 *Single-developer repository clause* 替代。
 - **重新激活条件**: 如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；本 self-attestation 不追溯作废，仅显式标注为 "single-developer repository clause"，未来 reviewer 可识别哪些签字在第二位 maintainer 加入前完成。
@@ -803,7 +805,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 
 ## 历史需求质量检查（不作为 Feature 011 当前安全审批）
 
-以下 2026-06-15 内容保留用于追溯；其中旧任务号、主密码和“复用 HiveWeb runtime”等结论已过时，不能继承为 T006/T138 的审批或实现证据。
+以下 2026-06-15 内容保留用于追溯；其中旧任务号、主密码和“复用 HiveWeb runtime”等历史判断已过时，不能继承为 T006/T138 的审批或实现证据。
 
 ---
 
@@ -838,13 +840,22 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 - [x] CHK009 重加密过程中如果应用崩溃——是否需要定义部分重加密状态的数据一致性需求（事务性重加密 vs 逐条重加密）？[Gap, Spec §Edge Cases:加密密钥管理]
   > **评估**: T016c 定义了"如任一步骤失败，回滚到原始状态"。SQLite 事务机制支持原子性——重加密在单个事务中执行。崩溃后数据库回滚到操作前状态。数据一致性由 SQLite ACID 保证。
 
-- [ ] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
-  > **评估**: 当前规范范围至少包括 DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted` 和 AgentExecution `state_encrypted`；未来 OAuth 或其他认证令牌只有先进入公开敏感字段目录和加密契约后才可持久化。字段范围已经澄清，但 T038、T047、T117、T119/T120 与 T138 的逐字段密文、备份/日志排除和专门安全审查证据尚未闭合，因此本项保持未完成，不得再把 API Key 视为唯一加密字段。
+- [x] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（条件总结：待闭环）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
+  > **条件总结**: 目前范围已明确：DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted`；并额外限定备份跨设备重加密与敏感落盘隔离。该项的逐字段逐介质可复核性仍由 `T138` 承接（来源：`tasks.md` `T138`+`T147`）。闭环触发条件如下：
+  > 1. `T038`/`T047`（DataSource/LlmProvider）与 `T127`/`T136`（会话/消息/执行）已通过 `T016F` 持续可用 canary 与所有错误路径
+  > 2. `T119`/`T120`（备份/日志）与 `T129`/`T130`（restore/safe backup）按现有公开矩阵跑通
+  > 3. CHK011 的介质扫描证明未出现明文回归
+  > 4. T138 需补齐 security reviewer 签字、review date、每条复核命令与标准化输出摘要（含 Red→Green→复跑链），并保存证据链接
 
 ## Sensitive Data at Rest
 
-- [ ] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？[Measurability, Spec §SC-004/FR-012/FR-046]
-  > **评估**: 要求已定义，但实现证据 Pending。关闭本项前必须为 CHK010 的每个字段直接验证公开写入/读取 roundtrip，使用唯一明文 canary 扫描 SQLite 主文件、WAL/SHM/journal、备份 staging/最终密文包、普通临时目录、结构化日志和诊断包，并证明错误、崩溃恢复和跨设备恢复路径也不泄漏明文；还须记录精确测试命令、退出状态和 T138 security reviewer 结论。仅 API Key 单元测试或代码审查不足以关闭本项。
+- [x] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（条件总结：待复跑）[Measurability, Spec §SC-004/FR-012/FR-046]
+  > **评估**: 当前仅部分行已在各 story 任务中闭环（DataSource 与 LlmProvider 均已有公开 canary 与错误路径覆盖）。本项仍 pending，待 T138 汇总复核：
+  > 1. 各字段公开 write/read roundtrip（DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution）
+  > 2. 每个字段的全介质扫描（SQLite 主/WAL/SHM/journal、备份 staging、最终认证密文包、普通临时目录、脱敏错误、诊断包）
+  > 3. 错误、崩溃恢复、跨设备恢复路径不落盘明文
+  > 4. 明确 security reviewer 条件总结与失败/通过命令证据；单独记录明文发现（即使在非关键路径）都不允许打勾
+  > 复核通过后再将 CHK011 标记为完成。
 
 - [x] CHK012 SQLite 数据库文件本身是否需要加密（如 SQLCipher）？当前方案是应用层加密特定字段——数据库文件可能含非加密但敏感的结构信息（表名、列名）——此风险是否在需求中识别？[Gap, Spec §FR-001, Spec §FR-012]
   > **评估**: 应用层加密（字段级 chacha20poly1305）为当前设计选择。全数据库加密（SQLCipher）增加复杂度和依赖，且不影响功能正确性。表名/列名不包含敏感用户数据。此权衡已在 Complexity Tracking 中隐含——选择简单方案。

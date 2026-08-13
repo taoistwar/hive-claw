@@ -877,12 +877,31 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
 - **可识别失败**：`error[E0432]: unresolved import hivegui::datasource::tool_store`。
 - **覆盖**：Tool 唯一 + builtin 不可 rename + RESTRICT 删除 + default_args schema 稳定。
 
-### T111.1 — T108 Skill store Red 证据
+### T108.1 — T108 Skill store Red 证据
 
 - **文件**：`crates/hivegui/tests/skill_management.rs`（新建，~55 行）。
 - **原样 Red 命令**：`cargo test -p hivegui --test skill_management --no-run` 退出 101。
 - **可识别失败**：`error[E0432]: unresolved import hivegui::datasource::skill_store`。
 - **覆盖**：Skill 唯一 + 空 content 拒绝 + 内容持久化。
+
+### T111.1 — T110 / T111 US12 Skill 无障碍与 T016E Skill 行 Review Red 证据
+
+- **文件**：`crates/hivegui/tests/accessibility.rs`（§T111，新增/修改）。
+- **原样 Red 命令**：`cargo test -p hivegui --test accessibility -- --exact skill_view_module_carries_scroll_tag_for_native_surface`。
+- **可识别失败**：在 `T112` 未到位前，`Skill` 行的 source-contract 与滚动/键盘入口断言应失败（预期触发 `assert_source_tag` / `assert!` 断言）。
+- **覆盖**：T110（`skill_view_module_carries_scroll_tag_for_native_surface`、`skill_list_surface_is_registered_in_t016e_inventory`、`skill_view_supports_keyboard_navigation_for_form_crud`、`skill_view_declares_stable_form_modal_and_error_surface`、`skill_view_search_and_pagination_controls_use_size_20`）。
+- **T016E 激活**：`SkillList` owner `US12/T112` 行在 reviewer 审批后进入 US12 实现前红线。
+- **审批**：用户（本会话）于 2026-08-12 批准 US12 T111 reviewer gate。
+
+### T111.2 — Self-attestation（Constitution v1.5.0 *Single-developer repository clause*）
+
+- **Handle**: user（本仓库唯一 active maintainer）。
+- **Date**: 2026-08-12。
+- **Scope**: T111 复核 `Skill` 无障碍/滚动行红证据并确认 owner-phase 与 T016E 行关系。
+- **重新检查条款**:
+  1. `SkillList` 被 `ScrollSurface::SkillList` / `owner_phase = US12/T112` 接管，未提前计入 Foundation Green。✓
+  2. `scroll:skill_list` 与 T110 在 reviewer 阶段未绕过 `assert_source_tag` / `scroll_inventory` 审核。✓
+  3. reviewer 审批后方可进入 T112。✓
 
 ### T123.1 — T115 Local Agent session Red 证据
 

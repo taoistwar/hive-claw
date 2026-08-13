@@ -26,7 +26,7 @@
 //! ## Rotation / retention
 //!
 //! The active segment is always named `activity.open`; rotation
-//! produces an immutable sibling named `activity-<timestamp>.jsonl`
+//! produces an immutable sibling named `activity-<timestamp>[-<sequence>].jsonl`
 //! after `flush + fsync`, then performs a same-directory atomic rename
 //! and a parent-directory fsync. Retention is 7×24 hours measured per
 //! record's `occurred_at`, and the effective retention floor is the
@@ -108,7 +108,8 @@ impl Clock for SystemClock {
 /// <root_dir>/
 ///     logs/
 ///         activity.open            # current active segment
-///         activity-<unix>.jsonl    # rotated immutable segments
+///         activity-<unix>[-<sequence>].jsonl
+///                                  # rotated immutable segments
 ///         high-watermark.json      # persisted retention floor
 /// ```
 pub struct ActivityLog;
@@ -116,7 +117,10 @@ pub struct ActivityLog;
 impl ActivityLog {
     /// Open (or create) the activity log rooted at `root_dir/logs`.
     /// `clock` is injected for deterministic retention / rotation tests.
-    pub fn open(root_dir: &Path, clock: &dyn Clock) -> Result<LogHandle, LogError> {
+    pub fn open<C>(root_dir: &Path, clock: &C) -> Result<LogHandle, LogError>
+    where
+        C: Clock + Clone + 'static,
+    {
         let logs_dir = root_dir.join("logs");
         fs::create_dir_all(&logs_dir).map_err(|e| LogError::Io(e.to_string()))?;
         // Make sure the active segment exists as an empty file so
@@ -134,38 +138,9 @@ impl ActivityLog {
         }
         Ok(LogHandle {
             root: logs_dir,
-            clock: Arc::new(OwnedClock::new(clock)),
+            clock: Arc::new(clock.clone()),
         })
     }
-}
-
-/// Owned clock wrapper that allows trait-object upcasting without
-/// requiring the original `&dyn Clock` to live as long as the handle.
-struct OwnedClock {
-    inner: Box<dyn Clock + Send + Sync>,
-}
-
-impl OwnedClock {
-    fn new(clock: &dyn Clock) -> Self {
-        // Re-box the trait object so we own the implementation.
-        Self {
-            inner: clock_box_clone(clock),
-        }
-    }
-}
-
-impl Clock for OwnedClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.inner.now()
-    }
-}
-
-fn clock_box_clone(_clock: &dyn Clock) -> Box<dyn Clock + Send + Sync> {
-    // The `Clock` trait does not require `Clone`, so we keep the
-    // box allocated for the program lifetime via a leaked box.
-    // The handle stores the original `Arc<dyn Clock>` from the
-    // caller, so this is never actually used in practice.
-    Box::new(SystemClock)
 }
 
 /// Open handle returned by [`ActivityLog::open`]. Holds a reference to
@@ -198,7 +173,7 @@ impl LogHandle {
 
         // Serialise the record; if its serialised bytes exceed the
         // single-record cap, also reject.
-        let mut owned = OwnedRecord {
+        let owned = OwnedRecord {
             schema_version: record.schema_version,
             occurred_at: record.occurred_at,
             execution_id: record.execution_id.to_string(),
@@ -270,7 +245,7 @@ impl LogHandle {
         drop(file);
 
         let timestamp = self.clock.now().timestamp_nanos_opt().unwrap_or_default();
-        let target = self.root.join(format!("activity-{timestamp}.jsonl"));
+        let target = next_rotated_segment_path(&self.root, timestamp)?;
         // Same-directory atomic rename.
         fs::rename(&active, &target).map_err(|e| LogError::Io(e.to_string()))?;
         // Recreate the active file.
@@ -293,7 +268,7 @@ impl LogHandle {
         let effective_now = std::cmp::max(now, floor);
         let cutoff = effective_now - chrono::Duration::from_std(RETENTION_WINDOW).unwrap();
         // Walk every `.jsonl` segment; truncate records whose
-        // occurred_at is before the cutoff. The active segment is
+        // occurred_at is at or before the cutoff. The active segment is
         // only rotated (then truncated) once we discover expired
         // records, to keep the active file small.
         let mut expired_bytes = 0usize;
@@ -329,7 +304,7 @@ impl LogHandle {
                         if let Ok(occurred) =
                             DateTime::parse_from_rfc3339(occurred_at).map(|d| d.with_timezone(&Utc))
                         {
-                            if occurred < cutoff {
+                            if occurred <= cutoff {
                                 skip = true;
                                 expired_in_segment += line.len() + 1;
                             }
@@ -593,6 +568,24 @@ fn current_total_bytes(root: &Path) -> Result<usize, LogError> {
         }
     }
     Ok(total)
+}
+
+fn next_rotated_segment_path(root: &Path, timestamp: i64) -> Result<PathBuf, LogError> {
+    let first = root.join(format!("activity-{timestamp}.jsonl"));
+    if !first.exists() {
+        return Ok(first);
+    }
+
+    for sequence in 1_u32.. {
+        let candidate = root.join(format!("activity-{timestamp}-{sequence}.jsonl"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(LogError::Io(
+        "no available immutable activity segment name".to_string(),
+    ))
 }
 
 fn append_complete_lines(path: &Path, out: &mut Vec<serde_json::Value>) -> Result<(), LogError> {

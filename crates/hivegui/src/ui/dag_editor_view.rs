@@ -2226,7 +2226,7 @@ mod tests {
             identifier: format!("function_{id}"),
             name: name.into(),
             description: Some(description.into()),
-            kind: 1,
+            kind: "builtin".to_string(),
             input_schema: input_schema.into(),
             output_schema: output_schema.into(),
             plugin_id: None,

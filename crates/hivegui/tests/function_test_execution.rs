@@ -21,7 +21,7 @@ fn custom_function(plugin_id: Option<i64>, plugin_export: Option<&str>) -> Funct
         identifier: "weather-lookup".into(),
         name: "weather-lookup".into(),
         description: None,
-        kind: 2,
+        kind: "custom".to_string(),
         input_schema: r#"{"type":"object"}"#.into(),
         output_schema: "{}".into(),
         plugin_id,
@@ -72,7 +72,7 @@ fn builtin_function_test_case(identifier: &str) -> (&'static str, &'static str, 
 
 fn builtin_function(identifier: &str) -> Function {
     let mut function = custom_function(None, None);
-    function.kind = 1;
+    function.kind = "builtin".to_string();
     function.identifier = identifier.into();
     function.name = identifier.into();
     function.plugin_id = None;
@@ -378,7 +378,7 @@ fn assert_placeholder_not_executable(error: &str) {
 async fn placeholder_function_is_explicitly_non_executable() {
     let temp_dir = tempfile::tempdir().expect("create temp directory");
     let mut function = custom_function(Some(1), Some("echo"));
-    function.kind = 3;
+    function.kind = "placeholder".to_string();
     function.required_capabilities = Some(r#"[bad json"#.into());
 
     let error = FunctionTestExecutor::execute(
@@ -395,7 +395,7 @@ async fn placeholder_function_is_explicitly_non_executable() {
 async fn placeholder_function_is_non_executable_from_capability_entrypoint() {
     let temp_dir = tempfile::tempdir().expect("create temp directory");
     let mut function = custom_function(Some(1), Some("echo"));
-    function.kind = 3;
+    function.kind = "placeholder".to_string();
     function.required_capabilities = Some(r#"["log.emit"]"#.into());
 
     let error = FunctionTestExecutor::execute_with_capabilities(

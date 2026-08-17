@@ -1363,11 +1363,11 @@ fn function_view_placeholder_row_should_be_schema_only_and_non_executable() {
     // Placeholder (kind 3) must have no inline test action and only placeholder
     // schema semantics, not a live execution contract.
     assert!(
-        FUNCTION_VIEW_SOURCE.contains("ic.kind != 3"),
+        FUNCTION_VIEW_SOURCE.contains("ic.kind != \"placeholder\""),
         "Placeholder rows must hide the inline '测试' action"
     );
     assert!(
-        FUNCTION_VIEW_SOURCE.contains("kind == 3")
+        FUNCTION_VIEW_SOURCE.contains("kind == \"placeholder\"")
             && FUNCTION_VIEW_SOURCE.contains("required_capabilities = None"),
         "Placeholder rows must clear capability/export state and stay schema-only"
     );
@@ -1433,7 +1433,8 @@ fn function_view_declares_keyboard_and_focus_contract_for_accessibility() {
         "T088 must wire keyboard handling for Function list/form/Test dialogs"
     );
     assert!(
-        FUNCTION_VIEW_SOURCE.contains("kind == 1") || FUNCTION_VIEW_SOURCE.contains("kind != 1"),
+        FUNCTION_VIEW_SOURCE.contains("kind == \"builtin\"")
+            || FUNCTION_VIEW_SOURCE.contains("kind != \"builtin\""),
         "Builtin rows should have an explicit contract path for disabled mode"
     );
 }

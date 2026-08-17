@@ -29,7 +29,7 @@ fn function_form_uses_linked_selectors_and_persists_relations() {
     }
 
     assert!(
-        source.contains(".when(self.form_kind == 2"),
+        source.contains(".when(self.form_kind == \"custom\""),
         "plugin selectors must only be shown for custom functions"
     );
     assert!(
@@ -43,29 +43,29 @@ fn placeholder_function_kind_only_exposes_schema_configuration() {
     let source = include_str!("../src/ui/function_view.rs");
 
     assert!(
-        source.contains("(3_i64, \"占位\")"),
+        source.contains("(\"placeholder\", \"占位\")"),
         "Kind selector must offer the placeholder function type"
     );
     assert!(
-        source.contains("3 => \"占位\""),
+        source.contains("\"placeholder\" => \"占位\""),
         "placeholder functions must use a readable Kind label"
     );
     assert!(
-        source.contains(".when(self.form_kind == 2"),
+        source.contains(".when(self.form_kind == \"custom\""),
         "plugin fields must remain exclusive to custom functions"
     );
     assert!(
-        source.contains(".when(self.form_kind != 3"),
+        source.contains(".when(self.form_kind != \"placeholder\""),
         "placeholder functions must hide Capability configuration"
     );
     assert!(
-        source.contains("if kind == 3")
+        source.contains("if kind == \"placeholder\"")
             && source.contains("view.form_capability = None")
             && source.contains("required_capabilities = None"),
         "selecting or saving a placeholder must clear executable relations"
     );
     assert!(
-        source.contains(".when(ic.kind != 3"),
+        source.contains(".when(ic.kind != \"placeholder\""),
         "a placeholder without an implementation must not expose the test action"
     );
 }

@@ -24,7 +24,7 @@ pub struct ToolView {
     form_identifier: String,
     form_name: String,
     form_description: String,
-    form_kind: i64,
+    form_kind: String,
     form_source: String,
     form_function_id: String,
     form_workflow_id: String,
@@ -60,7 +60,7 @@ impl ToolView {
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
-            form_kind: 1,
+            form_kind: "function-wrap".to_string(),
             form_source: "workspace".into(),
             form_function_id: String::new(),
             form_workflow_id: String::new(),
@@ -111,7 +111,7 @@ impl ToolView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_kind = 1;
+        self.form_kind = "function-wrap".to_string();
         self.form_source = "workspace".into();
         self.form_function_id.clear();
         self.form_workflow_id.clear();
@@ -249,8 +249,8 @@ impl ToolView {
             cx.notify();
             return;
         }
-        let kind: i64 = self.form_kind;
-        let fid: Option<i64> = if kind == 1 {
+        let kind = self.form_kind.clone();
+        let fid: Option<i64> = if kind == "function-wrap" {
             if self.form_function_id.is_empty() {
                 None
             } else {
@@ -259,7 +259,7 @@ impl ToolView {
         } else {
             None
         };
-        let wid: Option<i64> = if kind == 2 {
+        let wid: Option<i64> = if kind == "workflow-wrap" {
             if self.form_workflow_id.is_empty() {
                 None
             } else {
@@ -387,7 +387,7 @@ impl ToolView {
         }
     }
 
-    fn select_kind(&mut self, new_kind: i64, cx: &mut Context<Self>) {
+    fn select_kind(&mut self, new_kind: String, cx: &mut Context<Self>) {
         if self.form_kind != new_kind {
             self.form_function_id.clear();
             self.form_workflow_id.clear();
@@ -416,11 +416,19 @@ impl ToolView {
     }
 
     fn kind_label(&self) -> &'static str {
-        match self.form_kind {
-            1 => "函数",
-            2 => "工作流",
+        match self.form_kind.as_str() {
+            "function-wrap" => "函数",
+            "workflow-wrap" => "工作流",
             _ => "未知",
         }
+    }
+}
+
+fn tool_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "function-wrap" => "函数",
+        "workflow-wrap" => "工作流",
+        _ => "未知",
     }
 }
 
@@ -681,7 +689,7 @@ impl Render for ToolView {
                                     )
                                     .child(
                                         list_cell(Some(col_widths[3]), style)
-                                            .child(format!("{}", item.kind)),
+                                            .child(tool_kind_label(&item.kind)),
                                     )
                                     .child(
                                         list_cell(Some(col_widths[4]), style)
@@ -818,7 +826,7 @@ impl Render for ToolView {
                 let source_label = self.form_source.clone();
                 let kind_select_open = self.kind_select_open;
                 let source_select_open = self.source_select_open;
-                let form_kind = self.form_kind;
+                let form_kind = self.form_kind.clone();
                 let form_source = self.form_source.clone();
                 let view_handle = cx.weak_entity();
                 this.child(
@@ -873,34 +881,41 @@ impl Render for ToolView {
                                 })
                                 .when(kind_select_open, |field| {
                                     let kind_view = view_handle.clone();
-                                    field.child(selector_menu(theme).children(
-                                        [(1_i64, "函数"), (2_i64, "工作流")].into_iter().map(
-                                            move |(k, l)| {
-                                                let label = l.to_string();
-                                                let selected = k == form_kind;
-                                                let option_id = format!("tool-kind-option-{k}");
-                                                let view = kind_view.clone();
-                                                selector_option(
-                                                    option_id,
-                                                    label,
-                                                    selected,
-                                                    theme,
-                                                    move |_, _, cx| {
-                                                        view.update(cx, |view, cx| {
-                                                            if view.form_kind != k {
-                                                                view.form_function_id.clear();
-                                                                view.form_workflow_id.clear();
-                                                            }
-                                                            view.form_kind = k;
-                                                            view.kind_select_open = false;
-                                                            cx.notify();
-                                                        })
-                                                        .ok();
-                                                    },
-                                                )
-                                            },
+                                    field.child(
+                                        selector_menu(theme).children(
+                                            [
+                                                ("function-wrap", "函数"),
+                                                ("workflow-wrap", "工作流"),
+                                            ]
+                                            .into_iter()
+                                            .map(
+                                                move |(k, l)| {
+                                                    let label = l.to_string();
+                                                    let selected = k == form_kind;
+                                                    let option_id = format!("tool-kind-option-{k}");
+                                                    let view = kind_view.clone();
+                                                    selector_option(
+                                                        option_id,
+                                                        label,
+                                                        selected,
+                                                        theme,
+                                                        move |_, _, cx| {
+                                                            view.update(cx, |view, cx| {
+                                                                if view.form_kind != k {
+                                                                    view.form_function_id.clear();
+                                                                    view.form_workflow_id.clear();
+                                                                }
+                                                                view.form_kind = k.to_string();
+                                                                view.kind_select_open = false;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        },
+                                                    )
+                                                },
+                                            ),
                                         ),
-                                    ))
+                                    )
                                 }),
                             )
                             .child(
@@ -954,10 +969,10 @@ impl Render for ToolView {
                                     },
                                 ),
                             )
-                            .when(self.form_kind == 1, |this| {
+                            .when(self.form_kind == "function-wrap", |this| {
                                 this.child(form_field("Function ID *", function_id_input, theme))
                             })
-                            .when(self.form_kind == 2, |this| {
+                            .when(self.form_kind == "workflow-wrap", |this| {
                                 this.child(form_field("Workflow ID *", workflow_id_input, theme))
                             })
                             .child(form_field("Input Schema (JSON)", input_schema_input, theme))

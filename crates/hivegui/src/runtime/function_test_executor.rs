@@ -54,7 +54,7 @@ impl FunctionTestExecutor {
         input: Value,
         base_dir: &Path,
     ) -> Result<String, String> {
-        if function.kind == 3 {
+        if function.kind == "placeholder" {
             return Err("占位函数没有可执行实现，仅用于 LLM 提示词调试".to_string());
         }
 
@@ -76,11 +76,11 @@ impl FunctionTestExecutor {
         base_dir: &Path,
         allowed_capabilities: Vec<String>,
     ) -> Result<String, String> {
-        if function.kind == 3 {
+        if function.kind == "placeholder" {
             return Err("占位函数没有可执行实现，仅用于 LLM 提示词调试".to_string());
         }
 
-        if function.kind == 1 {
+        if function.kind == "builtin" {
             return BuiltinExecutor::execute(&function.identifier, input).map(|output| {
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
             });

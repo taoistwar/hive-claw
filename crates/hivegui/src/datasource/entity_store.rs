@@ -239,7 +239,11 @@ pub async fn restore_from_backup(pool: &Pool<Sqlite>, backup_path: &str) -> Resu
                 .unwrap_or("");
             let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let description = func.get("description").and_then(|v| v.as_str());
-            let kind = func.get("kind").and_then(|v| v.as_i64()).unwrap_or(1);
+            let kind = func
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("builtin")
+                .to_string();
             let input_schema = func
                 .get("input_schema")
                 .and_then(|v| v.as_str())
@@ -336,7 +340,11 @@ pub async fn restore_from_backup(pool: &Pool<Sqlite>, backup_path: &str) -> Resu
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let kind = tool.get("kind").and_then(|v| v.as_i64()).unwrap_or(1);
+            let kind = tool
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("function-wrap")
+                .to_string();
             let source = tool
                 .get("source")
                 .and_then(|v| v.as_str())
@@ -673,7 +681,7 @@ pub struct Function {
     pub identifier: String,
     pub name: String,
     pub description: Option<String>,
-    pub kind: i64,
+    pub kind: String,
     pub input_schema: String,
     pub output_schema: String,
     pub plugin_id: Option<i64>,
@@ -728,7 +736,7 @@ pub struct Tool {
     pub identifier: String,
     pub name: String,
     pub description: String,
-    pub kind: i64,
+    pub kind: String,
     pub source: String,
     pub is_always: bool,
     pub function_id: Option<i64>,
@@ -1523,7 +1531,7 @@ impl Function {
         identifier: String,
         name: String,
         description: Option<String>,
-        kind: i64,
+        kind: String,
         input_schema: String,
         output_schema: String,
         plugin_id: Option<i64>,
@@ -1543,14 +1551,14 @@ impl Function {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query_scalar::<_, i64>(
             "INSERT INTO functions (identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id, required_capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
-        ).bind(&identifier).bind(&name).bind(&description).bind(kind).bind(&input_schema).bind(&output_schema).bind(plugin_id).bind(&plugin_export).bind(category_id).bind(&required_capabilities).bind(&now).bind(&now)
+        ).bind(&identifier).bind(&name).bind(&description).bind(&kind).bind(&input_schema).bind(&output_schema).bind(plugin_id).bind(&plugin_export).bind(category_id).bind(&required_capabilities).bind(&now).bind(&now)
             .fetch_one(pool).await;
 
         let id =
             result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
 
         let duration = start.elapsed().as_millis();
-        tracing::info!(entity = "function", op = "create", id = id, identifier = %identifier, name = %name, kind = kind, duration_ms = duration, "Function created");
+        tracing::info!(entity = "function", op = "create", id = id, identifier = %identifier, name = %name, kind = %kind, duration_ms = duration, "Function created");
 
         Function::get(pool, id)
             .await?
@@ -1563,7 +1571,7 @@ impl Function {
         identifier: String,
         name: String,
         description: Option<String>,
-        kind: i64,
+        kind: String,
         input_schema: String,
         output_schema: String,
         plugin_id: Option<i64>,
@@ -1583,7 +1591,7 @@ impl Function {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE functions SET identifier=?, name=?, description=?, kind=?, input_schema=?, output_schema=?, plugin_id=?, plugin_export=?, category_id=?, required_capabilities=?, updated_at=? WHERE id=?"
-        ).bind(&identifier).bind(&name).bind(&description).bind(kind).bind(&input_schema).bind(&output_schema).bind(plugin_id).bind(&plugin_export).bind(category_id).bind(&required_capabilities).bind(&now).bind(id)
+        ).bind(&identifier).bind(&name).bind(&description).bind(&kind).bind(&input_schema).bind(&output_schema).bind(plugin_id).bind(&plugin_export).bind(category_id).bind(&required_capabilities).bind(&now).bind(id)
             .execute(pool).await;
 
         result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
@@ -2060,7 +2068,7 @@ impl Tool {
         identifier: String,
         name: String,
         description: String,
-        kind: i64,
+        kind: String,
         source: String,
         is_always: bool,
         function_id: Option<i64>,
@@ -2077,10 +2085,10 @@ impl Tool {
         validate_json(&output_schema)?;
 
         // 应用层 CHECK 约束验证
-        if kind == 1 && function_id.is_none() {
+        if kind == "function-wrap" && function_id.is_none() {
             return Err(anyhow::anyhow!("kind=function 时 function_id 不能为空"));
         }
-        if kind == 2 && workflow_id.is_none() {
+        if kind == "workflow-wrap" && workflow_id.is_none() {
             return Err(anyhow::anyhow!("kind=workflow 时 workflow_id 不能为空"));
         }
 
@@ -2088,14 +2096,14 @@ impl Tool {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query_scalar::<_, i64>(
             "INSERT INTO tools (identifier, name, description, kind, source, is_always, function_id, workflow_id, input_schema, output_schema, category_id, required_capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
-        ).bind(&identifier).bind(&name).bind(&description).bind(kind).bind(&source).bind(is_always as i64).bind(function_id).bind(workflow_id).bind(&input_schema).bind(&output_schema).bind(category_id).bind(&required_capabilities).bind(&now).bind(&now)
+        ).bind(&identifier).bind(&name).bind(&description).bind(&kind).bind(&source).bind(is_always as i64).bind(function_id).bind(workflow_id).bind(&input_schema).bind(&output_schema).bind(category_id).bind(&required_capabilities).bind(&now).bind(&now)
             .fetch_one(pool).await;
 
         let id =
             result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
 
         let duration = start.elapsed().as_millis();
-        tracing::info!(entity = "tool", op = "create", id = id, identifier = %identifier, name = %name, kind = kind, duration_ms = duration, "Tool created");
+        tracing::info!(entity = "tool", op = "create", id = id, identifier = %identifier, name = %name, kind = %kind, duration_ms = duration, "Tool created");
 
         Tool::get(pool, id)
             .await?
@@ -2108,7 +2116,7 @@ impl Tool {
         identifier: String,
         name: String,
         description: String,
-        kind: i64,
+        kind: String,
         source: String,
         is_always: bool,
         function_id: Option<i64>,
@@ -2125,10 +2133,10 @@ impl Tool {
         validate_json(&output_schema)?;
 
         // 应用层 CHECK 约束验证
-        if kind == 1 && function_id.is_none() {
+        if kind == "function-wrap" && function_id.is_none() {
             return Err(anyhow::anyhow!("kind=function 时 function_id 不能为空"));
         }
-        if kind == 2 && workflow_id.is_none() {
+        if kind == "workflow-wrap" && workflow_id.is_none() {
             return Err(anyhow::anyhow!("kind=workflow 时 workflow_id 不能为空"));
         }
 
@@ -2136,7 +2144,7 @@ impl Tool {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE tools SET identifier=?, name=?, description=?, kind=?, source=?, is_always=?, function_id=?, workflow_id=?, input_schema=?, output_schema=?, category_id=?, required_capabilities=?, updated_at=? WHERE id=?"
-        ).bind(&identifier).bind(&name).bind(&description).bind(kind).bind(&source).bind(is_always as i64).bind(function_id).bind(workflow_id).bind(&input_schema).bind(&output_schema).bind(category_id).bind(&required_capabilities).bind(&now).bind(id)
+        ).bind(&identifier).bind(&name).bind(&description).bind(&kind).bind(&source).bind(is_always as i64).bind(function_id).bind(workflow_id).bind(&input_schema).bind(&output_schema).bind(category_id).bind(&required_capabilities).bind(&now).bind(id)
             .execute(pool).await;
 
         result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
@@ -2703,7 +2711,11 @@ pub async fn import_from_backup(pool: &Pool<Sqlite>, input_path: &str) -> Result
                 .unwrap_or("");
             let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let description = func.get("description").and_then(|v| v.as_str());
-            let kind = func.get("kind").and_then(|v| v.as_i64()).unwrap_or(1);
+            let kind = func
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("builtin")
+                .to_string();
             let input_schema = func
                 .get("input_schema")
                 .and_then(|v| v.as_str())
@@ -2775,7 +2787,11 @@ pub async fn import_from_backup(pool: &Pool<Sqlite>, input_path: &str) -> Result
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let kind = tool.get("kind").and_then(|v| v.as_i64()).unwrap_or(1);
+            let kind = tool
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("function-wrap")
+                .to_string();
             let source = tool
                 .get("source")
                 .and_then(|v| v.as_str())
@@ -3447,7 +3463,7 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
             identifier TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL,
             description TEXT,
-            kind INTEGER NOT NULL DEFAULT 1,
+            kind TEXT NOT NULL DEFAULT 'builtin',
             input_schema TEXT NOT NULL DEFAULT '{}',
             output_schema TEXT NOT NULL DEFAULT '{}',
             plugin_id INTEGER REFERENCES plugins(id) ON DELETE SET NULL,
@@ -3492,7 +3508,7 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
             identifier TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL,
             description TEXT NOT NULL,
-            kind INTEGER NOT NULL DEFAULT 1,
+            kind TEXT NOT NULL DEFAULT 'function-wrap',
             source TEXT NOT NULL DEFAULT 'workspace',
             is_always INTEGER NOT NULL DEFAULT 0,
             function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL,
@@ -3504,8 +3520,8 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             CHECK (
-                (kind = 1 AND function_id IS NOT NULL AND workflow_id IS NULL) OR
-                (kind = 2 AND workflow_id IS NOT NULL AND function_id IS NULL)
+                (kind = 'function-wrap' AND function_id IS NOT NULL AND workflow_id IS NULL) OR
+                (kind = 'workflow-wrap' AND workflow_id IS NOT NULL AND function_id IS NULL)
             )
         )
         "#,

@@ -53,7 +53,7 @@ pub struct FunctionView {
     form_identifier: String,
     form_name: String,
     form_description: String,
-    form_kind: i64,
+    form_kind: String,
     form_plugin_id: Option<i64>,
     form_plugin_export: Option<String>,
     form_capability: Option<String>,
@@ -108,7 +108,7 @@ impl FunctionView {
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
-            form_kind: 1,
+            form_kind: "builtin".to_string(),
             form_plugin_id: None,
             form_plugin_export: None,
             form_capability: None,
@@ -210,7 +210,7 @@ impl FunctionView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_kind = 1;
+        self.form_kind = "builtin".to_string();
         self.form_plugin_id = None;
         self.form_plugin_export = None;
         self.form_capability = None;
@@ -354,20 +354,21 @@ impl FunctionView {
             cx.notify();
             return;
         }
-        let kind = self.form_kind;
-        if kind == 2 && (self.form_plugin_id.is_none() || self.form_plugin_export.is_none()) {
+        let kind = self.form_kind.clone();
+        if kind == "custom" && (self.form_plugin_id.is_none() || self.form_plugin_export.is_none())
+        {
             self.error_message = Some("插件函数必须选择关联插件和插件导出函数名".into());
             cx.notify();
             return;
         }
-        let plugin_id = (kind == 2).then_some(self.form_plugin_id).flatten();
-        let plugin_export = (kind == 2)
+        let plugin_id = (kind == "custom").then_some(self.form_plugin_id).flatten();
+        let plugin_export = (kind == "custom")
             .then_some(self.form_plugin_export.clone())
             .flatten();
         let mut required_capabilities = self.form_capability.as_ref().map(|name| {
             serde_json::to_string(&vec![name.clone()]).expect("serialize capability selection")
         });
-        if kind == 3 {
+        if kind == "placeholder" {
             required_capabilities = None;
         }
         let store = self.store.read(cx).clone();
@@ -879,11 +880,11 @@ impl Render for FunctionView {
                                     )
                                     .child(
                                         list_cell(Some(col_widths[3]), style)
-                                            .child(function_kind_label(item.kind)),
+                                            .child(function_kind_label(&item.kind)),
                                     )
                                     .child(
                                         list_actions(Some(col_widths[4]), style)
-                                            .when(ic.kind != 3, |actions| actions.child(
+                                            .when(ic.kind != "placeholder", |actions| actions.child(
                                                 action_button(
                                                     ("test", id as u64),
                                                     "测试",
@@ -902,7 +903,7 @@ impl Render for FunctionView {
                                                     }
                                                 }),
                                             ))
-                                            .when(ic.kind != 1, |actions| actions
+                                            .when(ic.kind != "builtin", |actions| actions
                                                 .child(
                                                     action_button(
                                                         ("edit", id as u64),
@@ -1016,7 +1017,7 @@ impl Render for FunctionView {
                 let description_input = self.description_input.clone().unwrap();
                 let input_schema_input = self.input_schema_input.clone().unwrap();
                 let output_schema_input = self.output_schema_input.clone().unwrap();
-                let kind_label = function_kind_label(self.form_kind);
+                let kind_label = function_kind_label(&self.form_kind);
                 let plugin_label = self
                     .form_plugin_id
                     .and_then(|id| self.plugins.iter().find(|plugin| plugin.id == id))
@@ -1102,9 +1103,9 @@ impl Render for FunctionView {
                                     .when(self.kind_select_open, |field| {
                                         field.child(selector_menu(theme).children(
                                             [
-                                                (1_i64, "内置函数"),
-                                                (2_i64, "自定义函数"),
-                                                (3_i64, "占位"),
+                                                ("builtin", "内置函数"),
+                                                ("custom", "自定义函数"),
+                                                ("placeholder", "占位"),
                                             ]
                                                 .into_iter()
                                                 .map(|(kind, label)| {
@@ -1117,14 +1118,14 @@ impl Render for FunctionView {
                                                             let view = cx.weak_entity();
                                                             move |_, _, cx| {
                                                                 view.update(cx, |view, cx| {
-                                                                    view.form_kind = kind;
+                                                                    view.form_kind = kind.to_string();
                                                                     view.kind_select_open = false;
-                                                                    if kind != 2 {
+                                                                    if kind != "custom" {
                                                                         view.form_plugin_id = None;
                                                                         view.form_plugin_export = None;
                                                                         view.plugin_exports.clear();
                                                                     }
-                                                                    if kind == 3 {
+                                                                    if kind == "placeholder" {
                                                                         view.form_capability = None;
                                                                     }
                                                                     cx.notify();
@@ -1137,7 +1138,7 @@ impl Render for FunctionView {
                                         ))
                                     }),
                                 )
-                                .when(self.form_kind == 2, |form| {
+                                .when(self.form_kind == "custom", |form| {
                                     form.child(
                                         selector_field(
                                             "关联插件 *",
@@ -1250,7 +1251,7 @@ impl Render for FunctionView {
                                         }),
                                     )
                                 })
-                                .when(self.form_kind != 3, |form| {
+                                .when(self.form_kind != "placeholder", |form| {
                                     form.child(selector_field(
                                         "所属 Capability",
                                         capability_label,
@@ -1496,7 +1497,7 @@ impl Render for FunctionView {
                     None => return this,
                 };
 
-                let kind_label = function_kind_label(function.kind);
+                let kind_label = function_kind_label(&function.kind);
                 let mut selected_capabilities = self
                     .test_capabilities
                     .iter()
@@ -1950,11 +1951,11 @@ impl Render for FunctionView {
     }
 }
 
-fn function_kind_label(kind: i64) -> &'static str {
+fn function_kind_label(kind: &str) -> &'static str {
     match kind {
-        1 => "内置函数",
-        2 => "自定义函数",
-        3 => "占位",
+        "builtin" => "内置函数",
+        "custom" => "自定义函数",
+        "placeholder" => "占位",
         _ => "未知",
     }
 }

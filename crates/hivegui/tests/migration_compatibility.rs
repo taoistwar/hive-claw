@@ -12,11 +12,13 @@ use std::{
     sync::Arc,
 };
 
+use hivegui::datasource::entity_store::{Function, Tool};
 use hivegui::datasource::migrations::{
     ArtifactSnapshot, CURRENT_SCHEMA_VERSION, MigrationErrorKind, MigrationFaultInjector,
     MigrationFaultPoint, MigrationOptions, MigrationStatus, capture_artifact_snapshot,
     migrate_to_current, restore_safe_snapshot, verify_safe_snapshot,
 };
+use hivegui::datasource::store::{Store, StoreOpenOptions};
 use sqlx::{Row, sqlite::SqlitePoolOptions};
 use support::TestWorkspace;
 
@@ -350,6 +352,53 @@ async fn v2_maps_function_and_tool_kinds_and_legacy_llm_fields_exactly() {
     }
     for canonical in ["category", "token_encrypted", "token_env"] {
         assert!(provider_columns.iter().any(|column| column == canonical));
+    }
+}
+
+#[tokio::test]
+async fn v4_migration_decodes_string_kinds_through_entity_readers() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    copy_fixture(&workspace, "v2-valid.sqlite");
+    migrate_to_current(migration_options(&workspace))
+        .await
+        .expect("v2 fixture migrates to v4");
+
+    // Open a real v4 Store through the public boundary, then read the
+    // migrated functions/tools through the entity readers. This is the
+    // regression guard for the kind type split: before the fix,
+    // `Function::list` / `Tool::list` would try to decode the v4 TEXT
+    // kind column into `i64` and fail at runtime.
+    let store = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open real v4 Store");
+
+    let functions = Function::list(store.pool(), None, 100, 0)
+        .await
+        .expect("list migrated functions");
+    assert!(!functions.is_empty(), "v2 fixture must contain functions");
+    for function in &functions {
+        assert!(
+            ["builtin", "custom", "placeholder"].contains(&function.kind.as_str()),
+            "function {} has unexpected kind {:?}",
+            function.identifier,
+            function.kind
+        );
+    }
+
+    let tools = Tool::list(store.pool(), None, 100, 0)
+        .await
+        .expect("list migrated tools");
+    assert!(!tools.is_empty(), "v2 fixture must contain tools");
+    for tool in &tools {
+        assert!(
+            ["function-wrap", "workflow-wrap"].contains(&tool.kind.as_str()),
+            "tool {} has unexpected kind {:?}",
+            tool.identifier,
+            tool.kind
+        );
     }
 }
 

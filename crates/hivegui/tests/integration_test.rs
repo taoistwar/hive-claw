@@ -295,7 +295,7 @@ async fn test_function_crud() -> Result<()> {
         "test_function".to_string(),
         "Test Function".to_string(),
         Some("A test function".to_string()),
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -306,7 +306,7 @@ async fn test_function_crud() -> Result<()> {
     .await?;
 
     assert_eq!(func.identifier, "test_function");
-    assert_eq!(func.kind, 1);
+    assert_eq!(func.kind, "builtin");
 
     // Read
     let retrieved = Function::get(&pool, func.id).await?.unwrap();
@@ -319,7 +319,7 @@ async fn test_function_crud() -> Result<()> {
         "test_function".to_string(),
         "Updated Function".to_string(),
         Some("Updated description".to_string()),
-        2,
+        "custom".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -330,7 +330,7 @@ async fn test_function_crud() -> Result<()> {
     .await?;
 
     assert_eq!(updated.name, "Updated Function");
-    assert_eq!(updated.kind, 2);
+    assert_eq!(updated.kind, "custom");
 
     // List
     let functions = Function::list(&pool, None, 10, 0).await?;
@@ -411,7 +411,7 @@ async fn test_tool_crud() -> Result<()> {
         "tool_function".to_string(),
         "Tool Function".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -421,13 +421,13 @@ async fn test_tool_crud() -> Result<()> {
     )
     .await?;
 
-    // Create tool (kind=1 requires function_id)
+    // Create tool (kind=function-wrap requires function_id)
     let tool = Tool::create(
         &pool,
         "test-tool".to_string(),
         "Test Tool".to_string(),
         "A test tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -440,7 +440,7 @@ async fn test_tool_crud() -> Result<()> {
     .await?;
 
     assert_eq!(tool.identifier, "test-tool");
-    assert_eq!(tool.kind, 1);
+    assert_eq!(tool.kind, "function-wrap");
     assert_eq!(tool.function_id, Some(func.id));
 
     // Read
@@ -454,7 +454,7 @@ async fn test_tool_crud() -> Result<()> {
         "test-tool".to_string(),
         "Updated Tool".to_string(),
         "Updated description".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -1386,7 +1386,7 @@ async fn test_function_create_and_get() -> Result<()> {
         "test_function".to_string(),
         "Test Function".to_string(),
         Some("A test function".to_string()),
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1397,7 +1397,7 @@ async fn test_function_create_and_get() -> Result<()> {
     .await?;
 
     assert_eq!(func.identifier, "test_function");
-    assert_eq!(func.kind, 1);
+    assert_eq!(func.kind, "builtin");
 
     let retrieved = Function::get(&pool, func.id).await?.unwrap();
     assert_eq!(retrieved.identifier, "test_function");
@@ -1414,7 +1414,7 @@ async fn test_function_identifier_unique() -> Result<()> {
         "unique_func".to_string(),
         "Function 1".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1430,7 +1430,7 @@ async fn test_function_identifier_unique() -> Result<()> {
         "unique_func".to_string(),
         "Function 2".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1456,7 +1456,7 @@ async fn test_function_list_pagination() -> Result<()> {
             format!("func_{}", i),
             format!("Function {}", i),
             None,
-            1,
+            "builtin".to_string(),
             "{}".to_string(),
             "{}".to_string(),
             None,
@@ -1491,7 +1491,7 @@ async fn test_function_search() -> Result<()> {
         "rust_func".to_string(),
         "Rust Function".to_string(),
         Some("Rust function".to_string()),
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1506,7 +1506,7 @@ async fn test_function_search() -> Result<()> {
         "python_func".to_string(),
         "Python Function".to_string(),
         Some("Python function".to_string()),
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1533,7 +1533,7 @@ async fn test_function_update() -> Result<()> {
         "update_func".to_string(),
         "Original".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1549,7 +1549,7 @@ async fn test_function_update() -> Result<()> {
         "update_func".to_string(),
         "Updated".to_string(),
         Some("Updated description".to_string()),
-        2,
+        "custom".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1560,7 +1560,7 @@ async fn test_function_update() -> Result<()> {
     .await?;
 
     assert_eq!(updated.name, "Updated");
-    assert_eq!(updated.kind, 2);
+    assert_eq!(updated.kind, "custom");
 
     Ok(())
 }
@@ -1574,7 +1574,7 @@ async fn test_function_delete() -> Result<()> {
         "to_delete".to_string(),
         "To Delete".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1811,7 +1811,7 @@ async fn test_tool_create_and_get() -> Result<()> {
         "tool_func".to_string(),
         "Tool Function".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1826,7 +1826,7 @@ async fn test_tool_create_and_get() -> Result<()> {
         "test-tool".to_string(),
         "Test Tool".to_string(),
         "A test tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -1839,7 +1839,7 @@ async fn test_tool_create_and_get() -> Result<()> {
     .await?;
 
     assert_eq!(tool.identifier, "test-tool");
-    assert_eq!(tool.kind, 1);
+    assert_eq!(tool.kind, "function-wrap");
     assert_eq!(tool.function_id, Some(func.id));
 
     let retrieved = Tool::get(&pool, tool.id).await?.unwrap();
@@ -1857,7 +1857,7 @@ async fn test_tool_identifier_unique() -> Result<()> {
         "unique_tool_func".to_string(),
         "Function".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1872,7 +1872,7 @@ async fn test_tool_identifier_unique() -> Result<()> {
         "unique-tool".to_string(),
         "Tool 1".to_string(),
         "Tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -1890,7 +1890,7 @@ async fn test_tool_identifier_unique() -> Result<()> {
         "unique-tool".to_string(),
         "Tool 2".to_string(),
         "Tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -1917,7 +1917,7 @@ async fn test_tool_check_constraint_kind1() -> Result<()> {
         "invalid-tool".to_string(),
         "Invalid Tool".to_string(),
         "Tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         None, // function_id 为空
@@ -1946,7 +1946,7 @@ async fn test_tool_check_constraint_kind2() -> Result<()> {
         "invalid-tool".to_string(),
         "Invalid Tool".to_string(),
         "Tool".to_string(),
-        2,
+        "workflow-wrap".to_string(),
         "workspace".to_string(),
         false,
         None,
@@ -1974,7 +1974,7 @@ async fn test_tool_list_pagination() -> Result<()> {
         "pagination_func".to_string(),
         "Function".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -1991,7 +1991,7 @@ async fn test_tool_list_pagination() -> Result<()> {
             format!("tool-{}", i),
             format!("Tool {}", i),
             "Tool".to_string(),
-            1,
+            "function-wrap".to_string(),
             "workspace".to_string(),
             false,
             Some(func.id),
@@ -2028,7 +2028,7 @@ async fn test_tool_update() -> Result<()> {
         "update_func".to_string(),
         "Function".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -2043,7 +2043,7 @@ async fn test_tool_update() -> Result<()> {
         "update-tool".to_string(),
         "Original".to_string(),
         "Tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -2061,7 +2061,7 @@ async fn test_tool_update() -> Result<()> {
         "update-tool".to_string(),
         "Updated".to_string(),
         "Updated description".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),
@@ -2088,7 +2088,7 @@ async fn test_tool_delete() -> Result<()> {
         "delete_func".to_string(),
         "Function".to_string(),
         None,
-        1,
+        "builtin".to_string(),
         "{}".to_string(),
         "{}".to_string(),
         None,
@@ -2103,7 +2103,7 @@ async fn test_tool_delete() -> Result<()> {
         "to-delete".to_string(),
         "To Delete".to_string(),
         "Tool".to_string(),
-        1,
+        "function-wrap".to_string(),
         "workspace".to_string(),
         false,
         Some(func.id),

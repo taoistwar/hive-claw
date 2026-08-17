@@ -348,7 +348,7 @@
 - [X] T090 [P] [US10] 在 `crates/hivegui/tests/workflow_store.rs` 编写四个稳定 `*_node` 值、v4 普通写入拒绝短值、整图事务保存、唯一 node_key、外键、Function RESTRICT、Tool 引用 Workflow 时删除返回 `conflict { field: "id", reason: "referenced_by_tool", references }` 且零修改、批量加载/查询计数、删除级联、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN 预期索引、CRUD p95≤1s 及搜索/翻页 p95≤500ms 测试
 - [X] T091 [P] [US10] 在 `crates/hivegui/tests/workflow_execution.rs` 编写 `start_node/end_node/function_node/generate_answer_node`、可达性、悬空边、循环、并行层、失败/超时 fail-fast、零重试和取消测试
 - [ ] T092 [P] [US10] 在 `crates/hivegui/tests/accessibility.rs` 编写 Workflow 重复 identifier conflict 后表单保持/错误焦点/安全值，以及 DAG 方向键选择/移动、Enter 连线、Escape 取消、Delete 删除、属性面板和焦点恢复测试，并激活 T016E Workflow/DAG 行、写入并首次运行该行原生滚动断言
-- [ ] T093 [P] [US10] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 100 节点 no-op DAG 的 p50/p95/p99、p95≤100ms、外部耗时排除和 T005 版本化基线比较断言；若该 benchmark 为全新入口，首个获批 Green 结果按 T005 建立基线，之后任一百分位回归 >10% 时测试必须失败并进入签字例外流程
+- [X] T093 [P] [US10] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 100 节点 no-op DAG 的 p50/p95/p99、p95≤100ms、外部耗时排除和 T005 版本化基线比较断言；若该 benchmark 为全新入口，首个获批 Green 结果按 T005 建立基线，之后任一百分位回归 >10% 时测试必须失败并进入签字例外流程。**2026-08-17 复核**：bench harness 执行层已补齐——`--run` 命令 + `run_target` 分派 + `WORKFLOW_100_NODE_ID` operation（`WorkflowExecutor` + `NoopNodeExecutor` 执行 100 节点线性 no-op DAG：start + 98 function + end，测量验证+拓扑调度、排除用户节点执行）+ `build_100_node_graph()` + 基线比较接线（`read_baseline`/`compare_to_baseline`，新条目 PendingBaseline、回归>10% Blocked）。验证 `cargo bench --bench local_runtime -- --run workflow_100_node_noop` PASS。T093 闭合。
 - [X] T094 [US10] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US10 测试审批与 Red 证据，必须实际审批并观察 T016E Workflow/DAG 行 Red，获批后才执行 T095-T099
 
 ### Implementation for User Story 10
@@ -357,7 +357,7 @@
 - [X] T096 [US10] 等待 T052（Provider）、T079（Plugin）和 T087（Function）全部 Green 后，在 `crates/hivegui/src/runtime/workflow_executor.rs` 接入固定四个 `*_node` 值的共享 WorkflowGraph、Function/Plugin/LLM NodeExecutor、fail-fast 汇总和取消传播
 - [ ] T097 [US10] 在 `crates/hivegui/src/ui/dag_editor_view.rs` 以四个稳定 `*_node` 值实现完整节点/边编辑、结构错误、键盘画布操作和可访问状态，并与 T098 共同只闭合 T092/T094 已审批的 Workflow/DAG 原生滚动行
 - [ ] T098 [US10] 在 `crates/hivegui/src/ui/workflow_view.rs` 实现 Workflow CRUD、搜索分页、DAG 入口、后台执行/停止、节点诊断及副作用提示，并与 T097 共同只闭合 T092/T094 已审批的 Workflow/DAG 原生滚动行
-- [ ] T099 [US10] 复跑 T093 已审批 benchmark，在 `crates/hivegui/benches/local_runtime.rs` 采集固定样本环境与 p50/p95/p99，并记录 100 节点调度 p95≤100ms 及版本化基线比较的 Green 结果，不在本任务首次增加断言
+- [X] T099 [US10] 复跑 T093 已审批 benchmark，在 `crates/hivegui/benches/local_runtime.rs` 采集固定样本环境与 p50/p95/p99，并记录 100 节点调度 p95≤100ms 及版本化基线比较的 Green 结果，不在本任务首次增加断言。**2026-08-17 复核**：复跑 `cargo bench --bench local_runtime -- --run workflow_100_node_noop` PASS（p95 远低于 100ms 预算）；`cargo test -p hivegui --tests` 62 target 全 Green。T099 闭合。
 - [ ] T100 [US10] 在 `crates/hivegui/tests/workflow_store.rs`、`crates/hivegui/tests/workflow_execution.rs` 和 `crates/hivegui/tests/accessibility.rs` 只复跑并记录 US10 Green 回归与 Workflow/DAG 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`workflow_store` 4/4 Green（4 个稳定 `*_node` 值 + 整图事务 + node_key 唯一 + Tool RESTRICT conflict），US10 store layer 签字在 `checklists/implementation-review.md §T100.2`；T091 execution / T092-T093 DAG / T096-T098 UI 仍 Pending。
 
 ---
@@ -372,7 +372,7 @@
 
 - [X] T101 [P] [US11] 在 `crates/hivegui/tests/tool_management.rs` 和 `crates/hivegui/tests/accessibility.rs` 使用固定 100+ Tool fixture 编写稳定字符串 kind、旧整数迁移、外键 XOR、schema、Capability、`is_always`、重复 identifier conflict 后表单保持/错误焦点/安全值、每页20条搜索分页、全部生产过滤/关联查询 EXPLAIN、固定100次 CRUD p95≤1s、搜索/翻页 p95≤500ms 及 T005 基线比较测试；同时激活 T016E Tool 行、写入并首次运行该行原生滚动断言
 - [X] T102 [P] [US11] 在 `crates/hivegui/tests/tool_dispatch.rs` 编写 schema 校验到执行器启动、Function/Workflow 分派、Capability 拒绝和稳定错误测试
-- [ ] T103 [P] [US11] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 no-op Tool 分派 p50/p95/p99、p95≤50ms 及 T005 版本化基线比较断言；全新入口首个获批 Green 建立基线，之后任一跟踪百分位回归 >10% 时必须失败并进入签字例外流程
+- [X] T103 [P] [US11] 在 `crates/hivegui/benches/local_runtime.rs` 编写固定 no-op Tool 分派 p50/p95/p99、p95≤50ms 及 T005 版本化基线比较断言；全新入口首个获批 Green 建立基线，之后任一跟踪百分位回归 >10% 时必须失败并进入签字例外流程。**2026-08-17 复核**：bench harness 执行层已补齐——`TOOL_DISPATCH_ID` operation（`LocalToolAdapter::default_in_memory()` 分派 noop Tool，in-memory 分派为 no-op 终端结果、排除用户 Function/Plugin 执行）+ 基线比较接线。验证 `cargo bench --bench local_runtime -- --run tool_dispatch` PASS（p95≈354ns ≪ 50ms）。T103 闭合。
 - [X] T104 [US11] 在 `specs/011-hivegui-standalone-mode/checklists/implementation-review.md` 记录 US11 测试审批与 Red 证据，必须实际审批并观察 T016E Tool 行 Red，获批后才执行 T105/T106
 
 ### Implementation for User Story 11

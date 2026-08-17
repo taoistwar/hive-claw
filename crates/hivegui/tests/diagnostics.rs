@@ -252,11 +252,11 @@ fn diagnostics_redact_prompt_token_session_tool_payload_and_backup_password() {
     let sink = Arc::new(RecordingDiagnosticSink::default());
     let boundary = RuntimeErrorBoundary::new(sink.clone());
 
-    let sensitive_payload = format!(
+    let sensitive_payload =
         "prompt='<HIVEGUI_CANARY_PROMPT=abc>'; token='<HIVEGUI_CANARY_TOKEN=xyz>'; \
          session='<HIVEGUI_CANARY_SESSION=qrs>'; tool_payload='<HIVEGUI_CANARY_TOOL=tuv>'; \
          backup_password='<HIVEGUI_CANARY_PASSWORD=mno>'; visible=ok"
-    );
+            .to_string();
     let failure = RuntimeFailure::internal(EXECUTION_ID, &sensitive_payload);
     let _ = boundary.handle("local_agent.execute", failure);
 
@@ -284,7 +284,7 @@ async fn diagnostic_record_sensitive_canary_leaves_zero_residue_on_persistence_m
 
     let sink = Arc::new(RecordingDiagnosticSink::default());
     let boundary = RuntimeErrorBoundary::new(sink.clone());
-    let failure = RuntimeFailure::internal(EXECUTION_ID, &format!("visible {payload}"));
+    let failure = RuntimeFailure::internal(EXECUTION_ID, format!("visible {payload}"));
     let _ = boundary.handle("local_agent.execute", failure);
 
     let scan = scan_all_mediums_for_test(workspace.root(), &canary).expect("scan");

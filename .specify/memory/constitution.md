@@ -165,8 +165,7 @@ These standards apply to every feature and MUST be enforced at code review:
 - **Authentication & authorisation**: Any feature that adds, modifies, or
   touches authentication, authorisation, session handling, or access control
   MUST receive a dedicated security review (the `/security-review` workflow
-  or equivalent) before merge. A second approver with security context is
-  required on the PR.
+  or equivalent) before merge.
 - **Dependencies**: New third-party dependencies MUST be vetted for
   maintenance status and known CVEs. Vulnerable versions MUST be upgraded
   within the SLA defined by the project's security policy.

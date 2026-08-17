@@ -11,9 +11,9 @@
 //! Each migration is embedded at compile time via `include_str!` and applied
 //! exactly once; applied versions are recorded in `schema_migrations`.
 
+use hiveweb::db::sql_safety::audit_sql;
 use sqlx::MySqlPool;
 use std::env;
-use hiveweb::db::sql_safety::audit_sql;
 
 struct Migration {
     version: &'static str,

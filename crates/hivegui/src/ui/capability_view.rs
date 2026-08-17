@@ -13,11 +13,7 @@
 //! rely on color contrast to identify it. The modal layer is
 //! exposed as the stable `CAPABILITY_MODAL` selector so the focus
 //! trap test in §T067A can drive it through the GPUI test runtime.
-use crate::datasource::{
-    Store,
-    capability_store::{CapabilityInput, CapabilityStore},
-    entity_store::Capability,
-};
+use crate::datasource::{Store, capability_store::CapabilityInput, entity_store::Capability};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
@@ -126,10 +122,8 @@ impl CapabilityView {
                 self.hide_form(cx);
                 cx.notify();
             }
-            "enter" => {
-                if self.error_message.is_none() {
-                    self.save(window, cx);
-                }
+            "enter" if self.error_message.is_none() => {
+                self.save(window, cx);
             }
             _ => {}
         }
@@ -440,7 +434,7 @@ impl Render for CapabilityView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;

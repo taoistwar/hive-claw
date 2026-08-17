@@ -7,10 +7,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
-use crate::db::sql_safety::audit_sql;
 use super::cache_helper;
 use super::cache_helper::cached_or_fetch;
 use crate::cache::redis::RedisClient;
+use crate::db::sql_safety::audit_sql;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 struct CcUserMembership {

@@ -213,11 +213,11 @@ impl RuntimeErrorBoundary {
             failure.cause(),
             failure.context()
         );
-        let already = {
+        let should_record = {
             let mut handled = self.handled.lock().expect("diagnostic handled lock");
             handled.insert(dedup_key)
         };
-        if !already {
+        if should_record {
             self.sink.record(DiagnosticRecord::new(
                 failure.execution_id(),
                 operation,
@@ -349,12 +349,12 @@ fn redact_angle_tokens(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(end) = find_angle_close(&bytes[i + 1..]) {
-                out.push_str("<redacted>");
-                i = i + 1 + end + 1;
-                continue;
-            }
+        if bytes[i] == b'<'
+            && let Some(end) = find_angle_close(&bytes[i + 1..])
+        {
+            out.push_str("<redacted>");
+            i = i + 1 + end + 1;
+            continue;
         }
         let ch_end = next_char_boundary(bytes, i);
         out.push_str(&input[i..ch_end]);
@@ -761,8 +761,12 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
-        let mut collector = ExecutionEventCollector::new();
-        collector.record_llm_event("exec-1", "step", "conversation=hello token=Bearer secret123");
+        let collector = ExecutionEventCollector::new();
+        collector.record_llm_event(
+            "exec-1",
+            "step",
+            "conversation=hello token=Bearer secret123",
+        );
 
         let bundle = DiagnosticBundle::new(Arc::new(collector));
         let config = RedactionConfig {

@@ -1,7 +1,7 @@
 #[path = "../tests/support/performance.rs"]
 mod performance;
 
-use performance::{baseline_path, target_specs, EnvironmentFingerprint, TargetSpec};
+use performance::{EnvironmentFingerprint, TargetSpec, baseline_path, target_specs};
 
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
@@ -79,7 +79,10 @@ fn print_manifest() {
         })).collect::<Vec<_>>(),
     });
 
-    println!("{}", serde_json::to_string_pretty(&manifest).expect("serialize benchmark manifest"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&manifest).expect("serialize benchmark manifest")
+    );
     eprintln!(
         "No placeholder timing was recorded: T093, T103, and T122 own the first approved Green runs."
     );
@@ -118,5 +121,8 @@ fn print_baseline_path(target_id: &str) {
 }
 
 fn target_by_id(id: &str) -> Option<TargetSpec> {
-    target_specs().iter().find(|target| target.id == id).cloned()
+    target_specs()
+        .iter()
+        .find(|target| target.id == id)
+        .cloned()
 }

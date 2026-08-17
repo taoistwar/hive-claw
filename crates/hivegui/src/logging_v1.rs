@@ -162,13 +162,13 @@ impl LogHandle {
         // Capacity pre-check: refuse to write a single record that
         // exceeds the 100 MB cap. We do this BEFORE any I/O so the
         // boundary is a zero-write rejection.
-        if let Some(cause) = sanitised_cause.as_ref() {
-            if cause.len() > SINGLE_RECORD_MAX_BYTES {
-                return Err(LogError::Capacity(format!(
-                    "single record exceeds {} bytes",
-                    SINGLE_RECORD_MAX_BYTES
-                )));
-            }
+        if let Some(cause) = sanitised_cause.as_ref()
+            && cause.len() > SINGLE_RECORD_MAX_BYTES
+        {
+            return Err(LogError::Capacity(format!(
+                "single record exceeds {} bytes",
+                SINGLE_RECORD_MAX_BYTES
+            )));
         }
 
         // Serialise the record; if its serialised bytes exceed the
@@ -299,17 +299,14 @@ impl LogHandle {
                     continue;
                 }
                 let mut skip = false;
-                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) {
-                    if let Some(occurred_at) = value.get("occurred_at").and_then(|v| v.as_str()) {
-                        if let Ok(occurred) =
-                            DateTime::parse_from_rfc3339(occurred_at).map(|d| d.with_timezone(&Utc))
-                        {
-                            if occurred <= cutoff {
-                                skip = true;
-                                expired_in_segment += line.len() + 1;
-                            }
-                        }
-                    }
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(line)
+                    && let Some(occurred_at) = value.get("occurred_at").and_then(|v| v.as_str())
+                    && let Ok(occurred) =
+                        DateTime::parse_from_rfc3339(occurred_at).map(|d| d.with_timezone(&Utc))
+                    && occurred <= cutoff
+                {
+                    skip = true;
+                    expired_in_segment += line.len() + 1;
                 }
                 if !skip {
                     kept_lines.extend_from_slice(line);

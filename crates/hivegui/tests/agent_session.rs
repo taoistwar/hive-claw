@@ -82,7 +82,7 @@ async fn chat_message_canary_leaves_zero_residue() {
     );
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: AgentExecution = panic!("placeholder so the type is referenced");
 }

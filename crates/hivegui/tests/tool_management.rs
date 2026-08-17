@@ -101,7 +101,7 @@ async fn tool_exposes_a_stable_default_args_schema() {
     );
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: ToolRecord = panic!("placeholder so the type is referenced");
 }

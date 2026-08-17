@@ -143,11 +143,14 @@ pub async fn update_hook(
 
     // Validation is side-effect free; only bump the optimistic version after
     // the candidate action has passed policy.
-    optimistic_lock::check_and_bump(pool, OptimisticLockTable::AgentHooks, hook_id, meta.updated_at)
-        .await
-        .map_err(|_| {
-            AppError::OptimisticLockConflict("Hook 配置已被他人修改，请刷新后重试".into())
-        })?;
+    optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::AgentHooks,
+        hook_id,
+        meta.updated_at,
+    )
+    .await
+    .map_err(|_| AppError::OptimisticLockConflict("Hook 配置已被他人修改，请刷新后重试".into()))?;
 
     let name = meta.name.unwrap_or(existing.name);
     let description = meta.description.unwrap_or(existing.description);

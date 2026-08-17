@@ -21,48 +21,73 @@ use zeroize::Zeroize;
 
 use super::{
     crypto::{
-        Clock, CryptoError, KEK_DERIVATION_DEADLINE, Secret32, SystemClock, derive_kek,
-        random_bytes, unwrap_kek_verifier, unwrap_with_kek, wrap_kek_verifier, wrap_with_kek,
+        Clock, CryptoError, Secret32, SystemClock, derive_kek, random_bytes, unwrap_kek_verifier,
+        unwrap_with_kek, wrap_with_kek,
     },
     policy::PasswordPolicy,
 };
 
+/// On-disk keystore format version. Bumped only on incompatible layout changes.
 pub const KEYSTORE_VERSION: u8 = 1;
+/// 6-byte magic prefix written at the start of every keystore file.
 pub const KEYSTORE_MAGIC: &[u8; 6] = b"AUTHV1";
+/// Directory (relative to the workspace root) holding the keystore file.
 pub const KEYSTORE_DIR: &str = "keystore";
+/// File name of the wrapped keystore blob inside `KEYSTORE_DIR`.
 pub const KEYSTORE_FILENAME: &str = "wrapped_device_key.v1";
+/// Unix file mode applied to the keystore file (owner read/write only).
 pub const KEYSTORE_FILE_MODE: u32 = 0o600;
+/// Maximum consecutive unlock attempts before backoff is enforced.
 pub const ATTEMPT_LIMIT: u32 = 5;
+/// Backoff duration applied after too many failed attempts (5 minutes).
 pub const BACKOFF_DURATION: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// Errors raised by the local master-password keystore operations.
 #[derive(Debug, Error)]
 pub enum AuthError {
     #[error("invalid password")]
+    /// The supplied password did not unlock the keystore.
     InvalidPassword,
     #[error("password is weak: {0}")]
+    /// The password failed the strength policy; carries the reason.
     WeakPassword(&'static str),
     #[error("keystore file is missing")]
+    /// No keystore file exists for this workspace.
     KeystoreMissing,
     #[error("keystore file is malformed: {0}")]
+    /// The keystore file had an unexpected layout; carries the reason.
     KeystoreMalformed(String),
     #[error("kek derivation failed")]
+    /// KEK derivation failed for an unspecified reason.
     DerivationFailed,
     #[error("kek derivation exceeded deadline: elapsed = {elapsed:?}")]
-    DerivationTimeout { elapsed: std::time::Duration },
+    /// KEK derivation exceeded the fail-closed deadline.
+    DerivationTimeout {
+        /// Elapsed time when the derivation deadline was exceeded.
+        elapsed: std::time::Duration,
+    },
     #[error("password field is hidden from clipboard")]
+    /// The password field must not be copied to the clipboard.
     PasswordFieldHiddenFromClipboard,
     #[error("invalid input on {field}: {reason}")]
+    /// A user input field failed validation.
     InvalidInput {
+        /// The offending field identifier.
         field: &'static str,
+        /// The validation failure reason.
         reason: &'static str,
     },
     #[error("backup tamper detected")]
+    /// A restore bundle failed tamper verification.
     BackupTamperDetected,
     #[error("io error: {0}")]
+    /// Underlying I/O failure.
     Io(#[from] std::io::Error),
     #[error("keystore is sealed (locked)")]
+    /// The keystore is currently sealed/locked.
     Sealed,
     #[error("too many failed attempts; backoff in effect")]
+    /// Too many failed attempts; a backoff window is active.
     TooManyAttempts,
 }
 
@@ -77,6 +102,9 @@ impl From<CryptoError> for AuthError {
     }
 }
 
+/// New-type for the 32-byte Argon2id salt; never persisted in plain text
+/// alongside the wrapped blob (it is the first 16 bytes of the
+/// `wrapped_device_key.v1` file).
 /// New-type for the 32-byte Argon2id salt; never persisted in plain text
 /// alongside the wrapped blob (it is the first 16 bytes of the
 /// `wrapped_device_key.v1` file).
@@ -103,13 +131,19 @@ impl Salt {
 /// - version (1 byte)
 /// - salt (16 bytes)
 /// - kek_verifier (12 nonce + 16 ct = 28 bytes)
-/// - wrapped_device_key (12 nonce + 32 ct + 16 tag = 60 bytes)
-/// Total: 6 + 1 + 16 + 28 + 60 = 111 bytes.
+/// - wrapped_device_key (12-byte nonce, 32-byte ct, 16-byte tag = 60 bytes)
+///
+/// The parsed on-disk keystore layout. The raw layout above sums to
+/// 6 + 1 + 16 + 28 + 60 = 111 bytes minimum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeystoreFile {
+    /// On-disk format version.
     pub version: u8,
+    /// Argon2id salt bytes.
     pub salt: Vec<u8>,
+    /// Wrapped (encrypted) KEK verifier blob.
     pub kek_verifier: Vec<u8>,
+    /// Wrapped (encrypted) device key blob.
     pub wrapped_device_key: Vec<u8>,
 }
 
@@ -166,10 +200,16 @@ impl KeystoreFile {
 /// `AuthKeystore` is a thin handle to the on-disk file. The on-disk file
 /// is created by `set_master_password` (T-AUTH-1) and consumed by
 /// `unlock` (T-AUTH-2).
+/// `AuthKeystore` is a thin handle to the on-disk file. The on-disk file
+/// is created by `set_master_password` (T-AUTH-1) and consumed by
+/// `unlock` (T-AUTH-2).
 #[derive(Debug, Clone)]
 pub struct AuthKeystore {
+    /// On-disk format version.
     pub version: u8,
+    /// The parsed keystore file contents.
     pub file: KeystoreFile,
+    /// Whether the primary encrypted Store is currently open.
     pub primary_store_open: bool,
     /// Test-only: the password captured by `open()` so that
     /// `verify_kek()` / `derive_kek_with_5s_deadline()` can use the
@@ -270,14 +310,20 @@ impl AuthKeystore {
 /// Outcome of the first-launch setup flow.
 #[derive(Debug)]
 pub enum AuthOutcome {
-    SetupCompleted { keystore: AuthKeystore },
+    /// First-launch setup completed; carries the created keystore.
+    SetupCompleted {
+        /// The created keystore.
+        keystore: AuthKeystore,
+    },
 }
 
 /// Unlocked keystore: in-memory `KEK` + `device_key`. Both are
 /// `Secret32` (Zeroize-on-drop).
 #[derive(Debug, Clone)]
 pub struct UnlockedKeystore {
+    /// The decrypted device key (zeroized on drop).
     pub device_key: Secret32,
+    /// The derived key-encryption key (zeroized on drop).
     pub kek: Secret32,
 }
 
@@ -290,16 +336,21 @@ impl UnlockedKeystore {
     }
 }
 
+/// Outcome of an `unlock` attempt.
 #[derive(Debug)]
 pub enum UnlockOutcome {
+    /// Unlock succeeded; carries the in-memory secrets.
     Unlocked(UnlockedKeystore),
+    /// The keystore remained sealed (e.g. wrong password, backoff).
     Sealed,
 }
 
 /// `PasswordProposal` is the user-supplied password + confirmation pair.
 #[derive(Debug, Clone)]
 pub struct PasswordProposal {
+    /// The candidate master password.
     pub password: String,
+    /// The confirmation entry, validated to match `password`.
     pub confirmation: String,
 }
 
@@ -341,7 +392,7 @@ pub fn set_master_password(
     let salt = Salt::random();
     let kek = derive_kek(&proposal.password, salt.as_bytes(), clock).map_err(|err| match err {
         CryptoError::DerivationTimeout(d) => AuthError::DerivationTimeout { elapsed: d },
-        other => AuthError::DerivationFailed,
+        _other => AuthError::DerivationFailed,
     })?;
     let device_key = Secret32::random();
     let wrapped = wrap_with_kek(&kek, &device_key)?;
@@ -447,10 +498,19 @@ pub fn unlock(
     }))
 }
 
+/// Outcome of a restore-from-backup operation.
 #[derive(Debug)]
 pub enum RestoreOutcome {
-    Restored { new_keystore: AuthKeystore },
-    TamperDetected { reason: &'static str },
+    /// Restore succeeded; carries the regenerated keystore.
+    Restored {
+        /// The regenerated keystore.
+        new_keystore: AuthKeystore,
+    },
+    /// Tamper was detected; carries a short human-readable reason.
+    TamperDetected {
+        /// Short human-readable reason the tamper was detected.
+        reason: &'static str,
+    },
 }
 
 /// Restore a workspace from a backup bundle. The device key MUST be
@@ -563,11 +623,17 @@ fn append_audit_log_entry(workspace_root: &Path, line: &str) -> Result<(), AuthE
 /// `attempt_tracker` — production code uses an OS-side counter in
 /// `logs/auth_attempts.log`; tests inject `TestAttemptTracker`.
 pub trait AttemptTracker: Send + Sync {
+    /// Record a failed unlock attempt and return the running failure count.
     fn record_failure(&self) -> u32;
+    /// Clear all recorded failures.
     fn reset(&self);
+    /// If the tracker is currently in a backoff window, return the
+    /// remaining duration; otherwise `None`.
     fn is_locked(&self, now: Instant) -> Option<std::time::Duration>;
 }
 
+/// In-memory `AttemptTracker` used by tests to drive failed-attempt / backoff
+/// transitions deterministically.
 pub struct TestAttemptTracker {
     inner: parking_lot::Mutex<Option<Instant>>,
 }
@@ -575,6 +641,7 @@ pub struct TestAttemptTracker {
 impl TestAttemptTracker {
     /// Construct a `TestAttemptTracker` with no recorded failures.
     /// `record_failure` and `reset` then mutate the internal state.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             inner: parking_lot::Mutex::new(None),

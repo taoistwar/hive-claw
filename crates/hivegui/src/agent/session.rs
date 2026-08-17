@@ -123,8 +123,11 @@ impl AgentToolCall {
 /// A single execution record persisted to the session log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentExecution {
+    /// Unique execution identifier.
     pub id: String,
+    /// Identifier of the owning session.
     pub session_id: String,
+    /// Current lifecycle state of the execution.
     pub state: SessionState,
 }
 
@@ -154,7 +157,9 @@ impl CancelToken {
 /// A snapshot of a session for rollback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    /// Unique snapshot identifier.
     pub id: String,
+    /// Identifier of the session the snapshot belongs to.
     pub session_id: String,
 }
 

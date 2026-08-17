@@ -206,8 +206,13 @@ pub async fn update(
     meta: UpdateMeta,
 ) -> Result<RecommendedGame, AppError> {
     if let Some(updated_at) = meta.updated_at {
-        crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::RecommendedGames, id, updated_at)
-            .await?;
+        crate::services::optimistic_lock::check_and_bump(
+            pool,
+            OptimisticLockTable::RecommendedGames,
+            id,
+            updated_at,
+        )
+        .await?;
     }
     sqlx::query(
         "UPDATE recommended_games SET name = COALESCE(?, name), reply = COALESCE(?, reply), reason = COALESCE(?, reason), tag = COALESCE(?, tag), game_category = COALESCE(?, game_category), game_image = COALESCE(?, game_image), sort_value = COALESCE(?, sort_value), game_id = COALESCE(?, game_id), game_name = COALESCE(?, game_name) WHERE id = ?"

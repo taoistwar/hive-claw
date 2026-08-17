@@ -96,10 +96,8 @@ impl TagView {
         }
         match event.keystroke.key.as_str() {
             "escape" => self.hide_form(cx),
-            "enter" => {
-                if self.error_message.is_none() {
-                    self.save_tag(cx);
-                }
+            "enter" if self.error_message.is_none() => {
+                self.save_tag(cx);
             }
             _ => {}
         }
@@ -178,10 +176,10 @@ impl TagView {
         // Create ColorPickerState with existing color as default
         self.color_picker = Some(cx.new(|cx| {
             let mut picker = ColorPickerState::new(window, cx);
-            if let Some(ref color_str) = tag.color {
-                if let Ok(color) = Hsla::parse_hex(color_str) {
-                    picker = picker.default_value(color);
-                }
+            if let Some(ref color_str) = tag.color
+                && let Ok(color) = Hsla::parse_hex(color_str)
+            {
+                picker = picker.default_value(color);
             }
             picker
         }));
@@ -203,12 +201,12 @@ impl TagView {
 
     fn set_color(&mut self, hex_color: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.form_color = hex_color.to_string();
-        if let Some(ref picker) = self.color_picker {
-            if let Ok(color) = Hsla::parse_hex(hex_color) {
-                picker.update(cx, |state, cx| {
-                    state.set_value(color, window, cx);
-                });
-            }
+        if let Some(ref picker) = self.color_picker
+            && let Ok(color) = Hsla::parse_hex(hex_color)
+        {
+            picker.update(cx, |state, cx| {
+                state.set_value(color, window, cx);
+            });
         }
         cx.notify();
     }
@@ -219,10 +217,10 @@ impl TagView {
             self.form_name = inp.read(cx).value().to_string();
         }
         // Sync color from color picker
-        if let Some(ref picker) = self.color_picker {
-            if let Some(color) = picker.read(cx).value() {
-                self.form_color = color.to_hex();
-            }
+        if let Some(ref picker) = self.color_picker
+            && let Some(color) = picker.read(cx).value()
+        {
+            self.form_color = color.to_hex();
         }
 
         if self.form_name.trim().is_empty() {
@@ -366,10 +364,10 @@ impl Render for TagView {
             }));
             self.color_picker = Some(cx.new(|cx| {
                 let mut picker = ColorPickerState::new(window, cx);
-                if !self.form_color.is_empty() {
-                    if let Ok(color) = Hsla::parse_hex(&self.form_color) {
-                        picker = picker.default_value(color);
-                    }
+                if !self.form_color.is_empty()
+                    && let Ok(color) = Hsla::parse_hex(&self.form_color)
+                {
+                    picker = picker.default_value(color);
                 }
                 picker
             }));
@@ -383,7 +381,7 @@ impl Render for TagView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;
@@ -975,7 +973,7 @@ impl Render for TagView {
                     ),
                 )
             })
-            .when_some(self.confirm_delete_id, |this, id| {
+            .when_some(self.confirm_delete_id, |this, _id| {
                 this.child(
                     div()
                         .absolute()

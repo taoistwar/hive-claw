@@ -92,7 +92,7 @@ async fn one_hundred_capability_crud_p95_under_one_second() {
     for i in 0..100 {
         let started = Instant::now();
         store
-            .create(CapabilityInput::new(&format!("cap.{i:03}"), "desc", false).unwrap())
+            .create(CapabilityInput::new(format!("cap.{i:03}"), "desc", false).unwrap())
             .await
             .expect("create");
         samples.push(started.elapsed());
@@ -105,7 +105,7 @@ async fn one_hundred_capability_crud_p95_under_one_second() {
     );
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: CapabilityPage = CapabilityPage::first(PAGE_SIZE);
     let _: CapabilityFilter = CapabilityFilter::default();

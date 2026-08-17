@@ -27,7 +27,7 @@ use sqlx::{AssertSqlSafe, Execute, MySql};
 const HIVEWEB_SOURCE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 const ASSERT_SQL_SAFE_OWNER: &str = "db/sql_safety.rs";
 const GAME_CATEGORY_FILTER_SQL: &str = "SELECT id FROM games WHERE category = JSON_OBJECT('name', ?) AND client_type IN (?, ?) AND channel = ? ORDER BY id LIMIT ?";
-const HIVEWEB_GAME_SERVICE: &str = "src/services/game_service.rs";
+const HIVEWEB_GAME_SERVICE: &str = "services/game_service.rs";
 
 #[test]
 fn dynamic_identifiers_require_exact_allowlist_and_typed_serialization() {

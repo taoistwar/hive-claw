@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::config::{AutoLockMinutes, LockErrorMode};
+use super::config::AutoLockMinutes;
 
+/// Reason the keystore is (or is not) locked, driving the unlock UI and
+/// auto-lock policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthLockReason {
     /// The application is running but the lock state is *not* engaged.
@@ -26,11 +28,16 @@ pub enum AuthLockReason {
     UserRequested,
 }
 
+/// User activity that can reset the idle auto-lock timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdleActivity {
+    /// A keyboard key press.
     KeyPress,
+    /// A mouse-down on the main window.
     MainWindowMouseDown,
+    /// An application focus change.
     FocusChange,
+    /// Mouse movement (ignored by the idle policy).
     MouseMove,
 }
 
@@ -39,28 +46,46 @@ pub enum IdleActivity {
 // aliases of `auth::crypto::{Clock, SystemClock, TestClock}`.
 pub use super::crypto::{Clock, SystemClock, TestClock};
 
+/// Error returned by an OS screen-lock monitor.
 #[derive(Debug, Error)]
 pub enum ScreenLockMonitorError {
     #[error("OS screen-lock monitor unavailable; mode = {mode:?}")]
-    Unavailable { mode: super::config::LockErrorMode },
+    /// The monitor is unavailable; `mode` describes the fail-closed behaviour.
+    Unavailable {
+        /// Fail-closed mode reported by the monitor.
+        mode: super::config::LockErrorMode,
+    },
     #[error("internal monitor error: {0}")]
+    /// An unexpected internal monitor failure.
     Internal(String),
 }
 
+/// Normalized OS screen-lock event, independent of platform source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OsScreenLockEvent {
+    /// Linux: the screensaver active state changed.
     LinuxScreenSaverActiveChanged,
+    /// macOS: the displays went to sleep.
     MacOsScreensDidSleep,
+    /// Windows: a session change (WTS) was observed.
     WindowsWtSessionChange,
 }
 
+/// Abstract OS screen-lock monitor; yields normalized lock events.
 pub trait ScreenLockMonitor: Send + Sync {
+    /// Block until the next lock event, or return `Ok(None)` if the stream
+    /// ended. Returns `Err` if the monitor is unavailable or failed.
     fn next_event(&self) -> Result<Option<OsScreenLockEvent>, ScreenLockMonitorError>;
+    /// Human-readable name of the monitor implementation (for diagnostics).
     fn describe(&self) -> &'static str;
 }
 
+/// A monitor that is always disabled and reports `Unavailable`, used to
+/// exercise the fail-closed path in tests.
 pub struct DisabledMonitor {
+    /// Fail-closed mode reported when `next_event` is called.
     pub mode: super::config::LockErrorMode,
+    /// Diagnostic label identifying this disabled monitor.
     pub label: &'static str,
 }
 
@@ -180,24 +205,40 @@ impl AuthLockState {
     }
 }
 
+/// A resolved lock trigger that the unlock UI can render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LockEvent {
-    IdleTimeout { minutes: u16 },
+    /// Idle auto-lock fired after `minutes` of inactivity.
+    IdleTimeout {
+        /// Idle duration (in minutes) that triggered the lock.
+        minutes: u16,
+    },
+    /// OS reported a screen lock.
     OsScreenLock,
+    /// Too many failed unlock attempts.
     TooManyAttempts,
+    /// The user explicitly requested a lock.
     UserRequested,
 }
 
+/// Source of an idle reset, used to distinguish activity types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdleSource {
+    /// A keyboard key press.
     KeyPress,
+    /// A mouse-down on the main window.
     MainWindowMouseDown,
+    /// An application focus change.
     FocusChange,
+    /// Mouse movement.
     MouseMove,
 }
 
+/// Tracks last user activity and decides when the idle auto-lock should fire.
 pub struct IdleTracker {
+    /// Configured auto-lock idle threshold.
     pub auto_lock_minutes: AutoLockMinutes,
+    /// Instant of the last recorded (non-MouseMove) activity.
     pub last_activity: parking_lot::Mutex<Instant>,
 }
 

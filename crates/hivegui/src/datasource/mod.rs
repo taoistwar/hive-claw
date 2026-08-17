@@ -1,3 +1,16 @@
+//! Data source public boundary for feature 011.
+//!
+//! This module re-exports concrete store/runtime helpers used by higher-level UI
+//! and runtime orchestration.
+//!
+//! 变更公开 API 清单（feature 011）：完整导出清单与复杂度/安全性核对见
+//! `specs/011-hivegui-standalone-mode/checklists/changed-public-api.md`。
+//!
+//! 安全约束：
+//! - 按 feature 规范，公开 SQL 与查询策略依赖下游 `query_plan` 与 `sql_source_inventory`。
+//! - `function_not_executable` 与其他稳定错误语义由 ABI/diagnostics 边界统一映射。
+//! - 不在本入口直接引入未标注所有者的复杂副作用。
+
 pub mod backup;
 pub mod capability_store;
 pub mod category_store;

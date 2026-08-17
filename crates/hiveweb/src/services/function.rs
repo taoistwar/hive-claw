@@ -264,7 +264,7 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
     );
 
     let count_sql = audit_sql(count_sql);
-    let mut count_q = sqlx::query_as::<_, (i64,)> (count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     if let Some(k) = filter.kind {
         count_q = count_q.bind(k);
     }
@@ -428,8 +428,13 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Funct
         ));
     }
 
-    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Functions, id, meta.updated_at)
-        .await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Functions,
+        id,
+        meta.updated_at,
+    )
+    .await?;
 
     if !is_builtin {
         if let Some(ref s) = meta.input_schema {

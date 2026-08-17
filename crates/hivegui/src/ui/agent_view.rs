@@ -1,4 +1,7 @@
-use crate::datasource::{Store, entity_store::Agent};
+use crate::datasource::{
+    Store,
+    entity_store::{AGENT_PAGE_SIZE, AgentFilter, AgentInput, AgentRecord, AgentStore},
+};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
@@ -12,7 +15,7 @@ use gpui_component::scroll::ScrollableElement;
 
 pub struct AgentView {
     store: Entity<Store>,
-    items: Vec<Agent>,
+    items: Vec<AgentRecord>,
     loading: bool,
     search_text: String,
     current_page: i64,
@@ -25,15 +28,21 @@ pub struct AgentView {
     form_name: String,
     form_description: String,
     form_system_prompt: String,
-    form_depth: String,
     form_model_preset: String,
+    form_parent_agent_id: Option<i64>,
+    form_tool_ids: Vec<i64>,
+    form_skill_ids: Vec<i64>,
+    form_capability_names: Vec<String>,
+    available_parents: Vec<(i64, String)>,
+    available_tools: Vec<(i64, String)>,
+    available_skills: Vec<(i64, String)>,
+    available_capabilities: Vec<String>,
     error_message: Option<String>,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
     description_input: Option<Entity<InputState>>,
     system_prompt_input: Option<Entity<InputState>>,
-    depth_input: Option<Entity<InputState>>,
     model_preset_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
 }
@@ -46,7 +55,7 @@ impl AgentView {
             loading: false,
             search_text: String::new(),
             current_page: 0,
-            page_size: 20,
+            page_size: AGENT_PAGE_SIZE,
             total_count: 0,
             show_form: false,
             form_scroll: ScrollHandle::default(),
@@ -55,18 +64,25 @@ impl AgentView {
             form_name: String::new(),
             form_description: String::new(),
             form_system_prompt: String::new(),
-            form_depth: "0".into(),
             form_model_preset: String::new(),
+            form_parent_agent_id: None,
+            form_tool_ids: Vec::new(),
+            form_skill_ids: Vec::new(),
+            form_capability_names: Vec::new(),
+            available_parents: Vec::new(),
+            available_tools: Vec::new(),
+            available_skills: Vec::new(),
+            available_capabilities: Vec::new(),
             error_message: None,
             confirm_delete_id: None,
             identifier_input: None,
             name_input: None,
             description_input: None,
             system_prompt_input: None,
-            depth_input: None,
             model_preset_input: None,
             search_input: None,
         };
+        v.load_references(cx);
         v.load(cx);
         v
     }
@@ -74,21 +90,104 @@ impl AgentView {
     fn load(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         let store = self.store.read(cx).clone();
-        let search = if self.search_text.is_empty() {
-            None
+        let page = if self.search_text.is_empty() {
+            AgentFilter::first().with_page(self.current_page + 1)
         } else {
-            Some(self.search_text.clone())
+            AgentFilter::first()
+                .with_search(self.search_text.clone())
+                .with_page(self.current_page + 1)
         };
-        let offset = self.current_page * self.page_size;
+
         cx.spawn(async move |this, cx| {
-            let items = Agent::list(store.pool(), search.clone(), 20, offset).await?;
-            let count = Agent::count(store.pool(), search).await?;
-            this.update(cx, |v, cx| {
-                v.items = items;
-                v.total_count = count;
-                v.loading = false;
-                cx.notify();
-            })
+            let result: std::result::Result<(Vec<AgentRecord>, i64, i64), String> = async {
+                let agent_store = AgentStore::new(store.pool().clone())
+                    .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
+                let data = agent_store
+                    .search(&page)
+                    .await
+                    .map_err(|e| format!("分页加载失败: {e}"))?;
+                Ok((data.records().to_vec(), data.total(), data.page_size()))
+            }
+            .await;
+            match result {
+                Ok((items, total_count, page_size)) => {
+                    this.update(cx, |v, cx| {
+                        v.items = items;
+                        v.total_count = total_count;
+                        v.page_size = page_size;
+                        v.loading = false;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(err) => {
+                    this.update(cx, |v, cx| {
+                        v.error_message = Some(format!("加载失败: {err}"));
+                        v.loading = false;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn load_references(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx).clone();
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let pool = store.pool();
+                let parents = sqlx::query_as::<_, (i64, String)>(
+                    "SELECT id, identifier FROM agents ORDER BY identifier",
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("读取 Agent 参照失败: {e}"))?;
+
+                let tools = sqlx::query_as::<_, (i64, String)>(
+                    "SELECT id, COALESCE(name, identifier) FROM tools ORDER BY COALESCE(name, identifier)",
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("读取 Tool 参照失败: {e}"))?;
+
+                let skills = sqlx::query_as::<_, (i64, String)>(
+                    "SELECT id, COALESCE(name, identifier) FROM skills ORDER BY COALESCE(name, identifier)",
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("读取 Skill 参照失败: {e}"))?;
+
+                let capabilities = sqlx::query_as::<_, (String,)>("SELECT name FROM capabilities ORDER BY name")
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| format!("读取 Capability 参照失败: {e}"))?;
+
+                Ok::<_, String>((parents, tools, skills, capabilities))
+            }
+            .await;
+
+            match result {
+                Ok((parents, tools, skills, capabilities)) => {
+                    this.update(cx, |view, _| {
+                        view.available_parents = parents;
+                        view.available_tools = tools;
+                        view.available_skills = skills;
+                        view.available_capabilities = capabilities
+                            .into_iter()
+                            .map(|(capability,)| capability)
+                            .collect();
+                    })
+                    .ok();
+                }
+                Err(err) => {
+                    this.update(cx, |v, _| {
+                        v.error_message = Some(err);
+                    })
+                    .ok();
+                }
+            }
         })
         .detach();
     }
@@ -114,11 +213,6 @@ impl AgentView {
                 .placeholder("系统提示词")
                 .default_value(&self.form_system_prompt)
         }));
-        self.depth_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("0")
-                .default_value(&self.form_depth)
-        }));
         self.model_preset_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("模型预设（可选）")
@@ -126,47 +220,7 @@ impl AgentView {
         }));
     }
 
-    fn show_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_form = true;
-        self.editing_id = None;
-        self.form_identifier.clear();
-        self.form_name.clear();
-        self.form_description.clear();
-        self.form_system_prompt.clear();
-        self.form_depth = "0".into();
-        self.form_model_preset.clear();
-        self.error_message = None;
-        self.init_inputs(window, cx);
-    }
-
-    fn show_edit_form(&mut self, window: &mut Window, item: Agent, cx: &mut Context<Self>) {
-        self.show_form = true;
-        self.editing_id = Some(item.id);
-        self.form_identifier = item.identifier.clone();
-        self.form_name = item.name.clone();
-        self.form_description = item.description.clone().unwrap_or_default();
-        self.form_system_prompt = item.system_prompt.clone();
-        self.form_depth = item.depth.to_string();
-        self.form_model_preset = item.model_preset.clone().unwrap_or_default();
-        self.error_message = None;
-        self.init_inputs(window, cx);
-    }
-
-    fn hide_form(&mut self, cx: &mut Context<Self>) {
-        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
-        self.show_form = false;
-        self.editing_id = None;
-        self.error_message = None;
-        self.identifier_input = None;
-        self.name_input = None;
-        self.description_input = None;
-        self.system_prompt_input = None;
-        self.depth_input = None;
-        self.model_preset_input = None;
-        cx.notify();
-    }
-
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn sync_form_inputs(&mut self, cx: &mut Context<Self>) {
         if let Some(ref inp) = self.identifier_input {
             self.form_identifier = inp.read(cx).value().to_string();
         }
@@ -179,46 +233,135 @@ impl AgentView {
         if let Some(ref inp) = self.system_prompt_input {
             self.form_system_prompt = inp.read(cx).value().to_string();
         }
-        if let Some(ref inp) = self.depth_input {
-            self.form_depth = inp.read(cx).value().to_string();
-        }
         if let Some(ref inp) = self.model_preset_input {
             self.form_model_preset = inp.read(cx).value().to_string();
         }
+    }
+
+    fn show_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_form = true;
+        self.editing_id = None;
+        self.form_identifier.clear();
+        self.form_name.clear();
+        self.form_description.clear();
+        self.form_system_prompt.clear();
+        self.form_model_preset.clear();
+        self.form_parent_agent_id = None;
+        self.form_tool_ids.clear();
+        self.form_skill_ids.clear();
+        self.form_capability_names.clear();
+        self.error_message = None;
+        self.init_inputs(window, cx);
+    }
+
+    fn show_edit_form(&mut self, window: &mut Window, item: AgentRecord, cx: &mut Context<Self>) {
+        self.show_form = true;
+        self.editing_id = Some(item.id());
+        self.form_identifier = item.identifier().to_string();
+        self.form_name = item.name().to_string();
+        self.form_description = item.description().unwrap_or_default().to_string();
+        self.form_system_prompt = item.system_prompt().to_string();
+        self.form_model_preset = item.model_preset().unwrap_or_default().to_string();
+        self.form_parent_agent_id = item.parent_agent_id();
+        self.form_tool_ids = item.tool_ids().to_vec();
+        self.form_skill_ids = item.skill_ids().to_vec();
+        self.form_capability_names = item
+            .capability_names()
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        self.error_message = None;
+        self.init_inputs(window, cx);
+    }
+
+    fn hide_form(&mut self, cx: &mut Context<Self>) {
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
+        self.show_form = false;
+        self.editing_id = None;
+        self.form_parent_agent_id = None;
+        self.form_tool_ids.clear();
+        self.form_skill_ids.clear();
+        self.form_capability_names.clear();
+        self.error_message = None;
+        self.identifier_input = None;
+        self.name_input = None;
+        self.description_input = None;
+        self.system_prompt_input = None;
+        self.model_preset_input = None;
+        cx.notify();
+    }
+
+    fn save(&mut self, cx: &mut Context<Self>) {
+        self.sync_form_inputs(cx);
+
         if self.form_identifier.trim().is_empty() || self.form_name.trim().is_empty() {
             self.error_message = Some("Identifier 和名称不能为空".into());
             cx.notify();
             return;
         }
-        let depth: i64 = self.form_depth.parse().unwrap_or(0);
-        let store = self.store.read(cx).clone();
-        let idf = self.form_identifier.clone();
-        let name = self.form_name.clone();
-        let desc = if self.form_description.is_empty() {
-            None
-        } else {
-            Some(self.form_description.clone())
-        };
-        let sp = self.form_system_prompt.clone();
-        let mp = if self.form_model_preset.is_empty() {
-            None
-        } else {
-            Some(self.form_model_preset.clone())
+
+        if self.form_system_prompt.trim().is_empty() {
+            self.error_message = Some("System Prompt 不能为空".into());
+            cx.notify();
+            return;
+        }
+
+        let mut input = match AgentInput::new_root(
+            self.form_identifier.clone(),
+            self.form_name.clone(),
+            self.form_system_prompt.clone(),
+        ) {
+            Ok(input) => input,
+            Err(e) => {
+                self.error_message = Some(format!("参数校验失败: {e}"));
+                cx.notify();
+                return;
+            }
         };
 
+        if !self.form_description.is_empty() {
+            input = input.with_description(self.form_description.clone());
+        }
+
+        if !self.form_model_preset.is_empty() {
+            input = input.with_model_preset(self.form_model_preset.clone());
+        }
+
+        input = input
+            .with_parent(self.form_parent_agent_id)
+            .with_tools(self.form_tool_ids.clone())
+            .with_skills(self.form_skill_ids.clone())
+            .with_always_skills(Vec::<i64>::new())
+            .with_capabilities(self.form_capability_names.clone());
+
+        let store = self.store.read(cx).clone();
+
         if let Some(eid) = self.editing_id {
+            let editing_id = eid;
             cx.spawn(async move |this, cx| {
-                match Agent::update(store.pool(), eid, idf, name, desc, sp, None, depth, mp).await {
-                    Ok(_) => {
+                let result = async {
+                    let agent_store = AgentStore::new(store.pool().clone())
+                        .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
+                    agent_store
+                        .update(editing_id, input)
+                        .await
+                        .map_err(|e| format!("更新失败: {e}"))?;
+                    Ok::<_, String>(())
+                }
+                .await;
+
+                match result {
+                    Ok(()) => {
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
                             v.load(cx);
+                            v.load_references(cx);
                         })
                         .ok();
                     }
-                    Err(e) => {
+                    Err(err) => {
                         this.update(cx, |v, cx| {
-                            v.error_message = Some(format!("更新失败: {}", e));
+                            v.error_message = Some(err);
                             cx.notify();
                         })
                         .ok();
@@ -228,17 +371,29 @@ impl AgentView {
             .detach();
         } else {
             cx.spawn(async move |this, cx| {
-                match Agent::create(store.pool(), idf, name, desc, sp, None, depth, mp).await {
-                    Ok(_) => {
+                let result = async {
+                    let agent_store = AgentStore::new(store.pool().clone())
+                        .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
+                    agent_store
+                        .create(input)
+                        .await
+                        .map_err(|e| format!("创建失败: {e}"))?;
+                    Ok::<_, String>(())
+                }
+                .await;
+
+                match result {
+                    Ok(()) => {
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
                             v.load(cx);
+                            v.load_references(cx);
                         })
                         .ok();
                     }
-                    Err(e) => {
+                    Err(err) => {
                         this.update(cx, |v, cx| {
-                            v.error_message = Some(format!("创建失败: {}", e));
+                            v.error_message = Some(err);
                             cx.notify();
                         })
                         .ok();
@@ -251,24 +406,107 @@ impl AgentView {
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
-        cx.spawn(
-            async move |this, cx| match Agent::delete(store.pool(), id).await {
-                Ok(_) => {
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let agent_store = AgentStore::new(store.pool().clone())
+                    .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
+                agent_store
+                    .delete(id, None)
+                    .await
+                    .map_err(|e| format!("删除失败: {e}"))?;
+                Ok::<_, String>(())
+            }
+            .await;
+
+            match result {
+                Ok(()) => {
+                    this.update(cx, |v, cx| {
+                        v.load(cx);
+                        v.load_references(cx);
+                    })
+                    .ok();
+                }
+                Err(err) => {
+                    this.update(cx, |v, cx| {
+                        v.error_message = Some(err);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn set_default(&mut self, id: i64, cx: &mut Context<Self>) {
+        let store = self.store.read(cx).clone();
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let agent_store = AgentStore::new(store.pool().clone())
+                    .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
+                agent_store
+                    .set_default(id)
+                    .await
+                    .map_err(|e| format!("设置默认失败: {e}"))?;
+                Ok::<_, String>(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
                     this.update(cx, |v, cx| {
                         v.load(cx);
                     })
                     .ok();
                 }
-                Err(e) => {
+                Err(err) => {
                     this.update(cx, |v, cx| {
-                        v.error_message = Some(format!("删除失败: {}", e));
+                        v.error_message = Some(err);
                         cx.notify();
                     })
                     .ok();
                 }
-            },
-        )
+            }
+        })
         .detach();
+    }
+
+    fn toggle_tool(&mut self, id: i64) {
+        if let Some(pos) = self.form_tool_ids.iter().position(|value| *value == id) {
+            self.form_tool_ids.remove(pos);
+        } else {
+            self.form_tool_ids.push(id);
+        }
+    }
+
+    fn toggle_skill(&mut self, id: i64) {
+        if let Some(pos) = self.form_skill_ids.iter().position(|value| *value == id) {
+            self.form_skill_ids.remove(pos);
+        } else {
+            self.form_skill_ids.push(id);
+        }
+    }
+
+    fn toggle_capability(&mut self, name: String) {
+        if let Some(pos) = self
+            .form_capability_names
+            .iter()
+            .position(|value| value == &name)
+        {
+            self.form_capability_names.remove(pos);
+        } else {
+            self.form_capability_names.push(name);
+        }
+    }
+
+    fn parent_label(&self, parent_agent_id: Option<i64>) -> String {
+        parent_agent_id
+            .and_then(|parent_id| {
+                self.available_parents
+                    .iter()
+                    .find(|(id, _)| *id == parent_id)
+                    .map(|(_, label)| label.clone())
+            })
+            .unwrap_or_else(|| "无".to_string())
     }
 
     fn next_page(&mut self, cx: &mut Context<Self>) {
@@ -277,6 +515,7 @@ impl AgentView {
             self.load(cx);
         }
     }
+
     fn prev_page(&mut self, cx: &mut Context<Self>) {
         if self.current_page > 0 {
             self.current_page -= 1;
@@ -287,18 +526,20 @@ impl AgentView {
 
 impl Render for AgentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tp = (self.total_count + self.page_size - 1) / self.page_size;
+        let total_pages = (self.total_count + self.page_size - 1) / self.page_size;
+
         if self.show_form && self.identifier_input.is_none() {
             self.init_inputs(window, cx);
         }
+
         if self.search_input.is_none() {
             self.search_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("输入名称...")
+                    .placeholder("输入名称")
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;
@@ -308,8 +549,18 @@ impl Render for AgentView {
                 .detach();
             }
         }
+
         let style = ManagementStyle::current(cx);
         let theme = cx.theme();
+
+        let parent_candidates = self.available_parents.clone();
+        let tools = self.available_tools.clone();
+        let skills = self.available_skills.clone();
+        let capabilities = self.available_capabilities.clone();
+        let form_tool_ids = self.form_tool_ids.clone();
+        let form_skill_ids = self.form_skill_ids.clone();
+        let form_capabilities = self.form_capability_names.clone();
+        let selected_parent = self.form_parent_agent_id;
 
         div()
             .flex()
@@ -375,7 +626,16 @@ impl Render for AgentView {
                     .min_h_0()
                     .overflow_y_scrollbar()
                     .p(px(16.0))
-                    .child(if self.items.is_empty() {
+                    .child(if self.loading {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .h_full()
+                            .text_color(style.list.muted_foreground)
+                            .text_size(px(14.0))
+                            .child("加载中...")
+                    } else if self.items.is_empty() {
                         div()
                             .flex()
                             .items_center()
@@ -388,10 +648,11 @@ impl Render for AgentView {
                         let col_widths = [
                             px(60.0),
                             px(120.0),
-                            px(100.0),
-                            px(80.0),
                             px(150.0),
-                            px(120.0),
+                            px(70.0),
+                            px(70.0),
+                            px(160.0),
+                            px(170.0),
                         ];
                         list_container(style)
                             .child(
@@ -408,41 +669,46 @@ impl Render for AgentView {
                                         list_header_cell(Some(col_widths[3]), style).child("Depth"),
                                     )
                                     .child(
-                                        list_header_cell(Some(col_widths[4]), style).child("描述"),
+                                        list_header_cell(Some(col_widths[4]), style).child("默认"),
                                     )
                                     .child(
-                                        list_header_cell(Some(col_widths[5]), style).child("操作"),
+                                        list_header_cell(Some(col_widths[5]), style).child("上级"),
+                                    )
+                                    .child(
+                                        list_header_cell(Some(col_widths[6]), style).child("操作"),
                                     ),
                             )
                             .children(self.items.iter().map(|item| {
-                                let id = item.id;
-                                let ic = item.clone();
+                                let id = item.id();
+                                let current = item.clone();
+                                let is_default = item.is_default();
+                                let parent_label = self.parent_label(item.parent_agent_id());
                                 list_row(style)
                                     .child(
                                         list_cell(Some(col_widths[0]), style)
-                                            .child(format!("{}", item.id)),
+                                            .child(format!("{}", item.id())),
                                     )
                                     .child(
                                         list_cell(Some(col_widths[1]), style)
-                                            .child(item.name.clone()),
+                                            .child(item.name().to_string()),
                                     )
                                     .child(
                                         list_cell(Some(col_widths[2]), style)
-                                            .child(item.identifier.clone()),
+                                            .child(item.identifier().to_string()),
                                     )
                                     .child(
                                         list_cell(Some(col_widths[3]), style)
-                                            .child(format!("{}", item.depth)),
+                                            .child(format!("{}", item.depth())),
                                     )
-                                    .child(list_cell(Some(col_widths[4]), style).child(
-                                        if let Some(ref d) = item.description {
-                                            d.clone()
-                                        } else {
-                                            String::new()
-                                        },
-                                    ))
                                     .child(
-                                        list_actions(None, style)
+                                        list_cell(Some(col_widths[4]), style)
+                                            .child(if is_default { "是" } else { "否" }),
+                                    )
+                                    .child(
+                                        list_cell(Some(col_widths[5]), style).child(parent_label),
+                                    )
+                                    .child(
+                                        list_actions(Some(col_widths[6]), style)
                                             .child(
                                                 action_button(
                                                     ("edit", id as u64),
@@ -455,12 +721,36 @@ impl Render for AgentView {
                                                     let t = cx.weak_entity();
                                                     move |_, window, cx| {
                                                         t.update(cx, |v, cx| {
-                                                            v.show_edit_form(window, ic.clone(), cx)
+                                                            v.show_edit_form(
+                                                                window,
+                                                                current.clone(),
+                                                                cx,
+                                                            )
                                                         })
                                                         .ok();
                                                     }
                                                 }),
                                             )
+                                            .when(!is_default, |row| {
+                                                row.child(
+                                                    action_button(
+                                                        ("set-default", id as u64),
+                                                        "设为默认",
+                                                        ActionRole::Warning,
+                                                        ActionSize::Row,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                v.set_default(id, cx);
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                                )
+                                            })
                                             .child(
                                                 action_button(
                                                     ("del", id as u64),
@@ -533,7 +823,7 @@ impl Render for AgentView {
                                     .child(format!(
                                         "第 {} / {} 页",
                                         self.current_page + 1,
-                                        tp.max(1)
+                                        total_pages.max(1)
                                     )),
                             )
                             .child(
@@ -565,7 +855,6 @@ impl Render for AgentView {
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
                 let system_prompt_input = self.system_prompt_input.clone().unwrap();
-                let depth_input = self.depth_input.clone().unwrap();
                 let model_preset_input = self.model_preset_input.clone().unwrap();
                 this.child(
                     div()
@@ -586,7 +875,7 @@ impl Render for AgentView {
                 )
                 .child(
                     management_modal_panel(
-                        management_modal_layer(px(550.0)),
+                        management_modal_layer(px(620.0)),
                         theme.popover,
                         theme.foreground,
                         theme.border,
@@ -611,8 +900,240 @@ impl Render for AgentView {
                             .child(form_field("名称 *", name_input, theme))
                             .child(form_field("描述", description_input, theme))
                             .child(form_field("System Prompt", system_prompt_input, theme))
-                            .child(form_field("Depth", depth_input, theme))
                             .child(form_field("Model Preset", model_preset_input, theme))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(div().text_size(px(13.0)).child("上级 Agent"))
+                                    .child(div().flex().flex_col().gap(px(4.0)).child({
+                                        let t = cx.weak_entity();
+                                        action_button(
+                                            ("parent", 0_u64),
+                                            if selected_parent.is_none() {
+                                                "☑ 无父 Agent"
+                                            } else {
+                                                "□ 无父 Agent"
+                                            },
+                                            if selected_parent.is_none() {
+                                                ActionRole::Edit
+                                            } else {
+                                                ActionRole::Neutral
+                                            },
+                                            ActionSize::Compact,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |_, _, _cx| {
+                                                let _ = t.update(_cx, |v, _| {
+                                                    v.form_parent_agent_id = None;
+                                                });
+                                            },
+                                        )
+                                    }))
+                                    .children(
+                                        parent_candidates
+                                            .into_iter()
+                                            .filter(|(pid, _)| Some(*pid) != self.editing_id)
+                                            .map(|(pid, label)| {
+                                                let active = selected_parent == Some(pid);
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(6.0))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.0))
+                                                            .text_color(theme.foreground)
+                                                            .child(label.clone()),
+                                                    )
+                                                    .child(
+                                                        action_button(
+                                                            ("set-parent", pid as u64),
+                                                            if active {
+                                                                "取消"
+                                                            } else {
+                                                                "选择"
+                                                            },
+                                                            if active {
+                                                                ActionRole::Edit
+                                                            } else {
+                                                                ActionRole::Neutral
+                                                            },
+                                                            ActionSize::Compact,
+                                                            style,
+                                                        )
+                                                        .on_mouse_down(MouseButton::Left, {
+                                                            let t = cx.weak_entity();
+                                                            move |_, _, cx| {
+                                                                t.update(cx, |v, _| {
+                                                                    v.form_parent_agent_id = if v
+                                                                        .form_parent_agent_id
+                                                                        == Some(pid)
+                                                                    {
+                                                                        None
+                                                                    } else {
+                                                                        Some(pid)
+                                                                    };
+                                                                })
+                                                                .ok();
+                                                            }
+                                                        }),
+                                                    )
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(div().text_size(px(13.0)).child("Tool 关联（可多选）"))
+                                    .children(tools.into_iter().map(|(tool_id, label)| {
+                                        let active = form_tool_ids.contains(&tool_id);
+                                        let t = cx.weak_entity();
+                                        let id = tool_id;
+                                        let tool_label = label.clone();
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .text_color(theme.foreground)
+                                                    .child(if active { "☑" } else { "□" }),
+                                            )
+                                            .child(div().text_size(px(13.0)).child(tool_label))
+                                            .child(
+                                                action_button(
+                                                    ("toggle-tool", id as u64),
+                                                    if active { "移除" } else { "添加" },
+                                                    if active {
+                                                        ActionRole::Edit
+                                                    } else {
+                                                        ActionRole::Neutral
+                                                    },
+                                                    ActionSize::Compact,
+                                                    style,
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, _| {
+                                                            v.toggle_tool(id);
+                                                        })
+                                                        .ok();
+                                                    },
+                                                ),
+                                            )
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(div().text_size(px(13.0)).child("Skill 关联（可多选）"))
+                                    .children(skills.into_iter().map(|(skill_id, label)| {
+                                        let active = form_skill_ids.contains(&skill_id);
+                                        let t = cx.weak_entity();
+                                        let id = skill_id;
+                                        let skill_label = label.clone();
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .text_color(theme.foreground)
+                                                    .child(if active { "☑" } else { "□" }),
+                                            )
+                                            .child(div().text_size(px(13.0)).child(skill_label))
+                                            .child(
+                                                action_button(
+                                                    ("toggle-skill", id as u64),
+                                                    if active { "移除" } else { "添加" },
+                                                    if active {
+                                                        ActionRole::Edit
+                                                    } else {
+                                                        ActionRole::Neutral
+                                                    },
+                                                    ActionSize::Compact,
+                                                    style,
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, _| {
+                                                            v.toggle_skill(id);
+                                                        })
+                                                        .ok();
+                                                    },
+                                                ),
+                                            )
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .child("Capability 关联（可多选）"),
+                                    )
+                                    .children(capabilities.into_iter().enumerate().map(
+                                        |(idx, name)| {
+                                            let cap_name = name.clone();
+                                            let active = form_capabilities.contains(&cap_name);
+                                            let t = cx.weak_entity();
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(theme.foreground)
+                                                        .child(if active { "☑" } else { "□" }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .child(cap_name.clone()),
+                                                )
+                                                .child(
+                                                    action_button(
+                                                        ("toggle-capability", idx as u64),
+                                                        if active { "移除" } else { "添加" },
+                                                        if active {
+                                                            ActionRole::Edit
+                                                        } else {
+                                                            ActionRole::Neutral
+                                                        },
+                                                        ActionSize::Compact,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, _| {
+                                                                v.toggle_capability(
+                                                                    cap_name.clone(),
+                                                                );
+                                                            })
+                                                            .ok();
+                                                        },
+                                                    ),
+                                                )
+                                        },
+                                    )),
+                            )
                             .when_some(self.error_message.as_ref(), |this, err| {
                                 this.child(
                                     div()
@@ -669,7 +1190,7 @@ impl Render for AgentView {
                     ),
                 )
             })
-            .when_some(self.confirm_delete_id, |this, id| {
+            .when_some(self.confirm_delete_id, |this, _id| {
                 this.child(
                     div()
                         .absolute()

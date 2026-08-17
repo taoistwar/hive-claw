@@ -15,8 +15,8 @@
 //! - `policy` — `PasswordPolicy`: minimum length, character classes,
 //!   rejection of system `pw_passwd`-shaped values, `set_os_pw_passwd_for_test`.
 //! - `ui` — `AuthUnlockView` + `AuthSetupView` + `UnlockScreen` enum
-//!   + `SetupScreen` enum + `PasswordFieldEcho` enum +
-//!   `RecoveryEntryKind` (only `RestoreFromBackup`).
+//!   + `SetupScreen` enum + `PasswordFieldEcho` enum
+//!   + `RecoveryEntryKind` (only `RestoreFromBackup`).
 //! - `config` — `AutoLockMinutes` (1..=1440).
 //! - `monitor` — `AgentExecution` / `ChatSession` status enums +
 //!   `SensitiveCanaryScanner` for plain-text canary scans across

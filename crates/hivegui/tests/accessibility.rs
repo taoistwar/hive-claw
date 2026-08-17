@@ -186,7 +186,7 @@ fn open_migration_view(
         gpui_component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
-    let visual = VisualTestContext::from_window(window.clone().into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     (window, visual)
 }
 
@@ -200,7 +200,7 @@ fn open_key_view(
         gpui_component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
-    let visual = VisualTestContext::from_window(window.clone().into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     (window, visual)
 }
 
@@ -735,7 +735,7 @@ fn open_sidebar_view(
         gpui_component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
-    let visual = VisualTestContext::from_window(window.clone().into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     (window, visual)
 }
 
@@ -1297,5 +1297,143 @@ fn capability_view_declares_stable_focus_selector_for_form_modal() {
             || CAPABILITY_VIEW_SOURCE.contains("CAPABILITY_FORM")
             || CAPABILITY_VIEW_SOURCE.contains("capability_form"),
         "T069 must declare a stable CAPABILITY_MODAL / CAPABILITY_FORM focus selector"
+    );
+}
+
+// ===========================================================================
+// §T085 — US9 Function management: builtin/schema/accessibility/contracts and
+// T016E Function activation.
+// ===========================================================================
+//
+// Source of truth: `specs/011-hivegui-standalone-mode/tasks.md` §T085
+// ("在 `crates/hivegui/tests/accessibility.rs` 编写 Function JSON schema
+// 编辑、Builtin 禁用状态、Placeholder 标签/schema-only 字段/无测试操作/
+// 不可执行状态、执行反馈、重复 identifier conflict 后表单保持/错误焦点/
+// 安全值和键盘测试，并激活 T016E Function 行、写入并首次运行该行原生滚动
+// 断言").
+//
+// T088 adds the runtime/a11y behavior in `crates/hivegui/src/ui/function_view.rs`.
+// These tests are the corresponding accessibility-side Red entry points and
+// inventory activation for T016E Function.
+
+const FUNCTION_VIEW_SOURCE: &str = include_str!("../src/ui/function_view.rs");
+
+#[test]
+fn function_view_module_carries_scroll_tag_for_native_surface() {
+    use support::scroll_inventory::{ScrollSurface, assert_source_tag};
+    // T088 must publish `//! scroll:function_list` in the module doc
+    // comment. Until then `parse_source_tag` returns `None` and
+    // `assert_source_tag` panics.
+    assert_source_tag(FUNCTION_VIEW_SOURCE, ScrollSurface::FunctionList.slug());
+}
+
+#[test]
+fn function_list_surface_is_registered_in_t016e_inventory() {
+    use support::scroll_inventory::ScrollSurface;
+    // T085 activates the T016E Function surface owned by US9/T087.
+    let owner = ScrollSurface::FunctionList.owner_phase().to_string();
+    assert_eq!(
+        owner, "US9/T087",
+        "FunctionList owner phase must be fixed to US9/T087"
+    );
+    assert_eq!(ScrollSurface::FunctionList.slug(), "function_list");
+}
+
+#[test]
+fn function_view_supports_json_schema_editor_controls() {
+    // T088 must keep dedicated JSON schema editors in the form so users can
+    // configure builtin/custom schemas directly from the management UI.
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("form_field_multiline(\"Input Schema (JSON)\""),
+        "T088 should render the input schema editor"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("form_field_multiline(\"Output Schema (JSON)\""),
+        "T088 should render the output schema editor"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("input_schema_input")
+            && FUNCTION_VIEW_SOURCE.contains("output_schema_input"),
+        "Function form should keep schema input handles for validation and persistence"
+    );
+}
+
+#[test]
+fn function_view_placeholder_row_should_be_schema_only_and_non_executable() {
+    // Placeholder (kind 3) must have no inline test action and only placeholder
+    // schema semantics, not a live execution contract.
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("ic.kind != 3"),
+        "Placeholder rows must hide the inline '测试' action"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("kind == 3")
+            && FUNCTION_VIEW_SOURCE.contains("required_capabilities = None"),
+        "Placeholder rows must clear capability/export state and stay schema-only"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("function_kind_label")
+            && FUNCTION_VIEW_SOURCE.contains("占位"),
+        "Function list should still expose the placeholder label"
+    );
+}
+
+#[test]
+fn function_view_exposes_execution_feedback_states_for_test_runs() {
+    // The run-test drawer should provide terminal success/error feedback so users
+    // can see why execution failed or succeeded.
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("TestState::Running"),
+        "Function test dialog should expose running state"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("TestState::Success"),
+        "Function test dialog should render success state"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("TestState::Error")
+            && FUNCTION_VIEW_SOURCE.contains("执行结果")
+            && FUNCTION_VIEW_SOURCE.contains("FunctionTestExecutor::execute"),
+        "Function test dialog should render error state after execute failure"
+    );
+}
+
+#[test]
+fn function_view_form_keeps_safe_values_and_focus_contract_after_save_error() {
+    // T088 runtime implementation must preserve form values on create/update
+    // failure, keep the user on the same form surface, and focus recoverably.
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains(r#"v.error_message = Some(format!("创建失败"#)
+            || FUNCTION_VIEW_SOURCE.contains(r#"v.error_message = Some(format!("更新失败"#),
+        "Save failure should stay on form and render safe error text"
+    );
+    assert!(
+        !FUNCTION_VIEW_SOURCE.contains("show_form = false"),
+        "Error path should not force-close form immediately"
+    );
+}
+
+#[test]
+fn function_view_declares_keyboard_and_focus_contract_for_accessibility() {
+    // This contract line is intentionally strict: the Function surface must add
+    // keyboard/focus support, and builtins should move from read-only defaults
+    // into explicit disabled-mode behavior during T088 implementation.
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("track_focus")
+            || FUNCTION_VIEW_SOURCE.contains("trap_focus")
+            || FUNCTION_VIEW_SOURCE.contains("focus.previous")
+            || FUNCTION_VIEW_SOURCE.contains("cx.focus_handle")
+            || FUNCTION_VIEW_SOURCE.contains("FocusHandle::new"),
+        "T088 must wire focus lifecycle for Function modal/focus surface"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("on_key_down")
+            || FUNCTION_VIEW_SOURCE.contains("on_key_event")
+            || FUNCTION_VIEW_SOURCE.contains("subscribe_key"),
+        "T088 must wire keyboard handling for Function list/form/Test dialogs"
+    );
+    assert!(
+        FUNCTION_VIEW_SOURCE.contains("kind == 1") || FUNCTION_VIEW_SOURCE.contains("kind != 1"),
+        "Builtin rows should have an explicit contract path for disabled mode"
     );
 }

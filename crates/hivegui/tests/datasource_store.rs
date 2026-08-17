@@ -327,6 +327,7 @@ fn no_filter() -> DataSourceFilter {
 
 // Pin the symbols T038 will define so the import list above is a
 // stable, reviewer-visible contract.
+#[allow(clippy::diverging_sub_expression)]
 const _: fn() = || {
     let _: DataSourcePage = page_one();
     let _: DataSourceFilter = no_filter();

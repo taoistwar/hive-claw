@@ -7,10 +7,7 @@
 #![warn(missing_docs)]
 
 use serde_json::Value;
-use sqlx::Row;
 use std::path::Path;
-
-use super::store::Store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Expected access path for the table referenced by the plan.
@@ -306,10 +303,10 @@ pub fn evaluate_fts_plan_with(
             if detail.contains("VIRTUAL TABLE INDEX") {
                 has_index_hint = true;
             }
-            if let Some(expected) = requirement.expected_index {
-                if detail.contains(expected) {
-                    has_index_hint = true;
-                }
+            if let Some(expected) = requirement.expected_index
+                && detail.contains(expected)
+            {
+                has_index_hint = true;
             }
         }
         if detail.starts_with("SCAN") && !detail.contains("CONSTANT") {
@@ -386,12 +383,12 @@ pub fn evaluate_mysql_plan(
     }
 
     for column in requirement.filter_columns {
-        if !used_key_parts.iter().any(|p| *p == *column) {
+        if !used_key_parts.contains(column) {
             failures.push(PlanFailureKind::UncoveredFilterColumn(column));
         }
     }
     for column in requirement.join_columns {
-        if !used_key_parts.iter().any(|p| *p == *column) {
+        if !used_key_parts.contains(column) {
             failures.push(PlanFailureKind::UncoveredJoinColumn(column));
         }
     }
@@ -432,10 +429,10 @@ pub fn evaluate_sqlite_plan(
         let detail = row.detail;
         if detail.starts_with("SEARCH") {
             has_search = true;
-            if let Some(expected) = requirement.expected_index {
-                if detail.contains(expected) {
-                    has_expected_index = true;
-                }
+            if let Some(expected) = requirement.expected_index
+                && detail.contains(expected)
+            {
+                has_expected_index = true;
             }
             if detail.contains("USING INDEX") || detail.contains("VIRTUAL TABLE INDEX") {
                 has_index_mention = true;
@@ -538,7 +535,7 @@ fn is_valid_exception(exception: &QueryPlanException, review_date: &str) -> bool
 /// is expected to honor. Each row lists its expected access path,
 /// filter/join columns, and (where applicable) a scan exception.
 pub fn production_query_catalog() -> &'static [ProductionQuery] {
-    &CATALOG
+    CATALOG
 }
 
 const CATALOG: &[ProductionQuery] = &[
@@ -1167,6 +1164,50 @@ const CATALOG: &[ProductionQuery] = &[
         scan_exception: None,
     },
     ProductionQuery {
+        id: "t012.global_configs.by_key",
+        owner_phase: "US1",
+        activation_task: "T019",
+        table: "global_configs",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["key"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t012.global_configs.by_key",
+            owner_phase: "US1",
+            activation_task: "T019",
+            table: "global_configs",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["key"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t012.global_configs.by_key_after_upsert",
+        owner_phase: "US1",
+        activation_task: "T019",
+        table: "global_configs",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["key"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t012.global_configs.by_key_after_upsert",
+            owner_phase: "US1",
+            activation_task: "T019",
+            table: "global_configs",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["key"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
         id: "t012.meta.read_schema_version",
         owner_phase: "Foundation",
         activation_task: "T028",
@@ -1525,69 +1566,6 @@ const CATALOG: &[ProductionQuery] = &[
         scan_exception: None,
     },
 ];
-
-/// Run `EXPLAIN QUERY PLAN` for the catalog entry against a live
-/// [`Store`]. The Foundation uses this entry point to exercise every
-/// active row in [`production_query_catalog`].
-pub async fn explain_catalog_query(
-    store: &Store,
-    query: &ProductionQuery,
-) -> Result<Vec<SqlitePlanRow>, String> {
-    if query.dialect != QueryDialect::Sqlite {
-        return Err(format!(
-            "{} is not a SQLite query; use a MySQL adapter",
-            query.id
-        ));
-    }
-    let pool = store.pool().clone();
-    let requirement = query
-        .requirements
-        .first()
-        .ok_or_else(|| format!("{} has no plan requirements", query.id))?;
-    let sql = build_select_sql(requirement);
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {}", sql)))
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| format!("explain {}: {e}", query.id))?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let id: i64 = row.try_get(0).map_err(|e| e.to_string())?;
-        let parent: i64 = row.try_get(1).map_err(|e| e.to_string())?;
-        let not_used: i64 = row.try_get(2).map_err(|e| e.to_string())?;
-        let detail: String = row.try_get(3).map_err(|e| e.to_string())?;
-        out.push(SqlitePlanRow {
-            id,
-            parent,
-            not_used,
-            detail: Box::leak(detail.into_boxed_str()),
-        });
-    }
-    Ok(out)
-}
-
-fn build_select_sql(requirement: &QueryPlanRequirement) -> String {
-    // The Foundation EXPLAIN probe is allowed to use a primary-key
-    // column other than `id` for tables whose canonical primary
-    // key is not `id`. The `meta` table uses `key` as the
-    // primary key, and the explanation must reference a real
-    // column so the SQLite planner can produce a meaningful
-    // EXPLAIN QUERY PLAN.
-    let pk_column = match requirement.table {
-        "meta" => "key",
-        _ => "id",
-    };
-    let mut sql = format!("SELECT {pk_column} FROM {}", requirement.table);
-    if !requirement.filter_columns.is_empty() {
-        sql.push_str(" WHERE ");
-        let conds: Vec<String> = requirement
-            .filter_columns
-            .iter()
-            .map(|c| format!("{c}=?"))
-            .collect();
-        sql.push_str(&conds.join(" AND "));
-    }
-    sql
-}
 
 // `Path` is exposed here for downstream test files that probe the
 // catalog; keep the import alive even if Rust elides the use.

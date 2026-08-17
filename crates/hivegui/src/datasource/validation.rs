@@ -166,7 +166,7 @@ pub struct PublicQueryFieldRow {
 /// so the Foundation can prove the gate is complete without
 /// committing to downstream contracts.
 pub fn public_conflict_catalog() -> &'static [PublicConflictRow] {
-    &CONFLICT_CATALOG
+    CONFLICT_CATALOG
 }
 
 const CONFLICT_CATALOG: &[PublicConflictRow] = &[
@@ -311,7 +311,7 @@ const CONFLICT_CATALOG: &[PublicConflictRow] = &[
 /// Public enum catalog. Each row lists the canonical enum values
 /// accepted by the public boundary.
 pub fn public_enum_catalog() -> &'static [PublicEnumRow] {
-    &ENUM_CATALOG
+    ENUM_CATALOG
 }
 
 const ENUM_CATALOG: &[PublicEnumRow] = &[
@@ -386,7 +386,7 @@ const ENUM_CATALOG: &[PublicEnumRow] = &[
 /// Public write field catalog. The Foundation rows cover
 /// `data_source`; subsequent rows are added per user story.
 pub fn public_write_field_catalog() -> &'static [PublicWriteFieldRow] {
-    &WRITE_FIELD_CATALOG
+    WRITE_FIELD_CATALOG
 }
 
 const WRITE_FIELD_CATALOG: &[PublicWriteFieldRow] = &[
@@ -1067,7 +1067,7 @@ const WRITE_FIELD_CATALOG: &[PublicWriteFieldRow] = &[
 /// Public query field catalog. The Foundation rows cover
 /// `paged_list`; later rows cover search/MySQL inputs.
 pub fn public_query_field_catalog() -> &'static [PublicQueryFieldRow] {
-    &QUERY_FIELD_CATALOG
+    QUERY_FIELD_CATALOG
 }
 
 const QUERY_FIELD_CATALOG: &[PublicQueryFieldRow] = &[

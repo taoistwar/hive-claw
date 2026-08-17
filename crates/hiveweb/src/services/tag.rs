@@ -124,16 +124,21 @@ pub async fn list(
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Tag, AppError> {
     if let Some(updated_at) = meta.updated_at {
-        crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Tags, id, updated_at)
-            .await
-            .or_else(|e| {
-                // tags 表没有 updated_at 列；保留接口但跳过
-                if matches!(e, AppError::Internal(_)) {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            })?;
+        crate::services::optimistic_lock::check_and_bump(
+            pool,
+            OptimisticLockTable::Tags,
+            id,
+            updated_at,
+        )
+        .await
+        .or_else(|e| {
+            // tags 表没有 updated_at 列；保留接口但跳过
+            if matches!(e, AppError::Internal(_)) {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
     }
     sqlx::query(
         "UPDATE tags SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE id = ?",

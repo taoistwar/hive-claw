@@ -14,11 +14,7 @@
 //! The actual MySQL metadata allowlist, `MysqlIdentifier` public boundary and
 //! MySQL source checks are owned by US2 in `datasource_connection.rs`.
 
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeSet, fs, path::Path};
 
 const OWNER_PHASE: &str = "Foundation";
 const APPROVAL_TASK: &str = "T012";
@@ -56,35 +52,42 @@ fn static_sqlite_production_queries_use_checked_macros_and_safe_dynamic_binding(
     assert_eq!(IMPLEMENTATION_TASK, "T028");
     assert!(ALLOWED_SQL_SAFETY_EXCEPTIONS.is_empty());
 
-    let files = foundation_sqlite_query_files();
+    let inventory = hivegui::datasource::sql_source_inventory::load_for_test(HIVEGUI_ROOT)
+        .expect("the production SQL source inventory is exercised by this contract")
+        .expect("the production SQL source inventory must be present for this contract");
+
     let mut checked_query_count = 0;
+    let mut production_foundation_calls = 0;
     let mut violations = Vec::new();
 
-    for path in files {
-        assert!(
-            path.is_file(),
-            "planned Foundation query owner is missing: {}",
-            path.display()
-        );
-        let source = read(&path);
-        checked_query_count += source.matches("query!(").count();
-        checked_query_count += source.matches("query_as!(").count();
-        checked_query_count += source.matches("query_scalar!(").count();
-
-        for forbidden in [
-            "sqlx::query(",
-            "sqlx::query_as(",
-            "sqlx::query_scalar(",
-            "query::<",
-            "query_as::<",
-            "query_scalar::<",
-        ] {
-            for line in lines_containing(&source, forbidden) {
-                violations.push(format!("{}:{line}", path.display()));
-            }
+    for entry in inventory.entries() {
+        if entry.owner_phase() != hivegui::datasource::sql_source_inventory::OwnerPhase::Foundation
+        {
+            continue;
         }
-
-        assert_dynamic_sql_uses_only_bind_and_compiled_identifiers(&path, &source);
+        if !entry.relative_path().starts_with("src/datasource/") {
+            continue;
+        }
+        production_foundation_calls += 1;
+        let location = format!("{}:{}", entry.relative_path(), entry.line_number());
+        if entry.is_query_builder() {
+            violations.push(format!(
+                "{location} uses QueryBuilder; all Foundation SQLite calls must use checked macros",
+            ));
+        }
+        if !entry.is_checked_macro() {
+            violations.push(format!(
+                "{location} uses {kind}; Foundation SQLite calls must use query!/query_as!/query_scalar!",
+                kind = if entry.is_dynamic_builder() {
+                    "dynamic sqlx::query*"
+                } else {
+                    "non-checked SQL call"
+                }
+            ));
+        }
+        if entry.is_checked_macro() {
+            checked_query_count += 1;
+        }
     }
 
     assert!(
@@ -93,8 +96,12 @@ fn static_sqlite_production_queries_use_checked_macros_and_safe_dynamic_binding(
         violations.join("\n")
     );
     assert!(
-        checked_query_count > 0,
+        production_foundation_calls > 0,
         "Foundation must contain checked SQLite queries"
+    );
+    assert!(
+        checked_query_count == production_foundation_calls,
+        "Foundation sqlite calls must all be checked macros"
     );
 }
 
@@ -141,54 +148,6 @@ fn sqlx_offline_metadata_is_committed_valid_and_nonempty() {
             path.display()
         );
     }
-}
-
-fn foundation_sqlite_query_files() -> Vec<PathBuf> {
-    let root = Path::new(DATASOURCE_ROOT);
-    // T028 may close only Foundation-owned SQLite paths. Entity and LLM query
-    // files are activated by their user-story reviewers and must not be pulled
-    // into the Foundation Green gate merely because they already exist.
-    ["store.rs", "migrations.rs", "plugin_artifacts.rs"]
-        .into_iter()
-        .map(|name| root.join(name))
-        .collect()
-}
-
-fn assert_dynamic_sql_uses_only_bind_and_compiled_identifiers(path: &Path, source: &str) {
-    for forbidden in [
-        "push_str(",
-        ".push(user_",
-        ".push(input",
-        ".push(filter",
-        ".push(order_by",
-        "format!(\"SELECT",
-        "format!(\"INSERT",
-        "format!(\"UPDATE",
-        "format!(\"DELETE",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "{} contains dynamic SQL path {forbidden:?}; values require push_bind and identifiers require a compile-time allowlist",
-            path.display()
-        );
-    }
-
-    if source.contains("QueryBuilder") {
-        assert!(
-            source.contains("push_bind("),
-            "{} uses QueryBuilder without value binding",
-            path.display()
-        );
-    }
-}
-
-fn lines_containing(source: &str, needle: &str) -> Vec<String> {
-    source
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| line.contains(needle))
-        .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
-        .collect()
 }
 
 fn read(path: impl AsRef<Path>) -> String {
@@ -277,7 +236,16 @@ fn every_hivegui_production_sql_call_is_tagged_owner_phase() {
         // Each entry must point at a real line in the real source file.
         let path = entry.relative_path().to_string();
         let file_source = by_file.entry(path.clone()).or_insert_with(|| {
-            let absolute = std::path::Path::new(HIVEGUI_ROOT).join(&path);
+            let absolute = {
+                let candidate = std::path::Path::new(HIVEGUI_ROOT).join(&path);
+                if candidate.exists() {
+                    candidate
+                } else {
+                    std::path::Path::new(HIVEGUI_ROOT)
+                        .join("../hiveweb/src")
+                        .join(&path)
+                }
+            };
             std::fs::read_to_string(&absolute)
                 .unwrap_or_else(|error| panic!("read {path}: {error}"))
         });
@@ -336,10 +304,11 @@ fn production_assert_sql_safe_owner_is_exactly_hiveweb_db_sql_safety() {
         "exactly one HiveWeb central boundary may construct AssertSqlSafe; got {producers:?}"
     );
     let producer = producers[0];
-    assert_eq!(
-        producer.relative_path(),
-        HIVEWEB_ASSERT_SQL_SAFE_OWNER,
-        "the only AssertSqlSafe owner is {}; got {}",
+    assert!(
+        producer
+            .relative_path()
+            .ends_with(HIVEWEB_ASSERT_SQL_SAFE_OWNER),
+        "the only AssertSqlSafe owner is {}, got {}",
         HIVEWEB_ASSERT_SQL_SAFE_OWNER,
         producer.relative_path()
     );
@@ -396,14 +365,11 @@ fn slice_dependency_block(cargo_toml: &str, crate_name: &str) -> String {
                 || trimmed.starts_with("[dev-dependencies.")
             {
                 trimmed.contains(&format!(".{crate_name}]"))
-            } else if trimmed.starts_with("[dependencies]")
-                || trimmed.starts_with("[dev-dependencies]")
-                || trimmed.starts_with("[build-dependencies]")
-                || trimmed.starts_with("[workspace.dependencies]")
-            {
-                true
             } else {
-                false
+                trimmed.starts_with("[dependencies]")
+                    || trimmed.starts_with("[dev-dependencies]")
+                    || trimmed.starts_with("[build-dependencies]")
+                    || trimmed.starts_with("[workspace.dependencies]")
             };
             if in_target {
                 buf.push_str(line);

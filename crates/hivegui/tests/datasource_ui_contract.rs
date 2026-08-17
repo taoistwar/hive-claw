@@ -21,7 +21,6 @@ mod support;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
@@ -200,7 +199,7 @@ async fn datasource_list_renders_within_responsive_heartbeat_during_background_p
         gpui_component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
-    let mut visual = VisualTestContext::from_window(window.clone().into(), cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
 
     let started = std::time::Instant::now();
     for _ in 0..6 {

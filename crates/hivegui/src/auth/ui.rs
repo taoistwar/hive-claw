@@ -11,12 +11,11 @@ use crate::auth::{
     backup::{
         BackupBundle, BackupExportOutcome, BackupExporter, BackupRequiredNotice, TestBackupExporter,
     },
-    config::{AutoLockMinutes, InvalidInputField, LockErrorMode},
+    config::{AutoLockMinutes, InvalidInputField},
     crypto::{Clock as AuthClock, SystemClock, TestClock},
     keystore::{
-        ATTEMPT_LIMIT, AuthError, AuthKeystore, AuthOutcome, BACKOFF_DURATION, KEYSTORE_FILENAME,
-        PasswordProposal, RestoreOutcome, UnlockOutcome, UnlockedKeystore, set_master_password,
-        unlock,
+        ATTEMPT_LIMIT, AuthError, AuthOutcome, BACKOFF_DURATION, PasswordProposal, RestoreOutcome,
+        UnlockOutcome, UnlockedKeystore, set_master_password, unlock,
     },
     lock::{AuthLockReason, AuthLockState, IdleActivity, OsScreenLockEvent, ScreenLockMonitor},
     monitor::{AgentExecutionStatus, ChatSessionStatus, SensitiveCanaryScanner, SensitiveFileKind},
@@ -26,16 +25,24 @@ use crate::auth::{
     },
 };
 
+/// The screen the unlock view should currently render.
 #[derive(Debug, Clone)]
 pub enum UnlockScreen {
+    /// Prompt the user to enter the master password.
     EnterMasterPassword {
+        /// The password field view-model.
         field: PasswordField,
+        /// Number of unlock attempts still allowed before backoff.
         attempts_remaining: u32,
     },
+    /// The main UI is unlocked and ready.
     MainUi {
+        /// Optional banner shown above the main UI.
         banner: Banner,
     },
+    /// Only the restore-from-backup recovery path is available.
     RecoveryOnly {
+        /// The recovery entry surface to present.
         entry: RecoveryPath,
     },
 }
@@ -44,27 +51,45 @@ pub enum UnlockScreen {
 /// entry kind. Mirrors `RecoveryEntryKind` from the `recovery` submodule.
 pub type RecoveryPath = RecoveryEntryKind;
 
+/// The screen the first-launch setup view should currently render.
 #[derive(Debug, Clone)]
 pub enum SetupScreen {
-    SetMasterPassword { field_state: SetupFieldState },
-    RecoveryConfirm { notice: RecoveryRiskNotice },
+    /// Collect the new master password.
+    SetMasterPassword {
+        /// Strength state of the password field.
+        field_state: SetupFieldState,
+    },
+    /// Show the recovery risk confirmation notice.
+    RecoveryConfirm {
+        /// The risk notice to present.
+        notice: RecoveryRiskNotice,
+    },
 }
 
+/// Strength state of the setup password field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupFieldState {
+    /// Field is empty.
     Empty,
+    /// Password is too weak to accept.
     Weak,
+    /// Password meets the policy.
     Strong,
 }
 
+/// Echo (visibility) policy for a master-password field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordFieldEcho {
+    /// Password is never displayed.
     Blank,
+    /// Password is displayed (reserved for tests / accessibility).
     Visible,
 }
 
+/// A master-password input field view-model.
 #[derive(Debug, Clone)]
 pub struct PasswordField {
+    /// Current echo policy for the field.
     pub echo: PasswordFieldEcho,
 }
 
@@ -77,9 +102,12 @@ impl PasswordField {
     }
 }
 
+/// A user-visible notice strip shown above the main UI.
 #[derive(Debug, Clone)]
 pub struct Banner {
+    /// The banner's message text.
     pub message: String,
+    /// Whether the banner blocks interaction with the main UI.
     pub blocks_main_ui: bool,
 }
 
@@ -95,6 +123,8 @@ impl Banner {
     }
 }
 
+/// Handle to an agent execution whose status can be observed and cancelled
+/// by the auto-lock path.
 #[derive(Debug, Clone)]
 pub struct AgentExecutionHandle {
     inner: std::sync::Arc<parking_lot::Mutex<AgentExecutionStatus>>,
@@ -112,6 +142,8 @@ impl AgentExecutionHandle {
     }
 }
 
+/// Handle to a chat session whose status can be observed and locked by the
+/// auto-lock path.
 #[derive(Debug, Clone)]
 pub struct ChatSessionHandle {
     inner: std::sync::Arc<parking_lot::Mutex<ChatSessionStatus>>,
@@ -133,11 +165,15 @@ impl ChatSessionHandle {
     }
 }
 
+/// An in-memory plaintext canary that must never be persisted to disk.
 #[derive(Debug, Clone, Default)]
 pub struct SensitiveCanary {
+    /// The canary plaintext bytes to scan persistent files for.
     pub plaintext: Vec<u8>,
 }
 
+/// Unlock view-model: owns the keystore handle, lock state, and idle clock
+/// used to drive the unlock screen.
 pub struct AuthUnlockView {
     workspace_root: PathBuf,
     state: Arc<Mutex<AuthLockState>>,
@@ -164,12 +200,11 @@ impl AuthUnlockView {
     /// the keystore file already exists, so a sealed keystore cannot
     /// auto-unlock at startup.
     pub fn open(workspace_root: &Path) -> Result<Self, AuthError> {
-        let path = workspace_root.join("keystore").join(KEYSTORE_FILENAME);
-        let reason = if path.exists() {
-            AuthLockReason::Startup
-        } else {
-            AuthLockReason::Startup
-        };
+        let _ = workspace_root;
+        // A sealed keystore cannot auto-unlock at startup; a missing
+        // keystore also begins in the `Startup` lock reason (first-run
+        // setup flow). Both branches resolve to `Startup`.
+        let reason = AuthLockReason::Startup;
         Ok(Self {
             workspace_root: workspace_root.to_path_buf(),
             state: Arc::new(Mutex::new(AuthLockState::new(reason))),
@@ -538,6 +573,7 @@ fn zero_clone_32() -> super::crypto::Secret32 {
 
 // === AuthSetupView ===
 
+/// View-model for the first-launch setup screen.
 pub struct AuthSetupView {
     inner: AuthUnlockView,
     risk_notice_dismissed: Arc<Mutex<bool>>,
@@ -573,14 +609,13 @@ impl AuthSetupView {
     /// `Zeroizing<String>`) for the post-ack auto-unlock.
     pub fn submit_setup(&self, proposal: PasswordProposal) -> Result<AuthOutcome, AuthError> {
         let outcome = set_master_password(&self.inner.workspace_root, &proposal, &SystemClock)?;
-        if let AuthOutcome::SetupCompleted { .. } = &outcome {
-            *self.inner.unlocked.lock().expect("unlocked") = None;
-            *self.inner.primary_store_open.lock().expect("store") = false;
-            // Capture the password for the post-ack auto-unlock. Drop
-            // any previously captured password first.
-            *self.setup_password.lock().expect("setup pw") =
-                Some(zeroize::Zeroizing::new(proposal.password.clone()));
-        }
+        let AuthOutcome::SetupCompleted { .. } = &outcome;
+        *self.inner.unlocked.lock().expect("unlocked") = None;
+        *self.inner.primary_store_open.lock().expect("store") = false;
+        // Capture the password for the post-ack auto-unlock. Drop
+        // any previously captured password first.
+        *self.setup_password.lock().expect("setup pw") =
+            Some(zeroize::Zeroizing::new(proposal.password.clone()));
         Ok(outcome)
     }
 
@@ -659,12 +694,7 @@ impl AuthSetupView {
         let exporter = self.backup_exporter.lock().expect("exporter");
         let result = exporter
             .export(&self.inner.workspace_root, _password)
-            .map_err(|e| {
-                AuthError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
+            .map_err(|e| AuthError::Io(std::io::Error::other(e.to_string())))?;
         *self.backup_required.lock().expect("backup") = false;
         Ok(result)
     }

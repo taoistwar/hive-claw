@@ -144,11 +144,22 @@ pub fn echo(input: String) -> FnResult<String> {
     };
     let envelope_json = serde_json::to_string(&envelope)?;
     let resp_str = unsafe { host_call(envelope_json)? };
-    let _resp: HostCallReply<LogEmitData> = serde_json::from_str(&resp_str)
+    let resp: HostCallReply<LogEmitData> = serde_json::from_str(&resp_str)
         .map_err(|e| Error::msg(format!("invalid host reply: {e}")))?;
+    if !resp.ok {
+        return Err(Error::msg(format!(
+            "log.emit denied: code={:?} message={:?}",
+            resp.code, resp.message
+        ))
+        .into());
+    }
 
+    // Echo the input back as the parsed JSON value (not a re-serialized
+    // string), so `"hello"` echoes as `hello`.
+    let echo_value: serde_json::Value = serde_json::from_str(&input)
+        .map_err(|e| Error::msg(format!("echo expects JSON input: {e}")))?;
     let out = serde_json::json!({
-        "echo": input,
+        "echo": echo_value,
         "logged": true,
     });
     Ok(serde_json::to_string(&out)?)

@@ -286,10 +286,8 @@ impl LLMConfigView {
         }
         match event.keystroke.key.as_str() {
             "escape" => self.close_form(cx),
-            "enter" => {
-                if self.error.is_none() {
-                    self.do_save(cx);
-                }
+            "enter" if self.error.is_none() => {
+                self.do_save(cx);
             }
             _ => {}
         }
@@ -407,7 +405,7 @@ impl LLMConfigView {
                     }
                     _ => Err(anyhow::anyhow!("暂不支持")),
                 };
-                _ = entity.update(cx, |this, cx| {
+                entity.update(cx, |this, cx| {
                     if r.is_ok() {
                         this.show_form = false;
                         this.reset_form();
@@ -454,7 +452,7 @@ impl LLMConfigView {
                         .await
                         .map(|_| ())
                 };
-                _ = entity.update(cx, |this, cx| {
+                entity.update(cx, |this, cx| {
                     if r.is_ok() {
                         this.show_form = false;
                         this.reset_form();
@@ -475,39 +473,39 @@ impl Render for LLMConfigView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = ManagementStyle::current(cx);
 
-        if !self.loaded {
-            if let Some(ref store) = self.llm_store {
-                self.loaded = true;
-                let s = store.clone();
-                let entity = cx.entity();
-                cx.spawn(async move |_t, cx| {
-                    let m = s.list_models().await.unwrap_or_default();
-                    let p = s.list_presets().await.unwrap_or_default();
-                    let pv = s.list_providers().await.unwrap_or_default();
-                    _ = entity.update(cx, |this, cx| {
-                        this.models = m;
-                        this.presets = p;
-                        this.providers = pv;
-                        if this.selected_preset_id.is_none_or(|selected| {
-                            !this.presets.iter().any(|preset| preset.id == selected)
-                        }) {
-                            this.selected_preset_id = this.presets.first().map(|preset| preset.id);
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
+        if !self.loaded
+            && let Some(ref store) = self.llm_store
+        {
+            self.loaded = true;
+            let s = store.clone();
+            let entity = cx.entity();
+            cx.spawn(async move |_t, cx| {
+                let m = s.list_models().await.unwrap_or_default();
+                let p = s.list_presets().await.unwrap_or_default();
+                let pv = s.list_providers().await.unwrap_or_default();
+                entity.update(cx, |this, cx| {
+                    this.models = m;
+                    this.presets = p;
+                    this.providers = pv;
+                    if this.selected_preset_id.is_none_or(|selected| {
+                        !this.presets.iter().any(|preset| preset.id == selected)
+                    }) {
+                        this.selected_preset_id = this.presets.first().map(|preset| preset.id);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
         }
 
         if self.search_input.is_none() {
             self.search_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("输入名称...")
-                    .default_value(&self.search.to_string())
+                    .default_value(self.search.to_string())
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search = state.read(cx).value().to_string().into();
                         this.current_page = 0;
@@ -564,27 +562,27 @@ impl Render for LLMConfigView {
                     self.name_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("名称")
-                            .default_value(&self.form_name.to_string())
+                            .default_value(self.form_name.to_string())
                     }));
                     self.desc_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("描述")
-                            .default_value(&self.form_desc.to_string())
+                            .default_value(self.form_desc.to_string())
                     }));
                     self.mt_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("max_tokens")
-                            .default_value(&self.form_max_tokens.to_string())
+                            .default_value(self.form_max_tokens.to_string())
                     }));
                     self.temp_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("temperature")
-                            .default_value(&self.form_temp.to_string())
+                            .default_value(self.form_temp.to_string())
                     }));
                     self.priority_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("优先级")
-                            .default_value(&self.form_priority.to_string())
+                            .default_value(self.form_priority.to_string())
                     }));
                 }
                 sync(&self.name_input, &mut self.form_name, cx);
@@ -747,7 +745,7 @@ impl Render for LLMConfigView {
                     self.name_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("名称")
-                            .default_value(&self.form_name.to_string())
+                            .default_value(self.form_name.to_string())
                     }));
                 }
                 if self.base_url_input.is_none() {
@@ -759,17 +757,17 @@ impl Render for LLMConfigView {
                     self.base_url_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("Base URL (可选)")
-                            .default_value(&self.form_base_url.to_string())
+                            .default_value(self.form_base_url.to_string())
                     }));
                     self.token_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder(token_ph)
-                            .default_value(&self.form_token.to_string())
+                            .default_value(self.form_token.to_string())
                     }));
                     self.token_env_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("Token环境变量名 (可选)")
-                            .default_value(&self.form_token_env.to_string())
+                            .default_value(self.form_token_env.to_string())
                     }));
                 }
                 sync(&self.name_input, &mut self.form_name, cx);
@@ -817,7 +815,7 @@ impl Render for LLMConfigView {
                             .hover(|s| s.bg(style.list.hover))
                             .child(l)
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                _ = e.update(cx, |t, cx| {
+                                e.update(cx, |t, cx| {
                                     t.form_category = v.clone().into();
                                     t.category_open = false;
                                     t.preset_open = false;
@@ -939,7 +937,7 @@ impl Render for LLMConfigView {
                                                             .on_mouse_down(MouseButton::Left, {
                                                                 let e = cx.entity();
                                                                 move |_, _, cx| {
-                                                                    _ = e.update(cx, |t, cx| {
+                                                                    e.update(cx, |t, cx| {
                                                                         t.category_open =
                                                                             !t.category_open;
                                                                         t.preset_open = false;
@@ -1136,7 +1134,7 @@ impl Render for LLMConfigView {
                                                     0 => {
                                                         cx.spawn(async move |cx| {
                                                             _ = s.delete_model(id).await;
-                                                            _ = e.update(cx, |t, cx| {
+                                                            e.update(cx, |t, cx| {
                                                                 t.confirm_delete = None;
                                                                 t.reload(cx);
                                                             });
@@ -1146,7 +1144,7 @@ impl Render for LLMConfigView {
                                                     1 => {
                                                         cx.spawn(async move |cx| {
                                                             _ = s.delete_preset(id).await;
-                                                            _ = e.update(cx, |t, cx| {
+                                                            e.update(cx, |t, cx| {
                                                                 t.confirm_delete = None;
                                                                 t.reload(cx);
                                                             });
@@ -1156,7 +1154,7 @@ impl Render for LLMConfigView {
                                                     _ => {
                                                         cx.spawn(async move |cx| {
                                                             _ = s.delete_provider(id).await;
-                                                            _ = e.update(cx, |t, cx| {
+                                                            e.update(cx, |t, cx| {
                                                                 t.confirm_delete = None;
                                                                 t.reload(cx);
                                                             });
@@ -1248,7 +1246,7 @@ impl Render for LLMConfigView {
                             .cursor(CursorStyle::PointingHand)
                             .child(preset.name.clone())
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
+                                entity.update(cx, |view, cx| {
                                     view.selected_preset_id = Some(preset_id);
                                     view.current_page = 0;
                                     cx.notify();
@@ -1456,7 +1454,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let modal = cx
             .debug_bounds("PROVIDER_MODAL")
@@ -1577,7 +1575,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         assert!(cx.debug_bounds("MODEL_ID_HEADER").is_some());
         assert!(cx.debug_bounds("MODEL_ID_42").is_some());
@@ -1719,7 +1717,7 @@ fn model_table(
                             .on_mouse_down(MouseButton::Left, {
                                 let edit_entity = edit_entity.clone();
                                 move |_, _, cx| {
-                                    _ = edit_entity.update(cx, |view, cx| {
+                                    edit_entity.update(cx, |view, cx| {
                                         if let Some(model) =
                                             view.models.iter().find(|model| model.id == id).cloned()
                                         {
@@ -1740,7 +1738,7 @@ fn model_table(
                             .on_mouse_down(MouseButton::Left, {
                                 let name = name.clone();
                                 move |_, _, cx| {
-                                    _ = delete_entity.update(cx, |view, cx| {
+                                    delete_entity.update(cx, |view, cx| {
                                         view.confirm_delete = Some((0, id, name.clone()));
                                         cx.notify();
                                     });
@@ -1816,7 +1814,7 @@ fn provider_table(
                             .on_mouse_down(MouseButton::Left, {
                                 let edit_entity = edit_entity.clone();
                                 move |_, _, cx| {
-                                    _ = edit_entity.update(cx, |view, cx| {
+                                    edit_entity.update(cx, |view, cx| {
                                         if let Some(provider) = view
                                             .providers
                                             .iter()
@@ -1844,7 +1842,7 @@ fn provider_table(
                                         let delete_entity = delete_entity.clone();
                                         cx.spawn(async move |cx| {
                                             _ = store.delete_provider(id).await;
-                                            _ = delete_entity.update(cx, |view, cx| {
+                                            delete_entity.update(cx, |view, cx| {
                                                 view.reload(cx);
                                             });
                                         })
@@ -1967,7 +1965,7 @@ fn preset_table(
                         .on_mouse_down(MouseButton::Left, {
                             let e1 = e1.clone();
                             move |_, _, cx| {
-                                _ = e1.update(cx, |t, cx| {
+                                e1.update(cx, |t, cx| {
                                     t.open_edit_preset(&preset_to_edit, cx);
                                 });
                             }
@@ -1985,7 +1983,7 @@ fn preset_table(
                             let e2 = e2.clone();
                             let n2 = n2.clone();
                             move |_, _, cx| {
-                                _ = e2.update(cx, |t, cx| {
+                                e2.update(cx, |t, cx| {
                                     t.confirm_delete = Some((1, id, n2.clone()));
                                     cx.notify();
                                 });
@@ -2044,7 +2042,7 @@ fn toggle(
                 .cursor(CursorStyle::PointingHand)
                 .child(if value { "是" } else { "否" })
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    _ = entity.update(cx, |t, cx| {
+                    entity.update(cx, |t, cx| {
                         t.form_is_default = !t.form_is_default;
                         cx.notify();
                     });
@@ -2094,7 +2092,7 @@ fn relation_selector(
                 .hover(|s| s.bg(style.list.hover))
                 .child(option_label)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    _ = option_entity.update(cx, |view, cx| {
+                    option_entity.update(cx, |view, cx| {
                         match relation {
                             ModelRelation::Preset => view.form_preset_id = Some(id),
                             ModelRelation::Provider => view.form_provider_id = Some(id),
@@ -2129,7 +2127,7 @@ fn relation_selector(
                 .cursor(CursorStyle::PointingHand)
                 .child(selected_label)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    _ = entity.update(cx, |view, cx| {
+                    entity.update(cx, |view, cx| {
                         match relation {
                             ModelRelation::Preset => {
                                 view.preset_open = !view.preset_open;

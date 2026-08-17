@@ -296,10 +296,10 @@ fn export_blocking(
     target_file
         .sync_all()
         .map_err(|e| ExportError::Io(e.to_string()))?;
-    if let Some(parent) = target.parent() {
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = target.parent()
+        && let Ok(dir) = File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
 
     Ok(manifest)
@@ -491,10 +491,10 @@ fn import_blocking(
         )));
     }
     fs::rename(&staged_database, &final_database).map_err(|e| ImportError::Io(e.to_string()))?;
-    if let Some(parent) = final_database.parent() {
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = final_database.parent()
+        && let Ok(dir) = File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
 
     // Persist the manifest sidecar for diagnostics.

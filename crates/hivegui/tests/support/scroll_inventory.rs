@@ -397,13 +397,13 @@ impl VisualTestContext {
                 surface: self.surface,
             });
         }
-        if let Some(idx) = focused {
-            if idx as usize >= frame.items.len() {
-                findings.push(A11yFinding::FocusOutOfRange {
-                    surface: self.surface,
-                    index: idx,
-                });
-            }
+        if let Some(idx) = focused
+            && idx as usize >= frame.items.len()
+        {
+            findings.push(A11yFinding::FocusOutOfRange {
+                surface: self.surface,
+                index: idx,
+            });
         }
         if !self.state.keyboard_only {
             findings.push(A11yFinding::MouseOnlyPath {

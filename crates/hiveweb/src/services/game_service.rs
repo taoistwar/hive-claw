@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
 
-use crate::db::sql_safety::audit_sql;
 use crate::cache::redis::RedisClient;
+use crate::db::sql_safety::audit_sql;
 #[allow(deprecated)]
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
@@ -57,7 +57,10 @@ pub async fn list_games(
             (String::new(), vec![], vec![])
         };
 
-    let count_sql = audit_sql(format!("SELECT COUNT(DISTINCT g.id) FROM games g {}", where_clause));
+    let count_sql = audit_sql(format!(
+        "SELECT COUNT(DISTINCT g.id) FROM games g {}",
+        where_clause
+    ));
     let mut count_query = sqlx::query(count_sql);
     for p in &count_params {
         count_query = count_query.bind(p);

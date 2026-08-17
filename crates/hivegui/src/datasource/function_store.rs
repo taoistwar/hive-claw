@@ -275,7 +275,9 @@ impl FunctionStoreError {
 /// stable shape so the UI / T083 tests can inspect the cause.
 #[derive(Debug, Clone)]
 pub struct FunctionConflict {
+    /// The conflicting field name.
     pub field: String,
+    /// The conflicting field value.
     pub value: String,
 }
 

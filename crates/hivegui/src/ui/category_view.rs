@@ -154,12 +154,6 @@ impl CategoryView {
 
     /// 根据 all_categories 构建扁平化的树形行列表
     fn build_tree(&mut self) {
-        let cat_map: std::collections::HashMap<i64, Category> = self
-            .all_categories
-            .iter()
-            .map(|c| (c.id, c.clone()))
-            .collect();
-
         // 收集每个父分类的子分类 ID
         let mut children_map: std::collections::HashMap<Option<i64>, Vec<Category>> =
             std::collections::HashMap::new();
@@ -177,14 +171,7 @@ impl CategoryView {
 
         let expanded_ids = self.expanded_ids.clone();
         self.tree_rows.clear();
-        Self::build_tree_recursive(
-            &mut self.tree_rows,
-            None,
-            0,
-            &children_map,
-            &cat_map,
-            &expanded_ids,
-        );
+        Self::build_tree_recursive(&mut self.tree_rows, None, 0, &children_map, &expanded_ids);
     }
 
     fn build_tree_recursive(
@@ -192,7 +179,6 @@ impl CategoryView {
         parent_id: Option<i64>,
         depth: usize,
         children_map: &std::collections::HashMap<Option<i64>, Vec<Category>>,
-        cat_map: &std::collections::HashMap<i64, Category>,
         expanded_ids: &HashSet<i64>,
     ) {
         if let Some(children) = children_map.get(&parent_id) {
@@ -211,7 +197,6 @@ impl CategoryView {
                         Some(child.id),
                         depth + 1,
                         children_map,
-                        cat_map,
                         expanded_ids,
                     );
                 }
@@ -280,7 +265,7 @@ impl CategoryView {
         self.description_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("输入描述（可选）")
-                .default_value(&category.description.unwrap_or_default())
+                .default_value(category.description.unwrap_or_default())
         }));
 
         cx.notify();
@@ -344,7 +329,7 @@ impl CategoryView {
                                             .text_color(style.list.muted_foreground)
                                             .child(if is_expanded { "▼" } else { "▶" })
                                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                                weak.update(cx, |view, cx| {
+                                                weak.update(cx, |view, _cx| {
                                                     view.toggle_expand(category_id);
                                                 })
                                                 .ok();
@@ -661,7 +646,7 @@ impl Render for CategoryView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.load_categories(cx);
@@ -1088,7 +1073,7 @@ impl Render for CategoryView {
                 )
             })
             // Delete confirmation
-            .when_some(self.confirm_delete_id, |this, id| {
+            .when_some(self.confirm_delete_id, |this, _id| {
                 this.child(
                     div()
                         .absolute()

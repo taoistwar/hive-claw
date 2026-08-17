@@ -5,9 +5,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::capability_adapter::{
-    AdapterErrorCode, AuditSink, CapabilityAdapter, CapabilityDispatchError, HandlerRegistry,
-};
+use super::capability_adapter::{AuditSink, CapabilityAdapter, CapabilityDispatchError};
 use super::diagnostics::DiagnosticSink;
 
 const BODY_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -313,13 +311,12 @@ impl DesktopHostDispatcher {
         // boundary; it consumes the redacted cause only. The returned
         // `&str` borrows from the input `envelope`, so we can safely
         // return a slice into it.
-        if let Ok(value) = serde_json::from_str::<Value>(envelope) {
-            if let Some(name) = value.get("capability").and_then(Value::as_str) {
-                if let Some(start) = envelope.find(name) {
-                    let end = start + name.len();
-                    return &envelope[start..end];
-                }
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(envelope)
+            && let Some(name) = value.get("capability").and_then(Value::as_str)
+            && let Some(start) = envelope.find(name)
+        {
+            let end = start + name.len();
+            return &envelope[start..end];
         }
         "<unknown>"
     }
@@ -358,6 +355,10 @@ impl DesktopHostDispatcher {
                     },
                     Err(e) => ReplyEnvelope::error(4001, format!("network.http 参数无效: {e}")),
                 }
+            }
+            Ok(call) if call.capability == "log.emit" => {
+                // 本地 no-op：接受结构化日志调用并返回成功，不依赖服务端运行时。
+                ReplyEnvelope::ok(serde_json::json!({"logged": true}))
             }
             Ok(call) => ReplyEnvelope::error(
                 5010,

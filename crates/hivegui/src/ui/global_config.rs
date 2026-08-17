@@ -15,7 +15,7 @@ use crate::ui::management_style::{
 };
 use gpui::*;
 use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputState, NumberInput};
+use gpui_component::input::{Input, InputState, NumberInput, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectState};
 
@@ -97,6 +97,7 @@ pub struct GlobalConfigView {
     name_input: Option<Entity<InputState>>,
     key_input: Option<Entity<InputState>>,
     data_input: Option<Entity<InputState>>,
+    data_textarea: Option<Entity<TextareaState>>,
     type_select_state: Option<Entity<SelectState<SearchableVec<TypeSelectItem>>>>,
     /// Focus handle for the modal layer; the form uses it to trap
     /// focus and the keyboard layer restores focus to the originating
@@ -129,6 +130,7 @@ impl GlobalConfigView {
             name_input: None,
             key_input: None,
             data_input: None,
+            data_textarea: None,
             type_select_state: None,
             modal_focus: cx.focus_handle(),
             form_focus: cx.focus_handle(),
@@ -145,10 +147,8 @@ impl GlobalConfigView {
         }
         match event.keystroke.key.as_str() {
             "escape" => self.close_form(cx),
-            "enter" => {
-                if self.error.is_none() {
-                    self.save_config(cx);
-                }
+            "enter" if self.error.is_none() => {
+                self.save_config(cx);
             }
             _ => {}
         }
@@ -199,6 +199,7 @@ impl GlobalConfigView {
         self.name_input = None;
         self.key_input = None;
         self.data_input = None;
+        self.data_textarea = None;
         self.type_select_state = None;
         cx.notify();
     }
@@ -216,6 +217,7 @@ impl GlobalConfigView {
         self.name_input = None;
         self.key_input = None;
         self.data_input = None;
+        self.data_textarea = None;
         self.type_select_state = None;
         cx.notify();
     }
@@ -248,7 +250,7 @@ impl GlobalConfigView {
                         .await
                         .map(|_| true)
                 };
-                _ = entity.update(cx, |this, cx| {
+                entity.update(cx, |this, cx| {
                     if result.is_ok() {
                         this.show_form = false;
                         this.reload(cx);
@@ -276,7 +278,7 @@ impl GlobalConfigView {
         let entity = cx.entity();
         cx.spawn(async move |_this, cx| {
             if let Ok((items, total)) = store.list_global_configs(&search, page, PAGE_SIZE).await {
-                _ = entity.update(cx, |this, cx| {
+                entity.update(cx, |this, cx| {
                     this.items = items;
                     this.total = total;
                     cx.notify();
@@ -295,12 +297,12 @@ impl GlobalConfigView {
             self.name_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("名称")
-                    .default_value(&self.form_name.to_string())
+                    .default_value(self.form_name.to_string())
             }));
             self.key_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("Key（唯一）")
-                    .default_value(&self.form_key.to_string())
+                    .default_value(self.form_key.to_string())
             }));
         }
 
@@ -352,6 +354,7 @@ impl GlobalConfigView {
                 convert_config_value(self.form_data.as_ref(), source_type, target_type).into();
             self.form_type_idx = *idx;
             self.data_input = None;
+            self.data_textarea = None;
             cx.notify();
         }
     }
@@ -376,17 +379,31 @@ impl GlobalConfigView {
 
         let is_number = self.form_type_idx == 1;
         let is_multiline = self.form_type_idx == 0 || self.form_type_idx == 2;
+        if is_multiline {
+            if self.data_textarea.is_none() {
+                let default_value = self.form_data.to_string();
+                self.data_textarea = Some(cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .placeholder("数据值")
+                        .default_value(&default_value)
+                        .rows(5)
+                }));
+            }
+
+            let input = self
+                .data_textarea
+                .clone()
+                .expect("data textarea initialized");
+            self.form_data = input.read(cx).value().to_string().into();
+            return Textarea::new(&input).h(px(100.0)).into_any_element();
+        }
+
         if self.data_input.is_none() {
             let default_value = self.form_data.to_string();
             self.data_input = Some(cx.new(|cx| {
-                let input = InputState::new(window, cx)
+                InputState::new(window, cx)
                     .placeholder("数据值")
-                    .default_value(&default_value);
-                if is_multiline {
-                    input.multi_line(true).rows(5)
-                } else {
-                    input
-                }
+                    .default_value(&default_value)
             }));
         }
 
@@ -395,12 +412,7 @@ impl GlobalConfigView {
         if is_number {
             NumberInput::new(&input).into_any_element()
         } else {
-            let input = Input::new(&input);
-            if is_multiline {
-                input.h(px(100.0)).into_any_element()
-            } else {
-                input.into_any_element()
-            }
+            Input::new(&input).into_any_element()
         }
     }
 
@@ -657,7 +669,7 @@ impl GlobalConfigView {
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
                             move |_, _, cx| {
-                                _ = entity.update(cx, |this, cx| this.open_edit(&item_to_edit, cx));
+                                entity.update(cx, |this, cx| this.open_edit(&item_to_edit, cx));
                             }
                         }),
                     )
@@ -676,7 +688,7 @@ impl GlobalConfigView {
                                     let entity = entity.clone();
                                     cx.spawn(async move |cx| {
                                         _ = store.delete_global_config(id).await;
-                                        _ = entity.update(cx, |this, cx| this.reload(cx));
+                                        entity.update(cx, |this, cx| this.reload(cx));
                                     })
                                     .detach();
                                 }
@@ -927,7 +939,7 @@ fn bool_radio(
                 .child(label),
         )
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            _ = entity.update(cx, |this, cx| {
+            entity.update(cx, |this, cx| {
                 this.form_data = val.clone().into();
                 cx.notify();
             });

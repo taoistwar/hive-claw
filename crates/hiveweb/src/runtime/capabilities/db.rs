@@ -6,12 +6,12 @@
 //! 参数绑定：用 `:name` 占位符；运行时按 args 中的 key 顺序替换为 `?` 并 bind。
 //! 这保证最终 SQL 仍然走 sqlx parameterized query — 无字符串拼接、无注入面。
 
+use crate::db::sql_safety::audit_sql;
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sqlx::{Column, MySqlPool, Row};
 use std::collections::HashMap;
-use crate::db::sql_safety::audit_sql;
 
 #[derive(Debug, Clone, Deserialize)]
 struct NamedQueryRaw {

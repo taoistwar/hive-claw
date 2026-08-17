@@ -197,13 +197,9 @@ impl OpenTable {
     }
 
     fn get_cached_page(&self, page: i64) -> Option<&PageCache> {
-        self.page_cache.get(&page).and_then(|cache| {
-            if cache.loaded_at.elapsed().as_secs() < PAGE_CACHE_TTL_SECS {
-                Some(cache)
-            } else {
-                None
-            }
-        })
+        self.page_cache
+            .get(&page)
+            .filter(|&cache| cache.loaded_at.elapsed().as_secs() < PAGE_CACHE_TTL_SECS)
     }
 
     fn show_error(&mut self, title: String, message: String) {
@@ -471,38 +467,6 @@ impl TableViewer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use gpui::{SharedString, TestAppContext, VisualTestContext, px, size};
-
-    use super::{OpenTable, TableViewer};
-
-    #[gpui::test]
-    fn query_errors_are_visible_instead_of_leaving_an_empty_tab(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
-        });
-
-        let window = cx.open_window(size(px(720.0), px(480.0)), |_, cx| {
-            let mut viewer = TableViewer::new(cx);
-            let mut table = OpenTable::new("AgentRuns".to_owned(), "FixtureDb".to_owned());
-            table.error = Some(SharedString::from(
-                "加载列失败: mysql transport error: fixture",
-            ));
-            viewer.open_tables.push(table);
-            viewer
-        });
-        cx.run_until_parked();
-
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert!(
-            visual.debug_bounds("TABLE_VIEWER_QUERY_ERROR").is_some(),
-            "a failed Columns/DDL/Data query must render an actionable error instead of a blank tab"
-        );
-    }
-}
-
 impl OpenTable {
     fn load_columns_async(
         &mut self,
@@ -654,13 +618,11 @@ impl OpenTable {
     ) {
         let page = self.current_offset / self.page_size;
 
-        if !force {
-            if let Some(_cached) = self.get_cached_page(page) {
-                let cached_data = self.page_cache.get(&page).unwrap().data.clone();
-                self.table_data = Some(cached_data);
-                cx.notify();
-                return;
-            }
+        if !force && let Some(_cached) = self.get_cached_page(page) {
+            let cached_data = self.page_cache.get(&page).unwrap().data.clone();
+            self.table_data = Some(cached_data);
+            cx.notify();
+            return;
         }
 
         let ds = ds.clone();
@@ -889,103 +851,96 @@ impl Render for TableViewer {
             }
         }
 
-        if t.active_tab == TableTab::Data && t.context_menu_visible {
-            if let (Some(row), Some(col_idx)) = (t.context_menu_row, t.context_menu_col) {
-                let num_cols = t.columns.len();
-                let widths: Vec<f32> = (0..num_cols)
-                    .map(|i| t.column_widths.get(i).copied().unwrap_or(120.0).max(80.0))
-                    .collect();
+        if t.active_tab == TableTab::Data
+            && t.context_menu_visible
+            && let (Some(row), Some(col_idx)) = (t.context_menu_row, t.context_menu_col)
+        {
+            let num_cols = t.columns.len();
+            let widths: Vec<f32> = (0..num_cols)
+                .map(|i| t.column_widths.get(i).copied().unwrap_or(120.0).max(80.0))
+                .collect();
 
-                let row_number_width = 50.0;
-                let row_height = 11.0 + 4.0 + 1.0;
-                let header_height = 11.0 + 8.0 + 1.0;
+            let row_number_width = 50.0;
+            let row_height = 11.0 + 4.0 + 1.0;
+            let header_height = 11.0 + 8.0 + 1.0;
 
-                let mut menu_x = row_number_width + 16.0;
-                for ci in 0..col_idx {
-                    menu_x += widths.get(ci).copied().unwrap_or(120.0).max(80.0) + 16.0;
-                }
-                let menu_y = header_height + (row as f32) * row_height;
-
-                col = col.child(
-                    div()
-                        .absolute()
-                        .left(px(menu_x))
-                        .top(px(menu_y))
-                        .w(px(160.0))
-                        .bg(palette.popover)
-                        .border_1()
-                        .border_color(palette.border)
-                        .rounded(px(4.0))
-                        .shadow_lg()
-                        .cursor(CursorStyle::PointingHand)
-                        .child(
-                            div()
-                                .id("context-menu-item-view")
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .text_size(px(12.0))
-                                .text_color(palette.popover_foreground)
-                                .hover(move |s| s.bg(palette.list_hover))
-                                .cursor(CursorStyle::PointingHand)
-                                .child("查看完整值")
-                                .on_mouse_down(MouseButton::Left, {
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |v, cx| {
-                                            v.open_value_panel_from_context_menu(cx);
-                                        })
-                                        .ok();
-                                    }
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("context-menu-item-copy")
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .text_size(px(12.0))
-                                .text_color(palette.popover_foreground)
-                                .hover(move |s| s.bg(palette.list_hover))
-                                .cursor(CursorStyle::PointingHand)
-                                .child("复制")
-                                .on_mouse_down(MouseButton::Left, {
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |v, cx| {
-                                            let idx = v.active_table_index;
-                                            let row_col =
-                                                v.open_tables.get(idx).and_then(|t| {
-                                                    match (t.context_menu_row, t.context_menu_col) {
-                                                        (Some(r), Some(c)) => Some((r, c)),
-                                                        _ => None,
-                                                    }
-                                                });
-                                            if let Some((row, col)) = row_col {
-                                                if let Some(table) = v.open_tables.get(idx) {
-                                                    if let Some(data) = &table.table_data {
-                                                        if row < data.rows.len()
-                                                            && col < data.rows[row].len()
-                                                        {
-                                                            if let Some(text) = &data.rows[row][col]
-                                                            {
-                                                                cx.write_to_clipboard(
-                                                                    ClipboardItem::new_string(
-                                                                        text.clone(),
-                                                                    ),
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            v.dismiss_context_menu(cx);
-                                        })
-                                        .ok();
-                                    }
-                                }),
-                        ),
-                );
+            let mut menu_x = row_number_width + 16.0;
+            for ci in 0..col_idx {
+                menu_x += widths.get(ci).copied().unwrap_or(120.0).max(80.0) + 16.0;
             }
+            let menu_y = header_height + (row as f32) * row_height;
+
+            col = col.child(
+                div()
+                    .absolute()
+                    .left(px(menu_x))
+                    .top(px(menu_y))
+                    .w(px(160.0))
+                    .bg(palette.popover)
+                    .border_1()
+                    .border_color(palette.border)
+                    .rounded(px(4.0))
+                    .shadow_lg()
+                    .cursor(CursorStyle::PointingHand)
+                    .child(
+                        div()
+                            .id("context-menu-item-view")
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(palette.popover_foreground)
+                            .hover(move |s| s.bg(palette.list_hover))
+                            .cursor(CursorStyle::PointingHand)
+                            .child("查看完整值")
+                            .on_mouse_down(MouseButton::Left, {
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |v, cx| {
+                                        v.open_value_panel_from_context_menu(cx);
+                                    })
+                                    .ok();
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("context-menu-item-copy")
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(palette.popover_foreground)
+                            .hover(move |s| s.bg(palette.list_hover))
+                            .cursor(CursorStyle::PointingHand)
+                            .child("复制")
+                            .on_mouse_down(MouseButton::Left, {
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |v, cx| {
+                                        let idx = v.active_table_index;
+                                        let row_col = v.open_tables.get(idx).and_then(|t| {
+                                            match (t.context_menu_row, t.context_menu_col) {
+                                                (Some(r), Some(c)) => Some((r, c)),
+                                                _ => None,
+                                            }
+                                        });
+                                        if let Some((row, col)) = row_col
+                                            && let Some(table) = v.open_tables.get(idx)
+                                            && let Some(data) = &table.table_data
+                                            && row < data.rows.len()
+                                            && col < data.rows[row].len()
+                                            && let Some(text) = &data.rows[row][col]
+                                        {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                        }
+                                        v.dismiss_context_menu(cx);
+                                    })
+                                    .ok();
+                                }
+                            }),
+                    ),
+            );
         }
 
         // Render error modal if present
@@ -1251,7 +1206,7 @@ impl TableViewer {
         this: gpui::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
-        let column_labels = vec!["列名", "类型", "可空", "主键", "注释"];
+        let column_labels = ["列名", "类型", "可空", "主键", "注释"];
         let column_data: Vec<_> = t
             .columns
             .iter()
@@ -1420,7 +1375,7 @@ impl TableViewer {
                             .child(
                                 div()
                                     .w(px(200.0))
-                                    .child(Input::new(&self.ddl_search_input.as_ref().unwrap())),
+                                    .child(Input::new(self.ddl_search_input.as_ref().unwrap())),
                             ),
                     )
                     .child(
@@ -1771,11 +1726,9 @@ impl TableViewer {
                             }
                         })
                         .child(
-                            div().truncate().child(
-                                val.as_ref()
-                                    .map(|v| v.clone())
-                                    .unwrap_or(SharedString::from("NULL")),
-                            ),
+                            div()
+                                .truncate()
+                                .child(val.clone().unwrap_or(SharedString::from("NULL"))),
                         ),
                 )
             });
@@ -1931,7 +1884,7 @@ impl TableViewer {
 
         let row_count = t.table_data.as_ref().map(|d| d.rows.len()).unwrap_or(0);
 
-        let pager = div()
+        div()
             .flex()
             .items_center()
             .justify_between()
@@ -2128,9 +2081,7 @@ impl TableViewer {
                                     }),
                             ),
                     ),
-            );
-
-        pager
+            )
     }
 
     fn render_page_size_option(
@@ -2199,8 +2150,6 @@ impl TableViewer {
             .w(px(4.0))
             .cursor(CursorStyle::PointingHand)
             .on_mouse_down(MouseButton::Left, {
-                let col_idx = col_idx;
-                let start_width = start_width;
                 move |event: &gpui::MouseDownEvent, _window, cx| {
                     cx.set_global(ColumnResize {
                         col_index: col_idx,
@@ -2211,7 +2160,6 @@ impl TableViewer {
             })
             .on_mouse_move({
                 let this = this.clone();
-                let col_idx = col_idx;
                 move |event: &gpui::MouseMoveEvent, _window, cx| {
                     if cx.has_global::<ColumnResize>() {
                         let resize = cx.global::<ColumnResize>();
@@ -2231,5 +2179,37 @@ impl TableViewer {
                     cx.remove_global::<ColumnResize>();
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{SharedString, TestAppContext, VisualTestContext, px, size};
+
+    use super::{OpenTable, TableViewer};
+
+    #[gpui::test]
+    fn query_errors_are_visible_instead_of_leaving_an_empty_tab(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let window = cx.open_window(size(px(720.0), px(480.0)), |_, cx| {
+            let mut viewer = TableViewer::new(cx);
+            let mut table = OpenTable::new("AgentRuns".to_owned(), "FixtureDb".to_owned());
+            table.error = Some(SharedString::from(
+                "加载列失败: mysql transport error: fixture",
+            ));
+            viewer.open_tables.push(table);
+            viewer
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            visual.debug_bounds("TABLE_VIEWER_QUERY_ERROR").is_some(),
+            "a failed Columns/DDL/Data query must render an actionable error instead of a blank tab"
+        );
     }
 }

@@ -100,12 +100,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let status = response.status();
-    let response_body = response
-        .text()
-        .await
-        .context("API test request failed")?;
+    let response_body = response.text().await.context("API test request failed")?;
 
-    println!("{}", response_summary(&method_upper, status, &response_body));
+    println!(
+        "{}",
+        response_summary(&method_upper, status, &response_body)
+    );
 
     Ok(())
 }
@@ -133,7 +133,8 @@ fn parse_args() -> anyhow::Result<(String, String, String, String)> {
                 let path = args
                     .get(i + 1)
                     .context("missing argument for --body-file")?;
-                let bytes = read_private_file(Path::new(path), MAX_REQUEST_BODY_BYTES, "api-test body")?;
+                let bytes =
+                    read_private_file(Path::new(path), MAX_REQUEST_BODY_BYTES, "api-test body")?;
                 let body_text = String::from_utf8(bytes)
                     .map_err(|_| anyhow::anyhow!("--body-file body must be valid utf-8"))?;
                 body = Some(body_text);

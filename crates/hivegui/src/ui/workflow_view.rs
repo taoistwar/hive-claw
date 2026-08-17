@@ -150,12 +150,12 @@ impl WorkflowView {
         self.description_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("描述（可选）")
-                .default_value(&item.description.unwrap_or_default())
+                .default_value(item.description.unwrap_or_default())
         }));
         self.timeout_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("30000")
-                .default_value(&item.timeout_ms.to_string())
+                .default_value(item.timeout_ms.to_string())
         }));
 
         cx.notify();
@@ -331,7 +331,7 @@ impl Render for WorkflowView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;
@@ -727,7 +727,7 @@ impl Render for WorkflowView {
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
-                let id = self.confirm_delete_id.unwrap();
+                let _id = self.confirm_delete_id.unwrap();
                 this.child(
                     div()
                         .absolute()

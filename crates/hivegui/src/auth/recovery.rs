@@ -12,6 +12,7 @@
 //! separately enforces that no `pub fn` password-bypass symbol is
 //! exposed.
 
+/// Public enumeration of every recovery entry surface the application offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryEntryKind {
     /// The only legal recovery entry: restore from a T129 backup.
@@ -36,24 +37,35 @@ impl RecoveryEntryKind {
     }
 }
 
+/// Whether the recovery risk acknowledgement box is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryAcceptance {
+    /// Acknowledgement box is checked.
     Checked,
+    /// Acknowledgement box is not checked.
     Unchecked,
 }
 
+/// Result of acknowledging the recovery risk notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcknowledgeOutcome {
+    /// Acknowledgement accepted; recovery may proceed.
     Accepted,
+    /// A prior backup is required before recovery can proceed.
     BackupRequired {
+        /// The notice describing why a backup is required.
         notice: super::backup::BackupRequiredNotice,
     },
+    /// The acknowledgement step must be completed first.
     AcknowledgementRequired,
 }
 
+/// The recovery risk notice shown before a destructive recovery operation.
 #[derive(Debug, Clone)]
 pub struct RecoveryRiskNotice {
+    /// Human-readable title of the notice.
     pub title: String,
+    /// Whether the user must explicitly acknowledge the notice.
     pub requires_explicit_acknowledgement: bool,
 }
 
@@ -70,7 +82,9 @@ impl RecoveryRiskNotice {
     }
 }
 
+/// View states of the recovery confirmation screen.
 #[derive(Debug, Clone)]
 pub enum RecoveryConfirmView {
+    /// Showing the recovery risk notice.
     RiskNotice,
 }

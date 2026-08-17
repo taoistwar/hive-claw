@@ -49,7 +49,7 @@ async fn empty_artifact_is_rejected_before_persisting_any_state() {
 async fn invalid_identifier_or_version_is_rejected() {
     let workspace = TestWorkspace::new().expect("test workspace");
     let pool = migrated_pool(&workspace).await;
-    let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+    let _store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
 
     let err = PluginArtifactInput::new("", "1.0.0", b"x").expect_err("empty identifier");
     assert_eq!(err.reason(), "invalid_input");

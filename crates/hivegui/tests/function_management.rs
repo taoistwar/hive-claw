@@ -95,7 +95,7 @@ async fn dotted_identifiers_are_rejected() {
     let _ = PAGE_SIZE;
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: FunctionRecord = panic!("placeholder so the type is referenced");
 }

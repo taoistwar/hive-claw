@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+/// Notice that a backup is required before a destructive operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupRequiredNotice {
+    /// No prior backup exists for this workspace.
     NoPriorBackup,
 }
 
@@ -19,10 +21,14 @@ impl BackupRequiredNotice {
     }
 }
 
+/// An exported backup bundle plus its integrity metadata.
 #[derive(Debug, Clone)]
 pub struct BackupBundle {
+    /// On-disk path of the exported backup file.
     pub export_path: PathBuf,
+    /// Wrapped (encrypted) device key material carried by the bundle.
     pub wrapped_device_key: Vec<u8>,
+    /// Hex-encoded SHA-256 of the bundle manifest, used for tamper checks.
     pub manifest_sha256: String,
 }
 
@@ -81,20 +87,30 @@ impl BackupBundle {
     }
 }
 
+/// Errors raised while exporting or verifying a backup bundle.
 #[derive(Debug, Error)]
 pub enum BackupError {
     #[error("io error: {0}")]
+    /// Underlying I/O failure.
     Io(#[from] std::io::Error),
     #[error("backup tamper detected")]
+    /// Bundle digest did not match; treated as tamper.
     TamperDetected,
 }
 
+/// Outcome of a backup export operation.
 #[derive(Debug, Clone)]
 pub enum BackupExportOutcome {
-    Exported { bundle: BackupBundle },
+    /// Export succeeded; carries the produced bundle.
+    Exported {
+        /// The produced backup bundle.
+        bundle: BackupBundle,
+    },
 }
 
+/// Exports a backup bundle for a workspace.
 pub trait BackupExporter: Send + Sync {
+    /// Export a backup for `workspace_root`, sealing it with `password`.
     fn export(
         &self,
         workspace_root: &Path,
@@ -104,6 +120,7 @@ pub trait BackupExporter: Send + Sync {
 
 /// In-memory test exporter. Real exporter is T129.
 pub struct TestBackupExporter {
+    /// Path the test exporter writes the bundle to.
     pub export_path: PathBuf,
 }
 

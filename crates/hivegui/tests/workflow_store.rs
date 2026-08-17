@@ -104,7 +104,7 @@ async fn deletion_referenced_by_tool_returns_conflict() {
     assert!(!conflict.references().is_empty());
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: WorkflowNode = panic!("placeholder so the type is referenced");
 }

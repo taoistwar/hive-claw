@@ -15,13 +15,16 @@
 //! state so the keyboard contract is deterministic regardless of
 //! how the underlying focus tree moves during the test runtime.
 
-#![warn(missing_docs)]
+// GPUI `actions!`-generated action structs cannot carry inline doc comments,
+// so missing_docs is allowed at the module level here; the public
+// `MigrationRecoveryAction` enum below remains documented by convention.
+#![allow(missing_docs)]
 
 use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
-    Action, AnyElement, Context, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
-    Render, Styled, Window, actions, div, prelude::*, px,
+    AnyElement, Context, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render,
+    Styled, Window, actions, div, prelude::*, px,
 };
 
 actions!(hivegui_recovery, [RecoveryTab, RecoveryTabPrev]);
@@ -284,7 +287,7 @@ impl MigrationRecoveryView {
         let future = self.commands.execute(action);
         cx.spawn(async move |view, cx| {
             let _ = future.await;
-            view.update(cx, |this, cx| {
+            let _ = view.update(cx, |this, cx| {
                 this.phase = MigrationRecoveryPhase::Completed;
                 cx.notify();
             });
@@ -782,15 +785,8 @@ impl Render for MigrationRecoveryView {
 }
 
 /// Focus global used by the recovery view to trap keyboard focus.
+#[derive(Default)]
 pub struct MigrationRecoveryFocus(pub Option<Entity<()>>);
-impl Default for MigrationRecoveryFocus {
-    fn default() -> Self {
-        // The owning view replaces this `None` with a live entity on
-        // first construction; tests can do the same via
-        // `MigrationRecoveryView::for_test`.
-        Self(None)
-    }
-}
 impl gpui::Global for MigrationRecoveryFocus {}
 
 const STRINGS: StringsZh = StringsZh {
@@ -828,7 +824,7 @@ struct StringsZh {
     zh_migration_recovery_exit: &'static str,
 }
 
-// Reference unused symbols to keep `#![warn(missing_docs)]` quiet
+// Reference unused symbols to keep missing_docs quiet
 // while the recovery flow is still being wired into the production
 // bootstrap.
 #[allow(dead_code)]

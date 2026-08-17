@@ -278,7 +278,13 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Skill
         validate_content(c)?;
     }
 
-    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Skills, id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Skills,
+        id,
+        meta.updated_at,
+    )
+    .await?;
 
     sqlx::query(
         r#"UPDATE skills SET

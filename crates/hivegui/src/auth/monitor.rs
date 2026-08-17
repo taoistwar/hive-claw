@@ -7,27 +7,43 @@ use std::path::Path;
 
 use thiserror::Error;
 
+/// Lifecycle status of an agent execution, used by idle-lock to cancel
+/// work when the keystore is sealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentExecutionStatus {
+    /// Execution is actively running.
     Running,
+    /// Execution was cancelled (e.g. by idle lock).
     Cancelled,
+    /// Execution finished successfully.
     Completed,
+    /// Execution terminated with an error.
     Failed,
 }
 
+/// Lifecycle status of a chat session relative to the keystore lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatSessionStatus {
+    /// Session is active and unlocked.
     Active,
+    /// Session was locked (keystore sealed); work must pause.
     Locked,
+    /// Session has been archived.
     Archived,
 }
 
+/// Categories of sensitive on-disk files scanned by the canary checker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensitiveFileKind {
+    /// Primary SQLite database file.
     SqliteMain,
+    /// SQLite write-ahead log.
     SqliteWal,
+    /// SQLite shared-memory file.
     SqliteShm,
+    /// Backup staging directory.
     BackupStaging,
+    /// Exported diagnostics bundle.
     DiagnosticsBundle,
 }
 
@@ -46,10 +62,13 @@ impl SensitiveFileKind {
     }
 }
 
+/// I/O error encountered while scanning a sensitive file for a canary.
 #[derive(Debug, Error)]
 #[error("canary scan io error: {0}")]
 pub struct CanaryScanError(#[from] std::io::Error);
 
+/// Scans sensitive on-disk files under a root directory for known canary
+/// byte substrings, used to detect leaked plaintext.
 pub struct SensitiveCanaryScanner<'r> {
     root: &'r Path,
 }

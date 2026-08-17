@@ -328,6 +328,7 @@ pub struct RootView {
     home: Entity<HomeView>,
     ai: Entity<AiView>,
     tools: Entity<UtilityView>,
+    last_route: AppRoute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -392,6 +393,7 @@ impl RootView {
             home,
             ai,
             tools,
+            last_route: AppRoute::Home,
         }
     }
 }
@@ -399,6 +401,14 @@ impl RootView {
 impl Render for RootView {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = cx.global::<HiveGuiAppState>().route;
+        // 通过左侧菜单/侧边栏等导航进入「工具」路由时，强制刷新 LLM
+        // 提示词调试的 Preset / Model / Provider 列表（用户在 AI 管理等
+        // 入口调整过它们后，切回时应看到最新数据）。
+        if route == AppRoute::Tools && self.last_route != AppRoute::Tools {
+            self.tools
+                .update(cx, |view, cx| view.refresh_prompt_debugger(cx));
+        }
+        self.last_route = route;
         let colors = shell_theme_colors(cx.theme());
         let body = match route {
             AppRoute::Home => self.home.clone().into_any_element(),

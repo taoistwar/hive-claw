@@ -47,8 +47,8 @@ pub fn text_regex_match(args: Value) -> BuiltinResult {
             .into_iter()
             .collect()
     };
-    Ok(serde_json::to_value(RegexMatchReply { matches })
-        .map_err(|e| BuiltinError::Exec(format!("{e}")))?)
+    serde_json::to_value(RegexMatchReply { matches })
+        .map_err(|e| BuiltinError::Exec(format!("{e}")))
 }
 
 pub const TEXT_REGEX_MATCH_INPUT_SCHEMA: &str = r#"{

@@ -24,13 +24,15 @@ pub type BuiltinResult = Result<Value, BuiltinError>;
 pub struct BuiltinRegistry;
 
 impl BuiltinRegistry {
-    /// Execute a builtin function by identifier.
+    /// Execute a builtin function by identifier. Only the underscore
+    /// identifiers are registered; the legacy dotted aliases must be
+    /// rejected (T083 keeps zero dotted records/aliases).
     pub fn execute(identifier: &str, input: Value) -> BuiltinResult {
         match identifier {
-            "format.template" => format_template::format_template(input),
-            "json.parse" => json_parse::json_parse(input),
-            "json.stringify" => json_stringify::json_stringify(input),
-            "text.regex_match" => text_regex_match::text_regex_match(input),
+            "format_template" => format_template::format_template(input),
+            "json_parse" => json_parse::json_parse(input),
+            "json_stringify" => json_stringify::json_stringify(input),
+            "text_regex_match" => text_regex_match::text_regex_match(input),
             _ => Err(BuiltinError::BadArgs(format!(
                 "Unknown pure builtin: {}",
                 identifier
@@ -42,7 +44,7 @@ impl BuiltinRegistry {
     pub fn is_pure_builtin(identifier: &str) -> bool {
         matches!(
             identifier,
-            "format.template" | "json.parse" | "json.stringify" | "text.regex_match"
+            "format_template" | "json_parse" | "json_stringify" | "text_regex_match"
         )
     }
 }

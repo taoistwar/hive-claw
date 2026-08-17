@@ -34,7 +34,7 @@ impl AuditedNamedQuery {
 pub struct TrustedSqlIdentifier(String);
 
 impl TrustedSqlIdentifier {
-    pub fn from_allowlist<'a>(value: &'a str, allowlist: &[&str]) -> Result<Self, String> {
+    pub fn from_allowlist(value: &str, allowlist: &[&str]) -> Result<Self, String> {
         if allowlist.iter().any(|candidate| candidate == &value) {
             Ok(Self(value.to_owned()))
         } else {
@@ -55,7 +55,7 @@ pub enum SqlSafetyBoundaryViolation {
 /// Central boundary for explicit SQL safety construction.
 #[inline]
 pub fn audit_sql(sql: String) -> AssertSqlSafe<String> {
-    AssertSqlSafe(sql)
+    AssertSqlSafe(sql) // query-plan: id=sql_safety.owner.central; owner_phase=security-remediation; activation_task=T017G
 }
 
 /// Return audited SQL for dynamic table/column interpolation.
@@ -88,7 +88,9 @@ pub fn audit_named_query(
     params: &[&str],
 ) -> Result<AuditedNamedQuery, String> {
     if has_suspicious_annotation(sql) {
-        return Err(format!("{name}: sql contains unsupported annotation or comment"));
+        return Err(format!(
+            "{name}: sql contains unsupported annotation or comment"
+        ));
     }
 
     let found = scan_named_params(sql)?;
@@ -97,7 +99,7 @@ pub fn audit_named_query(
         return Err(format!("{name}: sql has no bind parameters"));
     }
 
-    let mut declared = params.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
+    let declared = params.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
     let mut unique = HashSet::new();
     for declared in &declared {
         if !unique.insert(declared.clone()) {
@@ -114,7 +116,9 @@ pub fn audit_named_query(
     }
 
     if declared != found {
-        return Err(format!("{name}: declared parameters must match SQL placeholders"));
+        return Err(format!(
+            "{name}: declared parameters must match SQL placeholders"
+        ));
     }
 
     if inferred_kind(sql) != kind {
@@ -131,7 +135,11 @@ pub fn audit_named_query(
 }
 
 fn has_suspicious_annotation(sql: &str) -> bool {
-    sql.contains("--") || sql.contains("/*") || sql.contains("*/") || sql.contains('#') || sql.contains(';')
+    sql.contains("--")
+        || sql.contains("/*")
+        || sql.contains("*/")
+        || sql.contains('#')
+        || sql.contains(';')
 }
 
 fn inferred_kind(sql: &str) -> NamedQueryKind {
@@ -163,7 +171,8 @@ fn scan_named_params(sql: &str) -> Result<Vec<String>, String> {
                 j += 1;
             }
 
-            let name = std::str::from_utf8(&bytes[i + 1..j]).map_err(|_| "placeholder decode error")?;
+            let name =
+                std::str::from_utf8(&bytes[i + 1..j]).map_err(|_| "placeholder decode error")?;
             params.push(name.to_string());
             i = j;
         } else {

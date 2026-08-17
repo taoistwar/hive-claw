@@ -19,14 +19,12 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
+use rand::RngCore;
 use rand::rngs::OsRng;
-use rand::{RngCore, SeedableRng};
 use thiserror::Error;
-use zeroize::Zeroize;
 
 /// Size of the device key material in bytes.
 pub const DEVICE_KEY_BYTES: usize = 32;
@@ -322,10 +320,10 @@ impl DeviceKeyStore {
                     // The hard link is durable once the directory
                     // entry is committed; sync the parent to make
                     // the link visible across crashes.
-                    if let Some(parent) = path.parent() {
-                        if let Ok(dir) = std::fs::File::open(parent) {
-                            let _ = dir.sync_all();
-                        }
+                    if let Some(parent) = path.parent()
+                        && let Ok(dir) = std::fs::File::open(parent)
+                    {
+                        let _ = dir.sync_all();
                     }
                     let _ = fs::remove_file(&staging_path);
                     return Ok(DeviceKeyStartup::Ready(DeviceKey {
@@ -365,9 +363,9 @@ impl DeviceKeyStore {
         path: &Path,
         buffer: &[u8; DEVICE_KEY_BYTES],
     ) -> std::io::Result<PathBuf> {
-        let parent = path.parent().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "device key has no parent")
-        })?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("device key has no parent"))?;
         let mut suffix = [0_u8; 16];
         OsRng.fill_bytes(&mut suffix);
         let suffix_hex = suffix

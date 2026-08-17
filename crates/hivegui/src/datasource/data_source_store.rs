@@ -161,16 +161,11 @@ impl From<Conflict> for DataSourceStoreError {
 /// HiveGUI never silently clears a stored password. An empty
 /// password on an update means "keep the existing ciphertext",
 /// which is the *only* policy the v1 store exposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EmptyPasswordPolicy {
     /// Keep the existing ciphertext untouched.
+    #[default]
     KeepExisting,
-}
-
-impl Default for EmptyPasswordPolicy {
-    fn default() -> Self {
-        Self::KeepExisting
-    }
 }
 
 /// Validated input for create / update.
@@ -322,9 +317,10 @@ impl fmt::Display for DataSourceRecord {
 /// (`DataSourceViewMode::AddForm` / `EditForm` carry no separate
 /// visibility boolean) are the only mode surface the T039 contract
 /// accepts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DataSourceViewMode {
     /// Show the paginated list.
+    #[default]
     List,
     /// Show the Add form.
     AddForm,
@@ -335,12 +331,6 @@ pub enum DataSourceViewMode {
     /// The store reported a recoverable error; the string is
     /// already sanitized by [`DataSourceStoreError`].
     Error(String),
-}
-
-impl Default for DataSourceViewMode {
-    fn default() -> Self {
-        Self::List
-    }
 }
 
 /// Cancellation token for in-flight `create` / `update` operations.
@@ -585,7 +575,6 @@ impl DataSourceStore {
             username,
             database,
             password,
-            policy: _,
             ..
         } = input;
         let next_name = if name.is_empty() {

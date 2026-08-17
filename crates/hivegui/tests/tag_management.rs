@@ -100,7 +100,7 @@ async fn one_hundred_tag_crud_p95_under_one_second() {
     for i in 0..100 {
         let started = Instant::now();
         store
-            .create(TagInput::new(&format!("tag.{i:03}"), "#000000").unwrap())
+            .create(TagInput::new(format!("tag.{i:03}"), "#000000").unwrap())
             .await
             .expect("create");
         samples.push(started.elapsed());
@@ -113,7 +113,7 @@ async fn one_hundred_tag_crud_p95_under_one_second() {
     );
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: TagPage = TagPage::first(PAGE_SIZE);
     let _: TagFilter = TagFilter::default();

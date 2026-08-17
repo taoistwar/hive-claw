@@ -810,7 +810,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let cancel = cx
             .debug_bounds("DATASOURCE_FORM_CANCEL")

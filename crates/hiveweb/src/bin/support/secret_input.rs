@@ -3,9 +3,9 @@ use std::io::Read;
 use std::path::Path;
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 /// Opens and validates a private input file using the opened descriptor.
 ///

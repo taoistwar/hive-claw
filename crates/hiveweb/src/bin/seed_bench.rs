@@ -8,9 +8,9 @@
 use std::str::FromStr;
 
 use clap::Parser;
+use hiveweb::db::sql_safety::audit_sql;
 use rand::RngCore;
 use sqlx::mysql::MySqlConnectOptions;
-use hiveweb::db::sql_safety::audit_sql;
 
 const DEFAULT_ADMINS: usize = 100;
 const DEFAULT_LOGINS_PER_ADMIN: usize = 100;

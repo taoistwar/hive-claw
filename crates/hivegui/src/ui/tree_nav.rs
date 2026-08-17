@@ -687,7 +687,6 @@ impl Render for TreeNav {
                                 )
                                 .on_mouse_down(MouseButton::Left, {
                                     let this_for_ds = this.clone();
-                                    let idx = idx;
                                     let id = *id;
                                     move |_, _, cx| {
                                         this_for_ds
@@ -749,7 +748,6 @@ impl Render for TreeNav {
                                     .on_mouse_down(MouseButton::Left, {
                                         let this_for_db = this.clone();
                                         let source_idx = idx;
-                                        let db_idx = db_idx;
                                         let source_id = *id;
                                         let db_name = db.name.clone();
                                         move |event, _, cx| {
@@ -896,7 +894,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let database = cx
             .debug_bounds("DATASOURCE_DATABASE_42_FixtureDb")

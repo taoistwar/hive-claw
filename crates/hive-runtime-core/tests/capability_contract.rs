@@ -43,7 +43,7 @@ fn capability_metadata_does_not_imply_local_handler() {
     assert!(matches!(err, DispatchError::HandlerNotRegistered { .. }));
 
     // After explicit registration, the same capability is dispatchable.
-    registry.register(&cap, |_input| Ok(serde_json::json!({ "ok": true })));
+    let _ = registry.register(&cap, |_input| Ok(serde_json::json!({ "ok": true })));
     let outcome = registry
         .dispatch(&cap, &serde_json::json!({}))
         .expect("handler is registered");
@@ -74,7 +74,7 @@ fn duplicate_handler_registration_is_rejected_with_stable_error() {
     // capability so the dispatch table is unambiguous.
     let cap = CapabilityId::new("fs.write").expect("valid capability id");
     let mut registry = HandlerRegistry::empty();
-    registry.register(&cap, |_input| Ok(serde_json::json!({"first": true})));
+    let _ = registry.register(&cap, |_input| Ok(serde_json::json!({"first": true})));
     let err = registry
         .register(&cap, |_input| Ok(serde_json::json!({"second": true})))
         .expect_err("duplicate registration is rejected");
@@ -89,7 +89,7 @@ fn unauthorized_dispatch_against_handler_registry_is_stable() {
     // 稳定顺序和错误" requirement.
     let cap = CapabilityId::new("admin.fs.delete").expect("valid capability id");
     let mut registry = HandlerRegistry::empty();
-    registry.register(&cap, |_input| Ok(serde_json::json!({"deleted": true})));
+    let _ = registry.register(&cap, |_input| Ok(serde_json::json!({"deleted": true})));
 
     let empty_perm = CapabilitySet::empty();
     let err = registry
@@ -127,8 +127,7 @@ fn persisted_tool_only_accepts_function_or_workflow_target() {
     // function-wrap + workflow target  → XOR violation
     let xor_violation = PersistedToolBuilder::new(PersistedToolKind::FunctionWrap)
         .target(PersistedToolTarget::workflow("wf.support_triage"))
-        .err()
-        .expect("function-wrap with workflow target must be rejected");
+        .expect_err("function-wrap with workflow target must be rejected");
     assert!(matches!(
         xor_violation,
         PersistedToolError::TargetKindMismatch { .. }
@@ -137,8 +136,7 @@ fn persisted_tool_only_accepts_function_or_workflow_target() {
     // workflow-wrap + function target  → XOR violation
     let xor_violation2 = PersistedToolBuilder::new(PersistedToolKind::WorkflowWrap)
         .target(PersistedToolTarget::function("fn.format_template"))
-        .err()
-        .expect("workflow-wrap with function target must be rejected");
+        .expect_err("workflow-wrap with function target must be rejected");
     assert!(matches!(
         xor_violation2,
         PersistedToolError::TargetKindMismatch { .. }
@@ -204,10 +202,8 @@ fn hive_runtime_core_has_no_product_storage_or_transport_dependencies() {
     let expected_production = ["serde", "serde_json", "thiserror"];
     let expected_dev = ["serde", "serde_json"];
 
-    let expected_production: BTreeSet<_> = expected_production
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let expected_production: BTreeSet<_> =
+        expected_production.into_iter().map(str::to_owned).collect();
     let expected_dev: BTreeSet<_> = expected_dev.into_iter().map(str::to_owned).collect();
 
     assert_eq!(

@@ -278,7 +278,7 @@ pub async fn list(
     let count_sql = format!("SELECT COUNT(*) FROM workflows w {where_sql}");
 
     let count_sql = audit_sql(count_sql);
-    let mut count_q = sqlx::query_as::<_, (i64,)> (count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     if let Some(ref pattern) = search_pattern {
         count_q = count_q
             .bind(pattern)
@@ -326,8 +326,13 @@ pub async fn list(
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Workflow, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Workflows, id, meta.updated_at)
-        .await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Workflows,
+        id,
+        meta.updated_at,
+    )
+    .await?;
     sqlx::query(
         r#"UPDATE workflows SET
               name = COALESCE(?, name),

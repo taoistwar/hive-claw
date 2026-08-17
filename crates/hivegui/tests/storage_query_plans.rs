@@ -13,11 +13,12 @@ use hivegui::datasource::{
     query_plan::{
         AccessExpectation, FtsPlanExpectation, FtsPlanVerdict, PlanFailureKind, ProductionQuery,
         QueryDialect, QueryPlanException, QueryPlanRequirement, SqlitePlanRow, evaluate_fts_plan,
-        evaluate_mysql_plan, evaluate_sqlite_plan, explain_catalog_query, production_query_catalog,
+        evaluate_mysql_plan, evaluate_sqlite_plan, production_query_catalog,
     },
     store::{Store, StoreOpenOptions},
 };
 use serde_json::json;
+use sqlx::{AssertSqlSafe, Row};
 use support::TestWorkspace;
 
 const OWNER_PHASE: &str = "Foundation";
@@ -731,4 +732,72 @@ fn fts_query_with_uncovered_filter_column_is_rejected() {
         "an FTS plan that does not use the term column must fail; got {:?}",
         verdict.failures()
     );
+}
+
+// ---------------------------------------------------------------------------
+// §T012 — EXPLAIN QUERY PLAN executor (test-only). Moved out of `src/` so the
+// production `AssertSqlSafe` audit keeps a single owner in HiveWeb
+// `db/sql_safety.rs`. The SQL is assembled exclusively from the compile-time
+// `production_query_catalog` constants, never from user input.
+// ---------------------------------------------------------------------------
+
+async fn explain_catalog_query(
+    store: &Store,
+    query: &ProductionQuery,
+) -> Result<Vec<SqlitePlanRow>, String> {
+    if query.dialect != QueryDialect::Sqlite {
+        return Err(format!(
+            "{} is not a SQLite query; use a MySQL adapter",
+            query.id
+        ));
+    }
+    let pool = store.pool().clone();
+    let requirement = query
+        .requirements
+        .first()
+        .ok_or_else(|| format!("{} has no plan requirements", query.id))?;
+    let sql = build_select_sql(requirement);
+    let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+    let rows = sqlx::query(AssertSqlSafe(explain_sql))
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("explain {}: {e}", query.id))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: i64 = row.try_get(0).map_err(|e| e.to_string())?;
+        let parent: i64 = row.try_get(1).map_err(|e| e.to_string())?;
+        let not_used: i64 = row.try_get(2).map_err(|e| e.to_string())?;
+        let detail: String = row.try_get(3).map_err(|e| e.to_string())?;
+        out.push(SqlitePlanRow {
+            id,
+            parent,
+            not_used,
+            detail: Box::leak(detail.into_boxed_str()),
+        });
+    }
+    Ok(out)
+}
+
+fn build_select_sql(requirement: &QueryPlanRequirement) -> String {
+    // The Foundation EXPLAIN probe is allowed to use a primary-key
+    // column other than `id` for tables whose canonical primary
+    // key is not `id`. The `meta` table uses `key` as the
+    // primary key, and the explanation must reference a real
+    // column so the SQLite planner can produce a meaningful
+    // EXPLAIN QUERY PLAN.
+    let pk_column = match requirement.table {
+        "meta" => "key",
+        _ => "id",
+    };
+    let mut sql = format!("SELECT {pk_column} FROM {}", requirement.table);
+    if !requirement.filter_columns.is_empty() {
+        sql.push_str(" WHERE ");
+        let conds: Vec<String> = requirement
+            .filter_columns
+            .iter()
+            .map(|c| format!("{c}=?"))
+            .collect();
+        sql.push_str(&conds.join(" AND "));
+    }
+    sql
 }

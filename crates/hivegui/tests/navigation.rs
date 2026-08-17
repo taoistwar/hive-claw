@@ -37,7 +37,6 @@
 mod support;
 
 use hivegui::ui::app::{AppRoute, HiveGuiAppState};
-use support::CapturedHttpServer;
 
 // ---------------------------------------------------------------------------
 // §T029.1 — Public boundary: default route.

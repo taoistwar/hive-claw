@@ -851,7 +851,7 @@ impl MysqlClient {
             let fk_name: String = row.get(0).unwrap_or_default();
             let ref_table: String = row.get(1).unwrap_or_default();
             let column: String = row.get(2).unwrap_or_default();
-            let ref_ref_table: String = row.get(3).unwrap_or_default();
+            let _ref_ref_table: String = row.get(3).unwrap_or_default();
             let ref_column: String = row.get(4).unwrap_or_default();
 
             let entry = ref_map

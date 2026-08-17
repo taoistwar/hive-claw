@@ -151,10 +151,10 @@ impl QueryCountObserver {
             };
             state.active_scope.as_ref().and_then(|weak| weak.upgrade())
         };
-        if let Some(active) = active {
-            if let Ok(mut acc) = active.lock() {
-                acc.query_ids.push(query_id);
-            }
+        if let Some(active) = active
+            && let Ok(mut acc) = active.lock()
+        {
+            acc.query_ids.push(query_id);
         }
     }
 
@@ -287,7 +287,7 @@ pub struct QueryCountContract {
 /// can still detect the future owner without forcing the runtime to
 /// honour them.
 pub fn production_query_count_catalog() -> &'static [QueryCountContract] {
-    &CATALOG
+    CATALOG
 }
 
 const CATALOG: &[QueryCountContract] = &[

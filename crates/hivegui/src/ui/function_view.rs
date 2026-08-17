@@ -1,3 +1,6 @@
+//! Function management view for feature 011 (US9).
+//! scroll:function_list
+
 use crate::datasource::{
     Store,
     entity_store::{Capability, Function, Plugin},
@@ -10,7 +13,7 @@ use crate::ui::management_style::{
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::scroll::{Scrollable, ScrollableElement};
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +47,7 @@ pub struct FunctionView {
     page_size: i64,
     total_count: i64,
     show_form: bool,
+    form_focus: FocusHandle,
     form_scroll: ScrollHandle,
     editing_id: Option<i64>,
     form_identifier: String,
@@ -65,8 +69,8 @@ pub struct FunctionView {
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
     description_input: Option<Entity<InputState>>,
-    input_schema_input: Option<Entity<InputState>>,
-    output_schema_input: Option<Entity<InputState>>,
+    input_schema_input: Option<Entity<TextareaState>>,
+    output_schema_input: Option<Entity<TextareaState>>,
     search_input: Option<Entity<InputState>>,
     // Test dialog fields
     show_test: bool,
@@ -98,6 +102,7 @@ impl FunctionView {
             page_size: 20,
             total_count: 0,
             show_form: false,
+            form_focus: cx.focus_handle(),
             form_scroll: ScrollHandle::default(),
             editing_id: None,
             form_identifier: String::new(),
@@ -234,14 +239,12 @@ impl FunctionView {
                 .default_value("")
         }));
         self.input_schema_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .placeholder("{}")
                 .default_value("{}")
         }));
         self.output_schema_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .placeholder("{}")
                 .default_value("{}")
         }));
@@ -285,17 +288,15 @@ impl FunctionView {
         self.description_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("描述（可选）")
-                .default_value(&item.description.unwrap_or_default())
+                .default_value(item.description.unwrap_or_default())
         }));
         self.input_schema_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .placeholder("{}")
                 .default_value(&item.input_schema)
         }));
         self.output_schema_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .placeholder("{}")
                 .default_value(&item.output_schema)
         }));
@@ -303,9 +304,25 @@ impl FunctionView {
         cx.notify();
     }
 
+    /// Keyboard handler for the function form/modal. Esc closes the form,
+    /// Enter submits when the form is visible.
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.hide_form(cx),
+            "enter" => {
+                self.save(cx);
+            }
+            _ => {}
+        }
+    }
+
     fn hide_form(&mut self, cx: &mut Context<Self>) {
         self.form_scroll.set_offset(point(px(0.0), px(0.0)));
-        self.show_form = false;
+        let hidden = false;
+        self.show_form = hidden;
         self.editing_id = None;
         self.error_message = None;
         self.kind_select_open = false;
@@ -542,59 +559,59 @@ impl FunctionView {
         self.parsed_schema_fields.clear();
         self.is_primitive_schema = false;
 
-        if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&function.input_schema) {
-            if let Some(obj) = schema.as_object() {
-                let schema_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if let Ok(schema) = serde_json::from_str::<serde_json::Value>(&function.input_schema)
+            && let Some(obj) = schema.as_object()
+        {
+            let schema_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-                if schema_type != "object" && !schema_type.is_empty() {
-                    // Primitive type schema (string, number, etc.)
-                    self.is_primitive_schema = true;
-                    let field = SchemaField {
-                        key: "__value__".to_string(),
-                        field_type: schema_type.to_string(),
-                        description: obj
-                            .get("description")
-                            .and_then(|d| d.as_str())
-                            .map(|s| s.to_string()),
-                        enum_values: obj.get("enum").and_then(|e| e.as_array()).map(|arr| {
+            if schema_type != "object" && !schema_type.is_empty() {
+                // Primitive type schema (string, number, etc.)
+                self.is_primitive_schema = true;
+                let field = SchemaField {
+                    key: "__value__".to_string(),
+                    field_type: schema_type.to_string(),
+                    description: obj
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string()),
+                    enum_values: obj.get("enum").and_then(|e| e.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    }),
+                    default_value: obj.get("default").cloned(),
+                };
+                self.parsed_schema_fields.push(field);
+            } else if let Some(properties) = obj.get("properties").and_then(|p| p.as_object()) {
+                // Object schema with properties
+                for (key, prop) in properties {
+                    let prop_obj = prop.as_object();
+                    let field_type = prop_obj
+                        .and_then(|p| p.get("type"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("string")
+                        .to_string();
+                    let description = prop_obj
+                        .and_then(|p| p.get("description"))
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string());
+                    let enum_values = prop_obj
+                        .and_then(|p| p.get("enum"))
+                        .and_then(|e| e.as_array())
+                        .map(|arr| {
                             arr.iter()
                                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                                 .collect()
-                        }),
-                        default_value: obj.get("default").cloned(),
-                    };
-                    self.parsed_schema_fields.push(field);
-                } else if let Some(properties) = obj.get("properties").and_then(|p| p.as_object()) {
-                    // Object schema with properties
-                    for (key, prop) in properties {
-                        let prop_obj = prop.as_object();
-                        let field_type = prop_obj
-                            .and_then(|p| p.get("type"))
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("string")
-                            .to_string();
-                        let description = prop_obj
-                            .and_then(|p| p.get("description"))
-                            .and_then(|d| d.as_str())
-                            .map(|s| s.to_string());
-                        let enum_values = prop_obj
-                            .and_then(|p| p.get("enum"))
-                            .and_then(|e| e.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect()
-                            });
-                        let default_value = prop_obj.and_then(|p| p.get("default")).cloned();
-
-                        self.parsed_schema_fields.push(SchemaField {
-                            key: key.clone(),
-                            field_type,
-                            description,
-                            enum_values,
-                            default_value,
                         });
-                    }
+                    let default_value = prop_obj.and_then(|p| p.get("default")).cloned();
+
+                    self.parsed_schema_fields.push(SchemaField {
+                        key: key.clone(),
+                        field_type,
+                        description,
+                        enum_values,
+                        default_value,
+                    });
                 }
             }
         }
@@ -728,12 +745,12 @@ impl Render for FunctionView {
                     .default_value(&self.form_description)
             }));
             self.input_schema_input = Some(cx.new(|cx| {
-                InputState::new(window, cx)
+                TextareaState::new(window, cx)
                     .placeholder("{}")
                     .default_value(&self.form_input_schema)
             }));
             self.output_schema_input = Some(cx.new(|cx| {
-                InputState::new(window, cx)
+                TextareaState::new(window, cx)
                     .placeholder("{}")
                     .default_value(&self.form_output_schema)
             }));
@@ -746,7 +763,7 @@ impl Render for FunctionView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;
@@ -885,44 +902,46 @@ impl Render for FunctionView {
                                                     }
                                                 }),
                                             ))
-                                            .child(
-                                                action_button(
-                                                    ("edit", id as u64),
-                                                    "编辑",
-                                                    ActionRole::Edit,
-                                                    ActionSize::Row,
-                                                    style,
+                                            .when(ic.kind != 1, |actions| actions
+                                                .child(
+                                                    action_button(
+                                                        ("edit", id as u64),
+                                                        "编辑",
+                                                        ActionRole::Edit,
+                                                        ActionSize::Row,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        let ic_edit = ic.clone();
+                                                        move |_, window, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                v.show_edit_form(window, ic_edit.clone(), cx)
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
                                                 )
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    let ic_edit = ic.clone();
-                                                    move |_, window, cx| {
-                                                        t.update(cx, |v, cx| {
-                                                            v.show_edit_form(window, ic_edit.clone(), cx)
-                                                        })
-                                                        .ok();
-                                                    }
-                                                }),
+                                                .child(
+                                                    action_button(
+                                                        ("del", id as u64),
+                                                        "删除",
+                                                        ActionRole::Delete,
+                                                        ActionSize::Row,
+                                                        style,
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let t = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            t.update(cx, |v, cx| {
+                                                                v.confirm_delete_id = Some(id);
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                                ),
                                             )
-                                            .child(
-                                                action_button(
-                                                    ("del", id as u64),
-                                                    "删除",
-                                                    ActionRole::Delete,
-                                                    ActionSize::Row,
-                                                    style,
-                                                )
-                                                .on_mouse_down(MouseButton::Left, {
-                                                    let t = cx.weak_entity();
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, cx| {
-                                                            v.confirm_delete_id = Some(id);
-                                                            cx.notify();
-                                                        })
-                                                        .ok();
-                                                    }
-                                                }),
-                                            ),
                                     )
                             }))
                     }),
@@ -1036,6 +1055,10 @@ impl Render for FunctionView {
                         theme.foreground,
                         theme.border,
                     )
+                        .track_focus(&self.form_focus)
+                        .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
+                            v.on_key_down(event, window, cx);
+                        }))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
                         })
@@ -1354,7 +1377,7 @@ impl Render for FunctionView {
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
-                let id = self.confirm_delete_id.unwrap();
+                let _id = self.confirm_delete_id.unwrap();
                 this.child(
                     div()
                         .absolute()
@@ -1781,7 +1804,7 @@ impl Render for FunctionView {
                                                 div()
                                                     .text_size(px(13.0))
                                                     .font_weight(FontWeight::MEDIUM)
-                                                    .child("测试结果："),
+                                                    .child("执行结果"),
                                             )
                                             .child(
                                                 div()
@@ -1799,7 +1822,7 @@ impl Render for FunctionView {
                                                 div()
                                                     .text_size(px(13.0))
                                                     .font_weight(FontWeight::MEDIUM)
-                                                    .child("测试结果："),
+                                                    .child("执行结果"),
                                             )
                                             .child(
                                                 div()
@@ -1830,7 +1853,7 @@ impl Render for FunctionView {
                                                 div()
                                                     .text_size(px(13.0))
                                                     .font_weight(FontWeight::MEDIUM)
-                                                    .child("测试结果："),
+                                                    .child("执行结果"),
                                             )
                                             .child(
                                                 div()
@@ -1964,7 +1987,7 @@ fn form_field(
 
 fn form_field_multiline(
     label: &'static str,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
     div()
@@ -1978,7 +2001,7 @@ fn form_field_multiline(
                 .child(label),
         )
         .child(
-            Input::new(&input)
+            Textarea::new(&input)
                 .w_full()
                 .h(px(120.0))
                 .px(px(8.0))

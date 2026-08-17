@@ -197,9 +197,9 @@ async fn one_hundred_node_tree_loads_with_bounded_query_count() {
     let mut parent = None;
     for i in 0..100 {
         let input = if let Some(pid) = parent {
-            CategoryInput::with_parent(&format!("node-{i:03}"), &format!("N{i:03}"), pid).unwrap()
+            CategoryInput::with_parent(format!("node-{i:03}"), format!("N{i:03}"), pid).unwrap()
         } else {
-            CategoryInput::new(&format!("node-{i:03}"), &format!("N{i:03}")).unwrap()
+            CategoryInput::new(format!("node-{i:03}"), format!("N{i:03}")).unwrap()
         };
         let created = store.create(input).await.expect("create");
         parent = Some(created.id());
@@ -225,7 +225,7 @@ async fn one_hundred_category_crud_p95_under_one_second() {
     for i in 0..100 {
         let started = Instant::now();
         let created = store
-            .create(CategoryInput::new(&format!("cat-{i:03}"), &format!("C{i:03}")).unwrap())
+            .create(CategoryInput::new(format!("cat-{i:03}"), format!("C{i:03}")).unwrap())
             .await
             .expect("create");
         ids.push(created.id());
@@ -280,7 +280,7 @@ async fn invalid_slug_is_rejected() {
     assert_eq!(bad.field(), "slug");
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: CategoryNode = panic!("placeholder so the type is referenced");
 }

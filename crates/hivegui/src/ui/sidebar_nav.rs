@@ -314,68 +314,6 @@ fn dispatch_nav(cx: &mut App, route: Option<AppRoute>, key_str: &'static str, a1
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use gpui::{
-        Context, IntoElement, Render, SharedString, TestAppContext, VisualTestContext, Window, div,
-        prelude::*, px, rgb, size,
-    };
-
-    use super::{sidebar_layout, theme_menu_options};
-
-    struct SidebarLayoutTestView;
-
-    impl Render for SidebarLayoutTestView {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            sidebar_layout(
-                div().size_full().debug_selector(|| "HOME".to_owned()),
-                div().size_full().debug_selector(|| "AI".to_owned()),
-                div().size_full().debug_selector(|| "TOOLS".to_owned()),
-                div()
-                    .size_full()
-                    .debug_selector(|| "USER_CONFIG".to_owned()),
-                rgb(0xf0f0f7).into(),
-                rgb(0x333333).into(),
-            )
-        }
-    }
-
-    #[gpui::test]
-    fn extension_and_system_settings_are_removed_from_top_group(cx: &mut TestAppContext) {
-        let window = cx.open_window(size(px(48.0), px(640.0)), |_, _| SidebarLayoutTestView);
-        cx.run_until_parked();
-
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let ai = cx.debug_bounds("AI").expect("AI button bounds");
-        let tools = cx.debug_bounds("TOOLS").expect("tools button bounds");
-        let user_config = cx
-            .debug_bounds("USER_CONFIG")
-            .expect("user configuration button bounds");
-
-        assert!(cx.debug_bounds("EXTENSION").is_none());
-        assert!(cx.debug_bounds("SYSTEM_SETTINGS").is_none());
-        assert_eq!(tools.top(), ai.bottom() + px(8.0));
-        assert_eq!(user_config.bottom(), px(628.0));
-        assert!(tools.bottom() < user_config.top());
-    }
-
-    #[test]
-    fn user_menu_marks_the_current_theme() {
-        let themes = vec![
-            SharedString::from("Default Light"),
-            SharedString::from("Default Dark"),
-        ];
-
-        assert_eq!(
-            theme_menu_options(&themes, &SharedString::from("Default Dark")),
-            vec![
-                (SharedString::from("Default Light"), false),
-                (SharedString::from("Default Dark"), true),
-            ]
-        );
-    }
-}
-
 impl Render for SidebarNav {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let themes = ThemeRegistry::global(cx)
@@ -397,6 +335,7 @@ impl Render for SidebarNav {
         // dispatch path. The per-button `on_key_down` listeners
         // still handle Enter/Space directly.
         div()
+            .h_full()
             .track_focus(&self.view_focus)
             .key_context("HiveguiSidebar")
             .on_action(cx.listener(|this, _: &SidebarTab, window, cx| {
@@ -645,5 +584,89 @@ impl SidebarNav {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        Context, IntoElement, Render, SharedString, TestAppContext, VisualTestContext, Window, div,
+        prelude::*, px, rgb, size,
+    };
+
+    use super::{SidebarNav, sidebar_layout, theme_menu_options};
+    use crate::ui::app::{AppRoute, HiveGuiAppState};
+
+    struct SidebarLayoutTestView;
+
+    impl Render for SidebarLayoutTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            sidebar_layout(
+                div().size_full().debug_selector(|| "HOME".to_owned()),
+                div().size_full().debug_selector(|| "AI".to_owned()),
+                div().size_full().debug_selector(|| "TOOLS".to_owned()),
+                div()
+                    .size_full()
+                    .debug_selector(|| "USER_CONFIG".to_owned()),
+                rgb(0xf0f0f7).into(),
+                rgb(0x333333).into(),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn extension_and_system_settings_are_removed_from_top_group(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(48.0), px(640.0)), |_, _| SidebarLayoutTestView);
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let ai = cx.debug_bounds("AI").expect("AI button bounds");
+        let tools = cx.debug_bounds("TOOLS").expect("tools button bounds");
+        let user_config = cx
+            .debug_bounds("USER_CONFIG")
+            .expect("user configuration button bounds");
+
+        assert!(cx.debug_bounds("EXTENSION").is_none());
+        assert!(cx.debug_bounds("SYSTEM_SETTINGS").is_none());
+        assert_eq!(tools.top(), ai.bottom() + px(8.0));
+        assert_eq!(user_config.bottom(), px(628.0));
+        assert!(tools.bottom() < user_config.top());
+    }
+
+    #[gpui::test]
+    fn rendered_sidebar_fills_its_parent_height(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+            HiveGuiAppState::install_for_test(cx, AppRoute::Home);
+        });
+        let window = cx.open_window(size(px(48.0), px(640.0)), |window, cx| {
+            let sidebar = cx.new(|cx| SidebarNav::for_test(window, cx));
+            gpui_component::Root::new(sidebar, window, cx).bordered(false)
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let user_config = cx
+            .debug_bounds("user_config")
+            .expect("user configuration button bounds");
+
+        assert_eq!(user_config.bottom(), px(628.0));
+    }
+
+    #[test]
+    fn user_menu_marks_the_current_theme() {
+        let themes = vec![
+            SharedString::from("Default Light"),
+            SharedString::from("Default Dark"),
+        ];
+
+        assert_eq!(
+            theme_menu_options(&themes, &SharedString::from("Default Dark")),
+            vec![
+                (SharedString::from("Default Light"), false),
+                (SharedString::from("Default Dark"), true),
+            ]
+        );
     }
 }

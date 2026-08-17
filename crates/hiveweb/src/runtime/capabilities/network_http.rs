@@ -317,6 +317,7 @@ pub(crate) fn pinned_outbound_client(
 /// Build the same DNS-pinned/no-proxy/no-redirect client without installing a
 /// second request timer. Hook Webhooks wrap DNS + construction + send in one
 /// Tokio timeout, while `network.http` retains its existing client timeout.
+#[allow(dead_code)]
 pub(crate) fn pinned_outbound_client_for_attempt(
     target: &ResolvedOutboundTarget,
 ) -> Result<Client, String> {

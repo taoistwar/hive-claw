@@ -138,7 +138,7 @@ pub async fn run_tool_test(
     .bind(tool_id)
     .fetch_optional(pool)
     .await
-        .map_err(|e| ToolTestError::Failed(format!("tool lookup: {e}")))?;
+    .map_err(|e| ToolTestError::Failed(format!("tool lookup: {e}")))?;
 
     let Some((
         tid,
@@ -155,7 +155,9 @@ pub async fn run_tool_test(
     )) = tool_row
     else {
         logger.log(&format!("FAIL: tool id={} not found", tool_id));
-        return Err(ToolTestError::Failed(format!("tool id={tool_id} not found")));
+        return Err(ToolTestError::Failed(format!(
+            "tool id={tool_id} not found"
+        )));
     };
     logger.log(&format!(
         "STEP1 OK: tool found id={} identifier={} kind={}",
@@ -179,7 +181,7 @@ pub async fn run_tool_test(
     .bind(tool_id)
     .fetch_all(pool)
     .await
-        .map_err(|e| ToolTestError::Failed(format!("always tools: {e}")))?;
+    .map_err(|e| ToolTestError::Failed(format!("always tools: {e}")))?;
     logger.log(&format!(
         "STEP2 OK: loaded {} always_tools",
         always_tools.len()
@@ -278,13 +280,13 @@ pub async fn run_tool_test(
     ));
 
     // 5. 构建 LLM request
-    let (provider, model) = deps
-        .llm
-        .build_chain(ctx.model_preset.as_deref())
-        .map_err(|e| match e {
-            LlmAdapterError::Unknown(name) => ToolTestError::ModelPresetUnknown(name),
-            _ => ToolTestError::Failed(format!("LLM provider: {e}")),
-        })?;
+    let (provider, model) =
+        deps.llm
+            .build_chain(ctx.model_preset.as_deref())
+            .map_err(|e| match e {
+                LlmAdapterError::Unknown(name) => ToolTestError::ModelPresetUnknown(name),
+                _ => ToolTestError::Failed(format!("LLM provider: {e}")),
+            })?;
     logger.log(&format!("STEP5 OK: LLM provider built, model={}", model));
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
@@ -348,15 +350,15 @@ pub async fn run_tool_test(
     runtime_audit::record(
         &deps.execution_context,
         AuditRecord {
-        agent_id: None,
-        plugin_id: None,
-        function_id: None,
-        capability: None,
-        event_type: "llm_invoke",
-        outcome: "success",
-        elapsed_ms: Some(llm_elapsed_ms),
-        error_message: None,
-        payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
+            agent_id: None,
+            plugin_id: None,
+            function_id: None,
+            capability: None,
+            event_type: "llm_invoke",
+            outcome: "success",
+            elapsed_ms: Some(llm_elapsed_ms),
+            error_message: None,
+            payload_summary: Some(json!({"mode": "tool_test", "tool_id": tool_id})),
         },
     );
     logger.log(&format!(

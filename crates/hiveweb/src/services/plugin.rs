@@ -16,8 +16,8 @@ use sqlx::MySqlPool;
 use crate::db::sql_safety::audit_sql;
 use crate::models::Plugin;
 use crate::runtime::{registered_imports, scan_wasm_imports};
-use crate::storage::s3;
 use crate::services::optimistic_lock::OptimisticLockTable;
+use crate::storage::s3;
 use crate::utils::error::AppError;
 
 const WASM_MAGIC: &[u8; 4] = b"\0asm";
@@ -389,7 +389,13 @@ async fn fetch_tags(pool: &MySqlPool, plugin_id: i64) -> Result<Vec<TagSummary>,
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Plugin, AppError> {
     // 1. 乐观锁
-    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Plugins, id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Plugins,
+        id,
+        meta.updated_at,
+    )
+    .await?;
 
     // 2. 字段更新（部分字段）
     sqlx::query(

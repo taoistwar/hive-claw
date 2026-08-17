@@ -92,7 +92,7 @@ async fn sqlite_valid_but_with_failed_integrity_check_is_rejected() {
     // Skip the 16-byte header, then overwrite everything after
     // it with 0xff so the page-tree / b-tree structure is invalid.
     let mut corrupted = bytes[..16].to_vec();
-    corrupted.extend(std::iter::repeat(0xff).take(bytes.len().saturating_sub(16)));
+    corrupted.extend(std::iter::repeat_n(0xff, bytes.len().saturating_sub(16)));
     std::fs::write(ws.database_path(), &corrupted).expect("write corrupt v4");
     let err = open_store(ws.database_path(), ws.root())
         .await

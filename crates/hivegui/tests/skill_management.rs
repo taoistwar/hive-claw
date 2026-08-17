@@ -65,7 +65,7 @@ async fn duplicate_skill_name_returns_conflict() {
     assert_eq!(conflict.field(), "name");
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::diverging_sub_expression)]
 fn _pin_types() {
     let _: SkillRecord = panic!("placeholder so the type is referenced");
 }

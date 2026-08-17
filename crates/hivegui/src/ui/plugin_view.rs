@@ -374,10 +374,10 @@ impl PluginView {
                 {
                     Ok(_) => {
                         // Copy WASM file locally if a new one was selected
-                        if let Some(ref src) = wasm_path {
-                            if let Err(e) = Self::save_wasm_locally(&base_dir, eid, src) {
-                                tracing::error!("Failed to save WASM locally: {}", e);
-                            }
+                        if let Some(ref src) = wasm_path
+                            && let Err(e) = Self::save_wasm_locally(&base_dir, eid, src)
+                        {
+                            tracing::error!("Failed to save WASM locally: {}", e);
                         }
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
@@ -417,10 +417,10 @@ impl PluginView {
                 {
                     Ok(plugin) => {
                         // Copy WASM file locally
-                        if let Some(ref src) = wasm_path {
-                            if let Err(e) = Self::save_wasm_locally(&base_dir, plugin.id, src) {
-                                tracing::error!("Failed to save WASM locally: {}", e);
-                            }
+                        if let Some(ref src) = wasm_path
+                            && let Err(e) = Self::save_wasm_locally(&base_dir, plugin.id, src)
+                        {
+                            tracing::error!("Failed to save WASM locally: {}", e);
                         }
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
@@ -449,14 +449,14 @@ impl PluginView {
                 Ok(_) => {
                     // Clean up local WASM directory
                     let wasm_dir = base_dir.join("plugins").join(id.to_string());
-                    if wasm_dir.exists() {
-                        if let Err(e) = std::fs::remove_dir_all(&wasm_dir) {
-                            tracing::warn!(
-                                plugin_id = id,
-                                error = %e,
-                                "Failed to cleanup plugin WASM directory"
-                            );
-                        }
+                    if wasm_dir.exists()
+                        && let Err(e) = std::fs::remove_dir_all(&wasm_dir)
+                    {
+                        tracing::warn!(
+                            plugin_id = id,
+                            error = %e,
+                            "Failed to cleanup plugin WASM directory"
+                        );
                     }
                     this.update(cx, |v, cx| {
                         v.load(cx);
@@ -503,7 +503,7 @@ impl Render for PluginView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;
@@ -1106,7 +1106,7 @@ impl Render for PluginView {
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
-                let id = self.confirm_delete_id.unwrap();
+                let _id = self.confirm_delete_id.unwrap();
                 this.child(
                     div()
                         .absolute()
@@ -1386,7 +1386,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let modal = cx
             .debug_bounds("PLUGIN_MODAL")

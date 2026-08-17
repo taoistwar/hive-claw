@@ -191,12 +191,12 @@ impl ToolView {
         self.function_id_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("函数 ID")
-                .default_value(&item.function_id.map(|i| i.to_string()).unwrap_or_default())
+                .default_value(item.function_id.map(|i| i.to_string()).unwrap_or_default())
         }));
         self.workflow_id_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("工作流 ID")
-                .default_value(&item.workflow_id.map(|i| i.to_string()).unwrap_or_default())
+                .default_value(item.workflow_id.map(|i| i.to_string()).unwrap_or_default())
         }));
         self.input_schema_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -546,7 +546,7 @@ impl Render for ToolView {
                     .default_value(&self.search_text)
             }));
             if let Some(ref input) = self.search_input {
-                cx.subscribe_in(input, window, |this, state, event, window, cx| {
+                cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
                         this.current_page = 0;
@@ -1023,7 +1023,7 @@ impl Render for ToolView {
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
-                let id = self.confirm_delete_id.unwrap();
+                let _id = self.confirm_delete_id.unwrap();
                 this.child(
                     div()
                         .absolute()

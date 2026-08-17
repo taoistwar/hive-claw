@@ -138,7 +138,7 @@ fn v1_record_roundtrip_preserves_all_required_fields() {
     assert_eq!(value["operation"], "datasource.create");
     assert_eq!(value["entity_identifier"], "ds/abc");
     assert_eq!(value["result"], "Ok");
-    assert!(value.get("error_category").map_or(true, |v| v.is_null()));
+    assert!(value.get("error_category").is_none_or(|v| v.is_null()));
     assert_eq!(value["cause_summary"], "created");
     assert_eq!(value["segments_ms"]["parse_us"], 0);
     assert_eq!(value["segments_ms"]["plan_us"], 0);
@@ -342,7 +342,7 @@ fn effective_retention_time_takes_max_of_clock_and_persisted_high_watermark() {
     let report = log
         .enforce_retention()
         .expect("enforce retention with rewind");
-    assert_eq!(report.expired_bytes > 0, true);
+    assert!(report.expired_bytes > 0);
     let persisted = log.read_all().expect("read all records");
     assert_eq!(
         persisted.len(),

@@ -1,10 +1,7 @@
 use anyhow::Result;
-use hivegui::datasource::{
-    Store,
-    entity_store::{
-        Agent, Capability, Category, Function, Plugin, Skill, Tag, Tool, Workflow, export_all_data,
-        get_current_version, import_from_backup, init_tables, run_migrations,
-    },
+use hivegui::datasource::entity_store::{
+    Agent, Capability, Category, Function, Plugin, Skill, Tag, Tool, Workflow, export_all_data,
+    get_current_version, import_from_backup, init_tables, run_migrations,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -1091,7 +1088,7 @@ async fn test_capability_search() -> Result<()> {
 async fn test_capability_update() -> Result<()> {
     let pool = setup_test_db().await?;
 
-    let cap = Capability::create(
+    let _cap = Capability::create(
         &pool,
         "test_cap".to_string(),
         "Original".to_string(),
@@ -2608,7 +2605,7 @@ async fn test_export_import() -> Result<()> {
         None,
     )
     .await?;
-    let capability = Capability::create(
+    let _capability = Capability::create(
         &pool,
         "export_capability".to_string(),
         "Export capability desc".to_string(),

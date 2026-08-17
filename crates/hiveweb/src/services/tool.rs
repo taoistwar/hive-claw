@@ -431,7 +431,13 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<ToolList, AppE
 }
 
 pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<ToolListItem, AppError> {
-    crate::services::optimistic_lock::check_and_bump(pool, OptimisticLockTable::Tools, id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Tools,
+        id,
+        meta.updated_at,
+    )
+    .await?;
     let existing = fetch_by_id(pool, id).await?;
 
     if existing.source == "builtin" {

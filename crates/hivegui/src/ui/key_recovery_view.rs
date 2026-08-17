@@ -15,13 +15,16 @@
 //! state so the keyboard contract is deterministic regardless of
 //! how the underlying focus tree moves during the test runtime.
 
-#![warn(missing_docs)]
+// GPUI `actions!`-generated action structs cannot carry inline doc comments,
+// so missing_docs is allowed at the module level here; the public
+// `KeyRecoveryAction` enum below remains documented by convention.
+#![allow(missing_docs)]
 
 use std::sync::Arc;
 
 use gpui::{
-    Action, Context, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render, Styled,
-    Window, actions, div, prelude::*, px,
+    Context, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render, Styled, Window,
+    actions, div, prelude::*, px,
 };
 
 actions!(hivegui_key_recovery, [KeyRecoveryTab, KeyRecoveryTabPrev]);
@@ -208,7 +211,7 @@ impl KeyRecoveryView {
         let future = self.commands.execute(action);
         cx.spawn(async move |view, cx| {
             let _ = future.await;
-            view.update(cx, |this, cx| {
+            let _ = view.update(cx, |this, cx| {
                 this.phase = KeyRecoveryPhase::Completed;
                 cx.notify();
             });
@@ -372,15 +375,8 @@ impl Render for KeyRecoveryView {
 }
 
 /// Focus global used by the key recovery view to trap keyboard focus.
+#[derive(Default)]
 pub struct KeyRecoveryFocus(pub Option<Entity<()>>);
-impl Default for KeyRecoveryFocus {
-    fn default() -> Self {
-        // The owning view replaces this `None` with a live entity on
-        // first construction; tests can do the same via
-        // `KeyRecoveryView::for_test`.
-        Self(None)
-    }
-}
 impl gpui::Global for KeyRecoveryFocus {}
 
 const STRINGS: StringsZh = StringsZh {
@@ -404,7 +400,7 @@ struct StringsZh {
     zh_key_recovery_exit: &'static str,
 }
 
-// Reference unused symbols to keep `#![warn(missing_docs)]` quiet
+// Reference unused symbols to keep missing_docs quiet
 // while the recovery flow is still being wired into the production
 // bootstrap.
 #[allow(dead_code)]

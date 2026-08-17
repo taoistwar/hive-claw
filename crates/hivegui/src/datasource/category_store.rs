@@ -542,13 +542,9 @@ impl CategoryStore {
             }
         };
 
-        if let Err(err) = self.recompute_child_count(id).await {
-            return Err(err);
-        }
+        self.recompute_child_count(id).await?;
         if let Some(pid) = parent_id {
-            if let Err(err) = self.recompute_child_count(pid).await {
-                return Err(err);
-            }
+            self.recompute_child_count(pid).await?;
         }
 
         self.fetch_node(id).await
@@ -837,7 +833,7 @@ fn build_ancestors(
     let mut chain = Vec::new();
     let mut cursor = parent_id;
     while let Some(parent) = cursor {
-        if chain.iter().any(|&seen| seen == parent) {
+        if chain.contains(&parent) {
             // Should never happen because the writer refuses
             // cycles, but the runtime defends in depth.
             break;

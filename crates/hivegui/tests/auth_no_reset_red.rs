@@ -115,8 +115,7 @@ fn post_setup_displays_recovery_risk_notice_before_main_ui() {
         .take_recovery_confirm_view()
         .expect("post-setup must present RecoveryConfirmView");
     match notice {
-        RecoveryConfirmView::RiskNotice { .. } => {}
-        other => panic!("expected RiskNotice, got {other:?}"),
+        RecoveryConfirmView::RiskNotice => {}
     }
     let risk: RecoveryRiskNotice = view.recovery_risk_notice();
     assert_eq!(
@@ -163,9 +162,7 @@ fn recovery_view_without_backup_forces_first_export_wizard() {
     let export = view
         .run_backup_wizard_for_test(STRONG_PASSWORD)
         .expect("export");
-    let BackupExportOutcome::Exported { bundle } = export else {
-        panic!("expected Exported bundle, got {export:?}");
-    };
+    let BackupExportOutcome::Exported { bundle } = export;
     let bundle: BackupBundle = bundle;
     let manifest_sha = bundle.manifest_sha256();
     assert_eq!(
@@ -280,7 +277,6 @@ fn tampered_backup_wrapped_key_yields_fail_closed_on_new_device() {
         .expect("export");
     let bundle = match export {
         BackupExportOutcome::Exported { bundle } => bundle,
-        other => panic!("expected Exported, got {other:?}"),
     };
     let _ = view
         .acknowledge_risk_for_test(RecoveryAcceptance::Checked)

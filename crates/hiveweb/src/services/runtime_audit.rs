@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use chrono::{NaiveDateTime, Utc};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::{MySql, MySqlPool, QueryBuilder};
+use sqlx::MySqlPool;
 use std::sync::{
     Arc, LazyLock, OnceLock, RwLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -358,56 +358,24 @@ pub struct RuntimeAuditFilter {
     pub occurred_at_end: Option<NaiveDateTime>,
 }
 
-impl RuntimeAuditFilter {
-    fn is_empty(&self) -> bool {
-        self.event_type.is_none()
-            && self.outcome.is_none()
-            && self.capability.is_none()
-            && self.request_id.is_none()
-            && self.session_id.is_none()
-            && self.agent_id.is_none()
-            && self.occurred_at_start.is_none()
-            && self.occurred_at_end.is_none()
-    }
-}
+impl RuntimeAuditFilter {}
 
-fn push_filter_bindings(
-    query: &mut QueryBuilder<MySql>,
-    filter: &RuntimeAuditFilter,
-) {
-    let mut predicates = query.separated(" AND ");
-    if let Some(value) = &filter.event_type {
-        predicates.push("event_type = ").push_bind(value);
-    }
-    if let Some(value) = &filter.outcome {
-        predicates.push("outcome = ").push_bind(value);
-    }
-    if let Some(value) = &filter.capability {
-        predicates.push("capability = ").push_bind(value);
-    }
-    if let Some(value) = &filter.request_id {
-        predicates.push("request_id = ").push_bind(value);
-    }
-    if let Some(value) = filter.session_id {
-        predicates.push("session_id = ").push_bind(value);
-    }
-    if let Some(value) = filter.agent_id {
-        predicates.push("agent_id = ").push_bind(value);
-    }
-    if let Some(value) = filter.occurred_at_start {
-        predicates.push("occurred_at >= ").push_bind(value);
-    }
-    if let Some(value) = filter.occurred_at_end {
-        predicates.push("occurred_at <= ").push_bind(value);
-    }
-}
-
-fn append_where(query: &mut QueryBuilder<MySql>, filter: &RuntimeAuditFilter) {
-    if !filter.is_empty() {
-        query.push(" WHERE ");
-        push_filter_bindings(query, filter);
-    }
-}
+const LIST_RUNTIME_AUDIT_SQL: &str = r#"
+    SELECT id, request_id, session_id, agent_id, plugin_id, function_id,
+        capability, event_type, outcome, elapsed_ms, error_message,
+        payload_summary, occurred_at
+    FROM runtime_audit_logs
+    WHERE (? IS NULL OR event_type = ?)
+      AND (? IS NULL OR outcome = ?)
+      AND (? IS NULL OR capability = ?)
+      AND (? IS NULL OR request_id = ?)
+      AND (? IS NULL OR session_id = ?)
+      AND (? IS NULL OR agent_id = ?)
+      AND (? IS NULL OR occurred_at >= ?)
+      AND (? IS NULL OR occurred_at <= ?)
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT ? OFFSET ?
+"#;
 
 /// Query a bounded page of runtime audit logs using typed, in-condition-order
 /// bindings. API callers must still apply their authorization policy.
@@ -418,25 +386,55 @@ pub async fn list_runtime_audit_logs(
     filter: &RuntimeAuditFilter,
 ) -> Result<(Vec<RuntimeAuditLog>, u64), sqlx::Error> {
     let limit = limit.clamp(1, 100);
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM runtime_audit_logs
+           WHERE (? IS NULL OR event_type = ?)
+             AND (? IS NULL OR outcome = ?)
+             AND (? IS NULL OR capability = ?)
+             AND (? IS NULL OR request_id = ?)
+             AND (? IS NULL OR session_id = ?)
+             AND (? IS NULL OR agent_id = ?)
+             AND (? IS NULL OR occurred_at >= ?)
+             AND (? IS NULL OR occurred_at <= ?)"#,
+    )
+    .bind(&filter.event_type)
+    .bind(&filter.event_type)
+    .bind(&filter.outcome)
+    .bind(&filter.outcome)
+    .bind(&filter.capability)
+    .bind(&filter.capability)
+    .bind(&filter.request_id)
+    .bind(&filter.request_id)
+    .bind(filter.session_id)
+    .bind(filter.session_id)
+    .bind(filter.agent_id)
+    .bind(filter.agent_id)
+    .bind(filter.occurred_at_start)
+    .bind(filter.occurred_at_start)
+    .bind(filter.occurred_at_end)
+    .bind(filter.occurred_at_end)
+    .fetch_one(pool)
+    .await?;
 
-    let mut count_query = QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM runtime_audit_logs");
-    append_where(&mut count_query, filter);
-    let (count,): (i64,) = count_query.build_query_as().fetch_one(pool).await?;
-
-    let mut list_query = QueryBuilder::<MySql>::new(
-        r#"SELECT id, request_id, session_id, agent_id, plugin_id, function_id,
-                  capability, event_type, outcome, elapsed_ms, error_message,
-                  payload_summary, occurred_at
-           FROM runtime_audit_logs"#,
-    );
-    append_where(&mut list_query, filter);
-    list_query
-        .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
-        .push_bind(i64::from(limit))
-        .push(" OFFSET ")
-        .push_bind(i64::from(offset));
-    let items = list_query
-        .build_query_as::<RuntimeAuditLog>()
+    let items = sqlx::query_as::<_, RuntimeAuditLog>(LIST_RUNTIME_AUDIT_SQL)
+        .bind(&filter.event_type)
+        .bind(&filter.event_type)
+        .bind(&filter.outcome)
+        .bind(&filter.outcome)
+        .bind(&filter.capability)
+        .bind(&filter.capability)
+        .bind(&filter.request_id)
+        .bind(&filter.request_id)
+        .bind(filter.session_id)
+        .bind(filter.session_id)
+        .bind(filter.agent_id)
+        .bind(filter.agent_id)
+        .bind(filter.occurred_at_start)
+        .bind(filter.occurred_at_start)
+        .bind(filter.occurred_at_end)
+        .bind(filter.occurred_at_end)
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
         .fetch_all(pool)
         .await?;
 

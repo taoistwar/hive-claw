@@ -110,7 +110,10 @@ pub async fn check_and_bump(
         .map_err(|e| AppError::Internal(format!("optimistic_lock fetch failed: {e}")))?;
 
     let Some((db_updated_at,)) = row else {
-        return Err(AppError::NotFound(format!("{} id={id} not found", table.as_str())));
+        return Err(AppError::NotFound(format!(
+            "{} id={id} not found",
+            table.as_str()
+        )));
     };
 
     // MySQL DATETIME 仅秒级精度；比较时强制对齐到秒，避免亚秒级差异误判冲突。
@@ -128,11 +131,14 @@ pub async fn check_and_bump(
 mod tests {
     use std::collections::HashSet;
 
-    use super::{table_query_sql, OptimisticLockTable};
+    use super::{OptimisticLockTable, table_query_sql};
 
     #[test]
     fn optimistic_lock_table_list_is_complete_and_unique() {
-        let names: Vec<_> = OptimisticLockTable::ALL.iter().map(|t| t.as_str()).collect();
+        let names: Vec<_> = OptimisticLockTable::ALL
+            .iter()
+            .map(|t| t.as_str())
+            .collect();
 
         assert_eq!(names.len(), 10, "enum 扩展时需要同步更新 ALL");
         assert_eq!(

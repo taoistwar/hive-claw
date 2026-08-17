@@ -17,23 +17,30 @@ use rand::rngs::OsRng;
 use rand::{RngCore, SeedableRng};
 use thiserror::Error;
 use zeroize::Zeroize;
+/// Errors raised by the local master-password crypto primitives.
 #[derive(Debug, Error)]
 pub enum CryptoError {
     #[error("kek derivation failed: {0}")]
+    /// Underlying Argon2id derivation failure.
     DerivationFailed(String),
     #[error("kek derivation exceeded {0:?} deadline")]
+    /// KEK derivation exceeded the fail-closed deadline.
     DerivationTimeout(Duration),
     #[error("kek verifier mismatch (collapse to InvalidPassword)")]
+    /// KEK verifier did not decrypt; collapses "wrong key" with "tampered blob".
     KekVerifierMismatch,
     #[error("AES-GCM wrap/unwrap failed: {0}")]
+    /// AEAD wrap/unwrap failure.
     AeadFailed(String),
     #[error("invalid file layout: {0}")]
+    /// On-disk keystore blob had an unexpected layout.
     InvalidLayout(String),
 }
 
 /// 32-byte secret. On drop, `bytes` is zeroed via `Zeroize` (the
 /// `Zeroizing<[u8; 32]>` wrapper forces the optimizer to actually run
 /// the drop code, which is the same guarantee `zeroize` gives).
+/// 32-byte secret buffer that is wiped on drop via the `Zeroizing` wrapper.
 #[derive(Clone)]
 pub struct Secret32 {
     bytes: zeroize::Zeroizing<[u8; 32]>,
@@ -90,9 +97,13 @@ impl std::fmt::Debug for Secret32 {
 
 /// `Argon2id` parameters per OWASP Password Storage Cheat Sheet (2025).
 pub const ARGON2_M_KIB: u32 = 64 * 1024;
+/// Argon2id time cost (number of iterations).
 pub const ARGON2_T: u32 = 3;
+/// Argon2id parallelism factor (lanes).
 pub const ARGON2_P: u32 = 1;
+/// Argon2id salt length in bytes.
 pub const ARGON2_SALT_LEN: usize = 16;
+/// Argon2id derived-key length in bytes.
 pub const ARGON2_OUTPUT_LEN: usize = 32;
 
 /// Hard deadline for KEK derivation. Production desktops complete in
@@ -202,9 +213,11 @@ pub fn unwrap_with_kek(kek: &Secret32, blob: &[u8]) -> Result<Secret32, CryptoEr
 /// `SystemClock::now()`; tests inject `TestClock` for 5s deadline + 15min
 /// idle scenarios.
 pub trait Clock: Send + Sync + std::fmt::Debug {
+    /// Return the current instant.
     fn now(&self) -> Instant;
 }
 
+/// Production clock backed by the real monotonic instant.
 pub struct SystemClock;
 
 impl std::fmt::Debug for SystemClock {
@@ -219,6 +232,7 @@ impl Clock for SystemClock {
     }
 }
 
+/// Injectable test clock whose instant can be advanced manually.
 pub struct TestClock {
     inner: parking_lot::Mutex<Instant>,
 }
@@ -232,6 +246,7 @@ impl std::fmt::Debug for TestClock {
 impl TestClock {
     /// Construct a `TestClock` anchored to the current real instant.
     /// Tests then call `advance` to simulate idle windows.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             inner: parking_lot::Mutex::new(Instant::now()),
@@ -254,6 +269,7 @@ impl Clock for TestClock {
 
 /// Slow-clock simulator: every `now()` call advances the clock by
 /// 6s to force `DerivationTimeout`.
+/// Test clock that advances 6s on every `now()` call, forcing `DerivationTimeout`.
 pub struct SlowClock {
     inner: parking_lot::Mutex<Instant>,
 }

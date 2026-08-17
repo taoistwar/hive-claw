@@ -13,7 +13,7 @@
 mod support;
 
 use hivegui::datasource::migrations::{MigrationOptions, migrate_to_current};
-use hivegui::plugin::plugin_store::{PluginArtifactInput, PluginStore};
+use hivegui::plugin::plugin_store::PluginStore;
 use hivegui::runtime::plugin_executor::{
     DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECS, HARD_MAX_MEMORY_MB,
     HARD_MAX_OUTPUT_BYTES, HARD_MAX_TIMEOUT_SECS, PluginExecutor, PluginLimits,

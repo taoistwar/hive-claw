@@ -8,7 +8,7 @@ use gpui::{
     Pixels, Point, ScrollWheelEvent, Window, div, hsla, point, prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement;
 use std::collections::HashMap;
 
@@ -22,7 +22,7 @@ pub enum DagNodeType {
 }
 
 impl DagNodeType {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_node_str(s: &str) -> Self {
         match s {
             "start_node" => DagNodeType::StartNode,
             "end_node" => DagNodeType::EndNode,
@@ -105,10 +105,10 @@ pub struct DagEditorView {
     // 节点配置面板
     show_node_config: bool,
     config_node_key: Option<String>,
-    config_input: Option<Entity<InputState>>,
+    config_input: Option<Entity<TextareaState>>,
     config_model_preset_input: Option<Entity<InputState>>,
     config_history_window_input: Option<Entity<InputState>>,
-    config_system_prompt_input: Option<Entity<InputState>>,
+    config_system_prompt_input: Option<Entity<TextareaState>>,
     config_error: Option<String>,
 }
 
@@ -174,7 +174,7 @@ impl DagEditorView {
                         });
                         DagNode {
                             node_key: n.node_key,
-                            node_type: DagNodeType::from_str(&n.node_type),
+                            node_type: DagNodeType::from_node_str(&n.node_type),
                             function_id: n.function_id,
                             function_name,
                             position: Point::new(px(n.position_x as f32), px(n.position_y as f32)),
@@ -476,8 +476,7 @@ impl DagEditorView {
         };
         let config = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
         self.config_input = Some(cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .rows(10)
                 .default_value(config)
         }));
@@ -507,8 +506,7 @@ impl DagEditorView {
                     .default_value(history_window.to_string())
             }));
             self.config_system_prompt_input = Some(cx.new(|cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
+                TextareaState::new(window, cx)
                     .rows(8)
                     .default_value(system_prompt)
             }));
@@ -740,16 +738,16 @@ impl DagEditorView {
         let mut path = Vec::new();
 
         for node in &self.nodes {
-            if !visited.get(&node.node_key).unwrap_or(&false) {
-                if let Some(cycle) = self.dfs_cycle(
+            if !visited.get(&node.node_key).unwrap_or(&false)
+                && let Some(cycle) = self.dfs_cycle(
                     &node.node_key,
                     &graph,
                     &mut visited,
                     &mut rec_stack,
                     &mut path,
-                ) {
-                    return Some(cycle);
-                }
+                )
+            {
+                return Some(cycle);
             }
         }
         None
@@ -798,19 +796,19 @@ impl DagEditorView {
     }
 
     fn on_node_mouse_move(&mut self, position: Point<Pixels>) {
-        if let Some((ref node_key, _)) = self.dragging_node {
-            if let Some(node) = self.nodes.iter_mut().find(|n| &n.node_key == node_key) {
-                node.position = Point::new(
-                    px(
-                        f32::from(position.x - self.drag_offset.x - self.canvas_offset.x)
-                            / self.canvas_zoom,
-                    ),
-                    px(
-                        f32::from(position.y - self.drag_offset.y - self.canvas_offset.y)
-                            / self.canvas_zoom,
-                    ),
-                );
-            }
+        if let Some((ref node_key, _)) = self.dragging_node
+            && let Some(node) = self.nodes.iter_mut().find(|n| &n.node_key == node_key)
+        {
+            node.position = Point::new(
+                px(
+                    f32::from(position.x - self.drag_offset.x - self.canvas_offset.x)
+                        / self.canvas_zoom,
+                ),
+                px(
+                    f32::from(position.y - self.drag_offset.y - self.canvas_offset.y)
+                        / self.canvas_zoom,
+                ),
+            );
         }
     }
 
@@ -1829,7 +1827,7 @@ impl Render for DagEditorView {
                                         .size_full()
                                         .when_some(config_input, |this, input| {
                                             this.child(
-                                                Input::new(&input)
+                                                Textarea::new(&input)
                                                     .size_full()
                                                     .border_0()
                                                     .font_family("monospace"),
@@ -2002,7 +2000,7 @@ impl Render for DagEditorView {
                                             })
                                             .h(px(180.0))
                                             .when_some(system_prompt_input, |this, input| {
-                                                this.child(Input::new(&input).size_full())
+                                                this.child(Textarea::new(&input).size_full())
                                             }),
                                     ),
                             )

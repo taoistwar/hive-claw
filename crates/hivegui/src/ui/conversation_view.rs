@@ -2,11 +2,12 @@
 
 use crate::agent::local_agent::{LocalAgentRuntime, SessionHandle};
 use crate::agent::session::AgentMessage;
-use crate::runtime::diagnostics::ExecutionEventCollector;
+use crate::runtime::diagnostics::{DiagnosticBundle, ExecutionEventCollector, RedactionConfig};
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -89,7 +90,7 @@ impl ConversationView {
             self.message_input_state = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("输入对话内容…")
-                    .default_value(&self.message_input.to_string())
+                    .default_value(self.message_input.to_string())
             }));
             if let Some(state) = &self.message_input_state {
                 cx.subscribe_in(state, window, move |this, state, event, window, cx| {
@@ -109,7 +110,7 @@ impl ConversationView {
             self.route_input_state = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("子 Agent identifier")
-                    .default_value(&self.route_input.to_string())
+                    .default_value(self.route_input.to_string())
             }));
             if let Some(state) = &self.route_input_state {
                 cx.subscribe_in(state, window, move |this, input, event, window, cx| {
@@ -158,20 +159,20 @@ impl ConversationView {
         for session in self.sessions.iter_mut() {
             if let Some(state) = runtime.session_state(&session.handle) {
                 match state.as_str() {
-                    s if s == "running_tool" => {
+                    "running_tool" => {
                         session.tool_state = "运行中".to_string();
                     }
-                    s if s == "awaiting_model" => {
+                    "awaiting_model" => {
                         session.workflow_state = "等待模型".to_string();
                     }
-                    s if s == "rolled_back" => {
+                    "rolled_back" => {
                         session.workflow_state = "回滚中".to_string();
                     }
-                    s if s == "terminated" => {
+                    "terminated" => {
                         session.tool_state = "已终止".to_string();
                         session.workflow_state = "已终止".to_string();
                     }
-                    s if s == "idle" => {
+                    "idle" => {
                         session.tool_state = "空闲".to_string();
                         session.workflow_state = "空闲".to_string();
                     }
@@ -239,7 +240,7 @@ impl ConversationView {
                 cx.spawn(
                     async move |_this, cx| match runtime.start_session(&text).await {
                         Ok((handle, _token)) => {
-                            let _ = entity.update(cx, |this, _| {
+                            entity.update(cx, |this, _| {
                                 let session = SessionRow::new(handle.clone(), "新会话".to_string());
                                 this.sessions.push(session);
                                 this.active_session_id = Some(handle.as_str().to_string());
@@ -275,7 +276,7 @@ impl ConversationView {
                             .await;
                         }
                         Err(err) => {
-                            let _ = entity.update(cx, |this, cx| {
+                            entity.update(cx, |this, cx| {
                                 this.is_busy = false;
                                 this.is_error = true;
                                 this.status_message = Some(format!("启动会话失败: {err}").into());
@@ -316,7 +317,7 @@ impl ConversationView {
         _cx.spawn(async move |_this, cx| {
             match runtime.route_to_child(&handle_ref, &target).await {
                 Ok(snapshot) => {
-                    _ = entity.update(cx, move |this, cx| {
+                    entity.update(cx, move |this, cx| {
                         if let Some(active) = this
                             .sessions
                             .iter_mut()
@@ -343,7 +344,7 @@ impl ConversationView {
                     });
                 }
                 Err(err) => {
-                    _ = entity.update(cx, move |this, cx| {
+                    entity.update(cx, move |this, cx| {
                         let active_id = this
                             .sessions
                             .iter()
@@ -421,6 +422,33 @@ impl ConversationView {
         self.active_session_id = Some(id);
         self.status_message = None;
     }
+
+    fn export_diagnostic_bundle(&mut self, cx: &mut Context<Self>) {
+        let path = format!(
+            "./hivegui-conversation-diagnostic-{}.json",
+            uuid::Uuid::new_v4()
+        );
+        let path = Path::new(&path);
+        let bundle = DiagnosticBundle::new(self.collector.clone());
+        match bundle.export_redacted(path, &RedactionConfig::default()) {
+            Ok(redacted) => {
+                self.status_message = Some(
+                    format!(
+                        "诊断导出成功：{} (events={})",
+                        redacted.path().display(),
+                        redacted.event_count(),
+                    )
+                    .into(),
+                );
+                self.is_error = false;
+            }
+            Err(err) => {
+                self.status_message = Some(format!("诊断导出失败：{err}").into());
+                self.is_error = true;
+            }
+        }
+        cx.notify();
+    }
 }
 
 fn session_placeholder_append_runtime(
@@ -437,7 +465,7 @@ fn session_placeholder_append_runtime(
     let initial_session_id = session_id.clone();
     let initial_execution_id = execution_id.clone();
     let initial_collector = collector.clone();
-    let _ = entity.update(cx, move |this, cx| {
+    entity.update(cx, move |this, cx| {
         if let Some(session) = this
             .sessions
             .iter_mut()
@@ -773,7 +801,7 @@ impl Render for ConversationView {
             .child(div().flex().items_center().gap(px(8.0)).child({
                 let mut txt = "子 Agent：".to_string();
                 if active_children.is_empty() {
-                    txt.push_str("无")
+                    txt.push('无')
                 } else {
                     txt.push_str(&active_children.join(", "))
                 }
@@ -859,13 +887,16 @@ impl Render for ConversationView {
             .justify_between()
             .gap(px(6.0))
             .child(btn(
-                "导出诊断样例", // placeholder action wired from settings
+                "导出诊断样例",
                 theme.secondary,
                 theme.secondary_hover,
                 theme.foreground,
                 theme.foreground,
-                |_ev, _w, cx| {
-                    let _ = cx;
+                {
+                    let view = view.clone();
+                    move |_ev, _w, cx| {
+                        let _ = view.update(cx, |this, cx| this.export_diagnostic_bundle(cx));
+                    }
                 },
             ));
 

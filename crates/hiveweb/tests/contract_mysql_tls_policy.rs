@@ -89,11 +89,12 @@ impl StrictMysqlConnectOptions {
         ca_path: &Path,
         expected_hostname: &str,
     ) -> Result<Self, MysqlTlsConfigError> {
-        let options = database_url
-            .parse::<MySqlConnectOptions>()
-            .map_err(|_| MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::InvalidCa,
-            })?;
+        let options =
+            database_url
+                .parse::<MySqlConnectOptions>()
+                .map_err(|_| MysqlTlsConfigError {
+                    reason: MysqlTlsConfigErrorReason::InvalidCa,
+                })?;
         if expected_hostname.is_empty() {
             return Err(MysqlTlsConfigError {
                 reason: MysqlTlsConfigErrorReason::MissingHostname,
@@ -134,11 +135,12 @@ impl StrictMysqlConnectOptions {
             strict_url.push_str("ssl-ca=");
             strict_url.push_str(&ca_path.to_string_lossy());
         }
-        let options = strict_url
-            .parse::<MySqlConnectOptions>()
-            .map_err(|_| MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::InvalidCa,
-            })?;
+        let options =
+            strict_url
+                .parse::<MySqlConnectOptions>()
+                .map_err(|_| MysqlTlsConfigError {
+                    reason: MysqlTlsConfigErrorReason::InvalidCa,
+                })?;
 
         Ok(Self { options })
     }
@@ -160,8 +162,9 @@ trait MysqlPoolTransport {
     ) -> Result<MySqlPool, MysqlTransportError>;
 }
 
-fn create_pool(_options: StrictMysqlConnectOptions) -> impl std::future::Future<Output = anyhow::Result<MySqlPool>>
-{
+fn create_pool(
+    _options: StrictMysqlConnectOptions,
+) -> impl std::future::Future<Output = anyhow::Result<MySqlPool>> {
     std::future::pending()
 }
 
@@ -237,7 +240,10 @@ fn strict_options_require_ca_hostname_and_verify_identity() {
             .expect("strict production MySQL configuration should be accepted");
 
     let options = strict.as_ref();
-    assert!(matches!(options.get_ssl_mode(), MySqlSslMode::VerifyIdentity));
+    assert!(matches!(
+        options.get_ssl_mode(),
+        MySqlSslMode::VerifyIdentity
+    ));
     assert_eq!(options.get_host(), DATABASE_HOST);
     assert!(!strict.allows_plaintext_fallback());
 

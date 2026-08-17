@@ -31,7 +31,7 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use hivegui::auth::{
     config::LockErrorMode,
@@ -74,7 +74,7 @@ fn default_auto_lock_minutes_is_fifteen() {
     let view = unlocked_view(&new_workspace());
     let cfg = view.auto_lock_config();
     assert_eq!(cfg.minutes(), 15u16, "default auto_lock_minutes must be 15");
-    assert_eq!(u16::from(cfg.minutes()), 15);
+    assert_eq!(cfg.minutes(), 15);
 }
 
 #[test]

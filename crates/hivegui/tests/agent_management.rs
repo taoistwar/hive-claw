@@ -381,6 +381,6 @@ async fn delete_agent_clears_default_invariant() {
 
 #[allow(dead_code)]
 fn _pin_types() {
-    let _: AgentPage = panic!("placeholder so the type is referenced");
-    let _: AgentRecord = panic!("placeholder so the type is referenced");
+    let _ = std::any::TypeId::of::<AgentPage>();
+    let _ = std::any::TypeId::of::<AgentRecord>();
 }

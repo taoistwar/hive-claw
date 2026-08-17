@@ -25,12 +25,11 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
+use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
 
 use hivegui::auth::{
-    keystore::{AuthError, AuthKeystore, UnlockOutcome, UnlockedKeystore},
+    keystore::{AuthError, UnlockOutcome, UnlockedKeystore},
     lock::{AuthLockReason, AuthLockState},
-    policy::PasswordPolicy,
     ui::{AuthUnlockView, PasswordFieldEcho, RecoveryPath, UnlockScreen},
 };
 use support::TestWorkspace;
@@ -58,7 +57,6 @@ fn seeded_workspace() -> TestWorkspace {
         .expect("strong password must be accepted in the setup flow")
     {
         hivegui::auth::keystore::AuthOutcome::SetupCompleted { .. } => workspace,
-        other => panic!("expected SetupCompleted, got {other:?}"),
     }
 }
 
@@ -313,7 +311,7 @@ fn reload_after_lock_re_presents_unlock_screen() {
         .submit_password(STRONG_PASSWORD)
         .expect("unlock with correct password");
     view.lock_now_for_test(AuthLockReason::UserRequested);
-    let _ = view.close();
+    view.close();
     let view = AuthUnlockView::open(workspace.root()).expect("reopen after lock");
     match current_screen(&view) {
         UnlockScreen::EnterMasterPassword { .. } => {}

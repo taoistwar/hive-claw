@@ -43,15 +43,13 @@ fn persisted_tool_xor_violation_is_stable() {
     // function-wrap + workflow target is rejected.
     let err = PersistedToolBuilder::new(PersistedToolKind::FunctionWrap)
         .target(PersistedToolTarget::workflow("wf.support_triage"))
-        .err()
-        .expect("XOR violation is rejected at builder time");
+        .expect_err("XOR violation is rejected at builder time");
     assert!(matches!(err, PersistedToolError::TargetKindMismatch { .. }));
 
     // workflow-wrap + function target is rejected.
     let err = PersistedToolBuilder::new(PersistedToolKind::WorkflowWrap)
         .target(PersistedToolTarget::function("fn.format_template"))
-        .err()
-        .expect("XOR violation is rejected at builder time");
+        .expect_err("XOR violation is rejected at builder time");
     assert!(matches!(err, PersistedToolError::TargetKindMismatch { .. }));
 }
 
@@ -61,8 +59,7 @@ fn persisted_tool_rejects_empty_target() {
     // rejected at builder time, not silently accepted.
     let err = PersistedToolBuilder::new(PersistedToolKind::FunctionWrap)
         .target(PersistedToolTarget::function(""))
-        .err()
-        .expect("empty target is rejected");
+        .expect_err("empty target is rejected");
     assert!(matches!(err, PersistedToolError::EmptyTarget));
 }
 

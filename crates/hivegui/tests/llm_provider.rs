@@ -27,8 +27,8 @@ use hivegui::datasource::llm_provider_store::{
     LlmProviderInput, LlmProviderStore, LlmProviderTokenInput,
 };
 use hivegui::runtime::provider_resolver::{
-    ProviderAttempt, ProviderCallOutcome, ProviderError, ProviderErrorKind, ProviderResolver,
-    ProviderTransport, TransportError, TransportOutcome, TransportRequest,
+    ProviderAttempt, ProviderCallOutcome, ProviderErrorKind, ProviderResolver, ProviderTransport,
+    TransportError, TransportOutcome, TransportRequest,
 };
 use support::TestWorkspace;
 

@@ -78,7 +78,7 @@ impl ProcessLock {
             // LOCK_EX = 2, LOCK_NB = 4. Inline the constants to
             // avoid pulling a `libc` dependency.
             let operation: i32 = 2 | 4;
-            let result = unsafe { libc_flock(fd, operation) };
+            let result = libc_flock(fd, operation);
             if result == 0 {
                 Ok(Some(ProcessLock { _file: file }))
             } else {
@@ -1191,31 +1191,28 @@ impl Store {
         let mut last_error: Option<StoreOpenError> = None;
         for attempt in 0..max_attempts {
             // Test-only fault injector hook.
-            if let Some(injector) = fault_injector.as_ref() {
-                if let Some(class) = injector.before_open_attempt(attempt) {
-                    let delays = policy.delays(class);
-                    if delays.is_empty() || attempt + 1 >= max_attempts {
-                        unregister_store_owner(&database_path);
-                        return Err(StoreOpenError::new(
-                            StoreOpenErrorKind::Io,
-                            Some(database_path_buf.clone()),
-                        )
-                        .with_failure_class(class)
-                        .with_retry_count(attempt));
-                    }
-                    if let Some(delay) = delays.get(attempt).copied() {
-                        sleeper.sleep(delay).await;
-                    }
-                    last_error = Some(
-                        StoreOpenError::new(
-                            StoreOpenErrorKind::Io,
-                            Some(database_path_buf.clone()),
-                        )
+            if let Some(injector) = fault_injector.as_ref()
+                && let Some(class) = injector.before_open_attempt(attempt)
+            {
+                let delays = policy.delays(class);
+                if delays.is_empty() || attempt + 1 >= max_attempts {
+                    unregister_store_owner(&database_path);
+                    return Err(StoreOpenError::new(
+                        StoreOpenErrorKind::Io,
+                        Some(database_path_buf.clone()),
+                    )
+                    .with_failure_class(class)
+                    .with_retry_count(attempt));
+                }
+                if let Some(delay) = delays.get(attempt).copied() {
+                    sleeper.sleep(delay).await;
+                }
+                last_error = Some(
+                    StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                         .with_failure_class(class)
                         .with_retry_count(attempt),
-                    );
-                    continue;
-                }
+                );
+                continue;
             }
 
             match Self::try_open_once(&database_path, &plugin_root).await {
@@ -1588,6 +1585,12 @@ impl Store {
     pub fn pool(&self) -> &Pool<Sqlite> {
         &self.inner.pool
     }
+
+    /// Returns the absolute database path used by this store.
+    pub fn database_path(&self) -> &Path {
+        &self.inner.database_path
+    }
+
     pub fn crypto(&self) -> &Crypto {
         &self.inner.crypto
     }
@@ -1599,7 +1602,7 @@ impl Store {
         // query-plan: id=t012.meta.read_schema_version; owner_phase=Foundation; activation_task=T028
         self.record_query("foundation.store.schema_version");
         let row: Option<String> =
-            sqlx::query_scalar("SELECT value FROM meta WHERE key = 'schema_version'")
+            sqlx::query_scalar!("SELECT value FROM meta WHERE key = 'schema_version'") // owner_phase=Foundation
                 .fetch_optional(&self.inner.pool)
                 .await?;
         match row {
@@ -1635,6 +1638,49 @@ pub struct GlobalConfig {
 }
 
 impl Store {
+    /// Load the stored payload for `key` if present.
+    pub async fn get_global_config(&self, key: &str) -> Result<Option<String>> {
+        Ok(
+            // query-plan: id=t012.global_configs.by_key; owner_phase=US1; activation_task=T019
+            sqlx::query_scalar::<_, String>("SELECT data FROM global_configs WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.inner.pool)
+                .await?,
+        )
+    }
+
+    /// Insert or replace a config record by unique key.
+    pub async fn upsert_global_config(
+        &self,
+        name: &str,
+        key: &str,
+        config_type: &str,
+        data: &str,
+    ) -> Result<GlobalConfig> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO global_configs (name, key, type, data, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET name=excluded.name, type=excluded.type, \
+             data=excluded.data, updated_at=excluded.updated_at",
+        )
+        .bind(name)
+        .bind(key)
+        .bind(config_type)
+        .bind(data)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.inner.pool)
+        .await?;
+
+        // query-plan: id=t012.global_configs.by_key_after_upsert; owner_phase=US1; activation_task=T019
+        sqlx::query_as::<_, GlobalConfig>("SELECT * FROM global_configs WHERE key = ?")
+            .bind(key)
+            .fetch_one(&self.inner.pool)
+            .await
+            .map_err(|e| e.into())
+    }
+
     pub async fn create_global_config(
         &self,
         name: &str,
@@ -1750,7 +1796,7 @@ impl Store {
             .bind(key)
             .bind(config_type)
             .bind(data)
-            .bind(&now)
+            .bind(now)
             .bind(id)
             .execute(&self.inner.pool)
             .await?

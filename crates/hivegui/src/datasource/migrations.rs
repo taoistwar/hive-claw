@@ -14,6 +14,7 @@
 
 #![warn(missing_docs)]
 
+use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -206,27 +207,27 @@ pub async fn capture_artifact_snapshot_with_injector(
 ) -> Result<ArtifactSnapshot> {
     let database_path = database_path.to_path_buf();
     let plugin_root = plugin_root.to_path_buf();
-    if let Some(injector) = fault_injector {
-        if injector.should_fail(MigrationFaultPoint::BeforeDatabaseSnapshot) {
-            anyhow::bail!("injected fault at BeforeDatabaseSnapshot");
-        }
+    if let Some(injector) = fault_injector
+        && injector.should_fail(MigrationFaultPoint::BeforeDatabaseSnapshot)
+    {
+        anyhow::bail!("injected fault at BeforeDatabaseSnapshot");
     }
     let database_sha256 = file_sha256(&database_path)?;
-    if let Some(injector) = fault_injector {
-        if injector.should_fail(MigrationFaultPoint::AfterDatabaseSnapshot) {
-            anyhow::bail!("injected fault at AfterDatabaseSnapshot");
-        }
+    if let Some(injector) = fault_injector
+        && injector.should_fail(MigrationFaultPoint::AfterDatabaseSnapshot)
+    {
+        anyhow::bail!("injected fault at AfterDatabaseSnapshot");
     }
-    if let Some(injector) = fault_injector {
-        if injector.should_fail(MigrationFaultPoint::BeforeManagedPluginTreeSnapshot) {
-            anyhow::bail!("injected fault at BeforeManagedPluginTreeSnapshot");
-        }
+    if let Some(injector) = fault_injector
+        && injector.should_fail(MigrationFaultPoint::BeforeManagedPluginTreeSnapshot)
+    {
+        anyhow::bail!("injected fault at BeforeManagedPluginTreeSnapshot");
     }
     let plugin_tree_sha256 = plugin_tree_sha256(&plugin_root)?;
-    if let Some(injector) = fault_injector {
-        if injector.should_fail(MigrationFaultPoint::AfterManagedPluginTreeSnapshot) {
-            anyhow::bail!("injected fault at AfterManagedPluginTreeSnapshot");
-        }
+    if let Some(injector) = fault_injector
+        && injector.should_fail(MigrationFaultPoint::AfterManagedPluginTreeSnapshot)
+    {
+        anyhow::bail!("injected fault at AfterManagedPluginTreeSnapshot");
     }
     let table_row_counts = read_table_row_counts(&database_path).await?;
     // The snapshot_id is intentionally derived only from the
@@ -241,10 +242,10 @@ pub async fn capture_artifact_snapshot_with_injector(
     let (managed_plugin_digest, managed_plugin_manifest) = managed_plugin_digests(&plugin_root)?;
     let non_migrated_logical_digest = compute_logical_digest(&table_row_counts);
     let relationship_digest = compute_relationship_digest(&table_row_counts);
-    if let Some(injector) = fault_injector {
-        if injector.should_fail(MigrationFaultPoint::BeforeSafeSnapshotVerification) {
-            anyhow::bail!("injected fault at BeforeSafeSnapshotVerification");
-        }
+    if let Some(injector) = fault_injector
+        && injector.should_fail(MigrationFaultPoint::BeforeSafeSnapshotVerification)
+    {
+        anyhow::bail!("injected fault at BeforeSafeSnapshotVerification");
     }
     // If the target directory is a recovery site, substitute the
     // source paths recorded in `recovery_origin.json` so the
@@ -798,7 +799,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     }
     let mut out = String::with_capacity(64);
     for word in h {
-        out.push_str(&format!("{:08x}", word));
+        let _ = write!(&mut out, "{:08x}", word);
     }
     out
 }
@@ -891,8 +892,11 @@ async fn read_table_row_counts(database_path: &Path) -> Result<Vec<(String, i64)
         // contribute to the digest, so a fresh v4 install and a
         // migrated v2 install produce the same logical summary
         // when their user data is identical.
-        let sql = format!("SELECT COUNT(*) FROM \"{}\"", table);
-        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        let sql = match table_row_count_sql(table) {
+            Some(sql) => sql,
+            None => continue,
+        };
+        let count: i64 = sqlx::query_scalar(sql)
             .fetch_one(&pool)
             .await
             .with_context(|| format!("count rows in {table}"))?;
@@ -908,10 +912,10 @@ async fn read_table_row_counts(database_path: &Path) -> Result<Vec<(String, i64)
 /// entry-point above is the only consumer; the functions live here
 /// so the public boundary stays compile-stable.
 pub mod fixtures {
-    //! Optional fixture regeneration helpers. The only consumer is
-    //! the `#[ignore]`-gated `regenerate_committed_migration_fixtures_from_versioned_historical_ddl`
-    //! test; the helpers are kept compile-stable so the migration
-    //! boundary can be exercised without an explicit `cargo test --ignored`.
+    // Optional fixture regeneration helpers. The only consumer is
+    // the `#[ignore]`-gated `regenerate_committed_migration_fixtures_from_versioned_historical_ddl`
+    // test; the helpers are kept compile-stable so the migration
+    // boundary can be exercised without an explicit `cargo test --ignored`.
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1180,17 +1184,21 @@ pub mod fixtures {
     }
 
     async fn finalize_fixture(target: &Path, pool: &SqlitePool) -> Result<()> {
-        // VACUUM INTO → atomic rename.
+        // Stage a private copy atomically so callers get deterministic fixture
+        // layout without mutating the live source until publish.
         let staging = staging_path(target);
         let _ = std::fs::remove_file(&staging);
         let vacuum_target = staging.with_extension("vacuum.sqlite");
         let _ = std::fs::remove_file(&vacuum_target);
-        let vacuum_sql = format!("VACUUM INTO '{}'", vacuum_target.display());
-        sqlx::query(sqlx::AssertSqlSafe(vacuum_sql))
-            .execute(pool)
-            .await
-            .with_context(|| format!("VACUUM INTO {}", vacuum_target.display()))?;
         pool.close().await;
+
+        std::fs::copy(&staging, &vacuum_target).with_context(|| {
+            format!(
+                "copy staging {} to {}",
+                staging.display(),
+                vacuum_target.display()
+            )
+        })?;
         std::fs::rename(&vacuum_target, target).with_context(|| {
             format!("rename {} -> {}", vacuum_target.display(), target.display())
         })?;
@@ -1647,8 +1655,8 @@ pub mod fixtures {
             .await
             .context("foreign_key_check")?;
         pool.close().await;
-        let mut iter = rows.iter();
-        while let Some(row) = iter.next() {
+        let iter = rows.iter();
+        for row in iter {
             let _ = row.try_get::<String, _>(0).unwrap_or_default();
         }
         Ok(rows.is_empty())
@@ -1838,10 +1846,10 @@ pub async fn migrate_to_current(
     let database_path = options.database_path().to_path_buf();
     let plugin_root = options.plugin_root().to_path_buf();
     let database_url = format!("sqlite://{}?mode=rwc", database_path.display());
-    if !database_path.exists() {
-        if let Some(parent) = database_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
+    if !database_path.exists()
+        && let Some(parent) = database_path.parent()
+    {
+        std::fs::create_dir_all(parent).ok();
     }
 
     // Read the schema version using a read-only connection so
@@ -2131,39 +2139,39 @@ pub async fn migrate_to_current(
     // contract pins `pre_migration_snapshot` to `None` for a
     // no-op reopen. Returning early keeps the on-disk state
     // untouched and avoids writing a snapshot directory.
-    if let Some(version) = from_version {
-        if version == SCHEMA_VERSION_V4 {
-            if let Err(error) = tx.commit().await {
+    if let Some(version) = from_version
+        && version == SCHEMA_VERSION_V4
+    {
+        if let Err(error) = tx.commit().await {
+            return Err(MigrationError {
+                kind: MigrationErrorKind::InjectedFault,
+                fault_point: None,
+                snapshot_location: None,
+                message: format!("commit no-op migration: {error}"),
+            });
+        }
+        let validation = match verify_schema(&pool).await {
+            Ok(validation) => MigrationValidation {
+                integrity_ok: validation.managed_plugins_ok && validation.search_index_ok,
+                foreign_keys_ok: validation.managed_plugins_ok,
+                managed_plugins_ok: validation.managed_plugins_ok,
+            },
+            Err(error) => {
                 return Err(MigrationError {
                     kind: MigrationErrorKind::InjectedFault,
                     fault_point: None,
                     snapshot_location: None,
-                    message: format!("commit no-op migration: {error}"),
+                    message: format!("verify_schema: {error}"),
                 });
             }
-            let validation = match verify_schema(&pool).await {
-                Ok(validation) => MigrationValidation {
-                    integrity_ok: validation.managed_plugins_ok && validation.search_index_ok,
-                    foreign_keys_ok: validation.managed_plugins_ok,
-                    managed_plugins_ok: validation.managed_plugins_ok,
-                },
-                Err(error) => {
-                    return Err(MigrationError {
-                        kind: MigrationErrorKind::InjectedFault,
-                        fault_point: None,
-                        snapshot_location: None,
-                        message: format!("verify_schema: {error}"),
-                    });
-                }
-            };
-            return Ok(MigrationOutcome {
-                status: MigrationStatus::Unchanged,
-                from_version: Some(version),
-                to_version: SCHEMA_VERSION_V4,
-                validation,
-                pre_migration_snapshot: None,
-            });
-        }
+        };
+        return Ok(MigrationOutcome {
+            status: MigrationStatus::Unchanged,
+            from_version: Some(version),
+            to_version: SCHEMA_VERSION_V4,
+            validation,
+            pre_migration_snapshot: None,
+        });
     }
 
     // From here on we are about to mutate the database (v2 -> v3
@@ -2252,15 +2260,15 @@ pub async fn migrate_to_current(
 
     // Honour the AfterV2ToV3 fault point so a test can fail the
     // migration after the v2->v3 work is done but before v3->v4.
-    if let Some(injector) = options.fault_injector() {
-        if injector.should_fail(MigrationFaultPoint::AfterV2ToV3) {
-            return Err(MigrationError {
-                kind: MigrationErrorKind::InjectedFault,
-                fault_point: Some(MigrationFaultPoint::AfterV2ToV3),
-                snapshot_location: snapshot_location.clone(),
-                message: format!("injected fault at {:?}", MigrationFaultPoint::AfterV2ToV3),
-            });
-        }
+    if let Some(injector) = options.fault_injector()
+        && injector.should_fail(MigrationFaultPoint::AfterV2ToV3)
+    {
+        return Err(MigrationError {
+            kind: MigrationErrorKind::InjectedFault,
+            fault_point: Some(MigrationFaultPoint::AfterV2ToV3),
+            snapshot_location: snapshot_location.clone(),
+            message: format!("injected fault at {:?}", MigrationFaultPoint::AfterV2ToV3),
+        });
     }
     if let Err(error) = create_or_upgrade_to_v4(&mut tx).await {
         let kind = match error.to_string().as_str() {
@@ -2430,6 +2438,38 @@ async fn write_schema_version(
     .await
     .context("write schema_version")?;
     Ok(())
+}
+
+fn table_row_count_sql(table: &str) -> Option<&'static str> {
+    match table {
+        "agents" => Some("SELECT COUNT(*) FROM agents"),
+        "agent_capabilities" => Some("SELECT COUNT(*) FROM agent_capabilities"),
+        "agent_skills" => Some("SELECT COUNT(*) FROM agent_skills"),
+        "agent_tools" => Some("SELECT COUNT(*) FROM agent_tools"),
+        "agent_executions" => Some("SELECT COUNT(*) FROM agent_executions"),
+        "capabilities" => Some("SELECT COUNT(*) FROM capabilities"),
+        "categories" => Some("SELECT COUNT(*) FROM categories"),
+        "chat_messages" => Some("SELECT COUNT(*) FROM chat_messages"),
+        "chat_sessions" => Some("SELECT COUNT(*) FROM chat_sessions"),
+        "data_sources" => Some("SELECT COUNT(*) FROM data_sources"),
+        "functions" => Some("SELECT COUNT(*) FROM functions"),
+        "global_configs" => Some("SELECT COUNT(*) FROM global_configs"),
+        "llm_presets" => Some("SELECT COUNT(*) FROM llm_presets"),
+        "llm_providers" => Some("SELECT COUNT(*) FROM llm_providers"),
+        "models" => Some("SELECT COUNT(*) FROM models"),
+        "plugin_artifact_operations" => Some("SELECT COUNT(*) FROM plugin_artifact_operations"),
+        "plugin_artifact_gc" => Some("SELECT COUNT(*) FROM plugin_artifact_gc"),
+        "plugins" => Some("SELECT COUNT(*) FROM plugins"),
+        "search_index" => Some("SELECT COUNT(*) FROM search_index"),
+        "short_gram_index" => Some("SELECT COUNT(*) FROM short_gram_index"),
+        "skills" => Some("SELECT COUNT(*) FROM skills"),
+        "tags" => Some("SELECT COUNT(*) FROM tags"),
+        "tools" => Some("SELECT COUNT(*) FROM tools"),
+        "workflow_edges" => Some("SELECT COUNT(*) FROM workflow_edges"),
+        "workflow_nodes" => Some("SELECT COUNT(*) FROM workflow_nodes"),
+        "workflows" => Some("SELECT COUNT(*) FROM workflows"),
+        _ => None,
+    }
 }
 
 async fn write_search_normalization_id(
@@ -2997,8 +3037,8 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     // Indexes that back the T012 query-plan contract for the
     // `agents` table (Foundation: identifier+category, category
     // alone, and the normalized name search path).
-    // query-plan: id=t012.agents.identifier; owner_phase=Foundation; activation_task=T012
-    sqlx::query(
+    sqlx::query!(
+        // query-plan: id=t012.agents.identifier; owner_phase=Foundation; activation_task=T012
         "CREATE INDEX IF NOT EXISTS idx_agents_identifier_category_id \
          ON agents (identifier, category_id)",
     )
@@ -3006,8 +3046,8 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create idx_agents_identifier_category_id")?;
 
-    // query-plan: id=t012.agents.category; owner_phase=Foundation; activation_task=T012
-    sqlx::query(
+    sqlx::query!(
+        // query-plan: id=t012.agents.category; owner_phase=Foundation; activation_task=T012
         "CREATE INDEX IF NOT EXISTS idx_agents_category_id \
          ON agents (category_id)",
     )
@@ -3015,8 +3055,8 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create idx_agents_category_id")?;
 
-    // query-plan: id=t012.agents.search.normalized; owner_phase=Foundation; activation_task=T012
-    sqlx::query(
+    sqlx::query!(
+        // query-plan: id=t012.agents.search.normalized; owner_phase=Foundation; activation_task=T012
         "CREATE INDEX IF NOT EXISTS idx_agents_name_normalized \
          ON agents (name_normalized)",
     )

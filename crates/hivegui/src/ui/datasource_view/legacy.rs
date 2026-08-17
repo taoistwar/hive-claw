@@ -210,152 +210,6 @@ impl gpui::Render for DataSourceView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::DataSourceView;
-    use crate::datasource::Store;
-    use crate::ui::{
-        table_viewer::TableViewer,
-        tree_nav::{TreeNav, TreeNode},
-    };
-    use gpui::{AppContext as _, Modifiers, TestAppContext, VisualTestContext, px, size};
-
-    fn init_gpui(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
-        });
-    }
-
-    fn test_view(
-        store: gpui::Entity<Store>,
-        nodes: Vec<TreeNode>,
-        cx: &mut gpui::Context<DataSourceView>,
-    ) -> DataSourceView {
-        let tree = cx.new(|cx| {
-            let mut tree = TreeNav::new(cx);
-            tree.nodes = nodes;
-            tree
-        });
-        let viewer = cx.new(TableViewer::new);
-        DataSourceView {
-            store,
-            tree,
-            viewer,
-            prev_tree_selection: None,
-            form: None,
-            left_width: 280.0,
-            mid_width: 200.0,
-            error_modal: None,
-        }
-    }
-
-    fn assert_form_visible(cx: &mut VisualTestContext) {
-        let viewport = cx
-            .debug_bounds("LEGACY_DATASOURCE_VIEW_ROOT")
-            .expect("datasource viewport bounds");
-        let form = cx
-            .debug_bounds("DATASOURCE_FORM_ROOT")
-            .expect("datasource form bounds");
-        assert!(form.size.width > px(0.0));
-        assert!(form.size.height > px(0.0));
-        assert!(form.left() >= viewport.left());
-        assert!(form.right() <= viewport.right());
-        assert!(form.top() >= viewport.top());
-        assert!(form.bottom() <= viewport.bottom());
-    }
-
-    #[gpui::test]
-    fn add_button_opens_a_visible_datasource_form(cx: &mut TestAppContext) {
-        init_gpui(cx);
-        let store = cx.new(|_| Store::placeholder());
-        let window = cx.open_window(size(px(900.0), px(600.0)), move |_, cx| {
-            test_view(store.clone(), Vec::new(), cx)
-        });
-        cx.run_until_parked();
-
-        let typed_window = window.clone();
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let add = cx
-            .debug_bounds("DATASOURCE_ADD_BUTTON")
-            .expect("add datasource button bounds");
-        cx.simulate_click(add.center(), Modifiers::default());
-        cx.run_until_parked();
-
-        assert!(
-            typed_window
-                .update(&mut cx, |view, _, _| view.form.is_some())
-                .expect("read datasource form state")
-        );
-        assert_form_visible(&mut cx);
-    }
-
-    #[gpui::test]
-    fn edit_button_opens_a_visible_datasource_form(cx: &mut TestAppContext) {
-        init_gpui(cx);
-        let store = cx.new(|_| Store::placeholder());
-        let nodes = vec![TreeNode::DataSource {
-            id: 42,
-            name: "fixture".to_owned(),
-            host: "127.0.0.1".to_owned(),
-            port: 3306,
-            username: "tester".to_owned(),
-            encrypted_password: Vec::new(),
-            expanded: false,
-            databases: Vec::new(),
-        }];
-        let window = cx.open_window(size(px(900.0), px(600.0)), move |_, cx| {
-            test_view(store.clone(), nodes.clone(), cx)
-        });
-        cx.run_until_parked();
-
-        let typed_window = window.clone();
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let edit = cx
-            .debug_bounds("DATASOURCE_EDIT_BUTTON_42")
-            .expect("edit datasource button bounds");
-        cx.simulate_click(edit.center(), Modifiers::default());
-        cx.run_until_parked();
-
-        assert!(
-            typed_window
-                .update(&mut cx, |view, _, _| view.form.is_some())
-                .expect("read datasource form state")
-        );
-        assert_form_visible(&mut cx);
-    }
-
-    #[gpui::test]
-    fn cancel_button_closes_the_datasource_form(cx: &mut TestAppContext) {
-        init_gpui(cx);
-        let store = cx.new(|_| Store::placeholder());
-        let window = cx.open_window(size(px(900.0), px(600.0)), move |_, cx| {
-            test_view(store.clone(), Vec::new(), cx)
-        });
-        cx.run_until_parked();
-
-        let typed_window = window.clone();
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let add = cx
-            .debug_bounds("DATASOURCE_ADD_BUTTON")
-            .expect("add datasource button bounds");
-        cx.simulate_click(add.center(), Modifiers::default());
-        cx.run_until_parked();
-        let cancel = cx
-            .debug_bounds("DATASOURCE_FORM_CANCEL")
-            .expect("cancel datasource form button bounds");
-        cx.simulate_click(cancel.center(), Modifiers::default());
-        cx.run_until_parked();
-
-        assert!(
-            typed_window
-                .update(&mut cx, |view, _, _| view.form.is_none())
-                .expect("read closed datasource form state")
-        );
-        assert!(cx.debug_bounds("DATASOURCE_FORM_ROOT").is_none());
-    }
-}
-
 impl DataSourceView {
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(action) = self.tree.read(cx).pending_action() {
@@ -423,13 +277,13 @@ impl DataSourceView {
                 t.clear_pending_action(cx);
             });
         }
-        if let Some(ref form_entity) = self.form {
-            if form_entity.read(cx).is_done() {
-                self.form = None;
-                self.tree.update(cx, |t, cx| {
-                    t.refresh(cx);
-                });
-            }
+        if let Some(ref form_entity) = self.form
+            && form_entity.read(cx).is_done()
+        {
+            self.form = None;
+            self.tree.update(cx, |t, cx| {
+                t.refresh(cx);
+            });
         }
         if let Some(modal) = self.tree.update(cx, |t, _| t.take_error_modal()) {
             self.error_modal = Some(modal);
@@ -489,5 +343,151 @@ impl DataSourceView {
             }
             self.prev_tree_selection = current_tree_sel;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DataSourceView;
+    use crate::datasource::Store;
+    use crate::ui::{
+        table_viewer::TableViewer,
+        tree_nav::{TreeNav, TreeNode},
+    };
+    use gpui::{AppContext as _, Modifiers, TestAppContext, VisualTestContext, px, size};
+
+    fn init_gpui(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+    }
+
+    fn test_view(
+        store: gpui::Entity<Store>,
+        nodes: Vec<TreeNode>,
+        cx: &mut gpui::Context<DataSourceView>,
+    ) -> DataSourceView {
+        let tree = cx.new(|cx| {
+            let mut tree = TreeNav::new(cx);
+            tree.nodes = nodes;
+            tree
+        });
+        let viewer = cx.new(TableViewer::new);
+        DataSourceView {
+            store,
+            tree,
+            viewer,
+            prev_tree_selection: None,
+            form: None,
+            left_width: 280.0,
+            mid_width: 200.0,
+            error_modal: None,
+        }
+    }
+
+    fn assert_form_visible(cx: &mut VisualTestContext) {
+        let viewport = cx
+            .debug_bounds("LEGACY_DATASOURCE_VIEW_ROOT")
+            .expect("datasource viewport bounds");
+        let form = cx
+            .debug_bounds("DATASOURCE_FORM_ROOT")
+            .expect("datasource form bounds");
+        assert!(form.size.width > px(0.0));
+        assert!(form.size.height > px(0.0));
+        assert!(form.left() >= viewport.left());
+        assert!(form.right() <= viewport.right());
+        assert!(form.top() >= viewport.top());
+        assert!(form.bottom() <= viewport.bottom());
+    }
+
+    #[gpui::test]
+    fn add_button_opens_a_visible_datasource_form(cx: &mut TestAppContext) {
+        init_gpui(cx);
+        let store = cx.new(|_| Store::placeholder());
+        let window = cx.open_window(size(px(900.0), px(600.0)), move |_, cx| {
+            test_view(store.clone(), Vec::new(), cx)
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let add = cx
+            .debug_bounds("DATASOURCE_ADD_BUTTON")
+            .expect("add datasource button bounds");
+        cx.simulate_click(add.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.form.is_some())
+                .expect("read datasource form state")
+        );
+        assert_form_visible(&mut cx);
+    }
+
+    #[gpui::test]
+    fn edit_button_opens_a_visible_datasource_form(cx: &mut TestAppContext) {
+        init_gpui(cx);
+        let store = cx.new(|_| Store::placeholder());
+        let nodes = vec![TreeNode::DataSource {
+            id: 42,
+            name: "fixture".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 3306,
+            username: "tester".to_owned(),
+            encrypted_password: Vec::new(),
+            expanded: false,
+            databases: Vec::new(),
+        }];
+        let window = cx.open_window(size(px(900.0), px(600.0)), move |_, cx| {
+            test_view(store.clone(), nodes.clone(), cx)
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let edit = cx
+            .debug_bounds("DATASOURCE_EDIT_BUTTON_42")
+            .expect("edit datasource button bounds");
+        cx.simulate_click(edit.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.form.is_some())
+                .expect("read datasource form state")
+        );
+        assert_form_visible(&mut cx);
+    }
+
+    #[gpui::test]
+    fn cancel_button_closes_the_datasource_form(cx: &mut TestAppContext) {
+        init_gpui(cx);
+        let store = cx.new(|_| Store::placeholder());
+        let window = cx.open_window(size(px(900.0), px(600.0)), move |_, cx| {
+            test_view(store.clone(), Vec::new(), cx)
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let add = cx
+            .debug_bounds("DATASOURCE_ADD_BUTTON")
+            .expect("add datasource button bounds");
+        cx.simulate_click(add.center(), Modifiers::default());
+        cx.run_until_parked();
+        let cancel = cx
+            .debug_bounds("DATASOURCE_FORM_CANCEL")
+            .expect("cancel datasource form button bounds");
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.form.is_none())
+                .expect("read closed datasource form state")
+        );
+        assert!(cx.debug_bounds("DATASOURCE_FORM_ROOT").is_none());
     }
 }

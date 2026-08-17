@@ -147,21 +147,21 @@ pub async fn list_sessions_user(
         list_base, search_clause
     ));
 
-        let total: (i64,) = if bind_search {
-            sqlx::query_as(count_sql)
-                .bind(user_id)
-                .bind(format!("%{}%", search.unwrap()))
-                .fetch_one(pool)
-                .await
-        } else {
-            sqlx::query_as(count_sql)
-                .bind(user_id)
-                .fetch_one(pool)
-                .await
-        }
+    let total: (i64,) = if bind_search {
+        sqlx::query_as(count_sql)
+            .bind(user_id)
+            .bind(format!("%{}%", search.unwrap()))
+            .fetch_one(pool)
+            .await
+    } else {
+        sqlx::query_as(count_sql)
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+    }
     .map_err(|e| AppError::Internal(format!("user session count: {e}")))?;
 
-        let items: Vec<ChatSessionUser> = if bind_search {
+    let items: Vec<ChatSessionUser> = if bind_search {
         sqlx::query_as(list_sql)
             .bind(user_id)
             .bind(format!("%{}%", search.unwrap()))

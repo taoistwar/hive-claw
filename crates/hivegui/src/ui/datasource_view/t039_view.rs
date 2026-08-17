@@ -28,6 +28,7 @@ use crate::datasource::data_source_store::{
 /// Constant intentionally formatted so the test pattern
 /// `PAGE_SIZE = 20` matches the source as-is.
 pub const PAGE_SIZE: u64 = 20;
+/// Compile-time assertion that `PAGE_SIZE` equals 20.
 pub const _PAGE_SIZE_EQ_20: () = assert!(PAGE_SIZE == 20, "PAGE_SIZE = 20 must hold");
 
 /// Stable selector for the "next page" control (T036 contract).
@@ -231,7 +232,7 @@ impl Focusable for DatasourceListView {
 }
 
 impl Render for DatasourceListView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // T016E inventory hook: the view re-publishes the
         // scroll tag on every paint so a runtime walk can
         // assert the contract is honoured.
@@ -495,7 +496,7 @@ fn render_list(
     border: Hsla,
     muted: Hsla,
     muted_foreground: Hsla,
-    list_scroll: ScrollHandle,
+    _list_scroll: ScrollHandle,
 ) -> gpui::AnyElement {
     let mut list = div()
         .flex_1()

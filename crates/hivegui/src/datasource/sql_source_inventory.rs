@@ -103,6 +103,16 @@ impl InventoryEntry {
         matches!(self.kind, SqlCallKind::AssertSqlSafe)
     }
 
+    /// Returns true for checked-macro SQLx construction.
+    pub fn is_checked_macro(&self) -> bool {
+        matches!(self.kind, SqlCallKind::CheckedMacro)
+    }
+
+    /// Returns true for dynamic SQLx constructor usage.
+    pub fn is_dynamic_builder(&self) -> bool {
+        matches!(self.kind, SqlCallKind::DynamicBuilder)
+    }
+
     /// Returns true for `MysqlIdentifier::from_allowlist` calls.
     pub fn uses_mysql_identifier(&self) -> bool {
         matches!(self.kind, SqlCallKind::MysqlIdentifier)
@@ -137,14 +147,34 @@ pub fn load_for_test(root: impl AsRef<Path>) -> Result<Option<SqlSourceInventory
         return Ok(None);
     }
 
+    let mut scan_roots: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let local_src = root.join("src");
+    if local_src.exists() {
+        // Keep HiveGUI production paths relative to the crate root so
+        // Foundation filters can still match `src/datasource/...`.
+        scan_roots.push((local_src, root.to_path_buf()));
+    }
+    let hiveweb_src = root.join("../hiveweb/src");
+    if hiveweb_src.exists() {
+        // HiveWeb paths are scanned separately and normalized to `db/...`
+        // / `src/...` style inventory paths.
+        scan_roots.push((hiveweb_src.clone(), hiveweb_src));
+    }
+
     let mut entries = Vec::new();
-    scan_dir(root, root, &mut entries)?;
+    if scan_roots.is_empty() {
+        return Ok(None);
+    }
+
+    for (scan_root, relative_root) in &scan_roots {
+        scan_dir(relative_root, scan_root, &mut entries)?;
+    }
 
     Ok(Some(SqlSourceInventory { entries }))
 }
 
 fn scan_dir(
-    root: &Path,
+    relative_root: &Path,
     dir: &Path,
     entries: &mut Vec<InventoryEntry>,
 ) -> Result<(), InventoryError> {
@@ -156,24 +186,33 @@ fn scan_dir(
         let path = entry.path();
         if path.is_dir() {
             // Skip target / node_modules / .git.
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if matches!(name, "target" | "node_modules" | ".git" | "target") {
-                    continue;
-                }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && matches!(name, "target" | "node_modules" | ".git")
+            {
+                continue;
             }
-            scan_dir(root, &path, entries)?;
+            scan_dir(relative_root, &path, entries)?;
             continue;
         }
         if !is_rust_file(&path) {
+            continue;
+        }
+        if should_skip_file(&path) {
             continue;
         }
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
             Err(_) => return Err(InventoryError::IoError),
         };
-        scan_source(root, &path, &source, entries);
+        scan_source(relative_root, &path, &source, entries);
     }
     Ok(())
+}
+
+fn should_skip_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "sql_source_inventory.rs")
 }
 
 fn is_rust_file(path: &Path) -> bool {
@@ -204,11 +243,9 @@ fn scan_source(root: &Path, path: &Path, source: &str, entries: &mut Vec<Invento
             }
             continue;
         }
-        if line.contains("/*") {
-            if !line.contains("*/") {
-                in_block_comment = true;
-                continue;
-            }
+        if line.contains("/*") && !line.contains("*/") {
+            in_block_comment = true;
+            continue;
         }
         let owner_phase = extract_owner_phase(line);
         let kind = classify(trimmed);
@@ -244,7 +281,7 @@ fn classify(line: &str) -> Option<SqlCallKind> {
     if line.contains("QueryBuilder::") || line.contains("sqlx::QueryBuilder") {
         return Some(SqlCallKind::QueryBuilder);
     }
-    if line.contains("AssertSqlSafe") {
+    if line.contains("AssertSqlSafe(") {
         return Some(SqlCallKind::AssertSqlSafe);
     }
     if line.contains("MysqlIdentifier::from_allowlist") {

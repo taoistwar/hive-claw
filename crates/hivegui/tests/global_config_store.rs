@@ -128,8 +128,7 @@ async fn one_wan_fixture_crud_p95_under_one_second() {
     for i in 0..ONE_WAN_FIXTURE {
         store
             .create(
-                GlobalConfigInput::new(&format!("bench.key.{i:05}"), &format!("value-{i}"))
-                    .unwrap(),
+                GlobalConfigInput::new(format!("bench.key.{i:05}"), format!("value-{i}")).unwrap(),
             )
             .await
             .expect("seed");
@@ -158,7 +157,7 @@ async fn pagination_is_stable_across_pages() {
     let store = GlobalConfigStore::new(pool).await.expect("store");
     for i in 0..100 {
         store
-            .create(GlobalConfigInput::new(&format!("p.{i:03}"), "v").unwrap())
+            .create(GlobalConfigInput::new(format!("p.{i:03}"), "v").unwrap())
             .await
             .expect("seed");
     }

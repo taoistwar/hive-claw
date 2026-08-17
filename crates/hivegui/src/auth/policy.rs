@@ -7,6 +7,8 @@
 
 use std::sync::RwLock;
 
+/// Password strength policy rules (minimum length, character-class
+/// diversity, and rejection of OS password reuse).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasswordPolicy;
 
@@ -49,10 +51,10 @@ impl PasswordPolicy {
         if password.trim().is_empty() {
             return PasswordRejection::WhitespaceOnly;
         }
-        if let Some(os_pw) = os_pw_passwd() {
-            if password == os_pw {
-                return PasswordRejection::OsPwPasswdOverlap;
-            }
+        if let Some(os_pw) = os_pw_passwd()
+            && password == os_pw
+        {
+            return PasswordRejection::OsPwPasswdOverlap;
         }
         PasswordRejection::Accepted {
             length: password.len(),
@@ -83,13 +85,31 @@ fn os_pw_passwd() -> Option<String> {
     OS_PW_PASSWD.read().expect("os pw lock poisoned").clone()
 }
 
+/// Result of evaluating a candidate password against the policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasswordRejection {
-    Accepted { length: usize },
-    TooShort { min: usize },
-    InsufficientCharacterClasses { required: u8, actual: u8 },
+    /// Password satisfies the policy; carries its validated length.
+    Accepted {
+        /// Validated password length in bytes.
+        length: usize,
+    },
+    /// Password is shorter than the required minimum.
+    TooShort {
+        /// Required minimum length in bytes.
+        min: usize,
+    },
+    /// Password does not use enough distinct character classes.
+    InsufficientCharacterClasses {
+        /// Required number of distinct character classes.
+        required: u8,
+        /// Actual number of distinct character classes present.
+        actual: u8,
+    },
+    /// Every character in the password is identical.
     AllSameChar,
+    /// Password is empty or consists only of whitespace.
     WhitespaceOnly,
+    /// Password matches the OS account password (reuse rejected).
     OsPwPasswdOverlap,
 }
 

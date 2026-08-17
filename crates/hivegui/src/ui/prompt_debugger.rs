@@ -5,7 +5,7 @@ use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
 use gpui::*;
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable,
@@ -186,7 +186,14 @@ pub struct PromptDebugger {
     // 工具编辑状态
     editing_tools: HashMap<u64, bool>,
     collapsed_tools: HashMap<u64, bool>,
-    tool_inputs: HashMap<u64, (Entity<InputState>, Entity<InputState>, Entity<InputState>)>, // name, desc, params
+    tool_inputs: HashMap<
+        u64,
+        (
+            Entity<InputState>,
+            Entity<TextareaState>,
+            Entity<TextareaState>,
+        ),
+    >, // name, desc, params
     // 从函数管理选择工具
     available_tools: Vec<DbTool>,
     show_tool_picker: bool,
@@ -210,7 +217,7 @@ pub struct PromptDebugger {
     // 消息折叠/编辑状态
     collapsed_messages: HashMap<u64, bool>,
     editing_messages: HashMap<u64, bool>,
-    message_inputs: HashMap<u64, Entity<InputState>>,
+    message_inputs: HashMap<u64, Entity<TextareaState>>,
     // 执行历史
     execution_history: Vec<ExecutionRecord>,
     next_record_id: u64,
@@ -309,35 +316,58 @@ impl PromptDebugger {
     }
 
     fn load_data(&mut self, cx: &mut Context<Self>) {
+        self.load_available_tools(cx);
+        self.reload_presets_and_models(cx);
+    }
+
+    /// 刷新 Preset/Model/Provider 列表。
+    ///
+    /// 适用于用户在其他页面（如 LLM 管理、数据源）对 Preset 或
+    /// Model 做了变更后，切回本视图时重新拉取，避免下拉中残留
+    /// 过时数据。
+    pub fn reload_presets_and_models(&mut self, cx: &mut Context<Self>) {
         let llm_store = self.llm_store.clone();
-        let store = self.store.read(cx).clone();
+        let current_preset_id = self.selected_preset_id;
+        let current_model_id = self.selected_model_id;
         cx.spawn(async move |this, cx| {
             let presets = llm_store.list_presets().await.unwrap_or_default();
             let models = llm_store.list_models().await.unwrap_or_default();
             let providers = llm_store.list_providers().await.unwrap_or_default();
-            let available_tools = DbTool::list(store.pool(), None, 100, 0)
-                .await
-                .unwrap_or_default();
             _ = this.update(cx, |this, cx| {
                 this.presets = presets;
                 this.models = models;
                 this.providers = providers;
-                this.available_tools = available_tools;
+                // 保留当前选中的 Preset/Model（若仍存在），否则清空以避免指向已删除项。
                 if !this
-                    .selected_preset_id
-                    .is_some_and(|id| this.presets.iter().any(|preset| preset.id == id))
+                    .presets
+                    .iter()
+                    .any(|preset| Some(preset.id) == current_preset_id)
                 {
                     this.selected_preset_id = None;
+                } else {
+                    this.selected_preset_id = current_preset_id;
                 }
-                this.selected_model_id = valid_model_selection(
-                    &this.models,
-                    this.selected_preset_id,
-                    this.selected_model_id,
-                );
-                // 首帧可能已为尚未加载的数据创建了空 SelectState；数据到达后重建。
+                this.selected_model_id =
+                    valid_model_selection(&this.models, this.selected_preset_id, current_model_id);
+                // 数据可能变化，让下拉控件按新列表重建。
                 this.preset_select_state = None;
                 this.model_select_state = None;
                 this.loaded = true;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 加载可用工具列表，仅在初次进入视图时调用一次。
+    fn load_available_tools(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx).clone();
+        cx.spawn(async move |this, cx| {
+            let available_tools = DbTool::list(store.pool(), None, 100, 0)
+                .await
+                .unwrap_or_default();
+            _ = this.update(cx, |this, cx| {
+                this.available_tools = available_tools;
                 this.style = ManagementStyle::from_theme(cx.theme());
                 cx.notify();
             });
@@ -475,18 +505,18 @@ impl PromptDebugger {
     }
 
     fn move_message_up(&mut self, id: u64) {
-        if let Some(pos) = self.messages.iter().position(|m| m.id == id) {
-            if pos > 0 {
-                self.messages.swap(pos, pos - 1);
-            }
+        if let Some(pos) = self.messages.iter().position(|m| m.id == id)
+            && pos > 0
+        {
+            self.messages.swap(pos, pos - 1);
         }
     }
 
     fn move_message_down(&mut self, id: u64) {
-        if let Some(pos) = self.messages.iter().position(|m| m.id == id) {
-            if pos + 1 < self.messages.len() {
-                self.messages.swap(pos, pos + 1);
-            }
+        if let Some(pos) = self.messages.iter().position(|m| m.id == id)
+            && pos + 1 < self.messages.len()
+        {
+            self.messages.swap(pos, pos + 1);
         }
     }
 
@@ -541,10 +571,8 @@ impl PromptDebugger {
         let editing = self.editing_tools.entry(id).or_insert(false);
         *editing = !*editing;
         // 进入编辑时自动展开
-        if *editing {
-            if let Some(collapsed) = self.collapsed_tools.get_mut(&id) {
-                *collapsed = false;
-            }
+        if *editing && let Some(collapsed) = self.collapsed_tools.get_mut(&id) {
+            *collapsed = false;
         }
     }
 
@@ -553,7 +581,11 @@ impl PromptDebugger {
         id: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Entity<InputState>, Entity<InputState>, Entity<InputState>) {
+    ) -> (
+        Entity<InputState>,
+        Entity<TextareaState>,
+        Entity<TextareaState>,
+    ) {
         self.tool_inputs
             .entry(id)
             .or_insert_with(|| {
@@ -562,14 +594,9 @@ impl PromptDebugger {
                 let desc = tool.map(|t| t.description.clone()).unwrap_or_default();
                 let params = tool.map(|t| t.parameters_json.clone()).unwrap_or_default();
                 let name_input = cx.new(|cx| InputState::new(window, cx).default_value(&name));
-                let desc_input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true)
-                        .default_value(&desc)
-                });
+                let desc_input = cx.new(|cx| TextareaState::new(window, cx).default_value(&desc));
                 let params_input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true)
+                    TextareaState::new(window, cx)
                         .auto_grow(3, 8)
                         .default_value(&params)
                 });
@@ -580,9 +607,9 @@ impl PromptDebugger {
 
     fn save_tool_edit(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some((name_input, desc_input, params_input)) = self.tool_inputs.get(&id) {
-            let new_name = name_input.read(cx).text().to_string();
-            let new_desc = desc_input.read(cx).text().to_string();
-            let new_params = params_input.read(cx).text().to_string();
+            let new_name = name_input.read(cx).value().to_string();
+            let new_desc = desc_input.read(cx).value().to_string();
+            let new_params = params_input.read(cx).value().to_string();
             if let Some(tool) = self.tools.iter_mut().find(|t| t.id == id) {
                 tool.name = new_name;
                 tool.description = new_desc;
@@ -607,10 +634,8 @@ impl PromptDebugger {
         let editing = self.editing_messages.entry(id).or_insert(false);
         *editing = !*editing;
         // 进入编辑时自动展开
-        if *editing {
-            if let Some(collapsed) = self.collapsed_messages.get_mut(&id) {
-                *collapsed = false;
-            }
+        if *editing && let Some(collapsed) = self.collapsed_messages.get_mut(&id) {
+            *collapsed = false;
         }
     }
 
@@ -619,7 +644,7 @@ impl PromptDebugger {
         id: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<InputState> {
+    ) -> Entity<TextareaState> {
         self.message_inputs
             .entry(id)
             .or_insert_with(|| {
@@ -630,8 +655,7 @@ impl PromptDebugger {
                     .map(|m| m.content.clone())
                     .unwrap_or_default();
                 cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true)
+                    TextareaState::new(window, cx)
                         .auto_grow(1, 5)
                         .default_value(&content)
                 })
@@ -641,7 +665,7 @@ impl PromptDebugger {
 
     fn save_message_content(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(input) = self.message_inputs.get(&id) {
-            let new_content = input.read(cx).text().to_string();
+            let new_content = input.read(cx).value().to_string();
             self.update_message_content(id, new_content);
         }
         if let Some(editing) = self.editing_messages.get_mut(&id) {
@@ -660,16 +684,16 @@ impl PromptDebugger {
     /// 加载历史记录
     fn load_history(&mut self) {
         let path = Self::history_file_path();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(records) = serde_json::from_str::<Vec<ExecutionRecord>>(&content) {
-                self.execution_history = records;
-                self.next_record_id = self
-                    .execution_history
-                    .iter()
-                    .map(|r| r.id + 1)
-                    .max()
-                    .unwrap_or(1);
-            }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(records) = serde_json::from_str::<Vec<ExecutionRecord>>(&content)
+        {
+            self.execution_history = records;
+            self.next_record_id = self
+                .execution_history
+                .iter()
+                .map(|r| r.id + 1)
+                .max()
+                .unwrap_or(1);
         }
     }
 
@@ -806,22 +830,22 @@ impl PromptDebugger {
         self.temp_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("0.70")
-                .default_value(&record.temperature.to_string())
+                .default_value(record.temperature.to_string())
         }));
         self.max_tokens_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("2048")
-                .default_value(&record.max_tokens.to_string())
+                .default_value(record.max_tokens.to_string())
         }));
         self.top_p_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("1.00")
-                .default_value(&record.top_p.to_string())
+                .default_value(record.top_p.to_string())
         }));
         self.thinking_budget_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("1024")
-                .default_value(&record.thinking_budget.to_string())
+                .default_value(record.thinking_budget.to_string())
         }));
         // 回填工具定义
         self.tools = record.tools.clone();
@@ -932,7 +956,7 @@ fn param_control_with_tooltip(
     min_label: &'static str,
     max_label: &'static str,
     input: &Entity<InputState>,
-    tooltip_text: &'static str,
+    _tooltip_text: &'static str,
     style: &ManagementStyle,
 ) -> impl IntoElement {
     div()
@@ -981,7 +1005,7 @@ fn settings_panel(
     model_select_state: &Entity<SelectState<SearchableVec<ModelSelectItem>>>,
     preset_selected: bool,
     temp_input: &Entity<InputState>,
-    max_tokens_input: &Entity<InputState>,
+    _max_tokens_input: &Entity<InputState>,
     top_p_input: &Entity<InputState>,
     presence_penalty_input: &Entity<InputState>,
     frequency_penalty_input: &Entity<InputState>,
@@ -1104,7 +1128,7 @@ fn thinking_toggle(
                     .xsmall(),
                 )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    _ = entity.update(cx, |t, cx| {
+                    entity.update(cx, |t, cx| {
                         t.toggle_thinking();
                         cx.notify();
                     });
@@ -1119,7 +1143,7 @@ fn message_card(
     entity: Entity<PromptDebugger>,
     collapsed: bool,
     editing: bool,
-    input: Option<Entity<InputState>>,
+    input: Option<Entity<TextareaState>>,
 ) -> impl IntoElement {
     let msg_id = msg.id;
     let role = msg.role;
@@ -1174,7 +1198,7 @@ fn message_card(
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.toggle_collapse(msg_id);
                                             cx.notify();
                                         });
@@ -1189,7 +1213,7 @@ fn message_card(
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             if editing {
                                                 view.save_message_content(msg_id, cx);
                                             } else {
@@ -1208,7 +1232,7 @@ fn message_card(
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.move_message_up(msg_id);
                                             cx.notify();
                                         });
@@ -1223,7 +1247,7 @@ fn message_card(
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.move_message_down(msg_id);
                                             cx.notify();
                                         });
@@ -1238,7 +1262,7 @@ fn message_card(
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.remove_message(msg_id);
                                             cx.notify();
                                         });
@@ -1273,7 +1297,7 @@ fn message_card(
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .child(div().w_full().child(Input::new(&input_state)))
+                    .child(div().w_full().child(Textarea::new(&input_state)))
                     .child(
                         div().flex().justify_end().gap(px(6.0)).child(
                             div()
@@ -1288,7 +1312,7 @@ fn message_card(
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.save_message_content(msg_id, cx);
                                             cx.notify();
                                         });
@@ -1366,7 +1390,7 @@ impl PromptDebugger {
             .collect();
 
         // 为需要编辑的消息预创建 InputState
-        let mut input_map: HashMap<u64, Entity<InputState>> = HashMap::new();
+        let mut input_map: HashMap<u64, Entity<TextareaState>> = HashMap::new();
         for (id, _, editing) in &msg_states {
             if *editing {
                 let input = self.get_message_input(*id, window, cx);
@@ -1406,7 +1430,7 @@ impl PromptDebugger {
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
                             move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
+                                entity.update(cx, |view, cx| {
                                     view.add_message(MessageRole::System);
                                     cx.notify();
                                 });
@@ -1425,7 +1449,7 @@ impl PromptDebugger {
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
                             move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
+                                entity.update(cx, |view, cx| {
                                     view.add_message(MessageRole::User);
                                     cx.notify();
                                 });
@@ -1444,7 +1468,7 @@ impl PromptDebugger {
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
                             move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
+                                entity.update(cx, |view, cx| {
                                     view.add_message(MessageRole::Assistant);
                                     cx.notify();
                                 });
@@ -1528,7 +1552,7 @@ impl PromptDebugger {
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.toggle_collapse_tool(tool_id);
                                             cx.notify();
                                         });
@@ -1549,8 +1573,8 @@ impl PromptDebugger {
                                 )
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
-                                    move |_, window, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                    move |_, _window, cx| {
+                                        entity.update(cx, |view, cx| {
                                             if is_editing {
                                                 view.save_tool_edit(tool_id, cx);
                                             } else {
@@ -1569,7 +1593,7 @@ impl PromptDebugger {
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
                                     move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
+                                        entity.update(cx, |view, cx| {
                                             view.remove_tool(tool_id);
                                             cx.notify();
                                         });
@@ -1600,14 +1624,14 @@ impl PromptDebugger {
                             .text_color(style.list.muted_foreground)
                             .child("描述:"),
                     )
-                    .child(Input::new(&desc_input))
+                    .child(Textarea::new(&desc_input))
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(style.list.muted_foreground)
                             .child("参数 (JSON Schema):"),
                     )
-                    .child(Input::new(&params_input))
+                    .child(Textarea::new(&params_input))
             } else {
                 div()
                     .px(px(10.0))
@@ -1697,7 +1721,7 @@ impl PromptDebugger {
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
                             move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
+                                entity.update(cx, |view, cx| {
                                     view.add_tool();
                                     cx.notify();
                                 });
@@ -1723,7 +1747,7 @@ impl PromptDebugger {
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
                             move |_, _, cx| {
-                                _ = entity.update(cx, |view, cx| {
+                                entity.update(cx, |view, cx| {
                                     view.toggle_tool_picker();
                                     cx.notify();
                                 });
@@ -1780,7 +1804,7 @@ fn execute_button(
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 if !is_loading {
-                    _ = entity.update(cx, |view, cx| {
+                    entity.update(cx, |view, cx| {
                         view.execute_call(cx);
                     });
                 }
@@ -1894,7 +1918,7 @@ fn right_panel(
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
                     move |_, _, cx| {
-                        _ = entity.update(cx, |view, cx| {
+                        entity.update(cx, |view, cx| {
                             view.toggle_select_all();
                             cx.notify();
                         });
@@ -1914,7 +1938,7 @@ fn right_panel(
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
                     move |_, _, cx| {
-                        _ = entity.update(cx, |view, cx| {
+                        entity.update(cx, |view, cx| {
                             view.clear_history();
                             cx.notify();
                         });
@@ -1937,7 +1961,7 @@ fn right_panel(
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
                     move |_, _, cx| {
-                        _ = entity.update(cx, |view, cx| {
+                        entity.update(cx, |view, cx| {
                             view.start_comparison();
                             cx.notify();
                         });
@@ -2074,7 +2098,7 @@ fn right_panel(
                         let entity = entity.clone();
                         let record_id = record.id;
                         move |_, _, cx| {
-                            _ = entity.update(cx, |view, cx| {
+                            entity.update(cx, |view, cx| {
                                 view.toggle_record_selection(record_id);
                                 cx.notify();
                             });
@@ -2084,7 +2108,7 @@ fn right_panel(
                         let entity = entity.clone();
                         let record_id = record.id;
                         move |event: &MouseDownEvent, _, cx| {
-                            _ = entity.update(cx, |view, cx| {
+                            entity.update(cx, |view, cx| {
                                 view.show_context_menu(record_id, event.position);
                                 cx.notify();
                             });
@@ -2467,6 +2491,88 @@ fn comparison_table(
     table
 }
 
+/// 拼接记录为可拷贝到剪贴板的纯文本。
+///
+/// 用途：用户查看执行记录时，当前 GPUI 0.2 还没有原生支持
+/// `div` 内文本拖选（仅 `TextInput` 可选），所以提供「复制」按
+/// 钮以满足"选中文字"的需求。
+fn format_records_for_copy(records: &[ExecutionRecord]) -> String {
+    if records.len() > 1 {
+        let mut out = String::new();
+        out.push_str(&format!("对比 ({} 条记录)\n", records.len()));
+        out.push_str(&"─".repeat(40));
+        out.push('\n');
+        for (idx, record) in records.iter().enumerate() {
+            out.push_str(&format!("\n[{}] {}\n", idx + 1, record.model_name));
+            out.push_str(&format!(
+                "参数: T={:.2} Max={} TopP={:.2}\n",
+                record.temperature, record.max_tokens, record.top_p
+            ));
+            let messages = record
+                .messages
+                .iter()
+                .map(|m| format!("[{}] {}", m.role.label(), m.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&format!("消息:\n{messages}\n"));
+            let tools = if record.tools.is_empty() {
+                "无工具".to_string()
+            } else {
+                record
+                    .tools
+                    .iter()
+                    .map(|t| format!("- {}: {}", t.name, t.description))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            out.push_str(&format!("工具:\n{tools}\n"));
+            let result = match &record.result {
+                CallState::Success(t) => t.clone(),
+                CallState::Error(e) => e.clone(),
+                _ => "无结果".to_string(),
+            };
+            out.push_str(&format!("结果:\n{result}\n"));
+            out.push_str(&"─".repeat(40));
+            out.push('\n');
+        }
+        out
+    } else if let Some(record) = records.first() {
+        let mut out = String::new();
+        out.push_str(&format!("模型: {}\n", record.model_name));
+        out.push_str(&format!(
+            "参数: T={:.2} Max={} TopP={:.2}\n",
+            record.temperature, record.max_tokens, record.top_p
+        ));
+        let messages = record
+            .messages
+            .iter()
+            .map(|m| format!("[{}] {}", m.role.label(), m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!("消息:\n{messages}\n"));
+        let tools = if record.tools.is_empty() {
+            "无工具".to_string()
+        } else {
+            record
+                .tools
+                .iter()
+                .map(|t| format!("- {}: {}", t.name, t.description))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        out.push_str(&format!("工具:\n{tools}\n"));
+        let result = match &record.result {
+            CallState::Success(t) => t.clone(),
+            CallState::Error(e) => e.clone(),
+            _ => "无结果".to_string(),
+        };
+        out.push_str(&format!("结果:\n{result}\n"));
+        out
+    } else {
+        String::new()
+    }
+}
+
 /// 查看/对比模态框
 fn view_modal(
     records: &[ExecutionRecord],
@@ -2481,7 +2587,8 @@ fn view_modal(
         "查看执行记录".to_string()
     };
 
-    // 对比模式：最大宽度根据记录数动态调整，最多 20 列
+    // 预先拼接用于"复制"按钮的文本（避免在 click handler 内再次构造）。
+    let copy_text = format_records_for_copy(records);
     let modal_width = if is_comparison {
         let cols = records.len().min(20);
         px(200.0 + cols as f32 * 300.0)
@@ -2503,7 +2610,7 @@ fn view_modal(
         .on_mouse_down(MouseButton::Left, {
             let entity = entity.clone();
             move |_, _, cx| {
-                _ = entity.update(cx, |view, cx| {
+                entity.update(cx, |view, cx| {
                     view.close_view_modal();
                     cx.notify();
                 });
@@ -2521,7 +2628,12 @@ fn view_modal(
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                // 在 capture 阶段拦截所有鼠标按下事件，阻止冒泡到外层
+                // overlay (其 on_mouse_down 会关闭弹窗)。否则点击弹窗
+                // 内容时会把整个模态框关掉。
+                .capture_any_mouse_down(|_, _, cx| {
+                    cx.stop_propagation();
+                })
                 .child(
                     // 标题栏
                     div()
@@ -2554,7 +2666,7 @@ fn view_modal(
                                         .on_mouse_down(MouseButton::Left, {
                                             let entity = entity.clone();
                                             move |_, _, cx| {
-                                                _ = entity.update(cx, |view, cx| {
+                                                entity.update(cx, |view, cx| {
                                                     view.toggle_show_only_diff();
                                                     cx.notify();
                                                 });
@@ -2597,18 +2709,50 @@ fn view_modal(
                         )
                         .child(
                             div()
-                                .cursor(CursorStyle::PointingHand)
-                                .hover(|s| s.opacity(0.7))
-                                .child(Icon::new(IconName::Close).small())
-                                .on_mouse_down(MouseButton::Left, {
-                                    let entity = entity.clone();
-                                    move |_, _, cx| {
-                                        _ = entity.update(cx, |view, cx| {
-                                            view.close_view_modal();
-                                            cx.notify();
-                                        });
-                                    }
-                                }),
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    // 复制按钮：把整组记录的格式化文本写入剪贴板，
+                                    // 弥补 GPUI 0.2 暂不支持 div 内文本拖选的限制。
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.0))
+                                        .cursor(CursorStyle::PointingHand)
+                                        .hover(|s| s.opacity(0.7))
+                                        .child(Icon::new(IconName::Copy).small())
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(style.list.muted_foreground)
+                                                .child("复制"),
+                                        )
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let text = copy_text.clone();
+                                            move |_, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    text.clone(),
+                                                ));
+                                                cx.stop_propagation();
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .cursor(CursorStyle::PointingHand)
+                                        .hover(|s| s.opacity(0.7))
+                                        .child(Icon::new(IconName::Close).small())
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let entity = entity.clone();
+                                            move |_, _, cx| {
+                                                entity.update(cx, |view, cx| {
+                                                    view.close_view_modal();
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                ),
                         ),
                 )
                 .child(
@@ -2635,35 +2779,35 @@ fn view_modal(
 impl PromptDebugger {
     fn execute_call(&mut self, cx: &mut Context<Self>) {
         // 从 InputState 读取最新参数值
-        if let Some(ref input) = self.temp_input {
-            if let Ok(v) = input.read(cx).text().to_string().parse::<f64>() {
-                self.temperature = v;
-            }
+        if let Some(ref input) = self.temp_input
+            && let Ok(v) = input.read(cx).value().to_string().parse::<f64>()
+        {
+            self.temperature = v;
         }
-        if let Some(ref input) = self.max_tokens_input {
-            if let Ok(v) = input.read(cx).text().to_string().parse::<u32>() {
-                self.max_tokens = v;
-            }
+        if let Some(ref input) = self.max_tokens_input
+            && let Ok(v) = input.read(cx).value().to_string().parse::<u32>()
+        {
+            self.max_tokens = v;
         }
-        if let Some(ref input) = self.top_p_input {
-            if let Ok(v) = input.read(cx).text().to_string().parse::<f64>() {
-                self.top_p = v;
-            }
+        if let Some(ref input) = self.top_p_input
+            && let Ok(v) = input.read(cx).value().to_string().parse::<f64>()
+        {
+            self.top_p = v;
         }
-        if let Some(ref input) = self.presence_penalty_input {
-            if let Ok(v) = input.read(cx).text().to_string().parse::<f64>() {
-                self.presence_penalty = v;
-            }
+        if let Some(ref input) = self.presence_penalty_input
+            && let Ok(v) = input.read(cx).value().to_string().parse::<f64>()
+        {
+            self.presence_penalty = v;
         }
-        if let Some(ref input) = self.frequency_penalty_input {
-            if let Ok(v) = input.read(cx).text().to_string().parse::<f64>() {
-                self.frequency_penalty = v;
-            }
+        if let Some(ref input) = self.frequency_penalty_input
+            && let Ok(v) = input.read(cx).value().to_string().parse::<f64>()
+        {
+            self.frequency_penalty = v;
         }
-        if let Some(ref input) = self.thinking_budget_input {
-            if let Ok(v) = input.read(cx).text().to_string().parse::<u32>() {
-                self.thinking_budget_tokens = v;
-            }
+        if let Some(ref input) = self.thinking_budget_input
+            && let Ok(v) = input.read(cx).value().to_string().parse::<u32>()
+        {
+            self.thinking_budget_tokens = v;
         }
 
         let preset_id = match self
@@ -2865,18 +3009,16 @@ impl PromptDebugger {
             };
 
             _ = this.update(cx, |view, cx| {
-                let is_success = matches!(&response_text, Ok(_));
+                let is_success = response_text.is_ok();
                 view.call_state = match response_text {
                     Ok(text) => CallState::Success(text),
                     Err(err) => CallState::Error(err),
                 };
                 view.save_execution_record();
                 // 执行成功时自动弹出查看窗口
-                if is_success {
-                    if let Some(last_record) = view.execution_history.last() {
-                        view.view_records = vec![last_record.clone()];
-                        view.show_view_modal = true;
-                    }
+                if is_success && let Some(last_record) = view.execution_history.last() {
+                    view.view_records = vec![last_record.clone()];
+                    view.show_view_modal = true;
                 }
                 cx.notify();
             });
@@ -2984,12 +3126,7 @@ impl Render for PromptDebugger {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(self.message_editor(
-                                window,
-                                cx,
-                                &style,
-                                cx.entity(),
-                            )),
+                            .child(self.message_editor(window, cx, &style, cx.entity())),
                     )
                     .child(right_panel(
                         &self.call_state,
@@ -3002,12 +3139,8 @@ impl Render for PromptDebugger {
                     )),
             )
             .child(if self.show_view_modal {
-                view_modal(
-                    &self.view_records,
-                    &style,
-                    self.show_only_diff,
-                    cx.entity(),
-                ).into_any_element()
+                view_modal(&self.view_records, &style, self.show_only_diff, cx.entity())
+                    .into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -3025,7 +3158,7 @@ impl Render for PromptDebugger {
                     .on_mouse_down(MouseButton::Left, {
                         let entity = cx.entity();
                         move |_, _, cx| {
-                            _ = entity.update(cx, |view, cx| {
+                            entity.update(cx, |view, cx| {
                                 view.show_tool_picker = false;
                                 cx.notify();
                             });
@@ -3067,7 +3200,7 @@ impl Render for PromptDebugger {
                                             .on_mouse_down(MouseButton::Left, {
                                                 let entity = cx.entity();
                                                 move |_, _, cx| {
-                                                    _ = entity.update(cx, |view, cx| {
+                                                    entity.update(cx, |view, cx| {
                                                         view.show_tool_picker = false;
                                                         cx.notify();
                                                     });
@@ -3081,18 +3214,9 @@ impl Render for PromptDebugger {
                                     .py(px(12.0))
                                     .border_b_1()
                                     .border_color(style.list.border)
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .child(
-                                                Input::new(
-                                                    &cx.new(|cx| {
-                                                        InputState::new(window, cx)
-                                                            .placeholder("搜索工具名称...")
-                                                    }),
-                                                ),
-                                            ),
-                                    ),
+                                    .child(div().w_full().child(Input::new(&cx.new(|cx| {
+                                        InputState::new(window, cx).placeholder("搜索工具名称...")
+                                    })))),
                             )
                             .child(
                                 div()
@@ -3102,81 +3226,91 @@ impl Render for PromptDebugger {
                                     .px(px(16.0))
                                     .py(px(8.0))
                                     .child(
-                                            self.available_tools
-                                                .iter()
-                                                .filter(|t| {
-                                                    self.tool_picker_search.is_empty()
-                                                        || t.name
-                                                            .to_lowercase()
-                                                            .contains(&self.tool_picker_search.to_lowercase())
-                                                })
-                                                .fold(div(), |acc, tool| {
-                                                    let tool_name = tool.name.clone();
-                                                    let tool_identifier = tool.identifier.clone();
-                                                    let tool_description = tool.description.clone();
-                                                    let tool_id = tool.id;
-                                                    acc.child(
-                                                        div()
-                                                            .id(SharedString::from(format!(
-                                                                "picker-tool-{}",
-                                                                tool_id
-                                                            )))
-                                                            .mb(px(8.0))
-                                                            .p(px(12.0))
-                                                            .border_1()
-                                                            .border_color(style.list.border)
-                                                            .rounded(px(6.0))
-                                                            .cursor(CursorStyle::PointingHand)
-                                                            .hover(|s| {
-                                                                s.bg(style.action(ActionRole::Neutral).hover)
-                                                            })
-                                                            .on_mouse_down(MouseButton::Left, {
-                                                                let entity = cx.entity();
-                                                                move |_, _, cx| {
-                                                                    _ = entity.update(
-                                                                        cx,
-                                                                        |view, cx| {
-                                                                            view.add_tool_from_management(
-                                                                                tool_id,
-                                                                            );
-                                                                            view.show_tool_picker = false;
-                                                                            cx.notify();
-                                                                        },
-                                                                    );
-                                                                }
-                                                            })
-                                                            .child(
-                                                                div()
-                                                                    .flex()
-                                                                    .items_center()
-                                                                    .justify_between()
-                                                                    .mb(px(4.0))
-                                                                    .child(
-                                                                        div()
-                                                                            .text_size(px(14.0))
-                                                                            .font_weight(FontWeight::SEMIBOLD)
-                                                                            .child(SharedString::from(tool_name.as_str())),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .text_size(px(12.0))
-                                                                            .text_color(
-                                                                                style.list.muted_foreground,
-                                                                            )
-                                                                            .child(SharedString::from(tool_identifier.as_str())),
-                                                                    ),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(px(12.0))
-                                                                    .text_color(
-                                                                        style.list.muted_foreground,
-                                                                    )
-                                                                    .child(SharedString::from(tool_description.as_str())),
-                                                            ),
+                                        self.available_tools
+                                            .iter()
+                                            .filter(|t| {
+                                                self.tool_picker_search.is_empty()
+                                                    || t.name.to_lowercase().contains(
+                                                        &self.tool_picker_search.to_lowercase(),
                                                     )
-                                                }),
-                                        ),
+                                            })
+                                            .fold(div(), |acc, tool| {
+                                                let tool_name = tool.name.clone();
+                                                let tool_identifier = tool.identifier.clone();
+                                                let tool_description = tool.description.clone();
+                                                let tool_id = tool.id;
+                                                acc.child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "picker-tool-{}",
+                                                            tool_id
+                                                        )))
+                                                        .mb(px(8.0))
+                                                        .p(px(12.0))
+                                                        .border_1()
+                                                        .border_color(style.list.border)
+                                                        .rounded(px(6.0))
+                                                        .cursor(CursorStyle::PointingHand)
+                                                        .hover(|s| {
+                                                            s.bg(style
+                                                                .action(ActionRole::Neutral)
+                                                                .hover)
+                                                        })
+                                                        .on_mouse_down(MouseButton::Left, {
+                                                            let entity = cx.entity();
+                                                            move |_, _, cx| {
+                                                                entity.update(cx, |view, cx| {
+                                                                    view.add_tool_from_management(
+                                                                        tool_id,
+                                                                    );
+                                                                    view.show_tool_picker = false;
+                                                                    cx.notify();
+                                                                });
+                                                            }
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_between()
+                                                                .mb(px(4.0))
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(14.0))
+                                                                        .font_weight(
+                                                                            FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .child(SharedString::from(
+                                                                            tool_name.as_str(),
+                                                                        )),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(12.0))
+                                                                        .text_color(
+                                                                            style
+                                                                                .list
+                                                                                .muted_foreground,
+                                                                        )
+                                                                        .child(SharedString::from(
+                                                                            tool_identifier
+                                                                                .as_str(),
+                                                                        )),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.0))
+                                                                .text_color(
+                                                                    style.list.muted_foreground,
+                                                                )
+                                                                .child(SharedString::from(
+                                                                    tool_description.as_str(),
+                                                                )),
+                                                        ),
+                                                )
+                                            }),
+                                    ),
                             ),
                     )
                     .into_any_element()
@@ -3226,10 +3360,8 @@ mod tests {
     #[test]
     fn add_and_remove_messages() {
         let mut msgs: Vec<DebugMessage> = vec![];
-        let mut next_id = 1u64;
+        let id = 1u64;
 
-        let id = next_id;
-        next_id += 1;
         msgs.push(DebugMessage {
             id,
             role: MessageRole::User,
@@ -3243,7 +3375,7 @@ mod tests {
 
     #[test]
     fn move_message_up_and_down() {
-        let mut msgs = vec![
+        let mut msgs = [
             DebugMessage {
                 id: 1,
                 role: MessageRole::System,
@@ -3261,18 +3393,18 @@ mod tests {
             },
         ];
 
-        if let Some(pos) = msgs.iter().position(|m| m.id == 2) {
-            if pos > 0 {
-                msgs.swap(pos, pos - 1);
-            }
+        if let Some(pos) = msgs.iter().position(|m| m.id == 2)
+            && pos > 0
+        {
+            msgs.swap(pos, pos - 1);
         }
         assert_eq!(msgs[0].id, 2);
         assert_eq!(msgs[1].id, 1);
 
-        if let Some(pos) = msgs.iter().position(|m| m.id == 2) {
-            if pos + 1 < msgs.len() {
-                msgs.swap(pos, pos + 1);
-            }
+        if let Some(pos) = msgs.iter().position(|m| m.id == 2)
+            && pos + 1 < msgs.len()
+        {
+            msgs.swap(pos, pos + 1);
         }
         assert_eq!(msgs[0].id, 1);
         assert_eq!(msgs[1].id, 2);
@@ -3432,7 +3564,7 @@ mod geometry_tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let preset = cx
             .debug_bounds("PROMPT_DEBUGGER_PRESET_SELECTOR")
@@ -3496,7 +3628,7 @@ mod geometry_tests {
         });
         cx.run_until_parked();
 
-        let typed_window = window.clone();
+        let typed_window = window;
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let history_row = cx
             .debug_bounds("PROMPT_HISTORY_RECORD_42")

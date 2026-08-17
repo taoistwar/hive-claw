@@ -267,7 +267,7 @@ impl FoundationRuntimeComposition {
                     };
                     *slot = Some(next);
                 }
-                slot.clone().expect("slot just populated")
+                (*slot).expect("slot just populated")
             };
             // Record into the terminal map so callers can re-query
             // after the in_flight entry is removed.
@@ -291,10 +291,10 @@ impl FoundationRuntimeComposition {
         // First check the terminal map: a completed execution is
         // observable here even after the in_flight entry has been
         // removed.
-        if let Ok(terminal) = self.terminal.lock() {
-            if let Some(outcome) = terminal.get(execution_id).copied() {
-                return Ok(outcome);
-            }
+        if let Ok(terminal) = self.terminal.lock()
+            && let Some(outcome) = terminal.get(execution_id).copied()
+        {
+            return Ok(outcome);
         }
         let outcome_slot = {
             let inflight = self.in_flight.lock().expect("in_flight poisoned");
@@ -304,10 +304,10 @@ impl FoundationRuntimeComposition {
                 .ok_or_else(|| LocalExecutionError::Unknown(execution_id.to_string()))?
         };
         loop {
-            if let Ok(g) = outcome_slot.lock() {
-                if let Some(outcome) = *g {
-                    return Ok(outcome);
-                }
+            if let Ok(g) = outcome_slot.lock()
+                && let Some(outcome) = *g
+            {
+                return Ok(outcome);
             }
             self.notify.notified().await;
         }
@@ -320,7 +320,7 @@ impl FoundationRuntimeComposition {
     /// `Cancelled` within [`CANCEL_DEADLINE`].
     pub fn cancel(&self, execution_id: &str) -> Result<(), LocalExecutionError> {
         let outcome_slot = {
-            let mut inflight = self.in_flight.lock().expect("in_flight poisoned");
+            let inflight = self.in_flight.lock().expect("in_flight poisoned");
             match inflight.get(execution_id).cloned() {
                 Some(slot) => slot,
                 None => return Err(LocalExecutionError::Unknown(execution_id.to_string())),
@@ -339,10 +339,8 @@ impl FoundationRuntimeComposition {
                 false
             }
         };
-        if cancelled_now {
-            if let Ok(mut terminal) = self.terminal.lock() {
-                terminal.insert(execution_id.to_string(), LocalExecutionOutcome::Cancelled);
-            }
+        if cancelled_now && let Ok(mut terminal) = self.terminal.lock() {
+            terminal.insert(execution_id.to_string(), LocalExecutionOutcome::Cancelled);
         }
         self.notify.notify_waiters();
 
@@ -364,7 +362,7 @@ impl FoundationRuntimeComposition {
                 if slot.is_none() {
                     *slot = Some(LocalExecutionOutcome::Cancelled);
                 }
-                slot.clone().expect("slot populated")
+                (*slot).expect("slot populated")
             };
             if let Ok(mut terminal) = terminal_for_watchdog.lock() {
                 terminal.insert(id_for_watchdog.clone(), final_outcome);

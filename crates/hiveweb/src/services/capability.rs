@@ -88,7 +88,7 @@ pub async fn list(
 
     let count_sql = format!("SELECT COUNT(*) FROM capabilities {where_sql}");
     let count_sql = audit_sql(count_sql);
-    let mut count_q = sqlx::query_as::<_, (i64,)> (count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     for p in &params {
         count_q = count_q.bind(p);
     }
@@ -97,7 +97,8 @@ pub async fn list(
         .await
         .map_err(|e| AppError::Internal(format!("capability count: {e}")))?;
 
-    let list_sql = format!("SELECT * FROM capabilities {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?");
+    let list_sql =
+        format!("SELECT * FROM capabilities {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?");
     let list_sql = audit_sql(list_sql);
     let mut q = sqlx::query_as::<_, CapabilityModel>(list_sql);
     for p in &params {

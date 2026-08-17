@@ -205,7 +205,7 @@ fn pinned_tables_checksum_matches_provenance_entry() {
         .expect("normalizer loads when pinned to Unicode 17.0.0")
         .expect("normalizer is registered");
     let provenance = normalizer.provenance();
-    assert_provenance_complete(&provenance);
+    assert_provenance_complete(provenance);
     let runtime_checksum = normalizer
         .runtime_tables_sha256()
         .expect("runtime can hash its own tables");
@@ -250,10 +250,7 @@ fn non_empty_input_that_normalizes_to_empty_is_rejected_with_stable_error() {
             "an input that has no content after NFKC_CF must surface empty_after_normalization",
         );
         assert!(
-            matches!(
-                outcome,
-                NormalizationFailure::EmptyAfterNormalization { .. }
-            ),
+            matches!(outcome, NormalizationFailure::EmptyAfterNormalization),
             "{input:?} must map to EmptyAfterNormalization, got {outcome:?}"
         );
     }
@@ -447,7 +444,7 @@ fn fixed_fixture_ordering_is_normalized_display_name_then_identifier_then_pk() {
         .drain(..)
         .map(|page| page.into_iter().map(|row| row.hit).collect())
         .collect();
-    let mut flat: Vec<(String, String, i64)> = pages
+    let flat: Vec<(String, String, i64)> = pages
         .iter()
         .flatten()
         .map(|hit| {
@@ -475,12 +472,11 @@ fn fixed_fixture_ordering_is_normalized_display_name_then_identifier_then_pk() {
 
 #[test]
 fn page_size_is_bounded_by_max_page_size() {
-    assert!(MAX_PAGE_SIZE >= 1, "page size must be at least 1");
     let workspace = TestWorkspace::new().expect("workspace");
     let index = SearchIndex::open_migrated(workspace.database_path(), workspace.plugin_root())
         .expect("migrate and open search index");
     let err = index
-        .list_pages(SearchOrdering::TotalOrder, MAX_PAGE_SIZE as usize + 1)
+        .list_pages(SearchOrdering::TotalOrder, MAX_PAGE_SIZE + 1)
         .expect_err("page size above MAX_PAGE_SIZE must be rejected");
     assert!(matches!(err, SearchError::PageSizeTooLarge { .. }));
 }
@@ -576,7 +572,7 @@ fn startup_probes_fts5_trigram_tokenizer_and_fails_closed_when_absent() {
         .expect("open attempt")
         .expect_err("opening on a SQLite without FTS5 trigram must fail-closed");
     assert!(
-        matches!(outcome, SearchError::Fts5Unavailable { .. }),
+        matches!(outcome, SearchError::Fts5Unavailable),
         "FTS5 trigram absence must surface Fts5Unavailable, got {outcome:?}"
     );
 }
@@ -749,7 +745,7 @@ impl SearchIndexPlanExpectation {
     }
 }
 
-use hivegui::datasource::query_plan::{AccessExpectation, PlanFailureKind, QueryPlanRequirement};
+use hivegui::datasource::query_plan::PlanFailureKind;
 
 // `Path`/`PathBuf` are kept in the imports to allow direct test
 // helpers (and to keep the compiler happy once the surface exists).

@@ -701,38 +701,38 @@ pub(crate) fn redact_secrets(input: &str) -> String {
                         break;
                     }
                 }
-                if let Some(&nc) = chars.peek() {
-                    if nc == '=' || nc == ':' {
-                        chars.next();
-                        // Skip whitespace after the separator.
-                        while let Some(&nc) = chars.peek() {
-                            if nc.is_whitespace() {
-                                chars.next();
-                            } else {
-                                break;
-                            }
+                if let Some(&nc) = chars.peek()
+                    && (nc == '=' || nc == ':')
+                {
+                    chars.next();
+                    // Skip whitespace after the separator.
+                    while let Some(&nc) = chars.peek() {
+                        if nc.is_whitespace() {
+                            chars.next();
+                        } else {
+                            break;
                         }
-                        // Skip an opening quote if present.
-                        if let Some(&nc) = chars.peek() {
-                            if nc == '"' || nc == '\'' {
-                                chars.next();
-                            }
-                        }
-                        buffer.push_str(&probe);
-                        buffer.push_str(&skipped_ws);
-                        if let Some(&nc) = chars.peek() {
-                            buffer.push(nc);
-                        }
-                        buffer.push_str("<redacted>");
-                        // Consume the value up to the next separator.
-                        for nc in chars.by_ref() {
-                            if nc == ',' || nc == ';' || nc == '}' || nc == ']' || nc == '\n' {
-                                buffer.push(nc);
-                                break;
-                            }
-                        }
-                        continue;
                     }
+                    // Skip an opening quote if present.
+                    if let Some(&nc) = chars.peek()
+                        && (nc == '"' || nc == '\'')
+                    {
+                        chars.next();
+                    }
+                    buffer.push_str(&probe);
+                    buffer.push_str(&skipped_ws);
+                    if let Some(&nc) = chars.peek() {
+                        buffer.push(nc);
+                    }
+                    buffer.push_str("<redacted>");
+                    // Consume the value up to the next separator.
+                    for nc in chars.by_ref() {
+                        if nc == ',' || nc == ';' || nc == '}' || nc == ']' || nc == '\n' {
+                            buffer.push(nc);
+                            break;
+                        }
+                    }
+                    continue;
                 }
             }
             buffer.push_str(&probe);

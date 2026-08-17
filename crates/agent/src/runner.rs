@@ -46,8 +46,8 @@ use utils::runtime::{
 };
 
 use hive_runtime_core::execution::{
-    CancellationToken, EventSink, ExecutionContext, ExecutionPhase, PermissionSnapshot,
-    RuntimeEvent, RuntimeEventKind, TerminalOutcome,
+    CancellationToken, ExecutionContext, ExecutionPhase, PermissionSnapshot, RuntimeEventKind,
+    TerminalOutcome,
 };
 
 use crate::hook::{AgentHook, AgentHookContext, ToolEvent};
@@ -2025,7 +2025,6 @@ impl ExecutionContextRunner {
         let runner = AgentRunner::new(provider);
         let result = runner.run(self.spec).await;
         if context.is_cancelled() {
-            let elapsed = context.elapsed_ms();
             context
                 .finish_cancelled(format!(
                     "agent_runner::ExecutionContextRunner: {}",

@@ -505,16 +505,16 @@ fn handle_unique_constraint_error(
     field_name: &str,
     field_value: &str,
 ) -> anyhow::Error {
-    if let sqlx::Error::Database(db_err) = &err {
-        if db_err.message().contains("UNIQUE constraint failed") {
-            tracing::warn!(
-                entity_type = "unknown",
-                field = field_name,
-                value = field_value,
-                "UNIQUE constraint violation"
-            );
-            return anyhow::anyhow!("{} '{}' 已存在，请使用其他值", field_name, field_value);
-        }
+    if let sqlx::Error::Database(db_err) = &err
+        && db_err.message().contains("UNIQUE constraint failed")
+    {
+        tracing::warn!(
+            entity_type = "unknown",
+            field = field_name,
+            value = field_value,
+            "UNIQUE constraint violation"
+        );
+        return anyhow::anyhow!("{} '{}' 已存在，请使用其他值", field_name, field_value);
     }
     err.into()
 }
@@ -2448,10 +2448,10 @@ impl Agent {
 
         // 检测循环引用（创建时 current_id 为 None，因为还未生成 ID）
         // 这里只做基本的自引用检测
-        if let Some(pid) = parent_agent_id {
-            if pid <= 0 {
-                return Err(anyhow::anyhow!("parent_agent_id 必须为正整数"));
-            }
+        if let Some(pid) = parent_agent_id
+            && pid <= 0
+        {
+            return Err(anyhow::anyhow!("parent_agent_id 必须为正整数"));
         }
 
         let start = Instant::now();
@@ -4615,19 +4615,19 @@ impl AgentStore {
             None
         };
         let mut tx = self.pool.begin().await.map_err(backend_error)?;
-        if let Some(replacement) = &replacement_needs_promotion {
-            if !replacement.is_default {
-                sqlx::query("UPDATE agents SET is_default = 0 WHERE id = ?")
-                    .bind(existing.id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(backend_error)?;
-                sqlx::query("UPDATE agents SET is_default = 1 WHERE id = ?")
-                    .bind(replacement.id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(backend_error)?;
-            }
+        if let Some(replacement) = &replacement_needs_promotion
+            && !replacement.is_default
+        {
+            sqlx::query("UPDATE agents SET is_default = 0 WHERE id = ?")
+                .bind(existing.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend_error)?;
+            sqlx::query("UPDATE agents SET is_default = 1 WHERE id = ?")
+                .bind(replacement.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend_error)?;
         }
         // Reparent children to the deleted agent's parent.
         sqlx::query("UPDATE agents SET parent_agent_id = ? WHERE parent_agent_id = ?")
@@ -5095,7 +5095,7 @@ fn backend_error(error: sqlx::Error) -> AgentStoreError {
     }
 }
 
-fn AgentStoreKind_NotFound() -> AgentStoreError {
+fn agent_store_kind_not_found() -> AgentStoreError {
     AgentStoreError {
         kind: AgentStoreErrorKind::NotFound,
     }
@@ -5149,10 +5149,11 @@ async fn load_skill_ids(pool: &Pool<Sqlite>, agent_id: i64) -> Result<Vec<i64>, 
 }
 
 async fn load_always_skill_ids(pool: &Pool<Sqlite>) -> Result<Vec<i64>, AgentStoreError> {
-    let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM skills WHERE is_always = 1 ORDER BY id ASC")
-        .fetch_all(pool)
-        .await
-        .map_err(backend_error)?;
+    let rows: Vec<(i64,)> =
+        sqlx::query_as("SELECT id FROM skills WHERE is_always = 1 ORDER BY id ASC")
+            .fetch_all(pool)
+            .await
+            .map_err(backend_error)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 

@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -50,7 +50,7 @@ dependencies = [
  "chrono-tz",
  "command",
  "config",
- "cron 0.1.0",
+ "cron 0.1.1",
  "dirs 5.0.1",
  "futures",
  "globset",
@@ -214,7 +214,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "bus"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1875,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "channels"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "async-trait",
@@ -2024,7 +2024,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agent",
  "api",
@@ -2035,7 +2035,7 @@ dependencies = [
  "clap",
  "config",
  "console",
- "cron 0.1.0",
+ "cron 0.1.1",
  "dialoguer",
  "dirs 5.0.1",
  "env_logger",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "command"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bus",
@@ -2244,7 +2244,7 @@ dependencies = [
 name = "config"
 version = "0.1.0"
 dependencies = [
- "cron 0.1.0",
+ "cron 0.1.1",
  "dirs 5.0.1",
  "log",
  "regex",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "cron"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4723,7 +4723,7 @@ dependencies = [
 
 [[package]]
 name = "heartbeat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "log",
@@ -4836,7 +4836,7 @@ dependencies = [
 
 [[package]]
 name = "hiveweb"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agent",
  "aho-corasick",
@@ -7421,7 +7421,7 @@ dependencies = [
 
 [[package]]
 name = "providers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8566,7 +8566,7 @@ dependencies = [
 
 [[package]]
 name = "security"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "once_cell",
@@ -8766,7 +8766,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "config",
@@ -8931,7 +8931,7 @@ dependencies = [
 
 [[package]]
 name = "skills"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "include_dir",
 ]
@@ -8972,7 +8972,7 @@ dependencies = [
 
 [[package]]
 name = "smoke-plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "extism-pdk",
@@ -10612,7 +10612,7 @@ dependencies = [
 
 [[package]]
 name = "utils"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

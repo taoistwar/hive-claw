@@ -13,10 +13,10 @@ mod game_list;
 mod json_parse;
 mod json_stringify;
 mod query_balance;
+pub mod rag_answer;
 mod support_card;
 mod text_regex_match;
 mod tools;
-pub mod rag_answer;
 
 use serde_json::Value;
 use sqlx::MySqlPool;
@@ -43,10 +43,10 @@ use chat_respond::{CHAT_RESPOND_INPUT_SCHEMA, CHAT_RESPOND_OUTPUT_SCHEMA};
 use format_template::{FORMAT_TEMPLATE_INPUT_SCHEMA, FORMAT_TEMPLATE_OUTPUT_SCHEMA};
 use game_info::{GAME_INFO_INPUT_SCHEMA, GAME_INFO_OUTPUT_SCHEMA};
 use game_list::{GAME_LIST_INPUT_SCHEMA, GAME_LIST_OUTPUT_SCHEMA};
-use rag_answer::{RAG_ANSWER_INPUT_SCHEMA, RAG_ANSWER_OUTPUT_SCHEMA};
 use json_parse::{JSON_PARSE_INPUT_SCHEMA, JSON_PARSE_OUTPUT_SCHEMA};
 use json_stringify::{JSON_STRINGIFY_INPUT_SCHEMA, JSON_STRINGIFY_OUTPUT_SCHEMA};
 use query_balance::{QUERY_BALANCE_INPUT_SCHEMA, QUERY_BALANCE_OUTPUT_SCHEMA};
+use rag_answer::{RAG_ANSWER_INPUT_SCHEMA, RAG_ANSWER_OUTPUT_SCHEMA};
 use support_card::{SUPPORT_CARD_INPUT_SCHEMA, SUPPORT_CARD_OUTPUT_SCHEMA};
 use text_regex_match::{TEXT_REGEX_MATCH_INPUT_SCHEMA, TEXT_REGEX_MATCH_OUTPUT_SCHEMA};
 

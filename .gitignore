@@ -33,3 +33,4 @@ logs/
 hiveweb.log.*
 TEST.md
 tmp/
+.codebuddy/

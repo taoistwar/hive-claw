@@ -5,7 +5,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use redis::{
     Client, ConnectionInfo, ErrorKind, IntoConnectionInfo, RedisConnectionInfo, RedisError,
     RedisResult,
-    aio::MultiplexedConnection,
+    aio::{MultiplexedConnection, PubSub},
     sentinel::{Sentinel, SentinelNodeConnectionInfo},
 };
 use tokio::{
@@ -321,6 +321,23 @@ impl RedisClient {
             .await
             .map_err(|_| redis_timeout_error("Redis connection timed out"))?
     }
+
+    /// Acquire a dedicated Pub/Sub connection to the configured data node.
+    pub async fn get_async_pubsub(&self) -> RedisResult<PubSub> {
+        let acquire = async {
+            match self.inner.as_ref() {
+                RedisClientInner::Direct(client) => client
+                    .get_async_connection()
+                    .await
+                    .map(|connection| connection.into_pubsub()),
+                RedisClientInner::Sentinel(client) => client.get_pubsub().await,
+            }
+        };
+
+        timeout(self.connect_timeout, acquire)
+            .await
+            .map_err(|_| redis_timeout_error("Redis Pub/Sub connection timed out"))?
+    }
 }
 
 impl SentinelRedisClient {
@@ -347,6 +364,15 @@ impl SentinelRedisClient {
         self.refresh_master_if_due().await;
         let master = self.current_master.read().await.clone();
         master.get_multiplexed_async_connection().await
+    }
+
+    async fn get_pubsub(&self) -> RedisResult<PubSub> {
+        self.refresh_master_if_due().await;
+        let master = self.current_master.read().await.clone();
+        master
+            .get_async_connection()
+            .await
+            .map(|connection| connection.into_pubsub())
     }
 
     async fn refresh_master_if_due(&self) {

@@ -17,31 +17,28 @@ use std::sync::Arc;
 
 use crate::runtime::builtins::{
     BuiltinContext, BuiltinResult,
-    rag_answer::{
-        ENV_RAGFLOW_DATASET_IDS, ENV_RAGFLOW_DOCUMENT_IDS, ask_llm_to_answer, env_list,
-        extract_question, query_rag_chunks,
-    },
+    rag_answer::{ask_llm_to_answer, extract_question, query_rag_chunks},
 };
+use crate::services::ragflow_config::RagflowConfig;
 
 /// support_card handler — does not take LLM args; all state is read from
 /// `ctx.agent_ctx.user_input()`.
 pub fn support_card(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let question = extract_question(ctx.agent_ctx.as_ref());
     let llm = Arc::clone(&ctx.llm);
+    let config = RagflowConfig::current();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current()
-            .block_on(async move { support_card_async_impl(question, llm.as_ref()).await })
+            .block_on(async move { support_card_async_impl(question, llm.as_ref(), config).await })
     })
 }
 
 async fn support_card_async_impl(
     question: String,
     llm: &crate::runtime::llm::LlmRegistry,
+    config: RagflowConfig,
 ) -> BuiltinResult {
-    let dataset_ids = env_list(ENV_RAGFLOW_DATASET_IDS);
-    let document_ids = env_list(ENV_RAGFLOW_DOCUMENT_IDS);
-
-    let rag_chunks = query_rag_chunks(question.clone(), dataset_ids, document_ids).await;
+    let rag_chunks = query_rag_chunks(question.clone(), config).await;
 
     let has_knowledge = !rag_chunks.is_empty();
 
@@ -66,7 +63,7 @@ async fn support_card_async_impl(
         }));
     }
 
-    return Ok(json!({
+    Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
                 "content_type": "card",
@@ -79,7 +76,7 @@ async fn support_card_async_impl(
                 "agent_loop_reply": "抱歉，我无法回答您的问题。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
             }
         }
-    }));
+    }))
 }
 
 pub const SUPPORT_CARD_INPUT_SCHEMA: &str = r#"{

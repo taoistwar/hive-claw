@@ -1,4 +1,3 @@
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,16 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::runtime::builtins::{BuiltinContext, BuiltinResult};
-
-pub const DEFAULT_RAGFLOW_TOP_K: u32 = 10;
-pub const DEFAULT_RAGFLOW_PAGE_SIZE: u32 = 5;
-pub const DEFAULT_RAGFLOW_TIMEOUT_SECS: u64 = 30;
-pub const ENV_RAGFLOW_BASE_URL: &str = "RAGFLOW_BASE_URL";
-pub const ENV_RAGFLOW_API_KEY: &str = "RAGFLOW_API_KEY";
-pub const ENV_RAGFLOW_DATASET_IDS: &str = "RAGFLOW_DATASET_IDS";
-pub const ENV_RAGFLOW_DOCUMENT_IDS: &str = "RAGFLOW_DOCUMENT_IDS";
-pub const ENV_RAGFLOW_TOP_K: &str = "RAGFLOW_TOP_K";
-pub const ENV_RAGFLOW_PAGE_SIZE: &str = "RAGFLOW_PAGE_SIZE";
+use crate::services::ragflow_config::RagflowConfig;
 
 #[derive(Debug, Serialize)]
 pub struct RetrievalRequest {
@@ -37,6 +27,25 @@ pub struct RetrievalRequest {
     pub highlight: Option<bool>,
 }
 
+impl RetrievalRequest {
+    /// Builds a retrieval payload entirely from the resolved shared config.
+    pub fn from_config(question: String, config: &RagflowConfig) -> Self {
+        Self {
+            question,
+            dataset_ids: config.dataset_ids.clone(),
+            document_ids: config.document_ids.clone(),
+            page: Some(config.page),
+            page_size: Some(config.page_size),
+            similarity_threshold: Some(config.similarity_threshold),
+            vector_similarity_weight: Some(config.vector_similarity_weight),
+            top_k: Some(config.top_k),
+            rerank_id: config.rerank_id.clone(),
+            keyword: Some(config.keyword),
+            highlight: Some(config.highlight),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RetrievalResponse {
     code: i32,
@@ -46,8 +55,6 @@ struct RetrievalResponse {
 #[derive(Debug, Deserialize)]
 struct RetrievalData {
     chunks: Vec<RetrievalChunk>,
-    #[serde(default)]
-    total: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,23 +73,21 @@ pub fn rag_answer(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     }
 
     let llm = Arc::clone(&ctx.llm);
+    let config = RagflowConfig::current();
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current()
-        .block_on(async move { rag_answer_async_impl(question, llm.as_ref()).await })
+            .block_on(async move { rag_answer_async_impl(question, llm.as_ref(), config).await })
     })
 }
 
 async fn rag_answer_async_impl(
     question: String,
     llm: &crate::runtime::llm::LlmRegistry,
+    config: RagflowConfig,
 ) -> BuiltinResult {
-    let dataset_ids = env_list(ENV_RAGFLOW_DATASET_IDS);
-    let document_ids = env_list(ENV_RAGFLOW_DOCUMENT_IDS);
-
-    let rag_chunks = query_rag_chunks(question.clone(), dataset_ids, document_ids).await;
+    let rag_chunks = query_rag_chunks(question.clone(), config).await;
 
     let has_knowledge = !rag_chunks.is_empty();
-
 
     let llm_answer = ask_llm_to_answer(&question, &rag_chunks, has_knowledge, llm).await;
     if !llm_answer.trim().is_empty() {
@@ -97,7 +102,7 @@ async fn rag_answer_async_impl(
         }));
     }
 
-    return Ok(json!({
+    Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
                 "content_type": "card",
@@ -110,63 +115,37 @@ async fn rag_answer_async_impl(
                 "agent_loop_reply": "抱歉，我无法回答您的问题。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
             }
         }
-    }));
-
+    }))
 }
 
-pub fn extract_question(agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>) -> String {
+pub fn extract_question(
+    agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>,
+) -> String {
     agent_ctx
-        .and_then(|ctx| Some(ctx.user_input().raw_text.trim().to_string()))
+        .map(|ctx| ctx.user_input().raw_text.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_default()
 }
 
-pub async fn query_rag_chunks(
-    question: String,
-    dataset_ids: Vec<String>,
-    document_ids: Vec<String>,
-) -> Vec<String> {
-    perform_rag_request(question, dataset_ids, document_ids).await
+pub async fn query_rag_chunks(question: String, config: RagflowConfig) -> Vec<String> {
+    perform_rag_request(question, config).await
 }
 
-async fn perform_rag_request(
-    question: String,
-    dataset_ids: Vec<String>,
-    document_ids: Vec<String>,
-) -> Vec<String> {
-    let base_url = match env::var(ENV_RAGFLOW_BASE_URL) {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            tracing::warn!("RAGFLOW_BASE_URL 未配置，跳过知识检索");
-            return Vec::new();
-        }
-    };
+async fn perform_rag_request(question: String, config: RagflowConfig) -> Vec<String> {
+    if config.base_url.is_empty() {
+        tracing::warn!("RAGFlow base URL 未配置，跳过知识检索");
+        return Vec::new();
+    }
+    if config.api_key.is_empty() {
+        tracing::warn!("RAGFlow API key 未配置，跳过知识检索");
+        return Vec::new();
+    }
 
-    let api_key = match env::var(ENV_RAGFLOW_API_KEY) {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => {
-            tracing::warn!("RAGFLOW_API_KEY 未配置，跳过知识检索");
-            return Vec::new();
-        }
-    };
+    let request = RetrievalRequest::from_config(question, &config);
 
-    let request = RetrievalRequest {
-        question,
-        dataset_ids,
-        document_ids,
-        page: Some(1),
-        page_size: Some(env_num(ENV_RAGFLOW_PAGE_SIZE).unwrap_or(DEFAULT_RAGFLOW_PAGE_SIZE)),
-        similarity_threshold: Some(0.2),
-        vector_similarity_weight: Some(0.3),
-        top_k: Some(env_num(ENV_RAGFLOW_TOP_K).unwrap_or(DEFAULT_RAGFLOW_TOP_K)),
-        rerank_id: None,
-        keyword: Some(false),
-        highlight: Some(false),
-    };
-
-    let url = format!("{}/api/v1/retrieval", base_url.trim_end_matches('/'));
+    let url = format!("{}/api/v1/retrieval", config.base_url.trim_end_matches('/'));
     let client = match Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_RAGFLOW_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(config.timeout_secs))
         .build()
     {
         Ok(c) => c,
@@ -179,7 +158,7 @@ async fn perform_rag_request(
     let response = match client
         .post(url)
         .header("content-type", "application/json")
-        .bearer_auth(api_key)
+        .bearer_auth(&config.api_key)
         .json(&request)
         .send()
         .await
@@ -268,7 +247,9 @@ pub async fn ask_llm_to_answer(
 
 fn build_prompt_with_knowledge(question: &str, chunks: &[String]) -> String {
     let mut prompt = String::new();
-    prompt.push_str("你是客服助手，请严格基于以下知识库内容回答。回答要简洁、可执行。不要提示用户转人工。\n\n");
+    prompt.push_str(
+        "你是客服助手，请严格基于以下知识库内容回答。回答要简洁、可执行。不要提示用户转人工。\n\n",
+    );
     prompt.push_str(&format!("用户问题：{}\n\n", question));
     prompt.push_str("知识片段：\n");
     for (idx, chunk) in chunks.iter().take(6).enumerate() {
@@ -282,25 +263,6 @@ fn build_prompt_without_knowledge(question: &str) -> String {
     format!(
         "你是客服助手。用户提问：{question}\n\n请先回复一句“未检索到相关知识”，然后再基于常识给一个简洁、负责、可执行的答复。\n\n不要说你无能或无从回答。"
     )
-}
-
-pub fn env_list(key: &str) -> Vec<String> {
-    env::var(key)
-        .ok()
-        .map(|raw| split_csv(&raw))
-        .unwrap_or_default()
-}
-
-fn split_csv(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(|item| item.trim())
-        .filter(|item| !item.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-pub fn env_num(key: &str) -> Option<u32> {
-    env::var(key).ok().and_then(|raw| raw.parse::<u32>().ok())
 }
 
 pub const RAG_ANSWER_INPUT_SCHEMA: &str = r#"{
@@ -324,10 +286,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_csv_basic() {
+    fn retrieval_request_uses_every_resolved_config_value() {
+        let config = RagflowConfig {
+            base_url: "https://ragflow.example".to_string(),
+            api_key: "test-key".to_string(),
+            dataset_ids: vec!["dataset".to_string()],
+            document_ids: vec!["document".to_string()],
+            page: 2,
+            page_size: 7,
+            similarity_threshold: 0.4,
+            vector_similarity_weight: 0.6,
+            top_k: 12,
+            rerank_id: Some("reranker".to_string()),
+            keyword: false,
+            highlight: true,
+            timeout_secs: 45,
+        };
+
+        let request = RetrievalRequest::from_config("question".to_string(), &config);
+
+        assert_eq!(request.dataset_ids, config.dataset_ids);
+        assert_eq!(request.document_ids, config.document_ids);
+        assert_eq!(request.page, Some(config.page));
+        assert_eq!(request.page_size, Some(config.page_size));
         assert_eq!(
-            split_csv("a,, b ,c "),
-            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+            request.similarity_threshold,
+            Some(config.similarity_threshold)
         );
+        assert_eq!(
+            request.vector_similarity_weight,
+            Some(config.vector_similarity_weight)
+        );
+        assert_eq!(request.top_k, Some(config.top_k));
+        assert_eq!(request.rerank_id, config.rerank_id);
+        assert_eq!(request.keyword, Some(config.keyword));
+        assert_eq!(request.highlight, Some(config.highlight));
     }
 }

@@ -20,6 +20,7 @@ mod game_service_test;
 pub mod global_config;
 pub mod optimistic_lock;
 pub mod plugin;
+pub mod ragflow_config;
 pub mod recommended_game;
 pub mod runtime_audit;
 pub mod sensitive_filter;

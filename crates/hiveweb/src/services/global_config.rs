@@ -1,8 +1,12 @@
 //! GlobalConfig service — 全局配置 CRUD
 
-use serde::Deserialize;
-use sqlx::MySqlPool;
+use std::collections::HashMap;
 
+use serde::Deserialize;
+use serde_json::Value;
+use sqlx::{MySql, MySqlPool, QueryBuilder};
+
+use crate::cache::redis::RedisClient;
 use crate::models::GlobalConfig;
 use crate::utils::error::AppError;
 
@@ -21,7 +25,11 @@ pub struct UpdateMeta {
     pub data: Option<serde_json::Value>,
 }
 
-pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<GlobalConfig, AppError> {
+pub async fn create(
+    pool: &MySqlPool,
+    redis: &RedisClient,
+    meta: CreateMeta,
+) -> Result<GlobalConfig, AppError> {
     let res =
         sqlx::query("INSERT INTO global_configs (name, `key`, type, data) VALUES (?, ?, ?, ?)")
             .bind(&meta.name)
@@ -38,7 +46,9 @@ pub async fn create(pool: &MySqlPool, meta: CreateMeta) -> Result<GlobalConfig, 
                     AppError::Internal(format!("global_config insert: {e}"))
                 }
             })?;
-    fetch_by_id(pool, res.last_insert_id() as i64).await
+    let config = fetch_by_id(pool, res.last_insert_id() as i64).await?;
+    crate::services::ragflow_config::sync_global_value(redis, &config.key, &config.data).await;
+    Ok(config)
 }
 
 pub async fn fetch_by_id(pool: &MySqlPool, id: i64) -> Result<GlobalConfig, AppError> {
@@ -61,6 +71,55 @@ pub async fn fetch_by_key(pool: &MySqlPool, key: &str) -> Result<GlobalConfig, A
     .await
     .map_err(|e| AppError::Internal(format!("global_config fetch by key: {e}")))?
     .ok_or_else(|| AppError::NotFound(format!("global_config key={key} not found")))
+}
+
+/// Inserts a global config row only when its key does not already exist.
+/// Used to seed built-in config keys (e.g. RAGFlow) without clobbering edits.
+pub async fn ensure_key(
+    pool: &MySqlPool,
+    name: &str,
+    key: &str,
+    config_type: &str,
+    data: &Value,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT IGNORE INTO global_configs (name, `key`, type, data) VALUES (?, ?, ?, ?)",
+    )
+    .bind(name)
+    .bind(key)
+    .bind(config_type)
+    .bind(data)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| AppError::Internal(format!("global_config ensure_key: {e}")))
+}
+
+/// Fetches the JSON values for the requested global configuration keys in one query.
+pub async fn fetch_values_by_keys(
+    pool: &MySqlPool,
+    keys: &[&str],
+) -> Result<HashMap<String, Value>, AppError> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query =
+        QueryBuilder::<MySql>::new("SELECT `key`, data FROM global_configs WHERE `key` IN (");
+    {
+        let mut separated = query.separated(", ");
+        for key in keys {
+            separated.push_bind(*key);
+        }
+    }
+    query.push(")");
+
+    query
+        .build_query_as::<(String, Value)>()
+        .fetch_all(pool)
+        .await
+        .map(|rows| rows.into_iter().collect())
+        .map_err(|e| AppError::Internal(format!("global_config fetch values by keys: {e}")))
 }
 
 pub async fn list(
@@ -113,7 +172,12 @@ pub async fn list(
     }
 }
 
-pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<GlobalConfig, AppError> {
+pub async fn update(
+    pool: &MySqlPool,
+    redis: &RedisClient,
+    id: i64,
+    meta: UpdateMeta,
+) -> Result<GlobalConfig, AppError> {
     sqlx::query(
         "UPDATE global_configs SET \
          name = COALESCE(?, name), \
@@ -129,10 +193,13 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Globa
     .await
     .map_err(|e| AppError::Internal(format!("global_config update: {e}")))?;
 
-    fetch_by_id(pool, id).await
+    let config = fetch_by_id(pool, id).await?;
+    crate::services::ragflow_config::sync_global_value(redis, &config.key, &config.data).await;
+    Ok(config)
 }
 
-pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
+pub async fn delete(pool: &MySqlPool, redis: &RedisClient, id: i64) -> Result<(), AppError> {
+    let config = fetch_by_id(pool, id).await?;
     let rows = sqlx::query("DELETE FROM global_configs WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -144,5 +211,6 @@ pub async fn delete(pool: &MySqlPool, id: i64) -> Result<(), AppError> {
             "global_config id={id} not found"
         )));
     }
+    crate::services::ragflow_config::remove_global_value(redis, &config.key).await;
     Ok(())
 }

@@ -1,28 +1,18 @@
-use std::env;
 use std::time::Duration;
 
-use axum::{extract::{Query, State}, routing::get, Router};
+use axum::{Router, extract::Query, routing::get};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
-use crate::runtime::builtins::rag_answer::{
-    env_list,
-    env_num,
-    RetrievalRequest,
-    DEFAULT_RAGFLOW_PAGE_SIZE,
-    DEFAULT_RAGFLOW_TIMEOUT_SECS,
-    DEFAULT_RAGFLOW_TOP_K,
-    ENV_RAGFLOW_API_KEY,
-    ENV_RAGFLOW_BASE_URL,
-    ENV_RAGFLOW_DATASET_IDS,
-    ENV_RAGFLOW_DOCUMENT_IDS,
-    ENV_RAGFLOW_TOP_K,
-};
+use crate::runtime::builtins::rag_answer::RetrievalRequest;
+use crate::services::ragflow_config::RagflowConfig;
 use crate::utils::error::{ApiResponse, AppError};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/knowledge-query", get(search))
+    Router::new()
+        .route("/knowledge-query", get(search))
+        .route("/knowledge-query/defaults", get(defaults))
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,9 +33,50 @@ struct SearchQuery {
     #[serde(default)]
     top_k: Option<u32>,
     #[serde(default)]
+    rerank_id: Option<String>,
+    #[serde(default)]
     keyword: Option<bool>,
     #[serde(default)]
     highlight: Option<bool>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchDefaults {
+    page: u32,
+    page_size: u32,
+    similarity_threshold: f32,
+    vector_similarity_weight: f32,
+    top_k: u32,
+    rerank_id: Option<String>,
+    keyword: bool,
+    highlight: bool,
+    timeout_secs: u64,
+}
+
+impl From<&RagflowConfig> for SearchDefaults {
+    fn from(config: &RagflowConfig) -> Self {
+        Self {
+            page: config.page,
+            page_size: config.page_size,
+            similarity_threshold: config.similarity_threshold,
+            vector_similarity_weight: config.vector_similarity_weight,
+            top_k: config.top_k,
+            rerank_id: config.rerank_id.clone(),
+            keyword: config.keyword,
+            highlight: config.highlight,
+            timeout_secs: config.timeout_secs,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ResolvedSearchQuery {
+    request: RetrievalRequest,
+    page: u32,
+    page_size: u32,
+    timeout_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -87,47 +118,19 @@ struct RagflowResponseData {
     total: Option<u32>,
 }
 
+async fn defaults() -> ApiResponse<SearchDefaults> {
+    ApiResponse::success(SearchDefaults::from(&RagflowConfig::current()))
+}
+
 async fn search(
     Query(q): Query<SearchQuery>,
-    State(_): State<AppState>,
 ) -> Result<ApiResponse<SearchResponse>, ApiResponse<()>> {
-    let question = q.question.trim();
-    if question.is_empty() {
-        return Err(AppError::BadRequest("question 不能为空".into()).into_response());
-    }
+    let config = RagflowConfig::current();
+    let resolved = resolve_search_query(q, &config).map_err(|error| error.into_response())?;
+    let page = resolved.page;
+    let page_size = resolved.page_size;
 
-    let page = q.page.unwrap_or(1).max(1);
-    let page_size = q
-        .page_size
-        .unwrap_or(DEFAULT_RAGFLOW_PAGE_SIZE)
-        .max(1)
-        .min(100);
-
-    let dataset_ids = q
-        .dataset_ids
-        .as_deref()
-        .map(split_csv)
-        .unwrap_or_else(|| env_list(ENV_RAGFLOW_DATASET_IDS));
-
-    let document_ids = q
-        .document_ids
-        .as_deref()
-        .map(split_csv)
-        .unwrap_or_else(|| env_list(ENV_RAGFLOW_DOCUMENT_IDS));
-
-    let (items, total) = query_rag(
-        question,
-        dataset_ids,
-        document_ids,
-        page,
-        page_size,
-        q.similarity_threshold,
-        q.vector_similarity_weight,
-        q.top_k,
-        q.keyword,
-        q.highlight,
-    )
-    .await;
+    let (items, total) = query_rag(&config, resolved.request, resolved.timeout_secs).await;
 
     Ok(ApiResponse::success(SearchResponse {
         items,
@@ -136,6 +139,93 @@ async fn search(
         page_size,
         has_knowledge: total > 0,
     }))
+}
+
+fn resolve_search_query(
+    query: SearchQuery,
+    config: &RagflowConfig,
+) -> Result<ResolvedSearchQuery, AppError> {
+    let question = query.question.trim();
+    if question.is_empty() {
+        return Err(AppError::BadRequest("question 不能为空".into()));
+    }
+
+    let page = query.page.unwrap_or(config.page);
+    if page == 0 {
+        return Err(AppError::BadRequest("page 必须大于 0".into()));
+    }
+
+    let page_size = query.page_size.unwrap_or(config.page_size);
+    if !(1..=100).contains(&page_size) {
+        return Err(AppError::BadRequest(
+            "page_size 必须在 1 到 100 之间".into(),
+        ));
+    }
+
+    let similarity_threshold = query
+        .similarity_threshold
+        .unwrap_or(config.similarity_threshold);
+    validate_unit_interval("similarity_threshold", similarity_threshold)?;
+
+    let vector_similarity_weight = query
+        .vector_similarity_weight
+        .unwrap_or(config.vector_similarity_weight);
+    validate_unit_interval("vector_similarity_weight", vector_similarity_weight)?;
+
+    let top_k = query.top_k.unwrap_or(config.top_k);
+    if top_k == 0 {
+        return Err(AppError::BadRequest("top_k 必须大于 0".into()));
+    }
+
+    let timeout_secs = query.timeout_secs.unwrap_or(config.timeout_secs);
+    if timeout_secs == 0 {
+        return Err(AppError::BadRequest("timeout_secs 必须大于 0".into()));
+    }
+
+    let dataset_ids = query
+        .dataset_ids
+        .as_deref()
+        .map(split_csv)
+        .unwrap_or_else(|| config.dataset_ids.clone());
+
+    let document_ids = query
+        .document_ids
+        .as_deref()
+        .map(split_csv)
+        .unwrap_or_else(|| config.document_ids.clone());
+
+    let mut request = RetrievalRequest::from_config(question.to_string(), config);
+    request.dataset_ids = dataset_ids;
+    request.document_ids = document_ids;
+    request.page = Some(page);
+    request.page_size = Some(page_size);
+    request.similarity_threshold = Some(similarity_threshold);
+    request.vector_similarity_weight = Some(vector_similarity_weight);
+    request.top_k = Some(top_k);
+    request.rerank_id = match query.rerank_id {
+        Some(value) => {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
+        None => config.rerank_id.clone(),
+    };
+    request.keyword = Some(query.keyword.unwrap_or(config.keyword));
+    request.highlight = Some(query.highlight.unwrap_or(config.highlight));
+
+    Ok(ResolvedSearchQuery {
+        request,
+        page,
+        page_size,
+        timeout_secs,
+    })
+}
+
+fn validate_unit_interval(name: &str, value: f32) -> Result<(), AppError> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!("{name} 必须在 0 到 1 之间")))
+    }
 }
 
 fn split_csv(raw: &str) -> Vec<String> {
@@ -147,49 +237,21 @@ fn split_csv(raw: &str) -> Vec<String> {
 }
 
 async fn query_rag(
-    question: &str,
-    dataset_ids: Vec<String>,
-    document_ids: Vec<String>,
-    page: u32,
-    page_size: u32,
-    similarity_threshold: Option<f32>,
-    vector_similarity_weight: Option<f32>,
-    top_k: Option<u32>,
-    keyword: Option<bool>,
-    highlight: Option<bool>,
+    config: &RagflowConfig,
+    request: RetrievalRequest,
+    timeout_secs: u64,
 ) -> (Vec<KnowledgeChunk>, u32) {
-    let base_url = match env::var(ENV_RAGFLOW_BASE_URL) {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            tracing::warn!("RAGFLOW_BASE_URL 未配置，返回空结果");
-            return (Vec::new(), 0);
-        }
-    };
-
-    let api_key = match env::var(ENV_RAGFLOW_API_KEY) {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => {
-            tracing::warn!("RAGFLOW_API_KEY 未配置，返回空结果");
-            return (Vec::new(), 0);
-        }
-    };
-
-    let request = RetrievalRequest {
-        question: question.to_string(),
-        dataset_ids,
-        document_ids,
-        page: Some(page),
-        page_size: Some(page_size),
-        similarity_threshold: Some(similarity_threshold.unwrap_or(0.2)),
-        vector_similarity_weight: Some(vector_similarity_weight.unwrap_or(0.3)),
-        top_k: Some(top_k.unwrap_or_else(|| env_num(ENV_RAGFLOW_TOP_K).unwrap_or(DEFAULT_RAGFLOW_TOP_K))),
-        rerank_id: None,
-        keyword: Some(keyword.unwrap_or(false)),
-        highlight: Some(highlight.unwrap_or(false)),
-    };
+    if config.base_url.is_empty() {
+        tracing::warn!("RAGFlow base URL 未配置，返回空结果");
+        return (Vec::new(), 0);
+    }
+    if config.api_key.is_empty() {
+        tracing::warn!("RAGFlow API key 未配置，返回空结果");
+        return (Vec::new(), 0);
+    }
 
     let client = match Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_RAGFLOW_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()
     {
         Ok(c) => c,
@@ -199,12 +261,12 @@ async fn query_rag(
         }
     };
 
-    let url = format!("{}/api/v1/retrieval", base_url.trim_end_matches('/'));
+    let url = format!("{}/api/v1/retrieval", config.base_url.trim_end_matches('/'));
 
     let response = match client
         .post(url)
         .header("content-type", "application/json")
-        .bearer_auth(api_key)
+        .bearer_auth(&config.api_key)
         .json(&request)
         .send()
         .await
@@ -264,4 +326,110 @@ async fn query_rag(
         .collect();
 
     (items, total)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{SearchDefaults, SearchQuery, resolve_search_query};
+    use crate::services::ragflow_config::RagflowConfig;
+
+    fn global_config() -> RagflowConfig {
+        RagflowConfig {
+            base_url: "https://ragflow.example".to_string(),
+            api_key: "test-key".to_string(),
+            dataset_ids: vec!["dataset-from-global".to_string()],
+            document_ids: vec!["document-from-global".to_string()],
+            page: 2,
+            page_size: 6,
+            similarity_threshold: 0.2,
+            vector_similarity_weight: 0.3,
+            top_k: 10,
+            rerank_id: Some("reranker-from-global".to_string()),
+            keyword: true,
+            highlight: false,
+            timeout_secs: 30,
+        }
+    }
+
+    #[test]
+    fn editable_defaults_are_derived_from_resolved_global_config() {
+        let defaults = SearchDefaults::from(&global_config());
+
+        assert_eq!(
+            serde_json::to_value(defaults).unwrap(),
+            json!({
+                "page": 2,
+                "page_size": 6,
+                "similarity_threshold": 0.2_f32,
+                "vector_similarity_weight": 0.3_f32,
+                "top_k": 10,
+                "rerank_id": "reranker-from-global",
+                "keyword": true,
+                "highlight": false,
+                "timeout_secs": 30
+            })
+        );
+    }
+
+    #[test]
+    fn every_debug_parameter_overrides_its_global_default() {
+        let resolved = resolve_search_query(
+            SearchQuery {
+                question: "如何重置密码？".to_string(),
+                page: Some(4),
+                page_size: Some(20),
+                dataset_ids: None,
+                document_ids: None,
+                similarity_threshold: Some(0.45),
+                vector_similarity_weight: Some(0.65),
+                top_k: Some(25),
+                rerank_id: Some("debug-reranker".to_string()),
+                keyword: Some(false),
+                highlight: Some(true),
+                timeout_secs: Some(45),
+            },
+            &global_config(),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.page, 4);
+        assert_eq!(resolved.page_size, 20);
+        assert_eq!(resolved.timeout_secs, 45);
+        assert_eq!(resolved.request.page, Some(4));
+        assert_eq!(resolved.request.page_size, Some(20));
+        assert_eq!(resolved.request.similarity_threshold, Some(0.45));
+        assert_eq!(resolved.request.vector_similarity_weight, Some(0.65));
+        assert_eq!(resolved.request.top_k, Some(25));
+        assert_eq!(
+            resolved.request.rerank_id.as_deref(),
+            Some("debug-reranker")
+        );
+        assert_eq!(resolved.request.keyword, Some(false));
+        assert_eq!(resolved.request.highlight, Some(true));
+    }
+
+    #[test]
+    fn invalid_debug_ranges_are_rejected_at_the_http_boundary() {
+        let result = resolve_search_query(
+            SearchQuery {
+                question: "如何重置密码？".to_string(),
+                page: Some(1),
+                page_size: Some(101),
+                dataset_ids: None,
+                document_ids: None,
+                similarity_threshold: Some(1.1),
+                vector_similarity_weight: Some(0.3),
+                top_k: Some(10),
+                rerank_id: None,
+                keyword: Some(true),
+                highlight: Some(false),
+                timeout_secs: Some(30),
+            },
+            &global_config(),
+        );
+
+        assert!(result.is_err());
+    }
 }

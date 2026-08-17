@@ -53,8 +53,12 @@ async fn main() -> anyhow::Result<()> {
     let db_url_display = mask_url_password(&database_url);
     tracing::info!("Database initialized: {}", db_url_display);
 
+    // Load RAGFlow global overrides once; request paths read process-global state only.
+    services::ragflow_config::initialize(&pool).await;
+
     // Initialize Redis connection (direct REDIS_URL or Sentinel discovery).
     let redis = cache::redis::create_from_env().await?;
+    services::ragflow_config::spawn_subscriber(redis.clone(), pool.clone());
 
     // Initialize S3 client (only when plugin system is enabled)
     let s3_client = if plugin_system_enabled() {

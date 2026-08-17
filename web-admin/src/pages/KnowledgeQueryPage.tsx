@@ -1,84 +1,129 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react'
 import {
   Button,
   Card,
+  Col,
   Drawer,
   Empty,
+  Form,
   Input,
+  InputNumber,
+  Row,
   Space,
+  Spin,
+  Switch,
   Table,
   Tag,
   Typography,
   message,
-} from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import type { KnowledgeQueryItem } from '../services/knowledgeQuery';
-import { queryKnowledge } from '../services/knowledgeQuery';
+} from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import type { KnowledgeQueryItem, KnowledgeQueryParams } from '../services/knowledgeQuery'
+import { getKnowledgeQueryDefaults, queryKnowledge } from '../services/knowledgeQuery'
 
-const { Search } = Input;
-const { Paragraph, Text, Title } = Typography;
+const { Paragraph, Text, Title } = Typography
 
-const DEFAULT_PAGE_SIZE = 5;
-const PAGE_SIZE_OPTIONS = ['5', '10', '20', '50'];
+const DEFAULT_PAGE_SIZE = 5
+const PAGE_SIZE_OPTIONS = ['5', '10', '20', '50']
+
+interface SearchFormValues extends Required<Omit<KnowledgeQueryParams, 'rerank_id'>> {
+  rerank_id?: string
+}
 
 function formatScore(value?: number | null): string {
-  if (value === undefined || value === null || Number.isNaN(value)) return '—';
-  return value.toFixed(4);
+  if (value === undefined || value === null || Number.isNaN(value)) return '—'
+  return value.toFixed(4)
 }
 
 function formatKeywordTag(value?: string | null): string {
-  return value?.trim() || '—';
+  return value?.trim() || '—'
 }
 
 export default function KnowledgeQueryPage() {
-  const [question, setQuestion] = useState('');
-  const [items, setItems] = useState<KnowledgeQueryItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [selectedItem, setSelectedItem] = useState<KnowledgeQueryItem | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [form] = Form.useForm<SearchFormValues>()
+  const [items, setItems] = useState<KnowledgeQueryItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [defaultsLoading, setDefaultsLoading] = useState(true)
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [selectedItem, setSelectedItem] = useState<KnowledgeQueryItem | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
-  const fetchList = async (nextPage = page, nextPageSize = pageSize) => {
-    const q = question.trim();
-    if (!q) {
-      message.warning('请输入检索内容');
-      return;
+  const pageSizeOptions = useMemo(
+    () =>
+      Array.from(new Set([...PAGE_SIZE_OPTIONS, String(pageSize)])).sort(
+        (left, right) => Number(left) - Number(right)
+      ),
+    [pageSize]
+  )
+
+  useEffect(() => {
+    let active = true
+
+    void getKnowledgeQueryDefaults()
+      .then((defaults) => {
+        if (!active) return
+        form.setFieldsValue({
+          question: '',
+          ...defaults,
+          rerank_id: defaults.rerank_id ?? '',
+        })
+        setPage(defaults.page)
+        setPageSize(defaults.page_size)
+      })
+      .catch(() => {
+        if (active) message.error('全局检索参数加载失败，请稍后重试')
+      })
+      .finally(() => {
+        if (active) setDefaultsLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [form])
+
+  const fetchList = async (
+    values: SearchFormValues,
+    nextPage = values.page,
+    nextPageSize = values.page_size
+  ) => {
+    const params: KnowledgeQueryParams = {
+      ...values,
+      question: values.question.trim(),
+      page: nextPage,
+      page_size: nextPageSize,
+      rerank_id: values.rerank_id?.trim() ?? '',
     }
 
-    setLoading(true);
+    setLoading(true)
     try {
-      const res = await queryKnowledge({
-        question: q,
-        page: nextPage,
-        page_size: nextPageSize,
-      });
+      const res = await queryKnowledge(params)
 
-      setItems(res.items);
-      setTotal(res.total);
-      setPage(nextPage);
-      setPageSize(nextPageSize);
+      setItems(res.items)
+      setTotal(res.total)
+      setPage(nextPage)
+      setPageSize(nextPageSize)
+      form.setFieldsValue({ page: nextPage, page_size: nextPageSize })
     } catch {
-      message.error('检索失败，请稍后重试');
+      message.error('检索失败，请稍后重试')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
-
-  const onSearch = () => {
-    setPage(1);
-    void fetchList(1, pageSize);
-  };
+  }
 
   const handleTableChange = (newPage: number, newPageSize: number) => {
-    void fetchList(newPage, newPageSize);
-  };
+    void form
+      .validateFields()
+      .then((values) => fetchList(values, newPage, newPageSize))
+      .catch(() => undefined)
+  }
 
   const openDetail = (record: KnowledgeQueryItem) => {
-    setSelectedItem(record);
-    setDrawerOpen(true);
-  };
+    setSelectedItem(record)
+    setDrawerOpen(true)
+  }
 
   const columns: ColumnsType<KnowledgeQueryItem> = [
     {
@@ -91,7 +136,9 @@ export default function KnowledgeQueryPage() {
       title: '内容摘要',
       dataIndex: 'content',
       key: 'content',
-      render: (content: string) => <Paragraph ellipsis={{ rows: 2, expandable: false }}>{content || '—'}</Paragraph>,
+      render: (content: string) => (
+        <Paragraph ellipsis={{ rows: 2, expandable: false }}>{content || '—'}</Paragraph>
+      ),
     },
     {
       title: '文档',
@@ -129,7 +176,7 @@ export default function KnowledgeQueryPage() {
         </Button>
       ),
     },
-  ];
+  ]
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -137,19 +184,102 @@ export default function KnowledgeQueryPage() {
         知识库查询
       </Title>
 
-      <Card title="1. 检索区域" bordered={false}>
-        <Search
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onSearch={onSearch}
-          placeholder="输入问题或关键词"
-          enterButton="检索"
-          allowClear
-          size="large"
-        />
+      <Card title="1. 检索区域" variant="borderless">
+        <Spin spinning={defaultsLoading} tip="正在加载全局配置">
+          <Form<SearchFormValues>
+            form={form}
+            layout="vertical"
+            disabled={defaultsLoading}
+            onFinish={(values) => void fetchList(values)}
+          >
+            <Form.Item
+              label="问题"
+              name="question"
+              rules={[{ required: true, whitespace: true, message: '请输入检索内容' }]}
+            >
+              <Input.TextArea rows={3} placeholder="输入问题或关键词" allowClear />
+            </Form.Item>
+
+            <Row gutter={16}>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item
+                  label="页码"
+                  name="page"
+                  rules={[{ required: true, type: 'number', min: 1 }]}
+                >
+                  <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item
+                  label="每页数量"
+                  name="page_size"
+                  rules={[{ required: true, type: 'number', min: 1, max: 100 }]}
+                >
+                  <InputNumber min={1} max={100} precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item
+                  label="相似度阈值"
+                  name="similarity_threshold"
+                  rules={[{ required: true, type: 'number', min: 0, max: 1 }]}
+                >
+                  <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item
+                  label="向量相似度权重"
+                  name="vector_similarity_weight"
+                  rules={[{ required: true, type: 'number', min: 0, max: 1 }]}
+                >
+                  <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item
+                  label="Top K"
+                  name="top_k"
+                  rules={[{ required: true, type: 'number', min: 1 }]}
+                >
+                  <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item label="Rerank ID" name="rerank_id">
+                  <Input placeholder="留空表示不使用 reranker" allowClear />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={6}>
+                <Form.Item
+                  label="请求超时（秒）"
+                  name="timeout_secs"
+                  rules={[{ required: true, type: 'number', min: 1 }]}
+                >
+                  <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={6} lg={3}>
+                <Form.Item label="关键字匹配" name="keyword" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={6} lg={3}>
+                <Form.Item label="返回高亮" name="highlight" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Button type="primary" htmlType="submit" loading={loading} aria-label="检索">
+              检索
+            </Button>
+          </Form>
+        </Spin>
       </Card>
 
-      <Card title="2. 结果区域" bordered={false}>
+      <Card title="2. 结果区域" variant="borderless">
         {items.length === 0 && !loading ? (
           <Empty description="暂无结果，请先检索" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
@@ -164,7 +294,7 @@ export default function KnowledgeQueryPage() {
               total,
               showTotal: (t) => `共 ${t} 条`,
               showSizeChanger: true,
-              pageSizeOptions: PAGE_SIZE_OPTIONS,
+              pageSizeOptions,
               onChange: handleTableChange,
             }}
           />
@@ -172,7 +302,9 @@ export default function KnowledgeQueryPage() {
       </Card>
 
       <Drawer
-        title={selectedItem ? `知识片段明细：${selectedItem.document_keyword ?? ''}` : '知识片段明细'}
+        title={
+          selectedItem ? `知识片段明细：${selectedItem.document_keyword ?? ''}` : '知识片段明细'
+        }
         width={560}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -189,9 +321,7 @@ export default function KnowledgeQueryPage() {
 
             <div>
               <Text strong>高亮片段</Text>
-              <Paragraph style={{ marginTop: 6 }}>
-                {selectedItem.highlight || '—'}
-              </Paragraph>
+              <Paragraph style={{ marginTop: 6 }}>{selectedItem.highlight || '—'}</Paragraph>
             </div>
 
             <div>
@@ -219,7 +349,9 @@ export default function KnowledgeQueryPage() {
               <Text strong>关键字</Text>
               <div style={{ marginTop: 6 }}>
                 {selectedItem.important_keywords?.length ? (
-                  selectedItem.important_keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>)
+                  selectedItem.important_keywords.map((keyword) => (
+                    <Tag key={keyword}>{keyword}</Tag>
+                  ))
                 ) : (
                   <Text type="secondary">—</Text>
                 )}
@@ -236,5 +368,5 @@ export default function KnowledgeQueryPage() {
         )}
       </Drawer>
     </div>
-  );
+  )
 }

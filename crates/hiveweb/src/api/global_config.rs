@@ -100,7 +100,7 @@ async fn create_global_config(
         );
     }
 
-    svc::create(&state.pool, meta)
+    svc::create(&state.pool, &state.redis, meta)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -128,7 +128,7 @@ async fn update_global_config(
         meta.config_type = None;
     }
 
-    svc::update(&state.pool, id, meta)
+    svc::update(&state.pool, &state.redis, id, meta)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -149,7 +149,7 @@ async fn delete_global_config(
         );
     }
 
-    match svc::delete(&state.pool, id).await {
+    match svc::delete(&state.pool, &state.redis, id).await {
         Ok(()) => Ok(ApiResponse::success(())),
         Err(e) => Err(e.into_response()),
     }

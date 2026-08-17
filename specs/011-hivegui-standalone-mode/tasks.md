@@ -377,8 +377,8 @@
 
 ### Implementation for User Story 11
 
-- [ ] T105 [US11] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/runtime/tool_adapter.rs` 实现字符串 kind、Tool 约束、索引搜索分页、schema/Capability 校验和 Function/Workflow 分派
-- [ ] T106 [US11] 在 `crates/hivegui/src/ui/tool_view.rs` 实现 Tool CRUD、目标选择、`is_always`、schema/Capability 编辑、搜索分页和键盘语义，并只闭合 T101/T104 已审批的 Tool 原生滚动行
+- [X] T105 [US11] 在 `crates/hivegui/src/datasource/entity_store.rs` 和 `crates/hivegui/src/runtime/tool_adapter.rs` 实现字符串 kind、Tool 约束、索引搜索分页、schema/Capability 校验和 Function/Workflow 分派。**2026-08-17 复核**：实现主体已完成——`entity_store::Tool.kind: String`（字符串 kind，kind 分裂修复已统一为 `function-wrap`/`workflow-wrap`）；`Tool::create/update` 的 CHECK 约束（`kind == "function-wrap"` → `function_id` 非空、`kind == "workflow-wrap"` → `workflow_id` 非空）+ `validate_json(input_schema/output_schema)` schema 校验 + `required_capabilities` 字段；`Tool::list`/`count` 索引搜索分页；`tool_adapter.rs` 的 `ToolKind::Builtin/Function/Workflow/Local` 四值分派 + `RemoteForbidden` 远程拒绝（`http/https/remote/tcp` 前缀）。验证 `tool_management` 4/4 + `tool_dispatch` 6/6 Green。T105 闭合（注：T101 完整测试的分页/EXPLAIN/p95 专门断言仍未写全，作为独立测试缺口）。
+- [X] T106 [US11] 在 `crates/hivegui/src/ui/tool_view.rs` 实现 Tool CRUD、目标选择、`is_always`、schema/Capability 编辑、搜索分页和键盘语义，并只闭合 T101/T104 已审批的 Tool 原生滚动行。**2026-08-17 复核**：`tool_view.rs`（1162 行）已完整——`load`/`show_edit_form`/`save`/`delete` 完整 CRUD、`input_schema_input`/`output_schema_input` schema 编辑、kind/source 目标选择器（kind 分裂修复已把 `form_kind: i64` → `String` + `tool_kind_label(&str)`）、`is_always` 字段、搜索分页（走 `Tool::list`）、键盘语义（`on_key_down` + `track_focus`）。T106 闭合。
 - [X] T107 [US11] 在 `crates/hivegui/tests/tool_management.rs`、`crates/hivegui/tests/tool_dispatch.rs`、`crates/hivegui/tests/accessibility.rs` 和 `crates/hivegui/benches/local_runtime.rs` 只复跑并记录 US11 Green、性能结果与 Tool 原生滚动行，不得在此首次增加断言。**2026-07-31 进度**：`tool_management` 4/4 Green（unique name + builtin 不可变 + Workflow 引用 conflict + stable default_args schema），US11 store layer 签字在 `checklists/implementation-review.md §T107.2`；T102 dispatch / T103 bench / T105-T106 完整分派 + UI 仍 Pending（`tool_form_contract` Red 待 T106 实现 kind/source 字段选择器）。
 
 ---

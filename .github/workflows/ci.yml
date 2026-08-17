@@ -16,9 +16,9 @@ jobs:
       GITLEAKS_SHA256: "f8a30ec64d4e7a0a3a8c5e0a4f6f3b1e7a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"
       CARGO_DENY_VERSION: "0.20.2"
       SQLX_CLI_VERSION: "0.9.0"
-      MYSQL_ASYNC_VERSION: "0.36.2"
+      MYSQL_ASYNC_VERSION: "0.37.0"
       SQLX_VERSION: "0.9.0"
-      AWS_SDK_S3_VERSION: "1.133.0"
+      AWS_SDK_S3_VERSION: "1.141.0"
       VENDORED_WAYLAND_SCANNER_VERSION: "0.31.10"
 
     steps:
@@ -313,3 +313,77 @@ jobs:
 
       - name: cargo test (HiveWeb integration)
         run: cargo +1.97.1 test --locked -p hiveweb --tests -- --test-threads=1
+
+  hivegui-mysql:
+    name: hivegui mysql
+    runs-on: ubuntu-latest
+
+    # HiveGUI standalone boundary: this job exercises the HiveGUI remote
+    # MySQL client (`crates/hivegui/src/datasource/mysql_client.rs`) against an
+    # isolated schema/account. It reuses the MySQL 8.0 container image but is
+    # fully independent of HiveWeb: it does NOT set TEST_DATABASE_URL, does NOT
+    # run HiveWeb migrations, and does NOT start the HiveWeb server/client.
+    env:
+      HIVEGUI_TEST_MYSQL_URL: mysql://hivegui:hivegui_test_password@127.0.0.1:3306/hivegui_test
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: hivegui_test_root
+          MYSQL_DATABASE: hivegui_test
+          MYSQL_USER: hivegui
+          MYSQL_PASSWORD: hivegui_test_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -phivegui_test_root"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config build-essential libssl-dev
+
+      - name: Install and verify Rust 1.97.1 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup show
+
+          expected_release="release: 1.97.1"
+          rustc_details="$(rustc --version --verbose)"
+          cargo_details="$(cargo --version --verbose)"
+
+          printf '%s\n' "$rustc_details"
+          printf '%s\n' "$cargo_details"
+
+          if ! grep -Fqx -- "$expected_release" <<<"$rustc_details"; then
+            echo "::error::expected rustc 1.97.1" >&2
+            exit 1
+          fi
+
+          if ! grep -Fqx -- "$expected_release" <<<"$cargo_details"; then
+            echo "::error::expected cargo 1.97.1" >&2
+            exit 1
+          fi
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-hivegui-mysql-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo test (HiveGUI MySQL)
+        run: cargo +1.97.1 test --locked -p hivegui --test datasource_connection -- --test-threads=1

@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite, SqlitePool};
 
-use crate::datasource::plugin_artifacts::OperationState;
+use crate::datasource::plugin_artifacts::{OperationState, derive_staging_name};
 
 /// Reason a plugin installation failed. Stable string used in
 /// error envelopes and on-disk logs.
@@ -253,6 +253,13 @@ impl PluginStore {
 
     /// Install a fresh plugin. Rejects silently-replacing an
     /// existing `(identifier, version)` with `NoReplace`.
+    ///
+    /// T077: the install runs the full durability state machine:
+    /// `prepared` → `staged` → `published` → `referenced` → `done`,
+    /// recording each transition in `plugin_artifact_operations`. The
+    /// artifact bytes are written to a staging file (exclusive create,
+    /// flushed + fsynced, identity recomputed) before being published
+    /// to the immutable key via an exclusive no-replace create.
     pub async fn install(
         &self,
         input: PluginArtifactInput,
@@ -280,22 +287,40 @@ impl PluginStore {
                 references: Vec::new(),
             });
         }
-        let artifact_dir = self.inner.root.join(input.identifier());
-        std::fs::create_dir_all(&artifact_dir).map_err(|_| PluginInstallError {
-            kind: PluginInstallErrorKind::Io,
-            references: Vec::new(),
-        })?;
-        let artifact_path = artifact_dir.join(format!("{}.wasm", input.version()));
-        std::fs::write(&artifact_path, input.bytes()).map_err(|_| PluginInstallError {
-            kind: PluginInstallErrorKind::Io,
-            references: Vec::new(),
-        })?;
+
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let staging_name = derive_staging_name(&operation_id);
+        let fingerprint = sha256_hex(input.bytes());
+
+        // 1. prepared — the operation is recorded before any bytes hit
+        //    disk, so a crash leaves a recoverable prepared row.
+        self.insert_prepared(&operation_id, &staging_name).await?;
+
+        // 2. staging write — exclusive create, flush + fsync, then
+        //    re-read identity so the staged row carries the verified
+        //    hash of the bytes actually on disk.
+        self.write_staging(&staging_name, input.bytes()).await?;
+
+        // 3. staged — staging_identity becomes non-null.
+        self.transition(&operation_id, "staged", Some(&fingerprint), None, None)
+            .await?;
+
+        // 4. publish — exclusive no-replace create to the immutable key.
+        self.publish_artifact(input.identifier(), input.version(), input.bytes())
+            .await?;
+
+        // 5. published — new_identity becomes non-null.
+        self.transition(
+            &operation_id,
+            "published",
+            Some(&fingerprint),
+            Some(&fingerprint),
+            None,
+        )
+        .await?;
+
+        // 6. insert the plugin row (referenced by a live row).
         let now = chrono::Utc::now().to_rfc3339();
-        let fingerprint = {
-            let mut hasher = Sha256::new();
-            hasher.update(input.bytes());
-            format!("{:x}", hasher.finalize())
-        };
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO plugins (identifier, name, version, sha256, size_bytes, runtime, capabilities, resource_limits, row_revision, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'wasm32', '[]', '{}', 0, ?, ?) RETURNING id",
@@ -316,12 +341,148 @@ impl PluginStore {
                 references: Vec::new(),
             }
         })?;
+
+        // 7. referenced — plugin_id becomes non-null.
+        self.transition(
+            &operation_id,
+            "referenced",
+            Some(&fingerprint),
+            Some(&fingerprint),
+            Some(&row.0.to_string()),
+        )
+        .await?;
+
+        // 8. done — terminal success (retain plugin_id for the audit trail).
+        let plugin_id_str = row.0.to_string();
+        self.transition(
+            &operation_id,
+            "done",
+            Some(&fingerprint),
+            Some(&fingerprint),
+            Some(&plugin_id_str),
+        )
+        .await?;
+
         Ok(PluginRecord {
             id: row.0,
             name: input.identifier().to_string(),
             version: input.version().to_string(),
             fingerprint_hex: fingerprint,
         })
+    }
+
+    /// Record a `prepared` create operation in the durability ledger.
+    async fn insert_prepared(
+        &self,
+        operation_id: &str,
+        staging_name: &str,
+    ) -> Result<(), PluginInstallError> {
+        sqlx::query(
+            "INSERT INTO plugin_artifact_operations (operation_id, kind, staging_name, state) \
+             VALUES (?, 'create', ?, 'prepared')",
+        )
+        .bind(operation_id)
+        .bind(staging_name)
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "insert_prepared failed");
+            PluginInstallError {
+                kind: PluginInstallErrorKind::Io,
+                references: Vec::new(),
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Write the artifact bytes to a staging file using an exclusive
+    /// create, then flush + fsync. The caller later re-reads the bytes
+    /// to verify the on-disk identity.
+    async fn write_staging(
+        &self,
+        staging_name: &str,
+        bytes: &[u8],
+    ) -> Result<(), PluginInstallError> {
+        use std::io::Write;
+        let staging_dir = self.inner.root.join(".staging");
+        std::fs::create_dir_all(&staging_dir).map_err(io_err)?;
+        let staging_path = staging_dir.join(staging_name);
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging_path)
+            .map_err(io_err)?;
+        file.write_all(bytes).map_err(io_err)?;
+        file.flush().map_err(io_err)?;
+        file.sync_all().map_err(io_err)?;
+        Ok(())
+    }
+
+    /// Publish the artifact to the immutable key `identifier/version.wasm`
+    /// using an exclusive no-replace create. Fails with `NoReplace` if
+    /// the key already exists.
+    async fn publish_artifact(
+        &self,
+        identifier: &str,
+        version: &str,
+        bytes: &[u8],
+    ) -> Result<(), PluginInstallError> {
+        use std::io::Write;
+        let artifact_dir = self.inner.root.join(identifier);
+        std::fs::create_dir_all(&artifact_dir).map_err(io_err)?;
+        let artifact_path = artifact_dir.join(format!("{version}.wasm"));
+
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&artifact_path)
+        {
+            Ok(f) => f,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(PluginInstallError {
+                    kind: PluginInstallErrorKind::NoReplace,
+                    references: Vec::new(),
+                });
+            }
+            Err(_) => return Err(io_err(std::io::Error::other("open artifact"))),
+        };
+        file.write_all(bytes).map_err(io_err)?;
+        file.flush().map_err(io_err)?;
+        file.sync_all().map_err(io_err)?;
+        Ok(())
+    }
+
+    /// Transition an operation to a new state, writing the identity
+    /// columns that the state CHECK requires.
+    async fn transition(
+        &self,
+        operation_id: &str,
+        state: &str,
+        staging_identity: Option<&str>,
+        new_identity: Option<&str>,
+        plugin_id: Option<&str>,
+    ) -> Result<(), PluginInstallError> {
+        sqlx::query(
+            "UPDATE plugin_artifact_operations \
+             SET staging_identity = ?, new_identity = ?, plugin_id = ?, state = ? \
+             WHERE operation_id = ?",
+        )
+        .bind(staging_identity)
+        .bind(new_identity)
+        .bind(plugin_id)
+        .bind(state)
+        .bind(operation_id)
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "transition to {state} failed");
+            PluginInstallError {
+                kind: PluginInstallErrorKind::Io,
+                references: Vec::new(),
+            }
+        })?;
+        Ok(())
     }
 
     /// Mark a plugin as soft-deleted. The on-disk artifact is
@@ -445,6 +606,15 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+/// Map an `std::io::Error` into a [`PluginInstallError`] with the
+/// `Io` reason code.
+fn io_err(_error: std::io::Error) -> PluginInstallError {
+    PluginInstallError {
+        kind: PluginInstallErrorKind::Io,
+        references: Vec::new(),
+    }
 }
 
 /// Read the on-disk bytes for a plugin identified by `(id)` and

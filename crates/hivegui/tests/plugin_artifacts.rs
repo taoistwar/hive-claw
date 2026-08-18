@@ -104,6 +104,49 @@ fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn install_walks_full_durability_state_machine_to_done() {
+    // T077: install must record the full
+    // prepared → staged → published → referenced → done state machine
+    // in `plugin_artifact_operations`, ending in `done`.
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root()).expect("store");
+
+    let plugin = store
+        .install(PluginArtifactInput::new("stateful", "1.0.0", b"v1").unwrap())
+        .await
+        .expect("install");
+
+    let (state, staging_identity, new_identity, plugin_id): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT state, staging_identity, new_identity, plugin_id \
+         FROM plugin_artifact_operations ORDER BY rowid DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("latest operation row");
+
+    assert_eq!(state, "done", "install must terminate in done");
+    assert!(
+        staging_identity.is_some(),
+        "staging_identity must be recorded before done"
+    );
+    assert!(
+        new_identity.is_some(),
+        "new_identity must be recorded before done"
+    );
+    assert_eq!(
+        plugin_id.as_deref(),
+        Some(plugin.id().to_string().as_str()),
+        "referenced plugin_id must match the installed row"
+    );
+}
+
 #[cfg(unix)]
 mod no_follow_tests {
     use super::*;

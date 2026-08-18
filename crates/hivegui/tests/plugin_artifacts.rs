@@ -14,6 +14,7 @@
 
 mod support;
 
+use hivegui::datasource::entity_store::Plugin;
 use hivegui::datasource::migrations::{MigrationOptions, migrate_to_current};
 use hivegui::plugin::plugin_store::{
     PluginArtifact, PluginArtifactInput, PluginLease, PluginRecord, PluginStore,
@@ -155,6 +156,81 @@ async fn recovery_clears_interrupted_prepared_and_staged_operations() {
     assert!(
         !staging_dir.join("staging-staged").exists(),
         "staging bytes of a rolled-back staged operation must be removed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn replace_cas_switches_artifact_and_increments_revision() {
+    // T078: the replace CAS must switch s3_key/size/SHA and increment
+    // row_revision only when the exact revision matches; a stale revision
+    // returns None (stable concurrent-conflict signal), never a partial
+    // write.
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+
+    let plugin = Plugin::create(
+        &pool,
+        "cas-plugin".to_string(),
+        "CAS Plugin".to_string(),
+        None,
+        None,
+        "wasm32".to_string(),
+        "1.0.0".to_string(),
+        None,
+        None,
+        "plugins/cas/1.0.0.wasm".to_string(),
+        "old-sha".to_string(),
+        1024,
+        None,
+    )
+    .await
+    .expect("create plugin");
+
+    assert_eq!(plugin.row_revision, 0, "fresh plugin starts at revision 0");
+
+    let replaced = Plugin::replace(
+        &pool,
+        plugin.id,
+        plugin.row_revision,
+        "plugins/cas/2.0.0.wasm".to_string(),
+        "new-sha".to_string(),
+        2048,
+    )
+    .await
+    .expect("replace");
+    let replaced = replaced.expect("revision matches so replace must succeed");
+    assert_eq!(replaced.row_revision, 1, "replace increments row_revision");
+    assert_eq!(replaced.s3_key, "plugins/cas/2.0.0.wasm");
+    assert_eq!(replaced.sha256, "new-sha");
+    assert_eq!(replaced.size_bytes, 2048);
+
+    // A stale revision must not match; the row stays at revision 1.
+    let conflict = Plugin::replace(
+        &pool,
+        plugin.id,
+        0, // stale revision
+        "plugins/cas/3.0.0.wasm".to_string(),
+        "other-sha".to_string(),
+        4096,
+    )
+    .await
+    .expect("replace");
+    assert!(
+        conflict.is_none(),
+        "stale revision must yield a CAS conflict"
+    );
+
+    let after = Plugin::get(&pool, plugin.id)
+        .await
+        .expect("get")
+        .expect("plugin still exists");
+    assert_eq!(
+        after.row_revision, 1,
+        "conflicting replace must not bump revision"
+    );
+    assert_eq!(
+        after.sha256, "new-sha",
+        "conflicting replace must not change SHA"
     );
 }
 

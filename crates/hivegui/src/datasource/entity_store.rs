@@ -670,6 +670,7 @@ pub struct Plugin {
     pub sha256: String,
     pub size_bytes: i64,
     pub category_id: Option<i64>,
+    pub row_revision: i64,
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
@@ -1305,11 +1306,11 @@ impl Plugin {
     ) -> Result<Vec<Plugin>> {
         let plugins = if let Some(s) = search {
             sqlx::query_as::<_, Plugin>(
-                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL AND (name LIKE ? OR identifier LIKE ?) ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL AND (name LIKE ? OR identifier LIKE ?) ORDER BY name LIMIT ? OFFSET ?"
             ).bind(format!("%{}%", s)).bind(format!("%{}%", s)).bind(limit).bind(offset).fetch_all(pool).await?
         } else {
             sqlx::query_as::<_, Plugin>(
-                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL ORDER BY name LIMIT ? OFFSET ?"
             ).bind(limit).bind(offset).fetch_all(pool).await?
         };
         Ok(plugins)
@@ -1329,7 +1330,7 @@ impl Plugin {
 
     pub async fn get(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Plugin>> {
         let p = sqlx::query_as::<_, Plugin>(
-            "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, created_at, updated_at, deleted_at FROM plugins WHERE id = ?"
+            "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE id = ?"
         ).bind(id).fetch_optional(pool).await?;
         Ok(p)
     }
@@ -1363,7 +1364,7 @@ impl Plugin {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query_scalar::<_, i64>(
             "INSERT INTO plugins (identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
-        ).bind(&identifier).bind(&name).bind(&description).bind(&manifest).bind(&runtime).bind(&version).bind(&author).bind(&repository_url).bind(&s3_key).bind(&sha256).bind(size_bytes).bind(category_id).bind(&now).bind(&now)
+        ).bind(&identifier).bind(&name).bind(&description).bind(&manifest).bind(&runtime).bind(&version).bind(author.as_deref().unwrap_or("")).bind(repository_url.as_deref().unwrap_or("")).bind(&s3_key).bind(&sha256).bind(size_bytes).bind(category_id).bind(&now).bind(&now)
             .fetch_one(pool).await;
 
         let id =
@@ -1405,8 +1406,8 @@ impl Plugin {
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
-            "UPDATE plugins SET identifier=?, name=?, description=?, manifest=?, runtime=?, version=?, author=?, repository_url=?, s3_key=?, sha256=?, size_bytes=?, category_id=?, updated_at=? WHERE id=?"
-        ).bind(&identifier).bind(&name).bind(&description).bind(&manifest).bind(&runtime).bind(&version).bind(&author).bind(&repository_url).bind(&s3_key).bind(&sha256).bind(size_bytes).bind(category_id).bind(&now).bind(id)
+            "UPDATE plugins SET identifier=?, name=?, description=?, manifest=?, runtime=?, version=?, author=?, repository_url=?, s3_key=?, sha256=?, size_bytes=?, category_id=?, row_revision = row_revision + 1, updated_at=? WHERE id=?"
+        ).bind(&identifier).bind(&name).bind(&description).bind(&manifest).bind(&runtime).bind(&version).bind(author.as_deref().unwrap_or("")).bind(repository_url.as_deref().unwrap_or("")).bind(&s3_key).bind(&sha256).bind(size_bytes).bind(category_id).bind(&now).bind(id)
             .execute(pool).await;
 
         result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
@@ -1417,6 +1418,48 @@ impl Plugin {
         Plugin::get(pool, id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Plugin not found"))
+    }
+
+    /// Optimistic-concurrency replace of a plugin's immutable-artifact
+    /// reference. The CAS is conditioned on the exact `row_revision`
+    /// read by the caller; the `s3_key`/`sha256`/`size_bytes` tuple is
+    /// switched and `row_revision` incremented atomically. Returns
+    /// `Ok(None)` when the revision no longer matches (another writer
+    /// won) — a stable concurrent-conflict signal, never a partial write.
+    pub async fn replace(
+        pool: &Pool<Sqlite>,
+        id: i64,
+        expected_row_revision: i64,
+        s3_key: String,
+        sha256: String,
+        size_bytes: i64,
+    ) -> Result<Option<Plugin>> {
+        let start = Instant::now();
+        let now = Utc::now().to_rfc3339();
+        let affected = sqlx::query(
+            "UPDATE plugins SET s3_key = ?, sha256 = ?, size_bytes = ?, row_revision = row_revision + 1, updated_at = ? WHERE id = ? AND row_revision = ?",
+        )
+        .bind(&s3_key)
+        .bind(&sha256)
+        .bind(size_bytes)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_row_revision)
+        .execute(pool)
+        .await?;
+
+        if affected.rows_affected() != 1 {
+            // Revision mismatch: a concurrent writer advanced the row.
+            return Ok(None);
+        }
+
+        let duration = start.elapsed().as_millis();
+        tracing::info!(entity = "plugin", op = "replace", id = id, s3_key = %s3_key, duration_ms = duration, "Plugin artifact reference replaced");
+
+        let plugin = Plugin::get(pool, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Plugin not found after replace"))?;
+        Ok(Some(plugin))
     }
 
     pub async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
@@ -1475,6 +1518,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Plugin {
             sha256: row.try_get("sha256")?,
             size_bytes: row.try_get("size_bytes")?,
             category_id: row.try_get("category_id")?,
+            row_revision: row.try_get("row_revision")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             deleted_at: row.try_get("deleted_at")?,
@@ -3465,12 +3509,15 @@ pub async fn init_tables(pool: &Pool<Sqlite>) -> Result<()> {
             manifest TEXT,
             runtime TEXT NOT NULL,
             version TEXT NOT NULL,
-            author TEXT,
-            repository_url TEXT,
+            author TEXT NOT NULL DEFAULT '',
+            repository_url TEXT NOT NULL DEFAULT '',
             s3_key TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             size_bytes INTEGER NOT NULL,
             category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            resource_limits TEXT NOT NULL DEFAULT '{}',
+            row_revision INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             deleted_at TEXT

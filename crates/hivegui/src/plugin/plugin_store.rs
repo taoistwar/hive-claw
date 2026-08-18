@@ -34,6 +34,10 @@ pub enum PluginInstallErrorKind {
     UnsafeArtifact,
     /// Internal I/O error while persisting the artifact.
     Io,
+    /// The `row_revision` CAS failed: another writer changed the plugin
+    /// row between read and write. The caller must re-read the tuple and
+    /// retry.
+    CasConflict,
 }
 
 impl PluginInstallErrorKind {
@@ -45,6 +49,7 @@ impl PluginInstallErrorKind {
             Self::EmptyArtifact => "empty_artifact",
             Self::UnsafeArtifact => "unsafe_artifact",
             Self::Io => "io",
+            Self::CasConflict => "cas_conflict",
         }
     }
 }
@@ -135,6 +140,7 @@ pub struct PluginRecord {
     name: String,
     version: String,
     fingerprint_hex: String,
+    row_revision: i64,
 }
 
 impl PluginRecord {
@@ -156,6 +162,12 @@ impl PluginRecord {
     /// SHA-256 of the artifact bytes, lower-case hex.
     pub fn fingerprint_hex(&self) -> &str {
         &self.fingerprint_hex
+    }
+
+    /// Current `row_revision` of the live plugin row (used for
+    /// optimistic CAS on replace).
+    pub fn row_revision(&self) -> i64 {
+        self.row_revision
     }
 }
 
@@ -368,6 +380,7 @@ impl PluginStore {
             name: input.identifier().to_string(),
             version: input.version().to_string(),
             fingerprint_hex: fingerprint,
+            row_revision: 0,
         })
     }
 

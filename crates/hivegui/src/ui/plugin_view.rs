@@ -1273,6 +1273,7 @@ mod tests {
             sha256: "abc123".into(),
             size_bytes: 1024,
             category_id: None,
+            row_revision: 0,
             created_at: "2026-07-20T00:00:00Z".into(),
             updated_at: "2026-07-20T00:00:00Z".into(),
             deleted_at: None,

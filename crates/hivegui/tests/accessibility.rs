@@ -1524,3 +1524,49 @@ fn workflow_view_supports_keyboard_form_operations() {
         "Workflow form must handle Enter to submit"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §T081 [P] [US8] — Plugin view keyboard accessibility surface.
+//
+// T081 owns the Plugin CRUD modal; this asserts the keyboard / focus source
+// contract so the form is operable without a pointer.
+// ---------------------------------------------------------------------------
+
+const PLUGIN_VIEW_SOURCE: &str = include_str!("../src/ui/plugin_view.rs");
+
+#[test]
+fn plugin_view_supports_keyboard_form_operations() {
+    // T081 must wire keyboard form handling (Escape close / Enter submit)
+    // and a focus handle for the modal surface.
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("on_key_down"),
+        "Plugin view must wire keyboard handling"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("track_focus") || PLUGIN_VIEW_SOURCE.contains("focus_handle"),
+        "Plugin view must own a focus handle for the modal surface"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("\"escape\""),
+        "Plugin form must handle Escape to close"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("\"enter\""),
+        "Plugin form must handle Enter to submit"
+    );
+}
+
+#[test]
+fn plugin_view_surfaces_keep_existing_file_semantics() {
+    // T081 must make the import / replace / keep-existing-file fork
+    // explicit: editing without picking a new WASM keeps the current
+    // artifact (the file-address + "保留既有文件" copy is rendered).
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("保留既有文件"),
+        "Plugin view must surface keep-existing-file semantics when editing without a new file"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("PLUGIN_WASM_SELECTION"),
+        "Plugin view must tag the WASM selection surface for accessibility"
+    );
+}

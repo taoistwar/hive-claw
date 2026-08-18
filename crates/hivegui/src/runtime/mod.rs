@@ -37,7 +37,9 @@ pub use function_test_executor::{
     FUNCTION_TEST_TIMEOUT, FunctionTestExecutor, capability_matches_filter, format_test_output,
     resolve_test_capabilities,
 };
-pub use plugin_executor::PluginExecutor;
+pub use plugin_executor::{
+    BoundedInstancePool, InstanceCacheKey, PageCount, PluginExecutor, PluginLimits,
+};
 pub use provider_resolver::{
     ProviderAttempt, ProviderCallOutcome, ProviderCallRequest, ProviderError, ProviderErrorKind,
     ProviderResolver, ProviderTransport, TransportError, TransportOutcome, TransportRequest,

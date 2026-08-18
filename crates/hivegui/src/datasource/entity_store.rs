@@ -670,6 +670,8 @@ pub struct Plugin {
     pub sha256: String,
     pub size_bytes: i64,
     pub category_id: Option<i64>,
+    pub capabilities: String,
+    pub resource_limits: String,
     pub row_revision: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -1306,11 +1308,11 @@ impl Plugin {
     ) -> Result<Vec<Plugin>> {
         let plugins = if let Some(s) = search {
             sqlx::query_as::<_, Plugin>(
-                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL AND (name LIKE ? OR identifier LIKE ?) ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, capabilities, resource_limits, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL AND (name LIKE ? OR identifier LIKE ?) ORDER BY name LIMIT ? OFFSET ?"
             ).bind(format!("%{}%", s)).bind(format!("%{}%", s)).bind(limit).bind(offset).fetch_all(pool).await?
         } else {
             sqlx::query_as::<_, Plugin>(
-                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL ORDER BY name LIMIT ? OFFSET ?"
+                "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, capabilities, resource_limits, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE deleted_at IS NULL ORDER BY name LIMIT ? OFFSET ?"
             ).bind(limit).bind(offset).fetch_all(pool).await?
         };
         Ok(plugins)
@@ -1330,7 +1332,7 @@ impl Plugin {
 
     pub async fn get(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Plugin>> {
         let p = sqlx::query_as::<_, Plugin>(
-            "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE id = ?"
+            "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, capabilities, resource_limits, row_revision, created_at, updated_at, deleted_at FROM plugins WHERE id = ?"
         ).bind(id).fetch_optional(pool).await?;
         Ok(p)
     }
@@ -1483,6 +1485,44 @@ impl Plugin {
         Ok(())
     }
 
+    /// Atomically persist the plugin's declared capabilities (a JSON
+    /// array) and resource limits (a JSON object), bumping
+    /// `row_revision` so the change is observable to CAS readers.
+    /// Returns `Ok(None)` when the row no longer exists (soft-deleted
+    /// rows are still addressable by id and thus remain updatable).
+    pub async fn update_limits(
+        pool: &Pool<Sqlite>,
+        id: i64,
+        capabilities: String,
+        resource_limits: String,
+    ) -> Result<Option<Plugin>> {
+        let now = Utc::now().to_rfc3339();
+        let affected = sqlx::query(
+            "UPDATE plugins SET capabilities = ?, resource_limits = ?, row_revision = row_revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(&capabilities)
+        .bind(&resource_limits)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+        if affected.rows_affected() != 1 {
+            return Ok(None);
+        }
+
+        let duration = Instant::now().elapsed().as_millis();
+        tracing::info!(
+            entity = "plugin",
+            op = "update_limits",
+            id = id,
+            duration_ms = duration,
+            "Plugin capabilities/resource_limits updated"
+        );
+
+        Plugin::get(pool, id).await
+    }
+
     /// Get the local WASM file path for this plugin
     pub fn wasm_path(&self, base_dir: &std::path::Path) -> std::path::PathBuf {
         base_dir
@@ -1555,6 +1595,8 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Plugin {
             sha256: row.try_get("sha256")?,
             size_bytes: row.try_get("size_bytes")?,
             category_id: row.try_get("category_id")?,
+            capabilities: row.try_get("capabilities")?,
+            resource_limits: row.try_get("resource_limits")?,
             row_revision: row.try_get("row_revision")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
@@ -3034,7 +3076,7 @@ pub async fn export_all_data(pool: &Pool<Sqlite>, output_path: &str) -> Result<(
     .await?;
 
     let plugins = sqlx::query_as::<_, Plugin>(
-        "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, created_at, updated_at, deleted_at FROM plugins"
+        "SELECT id, identifier, name, description, manifest, runtime, version, author, repository_url, s3_key, sha256, size_bytes, category_id, capabilities, resource_limits, row_revision, created_at, updated_at, deleted_at FROM plugins"
     )
     .fetch_all(pool)
     .await?;

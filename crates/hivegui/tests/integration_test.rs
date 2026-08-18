@@ -286,6 +286,59 @@ async fn test_plugin_crud() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_plugin_update_limits_persists_and_bumps_revision() -> Result<()> {
+    let pool = setup_test_db().await?;
+
+    let plugin = Plugin::create(
+        &pool,
+        "limited-plugin".to_string(),
+        "Limited Plugin".to_string(),
+        None,
+        None,
+        "extism".to_string(),
+        "1.0.0".to_string(),
+        None,
+        None,
+        "plugins/limited/1.0.0.wasm".to_string(),
+        "abc123".to_string(),
+        1024,
+        None,
+    )
+    .await?;
+
+    // Defaults before any limits are written.
+    assert_eq!(plugin.capabilities, "[]");
+    assert_eq!(plugin.resource_limits, "{}");
+    let revision_before = plugin.row_revision;
+
+    let limits = serde_json::json!({
+        "timeout_ms": 60_000,
+        "memory_limit_mb": 256,
+        "output_limit_bytes": 20 * 1024 * 1024,
+    })
+    .to_string();
+    let caps = serde_json::json!(["net", "fs"]).to_string();
+
+    let updated = Plugin::update_limits(&pool, plugin.id, caps.clone(), limits.clone())
+        .await?
+        .expect("row exists");
+
+    assert_eq!(updated.capabilities, caps);
+    assert_eq!(updated.resource_limits, limits);
+    assert!(updated.row_revision > revision_before, "revision must bump");
+
+    // Read-back via list/get must carry the persisted columns.
+    let retrieved = Plugin::get(&pool, plugin.id).await?.unwrap();
+    assert_eq!(retrieved.capabilities, caps);
+    assert_eq!(retrieved.resource_limits, limits);
+
+    let listed = Plugin::list(&pool, None, 10, 0).await?;
+    assert_eq!(listed[0].resource_limits, limits);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_function_crud() -> Result<()> {
     let pool = setup_test_db().await?;
 

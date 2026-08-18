@@ -5,6 +5,7 @@
 use extism::{
     CurrentPlugin, Error as ExtismError, Manifest, PluginBuilder, UserData, Val, ValType, Wasm,
 };
+use std::collections::{HashMap, VecDeque};
 use std::{path::Path, time::Duration};
 use thiserror::Error;
 
@@ -29,6 +30,11 @@ pub const HARD_MAX_OUTPUT_BYTES: u64 = 50 * 1024 * 1024;
 /// Global idle instance pool cap. The full per-key instance pool is bounded
 /// by this number; the per-cache-key LRU keeps at most one instance per key.
 pub const POOL_CAPACITY: usize = 8;
+
+/// Bytes in a single 64 KiB WASM linear-memory page.
+pub const WASM_PAGE_BYTES: u64 = 64 * 1024;
+/// Number of 64 KiB WASM pages in one MiB (`1024 KiB / 64 KiB = 16`).
+pub const PAGES_PER_MIB: u64 = 16;
 
 /// Failure modes for [`PluginLimits::new`].
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -108,11 +114,298 @@ impl PluginLimits {
     pub fn output_bytes(&self) -> u64 {
         self.output_bytes
     }
+
+    /// Memory cap as a 64 KiB WASM linear-memory page count.
+    ///
+    /// The on-disk field is named `memory_limit_mb` (a schema-compat name),
+    /// but its logical unit is MiB. The value is converted to 64 KiB WASM
+    /// pages as `memory_mb × 16` before it reaches the Extism manifest
+    /// (T074 / plugin-abi contract). Raw MiB values or byte counts must
+    /// never be passed to the page parameter directly.
+    pub fn memory_pages(&self) -> PageCount {
+        PageCount::from_mib(self.memory_mb)
+    }
+
+    /// Timeout in milliseconds (`timeout_secs × 1000`). The cache key
+    /// uses milliseconds per the plugin-abi contract.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_secs * 1000
+    }
 }
 
 impl Default for PluginLimits {
     fn default() -> Self {
         Self::default_limits()
+    }
+}
+
+/// A validated 64 KiB WASM linear-memory page count.
+///
+/// The only way to build a [`PageCount`] is [`PageCount::from_mib`], which
+/// multiplies a MiB value by [`PAGES_PER_MIB`]. There is deliberately no
+/// `From<u64>` or raw constructor: passing a MiB value or a byte count
+/// straight into the page parameter is a T074 contract violation, so the
+/// type system forces callers through the MiB→page conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PageCount(u64);
+
+impl PageCount {
+    /// Convert a MiB memory cap to a 64 KiB page count (`mib × 16`).
+    ///
+    /// Inputs:
+    /// - `mib`: the memory cap in MiB (already validated by
+    ///   [`PluginLimits::new`] to the `1..=HARD_MAX_MEMORY_MB` range).
+    ///
+    /// Outputs: the equivalent [`PageCount`].
+    /// Error modes: total; `128 → 2048` and `512 → 8192` per the T074 spec.
+    pub fn from_mib(mib: u64) -> Self {
+        Self(mib * PAGES_PER_MIB)
+    }
+
+    /// The page count as a `u64`.
+    pub fn pages(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable, content-addressed identity for a pooled plugin instance.
+///
+/// Two instances are interchangeable only when *every* component matches.
+/// Per the plugin-abi contract the full cache key is the 9-tuple:
+/// `(artifact_sha256, abi_version, runtime, runtime_version, fuel_limit,
+/// timeout_ms, memory_limit_mb, output_limit_bytes, capability_policy_hash)`.
+/// Changing any single component (including a different resource quota or
+/// Capability policy) must never reuse an old instance.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InstanceCacheKey {
+    artifact_sha256: String,
+    abi_version: String,
+    runtime: String,
+    runtime_version: String,
+    fuel_limit: Option<u64>,
+    timeout_ms: u64,
+    memory_limit_mb: u64,
+    output_limit_bytes: u64,
+    capability_policy_hash: String,
+}
+
+impl InstanceCacheKey {
+    /// Construct an instance cache key from all nine components.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        artifact_sha256: impl Into<String>,
+        abi_version: impl Into<String>,
+        runtime: impl Into<String>,
+        runtime_version: impl Into<String>,
+        fuel_limit: Option<u64>,
+        timeout_ms: u64,
+        memory_limit_mb: u64,
+        output_limit_bytes: u64,
+        capability_policy_hash: impl Into<String>,
+    ) -> Self {
+        Self {
+            artifact_sha256: artifact_sha256.into(),
+            abi_version: abi_version.into(),
+            runtime: runtime.into(),
+            runtime_version: runtime_version.into(),
+            fuel_limit,
+            timeout_ms,
+            memory_limit_mb,
+            output_limit_bytes,
+            capability_policy_hash: capability_policy_hash.into(),
+        }
+    }
+
+    /// Compute the stable cache-key digest.
+    ///
+    /// Each component is length-prefixed (or, for fixed-width integers,
+    /// big-endian) before hashing, so no two distinct tuples collide. The
+    /// result is a SHA-256 hex string and is deterministic for a given tuple.
+    pub fn cache_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        fn push_str(buf: &mut Vec<u8>, value: &str) {
+            buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            buf.extend_from_slice(value.as_bytes());
+        }
+        push_str(&mut buf, &self.artifact_sha256);
+        push_str(&mut buf, &self.abi_version);
+        push_str(&mut buf, &self.runtime);
+        push_str(&mut buf, &self.runtime_version);
+        match self.fuel_limit {
+            Some(fuel) => {
+                buf.push(1);
+                buf.extend_from_slice(&fuel.to_be_bytes());
+            }
+            None => buf.push(0),
+        }
+        buf.extend_from_slice(&self.timeout_ms.to_be_bytes());
+        buf.extend_from_slice(&self.memory_limit_mb.to_be_bytes());
+        buf.extend_from_slice(&self.output_limit_bytes.to_be_bytes());
+        push_str(&mut buf, &self.capability_policy_hash);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&buf);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Artifact SHA-256 (lower-case hex).
+    pub fn artifact_sha256(&self) -> &str {
+        &self.artifact_sha256
+    }
+
+    /// ABI version.
+    pub fn abi_version(&self) -> &str {
+        &self.abi_version
+    }
+
+    /// Runtime identifier (e.g. `extism`).
+    pub fn runtime(&self) -> &str {
+        &self.runtime
+    }
+
+    /// Runtime version (e.g. `1.30.0`).
+    pub fn runtime_version(&self) -> &str {
+        &self.runtime_version
+    }
+
+    /// Optional fuel (instruction budget) limit. `None` means disabled.
+    pub fn fuel_limit(&self) -> Option<u64> {
+        self.fuel_limit
+    }
+
+    /// Timeout in milliseconds.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+    }
+
+    /// Memory cap in MiB.
+    pub fn memory_limit_mb(&self) -> u64 {
+        self.memory_limit_mb
+    }
+
+    /// Output cap in bytes.
+    pub fn output_limit_bytes(&self) -> u64 {
+        self.output_limit_bytes
+    }
+
+    /// Capability policy hash.
+    pub fn capability_policy_hash(&self) -> &str {
+        &self.capability_policy_hash
+    }
+}
+
+/// A bounded, LRU, content-addressed idle instance pool.
+///
+/// The pool is keyed by [`InstanceCacheKey`]. It holds at most `capacity`
+/// instances globally and at most one instance per cache key (T074:
+/// "全局最多 8 个、每个完整 cache key 最多 1 个"). On [`Self::insert`]
+/// the least-recently-used instance is evicted when the global cap is
+/// reached; on [`Self::get`] a hit is promoted to most-recently-used.
+///
+/// This container is value-type agnostic: the production executor layers
+/// it over `extism` instances (which are `!Send`) inside a dedicated
+/// `spawn_blocking` worker, keeping the container itself testable without
+/// the Extism runtime.
+#[derive(Debug)]
+pub struct BoundedInstancePool<V> {
+    capacity: usize,
+    order: VecDeque<InstanceCacheKey>,
+    slots: HashMap<InstanceCacheKey, V>,
+}
+
+impl<V> BoundedInstancePool<V> {
+    /// Construct an empty pool with the given global capacity.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::new(),
+            slots: HashMap::new(),
+        }
+    }
+
+    /// The global capacity (at most this many instances may be resident).
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Number of resident instances.
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Whether the pool is empty.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Whether an instance is resident for `key`.
+    pub fn contains_key(&self, key: &InstanceCacheKey) -> bool {
+        self.slots.contains_key(key)
+    }
+
+    /// Borrow the instance for `key`, promoting it to most-recently-used.
+    pub fn get(&mut self, key: &InstanceCacheKey) -> Option<&V> {
+        if !self.slots.contains_key(key) {
+            return None;
+        }
+        self.promote(key);
+        self.slots.get(key)
+    }
+
+    /// Mutably borrow the instance for `key`, promoting it to MRU.
+    pub fn get_mut(&mut self, key: &InstanceCacheKey) -> Option<&mut V> {
+        if !self.slots.contains_key(key) {
+            return None;
+        }
+        self.promote(key);
+        self.slots.get_mut(key)
+    }
+
+    /// Insert (or replace) the instance for `key`, enforcing the global
+    /// capacity and the one-instance-per-key invariant.
+    ///
+    /// Returns the evicted value if a least-recently-used victim had to be
+    /// removed to make room, or if `capacity == 0` (nothing can be cached).
+    pub fn insert(&mut self, key: InstanceCacheKey, value: V) -> Option<V> {
+        if self.capacity == 0 {
+            return Some(value);
+        }
+        if self.slots.contains_key(&key) {
+            // Replace in place: no capacity change, still promote to MRU.
+            self.promote(&key);
+            self.slots.insert(key, value);
+            return None;
+        }
+        let evicted = if self.slots.len() >= self.capacity {
+            let victim = self.order.pop_front()?;
+            self.order.retain(|k| k != &victim);
+            self.slots.remove(&victim)
+        } else {
+            None
+        };
+        self.order.push_back(key.clone());
+        self.slots.insert(key, value);
+        evicted
+    }
+
+    /// Remove the instance for `key`, returning it if present.
+    pub fn remove(&mut self, key: &InstanceCacheKey) -> Option<V> {
+        let value = self.slots.remove(key)?;
+        self.order.retain(|k| k != key);
+        Some(value)
+    }
+
+    /// Move `key` to the most-recently-used position in the LRU order.
+    fn promote(&mut self, key: &InstanceCacheKey) {
+        self.order.retain(|k| k != key);
+        self.order.push_back(key.clone());
+    }
+}
+
+impl<V> Default for BoundedInstancePool<V> {
+    fn default() -> Self {
+        Self::new(POOL_CAPACITY)
     }
 }
 

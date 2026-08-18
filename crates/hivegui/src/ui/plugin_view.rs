@@ -31,6 +31,9 @@ pub struct PluginView {
     form_version: String,
     form_sha256: String,
     form_size_bytes: String,
+    form_timeout_secs: String,
+    form_memory_mb: String,
+    form_output_mb: String,
     form_wasm_path: Option<PathBuf>,
     form_file_path: Option<PathBuf>,
     form_manifest: Option<String>,
@@ -42,7 +45,11 @@ pub struct PluginView {
     version_input: Option<Entity<InputState>>,
     sha256_input: Option<Entity<InputState>>,
     size_bytes_input: Option<Entity<InputState>>,
+    timeout_input: Option<Entity<InputState>>,
+    memory_input: Option<Entity<InputState>>,
+    output_input: Option<Entity<InputState>>,
     search_input: Option<Entity<InputState>>,
+    form_focus: FocusHandle,
 }
 
 impl PluginView {
@@ -64,6 +71,9 @@ impl PluginView {
             form_version: String::new(),
             form_sha256: String::new(),
             form_size_bytes: String::new(),
+            form_timeout_secs: "30".into(),
+            form_memory_mb: "128".into(),
+            form_output_mb: "10".into(),
             form_wasm_path: None,
             form_file_path: None,
             form_manifest: None,
@@ -75,7 +85,11 @@ impl PluginView {
             version_input: None,
             sha256_input: None,
             size_bytes_input: None,
+            timeout_input: None,
+            memory_input: None,
+            output_input: None,
             search_input: None,
+            form_focus: cx.focus_handle(),
         };
         v.load(cx);
         v
@@ -252,6 +266,21 @@ impl PluginView {
                 .placeholder("文件大小")
                 .default_value(&self.form_size_bytes)
         }));
+        self.timeout_input = Some(cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("超时（秒）")
+                .default_value(&self.form_timeout_secs)
+        }));
+        self.memory_input = Some(cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("内存上限（MiB）")
+                .default_value(&self.form_memory_mb)
+        }));
+        self.output_input = Some(cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("输出上限（MiB）")
+                .default_value(&self.form_output_mb)
+        }));
     }
 
     fn show_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -263,6 +292,9 @@ impl PluginView {
         self.form_version.clear();
         self.form_sha256.clear();
         self.form_size_bytes.clear();
+        self.form_timeout_secs = "30".into();
+        self.form_memory_mb = "128".into();
+        self.form_output_mb = "10".into();
         self.form_wasm_path = None;
         self.form_file_path = None;
         self.form_manifest = None;
@@ -281,6 +313,10 @@ impl PluginView {
         self.form_version = item.version.clone();
         self.form_sha256 = item.sha256.clone();
         self.form_size_bytes = item.size_bytes.to_string();
+        let (timeout, memory, output) = parse_resource_limits(&item.resource_limits);
+        self.form_timeout_secs = timeout;
+        self.form_memory_mb = memory;
+        self.form_output_mb = output;
         self.form_wasm_path = None;
         self.form_file_path = Some(item.wasm_path(&base_dir));
         self.form_manifest = manifest;
@@ -300,7 +336,23 @@ impl PluginView {
         self.version_input = None;
         self.sha256_input = None;
         self.size_bytes_input = None;
+        self.timeout_input = None;
+        self.memory_input = None;
+        self.output_input = None;
         cx.notify();
+    }
+
+    /// Keyboard handler for the plugin form. Esc closes the form,
+    /// Enter submits when the form is visible.
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.hide_form(cx),
+            "enter" => self.save(cx),
+            _ => {}
+        }
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -315,6 +367,15 @@ impl PluginView {
         }
         if let Some(ref inp) = self.version_input {
             self.form_version = inp.read(cx).value().to_string();
+        }
+        if let Some(ref inp) = self.timeout_input {
+            self.form_timeout_secs = inp.read(cx).value().to_string();
+        }
+        if let Some(ref inp) = self.memory_input {
+            self.form_memory_mb = inp.read(cx).value().to_string();
+        }
+        if let Some(ref inp) = self.output_input {
+            self.form_output_mb = inp.read(cx).value().to_string();
         }
         if self.form_identifier.trim().is_empty()
             || self.form_name.trim().is_empty()
@@ -350,6 +411,11 @@ impl PluginView {
         let sha = self.form_sha256.clone();
         let manifest = self.form_manifest.clone();
         let wasm_path = self.form_wasm_path.clone();
+        let resource_limits = serialize_resource_limits(
+            &self.form_timeout_secs,
+            &self.form_memory_mb,
+            &self.form_output_mb,
+        );
         let base_dir = Store::default_db_path();
 
         if let Some(eid) = self.editing_id {
@@ -378,6 +444,16 @@ impl PluginView {
                             && let Err(e) = Self::save_wasm_locally(&base_dir, eid, src)
                         {
                             tracing::error!("Failed to save WASM locally: {}", e);
+                        }
+                        if let Err(e) = Plugin::update_limits(
+                            store.pool(),
+                            eid,
+                            "[]".to_string(),
+                            resource_limits.clone(),
+                        )
+                        .await
+                        {
+                            tracing::error!("Failed to save resource limits: {}", e);
                         }
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
@@ -421,6 +497,16 @@ impl PluginView {
                             && let Err(e) = Self::save_wasm_locally(&base_dir, plugin.id, src)
                         {
                             tracing::error!("Failed to save WASM locally: {}", e);
+                        }
+                        if let Err(e) = Plugin::update_limits(
+                            store.pool(),
+                            plugin.id,
+                            "[]".to_string(),
+                            resource_limits,
+                        )
+                        .await
+                        {
+                            tracing::error!("Failed to save resource limits: {}", e);
                         }
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
@@ -757,6 +843,9 @@ impl Render for PluginView {
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
                 let version_input = self.version_input.clone().unwrap();
+                let timeout_input = self.timeout_input.clone().unwrap();
+                let memory_input = self.memory_input.clone().unwrap();
+                let output_input = self.output_input.clone().unwrap();
                 let form_scroll =
                     management_modal_scroll_content("plugin-form-scroll", &self.form_scroll);
                 this.child(
@@ -784,6 +873,10 @@ impl Render for PluginView {
                         theme.border,
                     )
                     .debug_selector(|| "PLUGIN_MODAL".to_owned())
+                    .track_focus(&self.form_focus)
+                    .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
+                        v.on_key_down(event, window, cx);
+                    }))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
@@ -887,6 +980,9 @@ impl Render for PluginView {
                                                             .text_color(
                                                                 theme.foreground.opacity(0.6),
                                                             )
+                                                            .debug_selector(|| {
+                                                                "PLUGIN_WASM_SELECTION".to_owned()
+                                                            })
                                                             .child(
                                                                 self.form_wasm_path
                                                                     .as_ref()
@@ -901,7 +997,7 @@ impl Render for PluginView {
                                                                     .unwrap_or_else(|| {
                                                                         if self.editing_id.is_some()
                                                                         {
-                                                                            "未选择新文件"
+                                                                            "保留既有文件（未替换）"
                                                                                 .to_string()
                                                                         } else {
                                                                             "未选择文件".to_string()
@@ -1052,6 +1148,9 @@ impl Render for PluginView {
                                                 ),
                                         )
                                     })
+                                    .child(form_field("超时（秒）", timeout_input, theme))
+                                    .child(form_field("内存上限（MiB）", memory_input, theme))
+                                    .child(form_field("输出上限（MiB）", output_input, theme))
                                     .when_some(self.error_message.as_ref(), |this, err| {
                                         this.child(
                                             div()
@@ -1222,6 +1321,49 @@ impl Render for PluginView {
     }
 }
 
+/// Serialize the three resource-limit form fields into the plugin
+/// `resource_limits` JSON object. The persisted shape matches the
+/// plugin-abi contract: `{"timeout_ms", "memory_limit_mb",
+/// "output_limit_bytes"}`. Invalid/empty inputs fall back to the
+/// defaults (30 s / 128 MiB / 10 MiB).
+fn serialize_resource_limits(timeout_secs: &str, memory_mb: &str, output_mb: &str) -> String {
+    let timeout_ms = timeout_secs.trim().parse::<u64>().unwrap_or(30) * 1000;
+    let memory = memory_mb.trim().parse::<u64>().unwrap_or(128);
+    let output_bytes = output_mb.trim().parse::<u64>().unwrap_or(10) * 1024 * 1024;
+    serde_json::json!({
+        "timeout_ms": timeout_ms,
+        "memory_limit_mb": memory,
+        "output_limit_bytes": output_bytes,
+    })
+    .to_string()
+}
+
+/// Parse a plugin `resource_limits` JSON object back into the three
+/// human-friendly form fields `(timeout_secs, memory_mb, output_mb)`.
+/// Unknown/missing fields fall back to the defaults.
+fn parse_resource_limits(json: &str) -> (String, String, String) {
+    #[derive(serde::Deserialize)]
+    struct Limits {
+        #[serde(default)]
+        timeout_ms: u64,
+        #[serde(default)]
+        memory_limit_mb: u64,
+        #[serde(default)]
+        output_limit_bytes: u64,
+    }
+    let defaults = Limits {
+        timeout_ms: 30_000,
+        memory_limit_mb: 128,
+        output_limit_bytes: 10 * 1024 * 1024,
+    };
+    let limits = serde_json::from_str::<Limits>(json).unwrap_or(defaults);
+    (
+        (limits.timeout_ms / 1000).to_string(),
+        limits.memory_limit_mb.to_string(),
+        (limits.output_limit_bytes / (1024 * 1024)).to_string(),
+    )
+}
+
 fn form_field(
     label: &'static str,
     input: Entity<InputState>,
@@ -1255,7 +1397,7 @@ mod tests {
         VisualTestContext, point, px, size,
     };
 
-    use super::PluginView;
+    use super::{PluginView, parse_resource_limits, serialize_resource_limits};
     use crate::datasource::{Store, entity_store::Plugin};
 
     fn test_plugin(id: i64) -> Plugin {
@@ -1273,6 +1415,8 @@ mod tests {
             sha256: "abc123".into(),
             size_bytes: 1024,
             category_id: None,
+            capabilities: "[]".into(),
+            resource_limits: "{}".into(),
             row_revision: 0,
             created_at: "2026-07-20T00:00:00Z".into(),
             updated_at: "2026-07-20T00:00:00Z".into(),
@@ -1280,7 +1424,31 @@ mod tests {
         }
     }
 
-    fn test_view(store: Entity<Store>) -> PluginView {
+    #[test]
+    fn resource_limits_serialize_parse_round_trip() {
+        // Human-friendly fields round-trip through the persisted JSON shape.
+        let json = serialize_resource_limits("60", "256", "20");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["timeout_ms"], 60_000);
+        assert_eq!(parsed["memory_limit_mb"], 256);
+        assert_eq!(parsed["output_limit_bytes"], 20 * 1024 * 1024);
+
+        let (timeout, memory, output) = parse_resource_limits(&json);
+        assert_eq!(timeout, "60");
+        assert_eq!(memory, "256");
+        assert_eq!(output, "20");
+    }
+
+    #[test]
+    fn resource_limits_parse_falls_back_to_defaults() {
+        // Malformed or empty JSON falls back to 30 s / 128 MiB / 10 MiB.
+        let (timeout, memory, output) = parse_resource_limits("not-json");
+        assert_eq!(timeout, "30");
+        assert_eq!(memory, "128");
+        assert_eq!(output, "10");
+    }
+
+    fn test_view(store: Entity<Store>, cx: &mut gpui::Context<PluginView>) -> PluginView {
         PluginView {
             store,
             items: Vec::new(),
@@ -1298,6 +1466,9 @@ mod tests {
             form_version: String::new(),
             form_sha256: String::new(),
             form_size_bytes: String::new(),
+            form_timeout_secs: "30".into(),
+            form_memory_mb: "128".into(),
+            form_output_mb: "10".into(),
             form_wasm_path: None,
             form_file_path: None,
             form_manifest: None,
@@ -1309,7 +1480,11 @@ mod tests {
             version_input: None,
             sha256_input: None,
             size_bytes_input: None,
+            timeout_input: None,
+            memory_input: None,
+            output_input: None,
             search_input: None,
+            form_focus: cx.focus_handle(),
         }
     }
 
@@ -1353,7 +1528,7 @@ mod tests {
         let expected = plugin.wasm_path(&Store::default_db_path());
 
         let window = cx.open_window(size(px(800.0), px(500.0)), move |window, cx| {
-            let mut view = test_view(store.clone());
+            let mut view = test_view(store.clone(), cx);
             view.show_edit_form(window, plugin, cx);
             assert_eq!(view.form_file_path.as_deref(), Some(expected.as_path()));
             view
@@ -1380,7 +1555,7 @@ mod tests {
         let store = cx.new(|_| store);
 
         let window = cx.open_window(size(px(800.0), px(500.0)), move |window, cx| {
-            let mut view = test_view(store.clone());
+            let mut view = test_view(store.clone(), cx);
             view.show_form = true;
             view.init_inputs(window, cx);
             view

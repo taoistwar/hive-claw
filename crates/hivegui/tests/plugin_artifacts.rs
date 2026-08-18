@@ -103,3 +103,83 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
 }
+
+#[cfg(unix)]
+mod no_follow_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_artifact_path_rejects_symlink_directory() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        // Create a real directory outside the store root, then symlink
+        // `identifier` to it. The no-follow boundary must reject it.
+        let outside = workspace.root().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        let identifier_dir = workspace.plugin_root().join("evil");
+        std::os::unix::fs::symlink(&outside, &identifier_dir).expect("symlink");
+
+        let err = store
+            .resolve_artifact_path("evil", "1.0.0")
+            .expect_err("symlink identifier dir must be rejected");
+        assert_eq!(err.reason(), "unsafe_artifact");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_artifact_path_rejects_symlink_final_file() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        let identifier_dir = workspace.plugin_root().join("linkme");
+        std::fs::create_dir_all(&identifier_dir).expect("identifier dir");
+        let outside_file = workspace.root().join("target.wasm");
+        std::fs::write(&outside_file, b"v1").expect("outside file");
+        std::os::unix::fs::symlink(&outside_file, identifier_dir.join("1.0.0.wasm"))
+            .expect("final symlink");
+
+        let err = store
+            .resolve_artifact_path("linkme", "1.0.0")
+            .expect_err("symlink final file must be rejected");
+        assert_eq!(err.reason(), "unsafe_artifact");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_artifact_path_rejects_hardlinked_file() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        let identifier_dir = workspace.plugin_root().join("hardlink");
+        std::fs::create_dir_all(&identifier_dir).expect("identifier dir");
+        let artifact = identifier_dir.join("1.0.0.wasm");
+        std::fs::write(&artifact, b"v1").expect("artifact");
+        let linked = workspace.root().join("hardlink-target");
+        std::fs::hard_link(&artifact, &linked).expect("hard link");
+
+        let err = store
+            .resolve_artifact_path("hardlink", "1.0.0")
+            .expect_err("link-count-2 file must be rejected");
+        assert_eq!(err.reason(), "unsafe_artifact");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_artifact_path_accepts_regular_file() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        let plugin = store
+            .install(PluginArtifactInput::new("ok", "1.0.0", b"v1").unwrap())
+            .await
+            .expect("install");
+
+        let path = store
+            .resolve_artifact_path("ok", "1.0.0")
+            .expect("regular file must resolve");
+        assert!(path.exists());
+        let _ = plugin;
+    }
+}

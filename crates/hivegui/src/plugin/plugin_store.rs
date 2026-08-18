@@ -28,6 +28,10 @@ pub enum PluginInstallErrorKind {
     InvalidInput,
     /// The plugin bytes are empty.
     EmptyArtifact,
+    /// The on-disk path traversed a symlink / hardlink / device / FIFO /
+    /// socket / other non-regular-file component, or the final WASM is
+    /// not a link-count-1 regular file (T077 no-follow boundary).
+    UnsafeArtifact,
     /// Internal I/O error while persisting the artifact.
     Io,
 }
@@ -39,6 +43,7 @@ impl PluginInstallErrorKind {
             Self::NoReplace => "no_replace",
             Self::InvalidInput => "invalid_input",
             Self::EmptyArtifact => "empty_artifact",
+            Self::UnsafeArtifact => "unsafe_artifact",
             Self::Io => "io",
         }
     }
@@ -356,11 +361,12 @@ impl PluginStore {
             Some(r) => r,
             None => return Ok(None),
         };
-        let path = self
-            .inner
-            .root
-            .join(&identifier)
-            .join(format!("{}.wasm", version));
+        // T077: resolve through the no-follow boundary; a symlink /
+        // hardlink / non-regular file returns `None` rather than bytes.
+        let path = match self.resolve_artifact_path(&identifier, &version) {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(_) => return Ok(None),
@@ -390,6 +396,46 @@ impl PluginStore {
         };
         self.inner.leases.lock().push(lease.clone());
         Ok(lease)
+    }
+
+    /// Resolve the on-disk path for `(identifier, version)` relative to
+    /// the store root without following symlinks. Returns the resolved
+    /// path only if the `identifier` directory is a real directory (not
+    /// a symlink) and the final component is a link-count-1 regular
+    /// file. This is the T077 no-follow / no-replace filesystem safety
+    /// boundary.
+    pub fn resolve_artifact_path(
+        &self,
+        identifier: &str,
+        version: &str,
+    ) -> Result<PathBuf, PluginInstallError> {
+        let unsafe_err = || PluginInstallError {
+            kind: PluginInstallErrorKind::UnsafeArtifact,
+            references: Vec::new(),
+        };
+
+        let dir = self.inner.root.join(identifier);
+        let dir_md = std::fs::symlink_metadata(&dir).map_err(|_| unsafe_err())?;
+        if dir_md.file_type().is_symlink() || !dir_md.file_type().is_dir() {
+            return Err(unsafe_err());
+        }
+
+        let path = dir.join(format!("{version}.wasm"));
+        let md = std::fs::symlink_metadata(&path).map_err(|_| unsafe_err())?;
+        if md.file_type().is_symlink() || !md.file_type().is_file() {
+            return Err(unsafe_err());
+        }
+        if md.len() == 0 {
+            return Err(unsafe_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if md.nlink() > 1 {
+                return Err(unsafe_err());
+            }
+        }
+        Ok(path)
     }
 }
 

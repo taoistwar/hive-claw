@@ -38,6 +38,17 @@ impl NodeType {
             Self::GenerateAnswer => "generate_answer_node",
         }
     }
+
+    /// Parse a stable wire string; unknown values fall back to
+    /// [`NodeType::Function`].
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "start_node" => Self::Start,
+            "end_node" => Self::End,
+            "generate_answer_node" => Self::GenerateAnswer,
+            _ => Self::Function,
+        }
+    }
 }
 
 /// A single node in a [`WorkflowGraph`].
@@ -368,6 +379,40 @@ impl WorkflowStore {
             .await
             .map_err(internal)?;
         Ok(())
+    }
+
+    /// Load a full workflow graph in a single batch: the workflow name,
+    /// every node, and every edge. This is the T095 "one batch load"
+    /// path used by the workflow executor.
+    pub async fn load_graph(
+        &self,
+        workflow_id: i64,
+        name: impl Into<String>,
+    ) -> Result<WorkflowGraph, WorkflowStoreError> {
+        let nodes = crate::datasource::entity_store::WorkflowNode::list_by_workflow(
+            &self.pool,
+            workflow_id,
+        )
+        .await
+        .map_err(internal)?;
+        let edges = crate::datasource::entity_store::WorkflowEdge::list_by_workflow(
+            &self.pool,
+            workflow_id,
+        )
+        .await
+        .map_err(internal)?;
+
+        let mut builder = WorkflowGraph::builder().name(name);
+        for node in nodes {
+            builder = builder.node(WorkflowNode::new(
+                node.node_key,
+                NodeType::from_wire(&node.node_type),
+            ));
+        }
+        for edge in edges {
+            builder = builder.edge(edge.src_node_key, edge.dst_node_key);
+        }
+        Ok(builder.build())
     }
 }
 

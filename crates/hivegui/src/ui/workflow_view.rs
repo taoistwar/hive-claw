@@ -37,6 +37,7 @@ pub struct WorkflowView {
     show_dag_editor: bool,
     dag_editor_workflow_id: Option<i64>,
     dag_editor_view: Option<Entity<DagEditorView>>,
+    form_focus: FocusHandle,
 }
 
 impl WorkflowView {
@@ -66,6 +67,7 @@ impl WorkflowView {
             show_dag_editor: false,
             dag_editor_workflow_id: None,
             dag_editor_view: None,
+            form_focus: cx.focus_handle(),
         };
         v.load(cx);
         v
@@ -159,6 +161,19 @@ impl WorkflowView {
         }));
 
         cx.notify();
+    }
+
+    /// Keyboard handler for the workflow form. Esc closes the form,
+    /// Enter submits when the form is visible.
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_form {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.hide_form(cx),
+            "enter" => self.save(cx),
+            _ => {}
+        }
     }
 
     fn hide_form(&mut self, cx: &mut Context<Self>) {
@@ -650,6 +665,10 @@ impl Render for WorkflowView {
                         theme.foreground,
                         theme.border,
                     )
+                    .track_focus(&self.form_focus)
+                    .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
+                        v.on_key_down(event, window, cx);
+                    }))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })

@@ -105,6 +105,60 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn recovery_clears_interrupted_prepared_and_staged_operations() {
+    // T077: startup replay must roll back non-terminal operations left
+    // by a crash. A `prepared` row (no bytes on disk) and a `staged`
+    // row (staging bytes on disk) must both be cleared.
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root()).expect("store");
+
+    // Seed a `prepared` operation (no staging bytes).
+    sqlx::query(
+        "INSERT INTO plugin_artifact_operations (operation_id, kind, staging_name, state) \
+         VALUES ('op-prepared', 'create', 'staging-prepared', 'prepared')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed prepared");
+
+    // Seed a `staged` operation with real staging bytes on disk.
+    let staging_dir = workspace.plugin_root().join(".staging");
+    std::fs::create_dir_all(&staging_dir).expect("staging dir");
+    std::fs::write(staging_dir.join("staging-staged"), b"partial").expect("staging bytes");
+    sqlx::query(
+        "INSERT INTO plugin_artifact_operations (operation_id, kind, staging_name, staging_identity, state) \
+         VALUES ('op-staged', 'create', 'staging-staged', 'deadbeef', 'staged')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed staged");
+
+    let recovered = store
+        .recover_interrupted_operations()
+        .await
+        .expect("recover");
+    assert_eq!(
+        recovered, 2,
+        "both prepared and staged operations are recovered"
+    );
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM plugin_artifact_operations WHERE operation_id IN ('op-prepared','op-staged')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining");
+    assert_eq!(remaining, 0, "interrupted operations must be cleared");
+
+    // The staged bytes on disk must be removed.
+    assert!(
+        !staging_dir.join("staging-staged").exists(),
+        "staging bytes of a rolled-back staged operation must be removed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn install_walks_full_durability_state_machine_to_done() {
     // T077: install must record the full
     // prepared → staged → published → referenced → done state machine

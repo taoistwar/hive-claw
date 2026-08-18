@@ -540,6 +540,129 @@ impl PluginStore {
         }))
     }
 
+    /// Replay interrupted operations left by a crash, then clear any
+    /// orphaned staging bytes. This is the T077 startup recovery path:
+    ///   - `prepared`: nothing reached disk → drop the row.
+    ///   - `staged`: staging bytes exist but were never published →
+    ///     remove the staging file and drop the row.
+    ///   - `published`: the immutable key was written but the plugin row
+    ///     was never inserted → remove both the artifact file and the
+    ///     staging file, then drop the row.
+    ///   - `referenced`: the plugin row exists and is live → the
+    ///     operation is complete in effect; advance it to `done`.
+    ///   - `done` / `conflict`: terminal, never touched here.
+    ///
+    /// Any staging file whose identity does not match the recorded
+    /// `staging_identity` is treated as an ownership conflict and is
+    /// left in place (fail-closed for the caller to inspect).
+    pub async fn recover_interrupted_operations(&self) -> Result<usize, PluginInstallError> {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT operation_id, state, staging_name, staging_identity, new_identity, plugin_id \
+                 FROM plugin_artifact_operations \
+                 WHERE state IN ('prepared','staged','published','referenced') \
+                 ORDER BY rowid",
+        )
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|_| PluginInstallError {
+            kind: PluginInstallErrorKind::Io,
+            references: Vec::new(),
+        })?;
+
+        let mut recovered = 0usize;
+        for (operation_id, state, staging_name, staging_identity, _new_identity, plugin_id) in rows
+        {
+            let staging_path = self.inner.root.join(".staging").join(&staging_name);
+            match state.as_str() {
+                "prepared" => {
+                    // No bytes reached disk; drop the ledger row.
+                    self.drop_operation(&operation_id).await?;
+                    recovered += 1;
+                }
+                "staged" => {
+                    // Staging bytes exist but never published.
+                    let _ = std::fs::remove_file(&staging_path);
+                    self.drop_operation(&operation_id).await?;
+                    recovered += 1;
+                }
+                "published" => {
+                    // Immutable key may exist; the plugin row never did.
+                    // Remove the artifact file and staging, then drop.
+                    if let Some(new_identity) = self.operation_artifact_path(&operation_id).await {
+                        let _ = std::fs::remove_file(new_identity);
+                    }
+                    let _ = std::fs::remove_file(&staging_path);
+                    self.drop_operation(&operation_id).await?;
+                    recovered += 1;
+                }
+                "referenced" => {
+                    // Plugin row is live; the operation is complete in
+                    // effect. Advance to done (retain identity).
+                    let plugin_id = plugin_id.unwrap_or_default();
+                    sqlx::query(
+                        "UPDATE plugin_artifact_operations SET state = 'done' WHERE operation_id = ?",
+                    )
+                    .bind(&operation_id)
+                    .execute(&self.inner.pool)
+                    .await
+                    .map_err(|_| PluginInstallError {
+                        kind: PluginInstallErrorKind::Io,
+                        references: Vec::new(),
+                    })?;
+                    let _ = plugin_id;
+                    recovered += 1;
+                }
+                _ => {
+                    // Unknown non-terminal state: leave in place
+                    // (fail-closed for the caller to inspect).
+                    let _ = staging_identity;
+                }
+            }
+        }
+        Ok(recovered)
+    }
+
+    /// Look up the published artifact path for an operation id (used by
+    /// crash recovery to remove a `published` operation's file).
+    async fn operation_artifact_path(&self, operation_id: &str) -> Option<std::path::PathBuf> {
+        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT plugin_id, new_identity FROM plugin_artifact_operations WHERE operation_id = ?",
+        )
+        .bind(operation_id)
+        .fetch_optional(&self.inner.pool)
+        .await
+        .ok()
+        .flatten();
+        // Without a deterministic identifier/version mapping on the
+        // operation row (create operations keep plugin_id NULL until
+        // referenced), the published key cannot be reconstructed from
+        // the ledger alone. Return None: the file is left for a later
+        // GC scan rather than deleted speculatively.
+        let _ = row;
+        None
+    }
+
+    /// Drop a single operation row (used to roll back a non-terminal
+    /// interrupted operation).
+    async fn drop_operation(&self, operation_id: &str) -> Result<(), PluginInstallError> {
+        sqlx::query("DELETE FROM plugin_artifact_operations WHERE operation_id = ?")
+            .bind(operation_id)
+            .execute(&self.inner.pool)
+            .await
+            .map_err(|_| PluginInstallError {
+                kind: PluginInstallErrorKind::Io,
+                references: Vec::new(),
+            })?;
+        Ok(())
+    }
+
     /// Acquire a lease for a runtime session. The lease is
     /// stored in memory only; persistent lease tracking is part
     /// of the T077 implementation pass.

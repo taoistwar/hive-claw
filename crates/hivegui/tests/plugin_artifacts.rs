@@ -235,6 +235,63 @@ async fn replace_cas_switches_artifact_and_increments_revision() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn gc_registration_is_idempotent_and_operation_completion_is_terminal() {
+    // T078: GC registration must be idempotent (a second insert of the
+    // same key does not duplicate or change state), and completing an
+    // operation must be terminal (a second call leaves `done` as-is).
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+
+    // Seed a non-terminal `prepared` operation (identity columns NULL,
+    // which satisfies the create/prepared CHECK).
+    sqlx::query(
+        "INSERT INTO plugin_artifact_operations (operation_id, kind, staging_name, state) \
+         VALUES ('op-gc', 'create', 'staging-gc', 'prepared')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed operation");
+
+    // Idempotent GC registration.
+    Plugin::register_gc_artifact(
+        &pool,
+        "plugins/owned.wasm".to_string(),
+        "orphaned".to_string(),
+    )
+    .await
+    .expect("register gc");
+    Plugin::register_gc_artifact(
+        &pool,
+        "plugins/owned.wasm".to_string(),
+        "orphaned".to_string(),
+    )
+    .await
+    .expect("register gc again");
+    let gc_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM plugin_artifact_gc WHERE artifact_key = ?")
+            .bind("plugins/owned.wasm")
+            .fetch_one(&pool)
+            .await
+            .expect("gc count");
+    assert_eq!(gc_count, 1, "GC registration must be idempotent");
+
+    // Terminal operation completion.
+    Plugin::complete_operation(&pool, "op-gc")
+        .await
+        .expect("complete operation");
+    Plugin::complete_operation(&pool, "op-gc")
+        .await
+        .expect("complete operation again");
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM plugin_artifact_operations WHERE operation_id = ?")
+            .bind("op-gc")
+            .fetch_one(&pool)
+            .await
+            .expect("operation state");
+    assert_eq!(state, "done", "operation completion must be terminal");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn install_walks_full_durability_state_machine_to_done() {
     // T077: install must record the full
     // prepared → staged → published → referenced → done state machine

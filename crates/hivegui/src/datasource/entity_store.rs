@@ -1500,6 +1500,43 @@ impl Plugin {
         std::fs::create_dir_all(&plugin_dir)?;
         Ok(plugin_dir)
     }
+
+    /// Idempotently register an owned artifact key for protected GC.
+    /// The key is inserted as `pending` only if it is not already
+    /// tracked; an existing row (any state) is left untouched.
+    /// Decoupled from the source operation and from any file deletion:
+    /// the caller later scans the ledger and deletes only when the
+    /// identity is no longer referenced.
+    pub async fn register_gc_artifact(
+        pool: &Pool<Sqlite>,
+        artifact_key: String,
+        reason: String,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO plugin_artifact_gc (artifact_key, last_attempt_at, reason, state) \
+             VALUES (?, unixepoch(), ?, 'pending') \
+             ON CONFLICT(artifact_key) DO NOTHING",
+        )
+        .bind(&artifact_key)
+        .bind(&reason)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Atomically mark a source `plugin_artifact_operations` row `done`.
+    /// This is the "operation→done" half of the T078 ledger API; it is
+    /// idempotent (a terminal `done`/`conflict` row is left as-is).
+    pub async fn complete_operation(pool: &Pool<Sqlite>, operation_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE plugin_artifact_operations SET state = 'done' \
+             WHERE operation_id = ? AND state NOT IN ('done', 'conflict')",
+        )
+        .bind(operation_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
 }
 
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Plugin {

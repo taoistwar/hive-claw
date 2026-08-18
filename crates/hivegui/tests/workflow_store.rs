@@ -21,10 +21,24 @@
 
 mod support;
 
+use hivegui::datasource::store::{Store, StoreOpenOptions};
 use hivegui::datasource::workflow_store::{
     NodeType, WorkflowConflict, WorkflowGraph, WorkflowNode, WorkflowStore,
 };
 use support::TestWorkspace;
+
+/// Open a real v4 Store (which runs migrations / creates tables) and
+/// return its pool plus a `WorkflowStore` bound to it.
+async fn open_workflow_store(workspace: &TestWorkspace) -> (Store, WorkflowStore) {
+    let store = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open real v4 Store");
+    let workflow_store = WorkflowStore::new(store.pool().clone()).expect("workflow store");
+    (store, workflow_store)
+}
 
 #[test]
 fn node_type_enumerates_exactly_four_stable_values() {
@@ -50,8 +64,7 @@ fn node_type_enumerates_exactly_four_stable_values() {
 #[tokio::test(flavor = "current_thread")]
 async fn create_workflow_persists_full_graph_in_single_transaction() {
     let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    let store = WorkflowStore::new(pool).expect("store");
+    let (_store, store) = open_workflow_store(&workspace).await;
 
     let graph = WorkflowGraph::builder()
         .name("demo")
@@ -59,15 +72,14 @@ async fn create_workflow_persists_full_graph_in_single_transaction() {
         .node(WorkflowNode::new("end", NodeType::End))
         .edge("start", "end")
         .build();
-    let created = store.create(graph).expect("create");
+    let created = store.create(graph).await.expect("create");
     assert_eq!(created.node_count(), 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn node_keys_must_be_unique_within_a_workflow() {
     let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    let store = WorkflowStore::new(pool).expect("store");
+    let (_store, store) = open_workflow_store(&workspace).await;
 
     let graph = WorkflowGraph::builder()
         .name("dup-keys")
@@ -76,6 +88,7 @@ async fn node_keys_must_be_unique_within_a_workflow() {
         .build();
     let err = store
         .create(graph)
+        .await
         .expect_err("duplicate node_key must fail");
     assert_eq!(err.reason(), "duplicate_node_key");
     assert_eq!(err.field(), "node_key");
@@ -84,8 +97,7 @@ async fn node_keys_must_be_unique_within_a_workflow() {
 #[tokio::test(flavor = "current_thread")]
 async fn deletion_referenced_by_tool_returns_conflict() {
     let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    let store = WorkflowStore::new(pool).expect("store");
+    let (store, workflow_store) = open_workflow_store(&workspace).await;
 
     let graph = WorkflowGraph::builder()
         .name("referenced")
@@ -93,9 +105,32 @@ async fn deletion_referenced_by_tool_returns_conflict() {
         .node(WorkflowNode::new("end", NodeType::End))
         .edge("start", "end")
         .build();
-    let workflow = store.create(graph).expect("create");
-    let conflict = store
+    let workflow = workflow_store.create(graph).await.expect("create");
+
+    // Create a workflow-wrap Tool referencing the workflow so the
+    // RESTRICT boundary is actually exercised (the workflow is now
+    // referenced, so delete must fail with zero modification).
+    hivegui::datasource::entity_store::Tool::create(
+        store.pool(),
+        "ref-tool".to_string(),
+        "Ref Tool".to_string(),
+        "References the workflow".to_string(),
+        "workflow-wrap".to_string(),
+        "workspace".to_string(),
+        false,
+        None,
+        Some(workflow.id()),
+        "{}".to_string(),
+        "{}".to_string(),
+        None,
+        None,
+    )
+    .await
+    .expect("create referencing tool");
+
+    let conflict = workflow_store
         .delete(workflow.id())
+        .await
         .expect_err("delete must fail when referenced by a tool");
     let expected = WorkflowConflict::ReferencedByTool;
     assert_eq!(conflict, expected);

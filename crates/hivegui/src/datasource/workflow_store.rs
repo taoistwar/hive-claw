@@ -11,9 +11,6 @@
 
 #![warn(missing_docs)]
 
-use std::sync::Arc;
-
-use parking_lot::Mutex;
 use thiserror::Error;
 
 /// Stable node type contract. The wire strings are the only
@@ -221,10 +218,13 @@ impl WorkflowConflict {
 
 /// Failure envelope.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
-#[error("workflow store error: {0:?}")]
 pub enum WorkflowStoreError {
     /// Conflict that maps to a known [`WorkflowConflict`].
+    #[error("workflow store conflict: {0:?}")]
     Conflict(WorkflowConflict),
+    /// Internal database / validation failure (not a known conflict).
+    #[error("workflow store internal error: {0}")]
+    Internal(String),
 }
 
 impl WorkflowStoreError {
@@ -232,6 +232,7 @@ impl WorkflowStoreError {
     pub fn field(&self) -> &str {
         match self {
             Self::Conflict(conflict) => conflict.field(),
+            Self::Internal(_) => "unknown",
         }
     }
 
@@ -239,6 +240,7 @@ impl WorkflowStoreError {
     pub fn reason(&self) -> &str {
         match self {
             Self::Conflict(conflict) => conflict.reason(),
+            Self::Internal(_) => "internal",
         }
     }
 
@@ -246,6 +248,7 @@ impl WorkflowStoreError {
     pub fn references(&self) -> Vec<String> {
         match self {
             Self::Conflict(conflict) => conflict.references(),
+            Self::Internal(_) => Vec::new(),
         }
     }
 }
@@ -256,33 +259,24 @@ impl PartialEq<WorkflowConflict> for WorkflowStoreError {
     }
 }
 
-/// Workflow store handle.
+/// Workflow store handle. Backed by a live SQLite [`sqlx::Pool`];
+/// the T095 implementation pass made the T090 Red tests exercise the
+/// real transactional DAG save, RESTRICT matrix and pagination paths.
 #[derive(Debug, Clone)]
 pub struct WorkflowStore {
-    inner: Arc<WorkflowStoreInner>,
-}
-
-#[derive(Debug)]
-struct WorkflowStoreInner {
-    records: Mutex<Vec<WorkflowRecord>>,
-    next_id: Mutex<i64>,
+    pool: sqlx::Pool<sqlx::Sqlite>,
 }
 
 impl WorkflowStore {
-    /// Open a new store against the given pool. T090 minimum
-    /// surface uses an in-memory vector.
-    pub fn new(_pool: sqlx::Pool<sqlx::Sqlite>) -> Result<Self, WorkflowStoreError> {
-        Ok(Self {
-            inner: Arc::new(WorkflowStoreInner {
-                records: Mutex::new(Vec::new()),
-                next_id: Mutex::new(1),
-            }),
-        })
+    /// Open a store against the given pool.
+    pub fn new(pool: sqlx::Pool<sqlx::Sqlite>) -> Result<Self, WorkflowStoreError> {
+        Ok(Self { pool })
     }
 
-    /// Create a new workflow graph. Duplicate `node_key` values
-    /// are rejected with [`WorkflowConflict::DuplicateNodeKey`].
-    pub fn create(&self, graph: WorkflowGraph) -> Result<WorkflowRecord, WorkflowStoreError> {
+    /// Persist a full workflow graph in a single transaction: the
+    /// workflow row plus every node and edge. Duplicate `node_key`
+    /// values are rejected with [`WorkflowConflict::DuplicateNodeKey`].
+    pub async fn create(&self, graph: WorkflowGraph) -> Result<WorkflowRecord, WorkflowStoreError> {
         let mut seen = std::collections::HashSet::new();
         for node in graph.nodes() {
             if !seen.insert(node.key().to_string()) {
@@ -291,23 +285,92 @@ impl WorkflowStore {
                 ));
             }
         }
-        let mut next_id = self.inner.next_id.lock();
-        let record = WorkflowRecord {
-            id: *next_id,
+
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let identifier = graph.name().to_string();
+
+        // The workflow row. The DAG name doubles as the identifier
+        // (T090 fixtures use identifier-safe names); invalid names are
+        // surfaced as an internal error below rather than a conflict.
+        let workflow_id: i64 = sqlx::query_scalar(
+            "INSERT INTO workflows (identifier, name, description, timeout_ms, category_id, input_schema, start_description, output_schema, required_capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(&identifier)
+        .bind(graph.name())
+        .bind(None::<String>)
+        .bind(30_000_i64)
+        .bind(None::<i64>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal)?;
+
+        for node in graph.nodes() {
+            sqlx::query(
+                "INSERT INTO workflow_nodes (workflow_id, node_key, node_type, function_id, position_x, position_y, node_config, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(workflow_id)
+            .bind(node.key())
+            .bind(node.kind().as_str())
+            .bind(None::<i64>)
+            .bind(0.0_f64)
+            .bind(0.0_f64)
+            .bind("{}")
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        }
+
+        for edge in graph.edges() {
+            sqlx::query(
+                "INSERT INTO workflow_edges (workflow_id, src_node_key, dst_node_key, mapping) VALUES (?, ?, ?, ?)",
+            )
+            .bind(workflow_id)
+            .bind(edge.from())
+            .bind(edge.to())
+            .bind("{}")
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        }
+
+        tx.commit().await.map_err(internal)?;
+
+        Ok(WorkflowRecord {
+            id: workflow_id,
             name: graph.name().to_string(),
             node_count: graph.nodes().len(),
-        };
-        *next_id += 1;
-        self.inner.records.lock().push(record.clone());
-        Ok(record)
+        })
     }
 
-    /// Delete a workflow by id. For the T090 minimum surface this
-    /// always returns [`WorkflowConflict::ReferencedByTool`] (the
-    /// Red test exercises the "delete must fail" boundary).
-    pub fn delete(&self, _id: i64) -> Result<(), WorkflowStoreError> {
-        Err(WorkflowStoreError::Conflict(
-            WorkflowConflict::ReferencedByTool,
-        ))
+    /// Delete a workflow by id. When a `Tool` row references the
+    /// workflow, the delete is rejected with
+    /// [`WorkflowConflict::ReferencedByTool`] (RESTRICT) and no rows
+    /// are modified; otherwise the workflow and its nodes/edges are
+    /// removed (nodes/edges are `ON DELETE CASCADE`).
+    pub async fn delete(&self, id: i64) -> Result<(), WorkflowStoreError> {
+        let refs = crate::datasource::entity_store::Workflow::referenced_by_tools(&self.pool, id)
+            .await
+            .map_err(internal)?;
+        if !refs.is_empty() {
+            return Err(WorkflowStoreError::Conflict(
+                WorkflowConflict::ReferencedByTool,
+            ));
+        }
+        crate::datasource::entity_store::Workflow::delete(&self.pool, id)
+            .await
+            .map_err(internal)?;
+        Ok(())
     }
+}
+
+fn internal(error: impl std::fmt::Display) -> WorkflowStoreError {
+    WorkflowStoreError::Internal(error.to_string())
 }

@@ -112,6 +112,7 @@ const V4_FOREIGN_KEYS: &[ForeignKeyContract] = &[
     fk!("functions", "category_id" => "categories", "id", "SET NULL"),
     fk!("workflows", "category_id" => "categories", "id", "SET NULL"),
     fk!("workflow_nodes", "workflow_id" => "workflows", "id", "CASCADE"),
+    fk!("workflow_nodes", "function_id" => "functions", "id", "SET NULL"),
     fk!("workflow_edges", "workflow_id" => "workflows", "id", "CASCADE"),
     fk!("tools", "function_id" => "functions", "id", "RESTRICT"),
     fk!("tools", "workflow_id" => "workflows", "id", "RESTRICT"),

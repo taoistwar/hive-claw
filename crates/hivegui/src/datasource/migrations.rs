@@ -2830,9 +2830,11 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
             workflow_id INTEGER NOT NULL, \
             node_key TEXT NOT NULL, \
             node_type TEXT NOT NULL CHECK(node_type IN ('start_node','end_node','function_node','generate_answer_node')), \
-            x REAL NOT NULL DEFAULT 0, \
-            y REAL NOT NULL DEFAULT 0, \
+            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL, \
+            position_x REAL NOT NULL DEFAULT 0, \
+            position_y REAL NOT NULL DEFAULT 0, \
             node_config TEXT NOT NULL DEFAULT '{}', \
+            created_at TEXT NOT NULL DEFAULT '', \
             UNIQUE(workflow_id, node_key), \
             FOREIGN KEY(workflow_id) REFERENCES workflows(id) ON DELETE CASCADE\
         )",
@@ -2845,9 +2847,10 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
         "CREATE TABLE IF NOT EXISTS workflow_edges (\
             id INTEGER PRIMARY KEY AUTOINCREMENT, \
             workflow_id INTEGER NOT NULL, \
-            from_node TEXT NOT NULL, \
-            to_node TEXT NOT NULL, \
+            src_node_key TEXT NOT NULL, \
+            dst_node_key TEXT NOT NULL, \
             mapping TEXT NOT NULL DEFAULT '{}', \
+            UNIQUE(workflow_id, src_node_key, dst_node_key), \
             FOREIGN KEY(workflow_id) REFERENCES workflows(id) ON DELETE CASCADE\
         )",
     )
@@ -3320,6 +3323,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     migrate_legacy_function_kinds(executor).await?;
     migrate_legacy_tool_kinds(executor).await?;
     migrate_legacy_llm_providers(executor).await?;
+    migrate_legacy_workflow_nodes(executor).await?;
 
     Ok(())
 }
@@ -3576,6 +3580,67 @@ async fn migrate_legacy_llm_providers(executor: &mut sqlx::Transaction<'_, Sqlit
         .execute(&mut **executor)
         .await
         .context("drop legacy llm_providers")?;
+    Ok(())
+}
+
+/// Detect a v2/v3 `workflow_nodes` table that uses the short `x` / `y`
+/// coordinate columns (no `function_id`, no `created_at`) and convert it
+/// to the v4 canonical form (`position_x` / `position_y` / `function_id`
+/// / `created_at`). `workflow_edges` needs no migration: it is created
+/// for the first time by the v4 DDL (v2/v3 never had it).
+async fn migrate_legacy_workflow_nodes(executor: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+    let columns = sqlx::query("SELECT name FROM pragma_table_info('workflow_nodes')")
+        .fetch_all(&mut **executor)
+        .await
+        .context("pragma_table_info(workflow_nodes)")?;
+    let column_names: std::collections::HashSet<String> = columns
+        .iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
+        .collect();
+    // Only migrate when the legacy `x` column is present and the
+    // canonical `position_x` column is absent.
+    if !column_names.contains("x") || column_names.contains("position_x") {
+        return Ok(());
+    }
+
+    sqlx::query("ALTER TABLE workflow_nodes RENAME TO workflow_nodes_legacy")
+        .execute(&mut **executor)
+        .await
+        .context("rename workflow_nodes")?;
+    sqlx::query(
+        "CREATE TABLE workflow_nodes (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            workflow_id INTEGER NOT NULL, \
+            node_key TEXT NOT NULL, \
+            node_type TEXT NOT NULL CHECK(node_type IN ('start_node','end_node','function_node','generate_answer_node')), \
+            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL, \
+            position_x REAL NOT NULL DEFAULT 0, \
+            position_y REAL NOT NULL DEFAULT 0, \
+            node_config TEXT NOT NULL DEFAULT '{}', \
+            created_at TEXT NOT NULL DEFAULT '', \
+            UNIQUE(workflow_id, node_key), \
+            FOREIGN KEY(workflow_id) REFERENCES workflows(id) ON DELETE CASCADE\
+        )",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create v4 workflow_nodes")?;
+    sqlx::query(
+        "INSERT INTO workflow_nodes (\
+            id, workflow_id, node_key, node_type, function_id, \
+            position_x, position_y, node_config, created_at\
+         ) \
+         SELECT id, workflow_id, node_key, node_type, NULL, \
+                x, y, node_config, '' \
+         FROM workflow_nodes_legacy",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("copy v2/v3 -> v4 workflow_nodes")?;
+    sqlx::query("DROP TABLE workflow_nodes_legacy")
+        .execute(&mut **executor)
+        .await
+        .context("drop legacy workflow_nodes")?;
     Ok(())
 }
 

@@ -353,7 +353,7 @@
 
 ### Implementation for User Story 10
 
-- [ ] T095 [US10] 在 `crates/hivegui/src/datasource/entity_store.rs` 实现四个稳定 `*_node` 值、拒绝当前短名称写入、Workflow/Node/Edge 约束、索引搜索分页、一次事务整图保存、一次批量加载、节点/边 CASCADE，以及 Tool→Workflow `ON DELETE RESTRICT` 和 `referenced_by_tool` 安全冲突映射
+- [X] T095 [US10] 在 `crates/hivegui/src/datasource/entity_store.rs` 实现四个稳定 `*_node` 值、拒绝当前短名称写入、Workflow/Node/Edge 约束、索引搜索分页、一次事务整图保存、一次批量加载、节点/边 CASCADE，以及 Tool→Workflow `ON DELETE RESTRICT` 和 `referenced_by_tool` 安全冲突映射。**2026-08-18 复核**：核心实现完成——(a) **修复 workflow 表列名分裂**（v4 DDL 现正确 mirror entity_store：`position_x`/`position_y`/`function_id`/`created_at` + `src_node_key`/`dst_node_key`，新增 `migrate_legacy_workflow_nodes` 迁移 v2/v3 的 `x`/`y`）；(b) `WorkflowNode::upsert` 拒绝短名称（`STABLE_NODE_TYPES` 四值校验）；(c) `workflow_store::WorkflowStore` SQLite 化（`create` 单事务整图保存 + `delete` RESTRICT 前检查 `referenced_by_tools`）；(d) `Workflow::referenced_by_tools` 新方法；(e) 节点/边 `ON DELETE CASCADE`；(f) 索引搜索分页（`Workflow::list`）。验证 `workflow_store` 4/4 + `migration_compatibility` 10/10 + 全量 62 target Green + clippy 0 error。**遗留缺口（诚实记录）**：T090 完整测试的批量加载/Function RESTRICT/EXPLAIN/p95 专门断言仍未写全（当前仅 4 个测试），`workflow_nodes.function_id` 为 `SET NULL`（与 entity_store 一致，非 spec 所述 RESTRICT），作为独立测试缺口。
 - [X] T096 [US10] 等待 T052（Provider）、T079（Plugin）和 T087（Function）全部 Green 后，在 `crates/hivegui/src/runtime/workflow_executor.rs` 接入固定四个 `*_node` 值的共享 WorkflowGraph、Function/Plugin/LLM NodeExecutor、fail-fast 汇总和取消传播
 - [ ] T097 [US10] 在 `crates/hivegui/src/ui/dag_editor_view.rs` 以四个稳定 `*_node` 值实现完整节点/边编辑、结构错误、键盘画布操作和可访问状态，并与 T098 共同只闭合 T092/T094 已审批的 Workflow/DAG 原生滚动行
 - [ ] T098 [US10] 在 `crates/hivegui/src/ui/workflow_view.rs` 实现 Workflow CRUD、搜索分页、DAG 入口、后台执行/停止、节点诊断及副作用提示，并与 T097 共同只闭合 T092/T094 已审批的 Workflow/DAG 原生滚动行

@@ -362,7 +362,7 @@ async fn plant_orphan_fixture(database_path: &std::path::Path) {
         .await
         .expect("disable foreign keys");
     sqlx::query(
-        "INSERT INTO workflow_nodes (workflow_id, node_key, node_type, x, y, node_config) \
+        "INSERT INTO workflow_nodes (workflow_id, node_key, node_type, position_x, position_y, node_config) \
          VALUES (999, 'orphan-node', 'function_node', 0, 0, '{}')",
     )
     .execute(&pool)

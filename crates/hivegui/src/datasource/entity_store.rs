@@ -1790,6 +1790,19 @@ impl Workflow {
 
         Ok(())
     }
+
+    /// Return the identifiers of all `Tool` rows referencing this
+    /// workflow. Used by `WorkflowStore::delete` to enforce the
+    /// `referenced_by_tool` RESTRICT boundary before a delete.
+    pub async fn referenced_by_tools(pool: &Pool<Sqlite>, id: i64) -> Result<Vec<String>> {
+        let refs = sqlx::query_scalar::<_, String>(
+            "SELECT identifier FROM tools WHERE workflow_id = ? ORDER BY id",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await?;
+        Ok(refs)
+    }
 }
 
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Workflow {
@@ -1864,6 +1877,18 @@ impl WorkflowNode {
         position_y: f64,
         node_config: Option<String>,
     ) -> Result<WorkflowNode> {
+        // T095: reject legacy short node_type values; only the four
+        // stable `*_node` strings are writable.
+        const STABLE_NODE_TYPES: [&str; 4] = [
+            "start_node",
+            "end_node",
+            "function_node",
+            "generate_answer_node",
+        ];
+        if !STABLE_NODE_TYPES.contains(&node_type.as_str()) {
+            return Err(anyhow::anyhow!("非法 node_type: {node_type}"));
+        }
+
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             r#"INSERT INTO workflow_nodes (workflow_id, node_key, node_type, function_id, position_x, position_y, node_config, created_at)

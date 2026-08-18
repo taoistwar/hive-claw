@@ -4,8 +4,9 @@ use crate::datasource::{
 };
 use crate::ui::management_style::{ActionRole, ActionSize, ManagementStyle, action_button};
 use gpui::{
-    Bounds, Context, CursorStyle, Entity, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent,
-    Pixels, Point, ScrollWheelEvent, Window, div, hsla, point, prelude::*, px,
+    Bounds, Context, CursorStyle, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, Window, div, hsla, point,
+    prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -110,6 +111,8 @@ pub struct DagEditorView {
     config_history_window_input: Option<Entity<InputState>>,
     config_system_prompt_input: Option<Entity<TextareaState>>,
     config_error: Option<String>,
+
+    focus_handle: FocusHandle,
 }
 
 impl DagEditorView {
@@ -143,6 +146,7 @@ impl DagEditorView {
             config_history_window_input: None,
             config_system_prompt_input: None,
             config_error: None,
+            focus_handle: cx.focus_handle(),
         };
         v.load(cx);
         v
@@ -854,6 +858,117 @@ impl DagEditorView {
         cx.notify();
     }
 
+    /// Keyboard canvas navigation/editing (T097). The canvas is fully
+    /// keyboard-operable:
+    ///   - Arrow keys: move the selected node (or, in edge-drawing mode,
+    ///     move selection between nodes)
+    ///   - Enter: start drawing an edge from the selected node, or finish
+    ///     drawing to the currently selected node
+    ///   - Escape: cancel edge drawing / close the config panel / clear
+    ///     the context menu
+    ///   - Delete / Backspace: delete the selected node (start/end are
+    ///     protected) or selected edge
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        match key {
+            "escape" => {
+                self.creating_edge = None;
+                self.context_menu = None;
+                if self.show_node_config {
+                    self.hide_node_config_panel(cx);
+                } else {
+                    cx.notify();
+                }
+            }
+            "delete" | "backspace" => {
+                if let Some((src, dst)) = self.selected_edge.clone() {
+                    self.delete_edge(&src, &dst, cx);
+                } else if let Some(node_key) = self.selected_node.clone() {
+                    self.delete_node(&node_key, cx);
+                }
+            }
+            "enter" => {
+                if self.creating_edge.is_some() {
+                    // Finish edge drawing to the currently selected node.
+                    if let (Some((src, _, _)), Some(target)) =
+                        (self.creating_edge.clone(), self.selected_node.clone())
+                        && src != target
+                    {
+                        self.complete_edge_from_keyboard(&src, &target, cx);
+                    }
+                    self.creating_edge = None;
+                } else if let Some(node_key) = self.selected_node.clone() {
+                    // Start drawing an edge from the selected node.
+                    let position = self
+                        .nodes
+                        .iter()
+                        .find(|n| n.node_key == node_key)
+                        .map(|n| n.position)
+                        .unwrap_or_default();
+                    self.creating_edge = Some((node_key, "output".to_string(), position));
+                    cx.notify();
+                }
+            }
+            "up" | "down" | "left" | "right" => {
+                if self.creating_edge.is_some() {
+                    self.move_selection_among_nodes(key, cx);
+                } else if let Some(node_key) = self.selected_node.clone() {
+                    let step = self.canvas_pixels(8.0);
+                    let (dx, dy) = match key {
+                        "up" => (px(0.0), px(-f32::from(step))),
+                        "down" => (px(0.0), px(f32::from(step))),
+                        "left" => (px(-f32::from(step)), px(0.0)),
+                        _ => (px(f32::from(step)), px(0.0)),
+                    };
+                    if let Some(node) = self.nodes.iter_mut().find(|n| n.node_key == node_key) {
+                        node.position = point(node.position.x + dx, node.position.y + dy);
+                    }
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move the selected node index forward/backward when drawing an edge
+    /// with the keyboard. "right"/"down" advance, "left"/"up" retreat.
+    fn move_selection_among_nodes(&mut self, key: &str, cx: &mut Context<Self>) {
+        let keys: Vec<String> = self.nodes.iter().map(|n| n.node_key.clone()).collect();
+        let current = self.selected_node.clone();
+        let current_index = current
+            .as_ref()
+            .and_then(|k| keys.iter().position(|n| n == k))
+            .unwrap_or(0);
+        let next_index = match key {
+            "left" | "up" => current_index.saturating_sub(1),
+            _ => (current_index + 1).min(keys.len().saturating_sub(1)),
+        };
+        self.selected_node = keys.get(next_index).cloned();
+        cx.notify();
+    }
+
+    /// Complete an edge from `src` to `target` (keyboard Enter). The
+    /// target is treated as the destination input handle.
+    fn complete_edge_from_keyboard(&mut self, src: &str, target: &str, cx: &mut Context<Self>) {
+        if src == target {
+            return;
+        }
+        // Avoid duplicate edges and the reverse direction.
+        let already = self
+            .edges
+            .iter()
+            .any(|e| e.src_node_key == src && e.dst_node_key == target);
+        if already {
+            return;
+        }
+        self.edges.push(DagEdge {
+            src_node_key: src.to_string(),
+            dst_node_key: target.to_string(),
+            mapping: serde_json::json!({}),
+        });
+        cx.notify();
+    }
+
     fn on_canvas_mouse_down(&mut self, position: Point<Pixels>) {
         // 点击空白处取消选中
         self.selected_node = None;
@@ -953,6 +1068,10 @@ impl Render for DagEditorView {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
+                v.on_key_down(event, window, cx);
+            }))
             // 工具栏
             .child(
                 div()
@@ -2146,7 +2265,10 @@ mod tests {
         (temp_dir, cx.new(|_| store))
     }
 
-    fn test_editor(store: gpui::Entity<Store>) -> DagEditorView {
+    fn test_editor(
+        store: gpui::Entity<Store>,
+        cx: &mut gpui::Context<DagEditorView>,
+    ) -> DagEditorView {
         DagEditorView {
             store,
             workflow_id: 1,
@@ -2193,6 +2315,7 @@ mod tests {
             config_history_window_input: None,
             config_system_prompt_input: None,
             config_error: None,
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -2206,7 +2329,7 @@ mod tests {
         let editor = Rc::new(RefCell::new(None));
         let editor_for_window = editor.clone();
         let window = cx.open_window(size(px(900.0), px(600.0)), move |window, cx| {
-            let inner = cx.new(|_| test_editor(store));
+            let inner = cx.new(|cx| test_editor(store, cx));
             *editor_for_window.borrow_mut() = Some(inner.clone());
             gpui_component::Root::new(inner, window, cx).bordered(false)
         });
@@ -2258,27 +2381,29 @@ mod tests {
     #[gpui::test]
     fn empty_workflow_loads_required_start_and_end_nodes(cx: &mut TestAppContext) {
         let (_temp_dir, store) = test_store(cx);
-        let mut editor = test_editor(store);
-        editor.nodes.clear();
-        editor.ensure_boundary_nodes();
-        assert_eq!(
-            editor
-                .nodes
-                .iter()
-                .filter(|node| node.node_type == DagNodeType::StartNode)
-                .count(),
-            1,
-            "an empty workflow must contain exactly one start node"
-        );
-        assert_eq!(
-            editor
-                .nodes
-                .iter()
-                .filter(|node| node.node_type == DagNodeType::EndNode)
-                .count(),
-            1,
-            "an empty workflow must contain exactly one end node"
-        );
+        let editor = cx.new(|cx| test_editor(store, cx));
+        editor.update(cx, |editor, _cx| {
+            editor.nodes.clear();
+            editor.ensure_boundary_nodes();
+            assert_eq!(
+                editor
+                    .nodes
+                    .iter()
+                    .filter(|node| node.node_type == DagNodeType::StartNode)
+                    .count(),
+                1,
+                "an empty workflow must contain exactly one start node"
+            );
+            assert_eq!(
+                editor
+                    .nodes
+                    .iter()
+                    .filter(|node| node.node_type == DagNodeType::EndNode)
+                    .count(),
+                1,
+                "an empty workflow must contain exactly one end node"
+            );
+        });
     }
 
     #[gpui::test]

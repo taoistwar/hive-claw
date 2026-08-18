@@ -1,3 +1,6 @@
+//! Workflow DAG canvas editor (US10).
+//! scroll:workflow_dag
+
 use crate::datasource::{
     Store,
     entity_store::{Function, Workflow, WorkflowEdge, WorkflowNode},

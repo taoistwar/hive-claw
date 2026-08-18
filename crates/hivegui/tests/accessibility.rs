@@ -1438,3 +1438,89 @@ fn function_view_declares_keyboard_and_focus_contract_for_accessibility() {
         "Builtin rows should have an explicit contract path for disabled mode"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §T092 [P] [US10] — Workflow / DAG accessibility surface.
+//
+// T097 (DAG keyboard canvas) and T098 (workflow form keyboard) own the
+// production code; these tests activate the T016E Workflow/DAG row and
+// assert the keyboard / focus / native-scroll source contract.
+// ---------------------------------------------------------------------------
+
+const DAG_EDITOR_SOURCE: &str = include_str!("../src/ui/dag_editor_view.rs");
+const WORKFLOW_VIEW_SOURCE: &str = include_str!("../src/ui/workflow_view.rs");
+
+#[test]
+fn dag_editor_module_carries_scroll_tag_for_native_surface() {
+    use support::scroll_inventory::{ScrollSurface, assert_source_tag};
+    // T097 must publish `//! scroll:workflow_dag` in the module doc comment.
+    assert_source_tag(DAG_EDITOR_SOURCE, ScrollSurface::WorkflowDag.slug());
+}
+
+#[test]
+fn workflow_dag_surface_is_registered_in_t016e_inventory() {
+    use support::scroll_inventory::ScrollSurface;
+    // T095 activates the T016E Workflow/DAG surface owned by US10.
+    let owner = ScrollSurface::WorkflowDag.owner_phase().to_string();
+    assert_eq!(
+        owner, "US10/T095",
+        "WorkflowDag owner phase must be fixed to US10/T095"
+    );
+    assert_eq!(ScrollSurface::WorkflowDag.slug(), "workflow_dag");
+}
+
+#[test]
+fn dag_editor_supports_keyboard_canvas_operations() {
+    // T097 must wire keyboard canvas navigation/editing: arrow-key node
+    // movement, Enter edge drawing, Escape cancel, Delete removal, and a
+    // focus handle for the canvas surface.
+    assert!(
+        DAG_EDITOR_SOURCE.contains("on_key_down"),
+        "DAG editor must wire keyboard handling"
+    );
+    assert!(
+        DAG_EDITOR_SOURCE.contains("track_focus") || DAG_EDITOR_SOURCE.contains("focus_handle"),
+        "DAG editor must own a focus handle for the canvas surface"
+    );
+    for required in ["\"up\"", "\"down\"", "\"left\"", "\"right\""] {
+        assert!(
+            DAG_EDITOR_SOURCE.contains(required),
+            "DAG editor must handle the {required} arrow key"
+        );
+    }
+    assert!(
+        DAG_EDITOR_SOURCE.contains("\"enter\""),
+        "DAG editor must handle Enter for edge drawing"
+    );
+    assert!(
+        DAG_EDITOR_SOURCE.contains("\"escape\""),
+        "DAG editor must handle Escape for cancel"
+    );
+    assert!(
+        DAG_EDITOR_SOURCE.contains("\"delete\"") || DAG_EDITOR_SOURCE.contains("\"backspace\""),
+        "DAG editor must handle Delete/Backspace for node/edge removal"
+    );
+}
+
+#[test]
+fn workflow_view_supports_keyboard_form_operations() {
+    // T098 must wire keyboard form handling (Escape close / Enter submit)
+    // and a focus handle for the form surface.
+    assert!(
+        WORKFLOW_VIEW_SOURCE.contains("on_key_down"),
+        "Workflow view must wire keyboard handling"
+    );
+    assert!(
+        WORKFLOW_VIEW_SOURCE.contains("track_focus")
+            || WORKFLOW_VIEW_SOURCE.contains("focus_handle"),
+        "Workflow view must own a focus handle for the form surface"
+    );
+    assert!(
+        WORKFLOW_VIEW_SOURCE.contains("\"escape\""),
+        "Workflow form must handle Escape to close"
+    );
+    assert!(
+        WORKFLOW_VIEW_SOURCE.contains("\"enter\""),
+        "Workflow form must handle Enter to submit"
+    );
+}

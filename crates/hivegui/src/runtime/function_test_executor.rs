@@ -4,7 +4,7 @@ use std::{collections::HashSet, path::Path, time::Duration};
 
 use serde_json::Value;
 
-use crate::datasource::entity_store::Function;
+use crate::datasource::entity_store::{Function, Plugin};
 
 use super::{BuiltinExecutor, PluginExecutor};
 
@@ -114,6 +114,64 @@ impl FunctionTestExecutor {
             &input_json,
             FUNCTION_TEST_TIMEOUT,
             allowed_capabilities,
+        )
+        .await
+    }
+
+    /// Executes `function` with verification of the associated Plugin
+    /// artifact against its trusted SHA-256 digest (T079). The digest is
+    /// re-derived from the bytes that are about to be handed to Extism and
+    /// compared to the recorded value before any byte reaches the runtime.
+    pub async fn execute_with_verification(
+        function: &Function,
+        input: Value,
+        base_dir: &Path,
+        allowed_capabilities: Vec<String>,
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+    ) -> Result<String, String> {
+        if function.kind == "placeholder" {
+            return Err("占位函数没有可执行实现，仅用于 LLM 提示词调试".to_string());
+        }
+        if function.kind == "builtin" {
+            return BuiltinExecutor::execute(&function.identifier, input).map(|output| {
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
+            });
+        }
+
+        let plugin_id = function
+            .plugin_id
+            .ok_or_else(|| "函数未关联插件".to_string())?;
+        let export_name = function
+            .plugin_export
+            .as_deref()
+            .ok_or_else(|| "函数未指定插件导出函数名".to_string())?;
+        let wasm_path = base_dir
+            .join("plugins")
+            .join(plugin_id.to_string())
+            .join("plugin.wasm");
+
+        if !wasm_path.exists() {
+            return Err(format!(
+                "WASM 文件不存在: {}。请重新上传关联插件",
+                wasm_path.display()
+            ));
+        }
+
+        let plugin = Plugin::get(pool, plugin_id)
+            .await
+            .map_err(|e| format!("读取插件记录失败: {e}"))?
+            .ok_or_else(|| "插件记录不存在，请重新导入".to_string())?;
+
+        let input_json =
+            serde_json::to_string(&input).map_err(|e| format!("序列化输入失败: {e}"))?;
+
+        PluginExecutor::execute_with_verified_artifact(
+            &wasm_path,
+            export_name,
+            &input_json,
+            FUNCTION_TEST_TIMEOUT,
+            allowed_capabilities,
+            &plugin.sha256,
         )
         .await
     }

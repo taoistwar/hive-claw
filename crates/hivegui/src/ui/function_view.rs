@@ -4,6 +4,7 @@
 use crate::datasource::{
     Store,
     entity_store::{Capability, Function, Plugin},
+    plugin_manifest::manifest_exports,
 };
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -167,9 +168,7 @@ impl FunctionView {
             .form_plugin_id
             .and_then(|id| self.plugins.iter().find(|plugin| plugin.id == id))
             .and_then(|plugin| plugin.manifest.as_deref())
-            .and_then(|manifest| serde_json::from_str::<serde_json::Value>(manifest).ok())
-            .and_then(|manifest| manifest.get("exports").cloned())
-            .and_then(|exports| serde_json::from_value::<Vec<String>>(exports).ok())
+            .map(|manifest| manifest_exports(Some(manifest)))
             .unwrap_or_default();
 
         if !self.plugin_exports.is_empty()
@@ -692,16 +691,18 @@ impl FunctionView {
         };
 
         let base_dir = Store::default_db_path();
+        let pool = self.store.read(cx).pool().clone();
         let mut allowed_capabilities = self.test_capabilities.iter().cloned().collect::<Vec<_>>();
         allowed_capabilities.sort();
 
         cx.spawn(async move |this, cx| {
             let start = std::time::Instant::now();
-            let result = crate::runtime::FunctionTestExecutor::execute_with_capabilities(
+            let result = crate::runtime::FunctionTestExecutor::execute_with_verification(
                 &function,
                 input,
                 &base_dir,
                 allowed_capabilities,
+                &pool,
             )
             .await;
 

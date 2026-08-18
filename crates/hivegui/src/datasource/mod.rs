@@ -27,6 +27,7 @@ pub mod migrations;
 pub mod models;
 pub mod mysql_client;
 pub mod plugin_artifacts;
+pub mod plugin_manifest;
 pub mod query_count;
 pub mod query_plan;
 pub mod search_index;

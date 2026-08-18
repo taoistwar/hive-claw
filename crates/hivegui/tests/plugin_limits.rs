@@ -17,7 +17,7 @@ use hivegui::plugin::plugin_store::PluginStore;
 use hivegui::runtime::plugin_executor::{
     BoundedInstancePool, DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECS,
     HARD_MAX_MEMORY_MB, HARD_MAX_OUTPUT_BYTES, HARD_MAX_TIMEOUT_SECS, InstanceCacheKey,
-    PAGES_PER_MIB, PageCount, PluginExecutor, PluginLimits, WASM_PAGE_BYTES,
+    PAGES_PER_MIB, PageCount, PluginExecutor, PluginLimits, WASM_PAGE_BYTES, sha256_hex,
 };
 use std::collections::HashSet;
 use support::TestWorkspace;
@@ -383,4 +383,42 @@ fn bounded_pool_remove_releases_slot() {
     assert_eq!(pool.remove(&key), Some(1));
     assert!(pool.is_empty());
     assert_eq!(pool.remove(&key), None);
+}
+
+#[test]
+fn sha256_hex_is_deterministic_lowercase() {
+    let digest = sha256_hex(b"plugin.wasm");
+    assert_eq!(digest.len(), 64);
+    assert_eq!(digest, sha256_hex(b"plugin.wasm"));
+    assert_ne!(digest, sha256_hex(b"plugin.wasm!"));
+    assert!(
+        digest
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+        "digest must be lower-case hex: {digest}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn execute_with_verified_artifact_rejects_mismatched_digest() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let wasm = wat::parse_str(r#"(module (func (export "run")))"#).expect("build wasm");
+    let wasm_path = workspace.root().join("mismatch.wasm");
+    std::fs::write(&wasm_path, &wasm).expect("write wasm");
+
+    let err = PluginExecutor::execute_with_verified_artifact(
+        &wasm_path,
+        "run",
+        "{}",
+        std::time::Duration::from_secs(2),
+        Vec::new(),
+        &"0".repeat(64),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.contains("WASM 制品校验失败"),
+        "digest mismatch must be rejected before execution: {err}"
+    );
 }

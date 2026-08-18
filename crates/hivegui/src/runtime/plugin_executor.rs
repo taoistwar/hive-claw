@@ -528,6 +528,58 @@ impl PluginExecutor {
         let wasm_bytes = tokio::fs::read(wasm_path)
             .await
             .map_err(|e| format!("读取 WASM 文件失败: {e}"))?;
+        Self::execute_bytes(
+            wasm_bytes,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+        )
+        .await
+    }
+
+    /// Execute a plugin export after re-verifying the artifact SHA-256
+    /// against the trusted record (T079: no byte may reach Extism before
+    /// the loaded artifact is re-verified against the stored digest).
+    ///
+    /// # Arguments
+    /// * `expected_sha256` - the trusted lower-case hex digest recorded at
+    ///   import time.
+    pub async fn execute_with_verified_artifact(
+        wasm_path: &Path,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+        expected_sha256: &str,
+    ) -> Result<String, String> {
+        let wasm_bytes = tokio::fs::read(wasm_path)
+            .await
+            .map_err(|e| format!("读取 WASM 文件失败: {e}"))?;
+        let actual = sha256_hex(&wasm_bytes);
+        if !actual.eq_ignore_ascii_case(expected_sha256) {
+            return Err(format!(
+                "WASM 制品校验失败：期望 SHA-256 {expected_sha256}，实际 {actual}"
+            ));
+        }
+        Self::execute_bytes(
+            wasm_bytes,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+        )
+        .await
+    }
+
+    /// Execute already-loaded artifact bytes.
+    async fn execute_bytes(
+        wasm_bytes: Vec<u8>,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+    ) -> Result<String, String> {
         let export_name = export_name.to_string();
         let input_json = input_json.to_string();
         let runtime = tokio::runtime::Handle::current();
@@ -570,4 +622,15 @@ impl PluginExecutor {
             Ok(Ok(result)) => result,
         }
     }
+}
+
+/// Compute the lower-case SHA-256 hex digest of a byte slice.
+///
+/// Used both to record the trusted digest at import time and to re-verify
+/// the loaded artifact before execution (T079).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }

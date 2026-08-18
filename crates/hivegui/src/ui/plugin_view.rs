@@ -1,8 +1,17 @@
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-use crate::datasource::{Store, entity_store::Plugin, wasm_exports::extract_wasm_exports};
+use crate::datasource::{
+    Store,
+    entity_store::{Capability, Plugin},
+    plugin_manifest::{
+        build_v1_manifest, manifest_exports as extract_exports, manifest_required_capabilities,
+        validate_manifest,
+    },
+    wasm_exports::extract_wasm_exports,
+};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
@@ -37,6 +46,10 @@ pub struct PluginView {
     form_wasm_path: Option<PathBuf>,
     form_file_path: Option<PathBuf>,
     form_manifest: Option<String>,
+    form_original_s3_key: String,
+    capabilities: Vec<Capability>,
+    form_capabilities: HashSet<String>,
+    capability_select_open: bool,
     error_message: Option<String>,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
@@ -77,6 +90,10 @@ impl PluginView {
             form_wasm_path: None,
             form_file_path: None,
             form_manifest: None,
+            form_original_s3_key: String::new(),
+            capabilities: Vec::new(),
+            form_capabilities: HashSet::new(),
+            capability_select_open: false,
             error_message: None,
             confirm_delete_id: None,
             identifier_input: None,
@@ -106,24 +123,12 @@ impl PluginView {
             .map(|b| format!("{:02x}", b))
             .collect::<String>();
         let exports = extract_wasm_exports(&data)?;
-        let manifest = serde_json::json!({ "exports": exports }).to_string();
+        let manifest = build_v1_manifest(&exports, &[]);
         Ok((hex, size, manifest))
     }
 
     fn manifest_exports(manifest: Option<&str>) -> Vec<String> {
-        manifest
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-            .and_then(|value| {
-                value
-                    .get("exports")
-                    .and_then(|exports| exports.as_array())
-                    .cloned()
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|export| export.as_str().map(str::to_owned))
-            .filter(|export| !export.is_empty())
-            .collect()
+        extract_exports(manifest)
     }
 
     fn manifest_for_edit(item: &Plugin, base_dir: &std::path::Path) -> Option<String> {
@@ -225,9 +230,11 @@ impl PluginView {
         cx.spawn(async move |this, cx| {
             let items = Plugin::list(store.pool(), search.clone(), 20, offset).await?;
             let count = Plugin::count(store.pool(), search).await?;
+            let capabilities = Capability::list(store.pool(), None, 1_000, 0).await?;
             this.update(cx, |v, cx| {
                 v.items = items;
                 v.total_count = count;
+                v.capabilities = capabilities;
                 v.loading = false;
                 cx.notify();
             })
@@ -298,6 +305,9 @@ impl PluginView {
         self.form_wasm_path = None;
         self.form_file_path = None;
         self.form_manifest = None;
+        self.form_original_s3_key.clear();
+        self.form_capabilities.clear();
+        self.capability_select_open = false;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
@@ -320,6 +330,11 @@ impl PluginView {
         self.form_wasm_path = None;
         self.form_file_path = Some(item.wasm_path(&base_dir));
         self.form_manifest = manifest;
+        self.form_original_s3_key = item.s3_key.clone();
+        self.form_capabilities = manifest_required_capabilities(item.manifest.as_deref())
+            .into_iter()
+            .collect();
+        self.capability_select_open = false;
         self.error_message = None;
         self.init_inputs(window, cx);
     }
@@ -353,6 +368,20 @@ impl PluginView {
             "enter" => self.save(cx),
             _ => {}
         }
+    }
+
+    /// Toggle the capability picker dropdown.
+    fn toggle_capability_select(&mut self, cx: &mut Context<Self>) {
+        self.capability_select_open = !self.capability_select_open;
+        cx.notify();
+    }
+
+    /// Toggle a capability in the required-capability set.
+    fn toggle_capability(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self.form_capabilities.remove(name) {
+            self.form_capabilities.insert(name.to_string());
+        }
+        cx.notify();
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -392,11 +421,20 @@ impl PluginView {
             cx.notify();
             return;
         }
-        // Auto-generate S3 key from identifier + version
-        let s3k = format!(
-            "plugins/{}/{}.wasm",
-            self.form_identifier, self.form_version
-        );
+        // Import / replace / keep-existing fork:
+        // - new plugin (import): a WASM file is required (checked above).
+        // - editing with a new file (replace): regenerate the artifact key.
+        // - editing without a new file (keep): preserve the original s3_key,
+        //   sha256 and size, and only update the remaining metadata.
+        let keep_existing = self.editing_id.is_some() && self.form_wasm_path.is_none();
+        let s3k = if keep_existing {
+            self.form_original_s3_key.clone()
+        } else {
+            format!(
+                "plugins/{}/{}.wasm",
+                self.form_identifier, self.form_version
+            )
+        };
         let size_bytes: i64 = self.form_size_bytes.parse().unwrap_or(0);
         let store = self.store.read(cx).clone();
         let idf = self.form_identifier.clone();
@@ -409,8 +447,31 @@ impl PluginView {
         let rt = "extism".to_string();
         let ver = self.form_version.clone();
         let sha = self.form_sha256.clone();
-        let manifest = self.form_manifest.clone();
+        // Normalize the manifest to the v1 shape (migrating any legacy
+        // `{"exports":[strings]}` record) and validate declared capabilities.
+        let exports = Self::manifest_exports(self.form_manifest.as_deref());
+        let mut required_caps: Vec<String> = self.form_capabilities.iter().cloned().collect();
+        required_caps.sort();
+        let normalized_manifest = Some(build_v1_manifest(&exports, &required_caps));
+        let host_caps: BTreeSet<String> = self
+            .capabilities
+            .iter()
+            .map(|cap| cap.name.clone())
+            .collect();
+        if let Err(issues) = validate_manifest(
+            normalized_manifest.as_deref().unwrap_or_default(),
+            &host_caps,
+        ) {
+            self.error_message = Some(format!(
+                "Plugin manifest 不兼容（{}），请在导入前修复",
+                issues.join(", ")
+            ));
+            cx.notify();
+            return;
+        }
         let wasm_path = self.form_wasm_path.clone();
+        let capabilities_json =
+            serde_json::to_string(&required_caps).unwrap_or_else(|_| "[]".to_string());
         let resource_limits = serialize_resource_limits(
             &self.form_timeout_secs,
             &self.form_memory_mb,
@@ -426,7 +487,7 @@ impl PluginView {
                     idf,
                     name,
                     desc,
-                    manifest,
+                    normalized_manifest.clone(),
                     rt,
                     ver,
                     None,
@@ -448,7 +509,7 @@ impl PluginView {
                         if let Err(e) = Plugin::update_limits(
                             store.pool(),
                             eid,
-                            "[]".to_string(),
+                            capabilities_json.clone(),
                             resource_limits.clone(),
                         )
                         .await
@@ -472,7 +533,7 @@ impl PluginView {
             })
             .detach();
         } else {
-            let manifest = self.form_manifest.clone();
+            let manifest = normalized_manifest;
             cx.spawn(async move |this, cx| {
                 match Plugin::create(
                     store.pool(),
@@ -501,7 +562,7 @@ impl PluginView {
                         if let Err(e) = Plugin::update_limits(
                             store.pool(),
                             plugin.id,
-                            "[]".to_string(),
+                            capabilities_json,
                             resource_limits,
                         )
                         .await
@@ -846,6 +907,16 @@ impl Render for PluginView {
                 let timeout_input = self.timeout_input.clone().unwrap();
                 let memory_input = self.memory_input.clone().unwrap();
                 let output_input = self.output_input.clone().unwrap();
+                let capabilities = self.capabilities.clone();
+                let selected_caps = self.form_capabilities.clone();
+                let cap_select_open = self.capability_select_open;
+                let capability_summary = if selected_caps.is_empty() {
+                    "未声明（默认无权限）".to_string()
+                } else {
+                    let mut sorted: Vec<String> = selected_caps.iter().cloned().collect();
+                    sorted.sort();
+                    sorted.join(", ")
+                };
                 let form_scroll =
                     management_modal_scroll_content("plugin-form-scroll", &self.form_scroll);
                 this.child(
@@ -1151,6 +1222,140 @@ impl Render for PluginView {
                                     .child(form_field("超时（秒）", timeout_input, theme))
                                     .child(form_field("内存上限（MiB）", memory_input, theme))
                                     .child(form_field("输出上限（MiB）", output_input, theme))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .text_color(theme.foreground)
+                                                    .child("所需 Capabilities"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                                    .rounded(px(4.0))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .w_full()
+                                                            .h(px(32.0))
+                                                            .px(px(8.0))
+                                                            .flex()
+                                                            .items_center()
+                                                            .cursor(CursorStyle::PointingHand)
+                                                            .debug_selector(|| {
+                                                                "PLUGIN_CAPABILITY_SELECTOR"
+                                                                    .to_owned()
+                                                            })
+                                                            .on_mouse_down(MouseButton::Left, {
+                                                                let t = cx.weak_entity();
+                                                                move |_, _, cx| {
+                                                                    t.update(cx, |v, cx| {
+                                                                        v.toggle_capability_select(
+                                                                            cx,
+                                                                        )
+                                                                    })
+                                                                    .ok();
+                                                                }
+                                                            })
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(12.0))
+                                                                    .text_color(
+                                                                        theme.foreground.opacity(0.7),
+                                                                    )
+                                                                    .child(capability_summary),
+                                                            ),
+                                                    )
+                                                    .when(cap_select_open, |this| {
+                                                        this.child(
+                                                            div()
+                                                                .w_full()
+                                                                .border_t_1()
+                                                                .border_color(theme.border)
+                                                                .flex()
+                                                                .flex_col()
+                                                                .children(capabilities.iter().map(
+                                                                    |cap| {
+                                                                        let name = cap.name.clone();
+                                                                        let selected =
+                                                                            selected_caps.contains(
+                                                                                &name,
+                                                                            );
+                                                                        div()
+                                                                            .w_full()
+                                                                            .px(px(8.0))
+                                                                            .py(px(5.0))
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap(px(6.0))
+                                                                            .cursor(
+                                                                                CursorStyle::PointingHand,
+                                                                            )
+                                                                            .on_mouse_down(
+                                                                                MouseButton::Left,
+                                                                                {
+                                                                                    let name =
+                                                                                        name.clone();
+                                                                                    let t =
+                                                                                        cx.weak_entity(
+                                                                                        );
+                                                                                    move |_, _, cx| {
+                                                                                        t.update(
+                                                                                            cx,
+                                                                                            |v,
+                                                                                             cx| {
+                                                                                                v.toggle_capability(
+                                                                                                    &name,
+                                                                                                    cx,
+                                                                                                )
+                                                                                            },
+                                                                                        )
+                                                                                        .ok();
+                                                                                    }
+                                                                                },
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .w(px(10.0))
+                                                                                    .h(px(10.0))
+                                                                                    .rounded(px(2.0))
+                                                                                    .border_1()
+                                                                                    .border_color(
+                                                                                        theme.border,
+                                                                                    )
+                                                                                    .bg(if selected {
+                                                                                        style.action(
+                                                                                            ActionRole::Main,
+                                                                                        )
+                                                                                        .background
+                                                                                    } else {
+                                                                                        theme.background
+                                                                                    }),
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_size(
+                                                                                        px(12.0),
+                                                                                    )
+                                                                                    .text_color(
+                                                                                        theme
+                                                                                            .foreground,
+                                                                                    )
+                                                                                    .child(name),
+                                                                            )
+                                                                    },
+                                                                )),
+                                                        )
+                                                    }),
+                                            ),
+                                    )
                                     .when_some(self.error_message.as_ref(), |this, err| {
                                         this.child(
                                             div()
@@ -1397,6 +1602,8 @@ mod tests {
         VisualTestContext, point, px, size,
     };
 
+    use std::collections::HashSet;
+
     use super::{PluginView, parse_resource_limits, serialize_resource_limits};
     use crate::datasource::{Store, entity_store::Plugin};
 
@@ -1472,6 +1679,10 @@ mod tests {
             form_wasm_path: None,
             form_file_path: None,
             form_manifest: None,
+            form_original_s3_key: String::new(),
+            capabilities: Vec::new(),
+            form_capabilities: HashSet::new(),
+            capability_select_open: false,
             error_message: None,
             confirm_delete_id: None,
             identifier_input: None,
@@ -1486,6 +1697,29 @@ mod tests {
             search_input: None,
             form_focus: cx.focus_handle(),
         }
+    }
+
+    #[test]
+    fn inspect_wasm_emits_v1_manifest() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let wasm_path = temp_dir.path().join("plugin.wasm");
+        let wasm = wat::parse_str(
+            r#"(module
+                (func (export "run"))
+                (func (export "health"))
+            )"#,
+        )
+        .expect("build wasm fixture");
+        std::fs::write(&wasm_path, wasm).expect("write wasm fixture");
+
+        let (_, _, manifest) = PluginView::inspect_wasm(&wasm_path).expect("inspect wasm");
+        let value: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+        assert_eq!(value["abi_version"], "hive-extism/v1");
+        assert_eq!(value["required_capabilities"], serde_json::json!([]));
+        assert_eq!(
+            PluginView::manifest_exports(Some(&manifest)),
+            ["run", "health"]
+        );
     }
 
     #[test]

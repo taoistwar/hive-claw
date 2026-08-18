@@ -2,8 +2,10 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
+
+use hive_runtime_core::abi::{HostCallReply, HostCallRequest, StableErrorKind};
 
 use super::capability_adapter::{AuditSink, CapabilityAdapter, CapabilityDispatchError};
 use super::diagnostics::DiagnosticSink;
@@ -96,48 +98,44 @@ pub const DESKTOP_CAPABILITY_CATALOG: &[DesktopCapabilityDefinition] = &[
     },
 ];
 
-#[derive(Debug, Deserialize)]
-struct CallEnvelope {
-    capability: String,
-    #[serde(default)]
-    args: Value,
+/// Build a successful `host_call` reply from a JSON value using the shared
+/// ABI envelope. The value is serialised to canonical JSON bytes and inlined
+/// verbatim, so the Plugin receives exactly the bytes it produced.
+fn host_call_ok(data: Value) -> HostCallReply {
+    let bytes = serde_json::to_vec(&data).expect("serde_json::Value serialises to bytes");
+    HostCallReply::success_json(&bytes).expect("a serialised Value is valid JSON")
 }
 
-#[derive(Debug, Serialize)]
-struct ReplyEnvelope {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+/// Legacy HiveGUI-only reply for a capability that is registered in the
+/// desktop catalog but has no local handler yet (still "depends on the
+/// server runtime" in the pre-ABI desktop path). Code `5010` is a desktop
+/// extension and is *not* part of the shared [`StableErrorKind`] table; it
+/// is removed once the remaining catalog handlers are wired to local
+/// implementations.
+///
+/// `capability` is guaranteed to be one of the static
+/// [`DESKTOP_CAPABILITY_CATALOG`] names at this call site (unknown names
+/// are rejected earlier as `capability_unknown`), so it cannot inject
+/// JSON control characters.
+fn legacy_not_implemented_reply(capability: &str) -> Vec<u8> {
+    format!(
+        r#"{{"ok":false,"code":5010,"message":"Capability「{capability}」依赖服务端运行时，HiveGUI 本地测试暂不支持"}}"#
+    )
+    .into_bytes()
 }
 
-impl ReplyEnvelope {
-    pub(crate) fn ok(data: Value) -> Self {
-        Self {
-            ok: true,
-            data: Some(data),
-            code: None,
-            message: None,
-        }
-    }
-
-    pub(crate) fn error(code: u16, message: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            data: None,
-            code: Some(code),
-            message: Some(message.into()),
-        }
-    }
-
-    pub(crate) fn serialize(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|e| {
-            format!(r#"{{"ok":false,"code":5000,"message":"序列化响应失败: {e}"}}"#)
-        })
-    }
+/// Serialise a failure `host_call` envelope for an arbitrary numeric code.
+///
+/// The shared [`HostCallReply::failure`] only accepts a [`StableErrorKind`];
+/// the capability-adapter layer surfaces a *different*, HiveGUI-internal
+/// error-code family ([`crate::runtime::capability_adapter::AdapterErrorCode`])
+/// whose wire values (4001/4045/4030/4050/4010/4020) are not all present in
+/// the Plugin ABI table. This helper reproduces the exact
+/// `{"ok":false,"code":<n>,"message":...}` shape (JSON-escaped message,
+/// `ok`-first field order) for that internal surface.
+fn host_call_error_bytes(code: u16, message: &str) -> Vec<u8> {
+    let message_json = serde_json::to_string(message).expect("serialising a string is total");
+    format!(r#"{{"ok":false,"code":{code},"message":{message_json}}}"#).into_bytes()
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,14 +240,11 @@ impl DesktopHostDispatcher {
             DispatcherImpl::Adapter { adapter, .. } => {
                 let outcome = adapter.dispatch(envelope, allowed_capabilities).await;
                 self.record_diagnostic(envelope, &outcome);
-                match outcome {
-                    Ok(outcome) => ReplyEnvelope::ok(outcome.data().clone()).serialize(),
-                    Err(err) => {
-                        let reply =
-                            ReplyEnvelope::error(err.wire_code(), err.message().to_string());
-                        reply.serialize()
-                    }
-                }
+                let reply_bytes = match outcome {
+                    Ok(outcome) => host_call_ok(outcome.data().clone()).encode_json(),
+                    Err(err) => host_call_error_bytes(err.wire_code(), err.message()),
+                };
+                String::from_utf8(reply_bytes).expect("host_call reply is always valid UTF-8 JSON")
             }
         }
     }
@@ -322,16 +317,24 @@ impl DesktopHostDispatcher {
     }
 
     async fn dispatch_legacy(&self, envelope: &str, allowed_capabilities: &[String]) -> String {
-        let reply = match serde_json::from_str::<CallEnvelope>(envelope) {
-            Err(e) => ReplyEnvelope::error(4001, format!("无效的 host_call 参数: {e}")),
+        let reply_bytes: Vec<u8> = match HostCallRequest::decode(envelope.as_bytes()) {
+            Err(e) => HostCallReply::failure(
+                StableErrorKind::InvalidArgs,
+                format!("无效的 host_call 参数: {e}"),
+            )
+            .encode_json(),
             Ok(call)
                 if !DESKTOP_CAPABILITY_CATALOG
                     .iter()
-                    .any(|known| known.name == call.capability) =>
+                    .any(|known| known.name == call.capability()) =>
             {
-                ReplyEnvelope::error(4045, format!("未知 Capability: {}", call.capability))
+                HostCallReply::failure(
+                    StableErrorKind::CapabilityUnknown,
+                    format!("未知 Capability: {}", call.capability()),
+                )
+                .encode_json()
             }
-            Ok(call) if !allowed_capabilities.contains(&call.capability) => {
+            Ok(call) if !allowed_capabilities.iter().any(|c| c == call.capability()) => {
                 let mut selected = allowed_capabilities.to_vec();
                 selected.sort();
                 let selected = if selected.is_empty() {
@@ -339,37 +342,41 @@ impl DesktopHostDispatcher {
                 } else {
                     selected.join(", ")
                 };
-                ReplyEnvelope::error(
-                    4030,
+                HostCallReply::failure(
+                    StableErrorKind::CapabilityDenied,
                     format!(
                         "函数测试未授权调用 Capability「{}」；当前已选 Capability：{}。请勾选「{}」后重试",
-                        call.capability, selected, call.capability
+                        call.capability(),
+                        selected,
+                        call.capability()
                     ),
                 )
+                .encode_json()
             }
-            Ok(call) if call.capability == "network.http" => {
-                match serde_json::from_value::<HttpArgs>(call.args) {
+            Ok(call) if call.capability() == "network.http" => {
+                match serde_json::from_slice::<HttpArgs>(call.args_json()) {
                     Ok(args) => match Self::network_http(args).await {
-                        Ok(data) => ReplyEnvelope::ok(data),
-                        Err(message) => ReplyEnvelope::error(4001, message),
+                        Ok(data) => host_call_ok(data).encode_json(),
+                        Err(message) => {
+                            HostCallReply::failure(StableErrorKind::InvalidArgs, message)
+                                .encode_json()
+                        }
                     },
-                    Err(e) => ReplyEnvelope::error(4001, format!("network.http 参数无效: {e}")),
+                    Err(e) => HostCallReply::failure(
+                        StableErrorKind::InvalidArgs,
+                        format!("network.http 参数无效: {e}"),
+                    )
+                    .encode_json(),
                 }
             }
-            Ok(call) if call.capability == "log.emit" => {
+            Ok(call) if call.capability() == "log.emit" => {
                 // 本地 no-op：接受结构化日志调用并返回成功，不依赖服务端运行时。
-                ReplyEnvelope::ok(serde_json::json!({"logged": true}))
+                host_call_ok(serde_json::json!({"logged": true})).encode_json()
             }
-            Ok(call) => ReplyEnvelope::error(
-                5010,
-                format!(
-                    "Capability「{}」依赖服务端运行时，HiveGUI 本地测试暂不支持",
-                    call.capability
-                ),
-            ),
+            Ok(call) => legacy_not_implemented_reply(call.capability()),
         };
 
-        reply.serialize()
+        String::from_utf8(reply_bytes).expect("host_call reply is always valid UTF-8 JSON")
     }
 
     async fn network_http(args: HttpArgs) -> Result<Value, String> {
@@ -438,5 +445,57 @@ impl DesktopHostDispatcher {
             "body": String::from_utf8_lossy(body),
             "body_truncated": body_truncated,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hive_runtime_core::abi::{HostCallReply, StableErrorKind};
+
+    /// T080: the desktop host must emit a byte-identical envelope to the
+    /// shared `hive-runtime-core` ABI types, not a locally diverged copy.
+    #[tokio::test]
+    async fn legacy_dispatcher_failure_matches_shared_abi_envelope() {
+        let dispatcher = DesktopHostDispatcher::default();
+        let got = dispatcher
+            .dispatch(
+                r#"{"capability":"unknown.capability","args":{}}"#,
+                &["unknown.capability".to_string()],
+            )
+            .await;
+
+        let expected = String::from_utf8(
+            HostCallReply::failure(
+                StableErrorKind::CapabilityUnknown,
+                "未知 Capability: unknown.capability",
+            )
+            .encode_json(),
+        )
+        .expect("shared ABI reply is UTF-8");
+
+        assert_eq!(got, expected);
+    }
+
+    /// T080: the success envelope must also round-trip through the shared
+    /// [`HostCallReply::success_json`] shape byte-for-byte.
+    #[tokio::test]
+    async fn legacy_dispatcher_success_matches_shared_abi_envelope() {
+        let dispatcher = DesktopHostDispatcher::default();
+        let got = dispatcher
+            .dispatch(
+                r#"{"capability":"log.emit","args":{}}"#,
+                &["log.emit".to_string()],
+            )
+            .await;
+
+        let expected = String::from_utf8(
+            HostCallReply::success_json(br#"{"logged":true}"#)
+                .expect("valid JSON")
+                .encode_json(),
+        )
+        .expect("shared ABI reply is UTF-8");
+
+        assert_eq!(got, expected);
     }
 }

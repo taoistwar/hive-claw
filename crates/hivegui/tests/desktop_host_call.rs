@@ -173,5 +173,8 @@ fn function_test_dialog_refreshes_capabilities_and_uses_a_compact_multi_select()
         .and_then(|tail| tail.split("impl Render").next())
         .expect("locate run_test implementation");
     assert!(run_test.contains("test_capabilities"));
-    assert!(run_test.contains("FunctionTestExecutor::execute_with_capabilities"));
+    // T079: function-test execution now re-verifies the Plugin artifact
+    // digest before running (execute_with_verification), which still
+    // forwards the selected capabilities.
+    assert!(run_test.contains("FunctionTestExecutor::execute_with_verification"));
 }

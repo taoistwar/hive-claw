@@ -1569,4 +1569,36 @@ fn plugin_view_surfaces_keep_existing_file_semantics() {
         PLUGIN_VIEW_SOURCE.contains("PLUGIN_WASM_SELECTION"),
         "Plugin view must tag the WASM selection surface for accessibility"
     );
+    // The keep-existing branch must preserve the original artifact key,
+    // sha256 and size rather than regenerating `plugins/{id}/{ver}.wasm`.
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("keep_existing"),
+        "Plugin save must implement the keep-existing fork"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("form_original_s3_key"),
+        "Plugin save must preserve the original s3_key when keeping the existing file"
+    );
+}
+
+#[test]
+fn plugin_view_surfaces_required_capabilities_selector_and_validation() {
+    // T081 manifest migration must surface a required-capabilities picker
+    // and validate the manifest before persisting.
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("PLUGIN_CAPABILITY_SELECTOR"),
+        "Plugin view must tag the required-capabilities selector surface"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("所需 Capabilities"),
+        "Plugin form must render the required-capabilities field"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("validate_manifest"),
+        "Plugin save must validate the manifest against the host capability set"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("manifest 不兼容"),
+        "Plugin save must surface manifest incompatibilities before persisting"
+    );
 }

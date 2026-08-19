@@ -15,7 +15,7 @@ use sqlx::MySqlPool;
 
 use crate::db::sql_safety::audit_sql;
 use crate::models::Plugin;
-use crate::runtime::{registered_imports, scan_wasm_imports};
+use crate::runtime::scan_wasm_imports;
 use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::storage::s3;
 use crate::utils::error::AppError;
@@ -134,8 +134,7 @@ pub async fn upload(
         ));
     }
 
-    let host_imports = registered_imports();
-    scan_wasm_imports(&bytes, &host_imports)?;
+    scan_wasm_imports(&bytes)?;
 
     let mut hasher = Sha256::new();
     hasher.update(&bytes);

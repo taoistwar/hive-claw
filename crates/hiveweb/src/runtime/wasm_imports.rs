@@ -1,11 +1,12 @@
 //! WASM binary parser: scan imports section (FR-005)
 //!
 //! Parses the WASM binary format to extract import names, used during
-//! plugin upload to verify that all host function imports are registered.
+//! plugin upload to verify the import surface against the shared
+//! `hive-runtime-core::wasm` structural contract (T080 / §4 隔离):
+//! exactly one user host function (`host_call`), no WASI, no stray host.
 
-use crate::runtime::capability::CAPABILITIES;
 use crate::utils::error::AppError;
-use hive_runtime_core::wasm::WasmModuleShape;
+use hive_runtime_core::wasm::{EXTISM_HOST_CALL_MODULE, HOST_CALL_IMPORT, WasmModuleShape};
 
 /// WASI 的 `wasi_snapshot_preview1` module 名。能力-only Plugin 一律拒绝。
 /// 该拒绝在共享 `hive-runtime-core::wasm` 契约中对应
@@ -13,12 +14,28 @@ use hive_runtime_core::wasm::WasmModuleShape;
 /// `with_wasi(false)`，Plugin 不得直接触碰文件系统或网络）。
 const WASI_MODULE: &str = "wasi_snapshot_preview1";
 
-/// 返回所有已注册的 capability 名（即合法的 host import 名）
-pub fn registered_imports() -> Vec<&'static str> {
-    CAPABILITIES.iter().map(|c| c.name).collect()
+/// Extism 宿主挂载唯一用户 host function 的完整 import 路径：
+/// `extism:host/user.host_call`（`with_function(HOST_CALL_IMPORT, …)` 固定
+/// 挂到 `EXTISM_HOST_CALL_MODULE` 命名空间）。
+fn extism_host_call_import() -> String {
+    format!("{EXTISM_HOST_CALL_MODULE}.{HOST_CALL_IMPORT}")
 }
 
-/// 扫描 WASM 的 imports 段，验证所有 host import 都在已注册列表中。
+/// 扫描 WASM 的 imports 段，对照共享结构契约验证 import surface。
+///
+/// 允许的 import 仅两类：
+/// 1. `extism:host/user.host_call` —— 唯一用户 host function（宿主仅注册
+///    [`HOST_CALL_IMPORT`]）；其余 `extism:host/user.*` 视为
+///    [`WasmModuleShape::UnknownHostCallImport`]。
+/// 2. `extism:host/env.*` —— Extism PDK 基础设施（input_offset/length/
+///    output_set 等），随 SDK 固定，不暴露业务能力。
+///
+/// 拒绝：`wasi_snapshot_preview1`（[`WasmModuleShape::WasiImportPresent`]）、
+/// 任何其它 host import（[`WasmModuleShape::DisallowedHostImport`]）。
+///
+/// 注意：此签名不再接收 capability 白名单——capability 通过 `host_call`
+/// JSON envelope 传递，而非 WASM import 名；旧的白名单模型对合法 Extism
+/// 插件从不命中（所有 import 都在 `extism:host/` 下），属空转校验。
 ///
 /// WASM binary format:
 /// - magic: \0asm (4 bytes)
@@ -27,7 +44,7 @@ pub fn registered_imports() -> Vec<&'static str> {
 ///
 /// Import section id = 2
 /// Each import: module_len + module + name_len + name + import_kind
-pub fn scan_wasm_imports(bytes: &[u8], allowed: &[&str]) -> Result<(), AppError> {
+pub fn scan_wasm_imports(bytes: &[u8]) -> Result<(), AppError> {
     // Skip magic + version (8 bytes)
     if bytes.len() < 8 {
         return Err(AppError::BadRequest("WASM 文件太小，无法解析".into()));
@@ -94,21 +111,28 @@ pub fn scan_wasm_imports(bytes: &[u8], allowed: &[&str]) -> Result<(), AppError>
         }
     }
 
-    // 验证 import：extism PDK 基础设施导入始终允许；
-    // 非 extism 导入才需要检查是否在 allowed（capability）列表中。
+    // 验证 import surface，对照共享 `WasmModuleShape` 结构契约：
+    // 唯一用户 host function 是 `extism:host/user.host_call`；Extism PDK 的
+    // `extism:host/env.*` 基础设施始终允许；其余一律拒绝。
+    let host_call_import = extism_host_call_import();
     for import in &found_imports {
-        // PDK infrastructure: extism:host/env.*  → always allowed
-        // User host functions:  extism:host/user.* → always allowed
-        if import.starts_with("extism:host/") {
-            continue;
+        if import == &host_call_import {
+            continue; // 唯一用户 host function（宿主已注册 HOST_CALL_IMPORT）
         }
-        if !allowed.contains(&import.as_str()) {
+        if import.starts_with("extism:host/env.") {
+            continue; // Extism PDK 基础设施（随 SDK 固定，不暴露业务能力）
+        }
+        if import.starts_with("extism:host/") {
             return Err(AppError::BadRequest(format!(
-                "WASM 包含未注册的 host import: {}（宿主仅支持: {}）",
-                import,
-                allowed.join(", ")
+                "WASM 包含未知的用户 host function（{:?}）：宿主仅注册 {}",
+                WasmModuleShape::UnknownHostCallImport,
+                HOST_CALL_IMPORT
             )));
         }
+        return Err(AppError::BadRequest(format!(
+            "WASM 包含不允许的 host import（{:?}）",
+            WasmModuleShape::DisallowedHostImport
+        )));
     }
 
     Ok(())
@@ -216,8 +240,7 @@ mod tests {
         let wasm = vec![
             0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x0a, 0x00,
         ];
-        let allowed = vec!["extism.time.now"];
-        assert!(scan_wasm_imports(&wasm, &allowed).is_ok());
+        assert!(scan_wasm_imports(&wasm).is_ok());
     }
 
     fn write_leb128_u32(value: u32) -> Vec<u8> {
@@ -237,56 +260,67 @@ mod tests {
         buf
     }
 
-    #[test]
-    fn test_wasm_with_allowed_import() {
+    /// Build a minimal WASM binary with a single function import of
+    /// `(module, name)`.
+    fn wasm_with_import(module: &str, name: &str) -> Vec<u8> {
         let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x02];
 
         let mut import_data = Vec::new();
         import_data.push(1); // num_imports
-
-        // Import 0: "extism"."time.now", function (0x00), typeidx = 0
-        import_data.extend_from_slice(&[6]);
-        import_data.extend_from_slice(b"extism");
-        import_data.extend_from_slice(&[8]);
-        import_data.extend_from_slice(b"time.now");
+        import_data.push(module.len() as u8);
+        import_data.extend_from_slice(module.as_bytes());
+        import_data.push(name.len() as u8);
+        import_data.extend_from_slice(name.as_bytes());
         import_data.push(0x00); // function kind
         import_data.push(0x00); // typeidx = 0
 
         let section_size = import_data.len() as u32;
         wasm.extend_from_slice(&write_leb128_u32(section_size));
         wasm.extend_from_slice(&import_data);
-
-        let allowed = vec!["extism.time.now"];
-        assert!(scan_wasm_imports(&wasm, &allowed).is_ok());
+        wasm
     }
 
     #[test]
-    fn test_wasm_with_unallowed_import() {
-        let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x02];
+    fn test_wasm_with_host_call_import_is_allowed() {
+        // 唯一用户 host function：extism:host/user.host_call
+        let wasm = wasm_with_import("extism:host/user", "host_call");
+        assert!(scan_wasm_imports(&wasm).is_ok());
+    }
 
-        let mut import_data = Vec::new();
-        import_data.push(1); // num_imports
+    #[test]
+    fn test_wasm_with_pdk_env_import_is_allowed() {
+        // Extism PDK 基础设施：extism:host/env.*
+        let wasm = wasm_with_import("extism:host/env", "input_offset");
+        assert!(scan_wasm_imports(&wasm).is_ok());
+    }
 
-        // Import 0: "extism"."unknown.func", function (0x00), typeidx = 0
-        import_data.extend_from_slice(&[6]);
-        import_data.extend_from_slice(b"extism");
-        import_data.extend_from_slice(&[12]);
-        import_data.extend_from_slice(b"unknown.func");
-        import_data.push(0x00); // function kind
-        import_data.push(0x00); // typeidx = 0
-
-        let section_size = import_data.len() as u32;
-        wasm.extend_from_slice(&write_leb128_u32(section_size));
-        wasm.extend_from_slice(&import_data);
-
-        let allowed = vec!["extism.time.now"];
-        let result = scan_wasm_imports(&wasm, &allowed);
+    #[test]
+    fn test_wasm_with_unknown_user_host_function_is_rejected() {
+        // 宿主仅注册 host_call；extism:host/user.* 其它函数一律拒绝。
+        let wasm = wasm_with_import("extism:host/user", "other_func");
+        let result = scan_wasm_imports(&wasm);
         assert!(result.is_err());
         assert!(
             result
                 .unwrap_err()
                 .to_string()
-                .contains("未注册的 host import")
+                .contains("UnknownHostCallImport"),
+            "stray user host function must map to the shared UnknownHostCallImport category"
+        );
+    }
+
+    #[test]
+    fn test_wasm_with_disallowed_host_import_is_rejected() {
+        // 非 extism:host/* 的裸 host import（旧 capability-名白名单模型）→ 拒绝。
+        let wasm = wasm_with_import("extism", "time.now");
+        let result = scan_wasm_imports(&wasm);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("DisallowedHostImport"),
+            "non-Extism host import must map to the shared DisallowedHostImport category"
         );
     }
 
@@ -299,8 +333,7 @@ mod tests {
         )
         .expect("WAT must compile");
 
-        let allowed: Vec<&str> = Vec::new();
-        let result = scan_wasm_imports(&wasm, &allowed);
+        let result = scan_wasm_imports(&wasm);
         assert!(result.is_err());
         assert!(
             result

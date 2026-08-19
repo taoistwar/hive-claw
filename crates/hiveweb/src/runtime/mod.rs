@@ -32,7 +32,7 @@ pub use input_source::{InputSource, InputSpec};
 pub use invoker::Invoker;
 pub use llm::LlmRegistry;
 pub use pool::{InstancePool, PoolConfig};
-pub use wasm_imports::{registered_imports, scan_wasm_imports};
+pub use wasm_imports::scan_wasm_imports;
 pub use workflow::WorkflowExecutor;
 
 use std::sync::Arc;

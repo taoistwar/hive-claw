@@ -21,6 +21,15 @@ pub const DEFAULT_MEMORY_MB: u64 = 128;
 /// Default output buffer cap per plugin call, in bytes (10 MiB).
 pub const DEFAULT_OUTPUT_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Default fuel (Wasmtime instruction budget) per plugin call.
+///
+/// Aligned with HiveWeb's `PLUGIN_CALL_FUEL` default (`10_000_000_000`) so a
+/// Plugin is subject to the same instruction budget on both hosts. Fuel is
+/// not user-configurable per Plugin in HiveGUI (the resource-limit form only
+/// surfaces timeout/memory/output), so the shared default is applied
+/// unconditionally.
+pub const DEFAULT_FUEL: u64 = 10_000_000_000;
+
 /// Hard maximums a caller may bump the limits up to.
 pub const HARD_MAX_TIMEOUT_SECS: u64 = 120;
 /// Hard memory ceiling, in MiB.
@@ -518,13 +527,42 @@ impl PluginExecutor {
             .await
     }
 
-    /// Execute a plugin export with the desktop host-call capability bridge.
+    /// Execute a plugin export with the desktop host-call capability bridge
+    /// and the default resource limits (30 s / 128 MiB / 10 MiB output).
     pub async fn execute_with_capabilities(
         wasm_path: &Path,
         export_name: &str,
         input_json: &str,
         timeout: Duration,
         allowed_capabilities: Vec<String>,
+    ) -> Result<String, String> {
+        Self::execute_with_limits(
+            wasm_path,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+            DEFAULT_MEMORY_MB,
+            DEFAULT_OUTPUT_BYTES,
+        )
+        .await
+    }
+
+    /// Execute a plugin export with explicit memory/output caps.
+    ///
+    /// `memory_mb` is converted to 64 KiB WASM pages (`memory_mb × 16`) before
+    /// it reaches `Manifest::with_memory_max`; the fuel budget is the shared
+    /// [`DEFAULT_FUEL`]; the output string is length-checked against
+    /// `output_bytes` after the call returns (Extism has no built-in output
+    /// cap). All three limits therefore match HiveWeb's enforcement.
+    pub async fn execute_with_limits(
+        wasm_path: &Path,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+        memory_mb: u64,
+        output_bytes: u64,
     ) -> Result<String, String> {
         let wasm_bytes = tokio::fs::read(wasm_path)
             .await
@@ -535,6 +573,8 @@ impl PluginExecutor {
             input_json,
             timeout,
             allowed_capabilities,
+            memory_mb,
+            output_bytes,
         )
         .await
     }
@@ -554,6 +594,31 @@ impl PluginExecutor {
         allowed_capabilities: Vec<String>,
         expected_sha256: &str,
     ) -> Result<String, String> {
+        Self::execute_with_verified_limits(
+            wasm_path,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+            expected_sha256,
+            DEFAULT_MEMORY_MB,
+            DEFAULT_OUTPUT_BYTES,
+        )
+        .await
+    }
+
+    /// Execute a plugin export after re-verifying the artifact SHA-256 and
+    /// applying explicit memory/output caps.
+    pub async fn execute_with_verified_limits(
+        wasm_path: &Path,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+        expected_sha256: &str,
+        memory_mb: u64,
+        output_bytes: u64,
+    ) -> Result<String, String> {
         let wasm_bytes = tokio::fs::read(wasm_path)
             .await
             .map_err(|e| format!("读取 WASM 文件失败: {e}"))?;
@@ -569,30 +634,47 @@ impl PluginExecutor {
             input_json,
             timeout,
             allowed_capabilities,
+            memory_mb,
+            output_bytes,
         )
         .await
     }
 
-    /// Execute already-loaded artifact bytes.
+    /// Execute already-loaded artifact bytes with memory/fuel/output limits.
     async fn execute_bytes(
         wasm_bytes: Vec<u8>,
         export_name: &str,
         input_json: &str,
         timeout: Duration,
         allowed_capabilities: Vec<String>,
+        memory_mb: u64,
+        output_bytes: u64,
     ) -> Result<String, String> {
+        // Convert MiB → 64 KiB WASM pages (T074: never pass MiB or bytes
+        // directly to the page parameter). Clamp-out and zero are rejected.
+        let memory_pages = memory_mb
+            .checked_mul(PAGES_PER_MIB)
+            .and_then(|pages| u32::try_from(pages).ok())
+            .ok_or_else(|| format!("内存上限无效: {memory_mb} MiB"))?;
+
         let export_name = export_name.to_string();
         let input_json = input_json.to_string();
         let runtime = tokio::runtime::Handle::current();
 
         let execution = tokio::task::spawn_blocking(move || {
-            let manifest = Manifest::new([Wasm::data(wasm_bytes)]).with_timeout(timeout);
+            let manifest = Manifest::new([Wasm::data(wasm_bytes)])
+                .with_timeout(timeout)
+                .with_memory_max(memory_pages);
             // T025R ③ / T082: sandbox must keep WASI disabled. Plugins that
             // import any WASI snapshot0/preview1 function (fd_write,
             // fd_read, proc_exit, …) are rejected at instantiation time;
-            // only the `host_call` host import is exposed.
+            // only the `host_call` host import is exposed. Fuel (instruction
+            // budget) and memory are enforced by Extism; the output cap is
+            // checked by the host after the call because Extism has no
+            // built-in output limit.
             let mut plugin = PluginBuilder::new(manifest)
                 .with_wasi(false)
+                .with_fuel_limit(DEFAULT_FUEL)
                 .with_function(
                     HOST_CALL_IMPORT,
                     [ValType::I64],
@@ -606,15 +688,26 @@ impl PluginExecutor {
                 .build()
                 .map_err(|e| format!("构建插件失败: {e}"))?;
 
-            plugin
+            let output = plugin
                 .call::<&str, String>(&export_name, &input_json)
                 .map_err(|e| {
-                    if e.to_string().contains("timeout") {
+                    let message = e.to_string();
+                    let lower = message.to_ascii_lowercase();
+                    if lower.contains("timeout") || lower.contains("fuel") {
                         "插件执行超时".to_string()
                     } else {
                         format!("插件执行失败: {e}")
                     }
-                })
+                })?;
+
+            if output.len() as u64 > output_bytes {
+                return Err(format!(
+                    "插件输出超过上限（{} 字节，上限 {} 字节）",
+                    output.len(),
+                    output_bytes
+                ));
+            }
+            Ok(output)
         });
 
         match tokio::time::timeout(timeout, execution).await {

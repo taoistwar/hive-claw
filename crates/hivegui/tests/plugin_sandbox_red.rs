@@ -146,6 +146,35 @@ fn plugin_executor_disables_wasi_in_source() {
 }
 
 #[test]
+fn plugin_executor_enforces_memory_fuel_and_output_limits() {
+    // T079 资源限制必须接线（与 HiveWeb 一致）：
+    //   - `with_memory_max(64KiB pages)` 由 MiB 换算，不得直接传 MiB/字节
+    //   - `with_fuel_limit(DEFAULT_FUEL)` 指令预算
+    //   - output 长度检查（Extism 无内置 output 上限，host 层兜底）
+    let source = include_str!("../src/runtime/plugin_executor.rs");
+    assert!(
+        source.contains(".with_memory_max("),
+        "plugin_executor.rs must set the Extism memory cap via with_memory_max"
+    );
+    assert!(
+        source.contains("memory_pages"),
+        "plugin_executor.rs must convert MiB → 64 KiB pages before with_memory_max"
+    );
+    assert!(
+        source.contains(".with_fuel_limit("),
+        "plugin_executor.rs must set the Extism fuel budget via with_fuel_limit"
+    );
+    assert!(
+        source.contains("DEFAULT_FUEL"),
+        "plugin_executor.rs must apply the shared fuel budget default"
+    );
+    assert!(
+        source.contains("output.len() as u64 > output_bytes"),
+        "plugin_executor.rs must enforce the output cap after the call"
+    );
+}
+
+#[test]
 fn plugin_executor_keeps_only_host_call_as_a_host_import() {
     // The executor must register exactly one host import — `host_call` —
     // and must not auto-register any other extism:host/* functions.

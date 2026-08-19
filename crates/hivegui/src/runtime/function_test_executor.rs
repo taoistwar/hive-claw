@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::datasource::entity_store::{Function, Plugin};
 
+use super::plugin_executor::{DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES};
 use super::{BuiltinExecutor, PluginExecutor};
 
 /// Maximum duration of one function test execution.
@@ -42,6 +43,34 @@ pub fn format_test_output(output: &str) -> String {
     serde_json::from_str::<Value>(output)
         .and_then(|value| serde_json::to_string_pretty(&value))
         .unwrap_or_else(|_| output.to_string())
+}
+
+/// Parse a Plugin `resource_limits` JSON object into `(memory_mb,
+/// output_bytes)`, falling back to the T074 defaults on a missing or
+/// malformed field.
+pub fn parse_resource_limits(json: &str) -> (u64, u64) {
+    #[derive(serde::Deserialize)]
+    struct Limits {
+        #[serde(default)]
+        memory_limit_mb: u64,
+        #[serde(default)]
+        output_limit_bytes: u64,
+    }
+    let limits = serde_json::from_str::<Limits>(json).unwrap_or(Limits {
+        memory_limit_mb: DEFAULT_MEMORY_MB,
+        output_limit_bytes: DEFAULT_OUTPUT_BYTES,
+    });
+    let memory_mb = if limits.memory_limit_mb == 0 {
+        DEFAULT_MEMORY_MB
+    } else {
+        limits.memory_limit_mb
+    };
+    let output_bytes = if limits.output_limit_bytes == 0 {
+        DEFAULT_OUTPUT_BYTES
+    } else {
+        limits.output_limit_bytes
+    };
+    (memory_mb, output_bytes)
 }
 
 /// Executes builtin and plugin-backed functions for the function test dialog.
@@ -165,14 +194,44 @@ impl FunctionTestExecutor {
         let input_json =
             serde_json::to_string(&input).map_err(|e| format!("序列化输入失败: {e}"))?;
 
-        PluginExecutor::execute_with_verified_artifact(
+        let (memory_mb, output_bytes) = parse_resource_limits(&plugin.resource_limits);
+
+        PluginExecutor::execute_with_verified_limits(
             &wasm_path,
             export_name,
             &input_json,
             FUNCTION_TEST_TIMEOUT,
             allowed_capabilities,
             &plugin.sha256,
+            memory_mb,
+            output_bytes,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES, parse_resource_limits};
+
+    #[test]
+    fn parse_resource_limits_reads_v1_fields() {
+        let (memory_mb, output_bytes) =
+            parse_resource_limits(r#"{"memory_limit_mb":256,"output_limit_bytes":20971520}"#);
+        assert_eq!(memory_mb, 256);
+        assert_eq!(output_bytes, 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_resource_limits_falls_back_to_defaults() {
+        // Malformed JSON and zero values fall back to T074 defaults.
+        let (memory_mb, output_bytes) = parse_resource_limits("not-json");
+        assert_eq!(memory_mb, DEFAULT_MEMORY_MB);
+        assert_eq!(output_bytes, DEFAULT_OUTPUT_BYTES);
+
+        let (memory_mb, output_bytes) =
+            parse_resource_limits(r#"{"memory_limit_mb":0,"output_limit_bytes":0}"#);
+        assert_eq!(memory_mb, DEFAULT_MEMORY_MB);
+        assert_eq!(output_bytes, DEFAULT_OUTPUT_BYTES);
     }
 }

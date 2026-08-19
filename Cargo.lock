@@ -5240,6 +5240,7 @@ dependencies = [
  "hex",
  "hive-builtins",
  "hive-runtime-core",
+ "libc",
  "mysql_async",
  "parking_lot",
  "providers",

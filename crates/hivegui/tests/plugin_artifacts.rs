@@ -412,4 +412,60 @@ mod no_follow_tests {
         assert!(path.exists());
         let _ = plugin;
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_verified_artifact_reads_bytes_through_nofollow_descriptor() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        store
+            .install(PluginArtifactInput::new("rdok", "1.0.0", b"payload").unwrap())
+            .await
+            .expect("install");
+
+        let bytes = store
+            .read_verified_artifact("rdok", "1.0.0")
+            .expect("regular file must be readable");
+        assert_eq!(bytes, b"payload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_verified_artifact_rejects_symlink_final_file() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        let identifier_dir = workspace.plugin_root().join("rdlink");
+        std::fs::create_dir_all(&identifier_dir).expect("identifier dir");
+        let outside_file = workspace.root().join("rd-target.wasm");
+        std::fs::write(&outside_file, b"v1").expect("outside file");
+        std::os::unix::fs::symlink(&outside_file, identifier_dir.join("1.0.0.wasm"))
+            .expect("final symlink");
+
+        // O_NOFOLLOW rejects the symlink at open time.
+        let err = store
+            .read_verified_artifact("rdlink", "1.0.0")
+            .expect_err("symlink final file must be rejected");
+        assert_eq!(err.reason(), "unsafe_artifact");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_verified_artifact_rejects_hardlinked_file() {
+        let workspace = TestWorkspace::new().expect("test workspace");
+        let pool = migrated_pool(&workspace).await;
+        let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
+
+        let identifier_dir = workspace.plugin_root().join("rdhard");
+        std::fs::create_dir_all(&identifier_dir).expect("identifier dir");
+        let artifact = identifier_dir.join("1.0.0.wasm");
+        std::fs::write(&artifact, b"v1").expect("artifact");
+        let linked = workspace.root().join("rd-hardlink-target");
+        std::fs::hard_link(&artifact, &linked).expect("hard link");
+
+        let err = store
+            .read_verified_artifact("rdhard", "1.0.0")
+            .expect_err("link-count-2 file must be rejected");
+        assert_eq!(err.reason(), "unsafe_artifact");
+    }
 }

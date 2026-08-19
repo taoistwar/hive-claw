@@ -734,6 +734,81 @@ impl PluginStore {
         }
         Ok(path)
     }
+
+    /// Read artifact bytes through a single no-follow descriptor.
+    ///
+    /// T079: unlike [`PluginStore::resolve_artifact_path`] followed by
+    /// `std::fs::read` (which validates a path and then re-opens it, leaving
+    /// a replace window between check and use), this opens the final
+    /// component with `O_NOFOLLOW` and validates the *opened descriptor*
+    /// via `fstat` (regular file, link count 1, non-empty) before reading a
+    /// single byte. The `identifier` directory is still checked with
+    /// `symlink_metadata`: it is store-managed and must never be a symlink.
+    pub fn read_verified_artifact(
+        &self,
+        identifier: &str,
+        version: &str,
+    ) -> Result<Vec<u8>, PluginInstallError> {
+        let unsafe_err = || PluginInstallError {
+            kind: PluginInstallErrorKind::UnsafeArtifact,
+            references: Vec::new(),
+        };
+
+        let dir = self.inner.root.join(identifier);
+        let dir_md = std::fs::symlink_metadata(&dir).map_err(|_| unsafe_err())?;
+        if dir_md.file_type().is_symlink() || !dir_md.file_type().is_dir() {
+            return Err(unsafe_err());
+        }
+
+        let path = dir.join(format!("{version}.wasm"));
+
+        // Open the final component with O_NOFOLLOW: a symlink in the last
+        // path segment is rejected at open time rather than "checked, then
+        // re-opened".
+        let file = open_nofollow(&path).map_err(|_| unsafe_err())?;
+
+        // Validate the *opened descriptor* (fstat), so the bytes we read are
+        // guaranteed to come from exactly one regular, non-empty file.
+        let md = file.metadata().map_err(|_| unsafe_err())?;
+        if !md.is_file() || md.len() == 0 {
+            return Err(unsafe_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if md.nlink() > 1 {
+                return Err(unsafe_err());
+            }
+        }
+
+        use std::io::Read;
+        let mut bytes = Vec::with_capacity(md.len() as usize);
+        file.take(MAX_ARTIFACT_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|_| unsafe_err())?;
+        Ok(bytes)
+    }
+}
+
+/// Upper bound on a single artifact read, as a DoS guard against a
+/// store-managed file that grew unexpectedly after publish (128 MiB).
+const MAX_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Open a path with `O_NOFOLLOW` so a symlink in the final component is
+/// rejected at open time. Non-Unix platforms fall back to a plain read
+/// open (the T077 no-follow boundary is a Unix-only concern).
+#[cfg(unix)]
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
 }
 
 /// SHA-256 helper used by tests + callers that want to compare

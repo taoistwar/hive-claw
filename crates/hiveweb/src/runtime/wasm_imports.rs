@@ -5,6 +5,13 @@
 
 use crate::runtime::capability::CAPABILITIES;
 use crate::utils::error::AppError;
+use hive_runtime_core::wasm::WasmModuleShape;
+
+/// WASI 的 `wasi_snapshot_preview1` module 名。能力-only Plugin 一律拒绝。
+/// 该拒绝在共享 `hive-runtime-core::wasm` 契约中对应
+/// [`WasmModuleShape::WasiImportPresent`]（§4 隔离：PluginBuilder 必须
+/// `with_wasi(false)`，Plugin 不得直接触碰文件系统或网络）。
+const WASI_MODULE: &str = "wasi_snapshot_preview1";
 
 /// 返回所有已注册的 capability 名（即合法的 host import 名）
 pub fn registered_imports() -> Vec<&'static str> {
@@ -49,6 +56,17 @@ pub fn scan_wasm_imports(bytes: &[u8], allowed: &[&str]) -> Result<(), AppError>
                     AppError::BadRequest("WASM 格式错误：无法读取 module name".into())
                 })?;
                 pos = new_pos;
+
+                // §4 隔离：能力-only Plugin 必须 `with_wasi(false)`，任何
+                // `wasi_snapshot_preview1` import 都在上传预校验阶段拒绝，
+                // 与共享 `WasmModuleShape::WasiImportPresent` 分类对齐。
+                if module == WASI_MODULE {
+                    return Err(AppError::BadRequest(format!(
+                        "WASM 包含被禁止的 WASI import（{}，对应共享契约 {:?}），能力-only Plugin 不得直接访问文件系统或网络",
+                        WASI_MODULE,
+                        WasmModuleShape::WasiImportPresent
+                    )));
+                }
 
                 let (name, new_pos) = read_name(bytes, pos).ok_or_else(|| {
                     AppError::BadRequest("WASM 格式错误：无法读取 field name".into())
@@ -269,6 +287,27 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("未注册的 host import")
+        );
+    }
+
+    #[test]
+    fn test_wasm_with_wasi_import_is_rejected() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "wasi_snapshot_preview1" "random_get"
+                  (func $random_get (param i32 i32) (result i32))))"#,
+        )
+        .expect("WAT must compile");
+
+        let allowed: Vec<&str> = Vec::new();
+        let result = scan_wasm_imports(&wasm, &allowed);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("wasi_snapshot_preview1"),
+            "WASI import must be rejected at upload pre-validation"
         );
     }
 }

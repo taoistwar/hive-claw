@@ -1112,4 +1112,46 @@ mod tests {
         );
         assert!(!deps.rate_limits.try_acquire_log_at(7, fixed));
     }
+
+    /// T080 §7 兼容性：HiveWeb host_call envelope 必须与共享
+    /// `hive-runtime-core::abi::HostCallReply` 字节级等价（成功 + 共享错误码）。
+    /// 任一字段顺序或转义不一致都会让 Plugin 侧解析到不同字节，故逐字节断言。
+    #[test]
+    fn plugin_host_call_envelope_is_byte_identical_to_shared_abi() {
+        use hive_runtime_core::abi::{HostCallReply, StableErrorKind};
+
+        // 成功路径：{"ok":true,"data":...}
+        let ok_value = json!({"status": 200, "headers": {}, "body": "ok"});
+        let web = serde_json::to_string(&ReplyEnvelope::ok(ok_value.clone())).expect("serialize");
+        let shared = String::from_utf8(
+            HostCallReply::success_json(&serde_json::to_vec(&ok_value).expect("to_vec"))
+                .expect("valid JSON")
+                .encode_json(),
+        )
+        .expect("utf8");
+        assert_eq!(web, shared, "success envelope must be byte-identical");
+
+        // 失败路径：{"ok":false,"code":<n>,"message":"..."}（共享错误码）
+        let cases = [
+            (
+                4030u16,
+                StableErrorKind::CapabilityDenied,
+                "当前 Agent 未授权",
+            ),
+            (
+                4045u16,
+                StableErrorKind::CapabilityUnknown,
+                "未知 Capability",
+            ),
+            (4001u16, StableErrorKind::InvalidArgs, "参数无效"),
+            (4081u16, StableErrorKind::CapabilityTimeout, "调用超时"),
+            (5000u16, StableErrorKind::Internal, "内部错误"),
+        ];
+        for (code, kind, msg) in cases {
+            let web = serde_json::to_string(&ReplyEnvelope::err(code, msg)).expect("serialize");
+            let shared =
+                String::from_utf8(HostCallReply::failure(kind, msg).encode_json()).expect("utf8");
+            assert_eq!(web, shared, "code {code} envelope must be byte-identical");
+        }
+    }
 }

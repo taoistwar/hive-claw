@@ -82,6 +82,7 @@ wasmparser = "0.221"
 # Internal workspace crates reused by Agent Runtime
 agent = { path = "../agent" }
 hive-builtins = { path = "../hive-builtins" }
+hive-runtime-core = { path = "../hive-runtime-core" }
 providers = { path = "../providers" }
 skills = { path = "../skills" }
 time = { workspace = true }

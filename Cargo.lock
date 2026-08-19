@@ -5284,6 +5284,7 @@ dependencies = [
  "extism",
  "futures",
  "hive-builtins",
+ "hive-runtime-core",
  "http-body-util",
  "jsonschema",
  "jsonwebtoken",

@@ -326,6 +326,285 @@ pub const EXTISM_HOST_CALL_MODULE: &str = "extism:host/user";
 /// return value matches before instantiating the Plugin.
 pub const ABI_VERSION_EXPORT: &str = "_hive_plugin_abi_version";
 
+/// The `wasi_snapshot_preview1` module name.
+///
+/// Any import of this module is a [`WasmModuleShape::WasiImportPresent`]
+/// violation while [`WasmSandboxConfig::wasi_enabled`] is `false`.
+pub const WASI_MODULE_NAME: &str = "wasi_snapshot_preview1";
+
+/// Validate a Plugin artifact's structural shape against the shared
+/// [`WasmModuleShape`] invariants (§4 隔离, §7 兼容性).
+///
+/// This is the single storage-neutral source of truth for the import /
+/// export invariants that HiveWeb and HiveGUI must both enforce before any
+/// Plugin byte reaches a runtime. It parses the import and export sections
+/// directly and fails fast on the first violation.
+///
+/// Inputs:
+/// - `bytes`: the raw WASM binary. The caller MUST have already performed
+///   the `\0asm` magic/version header check; a truncated or overflowing
+///   section fails closed as [`WasmModuleShape::DisallowedHostImport`]
+///   with a `"malformed …"` detail (the runtime still rejects such bytes
+///   at instantiation).
+/// - `wasi_enabled`: whether the sandbox permits WASI imports. Production
+///   hosts pass `false` ([`WasmSandboxConfig::deny_all_wasi`]).
+///
+/// Outputs: [`WasmValidationError::Ok`] with a short summary, or
+/// [`WasmValidationError::Rejected`] carrying the first
+/// [`WasmModuleShape`] category.
+/// Error modes: total. Malformed sections fail closed.
+///
+/// Static validation covers five of the six [`WasmModuleShape`]
+/// categories. [`WasmModuleShape::UnsupportedAbiVersion`] is *not*
+/// detected here: confirming that the [`ABI_VERSION_EXPORT`] function
+/// actually returns [`crate::abi::HIVE_EXTISM_ABI_V1`] requires executing
+/// the Plugin, which is the runtime adapter's responsibility after a
+/// successful static check.
+pub fn validate_wasm_shape(bytes: &[u8], wasi_enabled: bool) -> WasmValidationError {
+    match parse_wasm_sections(bytes) {
+        Err(detail) => {
+            WasmValidationError::rejected(WasmModuleShape::DisallowedHostImport, Some(detail))
+        }
+        Ok(shape) => {
+            // (a) WASI denial (§4 隔离).
+            if !wasi_enabled && shape.has_wasi_import {
+                return WasmValidationError::rejected(WasmModuleShape::WasiImportPresent, None);
+            }
+            // (b) Host outside the documented allowlist.
+            if shape.disallowed_host {
+                return WasmValidationError::rejected(WasmModuleShape::DisallowedHostImport, None);
+            }
+            // (c) A `host_call`-intent import with a non-stable name.
+            if shape.unknown_host_call {
+                return WasmValidationError::rejected(WasmModuleShape::UnknownHostCallImport, None);
+            }
+            // (d) No extism/`env` host surface at all (not built through the
+            //     official pipeline).
+            if !shape.has_host_surface {
+                return WasmValidationError::rejected(
+                    WasmModuleShape::MissingExtismFingerprint,
+                    None,
+                );
+            }
+            // (e) Missing the v1 ABI-version export.
+            if !shape.has_abi_export {
+                return WasmValidationError::rejected(
+                    WasmModuleShape::MissingAbiVersionExport,
+                    None,
+                );
+            }
+            WasmValidationError::ok("validated v1 plugin shape")
+        }
+    }
+}
+
+/// Aggregated structural facts collected while scanning the import and
+/// export sections. Purely an internal carrier for [`validate_wasm_shape`].
+#[derive(Default)]
+struct WasmShape {
+    /// At least one `wasi_snapshot_preview1` import is present.
+    has_wasi_import: bool,
+    /// At least one import lives outside `extism:host/*` / `env` /
+    /// `wasi_snapshot_preview1`.
+    disallowed_host: bool,
+    /// A function import under `extism:host/user` or `env` is named
+    /// something other than [`HOST_CALL_IMPORT`].
+    unknown_host_call: bool,
+    /// At least one `extism:host/*` or `env` import exists (the extism_sdk
+    /// or bare-host fingerprint).
+    has_host_surface: bool,
+    /// The [`ABI_VERSION_EXPORT`] function export is present.
+    has_abi_export: bool,
+}
+
+/// Parse the WASM import and export sections into a [`WasmShape`].
+///
+/// Fail-closed: any truncation or LEB128 overflow is reported as an
+/// `Err(String)` that [`validate_wasm_shape`] surfaces as a structural
+/// rejection.
+fn parse_wasm_sections(bytes: &[u8]) -> Result<WasmShape, String> {
+    if bytes.len() < 8 {
+        return Err("malformed wasm: shorter than 8-byte header".to_string());
+    }
+
+    let mut shape = WasmShape::default();
+    let mut pos = 8usize;
+
+    while pos < bytes.len() {
+        let section_id = *bytes
+            .get(pos)
+            .ok_or("malformed wasm: truncated section id")?;
+        pos += 1;
+        let section_size = read_leb128_u32(bytes, &mut pos)
+            .ok_or("malformed wasm: truncated section size")? as usize;
+        let section_end = pos
+            .checked_add(section_size)
+            .ok_or("malformed wasm: section size overflow")?;
+        if section_end > bytes.len() {
+            return Err("malformed wasm: section exceeds input".to_string());
+        }
+
+        match section_id {
+            2 => parse_import_section(bytes, pos, section_end, &mut shape)?,
+            7 => parse_export_section(bytes, pos, section_end, &mut shape)?,
+            _ => {}
+        }
+
+        pos = section_end;
+    }
+
+    Ok(shape)
+}
+
+/// Parse the import section (`id = 2`) into `shape`.
+fn parse_import_section(
+    bytes: &[u8],
+    pos: usize,
+    end: usize,
+    shape: &mut WasmShape,
+) -> Result<(), String> {
+    let mut cur = pos;
+    let num_imports =
+        read_leb128_u32(bytes, &mut cur).ok_or("malformed wasm: truncated import count")?;
+
+    for _ in 0..num_imports {
+        let module = read_name(bytes, &mut cur).ok_or("malformed wasm: truncated import module")?;
+        let name = read_name(bytes, &mut cur).ok_or("malformed wasm: truncated import name")?;
+        let kind = *bytes
+            .get(cur)
+            .ok_or("malformed wasm: truncated import kind")?;
+        cur += 1;
+        skip_import_desc(bytes, &mut cur, kind)
+            .ok_or("malformed wasm: truncated import descriptor")?;
+
+        if module == WASI_MODULE_NAME {
+            shape.has_wasi_import = true;
+        }
+        let is_host = module.starts_with("extism:host/") || module == HOST_CALL_MODULE;
+        if is_host {
+            shape.has_host_surface = true;
+        }
+        if module != WASI_MODULE_NAME && !is_host {
+            shape.disallowed_host = true;
+        }
+        // Only the `extism:host/user` (Extism SDK) and `env` (bare host)
+        // namespaces carry the user host function; `extism:host/env.*` is
+        // Extism PDK infrastructure and is never a `host_call`.
+        if kind == 0x00
+            && (module == EXTISM_HOST_CALL_MODULE || module == HOST_CALL_MODULE)
+            && name != HOST_CALL_IMPORT
+        {
+            shape.unknown_host_call = true;
+        }
+
+        if cur > end {
+            return Err("malformed wasm: import section overruns its size".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse the export section (`id = 7`) into `shape`.
+fn parse_export_section(
+    bytes: &[u8],
+    pos: usize,
+    end: usize,
+    shape: &mut WasmShape,
+) -> Result<(), String> {
+    let mut cur = pos;
+    let num_exports =
+        read_leb128_u32(bytes, &mut cur).ok_or("malformed wasm: truncated export count")?;
+
+    for _ in 0..num_exports {
+        let name = read_name(bytes, &mut cur).ok_or("malformed wasm: truncated export name")?;
+        let kind = *bytes
+            .get(cur)
+            .ok_or("malformed wasm: truncated export kind")?;
+        cur += 1;
+        read_leb128_u32(bytes, &mut cur).ok_or("malformed wasm: truncated export index")?;
+
+        if name == ABI_VERSION_EXPORT && kind == 0x00 {
+            shape.has_abi_export = true;
+        }
+
+        if cur > end {
+            return Err("malformed wasm: export section overruns its size".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Read an unsigned LEB128 `u32` from `bytes` at `*pos`, advancing `pos`.
+///
+/// Returns `None` on truncation or when the encoding overflows `u32`
+/// (more than five significant bytes).
+fn read_leb128_u32(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    loop {
+        let byte = *bytes.get(*pos)?;
+        *pos += 1;
+        result |= u64::from(byte & 0x7F) << shift;
+        if byte & 0x80 == 0 {
+            return u32::try_from(result).ok();
+        }
+        shift += 7;
+        if shift >= 35 {
+            return None;
+        }
+    }
+}
+
+/// Read a length-prefixed UTF-8 name from `bytes` at `*pos`, advancing
+/// `pos`. Returns `None` on truncation or non-UTF-8 content.
+fn read_name<'a>(bytes: &'a [u8], pos: &mut usize) -> Option<&'a str> {
+    let len = read_leb128_u32(bytes, pos)? as usize;
+    let end = pos.checked_add(len)?;
+    let slice = bytes.get(*pos..end)?;
+    *pos = end;
+    std::str::from_utf8(slice).ok()
+}
+
+/// Skip a WASM limits structure: flags byte + min, and max when present.
+fn skip_limits(bytes: &[u8], pos: &mut usize) -> Option<()> {
+    let flags = *bytes.get(*pos)?;
+    *pos += 1;
+    read_leb128_u32(bytes, pos)?;
+    if flags & 0x01 != 0 {
+        read_leb128_u32(bytes, pos)?;
+    }
+    Some(())
+}
+
+/// Skip the descriptor that follows an import's kind byte.
+fn skip_import_desc(bytes: &[u8], pos: &mut usize, kind: u8) -> Option<()> {
+    match kind {
+        // function: type index.
+        0x00 => {
+            read_leb128_u32(bytes, pos)?;
+            Some(())
+        }
+        // table: reftype (s33, read as unsigned) + limits.
+        0x01 => {
+            read_leb128_u32(bytes, pos)?;
+            skip_limits(bytes, pos)
+        }
+        // memory: limits.
+        0x02 => skip_limits(bytes, pos),
+        // global: valtype (1 byte) + mutability (1 byte).
+        0x03 => {
+            let end = pos.checked_add(2)?;
+            bytes.get(*pos..end)?;
+            *pos = end;
+            Some(())
+        }
+        // Unknown kind: cannot determine the descriptor size.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +649,156 @@ mod tests {
         assert_eq!(EXTISM_HOST_CALL_MODULE, "extism:host/user");
         assert_eq!(HOST_CALL_IMPORT, "host_call");
         assert_eq!(ABI_VERSION_EXPORT, "_hive_plugin_abi_version");
+        assert_eq!(WASI_MODULE_NAME, "wasi_snapshot_preview1");
+    }
+
+    // -- minimal WASM section builders -----------------------------------
+
+    fn leb128(mut value: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    fn section(id: u8, content: &[u8]) -> Vec<u8> {
+        let mut out = vec![id];
+        out.extend(leb128(content.len() as u32));
+        out.extend(content);
+        out
+    }
+
+    /// Build the import section (`id = 2`) for a list of `(module, name)`
+    /// function imports.
+    fn import_section(imports: &[(&str, &str)]) -> Vec<u8> {
+        let mut content = leb128(imports.len() as u32);
+        for (module, name) in imports {
+            content.push(module.len() as u8);
+            content.extend_from_slice(module.as_bytes());
+            content.push(name.len() as u8);
+            content.extend_from_slice(name.as_bytes());
+            content.push(0x00); // function kind
+            content.push(0x00); // type index
+        }
+        section(2, &content)
+    }
+
+    /// Build the export section (`id = 7`) for a list of `(name, kind)`
+    /// exports, all referencing index 0.
+    fn export_section(exports: &[(&str, u8)]) -> Vec<u8> {
+        let mut content = leb128(exports.len() as u32);
+        for (name, kind) in exports {
+            content.push(name.len() as u8);
+            content.extend_from_slice(name.as_bytes());
+            content.push(*kind);
+            content.push(0x00); // index
+        }
+        section(7, &content)
+    }
+
+    fn module(imports: &[(&str, &str)], exports: &[(&str, u8)]) -> Vec<u8> {
+        let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        if !imports.is_empty() {
+            wasm.extend(import_section(imports));
+        }
+        if !exports.is_empty() {
+            wasm.extend(export_section(exports));
+        }
+        wasm
+    }
+
+    const ABI_EXPORT: (&str, u8) = (ABI_VERSION_EXPORT, 0x00);
+
+    #[test]
+    fn valid_extism_plugin_passes() {
+        let wasm = module(
+            &[
+                ("extism:host/user", "host_call"),
+                ("extism:host/env", "input_length"),
+            ],
+            &[ABI_EXPORT],
+        );
+        assert!(validate_wasm_shape(&wasm, false).is_ok());
+    }
+
+    #[test]
+    fn valid_bare_env_plugin_passes() {
+        let wasm = module(&[("env", "host_call")], &[ABI_EXPORT]);
+        assert!(validate_wasm_shape(&wasm, false).is_ok());
+    }
+
+    #[test]
+    fn wasi_import_is_rejected_when_wasi_disabled() {
+        let wasm = module(
+            &[
+                ("extism:host/user", "host_call"),
+                ("wasi_snapshot_preview1", "random_get"),
+            ],
+            &[ABI_EXPORT],
+        );
+        assert_eq!(
+            validate_wasm_shape(&wasm, false).rejection_kind(),
+            Some(WasmModuleShape::WasiImportPresent)
+        );
+        // WASI enabled: the import is tolerated, so the plugin still passes.
+        assert!(validate_wasm_shape(&wasm, true).is_ok());
+    }
+
+    #[test]
+    fn disallowed_host_import_is_rejected() {
+        let wasm = module(&[("extism", "time.now")], &[ABI_EXPORT]);
+        assert_eq!(
+            validate_wasm_shape(&wasm, false).rejection_kind(),
+            Some(WasmModuleShape::DisallowedHostImport)
+        );
+    }
+
+    #[test]
+    fn unknown_user_host_function_is_rejected() {
+        let wasm = module(&[("extism:host/user", "other_func")], &[ABI_EXPORT]);
+        assert_eq!(
+            validate_wasm_shape(&wasm, false).rejection_kind(),
+            Some(WasmModuleShape::UnknownHostCallImport)
+        );
+    }
+
+    #[test]
+    fn missing_host_surface_is_rejected_as_no_fingerprint() {
+        // No extism:host/* or env import at all.
+        let wasm = module(&[], &[ABI_EXPORT]);
+        assert_eq!(
+            validate_wasm_shape(&wasm, false).rejection_kind(),
+            Some(WasmModuleShape::MissingExtismFingerprint)
+        );
+    }
+
+    #[test]
+    fn missing_abi_export_is_rejected() {
+        let wasm = module(&[("extism:host/user", "host_call")], &[]);
+        assert_eq!(
+            validate_wasm_shape(&wasm, false).rejection_kind(),
+            Some(WasmModuleShape::MissingAbiVersionExport)
+        );
+    }
+
+    #[test]
+    fn truncated_section_fails_closed() {
+        // A section whose declared size exceeds the input.
+        let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        wasm.push(2); // import section id
+        wasm.extend(leb128(100)); // claims 100 bytes, but none follow
+        assert_eq!(
+            validate_wasm_shape(&wasm, false).rejection_kind(),
+            Some(WasmModuleShape::DisallowedHostImport)
+        );
     }
 }

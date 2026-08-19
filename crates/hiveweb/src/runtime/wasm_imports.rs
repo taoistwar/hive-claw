@@ -6,13 +6,16 @@
 //! exactly one user host function (`host_call`), no WASI, no stray host.
 
 use crate::utils::error::AppError;
-use hive_runtime_core::wasm::{EXTISM_HOST_CALL_MODULE, HOST_CALL_IMPORT, WasmModuleShape};
+use hive_runtime_core::wasm::{
+    EXTISM_HOST_CALL_MODULE, HOST_CALL_IMPORT, WASI_MODULE_NAME, WasmModuleShape,
+};
 
-/// WASI 的 `wasi_snapshot_preview1` module 名。能力-only Plugin 一律拒绝。
-/// 该拒绝在共享 `hive-runtime-core::wasm` 契约中对应
-/// [`WasmModuleShape::WasiImportPresent`]（§4 隔离：PluginBuilder 必须
-/// `with_wasi(false)`，Plugin 不得直接触碰文件系统或网络）。
-const WASI_MODULE: &str = "wasi_snapshot_preview1";
+/// WASI 的 `wasi_snapshot_preview1` module 名（复用共享常量
+/// [`WASI_MODULE_NAME`]）。能力-only Plugin 一律拒绝。该拒绝在共享
+/// `hive-runtime-core::wasm` 契约中对应 [`WasmModuleShape::WasiImportPresent`]
+/// （§4 隔离：PluginBuilder 必须 `with_wasi(false)`，Plugin 不得直接触碰
+/// 文件系统或网络）。
+const WASI_MODULE: &str = WASI_MODULE_NAME;
 
 /// Extism 宿主挂载唯一用户 host function 的完整 import 路径：
 /// `extism:host/user.host_call`（`with_function(HOST_CALL_IMPORT, …)` 固定

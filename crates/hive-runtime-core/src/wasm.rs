@@ -297,7 +297,27 @@ pub const HOST_CALL_IMPORT: &str = "host_call";
 /// The canonical `env` module name for the `host_call` import.
 ///
 /// Hosts MUST expose [`HOST_CALL_IMPORT`] under this module name.
+///
+/// This is the module alias used by pure-WAT / bare-Wasmtime host adapters
+/// (and by the shared WAT fixtures). The Extism SDK compiles its Plugins
+/// against a *different*, fixed namespace: [`EXTISM_HOST_CALL_MODULE`].
+/// Extism's [`PluginBuilder::with_function`] can only mount host functions
+/// under that namespace, so Extism-based hosts (HiveWeb `invoker.rs` and
+/// HiveGUI `plugin_executor.rs`) must import/reference the Extism namespace
+/// rather than `env`. The two constants therefore name the *same logical*
+/// `host_call` surface in two distinct linkage styles; both MUST be treated
+/// as the single v1 import surface by [`WasmModuleShape`] validation.
 pub const HOST_CALL_MODULE: &str = "env";
+
+/// The `host_call` module namespace emitted by the Extism SDK.
+///
+/// Extism mounts every `PluginBuilder::with_function`-registered host
+/// function under `extism:host/user.<name>`; this is fixed by the SDK and
+/// cannot be overridden per-plugin. Hosts built on Extism (HiveWeb and
+/// HiveGUI) therefore link [`HOST_CALL_IMPORT`] as
+/// `extism:host/user.host_call`, while bare-Wasmtime hosts link it as
+/// `env.host_call` ([`HOST_CALL_MODULE`]).
+pub const EXTISM_HOST_CALL_MODULE: &str = "extism:host/user";
 
 /// The canonical ABI version export name.
 ///
@@ -347,6 +367,7 @@ mod tests {
     #[test]
     fn canonical_import_and_export_names_are_stable() {
         assert_eq!(HOST_CALL_MODULE, "env");
+        assert_eq!(EXTISM_HOST_CALL_MODULE, "extism:host/user");
         assert_eq!(HOST_CALL_IMPORT, "host_call");
         assert_eq!(ABI_VERSION_EXPORT, "_hive_plugin_abi_version");
     }

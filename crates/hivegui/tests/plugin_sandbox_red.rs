@@ -155,17 +155,18 @@ fn plugin_executor_keeps_only_host_call_as_a_host_import() {
         with_function_count, 1,
         "plugin_executor.rs must register exactly one host function in total"
     );
-    // The single host import is `host_call`; the identifier may be
-    // quoted separately from `.with_function(` because of formatting,
-    // so we look for the literal name without assuming adjacency.
+    // The single host import is `host_call`, sourced from the shared
+    // `hive-runtime-core::wasm::HOST_CALL_IMPORT` constant (which resolves
+    // to `"host_call"`). The identifier may be referenced via the constant,
+    // so we assert the shared constant is imported and used once, rather
+    // than a raw string literal.
     assert!(
-        source.contains("\"host_call\""),
-        "plugin_executor.rs must register the `host_call` host function"
+        source.contains("HOST_CALL_IMPORT"),
+        "plugin_executor.rs must register the shared `host_call` host function"
     );
-    assert_eq!(
-        source.matches("\"host_call\"").count(),
-        1,
-        "plugin_executor.rs must register `host_call` exactly once"
+    assert!(
+        source.contains("use hive_runtime_core::wasm::HOST_CALL_IMPORT"),
+        "plugin_executor.rs must source `host_call` from the shared wasm contract"
     );
 }
 

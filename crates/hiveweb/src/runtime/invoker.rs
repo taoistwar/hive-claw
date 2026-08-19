@@ -19,6 +19,8 @@ use sqlx::MySqlPool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use hive_runtime_core::wasm::HOST_CALL_IMPORT;
+
 use crate::models::Plugin as PluginRow;
 use crate::runtime::capability::{self, CapabilityRegistry, DispatchCtx, DispatcherDeps};
 use crate::runtime::execution_context::RuntimeExecutionContext;
@@ -70,7 +72,7 @@ fn build_extism_compiled_plugin(
         .with_wasi(false)
         .with_fuel_limit(fuel)
         .with_function(
-            "host_call",
+            HOST_CALL_IMPORT,
             [extism::ValType::I64],
             [extism::ValType::I64],
             UserData::default(),

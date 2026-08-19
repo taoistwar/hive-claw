@@ -5,6 +5,7 @@
 use extism::{
     CurrentPlugin, Error as ExtismError, Manifest, PluginBuilder, UserData, Val, ValType, Wasm,
 };
+use hive_runtime_core::wasm::HOST_CALL_IMPORT;
 use std::collections::{HashMap, VecDeque};
 use std::{path::Path, time::Duration};
 use thiserror::Error;
@@ -593,7 +594,7 @@ impl PluginExecutor {
             let mut plugin = PluginBuilder::new(manifest)
                 .with_wasi(false)
                 .with_function(
-                    "host_call",
+                    HOST_CALL_IMPORT,
                     [ValType::I64],
                     [ValType::I64],
                     UserData::new(DesktopHostContext {

@@ -4,7 +4,8 @@
 //!   1. 未知 capability → 4045
 //!   2. 已知但 Agent 未授权 → 4030
 //!   3. 已知且授权 → ok=true
-//!   4. 非法 envelope JSON → 4000
+//!   4. 非法 envelope JSON → 4001（T080 §3 调和：envelope 解析失败统一映射为
+//!      共享 ABI `invalid_args`，而非 API 层 `BAD_REQUEST` 4000）
 
 mod common;
 
@@ -125,7 +126,7 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn t049_bad_envelope_returns_4000() -> anyhow::Result<()> {
+async fn t049_bad_envelope_returns_4001() -> anyhow::Result<()> {
     let pool = common::test_pool().await?;
     let s3 = hiveweb::storage::s3::create_client().await?;
     let deps = DispatcherDeps {
@@ -145,6 +146,8 @@ async fn t049_bad_envelope_returns_4000() -> anyhow::Result<()> {
     let resp = capability::dispatch(&deps, &ctx, "{not-json}").await;
     let v: serde_json::Value = serde_json::from_str(&resp)?;
     assert_eq!(v["ok"], false);
-    assert_eq!(v["code"], 4000, "bad envelope must return 4000; got {resp}");
+    // Envelope 解析失败统一映射为共享 ABI 的 `invalid_args` (4001)，而非
+    // API 层 `BAD_REQUEST` (4000)（T080 §3 错误码调和）。
+    assert_eq!(v["code"], 4001, "bad envelope must return 4001; got {resp}");
     Ok(())
 }

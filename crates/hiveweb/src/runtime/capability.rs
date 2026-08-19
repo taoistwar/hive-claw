@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use hive_runtime_core::abi::StableErrorKind;
+
 use crate::runtime::capabilities;
 use crate::runtime::capabilities::{CapabilityFailure, CapabilityFailureKind};
 use crate::runtime::execution_context::RuntimeExecutionContext;
@@ -192,6 +194,17 @@ pub struct ReplyEnvelope {
     pub message: Option<String>,
 }
 
+/// 将共享 ABI 的稳定错误类别映射为 host_call 数值码（u16）。
+///
+/// 共享 [`StableErrorKind::host_call_code`] 返回 `Option<u32>`；hiveweb 的
+/// `ReplyEnvelope.code` 为 `u16`。所有会走到 host_call 返回路径的共享码均
+/// `< 65536`，转换无损。`FunctionNotExecutable` 无 host_call 码，调用点不会
+/// 传入，故 `expect` 是静态不变量。
+fn stable_code(kind: StableErrorKind) -> u16 {
+    kind.host_call_code()
+        .expect("this StableErrorKind variant has a host_call code") as u16
+}
+
 impl ReplyEnvelope {
     pub fn ok(data: Value) -> Self {
         Self {
@@ -222,7 +235,7 @@ fn serialize_bounded_reply(reply: ReplyEnvelope) -> (String, bool) {
 
     (
         serde_json::to_string(&ReplyEnvelope::err(
-            5000,
+            stable_code(StableErrorKind::Internal),
             "Capability response exceeds 4 MiB limit",
         ))
         .expect("static bounded capability error must serialize"),
@@ -279,10 +292,14 @@ fn to_reply<T: Serialize>(
             let safe_error =
                 runtime_audit::safe_capability_error_for_kind(capability, error.audit_kind());
             let code = match error.kind() {
-                CapabilityFailureKind::InvalidArguments => 4001,
-                CapabilityFailureKind::Timeout => 4081,
+                CapabilityFailureKind::InvalidArguments => {
+                    stable_code(StableErrorKind::InvalidArgs)
+                }
+                CapabilityFailureKind::Timeout => stable_code(StableErrorKind::CapabilityTimeout),
+                // HiveWeb 产品扩展：模型预设未知不在共享 `StableErrorKind`
+                // 表内（`llm.invoke` 能力级错误，对应 API 层 5007 / HTTP 422）。
                 CapabilityFailureKind::ModelPresetUnknown => codes::MODEL_PRESET_UNKNOWN,
-                CapabilityFailureKind::Failed => 5000,
+                CapabilityFailureKind::Failed => stable_code(StableErrorKind::Internal),
             };
             (
                 ReplyEnvelope::err(code, safe_error.message),
@@ -297,6 +314,9 @@ fn static_handler_result<T, E>(result: Result<T, E>) -> Result<T, CapabilityFail
     result.map_err(|_| CapabilityFailure::failed("capability handler failed"))
 }
 
+/// HiveWeb 产品扩展错误：能力限流（4292）不在共享 `StableErrorKind` 表内。
+/// 它是宿主侧的服务拒绝（HTTP 429 语义），非 Plugin ABI 的通用错误类别；
+/// HiveGUI 本地执行无限流，故不共享。
 fn rate_limited_reply() -> (
     ReplyEnvelope,
     &'static str,
@@ -322,7 +342,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     let t0 = Instant::now();
 
     if envelope_str.len() > HOST_CALL_MAX_BYTES {
-        let reply = ReplyEnvelope::err(4001, "Payload exceeds 4 MiB limit");
+        let reply = ReplyEnvelope::err(
+            stable_code(StableErrorKind::InvalidArgs),
+            "Payload exceeds 4 MiB limit",
+        );
         runtime_audit::record(
             &ctx.execution_context,
             AuditRecord {
@@ -344,7 +367,13 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     let envelope = match parsed {
         Ok(e) => e,
         Err(_) => {
-            let reply = ReplyEnvelope::err(4000, "Invalid host_call envelope");
+            // Envelope 解析失败统一映射为共享 ABI 的 `invalid_args` (4001)，
+            // 而非 API 层通用码 `BAD_REQUEST` (4000)：host_call 返回的是
+            // Plugin ABI 错误码，非 HTTP 业务码（contract §3）。
+            let reply = ReplyEnvelope::err(
+                stable_code(StableErrorKind::InvalidArgs),
+                "Invalid host_call envelope",
+            );
             runtime_audit::record(
                 &ctx.execution_context,
                 AuditRecord {
@@ -366,7 +395,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
     // 1. unknown capability → 4045
     let cap_name = envelope.capability.clone();
     if registry.lookup(&cap_name).is_none() {
-        let reply = ReplyEnvelope::err(4045, "Unknown capability");
+        let reply = ReplyEnvelope::err(
+            stable_code(StableErrorKind::CapabilityUnknown),
+            "Unknown capability",
+        );
         runtime_audit::record(
             &ctx.execution_context,
             AuditRecord {
@@ -396,7 +428,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
                     agent_id = ctx.agent_id,
                     "load_agent_permissions"
                 );
-                let reply = ReplyEnvelope::err(5000, "permission lookup failed");
+                let reply = ReplyEnvelope::err(
+                    stable_code(StableErrorKind::Internal),
+                    "permission lookup failed",
+                );
                 runtime_audit::record(
                     &ctx.execution_context,
                     AuditRecord {
@@ -416,7 +451,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         }
     };
     if !granted.contains(&cap_name) {
-        let reply = ReplyEnvelope::err(4030, format!("当前 Agent 未授权调用能力「{cap_name}」"));
+        let reply = ReplyEnvelope::err(
+            stable_code(StableErrorKind::CapabilityDenied),
+            format!("当前 Agent 未授权调用能力「{cap_name}」"),
+        );
         runtime_audit::record(
             &ctx.execution_context,
             AuditRecord {
@@ -449,7 +487,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
         Option<runtime_audit::SafeAuditError>,
     ) {
         (
-            ReplyEnvelope::err(4001, "Invalid capability arguments"),
+            ReplyEnvelope::err(
+                stable_code(StableErrorKind::InvalidArgs),
+                "Invalid capability arguments",
+            ),
             "error",
             Some(runtime_audit::SafeAuditError {
                 kind: "invalid_capability_args",
@@ -507,6 +548,8 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
             Err(e) => args_err("network.http", e),
         },
         S3_READ => match deps.s3.as_ref() {
+            // HiveWeb 产品扩展：插件系统关闭（5031）不在共享 `StableErrorKind`
+            // 表内，是宿主配置级错误（HTTP 503 语义），非 Plugin ABI 通用类别。
             None => (
                 ReplyEnvelope::err(
                     codes::PLUGIN_SYSTEM_DISABLED,
@@ -582,7 +625,10 @@ pub async fn dispatch(deps: &DispatcherDeps, ctx: &DispatchCtx, envelope_str: &s
             Err(e) => args_err("llm.invoke", e),
         },
         _ => (
-            ReplyEnvelope::err(5000, "Capability handler is not implemented"),
+            ReplyEnvelope::err(
+                stable_code(StableErrorKind::Internal),
+                "Capability handler is not implemented",
+            ),
             "error",
             Some(runtime_audit::SafeAuditError {
                 kind: "capability_handler_unimplemented",

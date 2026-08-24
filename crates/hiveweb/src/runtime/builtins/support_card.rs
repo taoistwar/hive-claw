@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use crate::runtime::builtins::{
     BuiltinContext, BuiltinResult,
-    rag_answer::{ask_llm_to_answer, extract_question, query_rag_chunks},
+    rag_answer::{
+        ask_llm_to_answer, extract_conversation_history, extract_question, query_rag_chunks,
+    },
 };
 use crate::services::ragflow_config::RagflowConfig;
 
@@ -25,16 +27,19 @@ use crate::services::ragflow_config::RagflowConfig;
 /// `ctx.agent_ctx.user_input()`.
 pub fn support_card(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let question = extract_question(ctx.agent_ctx.as_ref());
+    let history = extract_conversation_history(ctx.agent_ctx.as_ref());
     let llm = Arc::clone(&ctx.llm);
     let config = RagflowConfig::current();
     tokio::task::block_in_place(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async move { support_card_async_impl(question, llm.as_ref(), config).await })
+        tokio::runtime::Handle::current().block_on(async move {
+            support_card_async_impl(question, history, llm.as_ref(), config).await
+        })
     })
 }
 
 async fn support_card_async_impl(
     question: String,
+    history: Vec<Value>,
     llm: &crate::runtime::llm::LlmRegistry,
     config: RagflowConfig,
 ) -> BuiltinResult {
@@ -42,7 +47,7 @@ async fn support_card_async_impl(
 
     let has_knowledge = !rag_chunks.is_empty();
 
-    let llm_answer = ask_llm_to_answer(&question, &rag_chunks, has_knowledge, llm).await;
+    let llm_answer = ask_llm_to_answer(&question, &rag_chunks, has_knowledge, &history, llm).await;
     if !llm_answer.trim().is_empty() {
         let answer = llm_answer.trim().to_string();
         let support = "\n\n上面是AI智能回复，仅供参考。如果回答不满意，你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。";

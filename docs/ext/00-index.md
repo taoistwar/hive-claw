@@ -43,7 +43,6 @@
 
 | 函数 / 位置 | 目的与实际调用 | 外部表 | Redis 当前实际状态 |
 | ----------- | ------------ | ------ | ------------------ |
-| `membership::resolve_game_label_names` | `query_balance` 查询到时长卡后，批量把游戏标签代码解析为名称 | `cc_label` | 不使用；失败仅告警并保留原代码 |
 | `membership::get_ai_assistant_chat_limit_config` | Assistant 对话、quota 和 Legacy 推荐游戏执行接口读取每日次数、提醒阈值与重置小时 | `cc_config`，标签 `AIassistantChatLimitConfig`、状态 `ACTIVE` | 每次直接查 DB；同名缓存键和 TTL 常量当前未使用 |
 | `membership::get_discounted_products_config` | `query_balance(category=discount)` 按客户端和渠道生成优惠卡片 | `cc_config`，标签 `AIDiscountedProducts`、状态 `ACTIVE` | 不使用；失败降级为“暂无产品优惠活动” |
 | `game_info::fetch_categories` | `game_info` 无法取得有效游戏 ID 时，读取类型 1 的分类供 LLM 选择 | `cc_game_tag` | **已使用** `game_tags:cc_game_tag_type1`，600 秒；未注入 Redis 时直接查 DB |

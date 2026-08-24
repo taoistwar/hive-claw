@@ -136,7 +136,10 @@ left join
 ) m2 on m1.user_id = m2.user_id
 LEFT JOIN (
     select user_id, IFNULL(sum(value), 0) as total_coins from cc_user_asset_coin
-    where user_id = ? and expire_time > UNIX_TIMESTAMP() and value>0 AND type IN (0,1,2,3,4,5,6,7,10,12,13,17,18,19,20)
+    where user_id = ?
+        and expire_time > UNIX_TIMESTAMP()*1000
+        and value>0
+        AND type IN (0,1,2,3,4,5,6,7,10,12,13,17,18,19,20)
     group by user_id
 ) m7 on m1.user_id = m7.user_id
 "#,
@@ -228,7 +231,9 @@ pub async fn query_membership_subscriptions(
         ELSE null
     END                        AS next_price
 FROM
-(select * from cc_user_membership where user_id=? and  effective_end_time > now()) um
+(
+    select * from cc_user_membership where user_id=? and  effective_end_time > now()
+) um
 LEFT JOIN cc_membership_level ml ON um.membership_level = ml.level_code
 LEFT JOIN (
 	select * from cc_user_subscription where user_id=? and status ='ACTIVE'
@@ -322,70 +327,6 @@ LEFT JOIN cc_product_ext t4 ON t3.id = t4.product_id
     // 可以多个
 }
 
-/// Resolve game_label_list codes to human-readable names via cc_label table.
-/// Input: [{"game_label_list": ["ARM_GAME", "PC_GAME"]}, ...]
-/// Output: the same JSON but with codes replaced by names (e.g. ["手游", "PC游戏"])
-pub async fn resolve_game_label_names(
-    ext_pool: &MySqlPool,
-    duration_card_json: &mut [serde_json::Value],
-) -> Result<(), String> {
-    use std::collections::HashMap;
-
-    // Collect all unique label codes
-    let mut codes: Vec<String> = Vec::new();
-    for card in duration_card_json.iter() {
-        if let Some(list) = card.get("game_label_list").and_then(|v| v.as_array()) {
-            for item in list {
-                if let Some(code) = item.as_str()
-                    && !codes.contains(&code.to_string())
-                {
-                    codes.push(code.to_string());
-                }
-            }
-        }
-    }
-
-    if codes.is_empty() {
-        return Ok(());
-    }
-
-    // Query cc_label for names
-    let placeholders: Vec<String> = codes.iter().map(|_| "?".to_string()).collect();
-    let sql = format!(
-        "SELECT value, name FROM cc_label WHERE value IN ({})",
-        placeholders.join(",")
-    );
-    let mut query = sqlx::query_as::<_, (String, String)>(&sql);
-    for code in &codes {
-        query = query.bind(code);
-    }
-    let rows: Vec<(String, String)> = query
-        .fetch_all(ext_pool)
-        .await
-        .map_err(|e| format!("cc_label query: {e}"))?;
-
-    let map: HashMap<String, String> = rows.into_iter().collect();
-
-    // Replace codes with names
-    for card in duration_card_json.iter_mut() {
-        if let Some(list) = card
-            .get_mut("game_label_list")
-            .and_then(|v| v.as_array_mut())
-        {
-            let resolved: Vec<serde_json::Value> = list
-                .iter()
-                .map(|item| {
-                    let code = item.as_str().unwrap_or("");
-                    let name = map.get(code).map(|s| s.as_str()).unwrap_or(code);
-                    serde_json::Value::String(name.to_string())
-                })
-                .collect();
-            *list = resolved;
-        }
-    }
-
-    Ok(())
-}
 
 /// Cached version of `get_cloud_user_info`.
 pub async fn get_cloud_user_info_cached(

@@ -359,7 +359,7 @@ pub async fn query_balance_async_impl(
         Vec::new()
     };
 
-    let mut duration_card_json: Vec<Value> = duration_cards
+    let duration_card_json: Vec<Value> = duration_cards
         .iter()
         .map(|row| {
             json!({
@@ -380,16 +380,6 @@ pub async fn query_balance_async_impl(
         ?duration_card_json,
         "[query_balance] step1.8 duration_card_json"
     );
-
-    // Resolve game_label_list codes to human-readable names via cc_label
-    if need_duration
-        && !duration_card_json.is_empty()
-        && let Err(e) =
-            crate::services::membership::resolve_game_label_names(ext_pool, &mut duration_card_json)
-                .await
-    {
-        tracing::warn!(error = %e, "[query_balance] resolve_game_label_names failed");
-    }
 
     let has_membership = !membership_subscriptions.is_empty();
     let now = chrono::Utc::now().naive_utc();

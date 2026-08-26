@@ -18,7 +18,10 @@
 
 #![warn(missing_docs)]
 
-use super::capability_adapter::redact_secrets;
+use crate::logging_v1::{
+    ActivityLog, Clock, LogError, LogHandle, V1ErrorCategory, V1Record, V1Result, V1Segments,
+};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// A raw failure observed by an internal adapter. May contain
@@ -231,6 +234,147 @@ impl RuntimeErrorBoundary {
             kind: failure.kind().to_string(),
             message: public_message(failure.kind()),
         }
+    }
+}
+
+/// Production diagnostics pipeline that joins the six-layer event collector,
+/// the exactly-once runtime error boundary, the durable activity log, and the
+/// redacted diagnostic-bundle exporter.
+///
+/// Runtime adapters record typed events through the `record_*_event` methods.
+/// Only [`RuntimeDiagnosticPipeline::handle_failure`] crosses the persistence
+/// boundary, so observing the same internal failure in several adapters cannot
+/// create duplicate activity-log rows.
+pub struct RuntimeDiagnosticPipeline {
+    collector: Arc<ExecutionEventCollector>,
+    boundary: RuntimeErrorBoundary,
+}
+
+impl RuntimeDiagnosticPipeline {
+    /// Open the production pipeline below `root`, using the supplied clock for
+    /// the canonical v1 activity log's retention and ordering semantics.
+    pub fn open<C>(root: &Path, clock: C) -> Result<Self, LogError>
+    where
+        C: Clock + Clone + 'static,
+    {
+        let log = ActivityLog::open(root, &clock)?;
+        let sink = Arc::new(ActivityDiagnosticSink {
+            log: Mutex::new(log),
+        });
+        Ok(Self {
+            collector: Arc::new(ExecutionEventCollector::new()),
+            boundary: RuntimeErrorBoundary::new(sink),
+        })
+    }
+
+    /// Record an Agent-layer event for the final redacted bundle.
+    pub fn record_agent_event(
+        &self,
+        execution_id: impl Into<String>,
+        event: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
+        self.collector
+            .record_agent_event(execution_id, event, summary);
+    }
+
+    /// Record an LLM-layer event for the final redacted bundle.
+    pub fn record_llm_event(
+        &self,
+        execution_id: impl Into<String>,
+        event: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
+        self.collector
+            .record_llm_event(execution_id, event, summary);
+    }
+
+    /// Record a Tool-layer event for the final redacted bundle.
+    pub fn record_tool_event(
+        &self,
+        execution_id: impl Into<String>,
+        event: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
+        self.collector
+            .record_tool_event(execution_id, event, summary);
+    }
+
+    /// Record a Workflow-layer event for the final redacted bundle.
+    pub fn record_workflow_event(
+        &self,
+        execution_id: impl Into<String>,
+        event: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
+        self.collector
+            .record_workflow_event(execution_id, event, summary);
+    }
+
+    /// Record a Plugin-layer event for the final redacted bundle.
+    pub fn record_plugin_event(
+        &self,
+        execution_id: impl Into<String>,
+        event: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
+        self.collector
+            .record_plugin_event(execution_id, event, summary);
+    }
+
+    /// Record a Capability-layer event for the final redacted bundle.
+    pub fn record_capability_event(
+        &self,
+        execution_id: impl Into<String>,
+        event: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
+        self.collector
+            .record_capability_event(execution_id, event, summary);
+    }
+
+    /// Handle and persist one failure at the public runtime boundary.
+    pub fn handle_failure(&self, operation: &str, failure: RuntimeFailure) -> PublicError {
+        self.boundary.handle(operation, failure)
+    }
+
+    /// Export all collected events through the mandatory redaction policy.
+    pub fn export_redacted_bundle(&self, target: &Path) -> Result<RedactedBundle, std::io::Error> {
+        DiagnosticBundle::new(Arc::clone(&self.collector))
+            .export_redacted(target, &RedactionConfig::default())
+    }
+}
+
+struct ActivityDiagnosticSink {
+    log: Mutex<LogHandle>,
+}
+
+impl DiagnosticSink for ActivityDiagnosticSink {
+    fn record(&self, diagnostic: DiagnosticRecord) {
+        let log = self.log.lock().expect("activity diagnostic log lock");
+        let occurred_at = log.clock.now();
+        let error_category = match diagnostic.error_kind() {
+            "function_not_executable" => V1ErrorCategory::InvalidInput,
+            "io" => V1ErrorCategory::Internal,
+            "cancelled" => V1ErrorCategory::Conflict,
+            _ => V1ErrorCategory::Internal,
+        };
+        let record = V1Record {
+            schema_version: 1,
+            occurred_at,
+            execution_id: diagnostic.execution_id(),
+            operation: diagnostic.operation(),
+            entity_identifier: "",
+            result: V1Result::Failed,
+            error_category: Some(error_category),
+            cause_summary: Some(diagnostic.cause()),
+            segments_ms: V1Segments::default(),
+        };
+        // DiagnosticSink intentionally has a non-fallible interface because the
+        // public error must remain stable. A persistence failure is nevertheless
+        // fail-closed for this boundary: do not claim the failure was handled.
+        log.append(&record)
+            .expect("persisting the runtime diagnostic record must succeed");
     }
 }
 
@@ -711,7 +855,7 @@ fn redact_event_summary(summary: &str, config: &RedactionConfig) -> String {
         || config.redact_backup_passphrase;
 
     if should_redact {
-        redact_secrets(summary)
+        redact_cause(summary)
     } else {
         summary.to_string()
     }

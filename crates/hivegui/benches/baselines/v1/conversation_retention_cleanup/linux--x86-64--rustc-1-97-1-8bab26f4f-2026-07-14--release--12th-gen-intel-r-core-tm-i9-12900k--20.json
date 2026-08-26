@@ -1,0 +1,38 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "conversation_retention_cleanup",
+      "owner_task": "T117",
+      "timing_boundary": "one encrypted session create, expiry transition, exact retention preview, and confirmed cascade deletion lifecycle",
+      "excluded_time": [
+        "external I/O",
+        "Store open, migration, and baseline I/O"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 1000000000,
+      "workflow_node_count": null
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "release",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 37881906,
+      "p95": 43177602,
+      "p99": 80004219
+    }
+  },
+  "approval": {
+    "reviewer": "Codex designated reviewer under user standing authorization",
+    "approved_at": "2026-08-25",
+    "source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:d80224e895a662b5db98b9da91d60fbf74b3ec6ec95178c6587cbfbba91e3d9f"
+  }
+}

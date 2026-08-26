@@ -77,6 +77,15 @@ impl AgentMessage {
         }
     }
 
+    /// Build a local Tool observation message.
+    pub fn tool(body: impl Into<String>) -> Self {
+        Self {
+            id: next_id("tool"),
+            speaker: "tool".to_string(),
+            body: body.into(),
+        }
+    }
+
     /// Stable message id within the session.
     pub fn id(&self) -> &str {
         &self.id
@@ -179,6 +188,7 @@ pub enum AgentSessionError {
 pub struct AgentSession {
     database_path: std::path::PathBuf,
     state: Arc<Mutex<SessionState>>,
+    cancel_token: Arc<Mutex<Option<CancelToken>>>,
     messages: Arc<Mutex<Vec<AgentMessage>>>,
     executions: Arc<Mutex<Vec<AgentExecution>>>,
 }
@@ -189,6 +199,7 @@ impl AgentSession {
         Ok(Self {
             database_path: database_path.to_path_buf(),
             state: Arc::new(Mutex::new(SessionState::Idle)),
+            cancel_token: Arc::new(Mutex::new(None)),
             messages: Arc::new(Mutex::new(Vec::new())),
             executions: Arc::new(Mutex::new(Vec::new())),
         })
@@ -212,7 +223,9 @@ impl AgentSession {
     /// short-circuits the long-running tool call.
     pub fn start(&mut self, _input: &str) -> Result<CancelToken, AgentSessionError> {
         *self.state.lock().expect("state poisoned") = SessionState::AwaitingModel;
-        Ok(CancelToken::new())
+        let token = CancelToken::new();
+        *self.cancel_token.lock().expect("cancel token poisoned") = Some(token.clone());
+        Ok(token)
     }
 
     /// Invoke a Tool. The local runtime must reject any tool
@@ -257,6 +270,14 @@ impl AgentSession {
     /// watchdog is the half responsible for the 2-second wall-clock
     /// budget.
     pub fn cancel_in_flight(&mut self) -> Result<(), AgentSessionError> {
+        if let Some(token) = self
+            .cancel_token
+            .lock()
+            .expect("cancel token poisoned")
+            .as_ref()
+        {
+            token.cancel();
+        }
         *self.state.lock().expect("state poisoned") = SessionState::Terminated;
         Ok(())
     }
@@ -272,6 +293,18 @@ impl AgentSession {
     /// Current messages in the session.
     pub fn messages(&self) -> Vec<AgentMessage> {
         self.messages.lock().expect("messages poisoned").clone()
+    }
+
+    /// Clone the active turn's cooperative cancellation token.
+    pub fn cancel_token(&self) -> Option<CancelToken> {
+        self.cancel_token
+            .lock()
+            .expect("cancel token poisoned")
+            .clone()
+    }
+
+    pub(crate) fn set_state(&self, state: SessionState) {
+        *self.state.lock().expect("state poisoned") = state;
     }
 }
 

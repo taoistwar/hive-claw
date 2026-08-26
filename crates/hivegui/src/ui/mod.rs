@@ -26,3 +26,26 @@ pub mod tool_view;
 pub mod tree_nav;
 pub mod utility_view;
 pub mod workflow_view;
+
+/// Dispatch a long-running async UI operation onto the process Tokio runtime.
+///
+/// HiveGUI owns a multi-thread Tokio runtime for local HTTP, Store, backup, and
+/// execution work before the GPUI event loop starts. Views may await the
+/// returned handle on GPUI's foreground executor, but the operation itself
+/// never runs on the render thread.
+pub(crate) fn spawn_tokio<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::runtime::Handle::current().spawn(future)
+}
+
+/// Dispatch synchronous archive/diagnostic work without blocking GPUI.
+pub(crate) fn spawn_tokio_blocking<F, T>(operation: F) -> tokio::task::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::runtime::Handle::current().spawn_blocking(operation)
+}

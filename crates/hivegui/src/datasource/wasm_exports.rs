@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use hive_runtime_core::wasm::ABI_VERSION_EXPORT;
 use wasmparser::{ExternalKind, Parser, Payload};
 
 /// Returns the names of all function exports declared by a WASM module.
@@ -9,7 +10,7 @@ pub fn extract_wasm_exports(wasm_bytes: &[u8]) -> Result<Vec<String>> {
         if let Payload::ExportSection(reader) = payload? {
             for export in reader {
                 let export = export?;
-                if export.kind == ExternalKind::Func {
+                if export.kind == ExternalKind::Func && export.name != ABI_VERSION_EXPORT {
                     exports.push(export.name.to_string());
                 }
             }

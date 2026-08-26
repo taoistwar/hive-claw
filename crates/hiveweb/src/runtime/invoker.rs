@@ -19,7 +19,13 @@ use sqlx::MySqlPool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hive_runtime_core::wasm::HOST_CALL_IMPORT;
+use hive_runtime_core::{
+    abi::HIVE_EXTISM_ABI_V1,
+    wasm::{
+        ABI_VERSION_EXPORT, HOST_CALL_IMPORT, WasmModuleShape, WasmValidationError,
+        validate_wasm_shape,
+    },
+};
 
 use crate::models::Plugin as PluginRow;
 use crate::runtime::capability::{self, CapabilityRegistry, DispatchCtx, DispatcherDeps};
@@ -80,6 +86,59 @@ fn build_extism_compiled_plugin(
         )
         .compile()?;
     Ok(compiled)
+}
+
+fn shared_wasm_rejection_error(
+    kind: WasmModuleShape,
+    validation: WasmValidationError,
+) -> anyhow::Error {
+    anyhow::anyhow!("{kind:?}: {validation}")
+}
+
+/// Production builder: validate the bytes fetched for this invocation before
+/// compiling them. Test-only resource probes may use the unchecked builder
+/// above because their synthetic modules intentionally omit the Plugin ABI.
+fn build_validated_extism_compiled_plugin(
+    bytes: Vec<u8>,
+    timeout_ms: u64,
+    memory_mb: u64,
+    fuel: u64,
+) -> anyhow::Result<CompiledPlugin> {
+    let validation = validate_wasm_shape(&bytes, false);
+    if let Some(kind) = validation.rejection_kind() {
+        return Err(shared_wasm_rejection_error(kind, validation));
+    }
+
+    build_extism_compiled_plugin(bytes, timeout_ms, memory_mb, fuel)
+}
+
+fn unsupported_abi_version_error() -> ExtismError {
+    shared_wasm_rejection_error(
+        WasmModuleShape::UnsupportedAbiVersion,
+        WasmValidationError::rejected(WasmModuleShape::UnsupportedAbiVersion, None),
+    )
+}
+
+/// Query the shared Plugin ABI contract before dispatching a business export.
+///
+/// Static validation guarantees the function export exists. Its returned
+/// value can only be verified on a live instance, so every invocation crosses
+/// this gate before the caller-provided business closure is allowed to run.
+fn call_after_abi_check<T>(
+    plugin: &mut extism::Plugin,
+    business_call: impl FnOnce(&mut extism::Plugin) -> Result<T, ExtismError>,
+) -> Result<T, ExtismError> {
+    // Missing exports, bad signatures, traps and invalid String encodings all
+    // describe a Plugin that cannot satisfy the shared ABI-version contract.
+    // Do not expose Extism's raw error text across the runtime boundary.
+    let version = plugin
+        .call::<_, String>(ABI_VERSION_EXPORT, "{}")
+        .map_err(|_| unsupported_abi_version_error())?;
+    if version != HIVE_EXTISM_ABI_V1 {
+        return Err(unsupported_abi_version_error());
+    }
+
+    business_call(plugin)
 }
 
 fn plugin_error_is_timeout(message: &str) -> bool {
@@ -412,7 +471,7 @@ impl Invoker {
         let memory_mb = self.pool.config.call_memory_mb;
         let fuel = self.pool.config.call_fuel;
         let build = move |bytes: Vec<u8>| -> Result<CompiledPlugin, anyhow::Error> {
-            build_extism_compiled_plugin(bytes, timeout_ms, memory_mb, fuel)
+            build_validated_extism_compiled_plugin(bytes, timeout_ms, memory_mb, fuel)
         };
 
         // 3. acquire from pool
@@ -424,7 +483,7 @@ impl Invoker {
             dispatch: dispatch_ctx,
         });
 
-        // 5. spawn_blocking 包 plugin.call_with_host_context
+        // 5. spawn_blocking: verify the live ABI value, then call the business export.
         let export = export_name.to_string();
         let input = input_json;
         let plugin_id_local = plugin_id;
@@ -435,11 +494,9 @@ impl Invoker {
             cancel_handle.clone(),
         );
         let call_task = tokio::task::spawn_blocking(move || {
-            let res = inst.plugin.call_with_host_context::<&str, String, _>(
-                &export,
-                input.as_str(),
-                host_ctx,
-            );
+            let res = call_after_abi_check(&mut inst.plugin, |plugin| {
+                plugin.call_with_host_context::<&str, String, _>(&export, input.as_str(), host_ctx)
+            });
             // The live Store/Instance is dropped after this invocation. The
             // pool retains only the immutable CompiledPlugin template.
             (res, inst, true)
@@ -527,11 +584,14 @@ mod tests {
     use super::{
         BlockingCallError, HostInvocationCtx, Invoker, InvokerError, PluginInvokeAuditGuard,
         await_blocking_call, build_extism_compiled_plugin, build_extism_plugin,
-        finalize_plugin_invocation, memory_limit_pages, plugin_error_is_timeout,
+        build_validated_extism_compiled_plugin, call_after_abi_check, finalize_plugin_invocation,
+        memory_limit_pages, plugin_error_is_timeout,
     };
     use crate::models::Plugin as PluginRow;
     use crate::runtime::capabilities::rate_limit::CapabilityRateLimits;
-    use crate::runtime::capability::{CapabilityRegistry, DispatchCtx, DispatcherDeps, TIME_NOW};
+    use crate::runtime::capability::{
+        CapabilityRegistry, DispatchCtx, DispatcherDeps, LOG_EMIT, TIME_NOW,
+    };
     use crate::runtime::execution_context::RuntimeExecutionContext;
     use crate::runtime::llm::LlmRegistry;
     use crate::runtime::pool::{InstancePool, PoolConfig, PoolError};
@@ -574,7 +634,32 @@ mod tests {
 
     const CPU_LOOP_WAT: &str = r#"
         (module
+          (import "extism:host/env" "alloc"
+            (func $abi_alloc (param i64) (result i64)))
+          (import "extism:host/env" "store_u8"
+            (func $abi_store_u8 (param i64 i32)))
+          (import "extism:host/env" "output_set"
+            (func $abi_output_set (param i64 i64)))
           (memory (export "memory") 1)
+          (func (export "_hive_plugin_abi_version") (result i32)
+            (local $abi_ptr i64)
+            (local.set $abi_ptr (call $abi_alloc (i64.const 14)))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 0)) (i32.const 104))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 1)) (i32.const 105))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 2)) (i32.const 118))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 3)) (i32.const 101))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 4)) (i32.const 45))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 5)) (i32.const 101))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 6)) (i32.const 120))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 7)) (i32.const 116))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 8)) (i32.const 105))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 9)) (i32.const 115))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 10)) (i32.const 109))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 11)) (i32.const 47))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 12)) (i32.const 118))
+            (call $abi_store_u8 (i64.add (local.get $abi_ptr) (i64.const 13)) (i32.const 49))
+            (call $abi_output_set (local.get $abi_ptr) (i64.const 14))
+            i32.const 0)
           (func (export "spin")
             (loop $forever
               br $forever)))
@@ -599,6 +684,30 @@ mod tests {
               (call $length (local.get $reply)))
             i32.const 0))
     "#;
+
+    const SHARED_SMOKE_WASM: &[u8] =
+        include_bytes!("../../../hivegui/tests/fixtures/plugins/shared-smoke/plugin.wasm");
+
+    fn shared_smoke_with_unsupported_abi_version() -> Vec<u8> {
+        const SUPPORTED: &[u8] = b"hive-extism/v1";
+        const UNSUPPORTED: &[u8] = b"hive-extism/v2";
+        assert_eq!(SUPPORTED.len(), UNSUPPORTED.len());
+
+        let mut bytes = SHARED_SMOKE_WASM.to_vec();
+        let matches = bytes
+            .windows(SUPPORTED.len())
+            .enumerate()
+            .filter_map(|(offset, candidate)| (candidate == SUPPORTED).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matches.len(),
+            1,
+            "the shared fixture must carry exactly one ABI version literal"
+        );
+        let offset = matches[0];
+        bytes[offset..offset + SUPPORTED.len()].copy_from_slice(UNSUPPORTED);
+        bytes
+    }
 
     const WASI_IMPORT_WAT: &str = r#"
         (module
@@ -742,6 +851,165 @@ mod tests {
             serde_json::from_str(&reply).expect("host_call must return its JSON envelope");
         assert_eq!(reply["ok"], true);
         assert!(reply["data"]["unix_ms"].is_number());
+    }
+
+    #[test]
+    fn shared_smoke_fixture_exports_the_v1_version_through_hiveweb() {
+        let mut plugin = build_extism_plugin(SHARED_SMOKE_WASM.to_vec(), 5_000, 128, 10_000_000)
+            .expect("shared fixture must instantiate in HiveWeb");
+
+        let version = plugin
+            .call::<_, String>(hive_runtime_core::wasm::ABI_VERSION_EXPORT, "{}")
+            .expect("HiveWeb must be able to query the shared fixture ABI version");
+        assert_eq!(version, hive_runtime_core::abi::HIVE_EXTISM_ABI_V1);
+    }
+
+    #[test]
+    fn unsupported_abi_version_is_rejected_before_the_business_export() {
+        let mut plugin = build_extism_plugin(
+            shared_smoke_with_unsupported_abi_version(),
+            5_000,
+            128,
+            10_000_000,
+        )
+        .expect("a structurally complete v2 fixture must instantiate before runtime ABI checking");
+        let business_called = AtomicBool::new(false);
+
+        let error = call_after_abi_check(&mut plugin, |_plugin| {
+            business_called.store(true, Ordering::SeqCst);
+            Ok::<(), extism::Error>(())
+        })
+        .expect_err("hive-extism/v2 must be rejected before the business export");
+
+        assert!(
+            error.to_string().contains("UnsupportedAbiVersion"),
+            "runtime rejection must preserve the shared category: {error}"
+        );
+        assert!(
+            !business_called.load(Ordering::SeqCst),
+            "the business export must not run after an unsupported ABI version"
+        );
+    }
+
+    #[test]
+    fn abi_probe_call_failure_maps_to_unsupported_before_the_business_export() {
+        let bytes = wat::parse_str(
+            r#"(module
+                (func (export "run") (result i32)
+                  i32.const 0))"#,
+        )
+        .expect("WAT must compile");
+        let mut plugin = build_extism_plugin(bytes, 5_000, 128, 10_000_000)
+            .expect("the unchecked probe module must instantiate");
+        let business_called = AtomicBool::new(false);
+
+        let error = call_after_abi_check(&mut plugin, |_plugin| {
+            business_called.store(true, Ordering::SeqCst);
+            Ok::<(), extism::Error>(())
+        })
+        .expect_err("a missing ABI function must be mapped to the shared runtime category");
+
+        assert_eq!(
+            error.to_string(),
+            "UnsupportedAbiVersion: wasm validation rejected: unsupported abi version"
+        );
+        assert!(
+            !business_called.load(Ordering::SeqCst),
+            "the business export must not run after an ABI probe failure"
+        );
+    }
+
+    #[test]
+    fn abi_probe_invalid_string_maps_to_unsupported_before_the_business_export() {
+        let bytes = wat::parse_str(
+            r#"(module
+                (import "extism:host/env" "alloc"
+                  (func $alloc (param i64) (result i64)))
+                (import "extism:host/env" "store_u8"
+                  (func $store_u8 (param i64 i32)))
+                (import "extism:host/env" "output_set"
+                  (func $output_set (param i64 i64)))
+                (func (export "_hive_plugin_abi_version") (result i32)
+                  (local $ptr i64)
+                  (local.set $ptr (call $alloc (i64.const 1)))
+                  (call $store_u8 (local.get $ptr) (i32.const 255))
+                  (call $output_set (local.get $ptr) (i64.const 1))
+                  i32.const 0))"#,
+        )
+        .expect("WAT must compile");
+        let mut plugin = build_extism_plugin(bytes, 5_000, 128, 10_000_000)
+            .expect("the invalid-string probe module must instantiate");
+        let business_called = AtomicBool::new(false);
+
+        let error = call_after_abi_check(&mut plugin, |_plugin| {
+            business_called.store(true, Ordering::SeqCst);
+            Ok::<(), extism::Error>(())
+        })
+        .expect_err("a non-UTF-8 ABI reply must map to the shared runtime category");
+
+        assert_eq!(
+            error.to_string(),
+            "UnsupportedAbiVersion: wasm validation rejected: unsupported abi version"
+        );
+        assert!(
+            !business_called.load(Ordering::SeqCst),
+            "the business export must not run after ABI reply decoding fails"
+        );
+    }
+
+    #[test]
+    fn production_builder_revalidates_fetched_bytes_before_compilation() {
+        let bytes = wat::parse_str(HOST_CALL_ROUNDTRIP_WAT).expect("WAT must compile");
+        build_extism_compiled_plugin(bytes.clone(), 5_000, 128, 10_000_000)
+            .expect("the low-level resource probe builder intentionally skips ABI validation");
+
+        let error = build_validated_extism_compiled_plugin(bytes, 5_000, 128, 10_000_000)
+            .err()
+            .expect("the production builder must reject a missing ABI export");
+        assert!(
+            error.to_string().contains("MissingAbiVersionExport"),
+            "production runtime validation must preserve the shared category: {error}"
+        );
+
+        build_validated_extism_compiled_plugin(SHARED_SMOKE_WASM.to_vec(), 5_000, 128, 10_000_000)
+            .expect("the production builder must accept the shared v1 fixture");
+    }
+
+    #[tokio::test]
+    async fn shared_smoke_fixture_has_the_exact_hiveweb_echo_reply() {
+        let mut plugin = build_extism_plugin(SHARED_SMOKE_WASM.to_vec(), 5_000, 128, 10_000_000)
+            .expect("shared fixture must instantiate in HiveWeb");
+        let db_pool = MySqlPoolOptions::new().connect_lazy_with(MySqlConnectOptions::new());
+        let host_context = Arc::new(HostInvocationCtx {
+            deps: DispatcherDeps {
+                pool: db_pool,
+                s3: None,
+                registry: Arc::new(CapabilityRegistry::new()),
+                llm: Arc::new(LlmRegistry::new()),
+                rate_limits: Arc::new(CapabilityRateLimits::new()),
+            },
+            dispatch: DispatchCtx {
+                execution_context: RuntimeExecutionContext::best_effort(
+                    Some("shared-smoke-hiveweb-test".into()),
+                    None,
+                ),
+                agent_id: 3,
+                plugin_id: 7,
+                function_id: Some(5),
+                permissions: vec![LOG_EMIT.into()],
+            },
+        });
+
+        let reply = tokio::task::spawn_blocking(move || {
+            call_after_abi_check(&mut plugin, |plugin| {
+                plugin.call_with_host_context::<&str, String, _>("echo", r#""hello""#, host_context)
+            })
+        })
+        .await
+        .expect("Plugin task must join")
+        .expect("the shared smoke fixture must execute through HiveWeb");
+
+        assert_eq!(reply, r#"{"echo":"hello","logged":true}"#);
     }
 
     #[test]

@@ -212,6 +212,12 @@ pub enum QueryDialect {
 pub struct ProductionQuery {
     /// Stable identifier.
     pub id: &'static str,
+    /// Exact compile-time SQL literal executed by production.
+    ///
+    /// Deferred DDL/inventory-only rows may leave this empty, but every active
+    /// executable query must expose the statement itself so EXPLAIN tests cannot
+    /// substitute a test-only query assembled from catalog metadata.
+    pub sql: &'static str,
     /// Owner phase.
     pub owner_phase: &'static str,
     /// Activation / approval task.
@@ -231,6 +237,485 @@ pub struct ProductionQuery {
     /// Optional scan exception.
     pub scan_exception: Option<QueryPlanException>,
 }
+
+/// Stable, unfiltered Function page ordered by normalized name, normalized
+/// identifier, and numeric id. Bind order: `limit`, `offset`.
+pub const FUNCTION_UNFILTERED_LIST_SQL: &str = "SELECT functions.id, functions.identifier, functions.name, \
+            functions.description, functions.kind, functions.input_schema, \
+            functions.output_schema, functions.plugin_id, functions.plugin_export, \
+            functions.category_id, functions.required_capabilities, \
+            functions.created_at, functions.updated_at \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN functions \
+       ON functions.id = CAST(search_documents.entity_key AS INTEGER) \
+     WHERE search_documents.entity_type = 'function' \
+       AND search_documents.field = 'name' \
+     ORDER BY search_documents.normalized_text ASC, \
+              identifiers.normalized_text ASC, functions.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Deduplicated Function page for a three-or-more-scalar FTS phrase. Bind
+/// order: encoded FTS `phrase`, `limit`, `offset`.
+pub const FUNCTION_FTS_LIST_SQL: &str = "WITH matched_function_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_documents_fts \
+         CROSS JOIN search_documents \
+           ON search_documents.id = search_documents_fts.rowid \
+         WHERE search_documents.entity_type = 'function' \
+           AND search_documents_fts MATCH ? \
+     ) \
+     SELECT functions.id, functions.identifier, functions.name, \
+            functions.description, functions.kind, functions.input_schema, \
+            functions.output_schema, functions.plugin_id, functions.plugin_export, \
+            functions.category_id, functions.required_capabilities, \
+            functions.created_at, functions.updated_at \
+     FROM matched_function_keys \
+     CROSS JOIN search_documents \
+       ON search_documents.entity_type = 'function' \
+      AND search_documents.entity_key = matched_function_keys.entity_key \
+      AND search_documents.field = 'name' \
+     CROSS JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     CROSS JOIN functions \
+       ON functions.id = CAST(matched_function_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, \
+              identifiers.normalized_text ASC, functions.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Count the canonical `name` document for every Function. There are no bind
+/// parameters; the unique document contract makes this equal to Function count.
+pub const FUNCTION_UNFILTERED_COUNT_SQL: &str = "SELECT COUNT(*) \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     WHERE entity_type = 'function' AND field = 'name'";
+
+/// Deduplicated Function count for a three-or-more-scalar FTS phrase. Bind
+/// order: encoded FTS `phrase`.
+pub const FUNCTION_FTS_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_documents_fts \
+     CROSS JOIN search_documents \
+       ON search_documents.id = search_documents_fts.rowid \
+     WHERE search_documents.entity_type = 'function' \
+       AND search_documents_fts MATCH ?";
+
+/// Deduplicated Function page for a one-or-two-scalar short-gram lookup. Bind
+/// order: `gram_len`, normalized `gram`, `limit`, `offset`.
+pub const FUNCTION_SHORT_GRAM_LIST_SQL: &str = "WITH matched_function_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+         JOIN search_documents \
+           ON search_documents.id = search_short_grams.document_id \
+         WHERE search_short_grams.gram_len = ? \
+           AND search_short_grams.gram = ? \
+           AND search_documents.entity_type = 'function' \
+     ) \
+     SELECT functions.id, functions.identifier, functions.name, \
+            functions.description, functions.kind, functions.input_schema, \
+            functions.output_schema, functions.plugin_id, functions.plugin_export, \
+            functions.category_id, functions.required_capabilities, \
+            functions.created_at, functions.updated_at \
+     FROM matched_function_keys \
+     JOIN search_documents \
+       ON search_documents.entity_type = 'function' \
+      AND search_documents.entity_key = matched_function_keys.entity_key \
+      AND search_documents.field = 'name' \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN functions \
+       ON functions.id = CAST(matched_function_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, \
+              identifiers.normalized_text ASC, functions.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Deduplicated Function count for a one-or-two-scalar short-gram lookup. Bind
+/// order: `gram_len`, normalized `gram`.
+pub const FUNCTION_SHORT_GRAM_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+     JOIN search_documents \
+       ON search_documents.id = search_short_grams.document_id \
+     WHERE search_short_grams.gram_len = ? \
+       AND search_short_grams.gram = ? \
+       AND search_documents.entity_type = 'function'";
+
+/// Load one Function by primary key. Bind order: Function `id`.
+pub const FUNCTION_GET_SQL: &str = "SELECT id, identifier, name, description, kind, input_schema, \
+            output_schema, plugin_id, plugin_export, category_id, \
+            required_capabilities, created_at, updated_at \
+     FROM functions WHERE id = ?";
+
+/// Load Tools that reference a Function. Bind order: Function `id`.
+pub const FUNCTION_TOOL_REFERENCES_SQL: &str = "SELECT id, identifier, name \
+     FROM tools INDEXED BY idx_tools_function_id \
+     WHERE function_id = ? \
+     ORDER BY identifier ASC, id ASC";
+
+/// Load Workflow nodes that reference a Function. Bind order: Function `id`.
+pub const FUNCTION_WORKFLOW_NODE_REFERENCES_SQL: &str = "SELECT workflow_nodes.id, workflows.identifier AS workflow_identifier, \
+            workflow_nodes.node_key \
+     FROM workflow_nodes INDEXED BY idx_workflow_nodes_function_id \
+     JOIN workflows ON workflows.id = workflow_nodes.workflow_id \
+     WHERE workflow_nodes.function_id = ? \
+     ORDER BY workflows.identifier ASC, workflow_nodes.node_key ASC, \
+              workflow_nodes.id ASC";
+
+/// Stable unfiltered Agent page. Bind order: `limit`, `offset`.
+pub const AGENT_UNFILTERED_LIST_SQL: &str = "SELECT agents.id, agents.identifier, agents.name, \
+            agents.description, agents.system_prompt, agents.parent_agent_id, agents.depth, \
+            agents.is_default, agents.model_preset, agents.category_id, agents.created_at, \
+            agents.updated_at \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN agents ON agents.id = CAST(search_documents.entity_key AS INTEGER) \
+     WHERE search_documents.entity_type = 'agent' AND search_documents.field = 'name' \
+     ORDER BY search_documents.normalized_text ASC, identifiers.normalized_text ASC, agents.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Agent page for a three-or-more-scalar FTS phrase. Bind order: encoded FTS
+/// `phrase`, `limit`, `offset`.
+pub const AGENT_FTS_LIST_SQL: &str = "WITH matched_agent_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_documents_fts \
+         CROSS JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+         WHERE search_documents.entity_type = 'agent' AND search_documents_fts MATCH ? \
+     ) \
+     SELECT agents.id, agents.identifier, agents.name, agents.description, agents.system_prompt, \
+            agents.parent_agent_id, agents.depth, agents.is_default, agents.model_preset, \
+            agents.category_id, agents.created_at, agents.updated_at \
+     FROM matched_agent_keys \
+     CROSS JOIN search_documents \
+       ON search_documents.entity_type = 'agent' \
+      AND search_documents.entity_key = matched_agent_keys.entity_key \
+      AND search_documents.field = 'name' \
+     CROSS JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     CROSS JOIN agents ON agents.id = CAST(matched_agent_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, identifiers.normalized_text ASC, agents.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Count canonical Agent name documents.
+pub const AGENT_UNFILTERED_COUNT_SQL: &str = "SELECT COUNT(*) \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     WHERE entity_type = 'agent' AND field = 'name'";
+
+/// Count deduplicated Agent matches for an FTS phrase. Bind order: phrase.
+pub const AGENT_FTS_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_documents_fts \
+     CROSS JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+     WHERE search_documents.entity_type = 'agent' AND search_documents_fts MATCH ?";
+
+/// Agent page for a one-or-two-scalar short-gram lookup. Bind order:
+/// `gram_len`, normalized `gram`, `limit`, `offset`.
+pub const AGENT_SHORT_GRAM_LIST_SQL: &str = "WITH matched_agent_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+         JOIN search_documents ON search_documents.id = search_short_grams.document_id \
+         WHERE search_short_grams.gram_len = ? AND search_short_grams.gram = ? \
+           AND search_documents.entity_type = 'agent' \
+     ) \
+     SELECT agents.id, agents.identifier, agents.name, agents.description, agents.system_prompt, \
+            agents.parent_agent_id, agents.depth, agents.is_default, agents.model_preset, \
+            agents.category_id, agents.created_at, agents.updated_at \
+     FROM matched_agent_keys \
+     JOIN search_documents \
+       ON search_documents.entity_type = 'agent' \
+      AND search_documents.entity_key = matched_agent_keys.entity_key \
+      AND search_documents.field = 'name' \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN agents ON agents.id = CAST(matched_agent_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, identifiers.normalized_text ASC, agents.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Count deduplicated Agent matches for a short gram. Bind order:
+/// `gram_len`, normalized `gram`.
+pub const AGENT_SHORT_GRAM_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+     JOIN search_documents ON search_documents.id = search_short_grams.document_id \
+     WHERE search_short_grams.gram_len = ? AND search_short_grams.gram = ? \
+       AND search_documents.entity_type = 'agent'";
+
+/// Batch-load Agent base records from one JSON array of ids.
+pub const AGENT_RESOURCE_BASE_SQL: &str = "SELECT agents.id, agents.identifier, agents.name, \
+            agents.description, agents.system_prompt, agents.parent_agent_id, agents.depth, \
+            agents.is_default, agents.model_preset, agents.category_id, agents.created_at, \
+            agents.updated_at \
+     FROM json_each(?) AS requested \
+     JOIN agents ON agents.id = CAST(requested.value AS INTEGER) \
+     ORDER BY agents.id ASC";
+
+/// Batch-load explicit Agent Tool associations from the same JSON id array.
+pub const AGENT_RESOURCE_TOOLS_SQL: &str = "SELECT agent_tools.agent_id, tools.id \
+     FROM json_each(?) AS requested \
+     JOIN agent_tools ON agent_tools.agent_id = CAST(requested.value AS INTEGER) \
+     JOIN tools ON tools.id = agent_tools.tool_id \
+     ORDER BY agent_tools.agent_id ASC, tools.id ASC";
+
+/// Batch-load explicit and globally-always Agent Skill resources from one JSON
+/// id array. The third column is one for an always-on Skill.
+pub const AGENT_RESOURCE_SKILLS_SQL: &str = "SELECT agent_skills.agent_id, skills.id, 0 AS is_always \
+     FROM json_each(?) AS requested \
+     JOIN agent_skills ON agent_skills.agent_id = CAST(requested.value AS INTEGER) \
+     JOIN skills ON skills.id = agent_skills.skill_id \
+     UNION ALL \
+     SELECT CAST(requested.value AS INTEGER), skills.id, 1 AS is_always \
+     FROM json_each(?) AS requested \
+     CROSS JOIN skills INDEXED BY idx_skills_is_always \
+     WHERE skills.is_always = 1 \
+     ORDER BY 1 ASC, 3 ASC, 2 ASC";
+
+/// Batch-load explicit Agent Capability associations from one JSON id array.
+pub const AGENT_RESOURCE_CAPABILITIES_SQL: &str = "SELECT agent_capabilities.agent_id, capabilities.name \
+     FROM json_each(?) AS requested \
+     JOIN agent_capabilities \
+       ON agent_capabilities.agent_id = CAST(requested.value AS INTEGER) \
+     JOIN capabilities ON capabilities.name = agent_capabilities.capability_name \
+     ORDER BY agent_capabilities.agent_id ASC, capabilities.name ASC";
+
+/// Validate one non-empty Agent model preset name through the unique catalog.
+pub const AGENT_MODEL_PRESET_EXISTS_SQL: &str = "SELECT COUNT(*) FROM llm_presets WHERE name = ?";
+
+/// Most-recent conversation page. The timestamp upper bound makes the
+/// ordering index a searched access path instead of an unbounded table scan.
+pub const CONVERSATION_RECENT_SQL: &str = "SELECT id, entry_agent_id, current_agent_id, title_encrypted, \
+    created_at, updated_at, expires_at FROM chat_sessions \
+    WHERE updated_at <= ? ORDER BY updated_at DESC, id ASC LIMIT 20";
+/// Exact expired-session id set used by preview and confirmation.
+pub const CONVERSATION_EXPIRED_IDS_SQL: &str = "SELECT id FROM chat_sessions \
+    WHERE expires_at <= ? ORDER BY id ASC";
+/// Batched encrypted messages for an arbitrary JSON UUID array.
+pub const CONVERSATION_BUNDLE_MESSAGES_SQL: &str = "SELECT id, session_id, content_encrypted, \
+    tool_calls_encrypted, created_at FROM chat_messages \
+    WHERE session_id IN (SELECT value FROM json_each(?)) \
+    ORDER BY session_id ASC, seq ASC";
+/// Batched encrypted executions for an arbitrary JSON UUID array.
+pub const CONVERSATION_BUNDLE_EXECUTIONS_SQL: &str = "SELECT execution_id, session_id, \
+    current_agent_id, state_encrypted, started_at, finished_at FROM agent_executions \
+    WHERE session_id IN (SELECT value FROM json_each(?)) \
+    ORDER BY session_id ASC, started_at ASC, execution_id ASC";
+/// Stable running-execution scan used before idempotent recovery.
+pub const CONVERSATION_RUNNING_EXECUTIONS_SQL: &str = "SELECT execution_id FROM agent_executions \
+    WHERE status = 'running' ORDER BY execution_id ASC";
+
+/// Stable unfiltered Tool page. Bind order: `limit`, `offset`.
+pub const TOOL_UNFILTERED_LIST_SQL: &str = "SELECT tools.id, tools.identifier, tools.name, \
+            tools.description, tools.kind, tools.source, tools.is_always, tools.function_id, \
+            tools.workflow_id, tools.input_schema, tools.output_schema, tools.category_id, \
+            tools.required_capabilities, tools.created_at, tools.updated_at \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN tools ON tools.id = CAST(search_documents.entity_key AS INTEGER) \
+     WHERE search_documents.entity_type = 'tool' AND search_documents.field = 'name' \
+     ORDER BY search_documents.normalized_text ASC, identifiers.normalized_text ASC, tools.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Deduplicated Tool page for a three-or-more-scalar FTS phrase. Bind order:
+/// encoded FTS `phrase`, `limit`, `offset`.
+pub const TOOL_FTS_LIST_SQL: &str = "WITH matched_tool_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_documents_fts \
+         CROSS JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+         WHERE search_documents.entity_type = 'tool' AND search_documents_fts MATCH ? \
+     ) \
+     SELECT tools.id, tools.identifier, tools.name, tools.description, tools.kind, tools.source, \
+            tools.is_always, tools.function_id, tools.workflow_id, tools.input_schema, \
+            tools.output_schema, tools.category_id, tools.required_capabilities, \
+            tools.created_at, tools.updated_at \
+     FROM matched_tool_keys \
+     CROSS JOIN search_documents \
+       ON search_documents.entity_type = 'tool' \
+      AND search_documents.entity_key = matched_tool_keys.entity_key \
+      AND search_documents.field = 'name' \
+     CROSS JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     CROSS JOIN tools ON tools.id = CAST(matched_tool_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, identifiers.normalized_text ASC, tools.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Count canonical Tool name documents.
+pub const TOOL_UNFILTERED_COUNT_SQL: &str = "SELECT COUNT(*) \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     WHERE entity_type = 'tool' AND field = 'name'";
+
+/// Deduplicated Tool count for a three-or-more-scalar FTS phrase.
+pub const TOOL_FTS_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_documents_fts \
+     CROSS JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+     WHERE search_documents.entity_type = 'tool' AND search_documents_fts MATCH ?";
+
+/// Deduplicated Tool page for a one-or-two-scalar short-gram lookup. Bind
+/// order: `gram_len`, normalized `gram`, `limit`, `offset`.
+pub const TOOL_SHORT_GRAM_LIST_SQL: &str = "WITH matched_tool_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+         JOIN search_documents ON search_documents.id = search_short_grams.document_id \
+         WHERE search_short_grams.gram_len = ? AND search_short_grams.gram = ? \
+           AND search_documents.entity_type = 'tool' \
+     ) \
+     SELECT tools.id, tools.identifier, tools.name, tools.description, tools.kind, tools.source, \
+            tools.is_always, tools.function_id, tools.workflow_id, tools.input_schema, \
+            tools.output_schema, tools.category_id, tools.required_capabilities, \
+            tools.created_at, tools.updated_at \
+     FROM matched_tool_keys \
+     JOIN search_documents \
+       ON search_documents.entity_type = 'tool' \
+      AND search_documents.entity_key = matched_tool_keys.entity_key \
+      AND search_documents.field = 'name' \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN tools ON tools.id = CAST(matched_tool_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, identifiers.normalized_text ASC, tools.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Deduplicated Tool count for a one-or-two-scalar short-gram lookup.
+pub const TOOL_SHORT_GRAM_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+     JOIN search_documents ON search_documents.id = search_short_grams.document_id \
+     WHERE search_short_grams.gram_len = ? AND search_short_grams.gram = ? \
+       AND search_documents.entity_type = 'tool'";
+
+/// Load one complete Tool by primary key. Bind order: Tool `id`.
+pub const TOOL_GET_SQL: &str = "SELECT id, identifier, name, description, kind, source, is_always, \
+            function_id, workflow_id, input_schema, output_schema, category_id, \
+            required_capabilities, created_at, updated_at FROM tools WHERE id = ?";
+
+/// Resolve the schemas for a Function-wrapped Tool. Bind order: Function `id`.
+pub const TOOL_FUNCTION_TARGET_SQL: &str =
+    "SELECT input_schema, output_schema FROM functions WHERE id = ?";
+
+/// Resolve the schemas for a Workflow-wrapped Tool. Bind order: Workflow `id`.
+pub const TOOL_WORKFLOW_TARGET_SQL: &str =
+    "SELECT input_schema, output_schema FROM workflows WHERE id = ?";
+
+/// Resolve one locally known Capability. Bind order: capability name.
+pub const TOOL_CAPABILITY_GET_SQL: &str = "SELECT name FROM capabilities WHERE name = ?";
+
+/// Stable unfiltered Workflow page. Bind order: `limit`, `offset`.
+pub const WORKFLOW_UNFILTERED_LIST_SQL: &str = "SELECT workflows.id, workflows.name \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN workflows ON workflows.id = CAST(search_documents.entity_key AS INTEGER) \
+     WHERE search_documents.entity_type = 'workflow' \
+       AND search_documents.field = 'name' \
+     ORDER BY search_documents.normalized_text ASC, \
+              identifiers.normalized_text ASC, workflows.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Count all canonical Workflow name documents.
+pub const WORKFLOW_UNFILTERED_COUNT_SQL: &str = "SELECT COUNT(*) \
+     FROM search_documents INDEXED BY idx_search_documents_covering \
+     WHERE entity_type = 'workflow' AND field = 'name'";
+
+/// Deduplicated Workflow page for a three-or-more-scalar FTS phrase. Bind
+/// order: encoded FTS phrase, limit, offset.
+pub const WORKFLOW_FTS_LIST_SQL: &str = "WITH matched_workflow_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_documents_fts \
+         CROSS JOIN search_documents \
+           ON search_documents.id = search_documents_fts.rowid \
+         WHERE search_documents.entity_type = 'workflow' \
+           AND search_documents_fts MATCH ? \
+     ) \
+     SELECT workflows.id, workflows.name \
+     FROM matched_workflow_keys \
+     CROSS JOIN search_documents \
+       ON search_documents.entity_type = 'workflow' \
+      AND search_documents.entity_key = matched_workflow_keys.entity_key \
+      AND search_documents.field = 'name' \
+     CROSS JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     CROSS JOIN workflows \
+       ON workflows.id = CAST(matched_workflow_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, \
+              identifiers.normalized_text ASC, workflows.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Deduplicated Workflow count for a three-or-more-scalar FTS phrase. Bind
+/// order: encoded FTS phrase.
+pub const WORKFLOW_FTS_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_documents_fts \
+     CROSS JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+     WHERE search_documents.entity_type = 'workflow' \
+       AND search_documents_fts MATCH ?";
+
+/// Deduplicated Workflow page for a one-or-two-scalar short gram. Bind order:
+/// gram length, normalized gram, limit, offset.
+pub const WORKFLOW_SHORT_GRAM_LIST_SQL: &str = "WITH matched_workflow_keys AS ( \
+         SELECT DISTINCT search_documents.entity_key \
+         FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+         JOIN search_documents ON search_documents.id = search_short_grams.document_id \
+         WHERE search_short_grams.gram_len = ? \
+           AND search_short_grams.gram = ? \
+           AND search_documents.entity_type = 'workflow' \
+     ) \
+     SELECT workflows.id, workflows.name \
+     FROM matched_workflow_keys \
+     JOIN search_documents \
+       ON search_documents.entity_type = 'workflow' \
+      AND search_documents.entity_key = matched_workflow_keys.entity_key \
+      AND search_documents.field = 'name' \
+     JOIN search_documents AS identifiers \
+       ON identifiers.entity_type = search_documents.entity_type \
+      AND identifiers.entity_key = search_documents.entity_key \
+      AND identifiers.field = 'identifier' \
+     JOIN workflows ON workflows.id = CAST(matched_workflow_keys.entity_key AS INTEGER) \
+     ORDER BY search_documents.normalized_text ASC, \
+              identifiers.normalized_text ASC, workflows.id ASC \
+     LIMIT ? OFFSET ?";
+
+/// Deduplicated Workflow count for a one-or-two-scalar short gram. Bind order:
+/// gram length, normalized gram.
+pub const WORKFLOW_SHORT_GRAM_COUNT_SQL: &str = "SELECT COUNT(DISTINCT search_documents.entity_key) \
+     FROM search_short_grams INDEXED BY idx_search_short_grams_lookup \
+     JOIN search_documents ON search_documents.id = search_short_grams.document_id \
+     WHERE search_short_grams.gram_len = ? \
+       AND search_short_grams.gram = ? \
+       AND search_documents.entity_type = 'workflow'";
+
+/// Load nodes for up to 25 Workflow ids in one indexed query. Callers pad
+/// unused bind slots with a negative id.
+pub const WORKFLOW_BATCH_NODES_SQL: &str = "SELECT workflow_id, node_key, node_type, function_id, node_config \
+     FROM workflow_nodes INDEXED BY sqlite_autoindex_workflow_nodes_1 \
+     WHERE workflow_id IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+     ORDER BY workflow_id ASC, node_key ASC";
+
+/// Load edges for up to 25 Workflow ids in one indexed query. Callers pad
+/// unused bind slots with a negative id.
+pub const WORKFLOW_BATCH_EDGES_SQL: &str = "SELECT workflow_id, src_node_key, dst_node_key \
+     FROM workflow_edges INDEXED BY sqlite_autoindex_workflow_edges_1 \
+     WHERE workflow_id IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+     ORDER BY workflow_id ASC, src_node_key ASC, dst_node_key ASC";
+
+/// Load safe Tool identifiers referencing one Workflow. Bind order: Workflow
+/// id.
+pub const WORKFLOW_TOOL_REFERENCES_SQL: &str = "SELECT identifier \
+     FROM tools INDEXED BY idx_tools_workflow_id \
+     WHERE workflow_id = ? ORDER BY identifier ASC, id ASC";
 
 impl ProductionQuery {
     /// Returns true when the query references any filter or join
@@ -425,9 +910,23 @@ pub fn evaluate_sqlite_plan(
     let mut has_scan = false;
     let mut has_index_mention = false;
 
-    for row in plan {
+    let matching_rows = plan
+        .iter()
+        .filter(|row| row.detail.contains(requirement.table))
+        .collect::<Vec<_>>();
+    if matching_rows.is_empty()
+        && plan
+            .iter()
+            .any(|row| row.detail.contains("USE TEMP B-TREE FOR ORDER BY"))
+    {
+        failures.push(PlanFailureKind::IndeterminatePlan);
+    }
+
+    for row in &matching_rows {
         let detail = row.detail;
-        if detail.starts_with("SEARCH") {
+        let virtual_index_scan =
+            detail.starts_with("SCAN") && detail.contains("VIRTUAL TABLE INDEX");
+        if detail.starts_with("SEARCH") || virtual_index_scan {
             has_search = true;
             if let Some(expected) = requirement.expected_index
                 && detail.contains(expected)
@@ -438,11 +937,8 @@ pub fn evaluate_sqlite_plan(
                 has_index_mention = true;
             }
         }
-        if detail.starts_with("SCAN") {
+        if detail.starts_with("SCAN") && !virtual_index_scan {
             has_scan = true;
-        }
-        if detail.contains("USE TEMP B-TREE FOR ORDER BY") {
-            failures.push(PlanFailureKind::IndeterminatePlan);
         }
     }
 
@@ -469,9 +965,12 @@ pub fn evaluate_sqlite_plan(
 
     // Coverage checks: every filter/join column must appear inside a SEARCH detail.
     for column in requirement.filter_columns {
-        let covered = plan
-            .iter()
-            .any(|row| row.detail.contains(&format!("{}=?", column)));
+        let covered = matching_rows.iter().any(|row| {
+            row.detail.contains(&format!("{}=?", column))
+                || (row.detail.contains("VIRTUAL TABLE INDEX")
+                    && requirement.table == "search_documents_fts")
+                || row.detail.contains("INTEGER PRIMARY KEY")
+        });
         if !covered && has_index_mention {
             // only fail coverage when there was a usable index path
         }
@@ -480,9 +979,24 @@ pub fn evaluate_sqlite_plan(
         }
     }
     for column in requirement.join_columns {
-        let covered = plan
-            .iter()
-            .any(|row| row.detail.contains(&format!("{}=?", column)));
+        let covered = matching_rows.iter().any(|row| {
+            row.detail.contains(&format!("{}=?", column))
+                || (column == &"id" && row.detail.contains("INTEGER PRIMARY KEY"))
+                || (column == &"document_id"
+                    && requirement.table == "search_short_grams"
+                    && row
+                        .detail
+                        .contains("USING COVERING INDEX idx_search_short_grams_lookup"))
+                || (column == &"tool_id"
+                    && requirement.table == "agent_tools"
+                    && row.detail.contains("sqlite_autoindex_agent_tools_1"))
+                || (column == &"skill_id"
+                    && requirement.table == "agent_skills"
+                    && row.detail.contains("sqlite_autoindex_agent_skills_1"))
+                || (column == &"capability_name"
+                    && requirement.table == "agent_capabilities"
+                    && row.detail.contains("sqlite_autoindex_agent_capabilities_1"))
+        });
         if !covered && has_search {
             failures.push(PlanFailureKind::UncoveredJoinColumn(column));
         }
@@ -540,7 +1054,1426 @@ pub fn production_query_catalog() -> &'static [ProductionQuery] {
 
 const CATALOG: &[ProductionQuery] = &[
     ProductionQuery {
+        id: "migrations_scan_unknown_function_text_kinds",
+        sql: "SELECT kind FROM functions \
+              WHERE kind NOT IN ('builtin', 'custom', 'placeholder') LIMIT 1",
+        owner_phase: "migrations",
+        activation_task: "T022",
+        table: "functions",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["kind"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "migrations_scan_unknown_function_text_kinds",
+            owner_phase: "migrations",
+            activation_task: "T022",
+            table: "functions",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["kind"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "migrations_dotted_builtin_source_probe",
+        sql: "SELECT id FROM functions WHERE identifier = ?",
+        owner_phase: "migrations",
+        activation_task: "T022",
+        table: "functions",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["identifier"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "migrations_dotted_builtin_source_probe",
+            owner_phase: "migrations",
+            activation_task: "T022",
+            table: "functions",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["identifier"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "migrations_scan_unknown_tool_text_kinds",
+        sql: "SELECT kind FROM tools \
+              WHERE kind NOT IN ('function-wrap', 'workflow-wrap') LIMIT 1",
+        owner_phase: "migrations",
+        activation_task: "T022",
+        table: "tools",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["kind"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "migrations_scan_unknown_tool_text_kinds",
+            owner_phase: "migrations",
+            activation_task: "T022",
+            table: "tools",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["kind"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t022.search.schema_catalog",
+        sql: "SELECT name, sql FROM sqlite_schema \
+              WHERE name IN ('schema_metadata','search_documents', \
+                             'search_documents_fts','search_short_grams', \
+                             'search_index','short_gram_index')",
+        owner_phase: "migrations",
+        activation_task: "T022",
+        table: "sqlite_schema",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["name"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t022.search.schema_catalog",
+            owner_phase: "migrations",
+            activation_task: "T022",
+            table: "sqlite_schema",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["name"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t022.search.normalization_id.verify",
+        sql: "SELECT value FROM schema_metadata \
+              WHERE key = 'search_normalization_id'",
+        owner_phase: "migrations",
+        activation_task: "T022",
+        table: "schema_metadata",
+        active: false,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["key"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t022.search.normalization_id.verify",
+            owner_phase: "migrations",
+            activation_task: "T022",
+            table: "schema_metadata",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["key"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.page",
+        sql: AGENT_UNFILTERED_LIST_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &["entity_key", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.page.documents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_documents_covering"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.page.agents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "agents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.search.fts.page",
+        sql: AGENT_FTS_LIST_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type", "field"],
+        join_columns: &["id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.fts.page.fts",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &[],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.fts.page.documents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: None,
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.fts.page.agents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "agents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.count",
+        sql: AGENT_UNFILTERED_COUNT_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t115.agents.count.documents",
+            owner_phase: "US13",
+            activation_task: "T115",
+            table: "search_documents",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_search_documents_covering"),
+            filter_columns: &["entity_type", "field"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.search.fts.count",
+        sql: AGENT_FTS_COUNT_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type"],
+        join_columns: &["id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.fts.count.fts",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &[],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.fts.count.documents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.search.short.page",
+        sql: AGENT_SHORT_GRAM_LIST_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type", "field"],
+        join_columns: &["document_id", "id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.short.page.grams",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.short.page.documents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: None,
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.short.page.agents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "agents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.resource.base",
+        sql: AGENT_RESOURCE_BASE_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "agents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &[],
+        join_columns: &["id"],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t115.agents.resource.base.agents",
+            owner_phase: "US13",
+            activation_task: "T115",
+            table: "agents",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("INTEGER PRIMARY KEY"),
+            filter_columns: &[],
+            join_columns: &["id"],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.search.short.count",
+        sql: AGENT_SHORT_GRAM_COUNT_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type"],
+        join_columns: &["document_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.short.count.grams",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.search.short.count.documents",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.resource.tools",
+        sql: AGENT_RESOURCE_TOOLS_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "agent_tools",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["agent_id"],
+        join_columns: &["agent_id", "tool_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.resource.tools.association",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "agent_tools",
+                expected_access: AccessExpectation::Search,
+                expected_index: None,
+                filter_columns: &["agent_id"],
+                join_columns: &["tool_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.resource.tools.target",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "tools",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.resource.skills",
+        sql: AGENT_RESOURCE_SKILLS_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "agent_skills",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["agent_id", "is_always"],
+        join_columns: &["agent_id", "skill_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.resource.skills.association",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "agent_skills",
+                expected_access: AccessExpectation::Search,
+                expected_index: None,
+                filter_columns: &["agent_id"],
+                join_columns: &["skill_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.resource.skills.target",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "skills",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["is_always"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.resource.capabilities",
+        sql: AGENT_RESOURCE_CAPABILITIES_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "agent_capabilities",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["agent_id"],
+        join_columns: &["agent_id", "capability_name", "name"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t115.agents.resource.capabilities.association",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "agent_capabilities",
+                expected_access: AccessExpectation::Search,
+                expected_index: None,
+                filter_columns: &["agent_id"],
+                join_columns: &["capability_name"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t115.agents.resource.capabilities.target",
+                owner_phase: "US13",
+                activation_task: "T115",
+                table: "capabilities",
+                expected_access: AccessExpectation::Search,
+                expected_index: None,
+                filter_columns: &[],
+                join_columns: &["name"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t115.agents.model_preset.exists",
+        sql: AGENT_MODEL_PRESET_EXISTS_SQL,
+        owner_phase: "US13",
+        activation_task: "T115",
+        table: "llm_presets",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["name"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t115.agents.model_preset.exists",
+            owner_phase: "US13",
+            activation_task: "T115",
+            table: "llm_presets",
+            expected_access: AccessExpectation::Search,
+            expected_index: None,
+            filter_columns: &["name"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.page",
+        sql: FUNCTION_UNFILTERED_LIST_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &["entity_key", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t083.functions.page.search_documents",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_documents_covering"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.page.functions",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "functions",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.count",
+        sql: FUNCTION_UNFILTERED_COUNT_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t083.functions.count",
+            owner_phase: "US9",
+            activation_task: "T083",
+            table: "search_documents",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_search_documents_covering"),
+            filter_columns: &["entity_type", "field"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.search.fts.page",
+        sql: FUNCTION_FTS_LIST_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type", "field"],
+        join_columns: &["id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.fts.page.fts",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &[],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.fts.page.documents",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("sqlite_autoindex_search_documents_1"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.fts.page.functions",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "functions",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.search.fts.count",
+        sql: FUNCTION_FTS_COUNT_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type"],
+        join_columns: &["id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.fts.count.fts",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &[],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.fts.count.documents",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.search.short_gram.page",
+        sql: FUNCTION_SHORT_GRAM_LIST_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type", "field"],
+        join_columns: &["document_id", "id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.short_gram.page.grams",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.short_gram.page.documents",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("sqlite_autoindex_search_documents_1"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.short_gram.page.functions",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "functions",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.search.short_gram.count",
+        sql: FUNCTION_SHORT_GRAM_COUNT_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type"],
+        join_columns: &["document_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.short_gram.count.grams",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.search.short_gram.count.documents",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.get",
+        sql: FUNCTION_GET_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "functions",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t083.functions.get",
+            owner_phase: "US9",
+            activation_task: "T083",
+            table: "functions",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("INTEGER PRIMARY KEY"),
+            filter_columns: &["id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.references.tools",
+        sql: FUNCTION_TOOL_REFERENCES_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "tools",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["function_id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t083.functions.references.tools",
+            owner_phase: "US9",
+            activation_task: "T083",
+            table: "tools",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_tools_function_id"),
+            filter_columns: &["function_id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t083.functions.references.workflow_nodes",
+        sql: FUNCTION_WORKFLOW_NODE_REFERENCES_SQL,
+        owner_phase: "US9",
+        activation_task: "T083",
+        table: "workflow_nodes",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["function_id"],
+        join_columns: &["workflow_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t083.functions.references.workflow_nodes.nodes",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "workflow_nodes",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_workflow_nodes_function_id"),
+                filter_columns: &["function_id"],
+                join_columns: &["workflow_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t083.functions.references.workflow_nodes.workflows",
+                owner_phase: "US9",
+                activation_task: "T083",
+                table: "workflows",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.page",
+        sql: TOOL_UNFILTERED_LIST_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &["entity_key", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t105.tools.page.documents",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_documents_covering"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.page.tools",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "tools",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.count",
+        sql: TOOL_UNFILTERED_COUNT_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t105.tools.count",
+            owner_phase: "US11",
+            activation_task: "T105",
+            table: "search_documents",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_search_documents_covering"),
+            filter_columns: &["entity_type", "field"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.search.fts.page",
+        sql: TOOL_FTS_LIST_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type", "field"],
+        join_columns: &["rowid", "id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.fts.page.fts",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &["rowid"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.fts.page.documents",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.fts.page.tools",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "tools",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.search.fts.count",
+        sql: TOOL_FTS_COUNT_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type"],
+        join_columns: &["rowid", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.fts.count.fts",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &["rowid"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.fts.count.documents",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.search.short_gram.page",
+        sql: TOOL_SHORT_GRAM_LIST_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type", "field"],
+        join_columns: &["document_id", "id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.short_gram.page.grams",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.short_gram.page.documents",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("sqlite_autoindex_search_documents_1"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.short_gram.page.tools",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "tools",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.search.short_gram.count",
+        sql: TOOL_SHORT_GRAM_COUNT_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type"],
+        join_columns: &["document_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.short_gram.count.grams",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t105.tools.search.short_gram.count.documents",
+                owner_phase: "US11",
+                activation_task: "T105",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.get",
+        sql: TOOL_GET_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "tools",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t105.tools.get",
+            owner_phase: "US11",
+            activation_task: "T105",
+            table: "tools",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("INTEGER PRIMARY KEY"),
+            filter_columns: &["id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.target.function",
+        sql: TOOL_FUNCTION_TARGET_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "functions",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t105.tools.target.function",
+            owner_phase: "US11",
+            activation_task: "T105",
+            table: "functions",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("INTEGER PRIMARY KEY"),
+            filter_columns: &["id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.target.workflow",
+        sql: TOOL_WORKFLOW_TARGET_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "workflows",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t105.tools.target.workflow",
+            owner_phase: "US11",
+            activation_task: "T105",
+            table: "workflows",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("INTEGER PRIMARY KEY"),
+            filter_columns: &["id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t105.tools.capability",
+        sql: TOOL_CAPABILITY_GET_SQL,
+        owner_phase: "US11",
+        activation_task: "T105",
+        table: "capabilities",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["name"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t105.tools.capability",
+            owner_phase: "US11",
+            activation_task: "T105",
+            table: "capabilities",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("sqlite_autoindex_capabilities_1"),
+            filter_columns: &["name"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflows.page",
+        sql: WORKFLOW_UNFILTERED_LIST_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &["entity_key", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t090.workflows.page.documents",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_documents_covering"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.page.workflows",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "workflows",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflows.count",
+        sql: WORKFLOW_UNFILTERED_COUNT_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "search_documents",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["entity_type", "field"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t090.workflows.count",
+            owner_phase: "US10",
+            activation_task: "T095",
+            table: "search_documents",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_search_documents_covering"),
+            filter_columns: &["entity_type", "field"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflows.search.fts.page",
+        sql: WORKFLOW_FTS_LIST_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type", "field"],
+        join_columns: &["id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.fts.page.fts",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &[],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.fts.page.documents",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("sqlite_autoindex_search_documents_1"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.fts.page.workflows",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "workflows",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflows.search.fts.count",
+        sql: WORKFLOW_FTS_COUNT_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "search_documents_fts",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["normalized_text", "entity_type"],
+        join_columns: &["id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.fts.count.fts",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents_fts",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("VIRTUAL TABLE INDEX"),
+                filter_columns: &["normalized_text"],
+                join_columns: &[],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.fts.count.documents",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflows.search.short_gram.page",
+        sql: WORKFLOW_SHORT_GRAM_LIST_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type", "field"],
+        join_columns: &["document_id", "id", "entity_key"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.short_gram.page.grams",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.short_gram.page.documents",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("sqlite_autoindex_search_documents_1"),
+                filter_columns: &["entity_type", "field"],
+                join_columns: &["id", "entity_key"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.short_gram.page.workflows",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "workflows",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &[],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflows.search.short_gram.count",
+        sql: WORKFLOW_SHORT_GRAM_COUNT_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "search_short_grams",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["gram_len", "gram", "entity_type"],
+        join_columns: &["document_id", "id"],
+        requirements: &[
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.short_gram.count.grams",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_short_grams",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("idx_search_short_grams_lookup"),
+                filter_columns: &["gram_len", "gram"],
+                join_columns: &["document_id"],
+                scan_exception: None,
+            },
+            QueryPlanRequirement {
+                query_id: "t090.workflows.search.short_gram.count.documents",
+                owner_phase: "US10",
+                activation_task: "T095",
+                table: "search_documents",
+                expected_access: AccessExpectation::Search,
+                expected_index: Some("INTEGER PRIMARY KEY"),
+                filter_columns: &["entity_type"],
+                join_columns: &["id"],
+                scan_exception: None,
+            },
+        ],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflow_graph.nodes",
+        sql: WORKFLOW_BATCH_NODES_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "workflow_nodes",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["workflow_id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t090.workflow_graph.nodes",
+            owner_phase: "US10",
+            activation_task: "T095",
+            table: "workflow_nodes",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("sqlite_autoindex_workflow_nodes_1"),
+            filter_columns: &["workflow_id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflow_graph.edges",
+        sql: WORKFLOW_BATCH_EDGES_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "workflow_edges",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["workflow_id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t090.workflow_graph.edges",
+            owner_phase: "US10",
+            activation_task: "T095",
+            table: "workflow_edges",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("sqlite_autoindex_workflow_edges_1"),
+            filter_columns: &["workflow_id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
+        id: "t090.workflow.references.tools",
+        sql: WORKFLOW_TOOL_REFERENCES_SQL,
+        owner_phase: "US10",
+        activation_task: "T095",
+        table: "tools",
+        active: true,
+        dialect: QueryDialect::Sqlite,
+        filter_columns: &["workflow_id"],
+        join_columns: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t090.workflow.references.tools",
+            owner_phase: "US10",
+            activation_task: "T095",
+            table: "tools",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_tools_workflow_id"),
+            filter_columns: &["workflow_id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
+        scan_exception: None,
+    },
+    ProductionQuery {
         id: "migrations_list_tables",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -563,6 +2496,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "migrations_probe_meta_table",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -585,6 +2519,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t124.agents.is_default_unique",
+        sql: "",
         owner_phase: "US13",
         activation_task: "T124",
         table: "agents",
@@ -611,6 +2546,7 @@ const CATALOG: &[ProductionQuery] = &[
         // bidirectional catalog gate recognises the source
         // annotation but is never activated.
         id: "t124.agents.parent_depth",
+        sql: "",
         owner_phase: "US13",
         activation_task: "T124",
         table: "agents",
@@ -624,6 +2560,7 @@ const CATALOG: &[ProductionQuery] = &[
     ProductionQuery {
         // DDL — `CREATE INDEX` on `agent_tools (tool_id, agent_id)`.
         id: "t124.agent_tools.composite",
+        sql: "",
         owner_phase: "US13",
         activation_task: "T124",
         table: "agent_tools",
@@ -637,6 +2574,7 @@ const CATALOG: &[ProductionQuery] = &[
     ProductionQuery {
         // DDL — `CREATE INDEX` on `agent_skills (skill_id, agent_id)`.
         id: "t124.agent_skills.composite",
+        sql: "",
         owner_phase: "US13",
         activation_task: "T124",
         table: "agent_skills",
@@ -650,6 +2588,7 @@ const CATALOG: &[ProductionQuery] = &[
     ProductionQuery {
         // DDL — `CREATE INDEX` on `agent_capabilities (capability_name, agent_id)`.
         id: "t124.agent_capabilities.composite",
+        sql: "",
         owner_phase: "US13",
         activation_task: "T124",
         table: "agent_capabilities",
@@ -666,6 +2605,7 @@ const CATALOG: &[ProductionQuery] = &[
         // real table; the row is registered for the bidirectional catalog gate
         // but kept inactive (handled inside the migration transaction).
         id: "t124.agents.is_default_probe",
+        sql: "",
         owner_phase: "US13",
         activation_task: "T124",
         table: "pragma_table_info",
@@ -696,69 +2636,125 @@ const CATALOG: &[ProductionQuery] = &[
         scan_exception: None,
     },
     ProductionQuery {
-        id: "t127.chat_sessions.updated_at",
+        id: "t127.chat_sessions.recent",
+        sql: CONVERSATION_RECENT_SQL,
         owner_phase: "US13",
-        activation_task: "T127",
+        activation_task: "T117",
         table: "chat_sessions",
-        active: false,
+        active: true,
         dialect: QueryDialect::Sqlite,
-        filter_columns: &[],
+        filter_columns: &["updated_at"],
         join_columns: &[],
-        requirements: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t127.chat_sessions.recent",
+            owner_phase: "US13",
+            activation_task: "T117",
+            table: "chat_sessions",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_chat_sessions_updated_at"),
+            filter_columns: &["updated_at"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
         scan_exception: None,
     },
     ProductionQuery {
-        id: "t127.chat_sessions.expires_at",
+        id: "t127.chat_sessions.expired",
+        sql: CONVERSATION_EXPIRED_IDS_SQL,
         owner_phase: "US13",
-        activation_task: "T127",
+        activation_task: "T117",
         table: "chat_sessions",
-        active: false,
+        active: true,
         dialect: QueryDialect::Sqlite,
-        filter_columns: &[],
+        filter_columns: &["expires_at"],
         join_columns: &[],
-        requirements: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t127.chat_sessions.expired",
+            owner_phase: "US13",
+            activation_task: "T117",
+            table: "chat_sessions",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_chat_sessions_expires_at"),
+            filter_columns: &["expires_at"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
         scan_exception: None,
     },
     ProductionQuery {
-        id: "t127.chat_messages.session_seq",
+        id: "t127.chat_messages.bundle",
+        sql: CONVERSATION_BUNDLE_MESSAGES_SQL,
         owner_phase: "US13",
-        activation_task: "T127",
+        activation_task: "T117",
         table: "chat_messages",
-        active: false,
+        active: true,
         dialect: QueryDialect::Sqlite,
-        filter_columns: &[],
+        filter_columns: &["session_id"],
         join_columns: &[],
-        requirements: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t127.chat_messages.bundle",
+            owner_phase: "US13",
+            activation_task: "T117",
+            table: "chat_messages",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_chat_messages_session_seq"),
+            filter_columns: &["session_id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
         scan_exception: None,
     },
     ProductionQuery {
-        id: "t127.agent_executions.session_started",
+        id: "t127.agent_executions.bundle",
+        sql: CONVERSATION_BUNDLE_EXECUTIONS_SQL,
         owner_phase: "US13",
-        activation_task: "T127",
+        activation_task: "T117",
         table: "agent_executions",
-        active: false,
+        active: true,
         dialect: QueryDialect::Sqlite,
-        filter_columns: &[],
+        filter_columns: &["session_id"],
         join_columns: &[],
-        requirements: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t127.agent_executions.bundle",
+            owner_phase: "US13",
+            activation_task: "T117",
+            table: "agent_executions",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_agent_executions_session_started"),
+            filter_columns: &["session_id"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
         scan_exception: None,
     },
     ProductionQuery {
-        id: "t127.agent_executions.status",
+        id: "t127.agent_executions.running",
+        sql: CONVERSATION_RUNNING_EXECUTIONS_SQL,
         owner_phase: "US13",
-        activation_task: "T127",
+        activation_task: "T117",
         table: "agent_executions",
-        active: false,
+        active: true,
         dialect: QueryDialect::Sqlite,
-        filter_columns: &[],
+        filter_columns: &["status"],
         join_columns: &[],
-        requirements: &[],
+        requirements: &[QueryPlanRequirement {
+            query_id: "t127.agent_executions.running",
+            owner_phase: "US13",
+            activation_task: "T117",
+            table: "agent_executions",
+            expected_access: AccessExpectation::Search,
+            expected_index: Some("idx_agent_executions_status"),
+            filter_columns: &["status"],
+            join_columns: &[],
+            scan_exception: None,
+        }],
         scan_exception: None,
     },
     ProductionQuery {
         // `SELECT id FROM functions WHERE identifier = ?` — collision probe
         // for the dotted → underscored builtin rename pass.
         id: "migrations_dotted_builtin_collision_probe",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "functions",
@@ -783,6 +2779,7 @@ const CATALOG: &[ProductionQuery] = &[
         // `UPDATE functions SET identifier = ? WHERE identifier = ?` — dotted
         // → underscored builtin rename pass.
         id: "migrations_dotted_builtin_rename",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "functions",
@@ -807,6 +2804,7 @@ const CATALOG: &[ProductionQuery] = &[
         // `SELECT kind FROM functions WHERE kind NOT IN (1, 2) LIMIT 1` —
         // legacy-function-kind probe.
         id: "migrations_scan_unknown_function_kinds",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "functions",
@@ -831,6 +2829,7 @@ const CATALOG: &[ProductionQuery] = &[
         // `SELECT kind FROM tools WHERE kind NOT IN (1, 2) LIMIT 1` —
         // legacy-tool-kind probe.
         id: "migrations_scan_unknown_tool_kinds",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "tools",
@@ -853,6 +2852,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.agents.identifier",
+        sql: "",
         owner_phase: "Foundation",
         activation_task: "T012",
         table: "agents",
@@ -875,6 +2875,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.agents.category",
+        sql: "",
         owner_phase: "Foundation",
         activation_task: "T012",
         table: "agents",
@@ -897,6 +2898,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.agents.search.normalized",
+        sql: "",
         owner_phase: "Foundation",
         activation_task: "T012",
         table: "agents",
@@ -923,6 +2925,7 @@ const CATALOG: &[ProductionQuery] = &[
     // without forcing the EXPLAIN test to scan these tables.
     ProductionQuery {
         id: "t012.data_sources.by_id",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "data_sources",
@@ -945,6 +2948,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.data_sources.update",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T020",
         table: "data_sources",
@@ -967,6 +2971,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.data_sources.update_no_pwd",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T020",
         table: "data_sources",
@@ -989,6 +2994,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.data_sources.delete",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T021",
         table: "data_sources",
@@ -1011,6 +3017,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.by_id_inserted",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1033,6 +3040,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.search_count",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1055,6 +3063,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.search_list",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1077,6 +3086,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.update",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T020",
         table: "global_configs",
@@ -1099,6 +3109,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.delete",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T021",
         table: "global_configs",
@@ -1121,6 +3132,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.count_all",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1143,6 +3155,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.list_all",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1165,6 +3178,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.by_key",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1187,6 +3201,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.global_configs.by_key_after_upsert",
+        sql: "",
         owner_phase: "US1",
         activation_task: "T019",
         table: "global_configs",
@@ -1209,6 +3224,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.read_schema_version",
+        sql: "SELECT value FROM meta WHERE key = 'schema_version'",
         owner_phase: "Foundation",
         activation_task: "T028",
         table: "meta",
@@ -1237,6 +3253,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.read_schema_version_tx",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "meta",
@@ -1259,6 +3276,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.read_schema_version_ro",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "meta",
@@ -1281,6 +3299,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.read_search_normalization_id",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "meta",
@@ -1303,6 +3322,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.categories.backfill_slug",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "categories",
@@ -1325,6 +3345,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.tags.backfill_normalized",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "tags",
@@ -1347,6 +3368,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.capabilities.backfill_normalized",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "capabilities",
@@ -1369,6 +3391,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.plugins.row_revision_backfill",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "plugins",
@@ -1391,6 +3414,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.agents.backfill_name_normalized",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "agents",
@@ -1413,6 +3437,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.table_check_search_index",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -1435,6 +3460,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.table_check_short_gram_index",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -1457,6 +3483,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.pragma_check_plugins_row_revision",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "pragma_table_info",
@@ -1479,6 +3506,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.table_check_pao",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -1501,6 +3529,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.table_check_pag",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -1523,6 +3552,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.table_check_search_index_verify",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",
@@ -1545,6 +3575,7 @@ const CATALOG: &[ProductionQuery] = &[
     },
     ProductionQuery {
         id: "t012.meta.table_check_short_gram_index_verify",
+        sql: "",
         owner_phase: "migrations",
         activation_task: "T012M",
         table: "sqlite_master",

@@ -144,14 +144,11 @@ fn persisted_tool_only_accepts_function_or_workflow_target() {
 }
 
 #[test]
-fn persisted_tool_dedups_required_capabilities_to_a_canonical_set() {
-    // Required capabilities are stored as a BTreeSet so that two
-    // declarations with the same logical capability but different
-    // insertion order produce identical persisted bytes.
+fn persisted_tool_preserves_required_capability_order_and_rejects_duplicate_insert() {
     let mut caps = RequiredCapabilities::empty();
-    caps.insert(CapabilityId::new("net.http").expect("valid"));
-    caps.insert(CapabilityId::new("fs.read").expect("valid"));
-    caps.insert(CapabilityId::new("net.http").expect("valid")); // duplicate
+    assert!(caps.insert(CapabilityId::new("net.http").expect("valid")));
+    assert!(caps.insert(CapabilityId::new("fs.read").expect("valid")));
+    assert!(!caps.insert(CapabilityId::new("net.http").expect("valid")));
 
     let tool = PersistedToolBuilder::new(PersistedToolKind::FunctionWrap)
         .target(PersistedToolTarget::function("fn.fetch_url"))
@@ -159,8 +156,12 @@ fn persisted_tool_dedups_required_capabilities_to_a_canonical_set() {
         .required_capabilities(caps)
         .unwrap()
         .build();
-    let set: &BTreeSet<CapabilityId> = tool.required_capabilities().as_set();
-    assert_eq!(set.len(), 2, "duplicate CapabilityId is deduped");
+    let declared = tool
+        .required_capabilities()
+        .iter()
+        .map(CapabilityId::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(declared, ["net.http", "fs.read"]);
 }
 
 #[test]

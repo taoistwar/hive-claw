@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -8,12 +7,23 @@ use hive_builtins::{format_template, json_parse, json_stringify, text_regex_matc
 use serde_json::Value;
 
 use hivegui::{
-    datasource::entity_store::Function,
+    datasource::{
+        entity_store::{Capability, Function},
+        migrations::{MigrationOptions, migrate_to_current},
+    },
+    plugin::plugin_store::{PluginArtifactInput, PluginMetadata, PluginStore},
     runtime::{
         FUNCTION_TEST_TIMEOUT, FunctionTestExecutor, PluginExecutor, capability_matches_filter,
         format_test_output, resolve_test_capabilities,
     },
 };
+
+mod support;
+
+#[path = "support/plugin_wat.rs"]
+mod plugin_wat;
+
+use support::TestWorkspace;
 
 fn custom_function(plugin_id: Option<i64>, plugin_export: Option<&str>) -> Function {
     Function {
@@ -98,16 +108,98 @@ fn custom_plugin_function(
     function
 }
 
-fn shared_smoke_plugin_wasm(base_dir: &Path, plugin_id: i64) -> PathBuf {
-    let source_root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/shared-smoke");
-    let source = source_root.join("plugin.wasm");
-    let target_dir = base_dir.join("plugins").join(plugin_id.to_string());
+/// Identifier/version the shared smoke fixture is staged under. Matches the
+/// unified `{identifier}/{version}/{id}/plugin.wasm` layout the executor reads.
+const SMOKE_PLUGIN_IDENTIFIER: &str = "smoke";
+const SMOKE_PLUGIN_VERSION: &str = "1.0.0";
+const SHARED_SMOKE_WASM: &[u8] = include_bytes!("fixtures/plugins/shared-smoke/plugin.wasm");
+const SHARED_SMOKE_MANIFEST: &str = include_str!("fixtures/plugins/shared-smoke/manifest.json");
+const SHARED_SMOKE_CAPABILITIES: &[&str] = &[
+    "fs.read",
+    "fs.write",
+    "log.emit",
+    "network.http",
+    "time.now",
+];
 
-    fs::create_dir_all(&target_dir).expect("create shared smoke Plugin dir");
-    let target = target_dir.join("plugin.wasm");
-    fs::copy(&source, &target).expect("copy shared smoke Plugin fixture");
-    target
+async fn empty_managed_store() -> (TestWorkspace, sqlx::SqlitePool) {
+    let workspace = TestWorkspace::new().expect("create isolated verified Plugin workspace");
+    migrate_to_current(MigrationOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("migrate verified Plugin workspace");
+    let pool = workspace.sqlite_pool().await.expect("open SQLite pool");
+
+    (workspace, pool)
+}
+
+async fn installed_verified_smoke_plugin() -> (TestWorkspace, sqlx::SqlitePool, i64) {
+    let (workspace, pool) = empty_managed_store().await;
+    for capability in SHARED_SMOKE_CAPABILITIES {
+        Capability::create(
+            &pool,
+            (*capability).to_string(),
+            format!("Test-local {capability} fixture capability"),
+            false,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("register fixture Capability {capability}: {error}"));
+    }
+
+    let required_capabilities = SHARED_SMOKE_CAPABILITIES
+        .iter()
+        .map(|capability| (*capability).to_string())
+        .collect::<Vec<_>>();
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root())
+        .expect("open verified Plugin store");
+    let plugin = store
+        .install_with_metadata(
+            PluginArtifactInput::new(
+                SMOKE_PLUGIN_IDENTIFIER,
+                SMOKE_PLUGIN_VERSION,
+                SHARED_SMOKE_WASM,
+            )
+            .expect("build frozen ABI-v1 Plugin input"),
+            PluginMetadata::new(
+                "Frozen shared smoke Plugin",
+                None,
+                Some(SHARED_SMOKE_MANIFEST.to_string()),
+                "extism",
+                serde_json::to_string(&required_capabilities)
+                    .expect("serialize fixture Capability list"),
+                "{}",
+            ),
+        )
+        .await
+        .expect("install frozen ABI-v1 Plugin through the real store");
+
+    (workspace, pool, plugin.id())
+}
+
+fn managed_executor(plugin_root: &Path, pool: &sqlx::SqlitePool) -> FunctionTestExecutor {
+    FunctionTestExecutor::new(plugin_root.to_path_buf(), pool.clone())
+}
+
+async fn execute_managed(
+    executor: &FunctionTestExecutor,
+    function: &Function,
+    input: Value,
+) -> Result<String, String> {
+    executor.execute(function, input).await
+}
+
+async fn execute_managed_with_capabilities(
+    executor: &FunctionTestExecutor,
+    function: &Function,
+    input: Value,
+    capability_snapshot: Vec<String>,
+) -> Result<String, String> {
+    executor
+        .execute_with_capabilities(function, input, capability_snapshot)
+        .await
 }
 
 #[test]
@@ -158,9 +250,27 @@ fn json_test_output_is_pretty_printed_and_plain_text_is_preserved() {
     assert_eq!(format_test_output("plain text result"), "plain text result");
 }
 
+fn record_stable_error_result(
+    entrypoint: &str,
+    expected_kind: &str,
+    result: Result<String, String>,
+    violations: &mut Vec<String>,
+) {
+    match result {
+        Err(error) if error == expected_kind => {}
+        Err(error) => violations.push(format!(
+            "{entrypoint} returned {error:?}; expected exact stable kind {expected_kind:?}"
+        )),
+        Ok(output) => violations.push(format!(
+            "{entrypoint} succeeded with {output:?}; expected exact stable kind {expected_kind:?}"
+        )),
+    }
+}
+
 #[tokio::test]
 async fn builtin_functions_execute_and_validate_schema_and_output() {
-    let temp_dir = tempfile::tempdir().expect("create temp directory");
+    let (workspace, pool) = empty_managed_store().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
 
     for identifier in [
         "format_template",
@@ -187,9 +297,9 @@ async fn builtin_functions_execute_and_validate_schema_and_output() {
             normalized_output_schema
         );
 
-        let output = FunctionTestExecutor::execute(&function, input.clone(), temp_dir.path())
+        let output = execute_managed(&executor, &function, input.clone())
             .await
-            .expect("builtin must execute through underscore identifier")
+            .expect("managed execute must run every underscore Builtin")
             .as_str()
             .parse::<Value>()
             .unwrap_or_else(|error| {
@@ -197,24 +307,23 @@ async fn builtin_functions_execute_and_validate_schema_and_output() {
             });
         assert_eq!(output, expected_output);
 
-        let output = FunctionTestExecutor::execute_with_capabilities(
-            &function,
-            input,
-            temp_dir.path(),
-            Vec::new(),
-        )
-        .await
-        .expect("builtin with explicit capability entrypoint should also execute")
-        .as_str()
-        .parse::<Value>()
-        .unwrap_or_else(|error| panic!("builtin output must be JSON for {identifier}: {error}"));
+        let output = execute_managed_with_capabilities(&executor, &function, input, Vec::new())
+            .await
+            .expect("managed explicit-capability entry must run every underscore Builtin")
+            .as_str()
+            .parse::<Value>()
+            .unwrap_or_else(|error| {
+                panic!("builtin output must be JSON for {identifier}: {error}")
+            });
         assert_eq!(output, expected_output);
     }
 }
 
 #[tokio::test]
-async fn dotted_builtin_names_are_rejected_by_both_execution_entries() {
-    let temp_dir = tempfile::tempdir().expect("create temp directory");
+async fn dotted_builtin_names_are_not_found_from_every_public_entry() {
+    let (workspace, pool) = empty_managed_store().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
+    let mut violations = Vec::new();
 
     for identifier in [
         "format.template",
@@ -225,37 +334,30 @@ async fn dotted_builtin_names_are_rejected_by_both_execution_entries() {
         let function = builtin_function(identifier);
         let input = serde_json::json!({});
 
-        let dotted_error = FunctionTestExecutor::execute(&function, input.clone(), temp_dir.path())
-            .await
-            .expect_err("dotted builtin identifier should be rejected in execute entrypoint");
-        assert!(
-            dotted_error.contains("Unknown pure builtin")
-                || dotted_error.contains("not found")
-                || dotted_error.contains("未找到")
+        record_stable_error_result(
+            &format!("execute({identifier})"),
+            "not_found",
+            execute_managed(&executor, &function, input.clone()).await,
+            &mut violations,
         );
-
-        let dotted_error = FunctionTestExecutor::execute_with_capabilities(
-            &function,
-            input,
-            temp_dir.path(),
-            Vec::new(),
-        )
-        .await
-        .expect_err(
-            "dotted builtin identifier should be rejected in explicit-capability entrypoint",
-        );
-        assert!(
-            dotted_error.contains("Unknown pure builtin")
-                || dotted_error.contains("not found")
-                || dotted_error.contains("未找到")
+        record_stable_error_result(
+            &format!("execute_with_capabilities({identifier})"),
+            "not_found",
+            execute_managed_with_capabilities(&executor, &function, input, Vec::new()).await,
+            &mut violations,
         );
     }
+
+    assert!(
+        violations.is_empty(),
+        "all dotted Builtin names must return only stable not_found from both managed entries: {violations:#?}"
+    );
 }
 
 #[tokio::test]
-async fn custom_plugin_function_executes_via_both_execution_entries() {
-    let temp_dir = tempfile::tempdir().expect("create temp directory");
-    shared_smoke_plugin_wasm(temp_dir.path(), 1);
+async fn custom_plugin_function_executes_with_explicit_capability_snapshot() {
+    let (workspace, pool, plugin_id) = installed_verified_smoke_plugin().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
 
     let expected_input_schema: Value = serde_json::from_str(r#"{"type":"string"}"#).unwrap();
     let expected_output_schema: Value = serde_json::json!({
@@ -267,7 +369,7 @@ async fn custom_plugin_function_executes_via_both_execution_entries() {
         "required": ["echo", "logged"],
     });
 
-    let function = custom_plugin_function(1, "echo", Some(r#"["log.emit"]"#));
+    let function = custom_plugin_function(plugin_id, "echo", Some(r#"["log.emit"]"#));
 
     assert_eq!(
         serde_json::from_str::<Value>(&function.input_schema)
@@ -287,22 +389,14 @@ async fn custom_plugin_function_executes_via_both_execution_entries() {
     });
 
     let output = serde_json::from_str::<Value>(
-        &FunctionTestExecutor::execute(&function, input.clone(), temp_dir.path())
-            .await
-            .expect("custom plugin should execute in execute entrypoint"),
-    )
-    .expect("custom plugin output should be JSON");
-    assert_eq!(output, expected_output);
-
-    let output = serde_json::from_str::<Value>(
-        &FunctionTestExecutor::execute_with_capabilities(
+        &execute_managed_with_capabilities(
+            &executor,
             &function,
             input,
-            temp_dir.path(),
             vec!["log.emit".to_string()],
         )
         .await
-        .expect("custom plugin should execute in explicit-capability entrypoint"),
+        .expect("managed Custom Function should execute with an explicit snapshot"),
     )
     .expect("custom plugin output should be JSON");
     assert_eq!(output, expected_output);
@@ -310,37 +404,104 @@ async fn custom_plugin_function_executes_via_both_execution_entries() {
 
 #[tokio::test]
 async fn custom_plugin_function_fails_when_needed_capability_is_not_granted() {
-    let temp_dir = tempfile::tempdir().expect("create temp directory");
-    shared_smoke_plugin_wasm(temp_dir.path(), 1);
+    let (workspace, pool, plugin_id) = installed_verified_smoke_plugin().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
+    let function = custom_plugin_function(plugin_id, "echo", Some(r#"["log.emit"]"#));
+    let input = serde_json::json!("hello");
+    let mut violations = Vec::new();
 
-    let function = custom_plugin_function(1, "echo", Some(r#"["log.emit"]"#));
-    let error = FunctionTestExecutor::execute_with_capabilities(
-        &function,
-        serde_json::json!("hello"),
-        temp_dir.path(),
-        Vec::new(),
-    )
-    .await
-    .expect_err("missing Capability should fail plugin execution");
+    record_stable_error_result(
+        "managed execute with its empty default Capability snapshot",
+        "capability_denied",
+        execute_managed(&executor, &function, input.clone()).await,
+        &mut violations,
+    );
+    record_stable_error_result(
+        "managed execute_with_capabilities with an explicit empty snapshot",
+        "capability_denied",
+        execute_managed_with_capabilities(&executor, &function, input, Vec::new()).await,
+        &mut violations,
+    );
 
     assert!(
-        error.contains("未授权")
-            || error.contains("unauthorized")
-            || error.contains("capability")
-            || error.contains("permission")
+        violations.is_empty(),
+        "both implicit-empty and explicit-empty Capability snapshots must return exact capability_denied: {violations:#?}"
+    );
+}
+
+#[tokio::test]
+async fn real_custom_plugin_input_schema_violation_fails_closed_in_every_public_entry() {
+    let (workspace, pool, plugin_id) = installed_verified_smoke_plugin().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
+    let mut function = custom_plugin_function(plugin_id, "echo", Some(r#"["log.emit"]"#));
+    function.input_schema = r#"{"type":"object"}"#.into();
+    let input = serde_json::json!("guest-would-accept-this-string");
+    let mut violations = Vec::new();
+
+    record_schema_violation_result(
+        "managed execute(real Custom Plugin)",
+        "input_schema",
+        execute_managed(&executor, &function, input.clone()).await,
+        &mut violations,
+    );
+    record_schema_violation_result(
+        "managed execute_with_capabilities(real Custom Plugin)",
+        "input_schema",
+        execute_managed_with_capabilities(
+            &executor,
+            &function,
+            input,
+            vec!["log.emit".to_string()],
+        )
+        .await,
+        &mut violations,
+    );
+
+    assert!(
+        violations.is_empty(),
+        "real ABI-v1 Custom Plugin input must be rejected before guest execution when it violates Function.input_schema: {violations:#?}"
+    );
+}
+
+#[tokio::test]
+async fn real_custom_plugin_guest_output_schema_violation_fails_closed_in_every_public_entry() {
+    let (workspace, pool, plugin_id) = installed_verified_smoke_plugin().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
+    let mut function = custom_plugin_function(plugin_id, "echo", Some(r#"["log.emit"]"#));
+    function.output_schema = r#"{"type":"array"}"#.into();
+    let input = serde_json::json!("guest-produces-an-object");
+    let mut violations = Vec::new();
+
+    record_schema_violation_result(
+        "managed execute_with_capabilities(real Custom Plugin)",
+        "output_schema",
+        execute_managed_with_capabilities(
+            &executor,
+            &function,
+            input,
+            vec!["log.emit".to_string()],
+        )
+        .await,
+        &mut violations,
+    );
+
+    assert!(
+        violations.is_empty(),
+        "real ABI-v1 Custom Plugin guest output must return exact output_schema_mismatch after explicit-capability execution: {violations:#?}"
     );
 }
 
 #[tokio::test]
 async fn custom_function_precondition_errors_return_instead_of_stalling() {
-    let temp_dir = tempfile::tempdir().expect("create temp directory");
+    let (workspace, pool) = empty_managed_store().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
 
     let missing_plugin = tokio::time::timeout(
         Duration::from_secs(1),
-        FunctionTestExecutor::execute(
+        execute_managed(
+            &executor,
             &custom_function(None, Some("lookup")),
             serde_json::json!({"city": "beijing"}),
-            temp_dir.path(),
         ),
     )
     .await
@@ -348,84 +509,158 @@ async fn custom_function_precondition_errors_return_instead_of_stalling() {
     .expect_err("missing plugin must fail");
     assert_eq!(missing_plugin, "函数未关联插件");
 
-    let missing_export = FunctionTestExecutor::execute(
+    let missing_export = execute_managed(
+        &executor,
         &custom_function(Some(1), None),
         serde_json::json!({"city": "beijing"}),
-        temp_dir.path(),
     )
     .await
     .expect_err("missing export must fail");
     assert_eq!(missing_export, "函数未指定插件导出函数名");
 
-    let missing_wasm = FunctionTestExecutor::execute(
+    let missing_plugin_record = execute_managed(
+        &executor,
         &custom_function(Some(1), Some("lookup")),
         serde_json::json!({"city": "beijing"}),
-        temp_dir.path(),
     )
     .await
-    .expect_err("missing WASM must fail");
-    assert!(missing_wasm.contains("WASM 文件不存在"));
+    .expect_err("missing managed Plugin record must fail");
+    assert_eq!(missing_plugin_record, "plugin_missing");
 }
 
-fn assert_placeholder_not_executable(error: &str) {
+fn record_schema_violation_result(
+    entrypoint: &str,
+    schema_field: &str,
+    result: Result<String, String>,
+    violations: &mut Vec<String>,
+) {
+    let expected_kind = match schema_field {
+        "input_schema" => "input_schema_mismatch",
+        "output_schema" => "output_schema_mismatch",
+        other => panic!("unsupported schema contract field {other}"),
+    };
+    match result {
+        Err(error) if error == expected_kind => {}
+        Err(error) => violations.push(format!(
+            "{entrypoint} returned {error:?}; expected exact stable kind {expected_kind:?}"
+        )),
+        Ok(output) => violations.push(format!(
+            "{entrypoint} accepted a value that violates {schema_field}: {output}; expected exact stable kind {expected_kind:?}"
+        )),
+    }
+}
+
+#[tokio::test]
+async fn every_public_entry_rejects_input_that_violates_function_schema() {
+    let (workspace, pool) = empty_managed_store().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
+    let mut function = builtin_function("json_stringify");
+    function.input_schema = r#"{"type":"array"}"#.into();
+    let input = serde_json::json!({"value": {"message": "schema red"}});
+    let mut violations = Vec::new();
+
+    record_schema_violation_result(
+        "execute",
+        "input_schema",
+        execute_managed(&executor, &function, input.clone()).await,
+        &mut violations,
+    );
+    record_schema_violation_result(
+        "execute_with_capabilities",
+        "input_schema",
+        execute_managed_with_capabilities(&executor, &function, input, Vec::new()).await,
+        &mut violations,
+    );
+
     assert!(
-        error == "占位函数没有可执行实现，仅用于 LLM 提示词调试"
-            || error.contains("function_not_executable")
+        violations.is_empty(),
+        "all public Function execution entries must fail closed on input schema violations: {violations:#?}"
     );
 }
 
 #[tokio::test]
-async fn placeholder_function_is_explicitly_non_executable() {
+async fn every_public_entry_rejects_output_that_violates_function_schema() {
+    let (workspace, pool) = empty_managed_store().await;
+    let executor = managed_executor(workspace.plugin_root(), &pool);
+    let mut function = builtin_function("json_stringify");
+    function.output_schema = r#"{"type":"object"}"#.into();
+    let input = serde_json::json!({"value": {"message": "schema red"}});
+    let mut violations = Vec::new();
+
+    record_schema_violation_result(
+        "execute",
+        "output_schema",
+        execute_managed(&executor, &function, input.clone()).await,
+        &mut violations,
+    );
+    record_schema_violation_result(
+        "execute_with_capabilities",
+        "output_schema",
+        execute_managed_with_capabilities(&executor, &function, input, Vec::new()).await,
+        &mut violations,
+    );
+
+    assert!(
+        violations.is_empty(),
+        "all public Function execution entries must fail closed on output schema violations: {violations:#?}"
+    );
+}
+
+#[tokio::test]
+async fn placeholder_function_is_non_executable_before_capability_or_plugin_resolution() {
     let temp_dir = tempfile::tempdir().expect("create temp directory");
-    let mut function = custom_function(Some(1), Some("echo"));
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("open deliberately schema-free SQLite pool");
+    let executor = managed_executor(temp_dir.path(), &pool);
+    let mut function = custom_function(Some(i64::MAX), Some("missing_export"));
     function.kind = "placeholder".to_string();
     function.required_capabilities = Some(r#"[bad json"#.into());
+    let input = serde_json::json!({"query": "prompt-only"});
+    let mut violations = Vec::new();
 
-    let error = FunctionTestExecutor::execute(
-        &function,
-        serde_json::json!({"query": "prompt-only"}),
-        temp_dir.path(),
-    )
-    .await
-    .expect_err("placeholder functions must not be executable");
-    assert_placeholder_not_executable(&error);
+    record_stable_error_result(
+        "managed execute Placeholder before malformed Capability parsing",
+        "function_not_executable",
+        execute_managed(&executor, &function, input.clone()).await,
+        &mut violations,
+    );
+    record_stable_error_result(
+        "managed execute_with_capabilities Placeholder before Plugin lookup/guest creation",
+        "function_not_executable",
+        execute_managed_with_capabilities(
+            &executor,
+            &function,
+            input,
+            vec!["network.http".to_string()],
+        )
+        .await,
+        &mut violations,
+    );
+
+    assert!(
+        violations.is_empty(),
+        "both managed entries must return exact function_not_executable before Capability parsing, schema-free DB Plugin lookup, or guest creation: {violations:#?}"
+    );
 }
 
 #[tokio::test]
-async fn placeholder_function_is_non_executable_from_capability_entrypoint() {
-    let temp_dir = tempfile::tempdir().expect("create temp directory");
-    let mut function = custom_function(Some(1), Some("echo"));
-    function.kind = "placeholder".to_string();
-    function.required_capabilities = Some(r#"["log.emit"]"#.into());
-
-    let error = FunctionTestExecutor::execute_with_capabilities(
-        &function,
-        serde_json::json!({"query": "prompt-only"}),
-        temp_dir.path(),
-        vec!["log.emit".to_string(), "network.http".to_string()],
-    )
-    .await
-    .expect_err("placeholder functions must not be executable");
-    assert_placeholder_not_executable(&error);
-}
-
-#[tokio::test]
-async fn plugin_execution_has_a_hard_timeout() {
+async fn lower_level_plugin_executor_timeout_is_exempt_from_function_executor_api_inventory() {
+    // T074 lower-level sandbox coverage only. This direct PluginExecutor call
+    // neither defines nor authorizes another public FunctionTestExecutor entry.
     let temp_dir = tempfile::tempdir().expect("create temp directory");
     let wasm_path = temp_dir.path().join("loop.wasm");
-    let wasm = wat::parse_str(
+    let wasm = plugin_wat::compile_v1(
+        "",
         r#"
-        (module
           (func (export "loop_forever") (result i32)
             (loop $forever
               br $forever
             )
             i32.const 0
           )
-        )
         "#,
-    )
-    .expect("compile infinite-loop WASM");
+    );
     std::fs::write(&wasm_path, wasm).expect("write WASM fixture");
 
     let started = Instant::now();
@@ -442,6 +677,76 @@ async fn plugin_execution_has_a_hard_timeout() {
     assert!(started.elapsed() < Duration::from_secs(2));
 }
 
+fn public_function_test_executor_methods(source: &str) -> Vec<String> {
+    let implementation = source
+        .split_once("impl FunctionTestExecutor {")
+        .map(|(_, implementation)| implementation)
+        .expect("locate the single FunctionTestExecutor implementation");
+    let mut methods = implementation
+        .lines()
+        .filter_map(|line| {
+            let signature = line.trim_start().strip_prefix("pub ")?;
+            let signature = signature.strip_prefix("async ").unwrap_or(signature);
+            let signature = signature.strip_prefix("fn ")?;
+            signature.split_once('(').map(|(name, _)| name.to_string())
+        })
+        .collect::<Vec<_>>();
+    methods.sort();
+    methods
+}
+
+fn public_function_test_executor_signature(source: &str, method: &str) -> String {
+    let markers = [
+        format!("pub fn {method}("),
+        format!("pub async fn {method}("),
+    ];
+    let tail = markers
+        .iter()
+        .find_map(|marker| source.find(marker).map(|start| &source[start..]))
+        .unwrap_or_else(|| panic!("locate public FunctionTestExecutor::{method} signature"));
+    let signature = tail
+        .split_once('{')
+        .map(|(signature, _)| signature)
+        .expect("public method signature must be followed by a body");
+    signature.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn function_test_executor_public_api_is_exactly_two_managed_execution_entries() {
+    let source = include_str!("../src/runtime/function_test_executor.rs");
+
+    assert_eq!(
+        public_function_test_executor_methods(source),
+        ["execute", "execute_with_capabilities", "new"],
+        "only the managed constructor and two instance execution entries may remain public; path-based/static helpers and execute_with_verification must be absent or private"
+    );
+
+    let constructor = public_function_test_executor_signature(source, "new");
+    assert!(constructor.contains("plugin_root"));
+    assert!(constructor.contains("pool"));
+
+    for method in ["execute", "execute_with_capabilities"] {
+        let signature = public_function_test_executor_signature(source, method);
+        assert!(
+            signature.contains("&self"),
+            "FunctionTestExecutor::{method} must be an instance method: {signature}"
+        );
+        for forbidden in [
+            "base_dir",
+            "plugin_identifier",
+            "plugin_version",
+            "plugin_root",
+            "pool:",
+            "Path",
+        ] {
+            assert!(
+                !signature.contains(forbidden),
+                "FunctionTestExecutor::{method} must use constructor-owned managed state, not caller path/DB arguments; forbidden {forbidden:?} in {signature}"
+            );
+        }
+    }
+}
+
 #[test]
 fn function_view_routes_execution_errors_to_a_terminal_state() {
     let source = include_str!("../src/ui/function_view.rs");
@@ -451,7 +756,12 @@ fn function_view_routes_execution_errors_to_a_terminal_state() {
         .and_then(|tail| tail.split("impl Render").next())
         .expect("locate run_test implementation");
 
-    assert!(run_test.contains("FunctionTestExecutor::execute"));
+    assert!(run_test.contains("FunctionTestExecutor::new"));
+    assert!(run_test.contains(".execute_with_capabilities("));
+    assert!(
+        !run_test.contains("execute_with_verification"),
+        "the UI must not select a separate third entry or reopen a persisted artifact path"
+    );
     assert!(run_test.contains("TestState::Error"));
     assert!(
         !run_test.contains("return Err("),

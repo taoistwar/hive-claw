@@ -12,15 +12,25 @@
 
 mod support;
 
-use hivegui::datasource::migrations::{MigrationOptions, migrate_to_current};
-use hivegui::plugin::plugin_store::PluginStore;
-use hivegui::runtime::plugin_executor::{
-    BoundedInstancePool, DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECS,
-    HARD_MAX_MEMORY_MB, HARD_MAX_OUTPUT_BYTES, HARD_MAX_TIMEOUT_SECS, InstanceCacheKey,
-    PAGES_PER_MIB, PageCount, PluginExecutor, PluginLimits, WASM_PAGE_BYTES, sha256_hex,
+#[path = "support/plugin_wat.rs"]
+mod plugin_wat;
+
+use hivegui::datasource::{
+    entity_store::{Capability, Function, Plugin},
+    migrations::{MigrationOptions, migrate_to_current},
+    plugin_manifest::build_v1_manifest,
 };
-use std::collections::HashSet;
-use support::TestWorkspace;
+use hivegui::plugin::plugin_store::{PluginArtifactInput, PluginMetadata, PluginStore};
+use hivegui::runtime::{
+    FunctionTestExecutor,
+    plugin_executor::{
+        BoundedInstancePool, DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECS,
+        HARD_MAX_MEMORY_MB, HARD_MAX_OUTPUT_BYTES, HARD_MAX_TIMEOUT_SECS, InstanceCacheKey,
+        PAGES_PER_MIB, PageCount, PluginExecutor, PluginLimits, WASM_PAGE_BYTES, sha256_hex,
+    },
+};
+use std::{collections::HashSet, fmt::Write as _, path::PathBuf};
+use support::{CapturedHttpServer, MockHttpResponse, TestWorkspace};
 
 async fn migrated_pool(workspace: &TestWorkspace) -> sqlx::SqlitePool {
     migrate_to_current(MigrationOptions::new(
@@ -30,6 +40,120 @@ async fn migrated_pool(workspace: &TestWorkspace) -> sqlx::SqlitePool {
     .await
     .expect("migrate to current");
     workspace.sqlite_pool().await.expect("sqlite pool")
+}
+
+async fn installed_artifact(
+    pool: &sqlx::SqlitePool,
+    workspace: &TestWorkspace,
+    plugin_id: i64,
+) -> (String, PathBuf) {
+    let artifact_key: String = sqlx::query_scalar("SELECT s3_key FROM plugins WHERE id = ?")
+        .bind(plugin_id)
+        .fetch_one(pool)
+        .await
+        .expect("query persisted plugin artifact key");
+    let artifact_path = workspace.plugin_root().join(&artifact_key);
+    (artifact_key, artifact_path)
+}
+
+fn custom_plugin_function(plugin_id: i64, export_name: &str) -> Function {
+    Function {
+        id: 79,
+        identifier: "t079-pool-probe".into(),
+        name: "T079 pool probe".into(),
+        description: None,
+        kind: "custom".into(),
+        input_schema: "{}".into(),
+        output_schema: "{}".into(),
+        plugin_id: Some(plugin_id),
+        plugin_export: Some(export_name.into()),
+        category_id: None,
+        required_capabilities: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+fn v1_metadata(name: &str, exports: &[&str], required_capabilities: &[&str]) -> PluginMetadata {
+    let exports: Vec<String> = exports.iter().map(|value| (*value).to_string()).collect();
+    let required_capabilities: Vec<String> = required_capabilities
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect();
+    PluginMetadata::new(
+        name,
+        None,
+        Some(build_v1_manifest(&exports, &required_capabilities)),
+        "extism",
+        serde_json::to_string(&required_capabilities).expect("serialize capabilities"),
+        "{}",
+    )
+}
+
+fn minimal_gc_probe_wasm() -> Vec<u8> {
+    plugin_wat::compile_v1(
+        "",
+        r#"
+          (func (export "gc_probe") (result i32)
+            i32.const 0)
+        "#,
+    )
+}
+
+fn instance_reuse_probe_wasm(callback_url: &str) -> Vec<u8> {
+    let envelope = serde_json::json!({
+        "capability": "network.http",
+        "args": {
+            "method": "GET",
+            "url": callback_url,
+            "timeout_ms": 1_000,
+        }
+    })
+    .to_string();
+    let mut stores = String::new();
+    for (offset, byte) in envelope.bytes().enumerate() {
+        writeln!(
+            stores,
+            "(call $abi_store_u8 (i64.add (local.get $request) (i64.const {offset})) (i32.const {byte}))"
+        )
+        .expect("write WAT byte store");
+    }
+    let functions = format!(
+        r#"
+          (global $instance_already_observed (mut i32) (i32.const 0))
+          (func (export "pool_probe") (result i32)
+            (local $request i64)
+            (local $result i64)
+            (if (i32.eqz (global.get $instance_already_observed))
+              (then
+                (local.set $request (call $abi_alloc (i64.const {length})))
+                {stores}
+                (drop (call $pool_host_call (local.get $request)))
+                (global.set $instance_already_observed (i32.const 1))
+              )
+            )
+            (local.set $result (call $abi_alloc (i64.const 2)))
+            (call $abi_store_u8 (local.get $result) (i32.const 123))
+            (call $abi_store_u8 (i64.add (local.get $result) (i64.const 1)) (i32.const 125))
+            (call $abi_output_set (local.get $result) (i64.const 2))
+            i32.const 0
+          )
+        "#,
+        length = envelope.len(),
+    );
+    plugin_wat::compile_v1(
+        r#"(import "extism:host/user" "host_call"
+             (func $pool_host_call (param i64) (result i64)))"#,
+        &functions,
+    )
+}
+
+async fn gc_state(pool: &sqlx::SqlitePool, artifact_key: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT state FROM plugin_artifact_gc WHERE artifact_key = ?")
+        .bind(artifact_key)
+        .fetch_optional(pool)
+        .await
+        .expect("query GC ledger state")
 }
 
 #[test]
@@ -420,5 +544,182 @@ async fn execute_with_verified_artifact_rejects_mismatched_digest() {
     assert!(
         err.contains("WASM 制品校验失败"),
         "digest mismatch must be rejected before execution: {err}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_executor_reuses_same_full_key_and_misses_on_capability_policy_change() {
+    let server = CapturedHttpServer::spawn(vec![
+        MockHttpResponse::json(
+            200,
+            serde_json::json!({"ok": true})
+        );
+        4
+    ])
+    .await
+    .expect("start instantiation counter");
+    let wasm = instance_reuse_probe_wasm(&format!("{}/instantiated", server.base_url()));
+
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+    Capability::create(
+        &pool,
+        "network.http".to_string(),
+        "Test-local HTTP host capability".to_string(),
+        true,
+        None,
+    )
+    .await
+    .expect("seed DB-local network.http capability");
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root()).expect("store");
+    let plugin = store
+        .install_with_metadata(
+            PluginArtifactInput::new("production-pool", "1.0.0", &wasm).expect("plugin input"),
+            v1_metadata("Production pool probe", &["pool_probe"], &["network.http"]),
+        )
+        .await
+        .expect("install probe plugin");
+    let function = custom_plugin_function(plugin.id(), "pool_probe");
+
+    let policy_a = vec!["network.http".to_string()];
+    let policy_b = vec!["network.http".to_string(), "time.now".to_string()];
+    for policy in [policy_a.clone(), policy_a, policy_b.clone(), policy_b] {
+        let executor = FunctionTestExecutor::new(workspace.plugin_root(), pool.clone());
+        executor
+            .execute_with_capabilities(&function, serde_json::json!({}), policy)
+            .await
+            .expect("healthy ABI probe execution");
+    }
+
+    assert_eq!(
+        server.requests().len(),
+        2,
+        "the production FunctionTestExecutor→PluginExecutor path must instantiate once for the repeated full key and once after the capability-policy key changes"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn active_lease_blocks_gc_then_release_allows_ledger_to_converge() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root()).expect("store");
+    let wasm = minimal_gc_probe_wasm();
+    let plugin = store
+        .install_with_metadata(
+            PluginArtifactInput::new("leased-gc", "1.0.0", &wasm).expect("plugin input"),
+            v1_metadata("Leased GC probe", &["gc_probe"], &[]),
+        )
+        .await
+        .expect("install leased plugin");
+    let (artifact_key, artifact_path) = installed_artifact(&pool, &workspace, plugin.id()).await;
+    let lease = store
+        .acquire_lease(plugin.id(), "active-runtime-session")
+        .await
+        .expect("acquire runtime lease");
+
+    store.delete(plugin.id()).await.expect("soft delete");
+
+    assert!(
+        artifact_path.exists(),
+        "GC must not unlink an artifact while a runtime lease is active"
+    );
+    assert!(
+        matches!(
+            gc_state(&pool, &artifact_key).await.as_deref(),
+            Some("pending" | "blocked")
+        ),
+        "the protected artifact must remain represented by a retryable GC ledger row"
+    );
+
+    drop(lease);
+    store
+        .drain_pending_gc()
+        .await
+        .expect("retry GC after lease release");
+
+    assert!(
+        !artifact_path.exists(),
+        "the artifact must be removed once the last runtime lease is released"
+    );
+    assert_eq!(
+        gc_state(&pool, &artifact_key).await,
+        None,
+        "successful post-release GC must clear its ledger row"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_metadata_reference_keeps_gc_retryable_without_unlinking() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root()).expect("store");
+    let wasm = minimal_gc_probe_wasm();
+    let plugin = store
+        .install_with_metadata(
+            PluginArtifactInput::new("live-reference", "1.0.0", &wasm).expect("plugin input"),
+            v1_metadata("Live reference GC probe", &["gc_probe"], &[]),
+        )
+        .await
+        .expect("install referenced plugin");
+    let (artifact_key, artifact_path) = installed_artifact(&pool, &workspace, plugin.id()).await;
+    Plugin::register_gc_artifact(&pool, artifact_key.clone(), "reference-probe".into())
+        .await
+        .expect("register GC probe");
+
+    let drained = store.drain_pending_gc().await.expect("scan GC ledger");
+
+    assert_eq!(drained, 0, "a live metadata reference is not collectible");
+    assert!(
+        artifact_path.exists(),
+        "GC must preserve bytes still referenced by live metadata"
+    );
+    assert_eq!(
+        gc_state(&pool, &artifact_key).await.as_deref(),
+        Some("pending"),
+        "a transient live reference must stay retryable"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn identity_reappearance_blocks_gc_without_deleting_competitor_bytes() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let pool = migrated_pool(&workspace).await;
+    let store = PluginStore::new(pool.clone(), workspace.plugin_root()).expect("store");
+    let wasm = minimal_gc_probe_wasm();
+    let plugin = store
+        .install_with_metadata(
+            PluginArtifactInput::new("identity-gc", "1.0.0", &wasm).expect("plugin input"),
+            v1_metadata("Identity GC probe", &["gc_probe"], &[]),
+        )
+        .await
+        .expect("install identity-bound plugin");
+    let (artifact_key, artifact_path) = installed_artifact(&pool, &workspace, plugin.id()).await;
+    store.soft_delete(plugin.id()).await.expect("soft delete");
+    Plugin::register_gc_artifact(&pool, artifact_key.clone(), "identity-probe".into())
+        .await
+        .expect("register owned identity");
+
+    let displaced = workspace.root().join("displaced-owned-artifact.wasm");
+    std::fs::rename(&artifact_path, &displaced).expect("move the originally owned identity");
+    let competitor = b"competitor-reappeared-at-same-key";
+    let replacement = artifact_path.with_extension("replacement");
+    std::fs::write(&replacement, competitor).expect("stage competitor identity");
+    std::fs::rename(&replacement, &artifact_path).expect("publish competitor identity");
+
+    let drained = store
+        .drain_pending_gc()
+        .await
+        .expect("scan replaced identity");
+
+    assert_eq!(drained, 0, "identity reappearance must not be adopted");
+    assert_eq!(
+        gc_state(&pool, &artifact_key).await.as_deref(),
+        Some("blocked"),
+        "identity mismatch must stay blocked for explicit operator handling"
+    );
+    assert_eq!(
+        std::fs::read(&artifact_path).expect("competitor remains present"),
+        competitor,
+        "GC must never delete or rewrite bytes owned by the competing identity"
     );
 }

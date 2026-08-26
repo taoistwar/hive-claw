@@ -8,7 +8,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -141,6 +141,15 @@ pub enum RuntimeEventKind {
         /// Elapsed time in milliseconds since context creation.
         elapsed_ms: u64,
     },
+    /// One provider-to-provider transition in an LLM fallback chain.
+    FallbackUsed {
+        /// Model that failed with a retryable reason.
+        from_model: String,
+        /// Next configured model selected by priority.
+        to_model: String,
+        /// Stable provider-neutral reason; never raw provider text.
+        reason: String,
+    },
 }
 
 impl RuntimeEventKind {
@@ -266,6 +275,7 @@ struct ExecutionInner {
     sequencer: AtomicU64,
     terminal: AtomicBool,
     started_at_millis: u64,
+    segments_ms: Mutex<BTreeMap<String, u64>>,
 }
 
 impl ExecutionContext {
@@ -301,6 +311,7 @@ impl ExecutionContext {
                 sequencer: AtomicU64::new(0),
                 terminal: AtomicBool::new(false),
                 started_at_millis,
+                segments_ms: Mutex::new(BTreeMap::new()),
             }),
             agent_id: agent_id.into(),
             local_cancelled: Arc::new(AtomicBool::new(false)),
@@ -380,20 +391,38 @@ impl ExecutionContext {
 
     /// Emit an event to the shared sink.
     pub fn emit(&self, kind: RuntimeEventKind) -> Result<(), ExecutionError> {
-        if self.inner.terminal.load(Ordering::SeqCst) {
-            return Err(ExecutionError::AlreadyTerminal);
-        }
-        let sequence = self.inner.sequencer.fetch_add(1, Ordering::SeqCst);
-        let event = RuntimeEvent {
-            sequence,
-            execution_id: self.inner.execution_id.clone(),
-            session_id: self.inner.session_id.clone(),
+        self.event_emitter().emit(kind)
+    }
+
+    /// Return a cheap cloneable event-only handle for synchronous callbacks.
+    ///
+    /// Provider streaming callbacks use this handle to forward deltas without
+    /// retaining cancellation, permission, or child-context state.
+    pub fn event_emitter(&self) -> ExecutionEventEmitter {
+        ExecutionEventEmitter {
+            inner: self.inner.clone(),
             agent_id: self.agent_id.clone(),
-            occurred_at: now_iso8601(),
-            kind,
-        };
-        (self.inner.sink).emit(event);
-        Ok(())
+        }
+    }
+
+    /// Add elapsed milliseconds to a named execution segment.
+    ///
+    /// Repeated calls accumulate with saturation so nested work can report
+    /// multiple provider attempts under the same stable segment name.
+    pub fn record_segment_ms(&self, segment: impl Into<String>, elapsed_ms: u64) {
+        let mut segments = self.inner.segments_ms.lock().expect("segments lock");
+        let value = segments.entry(segment.into()).or_insert(0);
+        *value = value.saturating_add(elapsed_ms);
+    }
+
+    /// Return the accumulated milliseconds for `segment`, when recorded.
+    pub fn segment_ms(&self, segment: &str) -> Option<u64> {
+        self.inner
+            .segments_ms
+            .lock()
+            .expect("segments lock")
+            .get(segment)
+            .copied()
     }
 
     /// Finish the execution with a regular terminal outcome.
@@ -457,6 +486,36 @@ impl ExecutionContext {
         CancellationToken {
             flag: self.local_cancelled.clone(),
         }
+    }
+}
+
+/// Cloneable event-only projection of an [`ExecutionContext`].
+///
+/// It preserves the execution/session metadata, shared monotonic sequence and
+/// terminal gate while deliberately exposing neither permissions nor cancel.
+#[derive(Clone)]
+pub struct ExecutionEventEmitter {
+    inner: Arc<ExecutionInner>,
+    agent_id: String,
+}
+
+impl ExecutionEventEmitter {
+    /// Emit a non-terminal runtime event through the owning context's sink.
+    pub fn emit(&self, kind: RuntimeEventKind) -> Result<(), ExecutionError> {
+        if self.inner.terminal.load(Ordering::SeqCst) {
+            return Err(ExecutionError::AlreadyTerminal);
+        }
+        let sequence = self.inner.sequencer.fetch_add(1, Ordering::SeqCst);
+        let event = RuntimeEvent {
+            sequence,
+            execution_id: self.inner.execution_id.clone(),
+            session_id: self.inner.session_id.clone(),
+            agent_id: self.agent_id.clone(),
+            occurred_at: now_iso8601(),
+            kind,
+        };
+        (self.inner.sink).emit(event);
+        Ok(())
     }
 }
 

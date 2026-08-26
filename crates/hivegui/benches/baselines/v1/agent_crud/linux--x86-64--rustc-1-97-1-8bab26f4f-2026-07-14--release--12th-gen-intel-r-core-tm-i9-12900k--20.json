@@ -1,0 +1,39 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "agent_crud",
+      "owner_task": "T115",
+      "timing_boundary": "Agent CRUD lifecycle accepted through validation, create/fetch/update/delete transactions, and final absence materialized",
+      "excluded_time": [
+        "external I/O",
+        "Agent execution",
+        "Store open, migration, fixture loading, and baseline I/O"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 1000000000,
+      "workflow_node_count": null
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "release",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 45650266,
+      "p95": 50540772,
+      "p99": 52787314
+    }
+  },
+  "approval": {
+    "reviewer": "Codex designated reviewer under user standing authorization",
+    "approved_at": "2026-08-25",
+    "source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:4e1e504b2043b789036b4895a9bebc415905d1afc5b74bf5ed7212afef79400b"
+  }
+}

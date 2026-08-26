@@ -105,9 +105,8 @@ fn persisted_tool_serialised_form_is_self_contained() {
 }
 
 #[test]
-fn persisted_tool_serialised_form_is_canonical() {
-    // Two equivalent `PersistedTool` values constructed in different
-    // orders MUST serialise to identical bytes (canonical form).
+fn persisted_tool_serialised_form_preserves_declared_order() {
+    // Capability declaration order is part of the persisted contract.
     use hive_runtime_core::capability::CapabilityId;
     let mut a = RequiredCapabilities::empty();
     a.insert(CapabilityId::new("net.http").expect("valid"));
@@ -129,5 +128,65 @@ fn persisted_tool_serialised_form_is_canonical() {
         .required_capabilities(b)
         .unwrap()
         .build();
-    assert_eq!(tool_a.to_bytes().expect("a"), tool_b.to_bytes().expect("b"));
+    assert_ne!(tool_a.to_bytes().expect("a"), tool_b.to_bytes().expect("b"));
+}
+
+#[test]
+fn persisted_tool_preserves_declared_capability_order() {
+    use hive_runtime_core::capability::CapabilityId;
+
+    let declared = ["network.http", "fs.read", "log.emit"];
+    let mut capabilities = RequiredCapabilities::empty();
+    for capability in declared {
+        assert!(
+            capabilities.insert(CapabilityId::new(capability).expect("valid Capability")),
+            "fixture capabilities are unique"
+        );
+    }
+
+    let tool = PersistedToolBuilder::new(PersistedToolKind::FunctionWrap)
+        .target(PersistedToolTarget::function("fn.fetch_url"))
+        .expect("matching target")
+        .required_capabilities(capabilities)
+        .expect("ordered unique capabilities")
+        .build();
+    let restored = PersistedTool::from_bytes(&tool.to_bytes().expect("serialize"))
+        .expect("roundtrip persisted Tool");
+    let actual = restored
+        .required_capabilities()
+        .iter()
+        .map(|capability| capability.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        actual, declared,
+        "PersistedTool required_capabilities must preserve the caller's stable input order"
+    );
+}
+
+#[test]
+fn persisted_tool_rejects_duplicate_and_unknown_capabilities_at_construction() {
+    use hive_runtime_core::capability::{CapabilityId, CapabilitySet};
+
+    let log_emit = CapabilityId::new("log.emit").expect("valid Capability");
+    let mut known = CapabilitySet::empty();
+    known.insert(log_emit.clone());
+
+    let duplicate =
+        RequiredCapabilities::from_ordered(vec![log_emit.clone(), log_emit.clone()], &known)
+            .expect_err("duplicate Capability must fail");
+    assert!(matches!(
+        duplicate,
+        PersistedToolError::DuplicateCapability { .. }
+    ));
+
+    let unknown = RequiredCapabilities::from_ordered(
+        vec![CapabilityId::new("network.http").expect("valid but unavailable Capability")],
+        &known,
+    )
+    .expect_err("unknown Capability must fail");
+    assert!(matches!(
+        unknown,
+        PersistedToolError::UnknownCapability { .. }
+    ));
 }

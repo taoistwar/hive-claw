@@ -189,6 +189,24 @@ impl LlmStore {
             .map_err(Into::into)
     }
 
+    /// Resolve the default model name: the lowest-priority model under the
+    /// single default preset (`is_default = 1`). Returns `None` when no
+    /// default preset exists or the default preset has no models. This is
+    /// the fallback used when a caller (e.g. `generate_answer_node`) does not
+    /// specify an explicit model.
+    pub async fn default_model_name(&self) -> Result<Option<String>> {
+        let name: Option<String> = sqlx::query_scalar(
+            "SELECT m.name FROM models m \
+             JOIN llm_presets p ON p.id = m.preset_id \
+             WHERE p.is_default = 1 \
+             ORDER BY m.priority, m.id \
+             LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(name)
+    }
+
     pub async fn update_model(
         &self,
         id: i64,
@@ -267,6 +285,14 @@ impl LlmStore {
     pub async fn list_presets(&self) -> Result<Vec<LlmPreset>> {
         sqlx::query_as::<_, LlmPreset>("SELECT * FROM llm_presets ORDER BY id")
             .fetch_all(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Resolve the unique default Preset name for runtime provider selection.
+    pub async fn default_preset_name(&self) -> Result<Option<String>> {
+        sqlx::query_scalar("SELECT name FROM llm_presets WHERE is_default = 1 ORDER BY id LIMIT 1")
+            .fetch_optional(&self.pool)
             .await
             .map_err(Into::into)
     }

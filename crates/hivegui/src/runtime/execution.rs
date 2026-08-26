@@ -15,7 +15,7 @@
 #![warn(missing_docs)]
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -127,6 +127,391 @@ impl CancelHandle {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
+}
+
+/// One independently cancellable layer in a local Agent execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CancellationLayer {
+    /// Root Agent orchestration.
+    Agent,
+    /// Direct child-Agent orchestration.
+    ChildAgent,
+    /// Local LLM/provider call.
+    Llm,
+    /// Persisted Tool dispatch.
+    Tool,
+    /// Local Workflow execution.
+    Workflow,
+    /// Local Extism Plugin invocation.
+    Plugin,
+}
+
+/// Immutable request passed to a layered cancellation adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerExecutionRequest {
+    execution_id: String,
+    session_id: String,
+    layer: CancellationLayer,
+    external_side_effect: bool,
+}
+
+impl LayerExecutionRequest {
+    /// Owning execution UUID.
+    pub fn execution_id(&self) -> &str {
+        &self.execution_id
+    }
+
+    /// Owning session UUID.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Runtime layer being executed.
+    pub fn layer(&self) -> CancellationLayer {
+        self.layer
+    }
+
+    /// Whether successful completion may have an external side effect.
+    pub fn external_side_effect(&self) -> bool {
+        self.external_side_effect
+    }
+}
+
+/// Boxed future returned by [`LayerCancellationAdapter`].
+pub type LayerCancellationFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<LocalExecutionOutcome, LocalExecutionError>> + Send,
+    >,
+>;
+
+/// Production-facing adapter for one local execution layer.
+pub trait LayerCancellationAdapter: Send + Sync + 'static {
+    /// Execute one layer while observing the shared cooperative cancel handle.
+    fn execute_layer(
+        &self,
+        request: LayerExecutionRequest,
+        cancel: CancelHandle,
+    ) -> LayerCancellationFuture;
+}
+
+/// Stable validation error for the layered cancellation boundary.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[error("invalid_input:{field}:{reason}")]
+pub struct LayerCancellationError {
+    field: &'static str,
+    reason: &'static str,
+}
+
+impl LayerCancellationError {
+    fn new(field: &'static str, reason: &'static str) -> Self {
+        Self { field, reason }
+    }
+
+    /// Public field associated with the error.
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+
+    /// Stable non-sensitive reason code.
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+}
+
+/// Immutable terminal detail for one layered execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerCancellationSummary {
+    status: &'static str,
+    completed_layers: Vec<CancellationLayer>,
+    interrupted_layers: Vec<CancellationLayer>,
+    not_started_layers: Vec<CancellationLayer>,
+    side_effect_notice: Option<&'static str>,
+}
+
+impl LayerCancellationSummary {
+    /// Stable terminal status.
+    pub fn status(&self) -> &'static str {
+        self.status
+    }
+
+    /// Layers that completed before cancellation.
+    pub fn completed_layers(&self) -> &[CancellationLayer] {
+        &self.completed_layers
+    }
+
+    /// Layers interrupted cooperatively or by the forced deadline.
+    pub fn interrupted_layers(&self) -> &[CancellationLayer] {
+        &self.interrupted_layers
+    }
+
+    /// Planned layers that never started.
+    pub fn not_started_layers(&self) -> &[CancellationLayer] {
+        &self.not_started_layers
+    }
+
+    /// Stable warning when completed work may have external side effects.
+    pub fn side_effect_notice(&self) -> Option<&'static str> {
+        self.side_effect_notice
+    }
+}
+
+#[derive(Debug)]
+struct LayerExecutionState {
+    session_id: String,
+    planned: BTreeSet<CancellationLayer>,
+    cancel: CancelHandle,
+    scheduling_closed: bool,
+    started: BTreeSet<CancellationLayer>,
+    active: BTreeMap<CancellationLayer, tokio::task::AbortHandle>,
+    completed: BTreeSet<CancellationLayer>,
+    interrupted: BTreeSet<CancellationLayer>,
+    external_side_effects: BTreeSet<CancellationLayer>,
+    failed: bool,
+    terminal: Option<LayerCancellationSummary>,
+}
+
+struct LayeredCancellationInner<A> {
+    adapter: Arc<A>,
+    executions: Mutex<HashMap<String, LayerExecutionState>>,
+    notify: Notify,
+}
+
+/// Process-local coordinator that propagates Stop across every layer of one
+/// Agent execution without affecting other sessions.
+pub struct LayeredCancellationRuntime<A> {
+    inner: Arc<LayeredCancellationInner<A>>,
+}
+
+impl<A> Clone for LayeredCancellationRuntime<A> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<A> LayeredCancellationRuntime<A>
+where
+    A: LayerCancellationAdapter,
+{
+    /// Construct a coordinator around the unique local adapter boundary.
+    pub fn new(adapter: Arc<A>) -> Self {
+        Self {
+            inner: Arc::new(LayeredCancellationInner {
+                adapter,
+                executions: Mutex::new(HashMap::new()),
+                notify: Notify::new(),
+            }),
+        }
+    }
+
+    /// Register one execution and its immutable planned layer set.
+    pub fn start_execution(
+        &self,
+        execution_id: &str,
+        session_id: &str,
+        planned: &[CancellationLayer],
+    ) -> Result<(), LayerCancellationError> {
+        validate_layer_uuid(execution_id, "execution_id")?;
+        validate_layer_uuid(session_id, "session_id")?;
+        if planned.is_empty() {
+            return Err(LayerCancellationError::new("layers", "empty"));
+        }
+        let planned = planned.iter().copied().collect::<BTreeSet<_>>();
+        let mut executions = self.inner.executions.lock().expect("executions poisoned");
+        if executions.contains_key(execution_id) {
+            return Err(LayerCancellationError::new("execution_id", "duplicate"));
+        }
+        executions.insert(
+            execution_id.to_string(),
+            LayerExecutionState {
+                session_id: session_id.to_string(),
+                planned,
+                cancel: CancelHandle::new(),
+                scheduling_closed: false,
+                started: BTreeSet::new(),
+                active: BTreeMap::new(),
+                completed: BTreeSet::new(),
+                interrupted: BTreeSet::new(),
+                external_side_effects: BTreeSet::new(),
+                failed: false,
+                terminal: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Start one planned layer. Once Stop closes scheduling, no new layer may
+    /// begin even if it was part of the original plan.
+    pub async fn dispatch_step(
+        &self,
+        execution_id: &str,
+        layer: CancellationLayer,
+        external_side_effect: bool,
+    ) -> Result<(), LayerCancellationError> {
+        let (session_id, cancel) = {
+            let mut executions = self.inner.executions.lock().expect("executions poisoned");
+            let state = executions
+                .get_mut(execution_id)
+                .ok_or_else(|| LayerCancellationError::new("execution_id", "not_found"))?;
+            if state.scheduling_closed {
+                return Err(LayerCancellationError::new(
+                    "execution_id",
+                    "scheduling_closed",
+                ));
+            }
+            if !state.planned.contains(&layer) {
+                return Err(LayerCancellationError::new("layer", "not_planned"));
+            }
+            if !state.started.insert(layer) {
+                return Err(LayerCancellationError::new("layer", "already_started"));
+            }
+            if external_side_effect {
+                state.external_side_effects.insert(layer);
+            }
+            (state.session_id.clone(), state.cancel.clone())
+        };
+
+        let request = LayerExecutionRequest {
+            execution_id: execution_id.to_string(),
+            session_id,
+            layer,
+            external_side_effect,
+        };
+        let inner = Arc::clone(&self.inner);
+        let future = self.inner.adapter.execute_layer(request, cancel);
+        let execution_id_for_task = execution_id.to_string();
+        let task = tokio::spawn(async move {
+            let result = future.await;
+            let mut executions = inner.executions.lock().expect("executions poisoned");
+            if let Some(state) = executions.get_mut(&execution_id_for_task) {
+                state.active.remove(&layer);
+                if state.scheduling_closed {
+                    state.interrupted.insert(layer);
+                } else {
+                    match result {
+                        Ok(LocalExecutionOutcome::Completed) => {
+                            state.completed.insert(layer);
+                        }
+                        Ok(LocalExecutionOutcome::Cancelled) => {
+                            state.interrupted.insert(layer);
+                        }
+                        Ok(LocalExecutionOutcome::Failed(_)) | Err(_) => {
+                            state.interrupted.insert(layer);
+                            state.failed = true;
+                        }
+                    }
+                }
+                finalize_layer_state(state);
+            }
+            inner.notify.notify_waiters();
+        });
+        let abort_handle = task.abort_handle();
+        let mut executions = self.inner.executions.lock().expect("executions poisoned");
+        if let Some(state) = executions.get_mut(execution_id)
+            && state.terminal.is_none()
+            && !task.is_finished()
+        {
+            state.active.insert(layer, abort_handle);
+        }
+        Ok(())
+    }
+
+    /// Close scheduling and propagate cooperative cancellation. Any layer that
+    /// remains live at [`CANCEL_DEADLINE`] is aborted and recorded interrupted.
+    pub fn cancel_execution(&self, execution_id: &str) -> Result<(), LayerCancellationError> {
+        {
+            let mut executions = self.inner.executions.lock().expect("executions poisoned");
+            let state = executions
+                .get_mut(execution_id)
+                .ok_or_else(|| LayerCancellationError::new("execution_id", "not_found"))?;
+            if state.terminal.is_some() {
+                return Ok(());
+            }
+            state.scheduling_closed = true;
+            state.cancel.signal();
+            finalize_layer_state(state);
+        }
+        self.inner.notify.notify_waiters();
+
+        let inner = Arc::clone(&self.inner);
+        let execution_id = execution_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(CANCEL_DEADLINE).await;
+            let mut executions = inner.executions.lock().expect("executions poisoned");
+            if let Some(state) = executions.get_mut(&execution_id)
+                && state.terminal.is_none()
+            {
+                let active = std::mem::take(&mut state.active);
+                for (layer, handle) in active {
+                    handle.abort();
+                    state.interrupted.insert(layer);
+                }
+                finalize_layer_state(state);
+            }
+            inner.notify.notify_waiters();
+        });
+        Ok(())
+    }
+
+    /// Wait for an immutable terminal summary.
+    pub async fn wait_for_terminal(
+        &self,
+        execution_id: &str,
+    ) -> Result<LayerCancellationSummary, LayerCancellationError> {
+        loop {
+            let notified = self.inner.notify.notified();
+            {
+                let executions = self.inner.executions.lock().expect("executions poisoned");
+                let state = executions
+                    .get(execution_id)
+                    .ok_or_else(|| LayerCancellationError::new("execution_id", "not_found"))?;
+                if let Some(summary) = &state.terminal {
+                    return Ok(summary.clone());
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
+fn validate_layer_uuid(value: &str, field: &'static str) -> Result<(), LayerCancellationError> {
+    uuid::Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|_| LayerCancellationError::new(field, "invalid_uuid"))
+}
+
+fn finalize_layer_state(state: &mut LayerExecutionState) {
+    if state.terminal.is_some() || !state.active.is_empty() {
+        return;
+    }
+    if !state.scheduling_closed && state.started != state.planned {
+        return;
+    }
+    let status = if state.scheduling_closed {
+        "cancelled"
+    } else if state.failed {
+        "failed"
+    } else {
+        "completed"
+    };
+    let not_started_layers = state
+        .planned
+        .difference(&state.started)
+        .copied()
+        .collect::<Vec<_>>();
+    let side_effect_notice = state
+        .completed
+        .iter()
+        .any(|layer| state.external_side_effects.contains(layer))
+        .then_some("completed external side effects are not rolled back");
+    state.terminal = Some(LayerCancellationSummary {
+        status,
+        completed_layers: state.completed.iter().copied().collect(),
+        interrupted_layers: state.interrupted.iter().copied().collect(),
+        not_started_layers,
+        side_effect_notice,
+    });
 }
 
 /// Failure categories that the adapter may return. They are stable so

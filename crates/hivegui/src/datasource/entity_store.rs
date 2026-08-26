@@ -1,8 +1,25 @@
 use anyhow::Result;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use uuid::Uuid;
+
+use super::function_store::{FunctionInput, FunctionKind, FunctionStore};
+use super::plugin_artifacts::{GcState, OperationKind, OperationState, derive_staging_name};
+use super::query_count::QueryCountObserver;
+use super::query_plan::{
+    AGENT_FTS_COUNT_SQL, AGENT_FTS_LIST_SQL, AGENT_MODEL_PRESET_EXISTS_SQL,
+    AGENT_RESOURCE_BASE_SQL, AGENT_RESOURCE_CAPABILITIES_SQL, AGENT_RESOURCE_SKILLS_SQL,
+    AGENT_RESOURCE_TOOLS_SQL, AGENT_SHORT_GRAM_COUNT_SQL, AGENT_SHORT_GRAM_LIST_SQL,
+    AGENT_UNFILTERED_COUNT_SQL, AGENT_UNFILTERED_LIST_SQL,
+};
+use super::search_index::{
+    IndexBackend, IndexSelection, canonical_normalizer, delete_entity_search_documents,
+    fts_literal_phrase, normalize_search_query, replace_entity_search_documents,
+};
+use super::store::Store;
 
 /// FR-025: 自动重试机制 - 指数退避重试临时性错误
 /// 重试策略：最多 3 次，间隔 1s, 2s, 4s
@@ -678,6 +695,267 @@ pub struct Plugin {
     pub deleted_at: Option<String>,
 }
 
+/// Optional per-plugin execution limits persisted as a JSON object.
+///
+/// Missing fields select the runtime defaults. Present fields are validated at
+/// the Store boundary before any row is written.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginResourceLimits {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mb: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_limit_bytes: Option<i64>,
+}
+
+/// Immutable tuple for a newly published plugin artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewArtifact {
+    pub s3_key: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub resource_limits: PluginResourceLimits,
+}
+
+/// Exact old Plugin tuple used by the original online replace CAS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedPluginRevision {
+    pub plugin_id: i64,
+    pub identifier: String,
+    pub version: String,
+    pub s3_key: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub identity: String,
+    pub resource_limits: PluginResourceLimits,
+    pub row_revision: i64,
+}
+
+/// Typed input for creating a durable plugin artifact operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparePluginOperation {
+    Create {
+        target_identifier: String,
+        new: NewArtifact,
+    },
+    Replace {
+        expected_old: ExpectedPluginRevision,
+        new: NewArtifact,
+    },
+}
+
+/// Legal state transitions which do not themselves create user rows or GC
+/// ownership records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationTransition {
+    Staged { staging_identity: String },
+    Published { new_identity: String },
+    Done,
+    Conflict,
+}
+
+/// An artifact owned by an operation and therefore eligible for derived GC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationGcTarget {
+    PublishedNew,
+    ExpectedOld,
+}
+
+/// User-visible fields committed only after a create operation is published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePluginFields {
+    pub version: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub manifest: Option<String>,
+    pub runtime: String,
+    pub author: Option<String>,
+    pub repository_url: Option<String>,
+    pub category_id: Option<i64>,
+    pub capabilities: String,
+}
+
+/// Stable result of the original online replace CAS.
+#[derive(Debug, Clone)]
+pub enum ReplaceOutcome {
+    Referenced {
+        plugin: Box<Plugin>,
+    },
+    ConcurrentConflict {
+        plugin_id: i64,
+        actual_row_revision: Option<i64>,
+    },
+}
+
+/// Stable result of atomically deriving GC ownership and finishing an
+/// operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishOutcome {
+    Finished { gc_state: GcState },
+    AlreadyDone { gc_state: GcState },
+}
+
+/// Typed representation of one row in `plugin_artifact_operations`.
+#[derive(Debug, Clone)]
+pub struct PluginArtifactOperation {
+    operation_id: Uuid,
+    kind: OperationKind,
+    state: OperationState,
+    target_identifier: String,
+    plugin_id: Option<i64>,
+    expected_old_identifier: Option<String>,
+    expected_old_version: Option<String>,
+    expected_old_s3_key: Option<String>,
+    expected_old_sha256: Option<String>,
+    expected_old_size: Option<i64>,
+    expected_old_identity: Option<String>,
+    expected_old_resource_limits: Option<String>,
+    expected_old_row_revision: Option<i64>,
+    staging_name: String,
+    staging_identity: Option<String>,
+    new_s3_key: String,
+    new_sha256: String,
+    new_size: i64,
+    new_resource_limits: String,
+    new_identity: Option<String>,
+}
+
+impl PluginArtifactOperation {
+    pub fn operation_id(&self) -> Uuid {
+        self.operation_id
+    }
+
+    pub fn kind(&self) -> OperationKind {
+        self.kind
+    }
+
+    pub fn state(&self) -> OperationState {
+        self.state
+    }
+
+    pub fn staging_name(&self) -> &str {
+        &self.staging_name
+    }
+
+    pub fn plugin_id(&self) -> Option<i64> {
+        self.plugin_id
+    }
+
+    pub(crate) fn target_identifier(&self) -> &str {
+        &self.target_identifier
+    }
+
+    pub(crate) fn staging_identity(&self) -> Option<&str> {
+        self.staging_identity.as_deref()
+    }
+
+    pub(crate) fn new_s3_key(&self) -> &str {
+        &self.new_s3_key
+    }
+
+    pub(crate) fn new_sha256(&self) -> &str {
+        &self.new_sha256
+    }
+
+    pub(crate) fn new_size_bytes(&self) -> i64 {
+        self.new_size
+    }
+
+    pub(crate) fn new_resource_limits_json(&self) -> &str {
+        &self.new_resource_limits
+    }
+
+    pub(crate) fn new_identity(&self) -> Option<&str> {
+        self.new_identity.as_deref()
+    }
+
+    pub(crate) fn expected_old_s3_key(&self) -> Option<&str> {
+        self.expected_old_s3_key.as_deref()
+    }
+
+    pub(crate) fn expected_old_sha256(&self) -> Option<&str> {
+        self.expected_old_sha256.as_deref()
+    }
+
+    pub(crate) fn expected_old_size_bytes(&self) -> Option<i64> {
+        self.expected_old_size
+    }
+
+    pub(crate) fn expected_old_identity(&self) -> Option<&str> {
+        self.expected_old_identity.as_deref()
+    }
+
+    pub(crate) fn expected_old_row_revision(&self) -> Option<i64> {
+        self.expected_old_row_revision
+    }
+}
+
+/// Fail-closed errors emitted by the typed plugin artifact ledger.
+#[derive(Debug, Error)]
+pub enum PluginLedgerError {
+    #[error("not_found: plugin artifact operation {operation_id}")]
+    NotFound { operation_id: Uuid },
+    #[error("kind_mismatch: operation {operation_id} is {actual:?}, expected {expected:?}")]
+    KindMismatch {
+        operation_id: Uuid,
+        expected: OperationKind,
+        actual: OperationKind,
+    },
+    #[error("state_conflict: operation {operation_id} is {actual:?}, expected {expected:?}")]
+    StateConflict {
+        operation_id: Uuid,
+        expected: OperationState,
+        actual: OperationState,
+    },
+    #[error("invalid_input: {field}: {reason}")]
+    InvalidInput { field: String, reason: String },
+    #[error("corrupt_ledger: {0}")]
+    CorruptLedger(String),
+    #[error("backend: {0}")]
+    Backend(#[from] sqlx::Error),
+}
+
+/// Explicit typed boundary for the internal Plugin artifact ledger.
+#[derive(Debug, Clone)]
+pub struct PluginArtifactLedger {
+    pool: Pool<Sqlite>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PluginArtifactOperationRow {
+    operation_id: String,
+    kind: String,
+    state: String,
+    target_identifier: Option<String>,
+    plugin_id: Option<String>,
+    expected_old_identifier: Option<String>,
+    expected_old_version: Option<String>,
+    expected_old_s3_key: Option<String>,
+    expected_old_sha256: Option<String>,
+    expected_old_size: Option<i64>,
+    expected_old_identity: Option<String>,
+    expected_old_resource_limits: Option<String>,
+    expected_old_row_revision: Option<i64>,
+    staging_name: String,
+    staging_identity: Option<String>,
+    new_s3_key: Option<String>,
+    new_sha256: Option<String>,
+    new_size: Option<i64>,
+    new_resource_limits: Option<String>,
+    new_identity: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OperationGcOwnership {
+    artifact_key: String,
+    sha256: String,
+    size_bytes: i64,
+    identity: String,
+    reason: &'static str,
+}
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub id: i64,
@@ -1298,6 +1576,1160 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Capability {
     }
 }
 
+const GET_PLUGIN_ARTIFACT_OPERATION_SQL: &str = "SELECT operation_id, kind, state, target_identifier, plugin_id, \
+            expected_old_identifier, expected_old_version, expected_old_s3_key, \
+            expected_old_sha256, expected_old_size, expected_old_identity, \
+            expected_old_resource_limits, expected_old_row_revision, \
+            staging_name, staging_identity, new_s3_key, new_sha256, new_size, \
+            new_resource_limits, new_identity \
+     FROM plugin_artifact_operations WHERE operation_id = ?";
+
+const LIST_PLUGIN_ARTIFACT_OPERATIONS_SQL: &str = "SELECT operation_id, kind, state, target_identifier, plugin_id, \
+            expected_old_identifier, expected_old_version, expected_old_s3_key, \
+            expected_old_sha256, expected_old_size, expected_old_identity, \
+            expected_old_resource_limits, expected_old_row_revision, \
+            staging_name, staging_identity, new_s3_key, new_sha256, new_size, \
+            new_resource_limits, new_identity \
+     FROM plugin_artifact_operations \
+     WHERE state <> 'done' ORDER BY created_at, operation_id";
+
+impl TryFrom<PluginArtifactOperationRow> for PluginArtifactOperation {
+    type Error = PluginLedgerError;
+
+    fn try_from(row: PluginArtifactOperationRow) -> std::result::Result<Self, Self::Error> {
+        let operation_id = Uuid::parse_str(&row.operation_id).map_err(|error| {
+            PluginLedgerError::CorruptLedger(format!(
+                "operation_id {:?} is not a UUID: {error}",
+                row.operation_id
+            ))
+        })?;
+        let kind = parse_operation_kind(&row.kind)?;
+        let state = parse_operation_state(&row.state)?;
+        let target_identifier =
+            required_ledger_text(row.target_identifier, operation_id, "target_identifier")?;
+        let plugin_id = row
+            .plugin_id
+            .map(|value| {
+                value.parse::<i64>().map_err(|error| {
+                    PluginLedgerError::CorruptLedger(format!(
+                        "operation {operation_id} has invalid plugin_id {value:?}: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        let new_s3_key = required_ledger_text(row.new_s3_key, operation_id, "new_s3_key")?;
+        let new_sha256 = required_ledger_text(row.new_sha256, operation_id, "new_sha256")?;
+        let new_size = row.new_size.ok_or_else(|| {
+            PluginLedgerError::CorruptLedger(format!("operation {operation_id} has NULL new_size"))
+        })?;
+        let new_resource_limits =
+            required_ledger_text(row.new_resource_limits, operation_id, "new_resource_limits")?;
+
+        if row.staging_name != derive_staging_name(&operation_id.to_string()) {
+            return Err(PluginLedgerError::CorruptLedger(format!(
+                "operation {operation_id} has a non-derived staging_name"
+            )));
+        }
+
+        validate_artifact_fields(&new_s3_key, &new_sha256, new_size).map_err(|error| {
+            PluginLedgerError::CorruptLedger(format!(
+                "operation {operation_id} has an invalid new artifact tuple: {error}"
+            ))
+        })?;
+        parse_resource_limits_json(&new_resource_limits).map_err(|error| {
+            PluginLedgerError::CorruptLedger(format!(
+                "operation {operation_id} has invalid new_resource_limits: {error}"
+            ))
+        })?;
+
+        let operation = Self {
+            operation_id,
+            kind,
+            state,
+            target_identifier,
+            plugin_id,
+            expected_old_identifier: row.expected_old_identifier,
+            expected_old_version: row.expected_old_version,
+            expected_old_s3_key: row.expected_old_s3_key,
+            expected_old_sha256: row.expected_old_sha256,
+            expected_old_size: row.expected_old_size,
+            expected_old_identity: row.expected_old_identity,
+            expected_old_resource_limits: row.expected_old_resource_limits,
+            expected_old_row_revision: row.expected_old_row_revision,
+            staging_name: row.staging_name,
+            staging_identity: row.staging_identity,
+            new_s3_key,
+            new_sha256,
+            new_size,
+            new_resource_limits,
+            new_identity: row.new_identity,
+        };
+        validate_operation_invariants(&operation)?;
+        Ok(operation)
+    }
+}
+
+fn required_ledger_text(
+    value: Option<String>,
+    operation_id: Uuid,
+    field: &str,
+) -> std::result::Result<String, PluginLedgerError> {
+    value.filter(|value| !value.is_empty()).ok_or_else(|| {
+        PluginLedgerError::CorruptLedger(format!(
+            "operation {operation_id} has NULL or empty {field}"
+        ))
+    })
+}
+
+fn parse_operation_kind(value: &str) -> std::result::Result<OperationKind, PluginLedgerError> {
+    match value {
+        "create" => Ok(OperationKind::Create),
+        "replace" => Ok(OperationKind::Replace),
+        _ => Err(PluginLedgerError::CorruptLedger(format!(
+            "unknown operation kind {value:?}"
+        ))),
+    }
+}
+
+fn parse_operation_state(value: &str) -> std::result::Result<OperationState, PluginLedgerError> {
+    match value {
+        "prepared" => Ok(OperationState::Prepared),
+        "staged" => Ok(OperationState::Staged),
+        "published" => Ok(OperationState::Published),
+        "referenced" => Ok(OperationState::Referenced),
+        "done" => Ok(OperationState::Done),
+        "conflict" => Ok(OperationState::Conflict),
+        _ => Err(PluginLedgerError::CorruptLedger(format!(
+            "unknown operation state {value:?}"
+        ))),
+    }
+}
+
+fn parse_gc_state(value: &str) -> std::result::Result<GcState, PluginLedgerError> {
+    match value {
+        "pending" => Ok(GcState::Pending),
+        "blocked" => Ok(GcState::Blocked),
+        _ => Err(PluginLedgerError::CorruptLedger(format!(
+            "unknown GC state {value:?}"
+        ))),
+    }
+}
+
+fn invalid_ledger_input(field: &str, reason: impl Into<String>) -> PluginLedgerError {
+    PluginLedgerError::InvalidInput {
+        field: field.to_string(),
+        reason: reason.into(),
+    }
+}
+
+impl PluginResourceLimits {
+    fn validate(&self) -> std::result::Result<(), PluginLedgerError> {
+        validate_optional_limit(self.timeout_ms, "timeout_ms", 1, 120_000)?;
+        validate_optional_limit(self.memory_limit_mb, "memory_limit_mb", 1, 512)?;
+        validate_optional_limit(self.output_limit_bytes, "output_limit_bytes", 1, 52_428_800)?;
+        Ok(())
+    }
+
+    fn to_json(&self) -> std::result::Result<String, PluginLedgerError> {
+        self.validate()?;
+        serde_json::to_string(self).map_err(|error| {
+            invalid_ledger_input(
+                "resource_limits",
+                format!("cannot serialize limits: {error}"),
+            )
+        })
+    }
+}
+
+fn validate_optional_limit(
+    value: Option<i64>,
+    field: &str,
+    minimum: i64,
+    maximum: i64,
+) -> std::result::Result<(), PluginLedgerError> {
+    if let Some(value) = value
+        && !(minimum..=maximum).contains(&value)
+    {
+        return Err(invalid_ledger_input(
+            field,
+            format!("must be in {minimum}..={maximum}, got {value}"),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_resource_limits_json(
+    value: &str,
+) -> std::result::Result<PluginResourceLimits, PluginLedgerError> {
+    if value.len() > 1024 * 1024 {
+        return Err(invalid_ledger_input(
+            "resource_limits",
+            "JSON exceeds 1 MiB",
+        ));
+    }
+    let limits = serde_json::from_str::<PluginResourceLimits>(value).map_err(|error| {
+        invalid_ledger_input("resource_limits", format!("invalid JSON object: {error}"))
+    })?;
+    limits.validate()?;
+    Ok(limits)
+}
+
+fn validate_capabilities_json(value: &str) -> std::result::Result<(), PluginLedgerError> {
+    if value.len() > 1024 * 1024 {
+        return Err(invalid_ledger_input("capabilities", "JSON exceeds 1 MiB"));
+    }
+    let capabilities = serde_json::from_str::<Vec<String>>(value).map_err(|error| {
+        invalid_ledger_input(
+            "capabilities",
+            format!("must be a JSON array of strings: {error}"),
+        )
+    })?;
+    if capabilities.iter().any(|value| value.trim().is_empty()) {
+        return Err(invalid_ledger_input(
+            "capabilities",
+            "entries must be non-empty strings",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artifact_fields(
+    s3_key: &str,
+    sha256: &str,
+    size_bytes: i64,
+) -> std::result::Result<(), PluginLedgerError> {
+    if s3_key.is_empty()
+        || s3_key.len() > 1024
+        || s3_key.starts_with('/')
+        || s3_key.ends_with('/')
+        || s3_key.contains('\\')
+        || s3_key.contains('\0')
+        || s3_key
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+    {
+        return Err(invalid_ledger_input(
+            "s3_key",
+            "must be a safe non-empty relative artifact key",
+        ));
+    }
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid_ledger_input(
+            "sha256",
+            "must contain exactly 64 lowercase hexadecimal characters",
+        ));
+    }
+    if size_bytes <= 0 {
+        return Err(invalid_ledger_input(
+            "size_bytes",
+            "must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_identity(field: &str, identity: &str) -> std::result::Result<(), PluginLedgerError> {
+    if identity.trim().is_empty() || identity.len() > 4096 {
+        return Err(invalid_ledger_input(
+            field,
+            "must be a non-empty bounded file identity",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_new_artifact(new: &NewArtifact) -> std::result::Result<String, PluginLedgerError> {
+    validate_artifact_fields(&new.s3_key, &new.sha256, new.size_bytes)?;
+    new.resource_limits.to_json()
+}
+
+fn validate_operation_invariants(
+    operation: &PluginArtifactOperation,
+) -> std::result::Result<(), PluginLedgerError> {
+    validate_identifier(&operation.target_identifier).map_err(|error| {
+        PluginLedgerError::CorruptLedger(format!(
+            "operation {} has invalid target_identifier: {error}",
+            operation.operation_id
+        ))
+    })?;
+
+    match operation.kind {
+        OperationKind::Create => {
+            if operation.expected_old_identifier.is_some()
+                || operation.expected_old_version.is_some()
+                || operation.expected_old_s3_key.is_some()
+                || operation.expected_old_sha256.is_some()
+                || operation.expected_old_size.is_some()
+                || operation.expected_old_identity.is_some()
+                || operation.expected_old_resource_limits.is_some()
+                || operation.expected_old_row_revision.is_some()
+            {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "create operation {} contains an expected-old tuple",
+                    operation.operation_id
+                )));
+            }
+        }
+        OperationKind::Replace => {
+            let old_identifier = operation
+                .expected_old_identifier
+                .as_deref()
+                .ok_or_else(|| {
+                    PluginLedgerError::CorruptLedger(format!(
+                        "replace operation {} is missing expected_old_identifier",
+                        operation.operation_id
+                    ))
+                })?;
+            let old_version = operation.expected_old_version.as_deref().ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} is missing expected_old_version",
+                    operation.operation_id
+                ))
+            })?;
+            let old_s3_key = operation.expected_old_s3_key.as_deref().ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} is missing expected_old_s3_key",
+                    operation.operation_id
+                ))
+            })?;
+            let old_sha256 = operation.expected_old_sha256.as_deref().ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} is missing expected_old_sha256",
+                    operation.operation_id
+                ))
+            })?;
+            let old_size = operation.expected_old_size.ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} is missing expected_old_size",
+                    operation.operation_id
+                ))
+            })?;
+            let old_identity = operation.expected_old_identity.as_deref().ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} is missing expected_old_identity",
+                    operation.operation_id
+                ))
+            })?;
+            let old_limits = operation
+                .expected_old_resource_limits
+                .as_deref()
+                .ok_or_else(|| {
+                    PluginLedgerError::CorruptLedger(format!(
+                        "replace operation {} is missing expected_old_resource_limits",
+                        operation.operation_id
+                    ))
+                })?;
+            if operation.plugin_id.is_none() || operation.expected_old_row_revision.is_none() {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} is missing plugin_id or expected revision",
+                    operation.operation_id
+                )));
+            }
+            if old_identifier != operation.target_identifier || old_version.trim().is_empty() {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} has an inconsistent old identifier/version",
+                    operation.operation_id
+                )));
+            }
+            validate_artifact_fields(old_s3_key, old_sha256, old_size).map_err(|error| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} has an invalid old artifact tuple: {error}",
+                    operation.operation_id
+                ))
+            })?;
+            validate_identity("expected_old_identity", old_identity).map_err(|error| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} has an invalid old identity: {error}",
+                    operation.operation_id
+                ))
+            })?;
+            parse_resource_limits_json(old_limits).map_err(|error| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} has invalid old resource limits: {error}",
+                    operation.operation_id
+                ))
+            })?;
+        }
+    }
+
+    match operation.state {
+        OperationState::Prepared => {
+            if operation.staging_identity.is_some() || operation.new_identity.is_some() {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "prepared operation {} contains an identity",
+                    operation.operation_id
+                )));
+            }
+        }
+        OperationState::Staged => {
+            if operation.staging_identity.is_none() || operation.new_identity.is_some() {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "staged operation {} has an invalid identity shape",
+                    operation.operation_id
+                )));
+            }
+        }
+        OperationState::Published | OperationState::Referenced => {
+            if operation.staging_identity.is_none() || operation.new_identity.is_none() {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "published/referenced operation {} has an invalid identity shape",
+                    operation.operation_id
+                )));
+            }
+        }
+        OperationState::Done => {
+            if operation.new_identity.is_some() && operation.staging_identity.is_none() {
+                return Err(PluginLedgerError::CorruptLedger(format!(
+                    "done operation {} has an invalid identity shape",
+                    operation.operation_id
+                )));
+            }
+        }
+        OperationState::Conflict => {}
+    }
+    Ok(())
+}
+
+impl PluginArtifactLedger {
+    pub fn new(pool: Pool<Sqlite>) -> Self {
+        Self { pool }
+    }
+
+    pub async fn prepare(
+        &self,
+        operation_id: Uuid,
+        input: PreparePluginOperation,
+    ) -> std::result::Result<PluginArtifactOperation, PluginLedgerError> {
+        let staging_name = derive_staging_name(&operation_id.to_string());
+        let now = Utc::now().to_rfc3339();
+
+        match input {
+            PreparePluginOperation::Create {
+                target_identifier,
+                new,
+            } => {
+                validate_identifier(&target_identifier).map_err(|error| {
+                    invalid_ledger_input("target_identifier", error.to_string())
+                })?;
+                let new_resource_limits = validate_new_artifact(&new)?;
+                sqlx::query(
+                    "INSERT INTO plugin_artifact_operations (\
+                         operation_id, kind, target_identifier, plugin_id, \
+                         expected_old_identifier, expected_old_version, \
+                         expected_old_s3_key, expected_old_sha256, expected_old_size, \
+                         expected_old_identity, expected_old_resource_limits, \
+                         expected_old_row_revision, staging_name, staging_identity, \
+                         new_s3_key, new_sha256, new_size, new_resource_limits, \
+                         new_identity, state, created_at, updated_at\
+                     ) VALUES (?, 'create', ?, NULL, NULL, NULL, NULL, NULL, NULL, \
+                         NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?, NULL, 'prepared', ?, ?)",
+                )
+                .bind(operation_id.to_string())
+                .bind(target_identifier)
+                .bind(staging_name)
+                .bind(new.s3_key)
+                .bind(new.sha256)
+                .bind(new.size_bytes)
+                .bind(new_resource_limits)
+                .bind(&now)
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+            }
+            PreparePluginOperation::Replace { expected_old, new } => {
+                validate_identifier(&expected_old.identifier).map_err(|error| {
+                    invalid_ledger_input("expected_old.identifier", error.to_string())
+                })?;
+                if expected_old.plugin_id <= 0 {
+                    return Err(invalid_ledger_input(
+                        "expected_old.plugin_id",
+                        "must be greater than zero",
+                    ));
+                }
+                if expected_old.version.trim().is_empty() || expected_old.version.len() > 255 {
+                    return Err(invalid_ledger_input(
+                        "expected_old.version",
+                        "must be non-empty and at most 255 bytes",
+                    ));
+                }
+                if expected_old.row_revision < 0 {
+                    return Err(invalid_ledger_input(
+                        "expected_old.row_revision",
+                        "must be non-negative",
+                    ));
+                }
+                validate_artifact_fields(
+                    &expected_old.s3_key,
+                    &expected_old.sha256,
+                    expected_old.size_bytes,
+                )?;
+                validate_identity("expected_old.identity", &expected_old.identity)?;
+                let old_resource_limits = expected_old.resource_limits.to_json()?;
+                let new_resource_limits = validate_new_artifact(&new)?;
+                if new.s3_key == expected_old.s3_key {
+                    return Err(invalid_ledger_input(
+                        "new.s3_key",
+                        "replace must publish a distinct immutable key",
+                    ));
+                }
+
+                sqlx::query(
+                    "INSERT INTO plugin_artifact_operations (\
+                         operation_id, kind, target_identifier, plugin_id, \
+                         expected_old_identifier, expected_old_version, \
+                         expected_old_s3_key, expected_old_sha256, expected_old_size, \
+                         expected_old_identity, expected_old_resource_limits, \
+                         expected_old_row_revision, staging_name, staging_identity, \
+                         new_s3_key, new_sha256, new_size, new_resource_limits, \
+                         new_identity, state, created_at, updated_at\
+                     ) VALUES (?, 'replace', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, \
+                         ?, ?, ?, ?, NULL, 'prepared', ?, ?)",
+                )
+                .bind(operation_id.to_string())
+                .bind(&expected_old.identifier)
+                .bind(expected_old.plugin_id.to_string())
+                .bind(&expected_old.identifier)
+                .bind(expected_old.version)
+                .bind(expected_old.s3_key)
+                .bind(expected_old.sha256)
+                .bind(expected_old.size_bytes)
+                .bind(expected_old.identity)
+                .bind(old_resource_limits)
+                .bind(expected_old.row_revision)
+                .bind(staging_name)
+                .bind(new.s3_key)
+                .bind(new.sha256)
+                .bind(new.size_bytes)
+                .bind(new_resource_limits)
+                .bind(&now)
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+
+        self.required(operation_id).await
+    }
+
+    pub async fn get(
+        &self,
+        operation_id: Uuid,
+    ) -> std::result::Result<Option<PluginArtifactOperation>, PluginLedgerError> {
+        let row =
+            sqlx::query_as::<_, PluginArtifactOperationRow>(GET_PLUGIN_ARTIFACT_OPERATION_SQL)
+                .bind(operation_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        row.map(TryInto::try_into).transpose()
+    }
+
+    pub async fn list_not_done(
+        &self,
+    ) -> std::result::Result<Vec<PluginArtifactOperation>, PluginLedgerError> {
+        sqlx::query_as::<_, PluginArtifactOperationRow>(LIST_PLUGIN_ARTIFACT_OPERATIONS_SQL)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub async fn transition(
+        &self,
+        operation_id: Uuid,
+        expected: OperationState,
+        change: OperationTransition,
+    ) -> std::result::Result<PluginArtifactOperation, PluginLedgerError> {
+        let operation = self.required(operation_id).await?;
+        if operation.state != expected {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected,
+                actual: operation.state,
+            });
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let result = match change {
+            OperationTransition::Staged { staging_identity } => {
+                if expected != OperationState::Prepared {
+                    return Err(invalid_ledger_input(
+                        "state",
+                        "Staged is only legal from Prepared",
+                    ));
+                }
+                validate_identity("staging_identity", &staging_identity)?;
+                sqlx::query(
+                    "UPDATE plugin_artifact_operations \
+                     SET staging_identity = ?, state = 'staged', updated_at = ? \
+                     WHERE operation_id = ? AND state = 'prepared'",
+                )
+                .bind(staging_identity)
+                .bind(&now)
+                .bind(operation_id.to_string())
+                .execute(&self.pool)
+                .await?
+            }
+            OperationTransition::Published { new_identity } => {
+                if expected != OperationState::Staged {
+                    return Err(invalid_ledger_input(
+                        "state",
+                        "Published is only legal from Staged",
+                    ));
+                }
+                validate_identity("new_identity", &new_identity)?;
+                sqlx::query(
+                    "UPDATE plugin_artifact_operations \
+                     SET new_identity = ?, state = 'published', updated_at = ? \
+                     WHERE operation_id = ? AND state = 'staged'",
+                )
+                .bind(new_identity)
+                .bind(&now)
+                .bind(operation_id.to_string())
+                .execute(&self.pool)
+                .await?
+            }
+            OperationTransition::Done => {
+                let legal = matches!(expected, OperationState::Prepared | OperationState::Staged)
+                    || (expected == OperationState::Referenced
+                        && operation.kind == OperationKind::Create);
+                if !legal {
+                    return Err(invalid_ledger_input(
+                        "state",
+                        "Done would bypass owned-artifact GC or a user commit",
+                    ));
+                }
+                sqlx::query(
+                    "UPDATE plugin_artifact_operations SET state = 'done', updated_at = ? \
+                     WHERE operation_id = ? AND state = ?",
+                )
+                .bind(&now)
+                .bind(operation_id.to_string())
+                .bind(expected.as_str())
+                .execute(&self.pool)
+                .await?
+            }
+            OperationTransition::Conflict => {
+                if matches!(
+                    expected,
+                    OperationState::Referenced | OperationState::Done | OperationState::Conflict
+                ) {
+                    return Err(invalid_ledger_input(
+                        "state",
+                        "committed or terminal operations cannot transition to Conflict",
+                    ));
+                }
+                sqlx::query(
+                    "UPDATE plugin_artifact_operations SET state = 'conflict', updated_at = ? \
+                     WHERE operation_id = ? AND state = ?",
+                )
+                .bind(&now)
+                .bind(operation_id.to_string())
+                .bind(expected.as_str())
+                .execute(&self.pool)
+                .await?
+            }
+        };
+
+        if result.rows_affected() != 1 {
+            let actual = self.required(operation_id).await?.state;
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected,
+                actual,
+            });
+        }
+        self.required(operation_id).await
+    }
+
+    pub async fn commit_published_create(
+        &self,
+        operation_id: Uuid,
+        fields: CreatePluginFields,
+    ) -> std::result::Result<Plugin, PluginLedgerError> {
+        validate_create_plugin_fields(&fields)?;
+        let operation = self.required(operation_id).await?;
+        if operation.kind != OperationKind::Create {
+            return Err(PluginLedgerError::KindMismatch {
+                operation_id,
+                expected: OperationKind::Create,
+                actual: operation.kind,
+            });
+        }
+        if operation.state != OperationState::Published {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected: OperationState::Published,
+                actual: operation.state,
+            });
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut transaction = self.pool.begin().await?;
+        let plugin_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO plugins (\
+                 identifier, name, description, manifest, runtime, version, author, \
+                 repository_url, s3_key, sha256, size_bytes, category_id, capabilities, \
+                 resource_limits, row_revision, created_at, updated_at\
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) RETURNING id",
+        )
+        .bind(&operation.target_identifier)
+        .bind(&fields.name)
+        .bind(&fields.description)
+        .bind(&fields.manifest)
+        .bind(&fields.runtime)
+        .bind(&fields.version)
+        .bind(fields.author.as_deref().unwrap_or(""))
+        .bind(fields.repository_url.as_deref().unwrap_or(""))
+        .bind(&operation.new_s3_key)
+        .bind(&operation.new_sha256)
+        .bind(operation.new_size)
+        .bind(fields.category_id)
+        .bind(&fields.capabilities)
+        .bind(&operation.new_resource_limits)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&mut *transaction)
+        .await?;
+
+        let updated = sqlx::query(
+            "UPDATE plugin_artifact_operations \
+             SET plugin_id = ?, state = 'referenced', updated_at = ? \
+             WHERE operation_id = ? AND kind = 'create' AND state = 'published'",
+        )
+        .bind(plugin_id.to_string())
+        .bind(&now)
+        .bind(operation_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected: OperationState::Published,
+                actual: operation.state,
+            });
+        }
+
+        let plugin = fetch_plugin_in_transaction(&mut transaction, plugin_id).await?;
+        transaction.commit().await?;
+        Ok(plugin)
+    }
+
+    pub async fn commit_published_replace(
+        &self,
+        operation_id: Uuid,
+    ) -> std::result::Result<ReplaceOutcome, PluginLedgerError> {
+        let operation = self.required(operation_id).await?;
+        if operation.kind != OperationKind::Replace {
+            return Err(PluginLedgerError::KindMismatch {
+                operation_id,
+                expected: OperationKind::Replace,
+                actual: operation.kind,
+            });
+        }
+        if operation.state != OperationState::Published {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected: OperationState::Published,
+                actual: operation.state,
+            });
+        }
+
+        let plugin_id = required_old_plugin_id(&operation)?;
+        let expected_identifier = required_old_text(&operation, "expected_old_identifier")?;
+        let expected_version = required_old_text(&operation, "expected_old_version")?;
+        let expected_s3_key = required_old_text(&operation, "expected_old_s3_key")?;
+        let expected_sha256 = required_old_text(&operation, "expected_old_sha256")?;
+        let expected_size = operation.expected_old_size.ok_or_else(|| {
+            PluginLedgerError::CorruptLedger(format!(
+                "replace operation {operation_id} is missing expected_old_size"
+            ))
+        })?;
+        let expected_resource_limits =
+            required_old_text(&operation, "expected_old_resource_limits")?;
+        let expected_row_revision = operation.expected_old_row_revision.ok_or_else(|| {
+            PluginLedgerError::CorruptLedger(format!(
+                "replace operation {operation_id} is missing expected_old_row_revision"
+            ))
+        })?;
+        let now = Utc::now().to_rfc3339();
+
+        let mut transaction = self.pool.begin().await?;
+        let replaced = sqlx::query(
+            "UPDATE plugins SET \
+                 s3_key = ?, sha256 = ?, size_bytes = ?, resource_limits = ?, \
+                 row_revision = row_revision + 1, updated_at = ? \
+             WHERE id = ? AND identifier = ? AND version = ? AND s3_key = ? \
+                 AND sha256 = ? AND size_bytes = ? AND resource_limits = ? \
+                 AND row_revision = ? AND deleted_at IS NULL",
+        )
+        .bind(&operation.new_s3_key)
+        .bind(&operation.new_sha256)
+        .bind(operation.new_size)
+        .bind(&operation.new_resource_limits)
+        .bind(&now)
+        .bind(plugin_id)
+        .bind(expected_identifier)
+        .bind(expected_version)
+        .bind(expected_s3_key)
+        .bind(expected_sha256)
+        .bind(expected_size)
+        .bind(expected_resource_limits)
+        .bind(expected_row_revision)
+        .execute(&mut *transaction)
+        .await?;
+
+        if replaced.rows_affected() == 1 {
+            let referenced = sqlx::query(
+                "UPDATE plugin_artifact_operations SET state = 'referenced', updated_at = ? \
+                 WHERE operation_id = ? AND kind = 'replace' AND state = 'published'",
+            )
+            .bind(&now)
+            .bind(operation_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+            if referenced.rows_affected() != 1 {
+                return Err(PluginLedgerError::StateConflict {
+                    operation_id,
+                    expected: OperationState::Published,
+                    actual: operation.state,
+                });
+            }
+            let plugin = fetch_plugin_in_transaction(&mut transaction, plugin_id).await?;
+            transaction.commit().await?;
+            crate::runtime::plugin_executor::invalidate_artifact_instances_any_scope(
+                plugin_id,
+                expected_s3_key,
+            );
+            return Ok(ReplaceOutcome::Referenced {
+                plugin: Box::new(plugin),
+            });
+        }
+
+        let actual_row_revision =
+            sqlx::query_scalar::<_, i64>("SELECT row_revision FROM plugins WHERE id = ?")
+                .bind(plugin_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let ownership = operation_gc_ownership(&operation, OperationGcTarget::PublishedNew)?;
+        insert_or_verify_owned_gc(&mut transaction, operation_id, &ownership, &now).await?;
+        let finished = sqlx::query(
+            "UPDATE plugin_artifact_operations SET state = 'done', updated_at = ? \
+             WHERE operation_id = ? AND kind = 'replace' AND state = 'published'",
+        )
+        .bind(&now)
+        .bind(operation_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if finished.rows_affected() != 1 {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected: OperationState::Published,
+                actual: operation.state,
+            });
+        }
+        transaction.commit().await?;
+        Ok(ReplaceOutcome::ConcurrentConflict {
+            plugin_id,
+            actual_row_revision,
+        })
+    }
+
+    pub async fn finish_with_gc(
+        &self,
+        operation_id: Uuid,
+        expected: OperationState,
+        target: OperationGcTarget,
+    ) -> std::result::Result<FinishOutcome, PluginLedgerError> {
+        let operation = self.required(operation_id).await?;
+        let ownership = operation_gc_ownership(&operation, target)?;
+
+        if operation.state == OperationState::Done {
+            let gc_state = verify_existing_owned_gc(&self.pool, operation_id, &ownership).await?;
+            return Ok(FinishOutcome::AlreadyDone { gc_state });
+        }
+        if operation.state != expected {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected,
+                actual: operation.state,
+            });
+        }
+        let legal = matches!(
+            (expected, target, operation.kind),
+            (
+                OperationState::Published,
+                OperationGcTarget::PublishedNew,
+                OperationKind::Create | OperationKind::Replace
+            ) | (
+                OperationState::Referenced,
+                OperationGcTarget::ExpectedOld,
+                OperationKind::Replace
+            )
+        );
+        if !legal {
+            return Err(invalid_ledger_input(
+                "gc_target",
+                "target is not owned by the operation in its expected state",
+            ));
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut transaction = self.pool.begin().await?;
+        let gc_state =
+            insert_or_verify_owned_gc(&mut transaction, operation_id, &ownership, &now).await?;
+        let finished = sqlx::query(
+            "UPDATE plugin_artifact_operations SET state = 'done', updated_at = ? \
+             WHERE operation_id = ? AND state = ?",
+        )
+        .bind(&now)
+        .bind(operation_id.to_string())
+        .bind(expected.as_str())
+        .execute(&mut *transaction)
+        .await?;
+        if finished.rows_affected() != 1 {
+            return Err(PluginLedgerError::StateConflict {
+                operation_id,
+                expected,
+                actual: operation.state,
+            });
+        }
+        transaction.commit().await?;
+        Ok(FinishOutcome::Finished { gc_state })
+    }
+
+    async fn required(
+        &self,
+        operation_id: Uuid,
+    ) -> std::result::Result<PluginArtifactOperation, PluginLedgerError> {
+        self.get(operation_id)
+            .await?
+            .ok_or(PluginLedgerError::NotFound { operation_id })
+    }
+}
+
+fn validate_create_plugin_fields(
+    fields: &CreatePluginFields,
+) -> std::result::Result<(), PluginLedgerError> {
+    validate_name(&fields.name).map_err(|error| invalid_ledger_input("name", error.to_string()))?;
+    if let Some(description) = &fields.description {
+        validate_description(description)
+            .map_err(|error| invalid_ledger_input("description", error.to_string()))?;
+    }
+    if let Some(manifest) = &fields.manifest {
+        validate_json(manifest)
+            .map_err(|error| invalid_ledger_input("manifest", error.to_string()))?;
+    }
+    if fields.version.trim().is_empty() || fields.version.len() > 255 {
+        return Err(invalid_ledger_input(
+            "version",
+            "must be non-empty and at most 255 bytes",
+        ));
+    }
+    if fields.runtime.trim().is_empty() || fields.runtime.len() > 255 {
+        return Err(invalid_ledger_input(
+            "runtime",
+            "must be non-empty and at most 255 bytes",
+        ));
+    }
+    validate_capabilities_json(&fields.capabilities)?;
+    Ok(())
+}
+
+fn required_old_plugin_id(
+    operation: &PluginArtifactOperation,
+) -> std::result::Result<i64, PluginLedgerError> {
+    operation.plugin_id.ok_or_else(|| {
+        PluginLedgerError::CorruptLedger(format!(
+            "replace operation {} is missing plugin_id",
+            operation.operation_id
+        ))
+    })
+}
+
+fn required_old_text<'a>(
+    operation: &'a PluginArtifactOperation,
+    field: &str,
+) -> std::result::Result<&'a str, PluginLedgerError> {
+    let value = match field {
+        "expected_old_identifier" => operation.expected_old_identifier.as_deref(),
+        "expected_old_version" => operation.expected_old_version.as_deref(),
+        "expected_old_s3_key" => operation.expected_old_s3_key.as_deref(),
+        "expected_old_sha256" => operation.expected_old_sha256.as_deref(),
+        "expected_old_identity" => operation.expected_old_identity.as_deref(),
+        "expected_old_resource_limits" => operation.expected_old_resource_limits.as_deref(),
+        _ => None,
+    };
+    value.ok_or_else(|| {
+        PluginLedgerError::CorruptLedger(format!(
+            "operation {} is missing {field}",
+            operation.operation_id
+        ))
+    })
+}
+
+async fn fetch_plugin_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    plugin_id: i64,
+) -> std::result::Result<Plugin, PluginLedgerError> {
+    sqlx::query_as::<_, Plugin>(
+        "SELECT id, identifier, name, description, manifest, runtime, version, author, \
+                repository_url, s3_key, sha256, size_bytes, category_id, capabilities, \
+                resource_limits, row_revision, created_at, updated_at, deleted_at \
+         FROM plugins WHERE id = ?",
+    )
+    .bind(plugin_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or_else(|| {
+        PluginLedgerError::CorruptLedger(format!(
+            "Plugin row {plugin_id} disappeared inside its ledger transaction"
+        ))
+    })
+}
+
+fn operation_gc_ownership(
+    operation: &PluginArtifactOperation,
+    target: OperationGcTarget,
+) -> std::result::Result<OperationGcOwnership, PluginLedgerError> {
+    match target {
+        OperationGcTarget::PublishedNew => {
+            let identity = operation.new_identity.clone().ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "operation {} has no published new identity",
+                    operation.operation_id
+                ))
+            })?;
+            validate_identity("new_identity", &identity)?;
+            Ok(OperationGcOwnership {
+                artifact_key: operation.new_s3_key.clone(),
+                sha256: operation.new_sha256.clone(),
+                size_bytes: operation.new_size,
+                identity,
+                reason: "published_new",
+            })
+        }
+        OperationGcTarget::ExpectedOld => {
+            if operation.kind != OperationKind::Replace {
+                return Err(PluginLedgerError::KindMismatch {
+                    operation_id: operation.operation_id,
+                    expected: OperationKind::Replace,
+                    actual: operation.kind,
+                });
+            }
+            let artifact_key = required_old_text(operation, "expected_old_s3_key")?.to_string();
+            let sha256 = required_old_text(operation, "expected_old_sha256")?.to_string();
+            let size_bytes = operation.expected_old_size.ok_or_else(|| {
+                PluginLedgerError::CorruptLedger(format!(
+                    "replace operation {} has no expected_old_size",
+                    operation.operation_id
+                ))
+            })?;
+            let identity = required_old_text(operation, "expected_old_identity")?.to_string();
+            validate_artifact_fields(&artifact_key, &sha256, size_bytes)?;
+            validate_identity("expected_old_identity", &identity)?;
+            Ok(OperationGcOwnership {
+                artifact_key,
+                sha256,
+                size_bytes,
+                identity,
+                reason: "expected_old",
+            })
+        }
+    }
+}
+
+type ExistingGcOwnership = (
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+fn verify_gc_ownership_tuple(
+    operation_id: Uuid,
+    ownership: &OperationGcOwnership,
+    existing: ExistingGcOwnership,
+) -> std::result::Result<GcState, PluginLedgerError> {
+    let (sha256, size_bytes, identity, source_operation_id, state) = existing;
+    let matches = sha256.as_deref() == Some(ownership.sha256.as_str())
+        && size_bytes == Some(ownership.size_bytes)
+        && identity.as_deref() == Some(ownership.identity.as_str())
+        && source_operation_id.as_deref() == Some(operation_id.to_string().as_str());
+    if !matches {
+        return Err(PluginLedgerError::CorruptLedger(format!(
+            "GC artifact {:?} has conflicting ownership or identity",
+            ownership.artifact_key
+        )));
+    }
+    parse_gc_state(&state)
+}
+
+async fn insert_or_verify_owned_gc(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    operation_id: Uuid,
+    ownership: &OperationGcOwnership,
+    now: &str,
+) -> std::result::Result<GcState, PluginLedgerError> {
+    let existing = sqlx::query_as::<_, ExistingGcOwnership>(
+        "SELECT expected_sha256, expected_size_bytes, expected_identity, \
+                source_operation_id, state \
+         FROM plugin_artifact_gc WHERE artifact_key = ?",
+    )
+    .bind(&ownership.artifact_key)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    if let Some(existing) = existing {
+        return verify_gc_ownership_tuple(operation_id, ownership, existing);
+    }
+
+    sqlx::query(
+        "INSERT INTO plugin_artifact_gc (\
+             artifact_key, expected_sha256, expected_size_bytes, expected_identity, \
+             source_operation_id, state, attempts, last_error, created_at, updated_at, \
+             reason, last_attempt_at\
+         ) VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL, ?, ?, ?, 0)",
+    )
+    .bind(&ownership.artifact_key)
+    .bind(&ownership.sha256)
+    .bind(ownership.size_bytes)
+    .bind(&ownership.identity)
+    .bind(operation_id.to_string())
+    .bind(now)
+    .bind(now)
+    .bind(ownership.reason)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(GcState::Pending)
+}
+
+async fn verify_existing_owned_gc(
+    pool: &Pool<Sqlite>,
+    operation_id: Uuid,
+    ownership: &OperationGcOwnership,
+) -> std::result::Result<GcState, PluginLedgerError> {
+    let existing = sqlx::query_as::<_, ExistingGcOwnership>(
+        "SELECT expected_sha256, expected_size_bytes, expected_identity, \
+                source_operation_id, state \
+         FROM plugin_artifact_gc WHERE artifact_key = ?",
+    )
+    .bind(&ownership.artifact_key)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| {
+        PluginLedgerError::CorruptLedger(format!(
+            "done operation {operation_id} has no owned GC row for {:?}",
+            ownership.artifact_key
+        ))
+    })?;
+    verify_gc_ownership_tuple(operation_id, ownership, existing)
+}
+
 // === Plugin CRUD ===
 impl Plugin {
     pub async fn list(
@@ -1405,6 +2837,11 @@ impl Plugin {
             validate_json(m)?;
         }
 
+        let previous_s3_key =
+            sqlx::query_scalar::<_, String>("SELECT s3_key FROM plugins WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
@@ -1413,6 +2850,13 @@ impl Plugin {
             .execute(pool).await;
 
         result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
+
+        if let Some(previous_s3_key) = previous_s3_key {
+            crate::runtime::plugin_executor::invalidate_artifact_instances_any_scope(
+                id,
+                &previous_s3_key,
+            );
+        }
 
         let duration = start.elapsed().as_millis();
         tracing::info!(entity = "plugin", op = "update", id = id, identifier = %identifier, name = %name, duration_ms = duration, "Plugin updated");
@@ -1436,6 +2880,11 @@ impl Plugin {
         sha256: String,
         size_bytes: i64,
     ) -> Result<Option<Plugin>> {
+        let previous_s3_key =
+            sqlx::query_scalar::<_, String>("SELECT s3_key FROM plugins WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
         let affected = sqlx::query(
@@ -1455,6 +2904,13 @@ impl Plugin {
             return Ok(None);
         }
 
+        if let Some(previous_s3_key) = previous_s3_key {
+            crate::runtime::plugin_executor::invalidate_artifact_instances_any_scope(
+                id,
+                &previous_s3_key,
+            );
+        }
+
         let duration = start.elapsed().as_millis();
         tracing::info!(entity = "plugin", op = "replace", id = id, s3_key = %s3_key, duration_ms = duration, "Plugin artifact reference replaced");
 
@@ -1465,6 +2921,11 @@ impl Plugin {
     }
 
     pub async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
+        let previous_s3_key =
+            sqlx::query_scalar::<_, String>("SELECT s3_key FROM plugins WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
         let start = Instant::now();
         let now = Utc::now().to_rfc3339();
         sqlx::query("UPDATE plugins SET deleted_at = ? WHERE id = ?")
@@ -1472,6 +2933,13 @@ impl Plugin {
             .bind(id)
             .execute(pool)
             .await?;
+
+        if let Some(previous_s3_key) = previous_s3_key {
+            crate::runtime::plugin_executor::invalidate_artifact_instances_any_scope(
+                id,
+                &previous_s3_key,
+            );
+        }
 
         let duration = start.elapsed().as_millis();
         tracing::info!(
@@ -1496,6 +2964,11 @@ impl Plugin {
         capabilities: String,
         resource_limits: String,
     ) -> Result<Option<Plugin>> {
+        validate_capabilities_json(&capabilities)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        parse_resource_limits_json(&resource_limits)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
         let now = Utc::now().to_rfc3339();
         let affected = sqlx::query(
             "UPDATE plugins SET capabilities = ?, resource_limits = ?, row_revision = row_revision + 1, updated_at = ? WHERE id = ?",
@@ -1520,47 +2993,192 @@ impl Plugin {
             "Plugin capabilities/resource_limits updated"
         );
 
-        Plugin::get(pool, id).await
+        let plugin = Plugin::get(pool, id).await?;
+        if let Some(plugin) = plugin.as_ref() {
+            crate::runtime::plugin_executor::invalidate_artifact_instances_any_scope(
+                id,
+                &plugin.s3_key,
+            );
+        }
+        Ok(plugin)
+    }
+
+    /// Persist the canonical artifact key for a plugin whose database id was
+    /// only known after the INSERT. Used by the create flow to backfill
+    /// `s3_key` with `{identifier}/{version}/{id}/plugin.wasm`.
+    pub async fn set_artifact_key(pool: &Pool<Sqlite>, id: i64, s3_key: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE plugins SET s3_key = ?, row_revision = row_revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(s3_key)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Relative directory for a plugin artifact under the plugins root:
+    /// `{identifier}/{version}/{id}`. The database `id` is the terminal
+    /// disambiguator, so two rows that share `(identifier, version)` (e.g.
+    /// after a soft-delete + re-import) still map to distinct on-disk
+    /// locations.
+    pub fn artifact_dir(identifier: &str, version: &str, id: i64) -> std::path::PathBuf {
+        std::path::PathBuf::from(identifier)
+            .join(version)
+            .join(id.to_string())
+    }
+
+    /// Canonical artifact key: `{identifier}/{version}/{id}/plugin.wasm`.
+    /// This is the single source of truth for the logical key stored in
+    /// `plugins.s3_key` and for the on-disk file name.
+    pub fn artifact_key(identifier: &str, version: &str, id: i64) -> String {
+        format!("{identifier}/{version}/{id}/plugin.wasm")
+    }
+
+    /// Absolute WASM path for a plugin under `base_dir/plugins`:
+    /// `{base_dir}/plugins/{identifier}/{version}/{id}/plugin.wasm`.
+    pub fn artifact_wasm_path(
+        base_dir: &std::path::Path,
+        identifier: &str,
+        version: &str,
+        id: i64,
+    ) -> std::path::PathBuf {
+        base_dir
+            .join("plugins")
+            .join(Self::artifact_dir(identifier, version, id))
+            .join("plugin.wasm")
     }
 
     /// Get the local WASM file path for this plugin
     pub fn wasm_path(&self, base_dir: &std::path::Path) -> std::path::PathBuf {
-        base_dir
-            .join("plugins")
-            .join(self.id.to_string())
-            .join("plugin.wasm")
+        Self::artifact_wasm_path(base_dir, &self.identifier, &self.version, self.id)
     }
 
-    /// Ensure the plugin directory exists
+    /// Ensure the plugin artifact directory exists and return it:
+    /// `{base_dir}/plugins/{identifier}/{version}/{id}`.
     pub fn ensure_plugin_dir(
         base_dir: &std::path::Path,
+        identifier: &str,
+        version: &str,
         plugin_id: i64,
     ) -> Result<std::path::PathBuf> {
-        let plugin_dir = base_dir.join("plugins").join(plugin_id.to_string());
+        let plugin_dir = base_dir
+            .join("plugins")
+            .join(Self::artifact_dir(identifier, version, plugin_id));
         std::fs::create_dir_all(&plugin_dir)?;
         Ok(plugin_dir)
     }
 
-    /// Idempotently register an owned artifact key for protected GC.
-    /// The key is inserted as `pending` only if it is not already
-    /// tracked; an existing row (any state) is left untouched.
-    /// Decoupled from the source operation and from any file deletion:
-    /// the caller later scans the ledger and deletes only when the
-    /// identity is no longer referenced.
+    /// Idempotently register an operation-owned artifact for protected GC.
+    ///
+    /// Ownership is derived only from the persisted Plugin tuple and its
+    /// exact source operation. The current filesystem entry is deliberately
+    /// never adopted here. If the database cannot prove the source identity,
+    /// a `blocked` row is recorded so a worker cannot speculatively unlink a
+    /// path. An existing row is idempotent only when its complete ownership
+    /// tuple matches; conflicting ownership fails closed.
     pub async fn register_gc_artifact(
         pool: &Pool<Sqlite>,
         artifact_key: String,
         reason: String,
     ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO plugin_artifact_gc (artifact_key, last_attempt_at, reason, state) \
-             VALUES (?, unixepoch(), ?, 'pending') \
-             ON CONFLICT(artifact_key) DO NOTHING",
+        let mut transaction = pool.begin().await?;
+        let proven: Option<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT p.sha256, p.size_bytes, o.new_identity, o.operation_id \
+             FROM plugins p \
+             JOIN plugin_artifact_operations o \
+               ON o.plugin_id = CAST(p.id AS TEXT) \
+              AND o.new_s3_key = p.s3_key \
+              AND o.new_sha256 = p.sha256 \
+              AND o.new_size = p.size_bytes \
+             WHERE p.s3_key = ? AND o.new_identity IS NOT NULL \
+               AND o.state IN ('referenced','done') \
+             ORDER BY o.updated_at DESC, o.operation_id DESC LIMIT 1",
         )
         .bind(&artifact_key)
-        .bind(&reason)
-        .execute(pool)
+        .fetch_optional(&mut *transaction)
         .await?;
+
+        let plugin_tuple: Option<(String, i64)> = sqlx::query_as(
+            "SELECT sha256, size_bytes FROM plugins WHERE s3_key = ? \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&artifact_key)
+        .fetch_optional(&mut *transaction)
+        .await?;
+
+        let (
+            expected_sha256,
+            expected_size_bytes,
+            expected_identity,
+            source_operation_id,
+            state,
+            last_error,
+        ) = match proven {
+            Some((sha256, size_bytes, identity, operation_id)) => (
+                Some(sha256),
+                Some(size_bytes),
+                Some(identity),
+                Some(operation_id),
+                "pending",
+                None,
+            ),
+            None => (
+                plugin_tuple.as_ref().map(|row| row.0.clone()),
+                plugin_tuple.as_ref().map(|row| row.1),
+                None,
+                None,
+                "blocked",
+                Some("ownership_unproven".to_string()),
+            ),
+        };
+
+        let existing: Option<(Option<String>, Option<i64>, Option<String>, Option<String>)> =
+            sqlx::query_as(
+                "SELECT expected_sha256, expected_size_bytes, expected_identity, \
+                    source_operation_id \
+             FROM plugin_artifact_gc WHERE artifact_key = ?",
+            )
+            .bind(&artifact_key)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        let ownership = (
+            expected_sha256.clone(),
+            expected_size_bytes,
+            expected_identity.clone(),
+            source_operation_id.clone(),
+        );
+        if let Some(existing) = existing {
+            if existing != ownership {
+                anyhow::bail!("conflict: plugin artifact GC ownership mismatch");
+            }
+            transaction.commit().await?;
+            return Ok(());
+        }
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO plugin_artifact_gc (\
+                 artifact_key, expected_sha256, expected_size_bytes, expected_identity, \
+                 source_operation_id, attempts, last_error, created_at, updated_at, \
+                 last_attempt_at, reason, state\
+             ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, unixepoch(), ?, ?)",
+        )
+        .bind(&artifact_key)
+        .bind(expected_sha256)
+        .bind(expected_size_bytes)
+        .bind(expected_identity)
+        .bind(source_operation_id)
+        .bind(last_error)
+        .bind(&now)
+        .bind(&now)
+        .bind(&reason)
+        .bind(state)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1605,51 +3223,39 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Plugin {
     }
 }
 
-// === Function CRUD ===
+// === Legacy Function fixture/compatibility facade ===
+// All validation, SQL, transactions, search, and reference policy live in the
+// unique FunctionStore. Keep these signatures only while older fixtures and
+// callers migrate to that public boundary.
 impl Function {
-    pub async fn list(
+    pub(crate) async fn list(
         pool: &Pool<Sqlite>,
         search: Option<String>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Function>> {
-        let fns = if let Some(s) = search {
-            sqlx::query_as::<_, Function>(
-                "SELECT id, identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id, required_capabilities, created_at, updated_at FROM functions WHERE name LIKE ? OR identifier LIKE ? ORDER BY name LIMIT ? OFFSET ?"
-            ).bind(format!("%{}%", s)).bind(format!("%{}%", s)).bind(limit).bind(offset).fetch_all(pool).await?
-        } else {
-            sqlx::query_as::<_, Function>(
-                "SELECT id, identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id, required_capabilities, created_at, updated_at FROM functions ORDER BY name LIMIT ? OFFSET ?"
-            ).bind(limit).bind(offset).fetch_all(pool).await?
-        };
-        Ok(fns)
-    }
-
-    pub async fn count(pool: &Pool<Sqlite>, search: Option<String>) -> Result<i64> {
-        let c = if let Some(s) = search {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM functions WHERE name LIKE ? OR identifier LIKE ?",
-            )
-            .bind(format!("%{}%", s))
-            .bind(format!("%{}%", s))
-            .fetch_one(pool)
+        Ok(FunctionStore::new(pool.clone())?
+            .list_window(search, limit, offset)
             .await?
-        } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM functions")
-                .fetch_one(pool)
-                .await?
-        };
-        Ok(c)
+            .into_iter()
+            .map(|record| record.into_legacy_entity())
+            .collect())
     }
 
-    pub async fn get(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Function>> {
-        let f = sqlx::query_as::<_, Function>(
-            "SELECT id, identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id, required_capabilities, created_at, updated_at FROM functions WHERE id = ?"
-        ).bind(id).fetch_optional(pool).await?;
-        Ok(f)
+    pub(crate) async fn count(pool: &Pool<Sqlite>, search: Option<String>) -> Result<i64> {
+        Ok(FunctionStore::new(pool.clone())?
+            .count_matching(search)
+            .await?)
     }
 
-    pub async fn create(
+    pub(crate) async fn get(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Function>> {
+        Ok(FunctionStore::new(pool.clone())?
+            .get(id)
+            .await?
+            .map(|record| record.into_legacy_entity()))
+    }
+
+    pub(crate) async fn create(
         pool: &Pool<Sqlite>,
         identifier: String,
         name: String,
@@ -1662,33 +3268,25 @@ impl Function {
         category_id: Option<i64>,
         required_capabilities: Option<String>,
     ) -> Result<Function> {
-        validate_identifier(&identifier)?;
-        validate_name(&name)?;
-        if let Some(ref desc) = description {
-            validate_description(desc)?;
-        }
-        validate_json(&input_schema)?;
-        validate_json(&output_schema)?;
-
-        let start = Instant::now();
-        let now = Utc::now().to_rfc3339();
-        let result = sqlx::query_scalar::<_, i64>(
-            "INSERT INTO functions (identifier, name, description, kind, input_schema, output_schema, plugin_id, plugin_export, category_id, required_capabilities, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
-        ).bind(&identifier).bind(&name).bind(&description).bind(&kind).bind(&input_schema).bind(&output_schema).bind(plugin_id).bind(&plugin_export).bind(category_id).bind(&required_capabilities).bind(&now).bind(&now)
-            .fetch_one(pool).await;
-
-        let id =
-            result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
-
-        let duration = start.elapsed().as_millis();
-        tracing::info!(entity = "function", op = "create", id = id, identifier = %identifier, name = %name, kind = %kind, duration_ms = duration, "Function created");
-
-        Function::get(pool, id)
+        let input = legacy_function_input(
+            identifier,
+            name,
+            description,
+            kind,
+            input_schema,
+            output_schema,
+            plugin_id,
+            plugin_export,
+            category_id,
+            required_capabilities,
+        )?;
+        Ok(FunctionStore::new(pool.clone())?
+            .create_legacy_fixture(input)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Failed to retrieve created function"))
+            .into_legacy_entity())
     }
 
-    pub async fn update(
+    pub(crate) async fn update(
         pool: &Pool<Sqlite>,
         id: i64,
         identifier: String,
@@ -1702,49 +3300,56 @@ impl Function {
         category_id: Option<i64>,
         required_capabilities: Option<String>,
     ) -> Result<Function> {
-        validate_identifier(&identifier)?;
-        validate_name(&name)?;
-        if let Some(ref desc) = description {
-            validate_description(desc)?;
-        }
-        validate_json(&input_schema)?;
-        validate_json(&output_schema)?;
-
-        let start = Instant::now();
-        let now = Utc::now().to_rfc3339();
-        let result = sqlx::query(
-            "UPDATE functions SET identifier=?, name=?, description=?, kind=?, input_schema=?, output_schema=?, plugin_id=?, plugin_export=?, category_id=?, required_capabilities=?, updated_at=? WHERE id=?"
-        ).bind(&identifier).bind(&name).bind(&description).bind(&kind).bind(&input_schema).bind(&output_schema).bind(plugin_id).bind(&plugin_export).bind(category_id).bind(&required_capabilities).bind(&now).bind(id)
-            .execute(pool).await;
-
-        result.map_err(|e| handle_unique_constraint_error(e, "identifier", &identifier))?;
-
-        let duration = start.elapsed().as_millis();
-        tracing::info!(entity = "function", op = "update", id = id, identifier = %identifier, name = %name, duration_ms = duration, "Function updated");
-
-        Function::get(pool, id)
+        let input = legacy_function_input(
+            identifier,
+            name,
+            description,
+            kind,
+            input_schema,
+            output_schema,
+            plugin_id,
+            plugin_export,
+            category_id,
+            required_capabilities,
+        )?;
+        Ok(FunctionStore::new(pool.clone())?
+            .update_legacy_fixture(id, input)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Function not found"))
+            .into_legacy_entity())
     }
 
-    pub async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
-        let start = Instant::now();
-        sqlx::query("DELETE FROM functions WHERE id = ?")
-            .bind(id)
-            .execute(pool)
-            .await?;
-
-        let duration = start.elapsed().as_millis();
-        tracing::info!(
-            entity = "function",
-            op = "delete",
-            id = id,
-            duration_ms = duration,
-            "Function deleted"
-        );
-
-        Ok(())
+    pub(crate) async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
+        Ok(FunctionStore::new(pool.clone())?
+            .delete_legacy_fixture(id)
+            .await?)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn legacy_function_input(
+    identifier: String,
+    name: String,
+    description: Option<String>,
+    kind: String,
+    input_schema: String,
+    output_schema: String,
+    plugin_id: Option<i64>,
+    plugin_export: Option<String>,
+    category_id: Option<i64>,
+    required_capabilities: Option<String>,
+) -> Result<FunctionInput> {
+    Ok(FunctionInput::for_write(
+        identifier,
+        name,
+        description,
+        FunctionKind::try_from(kind)?,
+        input_schema,
+        output_schema,
+        plugin_id,
+        plugin_export,
+        category_id,
+        required_capabilities,
+    )?)
 }
 
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Function {
@@ -4514,6 +6119,56 @@ fn is_unique_violation(error: &sqlx::Error) -> bool {
     false
 }
 
+type AgentBaseRow = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<i64>,
+    i64,
+    i64,
+    Option<String>,
+    Option<i64>,
+    String,
+    String,
+);
+
+#[derive(Debug, Clone)]
+enum AgentSearchRoute {
+    Unfiltered,
+    FtsPhrase(String),
+    ShortGram { length: i64, gram: String },
+}
+
+impl AgentSearchRoute {
+    fn for_input(search: Option<&str>) -> Result<Self, AgentStoreError> {
+        let Some(search) = search else {
+            return Ok(Self::Unfiltered);
+        };
+        let normalizer = canonical_normalizer().map_err(agent_search_error)?;
+        let normalized = normalize_search_query(&normalizer, search).map_err(agent_search_error)?;
+        let selection =
+            IndexSelection::for_input(search, &normalizer).map_err(agent_search_error)?;
+        Ok(match selection.backend() {
+            IndexBackend::Fts5Trigram => Self::FtsPhrase(fts_literal_phrase(&normalized)),
+            IndexBackend::ShortGram { length } => Self::ShortGram {
+                length: length as i64,
+                gram: normalized,
+            },
+        })
+    }
+}
+
+fn agent_search_error(error: super::search_index::SearchError) -> AgentStoreError {
+    match error {
+        super::search_index::SearchError::InvalidInput { reason } => invalid("search", reason),
+        other => AgentStoreError {
+            kind: AgentStoreErrorKind::Backend(format!("search_index: {other}")),
+        },
+    }
+}
+
 /// Typed Agent store. The handle is a thin wrapper around the
 /// `agents` table; every public method runs inside a single
 /// transaction so the `is_default` invariant, hierarchy
@@ -4521,12 +6176,25 @@ fn is_unique_violation(error: &sqlx::Error) -> bool {
 #[derive(Debug, Clone)]
 pub struct AgentStore {
     pool: Pool<Sqlite>,
+    observer: Option<QueryCountObserver>,
 }
 
 impl AgentStore {
     /// Open a new typed Agent store over the given pool.
     pub fn new(pool: Pool<Sqlite>) -> Result<Self, AgentStoreError> {
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            observer: None,
+        })
+    }
+
+    /// Open the Agent boundary from the canonical Store, preserving the
+    /// production query-count observer configured at Store open time.
+    pub fn from_store(store: &Store) -> Result<Self, AgentStoreError> {
+        Ok(Self {
+            pool: store.pool().clone(),
+            observer: store.query_count_observer().cloned(),
+        })
     }
 
     /// Underlying pool.
@@ -4657,6 +6325,15 @@ impl AgentStore {
             .map_err(backend_error)?;
         }
 
+        replace_entity_search_documents(
+            &mut tx,
+            "agent",
+            &new_id.to_string(),
+            &[("identifier", &input.identifier), ("name", &input.name)],
+        )
+        .await
+        .map_err(agent_search_error)?;
+
         tx.commit().await.map_err(backend_error)?;
 
         self.fetch_one(new_id).await?.ok_or(AgentStoreError {
@@ -4718,6 +6395,7 @@ impl AgentStore {
                 .await?;
             update_row(&mut tx, id, &input, &normalized, &now, existing.is_default).await?;
             replace_associations(&mut tx, id, &input, &now).await?;
+            replace_agent_search_documents(&mut tx, id, &input).await?;
             tx.commit().await.map_err(backend_error)?;
         } else {
             self.validate_references(&input).await?;
@@ -4727,6 +6405,7 @@ impl AgentStore {
             apply_subtree_depth_shift(&mut tx, id, -existing.depth, AGENT_MAX_DEPTH).await?;
             update_row(&mut tx, id, &input, &normalized, &now, existing.is_default).await?;
             replace_associations(&mut tx, id, &input, &now).await?;
+            replace_agent_search_documents(&mut tx, id, &input).await?;
             tx.commit().await.map_err(backend_error)?;
         }
 
@@ -4803,6 +6482,9 @@ impl AgentStore {
             .execute(&mut *tx)
             .await
             .map_err(backend_error)?;
+        delete_entity_search_documents(&mut tx, "agent", &id.to_string())
+            .await
+            .map_err(agent_search_error)?;
         sqlx::query("DELETE FROM agents WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -4882,7 +6564,7 @@ impl AgentStore {
     /// Fetch a single Agent by id, with explicit and always-on
     /// skill sets loaded.
     pub async fn fetch_one(&self, id: i64) -> Result<Option<AgentRecord>, AgentStoreError> {
-        let row: Option<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> =
+        let row: Option<AgentBaseRow> =
             sqlx::query_as(
                 "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
                  FROM agents WHERE id = ?",
@@ -4932,6 +6614,83 @@ impl AgentStore {
         }))
     }
 
+    /// Load up to an arbitrary caller-selected Agent id set using exactly four
+    /// indexed production queries: base rows, Tools, Skills (explicit plus
+    /// globally always-on), and Capabilities. The query count is independent
+    /// of batch cardinality.
+    pub async fn load_resource_snapshots(
+        &self,
+        ids: &[i64],
+    ) -> Result<Vec<AgentRecord>, AgentStoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids_json = serde_json::to_string(ids).map_err(|error| AgentStoreError {
+            kind: AgentStoreErrorKind::Backend(format!("agent id batch: {error}")),
+        })?;
+
+        self.record_query("t115.agent.resource.base");
+        let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_RESOURCE_BASE_SQL)
+            .bind(&ids_json)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?;
+
+        self.record_query("t115.agent.resource.tools");
+        let tool_rows = sqlx::query_as::<_, (i64, i64)>(AGENT_RESOURCE_TOOLS_SQL)
+            .bind(&ids_json)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?;
+
+        self.record_query("t115.agent.resource.skills");
+        let skill_rows = sqlx::query_as::<_, (i64, i64, i64)>(AGENT_RESOURCE_SKILLS_SQL)
+            .bind(&ids_json)
+            .bind(&ids_json)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?;
+
+        self.record_query("t115.agent.resource.capabilities");
+        let capability_rows = sqlx::query_as::<_, (i64, String)>(AGENT_RESOURCE_CAPABILITIES_SQL)
+            .bind(&ids_json)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend_error)?;
+
+        let mut tools = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+        for (agent_id, tool_id) in tool_rows {
+            tools.entry(agent_id).or_default().push(tool_id);
+        }
+        let mut skills = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+        let mut always_skills = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+        for (agent_id, skill_id, is_always) in skill_rows {
+            if is_always == 0 {
+                skills.entry(agent_id).or_default().push(skill_id);
+            } else {
+                always_skills.entry(agent_id).or_default().push(skill_id);
+            }
+        }
+        let mut capabilities = std::collections::BTreeMap::<i64, Vec<String>>::new();
+        for (agent_id, capability) in capability_rows {
+            capabilities.entry(agent_id).or_default().push(capability);
+        }
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let id = row.0;
+                agent_record_from_row(
+                    row,
+                    tools.remove(&id).unwrap_or_default(),
+                    skills.remove(&id).unwrap_or_default(),
+                    always_skills.remove(&id).unwrap_or_default(),
+                    capabilities.remove(&id).unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
     /// Search / page Agents. `page_size` MUST equal
     /// [`AGENT_PAGE_SIZE`].
     pub async fn search(&self, filter: &AgentFilter) -> Result<AgentPage, AgentStoreError> {
@@ -4941,61 +6700,12 @@ impl AgentStore {
         if filter.page_size != AGENT_PAGE_SIZE {
             return Err(invalid("page_size", "fixed_value_required"));
         }
-        if let Some(search) = filter.search.as_ref() {
-            if search.is_empty() {
-                return Err(invalid("search", "empty"));
-            }
-            if search.len() > 255 {
-                return Err(invalid("search", "too_long"));
-            }
-            if search.chars().any(|c| c.is_control()) {
-                return Err(invalid("search", "control_character"));
-            }
-        }
         let offset = (filter.page - 1) * filter.page_size;
-        let normalized_search = filter.search.as_deref().map(normalize_agent_name);
-
-        let (records, total) = if let Some(ref norm) = normalized_search {
-            let pattern = format!("%{norm}%");
-            let total: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ?",
-            )
-            .bind(&pattern)
-            .bind(&pattern)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(backend_error)?;
-            let rows: Vec<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> = sqlx::query_as(
-                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
-                 FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ? \
-                 ORDER BY name ASC LIMIT ? OFFSET ?",
-            )
-            .bind(&pattern)
-            .bind(&pattern)
-            .bind(filter.page_size)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(backend_error)?;
-            let records = hydrate_many(&self.pool, rows).await?;
-            (records, total)
-        } else {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(backend_error)?;
-            let rows: Vec<(i64, String, String, Option<String>, String, Option<i64>, i64, i64, Option<String>, Option<i64>, String, String)> = sqlx::query_as(
-                "SELECT id, identifier, name, description, system_prompt, parent_agent_id, depth, is_default, model_preset, category_id, created_at, updated_at \
-                 FROM agents ORDER BY name ASC LIMIT ? OFFSET ?",
-            )
-            .bind(filter.page_size)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(backend_error)?;
-            let records = hydrate_many(&self.pool, rows).await?;
-            (records, total)
-        };
+        let route = AgentSearchRoute::for_input(filter.search.as_deref())?;
+        let (rows, total) = self
+            .fetch_agent_window(&route, filter.page_size, offset)
+            .await?;
+        let records = hydrate_many(&self.pool, rows).await?;
         Ok(AgentPage {
             records,
             total,
@@ -5006,32 +6716,84 @@ impl AgentStore {
 
     /// Count records matching the filter (no paging).
     pub async fn count(&self, filter: &AgentFilter) -> Result<i64, AgentStoreError> {
-        if let Some(ref search) = filter.search {
-            if search.is_empty() {
-                return Err(invalid("search", "empty"));
+        let route = AgentSearchRoute::for_input(filter.search.as_deref())?;
+        self.fetch_agent_count(&route).await
+    }
+
+    async fn fetch_agent_window(
+        &self,
+        route: &AgentSearchRoute,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<AgentBaseRow>, i64), AgentStoreError> {
+        match route {
+            AgentSearchRoute::Unfiltered => {
+                let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_UNFILTERED_LIST_SQL)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+                let total = sqlx::query_scalar::<_, i64>(AGENT_UNFILTERED_COUNT_SQL)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+                Ok((rows, total))
             }
-            if search.len() > 255 {
-                return Err(invalid("search", "too_long"));
+            AgentSearchRoute::FtsPhrase(phrase) => {
+                let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_FTS_LIST_SQL)
+                    .bind(phrase)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+                let total = sqlx::query_scalar::<_, i64>(AGENT_FTS_COUNT_SQL)
+                    .bind(phrase)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+                Ok((rows, total))
+            }
+            AgentSearchRoute::ShortGram { length, gram } => {
+                let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_SHORT_GRAM_LIST_SQL)
+                    .bind(length)
+                    .bind(gram)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+                let total = sqlx::query_scalar::<_, i64>(AGENT_SHORT_GRAM_COUNT_SQL)
+                    .bind(length)
+                    .bind(gram)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend_error)?;
+                Ok((rows, total))
             }
         }
-        if let Some(search) = filter.search.as_deref() {
-            let norm = normalize_agent_name(search);
-            let pattern = format!("%{norm}%");
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM agents WHERE name_normalized LIKE ? OR identifier LIKE ?",
-            )
-            .bind(&pattern)
-            .bind(&pattern)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(backend_error)?;
-            Ok(count)
-        } else {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+    }
+
+    async fn fetch_agent_count(&self, route: &AgentSearchRoute) -> Result<i64, AgentStoreError> {
+        match route {
+            AgentSearchRoute::Unfiltered => sqlx::query_scalar(AGENT_UNFILTERED_COUNT_SQL)
                 .fetch_one(&self.pool)
                 .await
-                .map_err(backend_error)?;
-            Ok(count)
+                .map_err(backend_error),
+            AgentSearchRoute::FtsPhrase(phrase) => sqlx::query_scalar(AGENT_FTS_COUNT_SQL)
+                .bind(phrase)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend_error),
+            AgentSearchRoute::ShortGram { length, gram } => {
+                sqlx::query_scalar(AGENT_SHORT_GRAM_COUNT_SQL)
+                    .bind(length)
+                    .bind(gram)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend_error)
+            }
         }
     }
 
@@ -5120,7 +6882,7 @@ impl AgentStore {
     /// before any write or completes successfully.
     async fn validate_references(&self, input: &AgentInput) -> Result<(), AgentStoreError> {
         if let Some(preset) = input.model_preset.as_deref() {
-            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_presets WHERE name = ?")
+            let exists: i64 = sqlx::query_scalar(AGENT_MODEL_PRESET_EXISTS_SQL)
                 .bind(preset)
                 .fetch_one(&self.pool)
                 .await
@@ -5212,6 +6974,12 @@ impl AgentStore {
         }
         Ok(())
     }
+
+    fn record_query(&self, query_id: &'static str) {
+        if let Some(observer) = self.observer.as_ref() {
+            observer.record_checked_query(query_id);
+        }
+    }
 }
 
 // ===== Private helpers used by the typed AgentStore =====
@@ -5260,6 +7028,21 @@ fn backend_error(error: sqlx::Error) -> AgentStoreError {
     AgentStoreError {
         kind: AgentStoreErrorKind::Backend(error.to_string()),
     }
+}
+
+async fn replace_agent_search_documents(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    id: i64,
+    input: &AgentInput,
+) -> Result<(), AgentStoreError> {
+    replace_entity_search_documents(
+        transaction,
+        "agent",
+        &id.to_string(),
+        &[("identifier", &input.identifier), ("name", &input.name)],
+    )
+    .await
+    .map_err(agent_search_error)
 }
 
 fn agent_store_kind_not_found() -> AgentStoreError {
@@ -5340,23 +7123,34 @@ async fn load_capability_names(
 
 async fn hydrate_many(
     pool: &Pool<Sqlite>,
-    rows: Vec<(
-        i64,
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<i64>,
-        i64,
-        i64,
-        Option<String>,
-        Option<i64>,
-        String,
-        String,
-    )>,
+    rows: Vec<AgentBaseRow>,
 ) -> Result<Vec<AgentRecord>, AgentStoreError> {
     let mut out = Vec::with_capacity(rows.len());
-    for (
+    for row in rows {
+        let id = row.0;
+        let tool_ids = load_tool_ids(pool, id).await?;
+        let skill_ids = load_skill_ids(pool, id).await?;
+        let always_skill_ids = load_always_skill_ids(pool).await?;
+        let capability_names = load_capability_names(pool, id).await?;
+        out.push(agent_record_from_row(
+            row,
+            tool_ids,
+            skill_ids,
+            always_skill_ids,
+            capability_names,
+        ));
+    }
+    Ok(out)
+}
+
+fn agent_record_from_row(
+    row: AgentBaseRow,
+    tool_ids: Vec<i64>,
+    skill_ids: Vec<i64>,
+    always_skill_ids: Vec<i64>,
+    capability_names: Vec<String>,
+) -> AgentRecord {
+    let (
         id,
         identifier,
         name,
@@ -5369,32 +7163,25 @@ async fn hydrate_many(
         category_id,
         created_at,
         updated_at,
-    ) in rows
-    {
-        let tool_ids = load_tool_ids(pool, id).await?;
-        let skill_ids = load_skill_ids(pool, id).await?;
-        let always_skill_ids = load_always_skill_ids(pool).await?;
-        let capability_names = load_capability_names(pool, id).await?;
-        out.push(AgentRecord {
-            id,
-            identifier,
-            name,
-            description,
-            system_prompt,
-            parent_agent_id,
-            depth,
-            is_default: is_default_i64 != 0,
-            model_preset,
-            category_id,
-            tool_ids,
-            skill_ids,
-            always_skill_ids,
-            capability_names,
-            created_at,
-            updated_at,
-        });
+    ) = row;
+    AgentRecord {
+        id,
+        identifier,
+        name,
+        description,
+        system_prompt,
+        parent_agent_id,
+        depth,
+        is_default: is_default_i64 != 0,
+        model_preset,
+        category_id,
+        tool_ids,
+        skill_ids,
+        always_skill_ids,
+        capability_names,
+        created_at,
+        updated_at,
     }
-    Ok(out)
 }
 
 async fn update_row(

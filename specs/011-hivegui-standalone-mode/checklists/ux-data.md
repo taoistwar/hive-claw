@@ -2,7 +2,7 @@
 
 **Purpose**: 验证 UX 导航、面板交互需求和数据模型需求的完整性、清晰性和一致性
 **Created**: 2026-06-15
-**Current review reset**: 2026-08-11
+**Current review reset**: 2026-08-25
 **Feature**: [spec.md](../spec.md)
 
 **Note**: 此检查清单关注**需求质量**——需求是否写得好、是否完整、是否无歧义。不测试实现行为。
@@ -13,26 +13,34 @@
 
 本节是唯一现役门禁。以下每项必须记录平台、测试/人工 smoke 命令、退出状态或截图/辅助技术证据、reviewer 和日期；全部适用项完成前 T139 不得标记完成。
 
-**当前状态（2026-08-11）**：T139/T142 复跑任务未执行，以下条目保持未完成，仅作为待验收清单。
+**当前状态（2026-08-25，source-true 更正）**：Linux 自动化曾执行 `cargo +1.97.1 test --locked -p hivegui --test accessibility -- --nocapture` 并得到 71/71，但 `accessibility.rs` 实际没有 T121 要求的 Agent/会话/设置产品行为、组合负载或对应原生滚动 owner 行，因此 T142 已回退 Pending，既有 71/71 只作为当前测试集合的历史 Green。
+
+本轮另完成真实 Linux AT-SPI 进程 smoke：在隔离 XDG/data/log 目录启动 `target/debug/hivegui`，临时把 `org.a11y.Status.IsEnabled` 与 `ScreenReaderEnabled` 设为 true 后，应用连接辅助技术总线并暴露 `/org/a11y/atspi/accessible/root`，名称=`hivegui`、角色=`Application`、根 child count=1，子窗口 child count=7；结束后两项系统属性均已恢复 false，隔离目录已移入系统回收站。但运行日志两次报告 focused element 只有 id、没有 accessibility role，导致辅助技术会朗读整个窗口；Ctrl-C 退出还触发 GPUI `InputBaseState` leaked-handle panic。该 smoke 证明真实 AT-SPI 集成可达，也同时发现产品 owner 缺口，不能记为通过。macOS VoiceOver、Windows Narrator 与三平台逐项清单仍未执行，故 T139 保持 Pending。
+
+**2026-08-26 当前源码复跑**：`cargo +1.97.1 test --locked -p hivegui --test accessibility -- --nocapture --test-threads=1` 最终 exit 0，**78/78**；已包含 Agent/Conversation/Settings、T121 组合负载、全部现役 owner native-scroll、真实 AccessKit node、keyboard/focus/Stop/backup recovery 行，以及 owner T110/T112 新增的 Skill 初始隐藏表单回归。`hiveweb_independence + local_agent_runtime` 另为 **24/24**，DataSource/LLM/会话/Plugin/v4 search/schema 的当前功能与数据合同亦在 T138/T141 中 Green。
+
+**Linux 真实 AT-SPI finding 闭合**：旧 smoke 在全树遍历时触发 `SkillView` 隐藏表单的 eager `Option::unwrap()`，并伴随 focused element 无 role。该缺口已退回 US12 owner：同一 `#[gpui::test] skill_view_initial_render_does_not_materialize_the_hidden_form` 先观察到 0/1、`skill_view.rs:632` panic；T112 最小修复把表单输入读取移入 `when(self.show_form, |root| ...)`，focused 1/1、Skill 6/6、全 accessibility 78/78 Green。随后从当前 debug binary 在隔离 XDG/data/log 根 `/tmp/hivegui-atspi-owned.LFKesP` 重新执行真实 AT-SPI smoke：Application=`hivegui`、Window role 可读，Home/Ai/Tools/用户配置均暴露 PushButton role；Home 暴露 `Accessible + Action + Component`、`click` action 与成功 `GrabFocus`，AI `DoAction(0)` 返回 true 并切换界面。`process.log` 记录 `Accessibility activated`，且本轮隔离日志没有 focused-element/whole-window/leaked-handle/panic；测试结束只用 SIGTERM 停止隔离进程，因此不把 status 143 冒充 graceful-shutdown 证据。系统 a11y 属性按 smoke 前值恢复。
+
+Linux 自动化与真实 AT finding 已闭合，但现役发布合同要求逐项三平台真实辅助技术证据；本环境不是 macOS/Windows，不能执行 VoiceOver 或 Narrator，也不能以交叉编译、AccessKit 单测或 Linux AT-SPI 代替。UXC-T139.1/.2、UXC001-UXC012 继续保持未勾选，T139 不得完成。
 
 ### T139/T142 执行模板（复跑时才可打勾）
 
-- [x] UXC-T139.1 用统一 reviewer 清单逐项补齐三平台证据：Linux/macOS/Windows 的 smoke 命令或人工复测记录、退出码、时间戳与截图/日志位置。
-- [x] UXC-T139.2 对每个 UXC0xx，先给出对应实现入口（T039/T040/T...）与实际执行命令，再补齐失败用例、修复后复测、以及 reviewer 条件总结。
-- [x] UXC-T139.3 复跑期间不得新增实现假设；若发现平台差异，先在 UXC008 记录差异说明并阻断 T139 完成，直到差异处理完成并回归。
+- [ ] UXC-T139.1 用统一 reviewer 清单逐项补齐三平台证据：Linux/macOS/Windows 的 smoke 命令或人工复测记录、退出码、时间戳与截图/日志位置。
+- [ ] UXC-T139.2 对每个 UXC0xx，先给出对应实现入口（T039/T040/T...）与实际执行命令，再补齐失败用例、修复后复测、以及 reviewer 条件总结。
+- [ ] UXC-T139.3 复跑期间不得新增实现假设；若发现平台差异，先在 UXC008 记录差异说明并阻断 T139 完成，直到差异处理完成并回归。
 
-- [x] UXC001 Linux、macOS、Windows 上顶层导航只显示 Home、Ai、Tools，默认 Home；已移除的 LockScreen、Dashboard、Game、SensitiveWord、Settings/Extension 顶层路由不得重现。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC002 Ai 管理页 Tab 顺序精确为 Agent、工具、技能、函数、流程、插件、LLM、Capabilities、分类、标签、数据管理、全局配置，键盘顺序、可见焦点与 AccessKit 名称/角色一致。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC003 DataSource 是“数据管理”中的现役本地功能，不受 HiveWeb 或旧 feature gate 隐藏；添加、编辑、空密码保留、测试连接、删除和重启恢复的状态/错误均可访问。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC004 全部 CRUD 表单在验证/唯一性/引用冲突后保留安全输入，显示非颜色唯一错误状态，把焦点移动到首个错误，并在 modal 关闭后恢复触发点焦点。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC005 长列表、管理 modal、Plugin 表单、数据管理和侧栏使用 GPUI/gpui-component 原生滚动；以可见 bounds 和实际滚动位移证明底部控件未遮挡，不使用自定义滚动条/手柄/箭头或手写 wheel 逻辑。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC006 Workflow DAG 的强制 start/end 节点、画布平移/缩放/拖拽、连线、typed node 配置、input mapping、键盘操作和失败反馈在三平台保持一致且不会丢失未保存状态。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC007 Agent 对话、Stop/stopping、历史删除、备份预验证/确认/恢复和阻断恢复界面的焦点陷阱、错误首焦点、取消与焦点恢复均通过 keyboard-only 及真实辅助技术 smoke。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC008 使用各平台真实辅助技术（Linux AT-SPI 工具、macOS VoiceOver、Windows Narrator 或经批准等价物）复核 Home/Ai/Tools、全部 CRUD、DAG、Agent、历史和备份/恢复的名称、角色、状态、朗读顺序与对比度；记录任何平台差异和处置。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC009 HiveGUI UI 与本地运行时在 HiveWeb 未配置且不运行时仍完整可用；不得展示、读取或触发 HiveWeb URL/client/fallback。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC010 当前数据模型检查只使用设备本地密钥、DataSource/LLM/会话密文字段、v4 实体及 Plugin 不可变制品；不得把旧 `master_password`、`usage_records`、Game、SensitiveWord 或 Dashboard 模型当作现役要求。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC011 分页/搜索 UI 使用每页20条、大小写不敏感字面量包含与规范化显示名/identifier/key/主键总排序；`Test`/`test` identifier 可分别存在但搜索可同时返回，跨页无重复/遗漏。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [x] UXC012 本节全部适用项的 reviewer 条件总结为通过，且不存在未记录的 UX/data release blocker。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC001 Linux、macOS、Windows 上顶层导航只显示 Home、Ai、Tools，默认 Home；已移除的 LockScreen、Dashboard、Game、SensitiveWord、Settings/Extension 顶层路由不得重现。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC002 Ai 管理页 Tab 顺序精确为 Agent、工具、技能、函数、流程、插件、LLM、Capabilities、分类、标签、数据管理、全局配置，键盘顺序、可见焦点与 AccessKit 名称/角色一致。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC003 DataSource 是“数据管理”中的现役本地功能，不受 HiveWeb 或旧 feature gate 隐藏；添加、编辑、空密码保留、测试连接、删除和重启恢复的状态/错误均可访问。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC004 全部 CRUD 表单在验证/唯一性/引用冲突后保留安全输入，显示非颜色唯一错误状态，把焦点移动到首个错误，并在 modal 关闭后恢复触发点焦点。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC005 长列表、管理 modal、Plugin 表单、数据管理和侧栏使用 GPUI/gpui-component 原生滚动；以可见 bounds 和实际滚动位移证明底部控件未遮挡，不使用自定义滚动条/手柄/箭头或手写 wheel 逻辑。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC006 Workflow DAG 的强制 start/end 节点、画布平移/缩放/拖拽、连线、typed node 配置、input mapping、键盘操作和失败反馈在三平台保持一致且不会丢失未保存状态。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC007 Agent 对话、Stop/stopping、历史删除、备份预验证/确认/恢复和阻断恢复界面的焦点陷阱、错误首焦点、取消与焦点恢复均通过 keyboard-only 及真实辅助技术 smoke。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC008 使用各平台真实辅助技术（Linux AT-SPI 工具、macOS VoiceOver、Windows Narrator 或经批准等价物）复核 Home/Ai/Tools、全部 CRUD、DAG、Agent、历史和备份/恢复的名称、角色、状态、朗读顺序与对比度；记录任何平台差异和处置。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC009 HiveGUI UI 与本地运行时在 HiveWeb 未配置且不运行时仍完整可用；不得展示、读取或触发 HiveWeb URL/client/fallback。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC010 当前数据模型检查只使用设备本地密钥、DataSource/LLM/会话密文字段、v4 实体及 Plugin 不可变制品；不得把旧 `master_password`、`usage_records`、Game、SensitiveWord 或 Dashboard 模型当作现役要求。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC011 分页/搜索 UI 使用每页20条、大小写不敏感字面量包含与规范化显示名/identifier/key/主键总排序；`Test`/`test` identifier 可分别存在但搜索可同时返回，跨页无重复/遗漏。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC012 本节全部适用项的 reviewer 条件总结为通过，且不存在未记录的 UX/data release blocker。（放行条件：待 T139 三平台复跑与 reviewer 签字）
 
 ---
 

@@ -65,9 +65,8 @@ tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 # HTTP body utilities
 http-body-util = "0.1"
 
-# Agent Runtime (004) — WASM plugin runtime + JSON schema validation
+# Agent Runtime (004) — WASM plugin runtime
 extism = "1"
-jsonschema = "0.17"
 regex = { workspace = true }
 aho-corasick = { workspace = true }
 once_cell = { workspace = true }
@@ -82,6 +81,7 @@ wasmparser = "0.221"
 # Internal workspace crates reused by Agent Runtime
 agent = { path = "../agent" }
 hive-builtins = { path = "../hive-builtins" }
+hive-json-schema = { path = "../hive-json-schema" }
 hive-runtime-core = { path = "../hive-runtime-core" }
 providers = { path = "../providers" }
 skills = { path = "../skills" }

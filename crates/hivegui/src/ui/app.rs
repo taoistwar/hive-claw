@@ -245,6 +245,29 @@ pub fn run(config: Config) -> anyhow::Result<()> {
         .block_on(Store::new(&db_path))
         .expect("Failed to initialize data source store");
 
+    // T079 ③ startup replay: recover any plugin install operation interrupted
+    // by a crash, then drain pending artifact GC so orphaned staging bytes and
+    // soft-deleted files left behind by a previous run are cleaned up.
+    if let Ok(plugin_store) = crate::plugin::plugin_store::PluginStore::new(
+        store.pool().clone(),
+        store.plugin_root().to_path_buf(),
+    ) {
+        tokio::runtime::Handle::current().block_on(async {
+            match plugin_store.recover_interrupted_operations().await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(recovered = n, "replayed interrupted plugin operations")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "plugin operation recovery failed"),
+            }
+            match plugin_store.drain_pending_gc().await {
+                Ok(n) if n > 0 => tracing::info!(drained = n, "drained pending plugin artifact GC"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "plugin artifact GC drain failed"),
+            }
+        });
+    }
+
     // Init LLM tables before app.run (avoids blocking UI thread)
     let llm_store = {
         let s = crate::datasource::llm_store::LlmStore::new(

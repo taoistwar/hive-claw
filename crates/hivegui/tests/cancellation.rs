@@ -26,13 +26,16 @@
 mod support;
 
 use std::{
+    collections::BTreeSet,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use hivegui::runtime::execution::{
-    FoundationRuntimeComposition, LocalExecutionAdapter, LocalExecutionError, LocalExecutionFuture,
-    LocalExecutionOutcome, LocalExecutionRequest,
+    CancelHandle, CancellationLayer, FoundationRuntimeComposition, LayerCancellationAdapter,
+    LayerCancellationFuture, LayerExecutionRequest, LayeredCancellationRuntime,
+    LocalExecutionAdapter, LocalExecutionError, LocalExecutionFuture, LocalExecutionOutcome,
+    LocalExecutionRequest,
 };
 use support::TestWorkspace;
 
@@ -174,5 +177,184 @@ fn cancelled_outcome_string_is_stable() {
         LocalExecutionOutcome::Cancelled.as_str(),
         "cancelled",
         "the Cancelled wire string is consumed by the activity log and UI summary"
+    );
+}
+
+#[derive(Debug, Default)]
+struct RecordingLayerAdapter {
+    started: Arc<Mutex<Vec<(String, CancellationLayer)>>>,
+}
+
+impl RecordingLayerAdapter {
+    fn started_layers(&self, execution_id: &str) -> BTreeSet<CancellationLayer> {
+        self.started
+            .lock()
+            .expect("started poisoned")
+            .iter()
+            .filter(|(id, _)| id == execution_id)
+            .map(|(_, layer)| *layer)
+            .collect()
+    }
+}
+
+impl LayerCancellationAdapter for RecordingLayerAdapter {
+    fn execute_layer(
+        &self,
+        request: LayerExecutionRequest,
+        cancel: CancelHandle,
+    ) -> LayerCancellationFuture {
+        self.started
+            .lock()
+            .expect("started poisoned")
+            .push((request.execution_id().to_string(), request.layer()));
+        Box::pin(async move {
+            if request.execution_id() == "00000000-0000-4000-8000-000000000002" {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                return Ok(LocalExecutionOutcome::Completed);
+            }
+            if request.layer() == CancellationLayer::Tool {
+                return Ok(LocalExecutionOutcome::Completed);
+            }
+            if request.layer() == CancellationLayer::Plugin {
+                std::future::pending::<()>().await;
+                unreachable!("Plugin future is force-terminated by the runtime")
+            }
+            while !cancel.is_cancelled() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok(LocalExecutionOutcome::Cancelled)
+        })
+    }
+}
+
+async fn wait_until_started(adapter: &RecordingLayerAdapter, execution_id: &str, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while adapter.started_layers(execution_id).len() < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all requested layers must start");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stopping_one_agent_propagates_to_every_layer_and_closes_new_scheduling() {
+    let execution_id = "00000000-0000-4000-8000-000000000001";
+    let session_id = "10000000-0000-4000-8000-000000000001";
+    let planned = [
+        CancellationLayer::Agent,
+        CancellationLayer::ChildAgent,
+        CancellationLayer::Llm,
+        CancellationLayer::Tool,
+        CancellationLayer::Workflow,
+        CancellationLayer::Plugin,
+    ];
+    let adapter = Arc::new(RecordingLayerAdapter::default());
+    let runtime = LayeredCancellationRuntime::new(adapter.clone());
+    runtime
+        .start_execution(execution_id, session_id, &planned)
+        .expect("start layered execution");
+    for (layer, external_side_effect) in [
+        (CancellationLayer::Agent, false),
+        (CancellationLayer::ChildAgent, false),
+        (CancellationLayer::Llm, false),
+        (CancellationLayer::Tool, true),
+        (CancellationLayer::Plugin, false),
+    ] {
+        runtime
+            .dispatch_step(execution_id, layer, external_side_effect)
+            .await
+            .expect("dispatch planned layer");
+    }
+    wait_until_started(&adapter, execution_id, 5).await;
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    let stopped_at = Instant::now();
+    runtime
+        .cancel_execution(execution_id)
+        .expect("cancel known layered execution");
+    let rejected = runtime
+        .dispatch_step(execution_id, CancellationLayer::Workflow, false)
+        .await
+        .expect_err("no new work may be scheduled after Stop");
+    assert_eq!(rejected.field(), "execution_id");
+    assert_eq!(rejected.reason(), "scheduling_closed");
+    let summary = runtime
+        .wait_for_terminal(execution_id)
+        .await
+        .expect("cancelled summary");
+    assert!(
+        stopped_at.elapsed() <= Duration::from_millis(2_250),
+        "non-cooperative Plugin must be force-terminated within 2s + slack"
+    );
+    assert_eq!(summary.status(), "cancelled");
+    assert_eq!(
+        summary.completed_layers(),
+        &[CancellationLayer::Tool],
+        "the completed external Tool side effect is retained"
+    );
+    assert_eq!(summary.not_started_layers(), &[CancellationLayer::Workflow]);
+    assert_eq!(
+        summary
+            .interrupted_layers()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            CancellationLayer::Agent,
+            CancellationLayer::ChildAgent,
+            CancellationLayer::Llm,
+            CancellationLayer::Plugin,
+        ])
+    );
+    assert_eq!(
+        summary.side_effect_notice(),
+        Some("completed external side effects are not rolled back")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_one_execution_does_not_stop_another_session() {
+    let adapter = Arc::new(RecordingLayerAdapter::default());
+    let runtime = LayeredCancellationRuntime::new(adapter.clone());
+    let first = "00000000-0000-4000-8000-000000000001";
+    let second = "00000000-0000-4000-8000-000000000002";
+    runtime
+        .start_execution(
+            first,
+            "10000000-0000-4000-8000-000000000001",
+            &[CancellationLayer::Plugin],
+        )
+        .expect("start first session");
+    runtime
+        .start_execution(
+            second,
+            "10000000-0000-4000-8000-000000000002",
+            &[CancellationLayer::Llm],
+        )
+        .expect("start second session");
+    runtime
+        .dispatch_step(first, CancellationLayer::Plugin, false)
+        .await
+        .expect("dispatch first Plugin");
+    runtime
+        .dispatch_step(second, CancellationLayer::Llm, false)
+        .await
+        .expect("dispatch second LLM");
+    wait_until_started(&adapter, first, 1).await;
+    wait_until_started(&adapter, second, 1).await;
+    runtime.cancel_execution(first).expect("cancel first only");
+    let second_summary = runtime
+        .wait_for_terminal(second)
+        .await
+        .expect("second session terminal");
+    assert_eq!(second_summary.status(), "completed");
+    assert_eq!(
+        runtime
+            .wait_for_terminal(first)
+            .await
+            .expect("first cancelled")
+            .status(),
+        "cancelled"
     );
 }

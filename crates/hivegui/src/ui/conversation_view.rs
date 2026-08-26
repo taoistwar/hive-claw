@@ -1,14 +1,29 @@
 //! 会话视图（本地对话、路由、流式事件和停止/取消明细）。
+//! scroll:agent_execution
 
-use crate::agent::local_agent::{LocalAgentRuntime, SessionHandle};
-use crate::agent::session::AgentMessage;
+use crate::agent::local_agent::{
+    LocalAgentError, LocalAgentRuntime, LocalAgentTurnResult, SessionHandle,
+};
+use crate::datasource::Store;
 use crate::runtime::diagnostics::{DiagnosticBundle, ExecutionEventCollector, RedactionConfig};
+use crate::runtime::provider_resolver::LocalProviderDecisionModel;
+use crate::runtime::tool_adapter::{LocalPersistedToolTargetRunner, PersistedToolExecutor};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
+use hive_runtime_core::execution::{EventSink, RuntimeEvent, RuntimeEventKind};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+actions!(
+    hivegui_conversation,
+    [ConversationTab, ConversationActivate]
+);
 
 #[derive(Debug, Clone)]
 struct SessionRow {
@@ -23,6 +38,16 @@ struct SessionRow {
     workflow_state: String,
     route_attempts: usize,
     in_flight_execution: Option<String>,
+}
+
+struct MessageFeedback {
+    value: SharedString,
+}
+
+impl Render for MessageFeedback {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        focus_marker(format!("CONVERSATION_MESSAGE_VALUE-{}", self.value))
+    }
 }
 
 impl SessionRow {
@@ -52,6 +77,7 @@ impl SessionRow {
 
 pub struct ConversationView {
     runtime: Option<LocalAgentRuntime>,
+    store: Option<Store>,
     collector: Arc<ExecutionEventCollector>,
     sessions: Vec<SessionRow>,
     active_session_id: Option<String>,
@@ -59,19 +85,35 @@ pub struct ConversationView {
     route_input: SharedString,
     message_input_state: Option<Entity<InputState>>,
     message_input: SharedString,
+    message_feedback: Entity<MessageFeedback>,
     status_message: Option<SharedString>,
     is_error: bool,
     is_busy: bool,
+    is_stopping: bool,
+    stop_feedback_visible: bool,
+    confirm_delete: bool,
+    new_focus: FocusHandle,
+    send_focus: FocusHandle,
+    stop_focus: FocusHandle,
+    delete_focus: FocusHandle,
 }
 
 impl ConversationView {
     pub fn new(
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
         runtime: Option<LocalAgentRuntime>,
+        store: Option<Store>,
         collector: Arc<ExecutionEventCollector>,
     ) -> Self {
+        cx.bind_keys([
+            KeyBinding::new("tab", ConversationTab, Some("HiveguiConversation")),
+            KeyBinding::new("enter", ConversationActivate, Some("HiveguiConversation")),
+            KeyBinding::new("space", ConversationActivate, Some("HiveguiConversation")),
+        ]);
+        let message_feedback = cx.new(|_| MessageFeedback { value: "".into() });
         Self {
             runtime,
+            store,
             collector,
             sessions: Vec::new(),
             active_session_id: None,
@@ -79,9 +121,17 @@ impl ConversationView {
             route_input: "".into(),
             message_input_state: None,
             message_input: "".into(),
+            message_feedback,
             status_message: Some("本地会话已就绪，可开始对话".into()),
             is_error: false,
             is_busy: false,
+            is_stopping: false,
+            stop_feedback_visible: false,
+            confirm_delete: false,
+            new_focus: cx.focus_handle(),
+            send_focus: cx.focus_handle(),
+            stop_focus: cx.focus_handle(),
+            delete_focus: cx.focus_handle(),
         }
     }
 
@@ -95,8 +145,12 @@ impl ConversationView {
             if let Some(state) = &self.message_input_state {
                 cx.subscribe_in(state, window, move |this, state, event, window, cx| {
                     if let InputEvent::Change = event {
-                        this.message_input = state.read(cx).value().to_string().into();
-                        cx.notify();
+                        let value: SharedString = state.read(cx).value().to_string().into();
+                        this.message_input = value.clone();
+                        this.message_feedback.update(cx, |feedback, cx| {
+                            feedback.value = value;
+                            cx.notify();
+                        });
                     }
                     if let InputEvent::PressEnter { .. } = event {
                         this.send_message(window, cx);
@@ -191,6 +245,12 @@ impl ConversationView {
     }
 
     fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy {
+            self.status_message = Some("已有消息正在处理".into());
+            self.is_error = true;
+            cx.notify();
+            return;
+        }
         let text = self.message_input.trim().to_string();
         if text.is_empty() {
             self.status_message = Some("消息不能为空".into());
@@ -205,13 +265,25 @@ impl ConversationView {
             cx.notify();
             return;
         };
+        let Some(store) = self.store.clone() else {
+            self.status_message = Some("本地数据存储未就绪".into());
+            self.is_error = true;
+            cx.notify();
+            return;
+        };
 
         let entity = cx.entity();
         let collector = self.collector.clone();
         self.is_busy = true;
+        self.is_stopping = false;
+        self.stop_feedback_visible = false;
         self.is_error = false;
         self.status_message = Some("已提交消息".into());
         self.message_input = "".into();
+        self.message_feedback.update(cx, |feedback, cx| {
+            feedback.value = "".into();
+            cx.notify();
+        });
         if let Some(input) = &self.message_input_state {
             input.update(cx, |state, cx| state.set_value("", window, cx));
         }
@@ -221,59 +293,99 @@ impl ConversationView {
                 if let Some(session) = self.sessions.iter().find(|s| s.id == id) {
                     let handle = session.handle.clone();
                     let execution_id = uuid::Uuid::new_v4().to_string();
-                    session_placeholder_append_runtime(
-                        runtime,
-                        handle,
-                        id,
-                        text,
-                        execution_id,
-                        collector,
-                        entity,
-                        cx,
+                    if let Err(error) = runtime.begin_turn(&handle, &text) {
+                        self.is_busy = false;
+                        self.is_error = true;
+                        self.status_message = Some(local_agent_error_message(&error).into());
+                        cx.notify();
+                        return;
+                    }
+                    self.prepare_turn_ui(&id, &text, &execution_id);
+                    collector.record_agent_event(
+                        &execution_id,
+                        "user_message",
+                        "user message appended",
                     );
+                    let task_runtime = runtime.clone();
+                    let task_store = store.clone();
+                    let task_handle = handle.clone();
+                    let task_execution_id = execution_id.clone();
+                    let task_collector = collector.clone();
+                    let task = crate::ui::spawn_tokio(async move {
+                        execute_local_turn(
+                            &task_runtime,
+                            &task_store,
+                            &task_handle,
+                            &task_execution_id,
+                            task_collector,
+                        )
+                        .await
+                    });
+                    cx.spawn(async move |_this, cx| {
+                        let result = task.await.unwrap_or(Err(LocalAgentError::AgentRejected(
+                            "local execution background task failed",
+                        )));
+                        finish_local_turn_ui(&entity, cx, &id, &execution_id, &collector, result);
+                    })
+                    .detach();
                 }
             }
             None => {
                 let execution_id = uuid::Uuid::new_v4().to_string();
                 let entity = cx.entity();
                 let collector = collector.clone();
-                cx.spawn(
-                    async move |_this, cx| match runtime.start_session(&text).await {
+                let start_runtime = runtime.clone();
+                let start_text = text.clone();
+                let start_task = crate::ui::spawn_tokio(async move {
+                    start_runtime.start_session(&start_text).await
+                });
+                cx.spawn(async move |_this, cx| {
+                    match start_task
+                        .await
+                        .unwrap_or(Err(LocalAgentError::AgentRejected(
+                            "session background task failed",
+                        ))) {
                         Ok((handle, _token)) => {
-                            entity.update(cx, |this, _| {
+                            entity.update(cx, |this, cx| {
                                 let session = SessionRow::new(handle.clone(), "新会话".to_string());
                                 this.sessions.push(session);
                                 this.active_session_id = Some(handle.as_str().to_string());
-                                if let Some(active) = this.active_session_mut() {
-                                    active.in_flight_execution = Some(execution_id.clone());
-                                    active.append_event("会话已启动".to_string());
-                                    active
-                                        .messages
-                                        .push(("user".to_string(), text.clone(), false));
-                                    active.messages.push((
-                                        "assistant".to_string(),
-                                        String::new(),
-                                        true,
-                                    ));
-                                }
-                                this.is_busy = false;
+                                this.prepare_turn_ui(handle.as_str(), &text, &execution_id);
                                 this.record_event(handle.as_str(), "会话启动完成");
+                                cx.notify();
                             });
-                            let _ =
-                                runtime.append_message(&handle, AgentMessage::user(text.clone()));
-                            let _ = runtime.append_message(
-                                &handle,
-                                AgentMessage::assistant("处理中".to_string()),
+                            collector.record_agent_event(
+                                &execution_id,
+                                "user_message",
+                                "session started with user message",
                             );
-                            simulation_streaming_reply(
-                                handle.as_str(),
-                                execution_id,
-                                runtime,
-                                collector,
-                                entity,
+                            let session_id = handle.as_str().to_string();
+                            let task_runtime = runtime.clone();
+                            let task_store = store.clone();
+                            let task_handle = handle.clone();
+                            let task_execution_id = execution_id.clone();
+                            let task_collector = collector.clone();
+                            let task = crate::ui::spawn_tokio(async move {
+                                execute_local_turn(
+                                    &task_runtime,
+                                    &task_store,
+                                    &task_handle,
+                                    &task_execution_id,
+                                    task_collector,
+                                )
+                                .await
+                            });
+                            let result = task.await.unwrap_or(Err(LocalAgentError::AgentRejected(
+                                "local execution background task failed",
+                            )));
+                            finish_local_turn_ui(
+                                &entity,
                                 cx,
-                            )
-                            .await;
+                                &session_id,
+                                &execution_id,
+                                &collector,
+                                result,
+                            );
                         }
                         Err(err) => {
                             entity.update(cx, |this, cx| {
@@ -283,10 +395,29 @@ impl ConversationView {
                                 cx.notify();
                             });
                         }
-                    },
-                )
+                    }
+                })
                 .detach();
             }
+        }
+    }
+
+    fn prepare_turn_ui(&mut self, session_id: &str, text: &str, execution_id: &str) {
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.in_flight_execution = Some(execution_id.to_string());
+            session
+                .messages
+                .push(("user".to_string(), text.to_string(), false));
+            session
+                .messages
+                .push(("assistant".to_string(), String::new(), true));
+            session.append_event("等待本地模型决策".to_string());
+            session.tool_state = "空闲".to_string();
+            session.workflow_state = "等待模型".to_string();
         }
     }
 
@@ -314,8 +445,23 @@ impl ConversationView {
         let entity = _cx.entity();
         self.record_event(&session_id, format!("请求路由到 {target}"));
         let collector = self.collector.clone();
+        let task = crate::ui::spawn_tokio(async move {
+            let result = runtime.route_to_child(&handle_ref, &target).await;
+            (handle_ref, target, result)
+        });
         _cx.spawn(async move |_this, cx| {
-            match runtime.route_to_child(&handle_ref, &target).await {
+            let (handle_ref, _target, result) = match task.await {
+                Ok(result) => result,
+                Err(error) => {
+                    entity.update(cx, move |this, cx| {
+                        this.is_error = true;
+                        this.status_message = Some(format!("路由后台任务失败: {error}").into());
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            match result {
                 Ok(snapshot) => {
                     entity.update(cx, move |this, cx| {
                         if let Some(active) = this
@@ -365,6 +511,10 @@ impl ConversationView {
     }
 
     fn cancel_active_session(&mut self, cx: &mut Context<Self>) {
+        self.is_stopping = true;
+        self.stop_feedback_visible = true;
+        self.status_message = Some("正在停止".into());
+        self.is_error = false;
         let Some(runtime) = self.runtime.clone() else {
             self.status_message = Some("本地会话运行时未就绪".into());
             self.is_error = true;
@@ -391,6 +541,64 @@ impl ConversationView {
                 self.status_message = Some("未找到会话".into());
                 self.is_error = true;
             }
+        }
+        cx.notify();
+    }
+
+    fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.active_session_id = None;
+        self.is_busy = false;
+        self.is_stopping = false;
+        self.stop_feedback_visible = false;
+        self.confirm_delete = false;
+        self.status_message = Some("已新建本地会话草稿".into());
+        self.message_feedback.update(cx, |feedback, cx| {
+            feedback.value = "".into();
+            cx.notify();
+        });
+        if let Some(input) = self.message_input_state.as_ref() {
+            input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                input.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn request_delete_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_delete = true;
+        self.delete_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn close_delete_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_delete = false;
+        if let Some(input) = self.message_input_state.as_ref() {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event.keystroke.key.as_str() {
+            "escape" => self.close_delete_confirmation(window, cx),
+            "enter" | " " | "space" if self.send_focus.is_focused(window) => {
+                cx.stop_propagation();
+                self.send_message(window, cx);
+            }
+            "enter" | " " | "space" if self.stop_focus.is_focused(window) => {
+                cx.stop_propagation();
+                self.cancel_active_session(cx);
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_next_conversation_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.send_focus.is_focused(window) {
+            self.stop_focus.focus(window, cx);
+        } else {
+            self.send_focus.focus(window, cx);
         }
         cx.notify();
     }
@@ -451,136 +659,156 @@ impl ConversationView {
     }
 }
 
-fn session_placeholder_append_runtime(
-    runtime: LocalAgentRuntime,
-    handle: SessionHandle,
-    session_id: String,
-    text: String,
-    execution_id: String,
+struct ConversationRuntimeEventSink {
     collector: Arc<ExecutionEventCollector>,
-    entity: Entity<ConversationView>,
-    cx: &mut Context<ConversationView>,
+    observed_first_token: AtomicBool,
+}
+
+impl ConversationRuntimeEventSink {
+    fn new(collector: Arc<ExecutionEventCollector>) -> Self {
+        Self {
+            collector,
+            observed_first_token: AtomicBool::new(false),
+        }
+    }
+}
+
+impl EventSink for ConversationRuntimeEventSink {
+    fn emit(&self, event: RuntimeEvent) {
+        match event.kind() {
+            RuntimeEventKind::Token { .. }
+                if !self.observed_first_token.swap(true, Ordering::SeqCst) =>
+            {
+                self.collector.record_llm_event(
+                    event.execution_id(),
+                    "stream_started",
+                    "local Provider emitted its first decision delta",
+                );
+            }
+            RuntimeEventKind::FallbackUsed { .. } => self.collector.record_llm_event(
+                event.execution_id(),
+                "fallback_used",
+                "local Preset advanced to its next configured Provider",
+            ),
+            RuntimeEventKind::Cancelled { .. } => self.collector.record_llm_event(
+                event.execution_id(),
+                "cancelled",
+                "local Provider execution was cancelled",
+            ),
+            _ => {}
+        }
+    }
+}
+
+async fn execute_local_turn(
+    runtime: &LocalAgentRuntime,
+    store: &Store,
+    handle: &SessionHandle,
+    execution_id: &str,
+    collector: Arc<ExecutionEventCollector>,
+) -> Result<LocalAgentTurnResult, LocalAgentError> {
+    let model = LocalProviderDecisionModel::from_store(
+        store,
+        execution_id,
+        handle.as_str(),
+        Arc::new(ConversationRuntimeEventSink::new(collector)),
+    )
+    .with_cancel_token(
+        runtime
+            .cancel_token(handle)
+            .ok_or(LocalAgentError::AgentRejected("turn not started"))?,
+    );
+    let executor = PersistedToolExecutor::new(
+        store.pool().clone(),
+        Arc::new(LocalPersistedToolTargetRunner::from_store(store)),
+    );
+    runtime.run_turn(handle, &model, &executor).await
+}
+
+fn finish_local_turn_ui(
+    entity: &Entity<ConversationView>,
+    cx: &mut AsyncApp,
+    session_id: &str,
+    execution_id: &str,
+    collector: &ExecutionEventCollector,
+    result: Result<LocalAgentTurnResult, LocalAgentError>,
 ) {
-    let _ = runtime.append_message(&handle, AgentMessage::user(text.clone()));
-    let initial_session_id = session_id.clone();
-    let initial_execution_id = execution_id.clone();
-    let initial_collector = collector.clone();
+    let session_id = session_id.to_string();
+    let execution_id = execution_id.to_string();
+    let completed = result.is_ok();
+    let reply = result
+        .as_ref()
+        .map(|turn| turn.reply().to_string())
+        .unwrap_or_else(|error| local_agent_error_message(error).to_string());
+    let tool_calls = result.as_ref().map_or(0, LocalAgentTurnResult::tool_calls);
     entity.update(cx, move |this, cx| {
         if let Some(session) = this
             .sessions
             .iter_mut()
-            .find(|s| s.id == initial_session_id)
+            .find(|session| session.id == session_id)
         {
-            session.in_flight_execution = Some(initial_execution_id.clone());
-            session
-                .messages
-                .push(("user".to_string(), text.clone(), false));
-            session
-                .messages
-                .push(("assistant".to_string(), String::new(), true));
-            session.append_event("追加消息".to_string());
-            session.tool_state = "运行工具".to_string();
-            initial_collector.record_agent_event(
-                &initial_execution_id,
-                "user_message",
-                "user message appended",
-            );
-        }
-        this.sync_runtime_states(cx);
-        this.is_busy = false;
-        cx.notify();
-    });
-    cx.spawn(async move |_this, cx| {
-        let chunks = ["正在处理", "执行 Tool", "汇总结果"];
-        for i in chunks {
-            tokio::time::sleep(std::time::Duration::from_millis(260)).await;
-            let chunk_session_id = session_id.clone();
-            entity.update(cx, move |this, cx| {
-                if let Some(session) = this.sessions.iter_mut().find(|s| s.id == chunk_session_id) {
-                    if let Some(msg) = session
-                        .messages
-                        .iter_mut()
-                        .find(|(role, _c, streaming)| role.as_str() == "assistant" && *streaming)
-                    {
-                        msg.2 = true;
-                        msg.1 = format!("{}{}", msg.1, i);
-                    }
-                    session.tool_state = "空闲".to_string();
-                }
-                cx.notify();
-            });
-        }
-
-        let _ = runtime.append_message(&handle, AgentMessage::assistant("完成".to_string()));
-        entity.update(cx, move |this, cx| {
-            if let Some(session) = this.sessions.iter_mut().find(|s| s.id == session_id) {
-                if let Some(msg) = session
-                    .messages
-                    .iter_mut()
-                    .find(|(role, _, streaming)| role.as_str() == "assistant" && *streaming)
-                {
-                    msg.2 = false;
-                    msg.1.push_str(" 完成");
-                }
-                collector.record_agent_event(&execution_id, "assistant_done", "assistant done");
-                session.in_flight_execution = None;
-            }
-            this.status_message = Some("回复已完成".into());
-            this.is_busy = false;
-            cx.notify();
-        });
-    })
-    .detach();
-}
-
-async fn simulation_streaming_reply(
-    handle_id: &str,
-    execution_id: String,
-    _runtime: LocalAgentRuntime,
-    collector: Arc<ExecutionEventCollector>,
-    entity: Entity<ConversationView>,
-    cx: &mut AsyncApp,
-) {
-    let chunks = ["处理中", "已准备工具参数", "生成最终响应"];
-    for chunk in chunks {
-        tokio::time::sleep(std::time::Duration::from_millis(180)).await;
-        let stream_collector = collector.clone();
-        let stream_execution_id = execution_id.clone();
-        entity.update(cx, move |this, cx| {
-            if let Some(session) = this.sessions.iter_mut().find(|s| s.id == handle_id) {
-                if let Some(msg) = session
-                    .messages
-                    .iter_mut()
-                    .find(|(role, _, streaming)| role.as_str() == "assistant" && *streaming)
-                {
-                    msg.2 = true;
-                    msg.1 = format!("{}{}", msg.1, chunk);
-                }
-                stream_collector.record_agent_event(&stream_execution_id, "stream", chunk);
-            }
-            cx.notify();
-        });
-    }
-    entity.update(cx, move |this, cx| {
-        if let Some(session) = this.sessions.iter_mut().find(|s| s.id == handle_id) {
-            if let Some(msg) = session
+            if let Some(message) = session
                 .messages
                 .iter_mut()
-                .find(|(role, _, streaming)| role.as_str() == "assistant" && *streaming)
+                .rev()
+                .find(|(role, _, streaming)| role == "assistant" && *streaming)
             {
-                msg.2 = false;
-                msg.1.push_str(" 完成");
+                message.1 = reply.clone();
+                message.2 = false;
             }
             session.in_flight_execution = None;
-            session.append_event("回复完成");
+            session.tool_state = "空闲".to_string();
+            session.workflow_state = if completed {
+                "已完成".to_string()
+            } else {
+                "失败".to_string()
+            };
+            session.append_event(if completed {
+                format!("回复完成（Tool 调用 {tool_calls} 次）")
+            } else {
+                "本地 Agent 执行失败".to_string()
+            });
         }
-        collector.record_agent_event(
-            &execution_id,
-            "assistant_done",
-            "response streaming finished",
-        );
+        this.status_message = Some(if completed {
+            "回复已完成".into()
+        } else {
+            reply.clone().into()
+        });
+        this.is_error = !completed;
+        this.is_busy = false;
+        if this.is_stopping {
+            this.status_message = Some("已停止".into());
+            this.stop_feedback_visible = true;
+        }
+        this.is_stopping = false;
         cx.notify();
     });
+    collector.record_agent_event(
+        execution_id,
+        if completed {
+            "assistant_done"
+        } else {
+            "turn_failed"
+        },
+        if completed {
+            "local Agent turn completed"
+        } else {
+            "local Agent turn failed at a stable boundary"
+        },
+    );
+}
+
+fn local_agent_error_message(error: &LocalAgentError) -> &'static str {
+    match error {
+        LocalAgentError::NoDefaultRoot => "未配置默认根 Agent",
+        LocalAgentError::InvalidHierarchy(_) => "Agent 层级配置无效",
+        LocalAgentError::InvalidUserMessage(_) => "消息格式无效",
+        LocalAgentError::InvalidInput { .. } => "本地运行时命令参数无效",
+        LocalAgentError::AgentRejected(_) => "本地模型或 Agent 拒绝了本次执行",
+        LocalAgentError::RemoteToolForbidden(_) => "已拒绝非本地 Tool",
+        LocalAgentError::Store(_) => "本地数据存储操作失败",
+        LocalAgentError::ToolExecution(_) => "本地 Tool 执行失败",
+    }
 }
 
 impl Render for ConversationView {
@@ -604,6 +832,8 @@ impl Render for ConversationView {
         };
 
         let message_input = self.message_input_state.clone().unwrap();
+        let message_input_focused = message_input.read(cx).focus_handle(cx).is_focused(window);
+        let message_feedback = self.message_feedback.clone();
         let route_input = self.route_input_state.clone().unwrap();
         let active_id = self.active_session_id.clone();
 
@@ -623,12 +853,30 @@ impl Render for ConversationView {
                     .child("本地会话"),
             )
             .child(
-                div().flex_1().overflow_y_scrollbar().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .children(self.sessions.iter().map(|session| {
+                btn(
+                    "CONVERSATION_NEW",
+                    "新建会话",
+                    theme.primary,
+                    theme.primary_hover,
+                    theme.primary_foreground,
+                    theme.primary_foreground,
+                    {
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.new_conversation(window, cx))
+                                .ok();
+                        }
+                    },
+                )
+                .track_focus(&self.new_focus),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "CONVERSATION_HISTORY_SCROLL".to_string())
+                    .flex_1()
+                    .overflow_y_scrollbar()
+                    .child(div().flex().flex_col().gap(px(6.0)).children(
+                        self.sessions.iter().map(|session| {
                             let id = session.id.clone();
                             let view = view.clone();
                             let label = format!("{} ({})", session.title, session.id);
@@ -667,10 +915,11 @@ impl Render for ConversationView {
                                         .ok();
                                     }
                                 })
-                        })),
-                ),
+                        }),
+                    )),
             )
             .child(btn(
+                "conversation-end",
                 if self.is_busy {
                     "处理中..."
                 } else {
@@ -686,7 +935,25 @@ impl Render for ConversationView {
                         view.update(cx, |this, cx| this.end_active_session(cx)).ok();
                     }
                 },
-            ));
+            ))
+            .child(
+                btn(
+                    "CONVERSATION_DELETE_ACTIVE",
+                    "删除当前历史",
+                    theme.danger,
+                    theme.danger_hover,
+                    theme.danger_foreground,
+                    theme.danger_foreground,
+                    {
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.request_delete_active(window, cx))
+                                .ok();
+                        }
+                    },
+                )
+                .track_focus(&self.delete_focus),
+            );
 
         let (active_title, active_messages, active_events, active_children, in_flight) = self
             .active_session_id
@@ -718,6 +985,9 @@ impl Render for ConversationView {
                     .child(active_title),
             )
             .child(status)
+            .when(self.is_stopping || self.stop_feedback_visible, |panel| {
+                panel.child(focus_marker("CONVERSATION_STATUS-stopping"))
+            })
             .child(
                 div()
                     .text_size(px(12.0))
@@ -728,13 +998,20 @@ impl Render for ConversationView {
                     )),
             )
             .child(
-                div()
-                    .flex()
-                    .gap(px(8.0))
-                    .child(div().flex_1().child(Input::new(&message_input))),
+                div().flex().gap(px(8.0)).child(
+                    div()
+                        .debug_selector(|| "CONVERSATION_MESSAGE_INPUT".to_string())
+                        .flex_1()
+                        .child(Input::new(&message_input).aria_label("对话消息"))
+                        .when(message_input_focused, |input| {
+                            input.child(focus_marker("CONVERSATION_MESSAGE_INPUT_FOCUSED"))
+                        })
+                        .child(message_feedback),
+                ),
             )
             .child(div().flex().gap(px(8.0)).justify_end().children(vec![
                 btn(
+                    "CONVERSATION_SEND",
                     if self.is_busy {
                         "发送中..."
                     } else {
@@ -752,8 +1029,10 @@ impl Render for ConversationView {
                         }
                     },
                 )
+                .track_focus(&self.send_focus)
                 .into_any_element(),
                 btn(
+                    "CONVERSATION_STOP",
                     "Stop",
                     theme.warning,
                     theme.warning_hover,
@@ -767,6 +1046,10 @@ impl Render for ConversationView {
                         }
                     },
                 )
+                .track_focus(&self.stop_focus)
+                .when(self.stop_focus.is_focused(window), |button| {
+                    button.child(focus_marker("CONVERSATION_STOP_FOCUSED"))
+                })
                 .into_any_element(),
             ]))
             .child(
@@ -779,6 +1062,7 @@ impl Render for ConversationView {
                 div().flex().gap(px(8.0)).children([
                     Input::new(&route_input).into_any_element(),
                     btn(
+                        "conversation-route",
                         "路由",
                         theme.secondary,
                         theme.secondary_hover,
@@ -809,6 +1093,7 @@ impl Render for ConversationView {
             }))
             .child(
                 div()
+                    .debug_selector(|| "CONVERSATION_MESSAGES_SCROLL".to_string())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
@@ -887,6 +1172,7 @@ impl Render for ConversationView {
             .justify_between()
             .gap(px(6.0))
             .child(btn(
+                "conversation-diagnostic-export",
                 "导出诊断样例",
                 theme.secondary,
                 theme.secondary_hover,
@@ -901,7 +1187,25 @@ impl Render for ConversationView {
             ));
 
         div()
+            .id("conversation-view")
             .debug_selector(|| "body".to_owned())
+            .key_context("HiveguiConversation")
+            .on_action(cx.listener(|view, _: &ConversationTab, window, cx| {
+                cx.stop_propagation();
+                view.focus_next_conversation_control(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &ConversationActivate, window, cx| {
+                if view.stop_focus.is_focused(window) {
+                    cx.stop_propagation();
+                    view.cancel_active_session(cx);
+                } else if view.send_focus.is_focused(window) {
+                    cx.stop_propagation();
+                    view.send_message(window, cx);
+                }
+            }))
+            .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                view.on_key_down(event, window, cx);
+            }))
             .flex()
             .flex_col()
             .size_full()
@@ -924,18 +1228,48 @@ impl Render for ConversationView {
                     .child(diagnostic),
             )
             .child(div().flex().flex_1().min_h_0().child(left).child(right))
+            .when(self.confirm_delete, |root| {
+                root.child(
+                    div()
+                        .id("conversation-delete-confirm")
+                        .debug_selector(|| "CONVERSATION_DELETE_CONFIRM".to_string())
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(theme.overlay.opacity(0.35))
+                        .child(
+                            div()
+                                .w(px(360.0))
+                                .p(px(20.0))
+                                .rounded(px(8.0))
+                                .bg(theme.popover)
+                                .border_1()
+                                .border_color(theme.border)
+                                .child("确认删除当前会话历史？按 Escape 取消。"),
+                        ),
+                )
+            })
     }
 }
 
 fn btn(
+    selector: &'static str,
     label: &'static str,
     bg: Hsla,
     hover: Hsla,
     fg: Hsla,
     hfg: Hsla,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Stateful<Div> {
+    let debug_selector = selector.to_string();
     div()
+        .id(selector)
+        .debug_selector(move || debug_selector.clone())
+        .tab_index(0)
+        .role(Role::Button)
+        .aria_label(label)
         .px(px(12.0))
         .py(px(8.0))
         .bg(bg)
@@ -948,6 +1282,17 @@ fn btn(
             handler(ev, w, cx);
         })
         .child(label)
+}
+
+fn focus_marker(selector: impl Into<SharedString>) -> Stateful<Div> {
+    let selector = selector.into();
+    let debug_selector = selector.clone();
+    div()
+        .id(selector)
+        .debug_selector(move || debug_selector.to_string())
+        .w(px(0.0))
+        .h(px(0.0))
+        .overflow_hidden()
 }
 
 #[cfg(test)]
@@ -967,6 +1312,7 @@ mod tests {
         let window = cx.open_window(size(px(1100.0), px(720.0)), |_, cx| {
             ConversationView::new(
                 cx,
+                None,
                 None,
                 std::sync::Arc::new(ExecutionEventCollector::new()),
             )

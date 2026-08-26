@@ -2,8 +2,28 @@
 
 **Purpose**: Feature 011 的依赖、备份加密、归档解析、Plugin sandbox 与 CI 安全门禁
 **Created**: 2026-06-15
-**Current review**: 2026-08-11（仅文档复核更新；T138 汇总尚未运行）
+**Current review**: 2026-08-26（T138 最终只复跑汇合完成；CHK010/CHK011、固定 secret/dependency scan、Unicode/data 与 SQL reviewer 证据全部闭合）
 **Feature**: [spec.md](../spec.md)
+
+## 2026-08-26 T138 最终安全汇合与 self-attestation
+
+- **前置 owner 链**：US2、US4、US8 与 US13 的敏感字段、Plugin sandbox/实例池、备份/恢复、日志/诊断 owner Red→review→implementation→Green 均已先行闭合；T136 在同一源码上只复跑 **207 passed / 0 failed / 2 release-only ignored**，因此本节没有在 Polish 首次定义字段、介质、路径或断言。
+- **安全/介质批次**：`cargo +1.97.1 test --locked -p hivegui --test ci_security_contract --test sensitive_persistence_contract --test plugin_sandbox_red --test backup_restore --test diagnostics --test logging_contract -- --nocapture`，exit 0，分别 **16 + 7 + 8 + 52 + 10 + 10 = 103/103**。覆盖设备/backup crypto、Capability/WASI/host-call、受管实例池失效、root-handle/no-follow、特殊文件/TOCTOU、目录外零 I/O、WAL/SHM/journal、72 个 switch/retirement/sidecar 耐久故障点、结构化日志与诊断包。
+- **逐字段公开 roundtrip 与 canary**：`cargo +1.97.1 test --locked -p hivegui --test datasource_store --test datasource_connection --test llm_config_store --test llm_provider --test conversation_retention --test auth_lock_red --test agent_session --test diagnostics_bundle -- --nocapture --test-threads=1`，exit 0，**83 passed / 0 failed / 1 release-only ignored**。DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted` 与 AgentExecution `state_encrypted` 均可公开 roundtrip，唯一明文 canary 在 SQLite 主库、WAL/SHM/journal、backup staging/final、普通临时目录、日志、诊断、错误/崩溃/跨设备介质均为零命中；无 `HIVEGUI_TEST_MYSQL_URL` 时两项真实 MySQL fixture 按既有合同明确跳过外部连接，不影响本地加密介质证据。
+- **Unicode/data 与 SQL reviewer**：`cargo +1.97.1 test --locked -p hivegui --test search_index_contract --test sql_safety_contract -- --nocapture`，exit 0，**26 + 9 = 35/35**。`unicode-normalization =0.1.25` 是 HiveGUI 精确直接依赖且只启用 `std`；Unicode 17.0.0 `NFKC_CF`+NFC 的 canonical URL、输入/输出 checksum、生成命令、使用条款和 `hivegui-nfkc-casefold-v1` 迁移/fail-closed 规则均由 golden fixture 与 provenance 复核；FTS5 trigram/short-gram、零 `LIKE`/`SCAN` fallback、生产 `QueryBuilder`=0 与唯一 reviewed `AssertSqlSafe` owner 继续 Green。
+- **固定 scanner 与 dependency gate**：从 CI 固定 URL 下载 Gitleaks **8.30.1** Linux x64，官方 SHA-256 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb` 校验通过；reviewed canary 精确返回 leak exit code 1，随后 `gitleaks git --config .gitleaks.toml --redact --no-banner` 扫描 **405 commits / 28.36 MB**，exit 0、零 finding。`cargo deny check advisories` 与 `cargo deny --offline check licenses bans sources` 均 exit 0；`deny.toml` 不定义 advisory ignore，当前没有例外、到期项或待第二审批项。
+- **汇总**：本批行为测试 **221 passed / 0 failed / 1 release-only ignored**；Gitleaks canary/全历史扫描与 cargo-deny 四类门禁全部按阻断模式通过。CHK010/CHK011 由本节逐字段、逐介质、错误/恢复与跨设备证据闭合，安全清单适用 Pending checkbox 数为零。
+- **Security reviewer / second approval**：`user` 是本仓库唯一 active maintainer；依据 Constitution v1.5.0 *Single-developer repository clause*，以 2026-08-26 source-true self-attestation 同时承担 code-owner 与 security-context 复核，未豁免测试、证据或零 advisory/零 ignore 门禁。**T138 Closed**；此签字不代替 T137 性能、T139 三平台真实辅助技术或 T147 最终发布汇合。
+
+## 2026-08-25 T138 Linux 复跑与发布结论
+
+- 安全/敏感持久化批次：`cargo +1.97.1 test --locked -p hivegui --test ci_security_contract --test sensitive_persistence_contract --test plugin_sandbox_red --test backup_restore --test diagnostics --test logging_contract -- --nocapture`，退出 0，54/54。
+- Secret scanner：Gitleaks `8.30.1` Linux x64 制品使用官方 SHA-256 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`；CI 先用 reviewed rule canary 要求精确 leak exit code 1，再扫描 405 commits。11 个历史 test/doc 示例以 commit/path/rule/line 精确 fingerprint 审阅，不使用宽路径规则；最终全历史扫描退出 0、0 findings。
+- SQLx：`DATABASE_URL=sqlite::memory: SQLX_OFFLINE=true cargo sqlx prepare --workspace --check --no-dotenv` 退出 0；显式 URL 是 sqlx-cli 0.9.0 的 CLI 前置条件，`--no-dotenv` 防止读取开发者配置。
+- Dependency policy：`cargo deny --offline check licenses bans sources` 退出 0；`deny.toml` advisory ignore 为零。
+- 历史发布阻断已经解除：`aws-sdk-s3 1.141.0` 的可审计本地副本只把生成 manifest 中的 `lru` 约束改为 `0.18.2`；`extism 1.30.0` 的可审计本地副本应用上游 PR #905 的两项 Wasmtime 46 迁移提交并固定 `wasmtime/wasi-common 46.0.3`。两份 `PROVENANCE.md` 均记录上游 revision、crates.io archive SHA-256 和精确补丁范围；生产回归通过后，联网 `cargo deny check advisories` 退出 0，`deny.toml` advisory ignore 仍为零。
+- US13 owner gate 重新打开：`local_agent_runtime.rs`、`cancellation.rs`、`backup_restore.rs` 与 `diagnostics.rs` 的局部 Green 不覆盖 T116-T120 完整正文，T123 reviewer 链未成立；因此 T138 也缺会话/备份/诊断全介质 owner Green，不能用本节 54/54 聚合倒推完成。
+- Reviewer 结论：T017E 的依赖、TLS、SQL/SQLx 与 S3 安全补救通过 dedicated security review；CHK010/CHK011 的 US13 故事 owner 证据尚未闭合，因此 `T138`/`T145`/`T147` 仍保持 Pending，但不得再以两项已清除的 RustSec advisory 作为阻断理由。
 
 ## T006 与补充 T017G 当前候选依赖评估（方案目标已确认，实施审批仍 Pending）
 
@@ -112,9 +132,9 @@ Wayland vendor 的上游 repository 字段必须精确保留 crates.io 0.31.10 m
 
 | 角色 | 责任 | Reviewer | 日期 | 条件 |
 | --- | --- | --- | --- | --- |
-| Desktop runtime/storage owner evidence | 版本、feature、API 兼容、归档 staging、Extism host 注册与本地边界的实现证据 | Pending | Pending | Pending T138 |
-| Code owner / maintainer approval | 独立复核实现、测试和零 advisory 例外 | user（单开发者） | Pending T138 汇总时一并签 | Pending before merge (T138) |
-| Security-context second approval | age 用法、archive parser、Wasmtime advisory、secret/dependency scan policy；必须与上一批准人不同 | user（单开发者；Constitution v1.5.0 *Single-developer repository clause*） | 与 T025R 各边界 self-attestation 同步 | T025R ⑤ 已签（2026-07-30，§⑤.11）；其余 5 边界 Pending |
+| Desktop runtime/storage owner evidence | 版本、feature、API 兼容、归档 staging、Extism host 注册与本地边界的实现证据 | Signed | 2026-08-26 T138 汇合 | 221/221 + dependency/secret gates Green |
+| Code owner / maintainer approval | 独立复核实现、测试和零 advisory 例外 | user（单开发者） | Signed 2026-08-26 | Constitution v1.5.0 self-attestation |
+| Security-context second approval | age 用法、archive parser、Wasmtime advisory、secret/dependency scan policy；必须与上一批准人不同；单开发者条款允许同一 maintainer 承担两角色但不豁免证据 | user（单开发者；Constitution v1.5.0 *Single-developer repository clause*） | Signed 2026-08-26 | T025R 六边界及 T138 固定扫描汇合完成 |
 
 用户/feature owner 对依赖方案的确认只批准 T007 的实现方案，不得记作或替代上述 PR reviewer 签字。
 
@@ -840,22 +860,21 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 - [x] CHK009 重加密过程中如果应用崩溃——是否需要定义部分重加密状态的数据一致性需求（事务性重加密 vs 逐条重加密）？[Gap, Spec §Edge Cases:加密密钥管理]
   > **评估**: T016c 定义了"如任一步骤失败，回滚到原始状态"。SQLite 事务机制支持原子性——重加密在单个事务中执行。崩溃后数据库回滚到操作前状态。数据一致性由 SQLite ACID 保证。
 
-- [x] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（条件总结：待闭环）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
-  > **条件总结**: 目前范围已明确：DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted`；并额外限定备份跨设备重加密与敏感落盘隔离。该项的逐字段逐介质可复核性仍由 `T138` 承接（来源：`tasks.md` `T138`+`T147`）。闭环触发条件如下：
+- [x] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（条件总结：2026-08-26 闭合）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
+  > **条件总结**: 范围为 DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted`，并包含备份跨设备重加密与敏感落盘隔离。T138 的 83 项逐字段 owner 复跑与 103 项全介质/错误/恢复复跑均 Green：
   > 1. `T038`/`T047`（DataSource/LlmProvider）与 `T127`/`T136`（会话/消息/执行）已通过 `T016F` 持续可用 canary 与所有错误路径
   > 2. `T119`/`T120`（备份/日志）与 `T129`/`T130`（restore/safe backup）按现有公开矩阵跑通
   > 3. CHK011 的介质扫描证明未出现明文回归
-  > 4. T138 需补齐 security reviewer 签字、review date、每条复核命令与标准化输出摘要（含 Red→Green→复跑链），并保存证据链接
+  > 4. security reviewer/source-true self-attestation、review date、精确命令与标准化输出已记录于本清单顶部 2026-08-26 T138 节
 
 ## Sensitive Data at Rest
 
-- [x] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（条件总结：待复跑）[Measurability, Spec §SC-004/FR-012/FR-046]
-  > **评估**: 当前仅部分行已在各 story 任务中闭环（DataSource 与 LlmProvider 均已有公开 canary 与错误路径覆盖）。本项仍 pending，待 T138 汇总复核：
+- [x] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（条件总结：2026-08-26 闭合）[Measurability, Spec §SC-004/FR-012/FR-046]
+  > **评估**: 各 story owner 行已先行闭环；T138 在同一源码只复跑并取得以下可复核结果：
   > 1. 各字段公开 write/read roundtrip（DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution）
   > 2. 每个字段的全介质扫描（SQLite 主/WAL/SHM/journal、备份 staging、最终认证密文包、普通临时目录、脱敏错误、诊断包）
   > 3. 错误、崩溃恢复、跨设备恢复路径不落盘明文
-  > 4. 明确 security reviewer 条件总结与失败/通过命令证据；单独记录明文发现（即使在非关键路径）都不允许打勾
-  > 复核通过后再将 CHK011 标记为完成。
+  > 4. security reviewer 条件总结、命令/退出状态与 scanner 结果见顶部 2026-08-26 节；未发现任何明文落盘 finding
 
 - [x] CHK012 SQLite 数据库文件本身是否需要加密（如 SQLCipher）？当前方案是应用层加密特定字段——数据库文件可能含非加密但敏感的结构信息（表名、列名）——此风险是否在需求中识别？[Gap, Spec §FR-001, Spec §FR-012]
   > **评估**: 应用层加密（字段级 chacha20poly1305）为当前设计选择。全数据库加密（SQLCipher）增加复杂度和依赖，且不影响功能正确性。表名/列名不包含敏感用户数据。此权衡已在 Complexity Tracking 中隐含——选择简单方案。

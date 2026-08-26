@@ -16,22 +16,6 @@ targets = [
 unmaintained = "workspace"
 unsound = "all"
 
-# PROVISIONAL IGNORE — pending Feature 011 security checklist sign-off (T145).
-# Verified 2026-08-15: both crates are already at their latest published version
-# (aws-sdk-s3 1.141.0, extism 1.30.0) and upstream has NOT shipped a fix that
-# relaxes the vulnerable transitive dependency:
-#   - RUSTSEC-2026-0253 (lru 0.16.4, unsound pop panic-safety) is pulled in by
-#     aws-sdk-s3 1.141.0, which pins lru = "^0.16.3". No newer aws-sdk-s3 exists.
-#   - RUSTSEC-2026-0222 (wasmtime 43.0.2, type-index confusion) is pulled in by
-#     extism 1.30.0, which pins wasmtime = "^43". No newer extism exists.
-# Both crates are required (extism = plugin runtime; aws-sdk-s3 = HiveWeb storage),
-# and the vulnerable code paths require conditions not exercised by HiveGUI/HiveWeb
-# usage. Remove these ignores as soon as upstream publishes a fixed release.
-ignore = [
-    "RUSTSEC-2026-0253",
-    "RUSTSEC-2026-0222",
-]
-
 [licenses]
 # Allowlist of permissive / weak-copyleft licenses used across the workspace.
 # Copyleft licenses (GPL/LGPL/AGPL families) are intentionally NOT listed, since

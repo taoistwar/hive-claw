@@ -322,8 +322,9 @@ pub const EXTISM_HOST_CALL_MODULE: &str = "extism:host/user";
 /// The canonical ABI version export name.
 ///
 /// Plugins MUST export a function with this name whose body returns the
-/// [`crate::abi::HIVE_EXTISM_ABI_V1`] string. Hosts verify the
-/// return value matches before instantiating the Plugin.
+/// [`crate::abi::HIVE_EXTISM_ABI_V1`] string. Hosts perform static shape
+/// validation first, instantiate the sandbox, then verify this return value
+/// before invoking any business export.
 pub const ABI_VERSION_EXPORT: &str = "_hive_plugin_abi_version";
 
 /// The `wasi_snapshot_preview1` module name.

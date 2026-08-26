@@ -43,7 +43,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize database connection pool
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = db::connection::create_pool(&database_url).await?;
+    let database_options = db::connection::StrictMysqlConnectOptions::try_from_environment(
+        &database_url,
+        "DATABASE_TLS_CA",
+        "DATABASE_TLS_HOSTNAME",
+    )?;
+    let pool = db::connection::create_pool(database_options).await?;
     if services::runtime_audit::install_mysql_writer(pool.clone()).is_err() {
         tracing::error!(
             error_kind = "runtime_audit_writer_init_failed",
@@ -77,19 +82,34 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize external read-only database for assistant API
     let ext_pool = match std::env::var("EXTERNAL_DB_URL") {
-        Ok(url) if !url.is_empty() => match db::connection::create_pool(&url).await {
-            Ok(p) => {
-                tracing::info!("External DB initialized: {}", mask_url_password(&url));
-                Some(p)
+        Ok(url) if !url.is_empty() => {
+            match db::connection::StrictMysqlConnectOptions::try_from_environment(
+                &url,
+                "EXTERNAL_DATABASE_TLS_CA",
+                "EXTERNAL_DATABASE_TLS_HOSTNAME",
+            ) {
+                Ok(options) => match db::connection::create_pool(options).await {
+                    Ok(p) => {
+                        tracing::info!("External DB initialized: {}", mask_url_password(&url));
+                        Some(p)
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            error_kind = "external_database_connection_failed",
+                            "External DB connection failed, assistant API will be unavailable"
+                        );
+                        None
+                    }
+                },
+                Err(_) => {
+                    tracing::warn!(
+                        error_kind = "external_database_tls_config_rejected",
+                        "External DB TLS configuration rejected, assistant API will be unavailable"
+                    );
+                    None
+                }
             }
-            Err(_) => {
-                tracing::warn!(
-                    error_kind = "external_database_connection_failed",
-                    "External DB connection failed, assistant API will be unavailable"
-                );
-                None
-            }
-        },
+        }
         _ => {
             tracing::info!("EXTERNAL_DB_URL not set, assistant API will be unavailable");
             None

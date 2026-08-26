@@ -388,6 +388,20 @@ impl LlmProviderStore {
         Ok(store)
     }
 
+    /// Build a store from an existing [`Crypto`] handle (rather than raw
+    /// device-key bytes). This lets production wiring reuse the `Crypto`
+    /// held by [`crate::datasource::Store`] without re-reading or
+    /// re-materialising the device key. The caller must hand over an
+    /// owned `Crypto` (it is `Clone`); the store zeroizes it on drop.
+    pub async fn from_crypto(
+        pool: SqlitePool,
+        crypto: Crypto,
+    ) -> Result<Self, LlmProviderStoreError> {
+        let store = Self { pool, crypto };
+        store.ensure_schema().await?;
+        Ok(store)
+    }
+
     async fn ensure_schema(&self) -> Result<(), LlmProviderStoreError> {
         sqlx::query(
             r#"

@@ -683,6 +683,27 @@ fn sidebar_buttons_expose_accesskit_names(cx: &mut TestAppContext) {
     }
 }
 
+#[test]
+fn sidebar_focus_targets_expose_real_button_roles_and_names() {
+    use gpui::Role;
+    use hivegui::ui::sidebar_nav::{SidebarKey, sidebar_focusable_accesskit_probe};
+
+    for (key, expected_name) in [
+        (SidebarKey::Home, "首页"),
+        (SidebarKey::Ai, "AI 管理"),
+        (SidebarKey::Tools, "工具"),
+        (SidebarKey::UserConfig, "用户配置"),
+    ] {
+        let node = sidebar_focusable_accesskit_probe(key);
+        assert_eq!(node.role(), Role::Button, "{key:?} must expose Button");
+        assert_eq!(
+            node.label(),
+            Some(expected_name),
+            "{key:?} must expose its visible Chinese name"
+        );
+    }
+}
+
 // §T030.4 — Fixed input → visible feedback latency. ─────────────────────
 
 #[gpui::test]
@@ -873,6 +894,37 @@ fn skill_view_search_and_pagination_controls_use_size_20() {
             && SKILL_VIEW_SOURCE.contains("next"),
         "Skill list pagination controls are missing or renamed"
     );
+}
+
+#[gpui::test]
+fn skill_view_initial_render_does_not_materialize_the_hidden_form(cx: &mut TestAppContext) {
+    let (_workspace, store, store_entity, runtime) = function_visual_store(cx);
+    let _runtime_guard = runtime.enter();
+    let window = cx.open_window(size(px(720.0), px(520.0)), move |window, cx| {
+        let view = cx.new(|cx| hivegui::ui::skill_view::SkillView::new(store_entity, cx));
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    for _ in 0..200 {
+        visual.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(
+        visual
+            .debug_bounds(hivegui::ui::skill_view::SKILL_MODAL)
+            .is_none(),
+        "the hidden Skill form must remain absent until the user opens it"
+    );
+
+    visual.update(|_, cx| {
+        cx.remove_global::<HiveGuiAppState>();
+    });
+    close_function_visual_window(&mut visual);
+    drop(visual);
+    drop(store);
+    drop(_runtime_guard);
 }
 
 // ===========================================================================
@@ -1330,11 +1382,11 @@ fn function_view_module_carries_scroll_tag_for_native_surface() {
 #[test]
 fn function_list_surface_is_registered_in_t016e_inventory() {
     use support::scroll_inventory::ScrollSurface;
-    // T085 activates the T016E Function surface owned by US9/T087.
+    // T085 activates the T016E Function surface closed by the T088 UI task.
     let owner = ScrollSurface::FunctionList.owner_phase().to_string();
     assert_eq!(
-        owner, "US9/T087",
-        "FunctionList owner phase must be fixed to US9/T087"
+        owner, "US9/T088",
+        "FunctionList owner phase must be fixed to the US9/T088 UI implementation task"
     );
     assert_eq!(ScrollSurface::FunctionList.slug(), "function_list");
 }
@@ -1344,11 +1396,13 @@ fn function_view_supports_json_schema_editor_controls() {
     // T088 must keep dedicated JSON schema editors in the form so users can
     // configure builtin/custom schemas directly from the management UI.
     assert!(
-        FUNCTION_VIEW_SOURCE.contains("form_field_multiline(\"Input Schema (JSON)\""),
+        FUNCTION_VIEW_SOURCE.contains("form_field_multiline(")
+            && FUNCTION_VIEW_SOURCE.contains("\"Input Schema (JSON)\""),
         "T088 should render the input schema editor"
     );
     assert!(
-        FUNCTION_VIEW_SOURCE.contains("form_field_multiline(\"Output Schema (JSON)\""),
+        FUNCTION_VIEW_SOURCE.contains("form_field_multiline(")
+            && FUNCTION_VIEW_SOURCE.contains("\"Output Schema (JSON)\""),
         "T088 should render the output schema editor"
     );
     assert!(
@@ -1393,7 +1447,7 @@ fn function_view_exposes_execution_feedback_states_for_test_runs() {
     assert!(
         FUNCTION_VIEW_SOURCE.contains("TestState::Error")
             && FUNCTION_VIEW_SOURCE.contains("执行结果")
-            && FUNCTION_VIEW_SOURCE.contains("FunctionTestExecutor::execute"),
+            && FUNCTION_VIEW_SOURCE.contains(".execute_with_capabilities("),
         "Function test dialog should render error state after execute failure"
     );
 }
@@ -1439,6 +1493,759 @@ fn function_view_declares_keyboard_and_focus_contract_for_accessibility() {
     );
 }
 
+fn function_visual_store(
+    cx: &mut TestAppContext,
+) -> (
+    support::TestWorkspace,
+    hivegui::datasource::Store,
+    gpui::Entity<hivegui::datasource::Store>,
+    tokio::runtime::Runtime,
+) {
+    use hivegui::datasource::store::{Store, StoreOpenOptions};
+    use hivegui::ui::app::{AppRoute, HiveGuiAppState};
+
+    init_gpui(cx);
+    cx.executor().allow_parking();
+    let workspace = support::TestWorkspace::new().expect("create Function visual-test workspace");
+    let runtime = tokio::runtime::Runtime::new().expect("create Function visual-test runtime");
+    let store = runtime
+        .block_on(Store::open_local(StoreOpenOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        )))
+        .expect("open canonical Function visual-test Store");
+    let store_entity = cx.new(|_| store.clone());
+    cx.update(|cx| {
+        HiveGuiAppState::install_for_test_with_store(cx, AppRoute::Ai, store_entity.clone());
+    });
+    (workspace, store, store_entity, runtime)
+}
+
+fn open_function_visual_window(
+    cx: &mut TestAppContext,
+    store: gpui::Entity<hivegui::datasource::Store>,
+    window_size: gpui::Size<gpui::Pixels>,
+) -> WindowHandle<gpui_component::Root> {
+    cx.open_window(window_size, move |window, cx| {
+        let view = cx.new(|cx| hivegui::ui::function_view::FunctionView::new(store, cx));
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    })
+}
+
+fn click_function_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    let Some(bounds) = visual.debug_bounds(selector) else {
+        return false;
+    };
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    true
+}
+
+fn replace_function_input(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    value: &str,
+) -> bool {
+    let Some(bounds) = visual.debug_bounds(selector) else {
+        return false;
+    };
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_keystrokes("ctrl-a");
+    visual.simulate_input(value);
+    visual.run_until_parked();
+    true
+}
+
+fn close_function_visual_window(visual: &mut VisualTestContext) {
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+}
+
+fn settle_function_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    for _ in 0..16 {
+        visual.run_until_parked();
+        if visual.debug_bounds(selector).is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    false
+}
+
+fn settle_function_selector_absent(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    for _ in 0..200 {
+        visual.run_until_parked();
+        if visual.debug_bounds(selector).is_none() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    false
+}
+
+fn assert_function_semantic_node(
+    node: &gpui::accesskit::Node,
+    expected_role: gpui::Role,
+    expected_label: &str,
+) {
+    use gpui::accesskit::Action;
+
+    assert_eq!(node.role(), expected_role);
+    assert_eq!(node.label(), Some(expected_label));
+    for action in [Action::Click, Action::Expand, Action::Collapse] {
+        assert!(
+            !node.supports_action(action),
+            "Function status/alert semantics must not expose an inapplicable {action:?} action"
+        );
+    }
+}
+
+#[gpui::test]
+fn function_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+
+    let (_workspace, _store, store_entity, runtime) = function_visual_store(cx);
+    let _runtime_guard = runtime.enter();
+    let window = open_function_visual_window(cx, store_entity, size(px(520.0), px(300.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let add_visible = click_function_selector(&mut visual, "FUNCTION_ADD");
+    let modal = visual.debug_bounds("FUNCTION_MODAL");
+    let scroll = visual.debug_bounds("FUNCTION_FORM_SCROLL");
+    let actions_at_top = visual.debug_bounds("FUNCTION_FORM_ACTIONS");
+    let keyboard_save = if scroll.is_some() {
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        visual
+            .debug_bounds("FUNCTION_FORM_SAVE_FOCUSED")
+            .and_then(|_| visual.debug_bounds("FUNCTION_FORM_SAVE"))
+    } else {
+        None
+    };
+    let actions_after_keyboard = visual.debug_bounds("FUNCTION_FORM_ACTIONS");
+    if let Some(scroll) = scroll {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(2_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let actions_before_wheel = visual.debug_bounds("FUNCTION_FORM_ACTIONS");
+    let mut actions_after = None;
+    if let (Some(scroll), Some(_)) = (scroll, actions_before_wheel) {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+        actions_after = visual.debug_bounds("FUNCTION_FORM_ACTIONS");
+    }
+    let custom_controls: Vec<&str> = [
+        "FUNCTION_SCROLL_UP",
+        "FUNCTION_SCROLL_DOWN",
+        "FUNCTION_SCROLLBAR_TRACK",
+        "FUNCTION_SCROLL_HANDLE",
+    ]
+    .into_iter()
+    .filter(|selector| visual.debug_bounds(selector).is_some())
+    .collect();
+    let handwritten_scroll: Vec<&str> = [
+        "ScrollWheelEvent",
+        ".on_scroll_wheel(",
+        "FUNCTION_SCROLL_UP",
+        "FUNCTION_SCROLL_DOWN",
+        "FUNCTION_SCROLLBAR_TRACK",
+        "FUNCTION_SCROLL_HANDLE",
+        "scroll-up",
+        "scroll-down",
+        "scrollbar-track",
+        "scroll-handle",
+    ]
+    .into_iter()
+    .filter(|needle| FUNCTION_VIEW_SOURCE.contains(needle))
+    .collect();
+    close_function_visual_window(&mut visual);
+
+    assert!(
+        add_visible,
+        "Function view must expose a stable FUNCTION_ADD selector for pointer and keyboard tests"
+    );
+    let modal = modal.expect("Function form must expose FUNCTION_MODAL bounds");
+    let scroll = scroll.expect(
+        "Function form must expose its GPUI Component native viewport as FUNCTION_FORM_SCROLL",
+    );
+    let actions_at_top = actions_at_top
+        .expect("long Function form must expose its bottom actions before keyboard navigation");
+    let keyboard_save = keyboard_save
+        .expect("Shift-Tab navigation must wrap from the first field to FUNCTION_FORM_SAVE");
+    let actions_after_keyboard = actions_after_keyboard
+        .expect("Tab navigation must move the bottom Function actions into the viewport");
+    assert!(
+        keyboard_save.top() >= scroll.top() && keyboard_save.bottom() <= scroll.bottom(),
+        "Tab reached Save but did not make it visible: viewport={scroll:?}, save={keyboard_save:?}"
+    );
+    assert!(
+        actions_after_keyboard.top() < actions_at_top.top()
+            && actions_after_keyboard.bottom() <= scroll.bottom(),
+        "Tab-to-bottom did not scroll Function actions into view: before={actions_at_top:?}, after={actions_after_keyboard:?}"
+    );
+    let actions_before_wheel = actions_before_wheel
+        .expect("long Function form must expose its bottom actions as FUNCTION_FORM_ACTIONS");
+    let actions_after = actions_after.expect("bottom Function actions after real wheel input");
+    assert!(modal.top() >= px(0.0) && modal.bottom() <= px(300.0));
+    assert!(scroll.top() >= modal.top() && scroll.bottom() <= modal.bottom());
+    assert!(
+        actions_after.top() < actions_before_wheel.top(),
+        "real GPUI wheel input did not move Function form content: before={actions_before_wheel:?}, after={actions_after:?}"
+    );
+    assert!(
+        actions_after.top() >= scroll.top() && actions_after.bottom() <= scroll.bottom(),
+        "bottom Function actions are not fully reachable: viewport={scroll:?}, actions={actions_after:?}"
+    );
+    assert!(
+        custom_controls.is_empty(),
+        "Function form rendered forbidden custom scroll controls: {custom_controls:?}"
+    );
+    assert!(
+        handwritten_scroll.is_empty(),
+        "Function production source contains handwritten wheel/custom scroll controls: {handwritten_scroll:?}"
+    );
+}
+
+#[gpui::test]
+fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use hivegui::datasource::{FunctionInput, FunctionKind, FunctionStore};
+    use hivegui::ui::function_view::{FunctionSemanticStatus, function_semantic_accesskit_probe};
+
+    const UPDATED_INPUT_SCHEMA: &str =
+        r#"{"type":"object","properties":{"query":{"type":"string"}}}"#;
+    const UPDATED_OUTPUT_SCHEMA: &str =
+        r#"{"type":"object","properties":{"answer":{"type":"string"}}}"#;
+
+    let (_workspace, store, store_entity, runtime) = function_visual_store(cx);
+    let function_store =
+        FunctionStore::new(store.pool().clone()).expect("construct public FunctionStore fixture");
+    // Store::open_local synchronizes the canonical Builtin registry before the
+    // Function view loads. Resolve the synchronized row without duplicating it.
+    let builtin_id = runtime
+        .block_on(async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM functions WHERE identifier = ? AND kind = 'builtin'",
+            )
+            .bind("format_template")
+            .fetch_one(store.pool())
+            .await
+        })
+        .expect("resolve synchronized system-owned Builtin Function");
+    let builtin = runtime
+        .block_on(function_store.get(builtin_id))
+        .expect("load Builtin Function")
+        .expect("synchronized Builtin Function must exist");
+    let placeholder_input = FunctionInput::for_write(
+        "t085_schema_placeholder".to_string(),
+        "T085 schema-only placeholder".to_string(),
+        None,
+        FunctionKind::Placeholder,
+        "{}".to_string(),
+        "{}".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build Placeholder Function input");
+    let placeholder = runtime
+        .block_on(function_store.create(placeholder_input))
+        .expect("seed Placeholder Function");
+    let _runtime_guard = runtime.enter();
+    let window = open_function_visual_window(cx, store_entity, size(px(760.0), px(900.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let readonly_selector: &'static str =
+        Box::leak(format!("FUNCTION_BUILTIN_READONLY-{}", builtin.id()).into_boxed_str());
+    let test_selector: &'static str =
+        Box::leak(format!("FUNCTION_TEST-{}", builtin.id()).into_boxed_str());
+    let edit_selector: &'static str =
+        Box::leak(format!("FUNCTION_EDIT-{}", builtin.id()).into_boxed_str());
+    let delete_selector: &'static str =
+        Box::leak(format!("FUNCTION_DELETE-{}", builtin.id()).into_boxed_str());
+    let readonly_visible = settle_function_selector(&mut visual, readonly_selector);
+    let readonly_accesskit =
+        function_semantic_accesskit_probe(FunctionSemanticStatus::BuiltinImmutable {
+            id: builtin.id(),
+            identifier: builtin.identifier().to_string(),
+        });
+    let test_visible = visual.debug_bounds(test_selector).is_some();
+    let edit_visible = visual.debug_bounds(edit_selector).is_some();
+    let delete_visible = visual.debug_bounds(delete_selector).is_some();
+
+    let placeholder_state_selector: &'static str = Box::leak(
+        format!("FUNCTION_PLACEHOLDER_NON_EXECUTABLE-{}", placeholder.id()).into_boxed_str(),
+    );
+    let placeholder_test_selector: &'static str =
+        Box::leak(format!("FUNCTION_TEST-{}", placeholder.id()).into_boxed_str());
+    let placeholder_edit_selector: &'static str =
+        Box::leak(format!("FUNCTION_EDIT-{}", placeholder.id()).into_boxed_str());
+    let placeholder_state_visible = visual.debug_bounds(placeholder_state_selector).is_some();
+    let placeholder_accesskit =
+        function_semantic_accesskit_probe(FunctionSemanticStatus::PlaceholderNonExecutable {
+            id: placeholder.id(),
+            identifier: placeholder.identifier().to_string(),
+        });
+    let placeholder_test_visible = visual.debug_bounds(placeholder_test_selector).is_some();
+
+    let add_visible = click_function_selector(&mut visual, "FUNCTION_ADD");
+    let builtin_option_visible = visual
+        .debug_bounds("FUNCTION_KIND_OPTION-builtin")
+        .is_some();
+    let builtin_disabled = visual
+        .debug_bounds("FUNCTION_KIND_BUILTIN_DISABLED")
+        .is_some();
+    if builtin_option_visible {
+        let _ = click_function_selector(&mut visual, "FUNCTION_KIND_OPTION-builtin");
+    }
+    let builtin_selectable = visual
+        .debug_bounds("FUNCTION_KIND_BUILTIN_SELECTABLE")
+        .is_some();
+    let builtin_selected = visual
+        .debug_bounds("FUNCTION_KIND_SELECTED-builtin")
+        .is_some();
+    let builtin_attempt_identifier_set = replace_function_input(
+        &mut visual,
+        "FUNCTION_IDENTIFIER",
+        "t085_user_builtin_attempt",
+    );
+    let builtin_attempt_name_set =
+        replace_function_input(&mut visual, "FUNCTION_NAME", "T085 user Builtin attempt");
+    let builtin_attempt_submitted = click_function_selector(&mut visual, "FUNCTION_FORM_SAVE")
+        && settle_function_selector_absent(&mut visual, "FUNCTION_MODAL")
+        && settle_function_selector(&mut visual, "FUNCTION_LIST_LOADED");
+    let add_closed = if visual.debug_bounds("FUNCTION_MODAL").is_some() {
+        click_function_selector(&mut visual, "FUNCTION_FORM_CANCEL")
+    } else {
+        true
+    };
+    let placeholder_edit_opened = settle_function_selector(&mut visual, placeholder_edit_selector)
+        && click_function_selector(&mut visual, placeholder_edit_selector);
+    let schema_fields_visible = visual.debug_bounds("FUNCTION_INPUT_SCHEMA").is_some()
+        && visual.debug_bounds("FUNCTION_OUTPUT_SCHEMA").is_some()
+        && visual
+            .debug_bounds("FUNCTION_PLACEHOLDER_SCHEMA_ONLY")
+            .is_some();
+    let relation_fields_absent = visual.debug_bounds("FUNCTION_PLUGIN_SELECTOR").is_none()
+        && visual.debug_bounds("FUNCTION_EXPORT_SELECTOR").is_none()
+        && visual
+            .debug_bounds("FUNCTION_CAPABILITY_SELECTOR")
+            .is_none();
+    let input_schema_set =
+        replace_function_input(&mut visual, "FUNCTION_INPUT_SCHEMA", UPDATED_INPUT_SCHEMA);
+    let output_schema_set =
+        replace_function_input(&mut visual, "FUNCTION_OUTPUT_SCHEMA", UPDATED_OUTPUT_SCHEMA);
+    let form_scroll = visual.debug_bounds("FUNCTION_FORM_SCROLL");
+    if let Some(scroll) = form_scroll {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let save_in_viewport = form_scroll
+        .zip(visual.debug_bounds("FUNCTION_FORM_SAVE"))
+        .is_some_and(|(scroll, save)| {
+            save.top() >= scroll.top() && save.bottom() <= scroll.bottom()
+        });
+    let placeholder_saved = save_in_viewport
+        && click_function_selector(&mut visual, "FUNCTION_FORM_SAVE")
+        && settle_function_selector_absent(&mut visual, "FUNCTION_MODAL")
+        && settle_function_selector(&mut visual, "FUNCTION_LIST_LOADED");
+    visual.update(|_, cx| {
+        cx.remove_global::<HiveGuiAppState>();
+    });
+    close_function_visual_window(&mut visual);
+    drop(_runtime_guard);
+    let builtin_attempts = runtime
+        .block_on(function_store.list(Some("t085_user_builtin_attempt".to_string()), 1))
+        .expect("reload attempted user-created Builtin");
+    let persisted_placeholder = runtime
+        .block_on(function_store.get(placeholder.id()))
+        .expect("reload Placeholder Function")
+        .expect("Placeholder Function must remain after edit");
+    let cleanup_runtime_guard = runtime.enter();
+    drop(function_store);
+    drop(store);
+    drop(cleanup_runtime_guard);
+
+    assert!(
+        readonly_visible,
+        "Builtin row must expose a non-colour, accessible read-only state via {readonly_selector}"
+    );
+    assert!(test_visible, "Builtin Function must remain testable");
+    assert!(!edit_visible, "Builtin Function must not expose Edit");
+    assert!(!delete_visible, "Builtin Function must not expose Delete");
+    assert_function_semantic_node(
+        &readonly_accesskit,
+        gpui::Role::Status,
+        "format_template builtin_immutable",
+    );
+    assert!(
+        add_visible,
+        "Function Add control must be keyboard/visual addressable"
+    );
+    assert!(
+        !builtin_option_visible || builtin_disabled,
+        "Builtin may be absent from Add, but any rendered option must be explicitly disabled"
+    );
+    assert!(
+        !builtin_selectable && !builtin_selected,
+        "the user-facing Add form must never make Builtin selectable or writable"
+    );
+    assert!(
+        builtin_attempt_identifier_set && builtin_attempt_name_set && builtin_attempt_submitted,
+        "the test must attempt creation through the rendered Function Add form"
+    );
+    assert!(
+        builtin_attempts
+            .items()
+            .iter()
+            .all(|function| function.kind() != FunctionKind::Builtin),
+        "the Function Add form must never persist a user-created Builtin"
+    );
+    assert!(
+        add_closed,
+        "Function Add form must close after save or expose FUNCTION_FORM_CANCEL after validation"
+    );
+    assert!(
+        placeholder_state_visible,
+        "Placeholder row must expose an explicit non-executable state"
+    );
+    assert_function_semantic_node(
+        &placeholder_accesskit,
+        gpui::Role::Status,
+        "t085_schema_placeholder function_not_executable",
+    );
+    assert!(
+        !placeholder_test_visible,
+        "Placeholder row must not expose Test"
+    );
+    assert!(placeholder_edit_opened, "Placeholder row must expose Edit");
+    assert!(
+        schema_fields_visible,
+        "Placeholder edit form must be schema-only"
+    );
+    assert!(
+        relation_fields_absent,
+        "Placeholder edit form must hide Plugin, export and Capability relationships"
+    );
+    assert!(
+        input_schema_set && output_schema_set,
+        "Function JSON schemas must be editable through rendered Textarea controls"
+    );
+    assert!(
+        placeholder_saved,
+        "Placeholder form must expose FUNCTION_FORM_SAVE"
+    );
+    assert_eq!(persisted_placeholder.kind(), FunctionKind::Placeholder);
+    assert_eq!(persisted_placeholder.input_schema(), UPDATED_INPUT_SCHEMA);
+    assert_eq!(persisted_placeholder.output_schema(), UPDATED_OUTPUT_SCHEMA);
+    assert_eq!(persisted_placeholder.plugin_id(), None);
+    assert_eq!(persisted_placeholder.plugin_export(), None);
+    assert_eq!(persisted_placeholder.required_capabilities(), None);
+}
+
+#[gpui::test]
+fn function_test_dialog_renders_local_success_and_error_terminal_feedback(cx: &mut TestAppContext) {
+    use hivegui::ui::function_view::{FunctionSemanticStatus, function_semantic_accesskit_probe};
+
+    let (_workspace, store, store_entity, runtime) = function_visual_store(cx);
+    let builtin_id = runtime
+        .block_on(async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM functions WHERE identifier = ? AND kind = 'builtin'",
+            )
+            .bind("json_parse")
+            .fetch_one(store.pool())
+            .await
+        })
+        .expect("resolve synchronized local json_parse Builtin");
+    let _runtime_guard = runtime.enter();
+    let window = open_function_visual_window(cx, store_entity, size(px(760.0), px(900.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let test_selector: &'static str =
+        Box::leak(format!("FUNCTION_TEST-{builtin_id}").into_boxed_str());
+    let test_loaded = settle_function_selector(&mut visual, test_selector);
+    let test_opened = test_loaded && click_function_selector(&mut visual, test_selector);
+    let dialog_visible = visual.debug_bounds("FUNCTION_TEST_DIALOG").is_some();
+    let success_input_set = replace_function_input(
+        &mut visual,
+        "FUNCTION_TEST_INPUT-text",
+        r#""{\"ok\":true}""#,
+    );
+    let success_run = click_function_selector(&mut visual, "FUNCTION_TEST_RUN");
+    let success_visible = settle_function_selector(&mut visual, "FUNCTION_TEST_SUCCESS");
+    let success_accesskit = function_semantic_accesskit_probe(FunctionSemanticStatus::TestSuccess);
+
+    let error_input_set =
+        replace_function_input(&mut visual, "FUNCTION_TEST_INPUT-text", "not-json");
+    let error_run = click_function_selector(&mut visual, "FUNCTION_TEST_RUN");
+    let error_visible = settle_function_selector(&mut visual, "FUNCTION_TEST_ERROR");
+    let error_accesskit = function_semantic_accesskit_probe(FunctionSemanticStatus::TestError);
+    let no_remote_backend = visual.read(|cx| {
+        cx.global::<HiveGuiAppState>()
+            .assert_no_remote_backend_prerequisite()
+            .is_ok()
+    });
+    close_function_visual_window(&mut visual);
+
+    assert!(
+        test_opened,
+        "Builtin row must expose a stable Test selector"
+    );
+    assert!(
+        dialog_visible,
+        "Function Test must render FUNCTION_TEST_DIALOG"
+    );
+    assert!(
+        success_input_set && success_run,
+        "local json_parse success must be driven through rendered input and Run controls"
+    );
+    assert!(
+        success_visible,
+        "successful local Builtin execution must render a terminal success state"
+    );
+    assert_function_semantic_node(&success_accesskit, gpui::Role::Status, "status=success");
+    assert!(
+        error_input_set && error_run,
+        "local json_parse error must be driven through the same rendered controls"
+    );
+    assert!(
+        error_visible,
+        "failed local Builtin execution must render a terminal error state"
+    );
+    assert_function_semantic_node(&error_accesskit, gpui::Role::Alert, "status=error");
+    assert!(
+        no_remote_backend,
+        "Builtin Function test feedback must remain entirely local"
+    );
+}
+
+#[gpui::test]
+fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
+    cx: &mut TestAppContext,
+) {
+    use hivegui::datasource::{FunctionInput, FunctionKind, FunctionStore};
+    use hivegui::ui::function_view::{FunctionSemanticStatus, function_semantic_accesskit_probe};
+
+    const IDENTIFIER: &str = "t085_safe_duplicate";
+    const DRAFT_IDENTIFIER: &str = "t085_textarea_enter_draft";
+    let (_workspace, store, store_entity, runtime) = function_visual_store(cx);
+    let function_store =
+        FunctionStore::new(store.pool().clone()).expect("construct public FunctionStore fixture");
+    let duplicate_input = FunctionInput::for_write(
+        IDENTIFIER.to_string(),
+        "Existing safe duplicate".to_string(),
+        None,
+        FunctionKind::Placeholder,
+        "{}".to_string(),
+        "{}".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build duplicate Function fixture");
+    runtime
+        .block_on(function_store.create(duplicate_input))
+        .expect("seed duplicate Function");
+    let _runtime_guard = runtime.enter();
+    let window = open_function_visual_window(cx, store_entity, size(px(760.0), px(900.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let add_visible = click_function_selector(&mut visual, "FUNCTION_ADD");
+    let modal_visible = visual.debug_bounds("FUNCTION_MODAL").is_some();
+    let identifier_initially_focused = visual.debug_bounds("FUNCTION_IDENTIFIER_FOCUSED").is_some();
+    if modal_visible {
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+    }
+    let shift_tab_wrapped_to_save = visual.debug_bounds("FUNCTION_FORM_SAVE_FOCUSED").is_some();
+    if shift_tab_wrapped_to_save {
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+    }
+    let tab_wrapped_to_identifier = visual.debug_bounds("FUNCTION_IDENTIFIER_FOCUSED").is_some();
+
+    let draft_identifier_set =
+        replace_function_input(&mut visual, "FUNCTION_IDENTIFIER", DRAFT_IDENTIFIER);
+    let name_set = replace_function_input(&mut visual, "FUNCTION_NAME", "Duplicate attempt");
+    let kind_opened = click_function_selector(&mut visual, "FUNCTION_KIND_SELECTOR");
+    let placeholder_selected =
+        click_function_selector(&mut visual, "FUNCTION_KIND_OPTION-placeholder");
+    let textarea_clicked = click_function_selector(&mut visual, "FUNCTION_INPUT_SCHEMA");
+    let textarea_focused = visual
+        .debug_bounds("FUNCTION_INPUT_SCHEMA_FOCUSED")
+        .is_some();
+    if textarea_clicked {
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+    }
+    let modal_after_textarea_enter = visual.debug_bounds("FUNCTION_MODAL").is_some();
+    let draft_rows = runtime
+        .block_on(function_store.list(Some(DRAFT_IDENTIFIER.to_string()), 1))
+        .expect("reload textarea Enter draft")
+        .items()
+        .iter()
+        .filter(|function| function.identifier() == DRAFT_IDENTIFIER)
+        .count();
+    let schema_reset = replace_function_input(&mut visual, "FUNCTION_INPUT_SCHEMA", "{}");
+    let duplicate_identifier_set =
+        replace_function_input(&mut visual, "FUNCTION_IDENTIFIER", IDENTIFIER);
+    if duplicate_identifier_set {
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+    }
+    let keyboard_save_focused = visual.debug_bounds("FUNCTION_FORM_SAVE_FOCUSED").is_some();
+    if keyboard_save_focused {
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+    }
+
+    let conflict_selector: &'static str =
+        Box::leak(format!("FUNCTION_IDENTIFIER_CONFLICT-{IDENTIFIER}").into_boxed_str());
+    let preserved_selector: &'static str =
+        Box::leak(format!("FUNCTION_IDENTIFIER_VALUE-{IDENTIFIER}").into_boxed_str());
+    let form_visible = visual.debug_bounds("FUNCTION_MODAL").is_some();
+    let conflict_visible = settle_function_selector(&mut visual, conflict_selector);
+    let preserved_visible = visual.debug_bounds(preserved_selector).is_some();
+    let error_focused = visual.debug_bounds("FUNCTION_FORM_ERROR_FOCUSED").is_some();
+    let conflict_accesskit =
+        function_semantic_accesskit_probe(FunctionSemanticStatus::IdentifierConflict {
+            value: IDENTIFIER.to_string(),
+            field: "identifier".to_string(),
+            reason: "duplicate".to_string(),
+        });
+    let exact_rows = runtime
+        .block_on(function_store.list(Some(IDENTIFIER.to_string()), 1))
+        .expect("reload duplicate fixture")
+        .items()
+        .iter()
+        .filter(|function| function.identifier() == IDENTIFIER)
+        .count();
+    if form_visible {
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+    }
+    let modal_closed = visual.debug_bounds("FUNCTION_MODAL").is_none();
+    let add_focus_restored = visual.debug_bounds("FUNCTION_ADD_FOCUSED").is_some();
+    if modal_closed && add_focus_restored {
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+    }
+    let reopened_from_keyboard = visual.debug_bounds("FUNCTION_MODAL").is_some()
+        && visual.debug_bounds("FUNCTION_IDENTIFIER_FOCUSED").is_some();
+    close_function_visual_window(&mut visual);
+
+    assert!(add_visible, "Function Add control must expose FUNCTION_ADD");
+    assert!(modal_visible, "Function Add must open FUNCTION_MODAL");
+    assert!(
+        identifier_initially_focused,
+        "opening the Function modal must focus its first field"
+    );
+    assert!(
+        shift_tab_wrapped_to_save && tab_wrapped_to_identifier,
+        "Function modal must trap Shift-Tab/Tab between its last and first controls"
+    );
+    assert!(
+        draft_identifier_set,
+        "Function form must expose FUNCTION_IDENTIFIER"
+    );
+    assert!(name_set, "Function form must expose FUNCTION_NAME");
+    assert!(
+        kind_opened && placeholder_selected,
+        "Placeholder kind must be selectable"
+    );
+    assert!(
+        textarea_clicked && textarea_focused,
+        "Function JSON schema must be a focusable multiline Textarea"
+    );
+    assert!(
+        modal_after_textarea_enter,
+        "Enter inside a Function schema Textarea must insert/edit content, not submit the form"
+    );
+    assert_eq!(
+        draft_rows, 0,
+        "Enter inside a Function schema Textarea unexpectedly submitted the draft"
+    );
+    assert!(
+        schema_reset,
+        "Function schema Textarea must remain editable after Enter"
+    );
+    assert!(
+        duplicate_identifier_set,
+        "Function identifier must remain editable before the explicit save"
+    );
+    assert!(
+        keyboard_save_focused,
+        "duplicate Function must be submitted by keyboard focus + Enter, without a pointer click"
+    );
+    assert!(
+        form_visible,
+        "identifier conflict must keep the Function form open"
+    );
+    assert!(
+        preserved_visible,
+        "identifier conflict must preserve the submitted safe value `{IDENTIFIER}`"
+    );
+    assert!(
+        conflict_visible,
+        "identifier conflict must render a stable safely-labelled error selector"
+    );
+    assert!(
+        error_focused,
+        "identifier conflict must focus its error summary"
+    );
+    let conflict_accessible_name = conflict_accesskit
+        .label()
+        .expect("identifier conflict must publish an accessible error name");
+    assert_function_semantic_node(
+        &conflict_accesskit,
+        gpui::Role::Alert,
+        "t085_safe_duplicate field=identifier reason=duplicate",
+    );
+    for forbidden in ["UNIQUE constraint", "sqlite", "database"] {
+        assert!(
+            !conflict_accessible_name
+                .to_ascii_lowercase()
+                .contains(&forbidden.to_ascii_lowercase()),
+            "Function conflict exposed backend detail `{forbidden}`: {conflict_accessible_name}"
+        );
+    }
+    assert_eq!(
+        exact_rows, 1,
+        "duplicate submit must not create a second row"
+    );
+    assert!(modal_closed, "Escape must close the Function modal");
+    assert!(
+        add_focus_restored,
+        "closing the Function modal must restore focus to its Add trigger"
+    );
+    assert!(
+        reopened_from_keyboard,
+        "restored Add focus must support Enter to reopen the Function modal"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // §T092 [P] [US10] — Workflow / DAG accessibility surface.
 //
@@ -1460,11 +2267,11 @@ fn dag_editor_module_carries_scroll_tag_for_native_surface() {
 #[test]
 fn workflow_dag_surface_is_registered_in_t016e_inventory() {
     use support::scroll_inventory::ScrollSurface;
-    // T095 activates the T016E Workflow/DAG surface owned by US10.
+    // T092 activates the T016E Workflow/DAG surface closed by T097/T098.
     let owner = ScrollSurface::WorkflowDag.owner_phase().to_string();
     assert_eq!(
-        owner, "US10/T095",
-        "WorkflowDag owner phase must be fixed to US10/T095"
+        owner, "US10/T097-T098",
+        "WorkflowDag owner phase must be fixed to the T097/T098 UI pair"
     );
     assert_eq!(ScrollSurface::WorkflowDag.slug(), "workflow_dag");
 }
@@ -1525,6 +2332,928 @@ fn workflow_view_supports_keyboard_form_operations() {
     );
 }
 
+fn workflow_visual_store(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    hivegui::datasource::Store,
+    gpui::Entity<hivegui::datasource::Store>,
+    tokio::runtime::Runtime,
+) {
+    init_gpui(cx);
+    cx.executor().allow_parking();
+    let temp_dir = tempfile::tempdir().expect("create Workflow visual-test data directory");
+    let runtime = tokio::runtime::Runtime::new().expect("create Workflow visual-test runtime");
+    let store = runtime
+        .block_on(hivegui::datasource::Store::new(temp_dir.path()))
+        .expect("create Workflow visual-test Store");
+    let store_entity = cx.new(|_| store.clone());
+    (temp_dir, store, store_entity, runtime)
+}
+
+fn open_workflow_visual_window(
+    cx: &mut TestAppContext,
+    store: gpui::Entity<hivegui::datasource::Store>,
+    window_size: gpui::Size<gpui::Pixels>,
+) -> WindowHandle<gpui_component::Root> {
+    cx.open_window(window_size, move |window, cx| {
+        let view = cx.new(|cx| hivegui::ui::workflow_view::WorkflowView::new(store, cx));
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    })
+}
+
+fn click_visual_selector(visual: &mut VisualTestContext, selector: &'static str) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing rendered Workflow selector `{selector}`"));
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+}
+
+fn replace_workflow_input(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    value: &str,
+) -> bool {
+    let Some(bounds) = visual.debug_bounds(selector) else {
+        return false;
+    };
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_keystrokes("ctrl-a");
+    visual.simulate_input(value);
+    visual.run_until_parked();
+    true
+}
+
+fn settle_workflow_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    for _ in 0..200 {
+        visual.run_until_parked();
+        if visual.debug_bounds(selector).is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    false
+}
+
+fn close_workflow_visual_window(
+    visual: &mut VisualTestContext,
+    store: hivegui::datasource::Store,
+    runtime: &tokio::runtime::Runtime,
+) {
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+    runtime.block_on(store.pool().close());
+    drop(store);
+}
+
+#[test]
+fn workflow_dag_scroll_owner_is_the_t097_t098_ui_pair() {
+    use support::scroll_inventory::ScrollSurface;
+
+    assert_eq!(
+        ScrollSurface::WorkflowDag.owner_phase().to_string(),
+        "US10/T097-T098",
+        "the activated Workflow/DAG product scroll line belongs to the T097/T098 UI pair, not the earlier Store task"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §T101 [P] [US11] — Tool management accessibility + native scroll Red.
+//
+// T106 owns the production selectors/focus semantics and is allowed to close
+// this surface only after T104 approves the observed Red below.
+// ---------------------------------------------------------------------------
+
+const TOOL_VIEW_SOURCE: &str = include_str!("../src/ui/tool_view.rs");
+
+#[test]
+fn tool_view_module_carries_scroll_tag_for_native_surface() {
+    use support::scroll_inventory::{ScrollSurface, assert_source_tag};
+
+    assert_source_tag(TOOL_VIEW_SOURCE, ScrollSurface::ToolList.slug());
+}
+
+#[test]
+fn tool_scroll_owner_is_the_t106_ui_task() {
+    use support::scroll_inventory::ScrollSurface;
+
+    assert_eq!(
+        ScrollSurface::ToolList.owner_phase().to_string(),
+        "US11/T106",
+        "the activated Tool product scroll line belongs to the T106 UI implementation"
+    );
+}
+
+fn tool_visual_store(
+    cx: &mut TestAppContext,
+) -> (
+    support::TestWorkspace,
+    hivegui::datasource::Store,
+    gpui::Entity<hivegui::datasource::Store>,
+    tokio::runtime::Runtime,
+) {
+    use hivegui::datasource::store::{Store, StoreOpenOptions};
+
+    init_gpui(cx);
+    cx.executor().allow_parking();
+    let workspace = support::TestWorkspace::new().expect("create Tool visual-test workspace");
+    let runtime = tokio::runtime::Runtime::new().expect("create Tool visual-test runtime");
+    let store = runtime
+        .block_on(Store::open_local(StoreOpenOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        )))
+        .expect("open canonical Tool visual-test Store");
+    let store_entity = cx.new(|_| store.clone());
+    (workspace, store, store_entity, runtime)
+}
+
+fn open_tool_visual_window(
+    cx: &mut TestAppContext,
+    store: gpui::Entity<hivegui::datasource::Store>,
+    window_size: gpui::Size<gpui::Pixels>,
+) -> WindowHandle<gpui_component::Root> {
+    cx.open_window(window_size, move |window, cx| {
+        let view = cx.new(|cx| hivegui::ui::tool_view::ToolView::new(store, cx));
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    })
+}
+
+fn close_tool_visual_window(
+    visual: &mut VisualTestContext,
+    store: hivegui::datasource::Store,
+    runtime: &tokio::runtime::Runtime,
+) {
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+    runtime.block_on(store.pool().close());
+    drop(store);
+}
+
+#[gpui::test]
+fn tool_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+
+    let (_workspace, store, store_entity, runtime) = tool_visual_store(cx);
+    let _runtime_guard = runtime.enter();
+    let window = open_tool_visual_window(cx, store_entity, size(px(520.0), px(300.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let add = visual.debug_bounds("TOOL_ADD");
+    if let Some(add) = add {
+        visual.simulate_click(add.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    }
+    let modal = visual.debug_bounds("TOOL_MODAL");
+    let scroll = visual.debug_bounds("TOOL_FORM_SCROLL");
+    let actions_before = visual.debug_bounds("TOOL_FORM_ACTIONS");
+    if let Some(scroll) = scroll {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let actions_after = visual.debug_bounds("TOOL_FORM_ACTIONS");
+    let forbidden_custom_controls = [
+        "TOOL_SCROLL_UP",
+        "TOOL_SCROLL_DOWN",
+        "TOOL_SCROLLBAR_TRACK",
+        "TOOL_SCROLL_HANDLE",
+    ]
+    .into_iter()
+    .filter(|selector| visual.debug_bounds(selector).is_some())
+    .collect::<Vec<_>>();
+    close_tool_visual_window(&mut visual, store, &runtime);
+
+    assert!(
+        add.is_some(),
+        "Tool view must expose stable TOOL_ADD pointer/keyboard semantics"
+    );
+    let modal = modal.expect("Tool form must expose TOOL_MODAL bounds");
+    let scroll = scroll.expect("Tool form must expose TOOL_FORM_SCROLL native viewport bounds");
+    let actions_before =
+        actions_before.expect("long Tool form must expose TOOL_FORM_ACTIONS before wheel input");
+    let actions_after =
+        actions_after.expect("long Tool form must retain TOOL_FORM_ACTIONS after wheel input");
+    assert!(modal.top() >= px(0.0) && modal.bottom() <= px(300.0));
+    assert!(scroll.top() >= modal.top() && scroll.bottom() <= modal.bottom());
+    assert!(
+        actions_after.top() < actions_before.top(),
+        "real GPUI wheel input did not move Tool form content: before={actions_before:?}, after={actions_after:?}"
+    );
+    assert!(
+        actions_after.top() >= scroll.top() && actions_after.bottom() <= scroll.bottom(),
+        "bottom Tool actions are not fully reachable: viewport={scroll:?}, actions={actions_after:?}"
+    );
+    assert!(
+        forbidden_custom_controls.is_empty(),
+        "Tool form rendered forbidden custom scroll controls: {forbidden_custom_controls:?}"
+    );
+    for forbidden in [
+        "ScrollWheelEvent",
+        ".on_scroll_wheel(",
+        "TOOL_SCROLL_UP",
+        "TOOL_SCROLL_DOWN",
+        "TOOL_SCROLLBAR_TRACK",
+        "TOOL_SCROLL_HANDLE",
+    ] {
+        assert!(
+            !TOOL_VIEW_SOURCE.contains(forbidden),
+            "Tool production source must not implement custom scrolling via `{forbidden}`"
+        );
+    }
+}
+
+fn click_tool_add(visual: &mut VisualTestContext) -> bool {
+    let Some(bounds) = visual
+        .debug_bounds("TOOL_ADD")
+        .or_else(|| visual.debug_bounds("add-btn"))
+    else {
+        return false;
+    };
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    true
+}
+
+fn settle_tool_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    for _ in 0..100 {
+        visual.run_until_parked();
+        if visual.debug_bounds(selector).is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    false
+}
+
+#[gpui::test]
+fn tool_form_renders_every_fr020_field_with_semantic_controls(cx: &mut TestAppContext) {
+    let (_workspace, store, store_entity, runtime) = tool_visual_store(cx);
+    let _runtime_guard = runtime.enter();
+    let window = open_tool_visual_window(cx, store_entity, size(px(760.0), px(620.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    assert!(click_tool_add(&mut visual), "rendered Tool Add control");
+    let missing = [
+        "TOOL_IDENTIFIER_INPUT",
+        "TOOL_NAME_INPUT",
+        "TOOL_DESCRIPTION_INPUT",
+        "TOOL_KIND_SELECT",
+        "TOOL_SOURCE_SELECT",
+        "TOOL_IS_ALWAYS",
+        "TOOL_FUNCTION_TARGET",
+        "TOOL_INPUT_SCHEMA_TEXTAREA",
+        "TOOL_OUTPUT_SCHEMA_TEXTAREA",
+        "TOOL_CATEGORY_SELECT",
+        "TOOL_REQUIRED_CAPABILITIES_TEXTAREA",
+        "TOOL_FORM_ACTIONS",
+    ]
+    .into_iter()
+    .filter(|selector| visual.debug_bounds(selector).is_none())
+    .collect::<Vec<_>>();
+    close_tool_visual_window(&mut visual, store, &runtime);
+
+    assert!(
+        missing.is_empty(),
+        "Tool FR-020 form fields missing: {missing:?}"
+    );
+    for required in [
+        "TextareaState",
+        "Textarea::new",
+        "input_schema_textarea",
+        "output_schema_textarea",
+        "required_capabilities_textarea",
+    ] {
+        assert!(
+            TOOL_VIEW_SOURCE.contains(required),
+            "multiline Tool schema/Capability field must use the shared Textarea control: missing {required}"
+        );
+    }
+}
+
+#[gpui::test]
+fn tool_duplicate_identifier_keeps_form_focus_and_safe_value(cx: &mut TestAppContext) {
+    const IDENTIFIER: &str = "t101_safe_duplicate";
+
+    let (_workspace, store, store_entity, runtime) = tool_visual_store(cx);
+    runtime.block_on(async {
+        let now = "2026-08-25T00:00:00Z";
+        let function_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO functions (identifier, name, description, kind, input_schema, \
+             output_schema, plugin_id, plugin_export, category_id, required_capabilities, \
+             created_at, updated_at) VALUES ('t101_function', 'T101 Function', '', 'builtin', \
+             '{}', '{}', NULL, NULL, NULL, NULL, ?, ?) RETURNING id",
+        )
+        .bind(now)
+        .bind(now)
+        .fetch_one(store.pool())
+        .await
+        .expect("seed Tool target");
+        sqlx::query(
+            "INSERT INTO tools (identifier, name, description, kind, source, is_always, \
+             function_id, workflow_id, input_schema, output_schema, category_id, \
+             required_capabilities, created_at, updated_at) VALUES (?, 'Existing Tool', '', \
+             'function-wrap', 'workspace', 0, ?, NULL, '{}', '{}', NULL, NULL, ?, ?)",
+        )
+        .bind(IDENTIFIER)
+        .bind(function_id)
+        .bind(now)
+        .bind(now)
+        .execute(store.pool())
+        .await
+        .expect("seed duplicate Tool");
+    });
+    let _runtime_guard = runtime.enter();
+    let window = open_tool_visual_window(cx, store_entity, size(px(760.0), px(620.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    assert!(click_tool_add(&mut visual), "rendered Tool Add control");
+    let identifier = settle_tool_selector(&mut visual, "TOOL_IDENTIFIER_INPUT");
+    if identifier {
+        let bounds = visual
+            .debug_bounds("TOOL_IDENTIFIER_INPUT")
+            .expect("settled identifier input");
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.simulate_input(IDENTIFIER);
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        if visual.debug_bounds("TOOL_FORM_SAVE_FOCUSED").is_some() {
+            visual.simulate_keystrokes("enter");
+        }
+    }
+    let conflict = settle_tool_selector(&mut visual, "TOOL_CONFLICT_IDENTIFIER");
+    let form_open = visual.debug_bounds("TOOL_MODAL").is_some();
+    let preserved = visual
+        .debug_bounds("TOOL_IDENTIFIER_VALUE-t101_safe_duplicate")
+        .is_some();
+    let focused = visual.debug_bounds("TOOL_ERROR_FOCUSED").is_some();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let modal_closed = visual.debug_bounds("TOOL_MODAL").is_none();
+    let add_focus_restored = visual.debug_bounds("TOOL_ADD_FOCUSED").is_some();
+    close_tool_visual_window(&mut visual, store, &runtime);
+
+    assert!(identifier, "Tool form must expose TOOL_IDENTIFIER_INPUT");
+    assert!(
+        conflict,
+        "duplicate identifier must render safe Tool conflict"
+    );
+    assert!(form_open, "Tool conflict must keep the form open");
+    assert!(
+        preserved,
+        "Tool conflict must preserve its safe identifier value"
+    );
+    assert!(focused, "Tool conflict summary must receive focus");
+    assert!(modal_closed, "Escape must close the Tool modal");
+    assert!(
+        add_focus_restored,
+        "Tool modal close must restore Add focus"
+    );
+}
+
+#[gpui::test]
+fn workflow_form_renders_every_fr019_field_with_stable_selectors(cx: &mut TestAppContext) {
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    let _runtime_guard = runtime.enter();
+    let window = open_workflow_visual_window(cx, store_entity, size(px(760.0), px(520.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    click_visual_selector(&mut visual, "WORKFLOW_ADD");
+    assert!(
+        visual.debug_bounds("workflow-form-scroll").is_some(),
+        "test precondition: clicking the rendered Add control must open the Workflow form"
+    );
+    let required = [
+        "WORKFLOW_IDENTIFIER",
+        "WORKFLOW_NAME",
+        "WORKFLOW_DESCRIPTION",
+        "WORKFLOW_TIMEOUT_MS",
+        "WORKFLOW_CATEGORY_ID",
+        "WORKFLOW_INPUT_SCHEMA",
+        "WORKFLOW_START_DESCRIPTION",
+        "WORKFLOW_OUTPUT_SCHEMA",
+        "WORKFLOW_REQUIRED_CAPABILITIES",
+    ];
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|selector| visual.debug_bounds(selector).is_none())
+        .collect();
+    close_workflow_visual_window(&mut visual, store, &runtime);
+    assert!(
+        missing.is_empty(),
+        "FR-019 Workflow form is missing rendered, keyboard-addressable fields/selectors: {missing:?}"
+    );
+}
+
+#[gpui::test]
+fn workflow_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    let _runtime_guard = runtime.enter();
+    let window = open_workflow_visual_window(cx, store_entity, size(px(520.0), px(260.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    click_visual_selector(&mut visual, "WORKFLOW_ADD");
+
+    let scroll = visual.debug_bounds("WORKFLOW_FORM_SCROLL");
+    let actions_before = visual.debug_bounds("WORKFLOW_FORM_ACTIONS");
+    let mut actions_after = None;
+    if let (Some(scroll), Some(_)) = (scroll, actions_before) {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-1_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+        actions_after = visual.debug_bounds("WORKFLOW_FORM_ACTIONS");
+    }
+    let custom_controls: Vec<&str> = [
+        "WORKFLOW_SCROLL_UP",
+        "WORKFLOW_SCROLL_DOWN",
+        "WORKFLOW_SCROLLBAR_TRACK",
+    ]
+    .into_iter()
+    .filter(|selector| visual.debug_bounds(selector).is_some())
+    .collect();
+    close_workflow_visual_window(&mut visual, store, &runtime);
+
+    let scroll = scroll.expect(
+        "Workflow form must expose the real native-scroll viewport as WORKFLOW_FORM_SCROLL",
+    );
+    let actions_before = actions_before
+        .expect("long FR-019 fixture must expose its bottom actions as WORKFLOW_FORM_ACTIONS");
+    let actions_after = actions_after.expect("bottom Workflow actions after real wheel input");
+    assert!(
+        actions_after.top() < actions_before.top(),
+        "real GPUI wheel input did not change the Workflow form content offset: before={actions_before:?}, after={actions_after:?}"
+    );
+    assert!(
+        actions_after.top() >= scroll.top() && actions_after.bottom() <= scroll.bottom(),
+        "bottom Workflow actions are not fully reachable in the viewport: viewport={scroll:?}, actions={actions_after:?}"
+    );
+    assert!(
+        custom_controls.is_empty(),
+        "Workflow form rendered custom scroll controls: {custom_controls:?}"
+    );
+}
+
+#[gpui::test]
+fn workflow_delete_conflict_keeps_the_tool_reference_and_confirmation_surface(
+    cx: &mut TestAppContext,
+) {
+    use hivegui::datasource::entity_store::{Tool, Workflow, WorkflowEdge, WorkflowNode};
+
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    let (workflow, tool) = runtime.block_on(async {
+        let workflow = Workflow::create(
+            store.pool(),
+            "ui-delete-conflict".to_string(),
+            "UI delete conflict".to_string(),
+            Some("must remain after conflict".to_string()),
+            30_000,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("seed Workflow");
+        WorkflowNode::upsert(
+            store.pool(),
+            workflow.id,
+            "start".to_string(),
+            "start_node".to_string(),
+            None,
+            10.0,
+            20.0,
+            Some("{}".to_string()),
+        )
+        .await
+        .expect("seed start node");
+        WorkflowNode::upsert(
+            store.pool(),
+            workflow.id,
+            "end".to_string(),
+            "end_node".to_string(),
+            None,
+            30.0,
+            40.0,
+            Some("{}".to_string()),
+        )
+        .await
+        .expect("seed end node");
+        WorkflowEdge::upsert(
+            store.pool(),
+            workflow.id,
+            "start".to_string(),
+            "end".to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("seed edge");
+        let tool = Tool::create(
+            store.pool(),
+            "ui-safe-tool".to_string(),
+            "UI safe tool".to_string(),
+            "references the workflow".to_string(),
+            "workflow-wrap".to_string(),
+            "workspace".to_string(),
+            false,
+            None,
+            Some(workflow.id),
+            "{}".to_string(),
+            "{}".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("seed referencing Tool");
+        (workflow, tool)
+    });
+    let _runtime_guard = runtime.enter();
+
+    let window = open_workflow_visual_window(cx, store_entity, size(px(900.0), px(600.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let delete_selector: &'static str =
+        Box::leak(format!("WORKFLOW_DELETE-{}", workflow.id).into_boxed_str());
+    let delete_loaded = settle_workflow_selector(&mut visual, delete_selector);
+    let delete_bounds = visual.debug_bounds(delete_selector);
+    let conflict_selector: &'static str =
+        Box::leak(format!("WORKFLOW_DELETE_CONFLICT-{}", workflow.id).into_boxed_str());
+    if let Some(delete_bounds) = delete_bounds {
+        visual.simulate_click(delete_bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        if let Some(confirm_bounds) = visual.debug_bounds("confirm-delete") {
+            visual.simulate_click(confirm_bounds.center(), gpui::Modifiers::default());
+            let _ = settle_workflow_selector(&mut visual, conflict_selector);
+        }
+    }
+    let confirmation_visible = visual.debug_bounds("confirm-delete").is_some();
+    let safe_conflict_visible = visual.debug_bounds(conflict_selector).is_some();
+
+    let after = runtime.block_on(async {
+        (
+            Workflow::get(store.pool(), workflow.id)
+                .await
+                .expect("reload Workflow"),
+            WorkflowNode::list_by_workflow(store.pool(), workflow.id)
+                .await
+                .expect("reload nodes"),
+            WorkflowEdge::list_by_workflow(store.pool(), workflow.id)
+                .await
+                .expect("reload edges"),
+            Tool::get(store.pool(), tool.id).await.expect("reload Tool"),
+        )
+    });
+    close_workflow_visual_window(&mut visual, store, &runtime);
+    assert!(
+        delete_loaded && delete_bounds.is_some(),
+        "Workflow row must expose a stable keyboard/visual selector `{delete_selector}` for Delete"
+    );
+    assert!(
+        confirmation_visible,
+        "a referenced_by_tool failure must keep the confirmation/form surface open for recovery"
+    );
+    assert!(
+        safe_conflict_visible,
+        "the UI must render a stable, safely labelled referenced_by_tool error surface"
+    );
+    assert!(after.0.is_some(), "Workflow changed after delete conflict");
+    assert_eq!(
+        after.1.len(),
+        2,
+        "Workflow nodes changed after delete conflict"
+    );
+    assert_eq!(
+        after.2.len(),
+        1,
+        "Workflow edges changed after delete conflict"
+    );
+    assert_eq!(
+        after.3.as_ref().and_then(|row| row.workflow_id),
+        Some(workflow.id),
+        "referencing Tool changed after delete conflict"
+    );
+}
+
+#[gpui::test]
+fn workflow_duplicate_identifier_preserves_form_safe_values_and_error_focus(
+    cx: &mut TestAppContext,
+) {
+    use hivegui::datasource::entity_store::Workflow;
+
+    const IDENTIFIER: &str = "t092-safe-duplicate";
+    const SAFE_NAME: &str = "T092 safe duplicate draft";
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    runtime
+        .block_on(Workflow::create(
+            store.pool(),
+            IDENTIFIER.to_string(),
+            "Existing Workflow".to_string(),
+            None,
+            30_000,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ))
+        .expect("seed duplicate Workflow");
+    let _runtime_guard = runtime.enter();
+    let window = open_workflow_visual_window(cx, store_entity, size(px(760.0), px(900.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    click_visual_selector(&mut visual, "WORKFLOW_ADD");
+    let identifier_set = replace_workflow_input(&mut visual, "WORKFLOW_IDENTIFIER", IDENTIFIER);
+    let name_set = replace_workflow_input(&mut visual, "WORKFLOW_NAME", SAFE_NAME);
+    let save_visible = visual.debug_bounds("WORKFLOW_FORM_SAVE").is_some();
+    if save_visible {
+        click_visual_selector(&mut visual, "WORKFLOW_FORM_SAVE");
+    }
+    let conflict_selector: &'static str =
+        Box::leak(format!("WORKFLOW_IDENTIFIER_CONFLICT-{IDENTIFIER}").into_boxed_str());
+    let preserved_identifier_selector: &'static str =
+        Box::leak(format!("WORKFLOW_IDENTIFIER_VALUE-{IDENTIFIER}").into_boxed_str());
+    let preserved_name_selector: &'static str =
+        Box::leak(format!("WORKFLOW_NAME_VALUE-{SAFE_NAME}").into_boxed_str());
+    let conflict_visible = settle_workflow_selector(&mut visual, conflict_selector);
+    let form_visible = visual.debug_bounds("workflow-form-scroll").is_some();
+    let identifier_preserved = visual.debug_bounds(preserved_identifier_selector).is_some();
+    let name_preserved = visual.debug_bounds(preserved_name_selector).is_some();
+    let error_focused = visual.debug_bounds("WORKFLOW_FORM_ERROR_FOCUSED").is_some();
+    let row_count: i64 = runtime
+        .block_on(
+            sqlx::query_scalar("SELECT COUNT(*) FROM workflows WHERE identifier = ?")
+                .bind(IDENTIFIER)
+                .fetch_one(store.pool()),
+        )
+        .expect("count duplicate Workflow rows");
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let modal_closed = visual.debug_bounds("workflow-form-scroll").is_none();
+    let add_focus_restored = visual.debug_bounds("WORKFLOW_ADD_FOCUSED").is_some();
+    close_workflow_visual_window(&mut visual, store, &runtime);
+
+    assert!(
+        identifier_set && name_set,
+        "Workflow form inputs must be editable"
+    );
+    assert!(
+        save_visible,
+        "Workflow form must expose a stable keyboard-addressable Save action"
+    );
+    assert!(
+        form_visible,
+        "duplicate identifier must keep the Workflow form open"
+    );
+    assert!(
+        conflict_visible,
+        "duplicate identifier must render a stable safe conflict surface"
+    );
+    assert!(
+        identifier_preserved && name_preserved,
+        "duplicate conflict must preserve submitted safe values"
+    );
+    assert!(
+        error_focused,
+        "duplicate conflict must move focus to the error summary"
+    );
+    assert_eq!(row_count, 1, "duplicate submit must be zero modification");
+    assert!(
+        modal_closed,
+        "Escape must close the Workflow form after recovery"
+    );
+    assert!(
+        add_focus_restored,
+        "closing the form must restore focus to Workflow Add"
+    );
+}
+
+fn seed_dag_keyboard_workflow(
+    runtime: &tokio::runtime::Runtime,
+    store: &hivegui::datasource::Store,
+) -> i64 {
+    use hivegui::datasource::entity_store::{Workflow, WorkflowNode};
+
+    runtime.block_on(async {
+        let workflow = Workflow::create(
+            store.pool(),
+            "t092-dag-keyboard".to_string(),
+            "T092 DAG keyboard".to_string(),
+            None,
+            30_000,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("seed DAG Workflow");
+        for (node_key, node_type, x, y) in [
+            ("start", "start_node", 80.0, 80.0),
+            ("middle", "function_node", 330.0, 190.0),
+            ("end", "end_node", 580.0, 300.0),
+        ] {
+            WorkflowNode::upsert(
+                store.pool(),
+                workflow.id,
+                node_key.to_string(),
+                node_type.to_string(),
+                None,
+                x,
+                y,
+                Some("{}".to_string()),
+            )
+            .await
+            .expect("seed DAG node");
+        }
+        workflow.id
+    })
+}
+
+fn open_dag_visual_window(
+    cx: &mut TestAppContext,
+    store: gpui::Entity<hivegui::datasource::Store>,
+    workflow_id: i64,
+) -> WindowHandle<gpui_component::Root> {
+    cx.open_window(size(px(900.0), px(600.0)), move |window, cx| {
+        let editor =
+            cx.new(|cx| hivegui::ui::dag_editor_view::DagEditorView::new(store, workflow_id, cx));
+        gpui_component::Root::new(editor, window, cx).bordered(false)
+    })
+}
+
+fn close_dag_visual_window(
+    visual: &mut VisualTestContext,
+    store: hivegui::datasource::Store,
+    runtime: &tokio::runtime::Runtime,
+) {
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+    let _ = runtime.block_on(tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        store.pool().close(),
+    ));
+    drop(store);
+}
+
+#[gpui::test]
+fn dag_keyboard_arrow_moves_the_real_selected_node(cx: &mut TestAppContext) {
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    let workflow_id = seed_dag_keyboard_workflow(&runtime, &store);
+    let _runtime_guard = runtime.enter();
+    let window = open_dag_visual_window(cx, store_entity, workflow_id);
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        settle_workflow_selector(&mut visual, "DAG_NODE-middle"),
+        "DAG fixture must render its middle node"
+    );
+    let before = visual
+        .debug_bounds("DAG_NODE-middle")
+        .expect("middle before move");
+    visual.simulate_click(before.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    let selected = visual.debug_bounds("DAG_SELECTED-middle").is_some();
+    let canvas_focused = visual.debug_bounds("DAG_CANVAS_FOCUSED").is_some();
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    let after = visual
+        .debug_bounds("DAG_NODE-middle")
+        .expect("middle after move");
+    close_dag_visual_window(&mut visual, store, &runtime);
+
+    assert!(
+        selected,
+        "pointer selection must publish the actual selected DAG node"
+    );
+    assert!(
+        canvas_focused,
+        "selecting a DAG node must focus the keyboard canvas"
+    );
+    assert!(
+        after.left() > before.left(),
+        "Right Arrow must move the selected node right"
+    );
+}
+
+#[gpui::test]
+fn dag_keyboard_enter_connects_nodes_and_escape_cancels_edge_mode(cx: &mut TestAppContext) {
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    let workflow_id = seed_dag_keyboard_workflow(&runtime, &store);
+    let _runtime_guard = runtime.enter();
+    let window = open_dag_visual_window(cx, store_entity, workflow_id);
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(settle_workflow_selector(&mut visual, "DAG_NODE-start"));
+    let start = visual.debug_bounds("DAG_NODE-start").expect("start node");
+    visual.simulate_click(start.center(), gpui::Modifiers::default());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let edge_mode_started = visual.debug_bounds("DAG_EDGE_MODE-start").is_some();
+    visual.simulate_keystrokes("right");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let edge_created = visual.debug_bounds("DAG_EDGE-start-middle").is_some();
+
+    visual.simulate_click(start.center(), gpui::Modifiers::default());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let second_edge_mode = visual.debug_bounds("DAG_EDGE_MODE-start").is_some();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let edge_mode_cancelled = visual.debug_bounds("DAG_EDGE_MODE-start").is_none();
+    close_dag_visual_window(&mut visual, store, &runtime);
+
+    assert!(
+        edge_mode_started,
+        "Enter must expose keyboard edge-drawing mode"
+    );
+    assert!(
+        edge_created,
+        "Arrow selection plus Enter must create start→middle"
+    );
+    assert!(
+        second_edge_mode,
+        "Enter must allow a second edge gesture to begin"
+    );
+    assert!(
+        edge_mode_cancelled,
+        "Escape must cancel keyboard edge-drawing mode"
+    );
+}
+
+#[gpui::test]
+fn dag_keyboard_delete_property_panel_and_focus_restore_are_real(cx: &mut TestAppContext) {
+    let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
+    let workflow_id = seed_dag_keyboard_workflow(&runtime, &store);
+    let _runtime_guard = runtime.enter();
+    let window = open_dag_visual_window(cx, store_entity, workflow_id);
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(settle_workflow_selector(&mut visual, "DAG_NODE-start"));
+
+    let start = visual.debug_bounds("DAG_NODE-start").expect("start node");
+    visual.simulate_mouse_down(
+        start.center(),
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let config_action = visual
+        .debug_bounds("DAG_NODE_MENU_CONFIG")
+        .expect("node property action");
+    visual.simulate_click(config_action.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    let property_panel_visible = visual.debug_bounds("DAG_NODE_CONFIG_EDITOR").is_some();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let property_panel_closed = visual.debug_bounds("DAG_NODE_CONFIG_EDITOR").is_none();
+    let canvas_focus_restored = visual.debug_bounds("DAG_CANVAS_FOCUSED").is_some();
+
+    let middle_deleted = if let Some(middle) = visual.debug_bounds("DAG_NODE-middle") {
+        visual.simulate_click(middle.center(), gpui::Modifiers::default());
+        visual.simulate_keystrokes("delete");
+        visual.run_until_parked();
+        visual.debug_bounds("DAG_NODE-middle").is_none()
+    } else {
+        false
+    };
+    close_dag_visual_window(&mut visual, store, &runtime);
+
+    assert!(
+        property_panel_visible,
+        "keyboard-reachable property panel must render"
+    );
+    assert!(
+        property_panel_closed,
+        "Escape must close the DAG property panel"
+    );
+    assert!(
+        canvas_focus_restored,
+        "closing properties must restore DAG canvas focus"
+    );
+    assert!(
+        middle_deleted,
+        "Delete must remove the selected non-boundary node"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // §T081 [P] [US8] — Plugin view keyboard accessibility surface.
 //
@@ -1533,6 +3262,28 @@ fn workflow_view_supports_keyboard_form_operations() {
 // ---------------------------------------------------------------------------
 
 const PLUGIN_VIEW_SOURCE: &str = include_str!("../src/ui/plugin_view.rs");
+
+#[test]
+fn plugin_view_module_carries_the_t016e_native_scroll_tag() {
+    use support::scroll_inventory::{ScrollSurface, assert_source_tag};
+
+    assert_source_tag(PLUGIN_VIEW_SOURCE, ScrollSurface::PluginList.slug());
+}
+
+#[test]
+fn plugin_list_inventory_is_owned_by_the_t081_ui_task() {
+    use support::scroll_inventory::{Inventory, ScrollSurface, assert_inventory_contains};
+
+    let mut inventory = Inventory::new();
+    inventory.register(ScrollSurface::PluginList, ScrollSurface::PluginList.slug());
+    assert_inventory_contains(&inventory, ScrollSurface::PluginList);
+
+    let registration = inventory
+        .get(ScrollSurface::PluginList)
+        .expect("PluginList must be registered by its story owner");
+    assert_eq!(registration.owner.to_string(), "US8/T081");
+    assert_eq!(registration.build_tag, "plugin_list");
+}
 
 #[test]
 fn plugin_view_supports_keyboard_form_operations() {
@@ -1557,27 +3308,26 @@ fn plugin_view_supports_keyboard_form_operations() {
 }
 
 #[test]
-fn plugin_view_surfaces_keep_existing_file_semantics() {
-    // T081 must make the import / replace / keep-existing-file fork
-    // explicit: editing without picking a new WASM keeps the current
-    // artifact (the file-address + "保留既有文件" copy is rendered).
+fn plugin_view_locks_artifact_file_on_edit() {
+    // T081: editing a plugin must NOT let the artifact file change. The
+    // identifier / version / runtime are locked (read-only) and the WASM
+    // picker is replaced by an immutable "不可修改" surface, so the original
+    // s3_key / sha256 / size are preserved.
     assert!(
-        PLUGIN_VIEW_SOURCE.contains("保留既有文件"),
-        "Plugin view must surface keep-existing-file semantics when editing without a new file"
+        PLUGIN_VIEW_SOURCE.contains("不可修改"),
+        "Plugin edit must surface that the artifact file is immutable"
     );
     assert!(
-        PLUGIN_VIEW_SOURCE.contains("PLUGIN_WASM_SELECTION"),
-        "Plugin view must tag the WASM selection surface for accessibility"
-    );
-    // The keep-existing branch must preserve the original artifact key,
-    // sha256 and size rather than regenerating `plugins/{id}/{ver}.wasm`.
-    assert!(
-        PLUGIN_VIEW_SOURCE.contains("keep_existing"),
-        "Plugin save must implement the keep-existing fork"
+        PLUGIN_VIEW_SOURCE.contains("form_field_readonly"),
+        "Plugin edit must render identifier/version as read-only fields"
     );
     assert!(
         PLUGIN_VIEW_SOURCE.contains("form_original_s3_key"),
-        "Plugin save must preserve the original s3_key when keeping the existing file"
+        "Plugin save must preserve the original s3_key when editing"
+    );
+    assert!(
+        PLUGIN_VIEW_SOURCE.contains("PLUGIN_WASM_SELECTION"),
+        "Plugin add must still tag the WASM selection surface for accessibility"
     );
 }
 
@@ -1600,5 +3350,635 @@ fn plugin_view_surfaces_required_capabilities_selector_and_validation() {
     assert!(
         PLUGIN_VIEW_SOURCE.contains("manifest 不兼容"),
         "Plugin save must surface manifest incompatibilities before persisting"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §T121 [P] [US13] — Agent / conversation / settings owner surfaces.
+// ---------------------------------------------------------------------------
+
+const AGENT_VIEW_SOURCE: &str = include_str!("../src/ui/agent_view.rs");
+const CONVERSATION_VIEW_SOURCE: &str = include_str!("../src/ui/conversation_view.rs");
+const SETTINGS_VIEW_SOURCE: &str = include_str!("../src/ui/settings_view.rs");
+
+#[test]
+fn us13_agent_conversation_settings_activate_the_owner_native_scroll_row() {
+    use support::scroll_inventory::{
+        Inventory, ScrollSurface, assert_inventory_contains, assert_source_tag,
+    };
+
+    let mut inventory = Inventory::new();
+    inventory.register(
+        ScrollSurface::AgentExecution,
+        ScrollSurface::AgentExecution.slug(),
+    );
+    assert_inventory_contains(&inventory, ScrollSurface::AgentExecution);
+    assert_eq!(
+        ScrollSurface::AgentExecution.owner_phase().to_string(),
+        "US13/T132-T135"
+    );
+    assert_source_tag(AGENT_VIEW_SOURCE, ScrollSurface::AgentExecution.slug());
+    assert_source_tag(
+        CONVERSATION_VIEW_SOURCE,
+        ScrollSurface::AgentExecution.slug(),
+    );
+    assert_source_tag(SETTINGS_VIEW_SOURCE, ScrollSurface::AgentExecution.slug());
+}
+
+fn us13_visual_store(
+    cx: &mut TestAppContext,
+) -> (
+    support::TestWorkspace,
+    hivegui::datasource::Store,
+    gpui::Entity<hivegui::datasource::Store>,
+    tokio::runtime::Runtime,
+) {
+    use hivegui::datasource::store::{Store, StoreOpenOptions};
+    use hivegui::ui::app::{AppRoute, HiveGuiAppState};
+
+    init_gpui(cx);
+    cx.executor().allow_parking();
+    let workspace = support::TestWorkspace::new().expect("create US13 visual workspace");
+    let runtime = tokio::runtime::Runtime::new().expect("create US13 visual runtime");
+    let store = runtime
+        .block_on(Store::open_local(StoreOpenOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        )))
+        .expect("open canonical US13 Store");
+    let store_entity = cx.new(|_| store.clone());
+    cx.update(|cx| {
+        HiveGuiAppState::install_for_test_with_store(cx, AppRoute::Ai, store_entity.clone());
+    });
+    (workspace, store, store_entity, runtime)
+}
+
+fn click_us13_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    let Some(bounds) = visual.debug_bounds(selector) else {
+        return false;
+    };
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    true
+}
+
+fn settle_us13_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
+    for _ in 0..100 {
+        visual.run_until_parked();
+        if visual.debug_bounds(selector).is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
+fn close_us13_window(visual: &mut VisualTestContext) {
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+}
+
+#[derive(Clone, Copy)]
+struct T121NoopWorkflowExecutor;
+
+impl hivegui::runtime::workflow_executor::WorkflowNodeExecutor for T121NoopWorkflowExecutor {
+    fn execute(
+        &self,
+        _node: hivegui::datasource::workflow_store::WorkflowNode,
+        _input: serde_json::Value,
+        _cancel: hivegui::runtime::execution::CancelHandle,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+    > {
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+}
+
+fn t121_100_node_workflow() -> hivegui::datasource::workflow_store::WorkflowGraph {
+    use hivegui::datasource::workflow_store::{NodeType, WorkflowGraph, WorkflowNode};
+
+    let mut builder = WorkflowGraph::builder()
+        .name("t121-combined-load")
+        .node(WorkflowNode::new("start", NodeType::Start));
+    for index in 0..98 {
+        builder = builder.node(WorkflowNode::new(
+            format!("noop-{index}"),
+            NodeType::Function,
+        ));
+    }
+    builder = builder
+        .node(WorkflowNode::new("end", NodeType::End))
+        .edge("start", "noop-0");
+    for index in 0..97 {
+        builder = builder.edge(format!("noop-{index}"), format!("noop-{}", index + 1));
+    }
+    builder.edge("noop-97", "end").build()
+}
+
+fn t121_combined_ui_target() -> support::performance::TargetSpec {
+    support::performance::TargetSpec {
+        id: "us13_combined_ui_feedback".into(),
+        owner_task: "T121".into(),
+        timing_boundary: "one keyboard character dispatched while Agent conversation, 100-node no-op Workflow, and backup prevalidation are all active to that character's visible input feedback".into(),
+        excluded_time: vec![
+            "external local-LLM wait".into(),
+            "Workflow user-node execution".into(),
+            "backup archive construction before the combined-load window".into(),
+            "baseline and exception I/O".into(),
+        ],
+        warmup_iterations: support::performance::WARMUP_ITERATIONS,
+        measured_samples: support::performance::MEASURED_SAMPLES,
+        p95_budget_ns: 100_000_000,
+        workflow_node_count: Some(100),
+    }
+}
+
+#[gpui::test]
+fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use hivegui::datasource::entity_store::{AgentInput, AgentStore};
+
+    let (_workspace, store, store_entity, runtime) = us13_visual_store(cx);
+    runtime
+        .block_on(async {
+            AgentStore::new(store.pool().clone())
+                .expect("Agent Store")
+                .create(
+                    AgentInput::new_root("t121_safe_duplicate", "Existing Agent", "system")
+                        .expect("valid Agent"),
+                )
+                .await
+        })
+        .expect("seed duplicate Agent");
+    let _runtime_guard = runtime.enter();
+    let window = cx.open_window(size(px(520.0), px(300.0)), move |window, cx| {
+        let view = cx.new(|cx| hivegui::ui::agent_view::AgentView::new(store_entity, cx));
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let add_visible = settle_us13_selector(&mut visual, "AGENT_ADD");
+    let opened = add_visible && click_us13_selector(&mut visual, "AGENT_ADD");
+    let modal = visual.debug_bounds("AGENT_MODAL");
+    let scroll = visual.debug_bounds("AGENT_FORM_SCROLL");
+    let actions_before = visual.debug_bounds("AGENT_FORM_ACTIONS");
+    if let Some(scroll_bounds) = scroll {
+        visual.simulate_event(ScrollWheelEvent {
+            position: scroll_bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-900.0))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let actions_after = visual.debug_bounds("AGENT_FORM_ACTIONS");
+    let input_ready =
+        replace_function_input(&mut visual, "AGENT_IDENTIFIER_INPUT", "t121_safe_duplicate")
+            && replace_function_input(&mut visual, "AGENT_NAME_INPUT", "Preserved Agent Name");
+    if input_ready {
+        visual.simulate_keystrokes("shift-tab enter");
+    }
+    let conflict = settle_us13_selector(
+        &mut visual,
+        "AGENT_CONFLICT-field=identifier-reason=duplicate",
+    );
+    let preserved = visual
+        .debug_bounds("AGENT_IDENTIFIER_VALUE-t121_safe_duplicate")
+        .is_some()
+        && visual
+            .debug_bounds("AGENT_NAME_VALUE-Preserved Agent Name")
+            .is_some();
+    let error_focused = visual.debug_bounds("AGENT_ERROR_FOCUSED").is_some();
+    visual.simulate_keystrokes("escape");
+    let focus_restored = visual.debug_bounds("AGENT_ADD_FOCUSED").is_some();
+    close_us13_window(&mut visual);
+
+    assert!(
+        add_visible && opened,
+        "Agent Add must be keyboard/pointer reachable"
+    );
+    let modal = modal.expect("Agent modal must render");
+    let scroll = scroll.expect("Agent form must expose the owner native scroll surface");
+    let before = actions_before.expect("Agent actions exist before scroll");
+    let after = actions_after.expect("Agent actions exist after scroll");
+    assert!(scroll.top() >= modal.top() && scroll.bottom() <= modal.bottom());
+    assert!(after.top() < before.top() && after.bottom() <= modal.bottom());
+    assert!(conflict && preserved && error_focused);
+    assert!(focus_restored, "Escape restores focus to Agent Add");
+    assert!(!AGENT_VIEW_SOURCE.contains("on_scroll_wheel"));
+}
+
+#[gpui::test]
+fn conversation_stop_history_delete_and_keyboard_flow_are_real(cx: &mut TestAppContext) {
+    use hivegui::agent::local_agent::LocalAgentRuntime;
+    use hivegui::datasource::entity_store::{AgentInput, AgentStore};
+    use hivegui::runtime::diagnostics::ExecutionEventCollector;
+
+    let (_workspace, store, _store_entity, runtime) = us13_visual_store(cx);
+    runtime
+        .block_on(async {
+            AgentStore::new(store.pool().clone())
+                .expect("Agent Store")
+                .create(
+                    AgentInput::new_root("t121_conversation_root", "Root", "system")
+                        .expect("root input"),
+                )
+                .await
+        })
+        .expect("seed default root");
+    let local_runtime = LocalAgentRuntime::new(store.pool().clone()).expect("local runtime");
+    let collector = Arc::new(ExecutionEventCollector::new());
+    let _runtime_guard = runtime.enter();
+    let window = cx.open_window(size(px(760.0), px(420.0)), move |window, cx| {
+        let view = cx.new(|cx| {
+            hivegui::ui::conversation_view::ConversationView::new(
+                cx,
+                Some(local_runtime),
+                Some(store),
+                collector,
+            )
+        });
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let required = [
+        "CONVERSATION_NEW",
+        "CONVERSATION_MESSAGE_INPUT",
+        "CONVERSATION_SEND",
+        "CONVERSATION_HISTORY_SCROLL",
+        "CONVERSATION_MESSAGES_SCROLL",
+    ];
+    let missing = required
+        .iter()
+        .filter(|selector| visual.debug_bounds(selector).is_none())
+        .copied()
+        .collect::<Vec<_>>();
+    let stop_available = visual.debug_bounds("CONVERSATION_STOP").is_some();
+    if stop_available {
+        click_us13_selector(&mut visual, "CONVERSATION_STOP");
+    }
+    let stopping = visual
+        .debug_bounds("CONVERSATION_STATUS-stopping")
+        .is_some();
+    let delete_visible = visual.debug_bounds("CONVERSATION_DELETE_ACTIVE").is_some();
+    if delete_visible {
+        click_us13_selector(&mut visual, "CONVERSATION_DELETE_ACTIVE");
+    }
+    let confirmation = visual.debug_bounds("CONVERSATION_DELETE_CONFIRM").is_some();
+    visual.simulate_keystrokes("escape");
+    let input_focus_restored = visual
+        .debug_bounds("CONVERSATION_MESSAGE_INPUT_FOCUSED")
+        .is_some();
+    close_us13_window(&mut visual);
+
+    assert!(
+        missing.is_empty(),
+        "missing conversation selectors: {missing:?}"
+    );
+    assert!(
+        stop_available && stopping,
+        "Stop must immediately render stopping"
+    );
+    assert!(
+        delete_visible && confirmation,
+        "history delete requires confirmation"
+    );
+    assert!(
+        input_focus_restored,
+        "Escape restores conversation input focus"
+    );
+    assert!(!CONVERSATION_VIEW_SOURCE.contains("on_scroll_wheel"));
+}
+
+#[gpui::test]
+fn settings_backup_restore_retention_and_diagnostics_are_keyboard_reachable(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use hivegui::runtime::diagnostics::ExecutionEventCollector;
+
+    let (_workspace, store, _store_entity, runtime) = us13_visual_store(cx);
+    let collector = Arc::new(ExecutionEventCollector::new());
+    let _runtime_guard = runtime.enter();
+    let window = cx.open_window(size(px(560.0), px(320.0)), move |window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = hivegui::ui::settings_view::SettingsView::new(cx, Some(collector));
+            view.set_store(store);
+            view
+        });
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let surface = visual.debug_bounds("SETTINGS_SCROLL");
+    let actions_before = visual.debug_bounds("SETTINGS_DIAGNOSTIC_EXPORT");
+    if let Some(bounds) = surface {
+        visual.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-1_200.0))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let actions_after = visual.debug_bounds("SETTINGS_DIAGNOSTIC_EXPORT");
+    let required = [
+        "SETTINGS_RETENTION_DAYS",
+        "SETTINGS_RETENTION_PREVIEW",
+        "SETTINGS_BACKUP_EXPORT",
+        "SETTINGS_RESTORE_PRECHECK",
+        "SETTINGS_RESTORE_CONFIRM",
+        "SETTINGS_DIAGNOSTIC_EXPORT",
+    ];
+    let missing = required
+        .iter()
+        .filter(|selector| visual.debug_bounds(selector).is_none())
+        .copied()
+        .collect::<Vec<_>>();
+    visual.simulate_keystrokes("tab tab tab enter escape");
+    let focus_restored = visual
+        .debug_bounds("SETTINGS_RESTORE_PRECHECK_FOCUSED")
+        .is_some();
+    close_us13_window(&mut visual);
+
+    let surface = surface.expect("Settings must expose native scroll bounds");
+    let before = actions_before.expect("diagnostic action exists before scroll");
+    let after = actions_after.expect("diagnostic action exists after scroll");
+    assert!(after.top() < before.top() && after.bottom() <= surface.bottom());
+    assert!(
+        missing.is_empty(),
+        "missing Settings selectors: {missing:?}"
+    );
+    assert!(focus_restored, "modal Escape restores precheck focus");
+    assert!(!SETTINGS_VIEW_SOURCE.contains("on_scroll_wheel"));
+}
+
+#[gpui::test]
+fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
+    cx: &mut TestAppContext,
+) {
+    use chrono::Utc;
+    use hivegui::agent::local_agent::LocalAgentRuntime;
+    use hivegui::datasource::{
+        backup::{BackupExporter, BackupImporter},
+        entity_store::{AgentInput, AgentStore},
+        llm_store::LlmStore,
+    };
+    use hivegui::runtime::{
+        diagnostics::ExecutionEventCollector, execution::CancelHandle,
+        workflow_executor::WorkflowExecutor,
+    };
+    use support::performance::{
+        BenchmarkReport, ComparisonOutcome, EnvironmentFingerprint, baseline_path,
+        evaluate_benchmark_gate, regression_exception_path, source_revision,
+    };
+    use tokio::io::AsyncReadExt as _;
+
+    let (workspace, store, _store_entity, runtime) = us13_visual_store(cx);
+    let request_seen = Arc::new(AtomicBool::new(false));
+    let release_agent = Arc::new(Notify::new());
+    let (endpoint, server_task) = runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind T121 hanging local LLM");
+        let address = listener.local_addr().expect("T121 local LLM address");
+        let request_seen = Arc::clone(&request_seen);
+        let release_agent = Arc::clone(&release_agent);
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept T121 local LLM");
+            let mut request_prefix = [0_u8; 4096];
+            let read = stream
+                .read(&mut request_prefix)
+                .await
+                .expect("read T121 local LLM request");
+            assert!(
+                read > 0,
+                "Agent conversation must issue a real local request"
+            );
+            request_seen.store(true, Ordering::SeqCst);
+            release_agent.notified().await;
+        });
+        (format!("http://{address}"), task)
+    });
+
+    runtime.block_on(async {
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let provider = llm_store
+            .create_provider(
+                "t121-local-provider",
+                "openai",
+                &endpoint,
+                "t121-local-token",
+                "",
+            )
+            .await
+            .expect("create T121 local Provider");
+        let preset = llm_store
+            .create_preset("t121-local-preset", "", false, 256, 0.0)
+            .await
+            .expect("create T121 local Preset");
+        llm_store
+            .create_model("t121-local-model", preset.id, provider.id, 1)
+            .await
+            .expect("create T121 local Model");
+        AgentStore::new(store.pool().clone())
+            .expect("T121 Agent Store")
+            .create(
+                AgentInput::new_root(
+                    "t121_combined_root",
+                    "Combined Load Root",
+                    "local-only system prompt",
+                )
+                .expect("valid T121 root Agent")
+                .with_model_preset("t121-local-preset"),
+            )
+            .await
+            .expect("create T121 root Agent");
+    });
+
+    let archive = workspace.root().join("t121-combined.age");
+    runtime
+        .block_on(
+            BackupExporter::new(workspace.database_path())
+                .export_age(&archive, "T121-combined-passphrase"),
+        )
+        .expect("build the T121 archive before the measured boundary");
+
+    let load_running = Arc::new(AtomicBool::new(true));
+    let workflow_running = Arc::clone(&load_running);
+    let workflow_task = runtime.spawn(async move {
+        let workflow = t121_100_node_workflow();
+        let executor = WorkflowExecutor::new(T121NoopWorkflowExecutor);
+        let mut completed = 0_usize;
+        while workflow_running.load(Ordering::SeqCst) {
+            let outcome = executor
+                .execute(&workflow, serde_json::json!({}), CancelHandle::new())
+                .await
+                .expect("T121 no-op Workflow remains healthy");
+            assert!(outcome.completed && outcome.node_results.len() == 100);
+            completed += 1;
+            tokio::task::yield_now().await;
+        }
+        completed
+    });
+    let backup_running = Arc::clone(&load_running);
+    let backup_archive = archive.clone();
+    let backup_importer = BackupImporter::new(workspace.root().join("t121-staging"));
+    let backup_task = runtime.spawn(async move {
+        let mut completed = 0_usize;
+        while backup_running.load(Ordering::SeqCst) {
+            backup_importer
+                .inspect_manifest(&backup_archive, "T121-combined-passphrase")
+                .await
+                .expect("T121 backup prevalidation remains healthy");
+            completed += 1;
+        }
+        completed
+    });
+
+    let local_runtime = LocalAgentRuntime::new(store.pool().clone()).expect("T121 local runtime");
+    let collector = Arc::new(ExecutionEventCollector::new());
+    let _runtime_guard = runtime.enter();
+    let window = cx.open_window(size(px(760.0), px(420.0)), move |window, cx| {
+        let view = cx.new(|cx| {
+            hivegui::ui::conversation_view::ConversationView::new(
+                cx,
+                Some(local_runtime),
+                Some(store),
+                collector,
+            )
+        });
+        gpui_component::Root::new(view, window, cx).bordered(false)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let input_ready = settle_us13_selector(&mut visual, "CONVERSATION_MESSAGE_INPUT");
+    let send_ready = settle_us13_selector(&mut visual, "CONVERSATION_SEND");
+    let stop_ready = settle_us13_selector(&mut visual, "CONVERSATION_STOP");
+    let started = input_ready
+        && send_ready
+        && stop_ready
+        && replace_function_input(
+            &mut visual,
+            "CONVERSATION_MESSAGE_INPUT",
+            "start combined load",
+        )
+        && click_us13_selector(&mut visual, "CONVERSATION_SEND");
+    for _ in 0..100 {
+        visual.run_until_parked();
+        if request_seen.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let agent_in_flight = request_seen.load(Ordering::SeqCst);
+
+    let target = t121_combined_ui_target();
+    let mut samples_ns = Vec::with_capacity(target.measured_samples);
+    let mut stop_available = Vec::with_capacity(target.measured_samples);
+    let mut all_feedback_visible = true;
+    let total_interactions = target.warmup_iterations + target.measured_samples;
+    let input_reset = replace_function_input(&mut visual, "CONVERSATION_MESSAGE_INPUT", "");
+    let mut visible_value = String::with_capacity(total_interactions);
+    for index in 0..total_interactions {
+        let character = char::from(b'a' + u8::try_from(index % 26).expect("alphabet index"));
+        visible_value.push(character);
+        let value_selector =
+            Box::leak(format!("CONVERSATION_MESSAGE_VALUE-{visible_value}").into_boxed_str());
+        let interaction_started = Instant::now();
+        visual.simulate_input(character.to_string().as_str());
+        let mut feedback_visible = false;
+        if input_reset {
+            for _ in 0..100 {
+                visual.run_until_parked();
+                if visual.debug_bounds(value_selector).is_some() {
+                    feedback_visible = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let elapsed = interaction_started.elapsed();
+        all_feedback_visible &= input_reset && feedback_visible;
+        stop_available.push(visual.debug_bounds("CONVERSATION_STOP").is_some());
+        if index >= target.warmup_iterations {
+            samples_ns.push(
+                u64::try_from(elapsed.as_nanos()).expect("T121 latency fits in u64 nanoseconds"),
+            );
+        }
+    }
+    visual.simulate_keystrokes("tab tab");
+    visual.run_until_parked();
+    let stop_focused = visual.debug_bounds("CONVERSATION_STOP_FOCUSED").is_some();
+    visual.simulate_keystrokes("enter");
+    let stopping = settle_us13_selector(&mut visual, "CONVERSATION_STATUS-stopping");
+    close_us13_window(&mut visual);
+
+    load_running.store(false, Ordering::SeqCst);
+    release_agent.notify_waiters();
+    server_task.abort();
+    drop(_runtime_guard);
+    let (workflow_iterations, backup_iterations) = runtime.block_on(async {
+        let workflow_iterations = workflow_task.await.expect("join T121 Workflow load");
+        let backup_iterations = backup_task.await.expect("join T121 backup load");
+        (workflow_iterations, backup_iterations)
+    });
+
+    assert!(
+        started && agent_in_flight,
+        "the real local Agent conversation must be in flight"
+    );
+    assert!(
+        all_feedback_visible,
+        "every keyboard input must produce visible feedback"
+    );
+    assert!(
+        workflow_iterations > 0,
+        "the real 100-node Workflow must overlap UI input"
+    );
+    assert!(
+        backup_iterations > 0,
+        "real backup prevalidation must overlap UI input"
+    );
+    assert!(
+        stop_available.iter().all(|available| *available),
+        "Stop availability must remain 100% throughout the combined load"
+    );
+    assert!(
+        stop_focused && stopping,
+        "keyboard Stop must focus and immediately show stopping"
+    );
+
+    let environment = EnvironmentFingerprint::capture();
+    let report = BenchmarkReport::from_samples(target.clone(), environment.clone(), &samples_ns)
+        .expect("build the fixed T121 report");
+    assert!(
+        report.percentiles_ns.p95 <= 100_000_000,
+        "input feedback p95={}ns exceeds 100ms",
+        report.percentiles_ns.p95
+    );
+    assert!(
+        samples_ns.iter().all(|sample| *sample <= 250_000_000),
+        "a UI heartbeat exceeded the 250ms continuous-blocking ceiling: {samples_ns:?}"
+    );
+
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let revision = source_revision(&repository).expect("capture T121 source revision");
+    let comparison = evaluate_benchmark_gate(
+        &report,
+        &revision,
+        &baseline_path(&target, &environment),
+        &regression_exception_path(&target, &environment),
+        Utc::now().date_naive(),
+    )
+    .expect("evaluate the T005 T121 performance gate");
+    assert!(
+        matches!(
+            comparison.outcome,
+            ComparisonOutcome::Passed | ComparisonOutcome::ApprovedException
+        ),
+        "T121 combined-load performance gate is not approved: {comparison:?}; report={report:?}"
     );
 }

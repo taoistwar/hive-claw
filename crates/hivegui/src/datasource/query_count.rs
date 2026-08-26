@@ -338,13 +338,13 @@ const CATALOG: &[QueryCountContract] = &[
         owner_phase: "US13",
         activation_task: "T115",
         maximum_queries: 4,
-        active: false,
+        active: true,
     },
     QueryCountContract {
         id: "conversation.session_bundle",
         owner_phase: "US13",
         activation_task: "T117",
         maximum_queries: 2,
-        active: false,
+        active: true,
     },
 ];

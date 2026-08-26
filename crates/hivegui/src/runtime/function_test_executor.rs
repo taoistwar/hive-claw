@@ -1,10 +1,13 @@
 //! Function test execution shared by the management UI.
 
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
+use hive_json_schema::CompiledJsonSchema;
 use serde_json::Value;
+use sqlx::SqlitePool;
 
 use crate::datasource::entity_store::{Function, Plugin};
+use crate::plugin::plugin_store::PluginStore;
 
 use super::plugin_executor::{DEFAULT_MEMORY_MB, DEFAULT_OUTPUT_BYTES};
 use super::{BuiltinExecutor, PluginExecutor};
@@ -73,141 +76,133 @@ pub fn parse_resource_limits(json: &str) -> (u64, u64) {
     (memory_mb, output_bytes)
 }
 
-/// Executes builtin and plugin-backed functions for the function test dialog.
-pub struct FunctionTestExecutor;
+/// Executes Builtin and Custom Functions through constructor-owned local state.
+pub struct FunctionTestExecutor {
+    plugin_root: PathBuf,
+    pool: SqlitePool,
+}
 
 impl FunctionTestExecutor {
-    /// Executes `function` with `input`, returning a displayable output or actionable error.
-    pub async fn execute(
-        function: &Function,
-        input: Value,
-        base_dir: &Path,
-    ) -> Result<String, String> {
-        if function.kind == "placeholder" {
-            return Err("占位函数没有可执行实现，仅用于 LLM 提示词调试".to_string());
+    /// Construct the managed executor from the local Plugin root and Store pool.
+    pub fn new(plugin_root: impl Into<PathBuf>, pool: SqlitePool) -> Self {
+        Self {
+            plugin_root: plugin_root.into(),
+            pool,
         }
-
-        let allowed_capabilities = function
-            .required_capabilities
-            .as_deref()
-            .map(serde_json::from_str::<Vec<String>>)
-            .transpose()
-            .map_err(|e| format!("函数 Capability 配置无效: {e}"))?
-            .unwrap_or_default();
-
-        Self::execute_with_capabilities(function, input, base_dir, allowed_capabilities).await
     }
 
-    /// Executes `function` with an explicit capability snapshot for one test run.
-    pub async fn execute_with_capabilities(
-        function: &Function,
-        input: Value,
-        base_dir: &Path,
-        allowed_capabilities: Vec<String>,
-    ) -> Result<String, String> {
-        if function.kind == "placeholder" {
-            return Err("占位函数没有可执行实现，仅用于 LLM 提示词调试".to_string());
-        }
-
-        if function.kind == "builtin" {
-            return BuiltinExecutor::execute(&function.identifier, input).map(|output| {
-                serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
-            });
-        }
-
-        let plugin_id = function
-            .plugin_id
-            .ok_or_else(|| "函数未关联插件".to_string())?;
-        let export_name = function
-            .plugin_export
-            .as_deref()
-            .ok_or_else(|| "函数未指定插件导出函数名".to_string())?;
-        let wasm_path = base_dir
-            .join("plugins")
-            .join(plugin_id.to_string())
-            .join("plugin.wasm");
-
-        if !wasm_path.exists() {
-            return Err(format!(
-                "WASM 文件不存在: {}。请重新上传关联插件",
-                wasm_path.display()
-            ));
-        }
-
-        let input_json =
-            serde_json::to_string(&input).map_err(|e| format!("序列化输入失败: {e}"))?;
-
-        PluginExecutor::execute_with_capabilities(
-            &wasm_path,
-            export_name,
-            &input_json,
-            FUNCTION_TEST_TIMEOUT,
-            allowed_capabilities,
-        )
-        .await
-    }
-
-    /// Executes `function` with verification of the associated Plugin
-    /// artifact against its trusted SHA-256 digest (T079). The digest is
-    /// re-derived from the bytes that are about to be handed to Extism and
-    /// compared to the recorded value before any byte reaches the runtime.
-    pub async fn execute_with_verification(
-        function: &Function,
-        input: Value,
-        base_dir: &Path,
-        allowed_capabilities: Vec<String>,
-        pool: &sqlx::Pool<sqlx::Sqlite>,
-    ) -> Result<String, String> {
-        if function.kind == "placeholder" {
-            return Err("占位函数没有可执行实现，仅用于 LLM 提示词调试".to_string());
-        }
-        if function.kind == "builtin" {
-            return BuiltinExecutor::execute(&function.identifier, input).map(|output| {
-                serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
-            });
-        }
-
-        let plugin_id = function
-            .plugin_id
-            .ok_or_else(|| "函数未关联插件".to_string())?;
-        let export_name = function
-            .plugin_export
-            .as_deref()
-            .ok_or_else(|| "函数未指定插件导出函数名".to_string())?;
-        let wasm_path = base_dir
-            .join("plugins")
-            .join(plugin_id.to_string())
-            .join("plugin.wasm");
-
-        if !wasm_path.exists() {
-            return Err(format!(
-                "WASM 文件不存在: {}。请重新上传关联插件",
-                wasm_path.display()
-            ));
-        }
-
-        let plugin = Plugin::get(pool, plugin_id)
+    /// Execute with a default-deny, empty Capability snapshot.
+    pub async fn execute(&self, function: &Function, input: Value) -> Result<String, String> {
+        self.execute_with_capabilities(function, input, Vec::new())
             .await
-            .map_err(|e| format!("读取插件记录失败: {e}"))?
-            .ok_or_else(|| "插件记录不存在，请重新导入".to_string())?;
-
-        let input_json =
-            serde_json::to_string(&input).map_err(|e| format!("序列化输入失败: {e}"))?;
-
-        let (memory_mb, output_bytes) = parse_resource_limits(&plugin.resource_limits);
-
-        PluginExecutor::execute_with_verified_limits(
-            &wasm_path,
-            export_name,
-            &input_json,
-            FUNCTION_TEST_TIMEOUT,
-            allowed_capabilities,
-            &plugin.sha256,
-            memory_mb,
-            output_bytes,
-        )
-        .await
     }
+
+    /// Execute with an explicit Capability snapshot for this invocation.
+    pub async fn execute_with_capabilities(
+        &self,
+        function: &Function,
+        input: Value,
+        allowed_capabilities: Vec<String>,
+    ) -> Result<String, String> {
+        if function.kind == "placeholder" {
+            return Err("function_not_executable".to_string());
+        }
+
+        match function.kind.as_str() {
+            "builtin" if !hive_builtins::BuiltinRegistry::is_pure_builtin(&function.identifier) => {
+                return Err("not_found".to_string());
+            }
+            "builtin" | "custom" => {}
+            _ => return Err("not_found".to_string()),
+        }
+
+        validate_function_schema(&function.input_schema, &input)
+            .map_err(|_| "input_schema_mismatch".to_string())?;
+        ensure_capabilities_allowed(function, &allowed_capabilities)?;
+
+        let output = if function.kind == "builtin" {
+            BuiltinExecutor::execute(&function.identifier, input)
+                .map_err(|_| "input_schema_mismatch".to_string())?
+        } else {
+            self.execute_custom(function, input, allowed_capabilities)
+                .await?
+        };
+
+        validate_function_schema(&function.output_schema, &output)
+            .map_err(|_| "output_schema_mismatch".to_string())?;
+        serde_json::to_string_pretty(&output).map_err(|_| "output_schema_mismatch".to_string())
+    }
+
+    async fn execute_custom(
+        &self,
+        function: &Function,
+        input: Value,
+        allowed_capabilities: Vec<String>,
+    ) -> Result<Value, String> {
+        let plugin_id = function
+            .plugin_id
+            .ok_or_else(|| "函数未关联插件".to_string())?;
+        let export_name = function
+            .plugin_export
+            .as_deref()
+            .ok_or_else(|| "函数未指定插件导出函数名".to_string())?;
+        let plugin = Plugin::get(&self.pool, plugin_id)
+            .await
+            .map_err(|_| "plugin_missing".to_string())?
+            .filter(|plugin| plugin.deleted_at.is_none())
+            .ok_or_else(|| "plugin_missing".to_string())?;
+        let input_json =
+            serde_json::to_string(&input).map_err(|_| "input_schema_mismatch".to_string())?;
+        let (memory_mb, output_bytes) = parse_resource_limits(&plugin.resource_limits);
+        let store = PluginStore::new(self.pool.clone(), &self.plugin_root)
+            .map_err(|_| "not_found".to_string())?;
+        let executor = PluginExecutor::new_scoped(store, &self.plugin_root);
+        let output = executor
+            .execute_verified_key(
+                plugin_id,
+                &plugin.s3_key,
+                export_name,
+                &input_json,
+                FUNCTION_TEST_TIMEOUT,
+                allowed_capabilities,
+                &plugin.sha256,
+                memory_mb,
+                output_bytes,
+            )
+            .await
+            .map_err(|_| "not_found".to_string())?;
+        serde_json::from_str(&output).map_err(|_| "output_schema_mismatch".to_string())
+    }
+}
+
+fn validate_function_schema(schema: &str, value: &Value) -> Result<(), ()> {
+    let schema: Value = serde_json::from_str(schema).map_err(|_| ())?;
+    let compiled = CompiledJsonSchema::compile(&schema).map_err(|_| ())?;
+    compiled.validate(value).map_err(|_| ())
+}
+
+fn ensure_capabilities_allowed(
+    function: &Function,
+    allowed_capabilities: &[String],
+) -> Result<(), String> {
+    let required = function
+        .required_capabilities
+        .as_deref()
+        .map(serde_json::from_str::<Vec<String>>)
+        .transpose()
+        .map_err(|_| "capability_denied".to_string())?
+        .unwrap_or_default();
+    let allowed = allowed_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if required
+        .iter()
+        .any(|capability| !allowed.contains(capability.as_str()))
+    {
+        return Err("capability_denied".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

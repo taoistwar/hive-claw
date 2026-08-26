@@ -1,3 +1,6 @@
+//! Agent management UI for the standalone local runtime.
+//! scroll:agent_execution
+
 use crate::datasource::{
     Store,
     entity_store::{AGENT_PAGE_SIZE, AgentFilter, AgentInput, AgentRecord, AgentStore},
@@ -10,6 +13,7 @@ use crate::ui::management_style::{
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
+use gpui_component::FocusTrapElement as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
 
@@ -22,6 +26,10 @@ pub struct AgentView {
     page_size: i64,
     total_count: i64,
     show_form: bool,
+    form_focus: FocusHandle,
+    add_focus: FocusHandle,
+    save_focus: FocusHandle,
+    error_focus: FocusHandle,
     form_scroll: ScrollHandle,
     editing_id: Option<i64>,
     form_identifier: String,
@@ -38,6 +46,7 @@ pub struct AgentView {
     available_skills: Vec<(i64, String)>,
     available_capabilities: Vec<String>,
     error_message: Option<String>,
+    identifier_conflict: bool,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
@@ -58,6 +67,10 @@ impl AgentView {
             page_size: AGENT_PAGE_SIZE,
             total_count: 0,
             show_form: false,
+            form_focus: cx.focus_handle(),
+            add_focus: cx.focus_handle(),
+            save_focus: cx.focus_handle(),
+            error_focus: cx.focus_handle(),
             form_scroll: ScrollHandle::default(),
             editing_id: None,
             form_identifier: String::new(),
@@ -74,6 +87,7 @@ impl AgentView {
             available_skills: Vec::new(),
             available_capabilities: Vec::new(),
             error_message: None,
+            identifier_conflict: false,
             confirm_delete_id: None,
             identifier_input: None,
             name_input: None,
@@ -244,14 +258,17 @@ impl AgentView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_system_prompt.clear();
+        self.form_system_prompt = "You are a local Agent.".to_string();
         self.form_model_preset.clear();
         self.form_parent_agent_id = None;
         self.form_tool_ids.clear();
         self.form_skill_ids.clear();
         self.form_capability_names.clear();
         self.error_message = None;
+        self.identifier_conflict = false;
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.init_inputs(window, cx);
+        self.focus_identifier_on_next_frame(window, cx);
     }
 
     fn show_edit_form(&mut self, window: &mut Window, item: AgentRecord, cx: &mut Context<Self>) {
@@ -271,10 +288,24 @@ impl AgentView {
             .map(std::string::ToString::to_string)
             .collect();
         self.error_message = None;
+        self.identifier_conflict = false;
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.init_inputs(window, cx);
+        self.focus_identifier_on_next_frame(window, cx);
     }
 
-    fn hide_form(&mut self, cx: &mut Context<Self>) {
+    fn focus_identifier_on_next_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let identifier = self
+            .identifier_input
+            .as_ref()
+            .expect("Agent identifier input initialized")
+            .clone();
+        cx.on_next_frame(window, move |_view, window, cx| {
+            identifier.update(cx, |input, cx| input.focus(window, cx));
+        });
+    }
+
+    fn hide_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         self.show_form = false;
         self.editing_id = None;
@@ -283,25 +314,29 @@ impl AgentView {
         self.form_skill_ids.clear();
         self.form_capability_names.clear();
         self.error_message = None;
+        self.identifier_conflict = false;
         self.identifier_input = None;
         self.name_input = None;
         self.description_input = None;
         self.system_prompt_input = None;
         self.model_preset_input = None;
+        self.add_focus.focus(window, cx);
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_form_inputs(cx);
 
         if self.form_identifier.trim().is_empty() || self.form_name.trim().is_empty() {
             self.error_message = Some("Identifier 和名称不能为空".into());
+            self.error_focus.focus(window, cx);
             cx.notify();
             return;
         }
 
         if self.form_system_prompt.trim().is_empty() {
             self.error_message = Some("System Prompt 不能为空".into());
+            self.error_focus.focus(window, cx);
             cx.notify();
             return;
         }
@@ -314,6 +349,7 @@ impl AgentView {
             Ok(input) => input,
             Err(e) => {
                 self.error_message = Some(format!("参数校验失败: {e}"));
+                self.error_focus.focus(window, cx);
                 cx.notify();
                 return;
             }
@@ -338,7 +374,7 @@ impl AgentView {
 
         if let Some(eid) = self.editing_id {
             let editing_id = eid;
-            cx.spawn(async move |this, cx| {
+            cx.spawn_in(window, async move |this, cx| {
                 let result = async {
                     let agent_store = AgentStore::new(store.pool().clone())
                         .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
@@ -350,57 +386,67 @@ impl AgentView {
                 }
                 .await;
 
-                match result {
-                    Ok(()) => {
-                        this.update(cx, |v, cx| {
-                            v.hide_form(cx);
+                _ = cx.update(|window, cx| {
+                    _ = this.update(cx, |v, cx| match result {
+                        Ok(()) => {
+                            v.hide_form(window, cx);
                             v.load(cx);
                             v.load_references(cx);
-                        })
-                        .ok();
-                    }
-                    Err(err) => {
-                        this.update(cx, |v, cx| {
+                        }
+                        Err(err) => {
+                            v.identifier_conflict =
+                                err.contains("DuplicateIdentifier") || err.contains("duplicate");
                             v.error_message = Some(err);
+                            v.error_focus.focus(window, cx);
                             cx.notify();
-                        })
-                        .ok();
-                    }
-                }
+                        }
+                    });
+                });
             })
             .detach();
         } else {
-            cx.spawn(async move |this, cx| {
-                let result = async {
-                    let agent_store = AgentStore::new(store.pool().clone())
-                        .map_err(|e| format!("AgentStore 创建失败: {e}"))?;
-                    agent_store
-                        .create(input)
-                        .await
-                        .map_err(|e| format!("创建失败: {e}"))?;
-                    Ok::<_, String>(())
-                }
-                .await;
-
-                match result {
-                    Ok(()) => {
-                        this.update(cx, |v, cx| {
-                            v.hide_form(cx);
+            cx.spawn_in(window, async move |this, cx| {
+                let result = match AgentStore::new(store.pool().clone()) {
+                    Ok(agent_store) => agent_store.create(input).await.map(|_| ()),
+                    Err(error) => Err(error),
+                };
+                _ = cx.update(|window, cx| {
+                    _ = this.update(cx, |v, cx| match result {
+                        Ok(()) => {
+                            v.hide_form(window, cx);
                             v.load(cx);
                             v.load_references(cx);
-                        })
-                        .ok();
-                    }
-                    Err(err) => {
-                        this.update(cx, |v, cx| {
-                            v.error_message = Some(err);
+                        }
+                        Err(error) => {
+                            v.identifier_conflict =
+                                error.field() == "identifier" && error.reason() == "duplicate";
+                            v.error_message = Some(format!("创建失败: {error}"));
+                            v.error_focus.focus(window, cx);
                             cx.notify();
-                        })
-                        .ok();
-                    }
-                }
+                        }
+                    });
+                });
             })
             .detach();
+        }
+    }
+
+    fn on_form_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                cx.stop_propagation();
+                self.hide_form(window, cx);
+            }
+            "enter" if self.show_form => {
+                cx.stop_propagation();
+                self.save(window, cx);
+            }
+            _ => {}
         }
     }
 
@@ -590,11 +636,19 @@ impl Render for AgentView {
                             ActionSize::Page,
                             style,
                         )
+                        .debug_selector(|| "AGENT_ADD".to_string())
+                        .track_focus(&self.add_focus)
+                        .tab_index(0)
+                        .role(Role::Button)
+                        .aria_label("添加 Agent")
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, window, cx| {
                                 t.update(cx, |v, cx| v.show_add_form(window, cx)).ok();
                             }
+                        })
+                        .when(self.add_focus.is_focused(window), |button| {
+                            button.child(focus_marker("AGENT_ADD_FOCUSED"))
                         }),
                     ),
             )
@@ -868,8 +922,8 @@ impl Render for AgentView {
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
-                            move |_, _, cx| {
-                                t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                            move |_, window, cx| {
+                                t.update(cx, |v, cx| v.hide_form(window, cx)).ok();
                             }
                         }),
                 )
@@ -880,27 +934,65 @@ impl Render for AgentView {
                         theme.foreground,
                         theme.border,
                     )
+                    .debug_selector(|| "AGENT_MODAL".to_string())
+                    .track_focus(&self.form_focus)
+                    .focus_trap("agent-form-focus-trap", &self.form_focus)
+                    .key_context("HiveguiAgentForm")
+                    .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                        view.on_form_key_down(event, window, cx);
+                    }))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
                     .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child(if self.editing_id.is_some() {
+                                "编辑 Agent"
+                            } else {
+                                "添加 Agent"
+                            }),
+                    )
+                    .child(form_field(
+                        "Identifier *",
+                        identifier_input,
+                        "AGENT_IDENTIFIER_INPUT",
+                        Some(format!("AGENT_IDENTIFIER_VALUE-{}", self.form_identifier)),
+                        theme,
+                    ))
+                    .child(form_field(
+                        "名称 *",
+                        name_input,
+                        "AGENT_NAME_INPUT",
+                        Some(format!("AGENT_NAME_VALUE-{}", self.form_name)),
+                        theme,
+                    ))
+                    .child(
                         management_modal_scroll("agent-form-scroll", &self.form_scroll)
+                            .debug_selector(|| "AGENT_FORM_SCROLL".to_string())
                             .gap(px(10.0))
-                            .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(if self.editing_id.is_some() {
-                                        "编辑 Agent"
-                                    } else {
-                                        "添加 Agent"
-                                    }),
-                            )
-                            .child(form_field("Identifier *", identifier_input, theme))
-                            .child(form_field("名称 *", name_input, theme))
-                            .child(form_field("描述", description_input, theme))
-                            .child(form_field("System Prompt", system_prompt_input, theme))
-                            .child(form_field("Model Preset", model_preset_input, theme))
+                            .child(form_field(
+                                "描述",
+                                description_input,
+                                "AGENT_DESCRIPTION_INPUT",
+                                None,
+                                theme,
+                            ))
+                            .child(form_field(
+                                "System Prompt",
+                                system_prompt_input,
+                                "AGENT_SYSTEM_PROMPT_INPUT",
+                                None,
+                                theme,
+                            ))
+                            .child(form_field(
+                                "Model Preset",
+                                model_preset_input,
+                                "AGENT_MODEL_PRESET_INPUT",
+                                None,
+                                theme,
+                            ))
                             .child(
                                 div()
                                     .flex()
@@ -1137,16 +1229,37 @@ impl Render for AgentView {
                             .when_some(self.error_message.as_ref(), |this, err| {
                                 this.child(
                                     div()
+                                        .id("agent-form-error-a11y")
+                                        .debug_selector(|| {
+                                            if self.identifier_conflict {
+                                                "AGENT_CONFLICT-field=identifier-reason=duplicate"
+                                                    .to_string()
+                                            } else {
+                                                "AGENT_FORM_ERROR".to_string()
+                                            }
+                                        })
+                                        .track_focus(&self.error_focus)
+                                        .tab_index(0)
+                                        .role(Role::Alert)
+                                        .aria_label(if self.identifier_conflict {
+                                            "field=identifier reason=duplicate"
+                                        } else {
+                                            "Agent form error"
+                                        })
                                         .p(px(8.0))
                                         .bg(theme.warning.opacity(0.1))
                                         .rounded(px(4.0))
                                         .text_size(px(12.0))
                                         .text_color(theme.warning)
-                                        .child(err.clone()),
+                                        .child(err.clone())
+                                        .when(self.error_focus.is_focused(window), |error| {
+                                            error.child(focus_marker("AGENT_ERROR_FOCUSED"))
+                                        }),
                                 )
                             })
                             .child(
                                 div()
+                                    .debug_selector(|| "AGENT_FORM_ACTIONS".to_string())
                                     .flex()
                                     .justify_end()
                                     .gap(px(8.0))
@@ -1162,8 +1275,9 @@ impl Render for AgentView {
                                             MouseButton::Left,
                                             {
                                                 let t = cx.weak_entity();
-                                                move |_, _, cx| {
-                                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                move |_, window, cx| {
+                                                    t.update(cx, |v, cx| v.hide_form(window, cx))
+                                                        .ok();
                                                 }
                                             },
                                         ),
@@ -1176,12 +1290,16 @@ impl Render for AgentView {
                                             ActionSize::Page,
                                             style,
                                         )
+                                        .track_focus(&self.save_focus)
+                                        .tab_index(0)
+                                        .role(Role::Button)
+                                        .aria_label("保存 Agent")
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             {
                                                 let t = cx.weak_entity();
-                                                move |_, _, cx| {
-                                                    t.update(cx, |v, cx| v.save(cx)).ok();
+                                                move |_, window, cx| {
+                                                    t.update(cx, |v, cx| v.save(window, cx)).ok();
                                                 }
                                             },
                                         ),
@@ -1309,8 +1427,11 @@ impl Render for AgentView {
 fn form_field(
     label: &'static str,
     input: Entity<InputState>,
+    selector: &'static str,
+    value_selector: Option<String>,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
+    let selector = selector.to_string();
     div()
         .flex()
         .flex_col()
@@ -1322,12 +1443,31 @@ fn form_field(
                 .child(label),
         )
         .child(
-            Input::new(&input)
-                .w_full()
-                .h(px(32.0))
-                .px(px(8.0))
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(4.0)),
+            div()
+                .debug_selector(move || selector.clone())
+                .child(
+                    Input::new(&input)
+                        .aria_label(label)
+                        .w_full()
+                        .h(px(32.0))
+                        .px(px(8.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(4.0)),
+                )
+                .when_some(value_selector, |field, selector| {
+                    field.child(focus_marker(selector))
+                }),
         )
+}
+
+fn focus_marker(selector: impl Into<SharedString>) -> Stateful<Div> {
+    let selector = selector.into();
+    let debug_selector = selector.clone();
+    div()
+        .id(selector)
+        .debug_selector(move || debug_selector.to_string())
+        .w(px(0.0))
+        .h(px(0.0))
+        .overflow_hidden()
 }

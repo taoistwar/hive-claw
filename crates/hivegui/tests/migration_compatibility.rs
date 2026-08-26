@@ -12,14 +12,15 @@ use std::{
     sync::Arc,
 };
 
-use hivegui::datasource::entity_store::{Function, Tool};
+use hivegui::datasource::entity_store::Tool;
+use hivegui::datasource::function_store::FunctionStore;
 use hivegui::datasource::migrations::{
     ArtifactSnapshot, CURRENT_SCHEMA_VERSION, MigrationErrorKind, MigrationFaultInjector,
     MigrationFaultPoint, MigrationOptions, MigrationStatus, capture_artifact_snapshot,
     migrate_to_current, restore_safe_snapshot, verify_safe_snapshot,
 };
 use hivegui::datasource::store::{Store, StoreOpenOptions};
-use sqlx::{Row, sqlite::SqlitePoolOptions};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use support::TestWorkspace;
 
 const OWNER_PHASE: &str = "Foundation";
@@ -143,6 +144,240 @@ async fn query_strings(database: &Path, sql: &str) -> Vec<String> {
     values
 }
 
+async fn open_read_only(database: &Path) -> SqlitePool {
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite://{}?mode=ro", database.display()))
+        .await
+        .expect("open v4 database read-only for schema inspection")
+}
+
+fn canonical_schema_sql(sql: &str) -> String {
+    sql.chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .replace('"', "'")
+}
+
+async fn schema_catalog(database: &Path) -> Vec<String> {
+    query_strings(
+        database,
+        "SELECT type || '|' || name || '|' || tbl_name || '|' || COALESCE(sql, '') \
+         FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' \
+         ORDER BY type, name, tbl_name, COALESCE(sql, '')",
+    )
+    .await
+}
+
+async fn assert_restrict_foreign_key(
+    pool: &SqlitePool,
+    table: &str,
+    from: &str,
+    referenced_table: &str,
+    referenced_column: &str,
+) {
+    let rows = match table {
+        "functions" => {
+            sqlx::query(
+                "SELECT \"from\", \"table\", \"to\", on_delete \
+             FROM pragma_foreign_key_list('functions')",
+            )
+            .fetch_all(pool)
+            .await
+        }
+        "workflow_nodes" => {
+            sqlx::query(
+                "SELECT \"from\", \"table\", \"to\", on_delete \
+             FROM pragma_foreign_key_list('workflow_nodes')",
+            )
+            .fetch_all(pool)
+            .await
+        }
+        "tools" => {
+            sqlx::query(
+                "SELECT \"from\", \"table\", \"to\", on_delete \
+             FROM pragma_foreign_key_list('tools')",
+            )
+            .fetch_all(pool)
+            .await
+        }
+        other => panic!("unreviewed foreign-key table in T022 contract: {other}"),
+    }
+    .unwrap_or_else(|error| panic!("inspect {table} foreign keys: {error}"));
+
+    let matching = rows
+        .iter()
+        .filter(|row| row.try_get::<String, _>("from").ok().as_deref() == Some(from))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching.len(),
+        1,
+        "{table}.{from} must have exactly one foreign key"
+    );
+    let row = matching[0];
+    assert_eq!(
+        row.try_get::<String, _>("table").expect("referenced table"),
+        referenced_table,
+        "{table}.{from} references the wrong table"
+    );
+    assert_eq!(
+        row.try_get::<String, _>("to").expect("referenced column"),
+        referenced_column,
+        "{table}.{from} references the wrong column"
+    );
+    assert_eq!(
+        row.try_get::<String, _>("on_delete")
+            .expect("delete action"),
+        "RESTRICT",
+        "{table}.{from} must fail closed on delete"
+    );
+}
+
+async fn assert_v4_search_and_reference_schema(database: &Path) {
+    let pool = open_read_only(database).await;
+
+    let search_documents_sql = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'search_documents'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("v4 owns the canonical search_documents table");
+    let search_documents_sql = canonical_schema_sql(&search_documents_sql);
+    for required in [
+        "createtablesearch_documents(",
+        "idintegerprimarykey",
+        "entity_typetextnotnull",
+        "entity_keytextnotnull",
+        "fieldtextnotnull",
+        "normalized_texttextnotnull",
+        "unique(entity_type,entity_key,field)",
+    ] {
+        assert!(
+            search_documents_sql.contains(required),
+            "search_documents is missing required schema fragment {required}: {search_documents_sql}"
+        );
+    }
+
+    let search_fts_sql = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'search_documents_fts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("v4 owns the canonical search_documents_fts virtual table");
+    let search_fts_sql = canonical_schema_sql(&search_fts_sql);
+    for required in [
+        "createvirtualtablesearch_documents_ftsusingfts5(",
+        "normalized_text",
+        "content='search_documents'",
+        "content_rowid='id'",
+        "tokenize='trigramcase_sensitive1'",
+    ] {
+        assert!(
+            search_fts_sql.contains(required),
+            "search_documents_fts is missing required external-content/trigram fragment {required}: {search_fts_sql}"
+        );
+    }
+
+    let short_grams_sql = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'search_short_grams'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("v4 owns the canonical search_short_grams table");
+    let short_grams_sql = canonical_schema_sql(&short_grams_sql);
+    for required in [
+        "createtablesearch_short_grams(",
+        "document_idinteger",
+        "gram_leninteger",
+        "check(gram_lenin(1,2))",
+        "gramtextnotnull",
+        "primarykey(document_id,gram_len,gram)",
+        "withoutrowid",
+    ] {
+        assert!(
+            short_grams_sql.contains(required),
+            "search_short_grams is missing required schema fragment {required}: {short_grams_sql}"
+        );
+    }
+
+    let short_gram_foreign_keys = sqlx::query(
+        "SELECT \"from\", \"table\", \"to\", on_delete \
+         FROM pragma_foreign_key_list('search_short_grams')",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect search_short_grams foreign keys");
+    assert_eq!(short_gram_foreign_keys.len(), 1);
+    let short_gram_foreign_key = &short_gram_foreign_keys[0];
+    assert_eq!(
+        short_gram_foreign_key
+            .try_get::<String, _>("from")
+            .expect("short-gram foreign-key column"),
+        "document_id"
+    );
+    assert_eq!(
+        short_gram_foreign_key
+            .try_get::<String, _>("table")
+            .expect("short-gram parent table"),
+        "search_documents"
+    );
+    assert_eq!(
+        short_gram_foreign_key
+            .try_get::<String, _>("to")
+            .expect("short-gram parent column"),
+        "id"
+    );
+    assert_eq!(
+        short_gram_foreign_key
+            .try_get::<String, _>("on_delete")
+            .expect("short-gram delete action"),
+        "CASCADE"
+    );
+
+    let explicit_indexes = sqlx::query(
+        "SELECT name FROM pragma_index_list('search_short_grams') \
+         WHERE origin = 'c' ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("list explicit search_short_grams indexes");
+    let mut has_covering_lookup = false;
+    for index in explicit_indexes {
+        let name = index.try_get::<String, _>("name").expect("index name");
+        let columns =
+            sqlx::query_scalar::<_, String>("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
+                .bind(&name)
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("inspect {name}: {error}"));
+        has_covering_lookup |= columns == ["gram_len", "gram", "document_id"];
+    }
+    assert!(
+        has_covering_lookup,
+        "search_short_grams requires an explicit (gram_len, gram, document_id) covering index"
+    );
+
+    let normalization_values = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM schema_metadata WHERE key = 'search_normalization_id'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read canonical search normalization metadata");
+    assert_eq!(
+        normalization_values,
+        ["hivegui-nfkc-casefold-v1"],
+        "schema_metadata must contain exactly one canonical normalization row"
+    );
+
+    assert_restrict_foreign_key(&pool, "functions", "plugin_id", "plugins", "id").await;
+    assert_restrict_foreign_key(&pool, "workflow_nodes", "function_id", "functions", "id").await;
+    assert_restrict_foreign_key(&pool, "tools", "function_id", "functions", "id").await;
+    assert_restrict_foreign_key(&pool, "tools", "workflow_id", "workflows", "id").await;
+
+    pool.close().await;
+}
+
 async fn assert_v4_invariants(workspace: &TestWorkspace) {
     assert_eq!(
         read_schema_version(workspace.database_path()).await,
@@ -154,6 +389,7 @@ async fn assert_v4_invariants(workspace: &TestWorkspace) {
     let foreign_key_failures =
         query_strings(workspace.database_path(), "PRAGMA foreign_key_check").await;
     assert!(foreign_key_failures.is_empty());
+    assert_v4_search_and_reference_schema(workspace.database_path()).await;
 
     let node_types = query_strings(
         workspace.database_path(),
@@ -204,6 +440,7 @@ async fn empty_database_is_created_directly_at_v4_and_reopening_is_idempotent() 
         first.snapshot_location().is_none(),
         "a newly created database does not require a migration snapshot"
     );
+    assert_v4_search_and_reference_schema(workspace.database_path()).await;
 
     let before_reopen =
         capture_artifact_snapshot(workspace.database_path(), workspace.plugin_root())
@@ -249,6 +486,75 @@ async fn supported_v2_and_v3_fixtures_upgrade_transactionally_to_v4() {
         assert!(report.validation.managed_plugins_ok);
         assert_eq!(report.pre_migration_snapshot.as_ref(), Some(&before));
         assert_v4_invariants(&workspace).await;
+    }
+}
+
+#[tokio::test]
+async fn current_v4_missing_a_required_search_table_fails_closed_without_partial_repair() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    migrate_to_current(migration_options(&workspace))
+        .await
+        .expect("create initial v4 database");
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite://{}", workspace.database_path().display()))
+        .await
+        .expect("open v4 database to inject schema drift");
+    sqlx::query("DROP TABLE IF EXISTS search_documents")
+        .execute(&pool)
+        .await
+        .expect("remove required v4 search table");
+    pool.close().await;
+
+    let before_schema = schema_catalog(workspace.database_path()).await;
+    let before_artifacts = snapshot(&workspace).await;
+    migrate_to_current(migration_options(&workspace))
+        .await
+        .expect_err("a schema marked v4 but missing required search DDL must fail closed");
+
+    assert_eq!(
+        schema_catalog(workspace.database_path()).await,
+        before_schema,
+        "opening a drifted v4 database must not repair or partially mutate its schema"
+    );
+    assert_eq!(
+        snapshot(&workspace).await,
+        before_artifacts,
+        "opening a drifted v4 database must preserve every database and Plugin artifact"
+    );
+    assert_eq!(
+        read_schema_version(workspace.database_path()).await,
+        CURRENT_SCHEMA_VERSION
+    );
+}
+
+#[tokio::test]
+async fn v2_and_v3_fault_after_v4_ddl_rolls_back_the_exact_sqlite_schema() {
+    for fixture in ["v2-valid.sqlite", "v3-valid.sqlite"] {
+        let workspace = TestWorkspace::new().expect("isolated workspace");
+        copy_fixture(&workspace, fixture);
+        copy_managed_plugin_fixture(&workspace);
+        let before_schema = schema_catalog(workspace.database_path()).await;
+        let before_artifacts = snapshot(&workspace).await;
+
+        let error = migrate_to_current(migration_options(&workspace).with_fault_injector(
+            Arc::new(OneShotMigrationFault::new(MigrationFaultPoint::AfterV3ToV4)),
+        ))
+        .await
+        .expect_err("fault after v4 DDL must abort the entire migration transaction");
+
+        assert_eq!(error.kind(), MigrationErrorKind::InjectedFault);
+        assert_eq!(
+            schema_catalog(workspace.database_path()).await,
+            before_schema,
+            "{fixture} retained partial v4 sqlite_schema rows after rollback"
+        );
+        assert_eq!(
+            snapshot(&workspace).await,
+            before_artifacts,
+            "{fixture} retained partial database or Plugin changes after rollback"
+        );
     }
 }
 
@@ -366,7 +672,7 @@ async fn v4_migration_decodes_string_kinds_through_entity_readers() {
     // Open a real v4 Store through the public boundary, then read the
     // migrated functions/tools through the entity readers. This is the
     // regression guard for the kind type split: before the fix,
-    // `Function::list` / `Tool::list` would try to decode the v4 TEXT
+    // `FunctionStore::list` / `Tool::list` would try to decode the v4 TEXT
     // kind column into `i64` and fail at runtime.
     let store = Store::open_local(StoreOpenOptions::new(
         workspace.database_path(),
@@ -375,16 +681,19 @@ async fn v4_migration_decodes_string_kinds_through_entity_readers() {
     .await
     .expect("open real v4 Store");
 
-    let functions = Function::list(store.pool(), None, 100, 0)
+    let function_page = FunctionStore::new(store.pool().clone())
+        .expect("Function Store")
+        .list(None, 1)
         .await
         .expect("list migrated functions");
+    let functions = function_page.items();
     assert!(!functions.is_empty(), "v2 fixture must contain functions");
-    for function in &functions {
+    for function in functions {
         assert!(
-            ["builtin", "custom", "placeholder"].contains(&function.kind.as_str()),
+            ["builtin", "custom", "placeholder"].contains(&function.kind().as_str()),
             "function {} has unexpected kind {:?}",
-            function.identifier,
-            function.kind
+            function.identifier(),
+            function.kind()
         );
     }
 

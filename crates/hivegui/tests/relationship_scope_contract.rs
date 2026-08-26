@@ -103,7 +103,7 @@ const V4_APPLICATION_TABLES: &[TableContract] = &[
 ];
 
 const V4_FOREIGN_KEYS: &[ForeignKeyContract] = &[
-    fk!("llm_presets", "provider_id" => "llm_providers", "id", "RESTRICT"),
+    fk!("models", "preset_id" => "llm_presets", "id", "CASCADE"),
     fk!("models", "provider_id" => "llm_providers", "id", "RESTRICT"),
     fk!("categories", "parent_id" => "categories", "id", "SET NULL"),
     fk!("capabilities", "category_id" => "categories", "id", "SET NULL"),
@@ -112,7 +112,7 @@ const V4_FOREIGN_KEYS: &[ForeignKeyContract] = &[
     fk!("functions", "category_id" => "categories", "id", "SET NULL"),
     fk!("workflows", "category_id" => "categories", "id", "SET NULL"),
     fk!("workflow_nodes", "workflow_id" => "workflows", "id", "CASCADE"),
-    fk!("workflow_nodes", "function_id" => "functions", "id", "SET NULL"),
+    fk!("workflow_nodes", "function_id" => "functions", "id", "RESTRICT"),
     fk!("workflow_edges", "workflow_id" => "workflows", "id", "CASCADE"),
     fk!("tools", "function_id" => "functions", "id", "RESTRICT"),
     fk!("tools", "workflow_id" => "workflows", "id", "RESTRICT"),
@@ -324,28 +324,36 @@ async fn fresh_v4_schema_has_every_declared_table_and_fk_and_no_extra_structure(
     // by this test is intentionally narrow.
     let infrastructure_table_predicates: &[(&str, &str)] = &[
         ("meta", "migration metadata key/value table"),
-        ("search_index", "FTS5 trigram virtual table for search"),
         (
-            "search_index_config",
+            "schema_metadata",
+            "versioned search metadata key/value table",
+        ),
+        ("search_documents", "external-content search document table"),
+        (
+            "search_documents_fts",
+            "external-content FTS5 trigram virtual table",
+        ),
+        (
+            "search_documents_fts_config",
             "FTS5 trigram virtual table shadow table",
         ),
         (
-            "search_index_content",
+            "search_documents_fts_content",
             "FTS5 trigram virtual table shadow table",
         ),
         (
-            "search_index_data",
+            "search_documents_fts_data",
             "FTS5 trigram virtual table shadow table",
         ),
         (
-            "search_index_docsize",
+            "search_documents_fts_docsize",
             "FTS5 trigram virtual table shadow table",
         ),
         (
-            "search_index_idx",
+            "search_documents_fts_idx",
             "FTS5 trigram virtual table shadow table",
         ),
-        ("short_gram_index", "derived 1-2 character search index"),
+        ("search_short_grams", "derived 1-2 character search index"),
         (
             "plugin_artifact_operations",
             "plugin artifact sidecar operations ledger",

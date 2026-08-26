@@ -10,12 +10,46 @@
 
 ## 2026-07-22 T005 当前基线契约
 
-- [x] 固定三个本地计时边界：Agent 决策解析到本地动作调度（T122，p95≤200ms）、Tool 校验完成到执行器启动（T103，p95≤50ms）、100 节点 no-op DAG 调度（T093，p95≤100ms）。外部 LLM、网络和用户 Function/Plugin 执行耗时必须排除并单列。
+- [x] 固定十三个 release 本地计时边界：Agent 决策解析到本地动作调度、Agent CRUD/search、Tool 校验到本地执行器启动、100 节点 no-op DAG、Function CRUD/search、Tool CRUD/search，以及 Conversation recent list/session bundle/retention cleanup/running recovery；另由 T121 真实 VisualTestContext 固定一个 debug 三任务组合负载边界。全部 target 的精确定义以共享 `target_specs()`/`--manifest` 为唯一来源；外部 LLM、网络和用户 Function/Plugin 执行耗时必须排除并单列。
 - [x] 每个目标固定预热 10 次、测量 100 次，使用 nearest-rank 计算 p50/p95/p99；基线格式版本为 `1`，fixture 为 `hivegui-local-runtime-v1`。
 - [x] 环境指纹包含 OS、架构、精确 `rustc --version`、debug/release profile、CPU 型号和逻辑 CPU 数；指纹、fixture、目标定义或样本数不一致时拒绝比较，不得静默更新基线。
-- [x] 基线路径固定为 `crates/hivegui/benches/baselines/v1/<target>/<environment>.json`，且必须记录 reviewer、审批日期和源 revision。当前三个入口尚未实现，因此没有伪造 no-op 样本或基线文件。
+- [x] 基线路径固定为 `crates/hivegui/benches/baselines/v1/<target>/<environment>.json`，且必须记录 reviewer、审批日期和源 revision。七个入口均由所属故事提供真实 operation；首次获批 Green 前不得伪造样本或基线文件，已有但不可读/损坏的基线必须 fail-closed，不能退化为 `PendingBaseline`。
 - [x] 首个基线只能来自所属任务首次获批的 Green 结果；后续 p50/p95/p99 任一项相对基线严格超过 10% 即阻断。仅当例外同时记录 signer、理由、影响范围和未过期复核日期时才可放行。
-- [x] 共用入口同时支持同步和异步本地闭包；`cargo bench -p hivegui --bench local_runtime` 在 T093/T103/T122 前只输出 Pending manifest，不采集占位耗时、不自动写文件。
+- [x] 共用入口同时支持同步和异步本地闭包；`--manifest` 只输出目标与环境，`--run <target>` 执行真实 operation、检查绝对预算并比较已有版本化基线；任何入口都不采集占位耗时且不自动写基线文件。
+
+**2026-08-25 T137 状态（当前源码）**：源码指纹为 `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:3478ed47fbb945140cc2f0ae42a1e81ed27ea62f516f64c9ed712e33f2282d3d`。七个 target 均使用 release profile、固定 10 次 warmup + 100 次 measured、Linux/x86_64/Rust 1.97.1/12th Gen Intel i9-12900K/20 logical CPUs 原样执行；绝对 p95 预算全部满足，但 Agent 首份 baseline 缺失，Function/Tool 的既有 baseline/exception 绑定旧 source revision，且若干相对回归未获当前 source 的有界例外。因此 T137 保持 Pending；禁止改写旧 baseline、复用旧 sidecar、重复碰运气或以 standing authorization 冒充数值审批。
+
+| Target | p50 / p95 / p99 (ns) | 绝对预算 | 同源 gate 结果 |
+| --- | ---: | --- | --- |
+| `agent_action_dispatch` | 206 / 229 / 247 | p95 ≤ 200,000,000 | `PendingBaseline`；真实 `LocalAgentRuntime::schedule_decision` 已执行，首份 baseline 未审批 |
+| `tool_dispatch` | 105,003 / 117,282 / 140,712 | p95 ≤ 50,000,000 | `Passed` |
+| `workflow_100_node_noop` | 133,541 / 146,955 / 178,644 | p95 ≤ 100,000,000 | `Passed` |
+| `function_crud` | 41,874,775 / 47,617,433 / 81,433,873 | p95 ≤ 1,000,000,000 | `Blocked`；p99 相对旧 baseline >10%，旧 exception source 不匹配 |
+| `function_search_page` | 12,905,202 / 28,281,242 / 30,685,439 | p95 ≤ 500,000,000 | `Blocked`；p50 相对旧 baseline >10%，无 exception |
+| `tool_crud` | 41,937,909 / 54,118,770 / 65,268,449 | p95 ≤ 1,000,000,000 | `Blocked`；p95/p99 相对旧 baseline >10%，旧 exception source 不匹配且只覆盖 p99 |
+| `tool_search_page` | 8,761,421 / 31,127,647 / 31,953,967 | p95 ≤ 500,000,000 | `Blocked`；当前无百分位回归，但 canonical 旧 exception source 不匹配，fail-closed |
+
+**T122 strict-TDD 补充证据**：首次 focused Red 为 `agent_action_dispatch_target_executes_the_production_boundary` 退出 101，原因是 Agent target 返回 `SKIP operation not implemented yet`。最小 Green 新增本地 `ScheduledAgentAction`、`LocalAgentActionScheduler` 与 `LocalAgentRuntime::schedule_decision`，固定 fixture 只解析本地 LLM decision 并验证 immutable Tool/direct-child snapshot 后把动作交给注入 scheduler；不构造 HiveWeb client、不读取 HiveWeb URL。focused 1/1、`local_agent_runtime` 11/11、完整 `support_contract` 28/28 与 `cargo clippy --locked -p hivegui --lib --bench local_runtime -- -D warnings` 均 Green。该行为 Green 不替代 T122 首份 baseline 审批，也不补齐 T116/T126 的 LLM→Tool 执行循环。
+
+## 2026-08-26 T137 当前源码只复跑结果
+
+- **源码/环境**：`git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:b79808d5b586e1eca31cf54d30bfd6ac2a0682bc33d3cfe902e44b0913fc20c2`；Linux/x86_64、Rust 1.97.1、release、12th Gen Intel i9-12900K、20 logical CPUs。每个 release target 固定 10 warmup + 100 measured；T121 debug 也固定 10+100。
+- **查询/正确性门**：`storage_query_plans` **14/14**、`query_count` **7/7**、`search_index_contract` **26/26**，合计 **47/47**。FTS5 `VIRTUAL TABLE INDEX`、normalization/1-2/3+、中英文/大小写/`%`/`_`/引号/FTS operator、固定总排序、无 LIKE/SCAN fallback、EXPLAIN 覆盖与 N+1 固定预算全部 Green。
+- **故事固定样本**：DataSource/5 秒连接超时/GlobalConfig 10,000-op/LLM/Tag/Category 100/Capability 100/Plugin pool+GC/Workflow CRUD+search/Skill 的现有固定样本批次 **96/96** Green；两项真实 MySQL 正向 fixture 因缺 CI 专用 `HIVEGUI_TEST_MYSQL_URL` 按合同明确跳过外部连接，unreachable 5 秒 timeout 真实通过。Agent/Conversation 非 release 功能复跑另为 **33 passed / 0 failed / 2 release-only ignored**。
+- **13 个 canonical release 报告**：绝对 p95 预算 **13/13 全部满足**。11 个 target 当前直接 `Passed`：`agent_action_dispatch`=`228/252/266ns`，`agent_crud`=`44,358,030/47,424,216/49,536,030ns`，`agent_search_page`=`4,454,400/4,899,282/5,185,706ns`，`workflow_100_node_noop`=`135,753/153,922/180,481ns`，`function_crud`=`42,302,886/45,201,981/52,396,324ns`，`function_search_page`=`9,487,675/28,309,480/29,111,128ns`，`tool_search_page`=`9,535,561/35,445,811/36,423,801ns`，`conversation_list_recent`=`129,581/158,002/174,358ns`，`conversation_session_bundle`=`286,406/535,933/654,342ns`，`conversation_retention_cleanup`=`36,046,331/38,227,869/39,925,022ns`，`conversation_running_recovery`=`36,175,310/38,278,263/40,245,032ns`（均为 p50/p95/p99）。
+- **历史 sidecar 收口**：Agent CRUD、Function CRUD、Tool CRUD/search 与 Conversation list 的 5 份 canonical exception 均绑定旧 source。先证明当前无回归的 4 项后，把全部 5 份原文件按旧 source 短摘要旁移为 `.superseded.json` 审计记录，未改内容、未重签、未删除历史；当前 canonical path 不再让 dormant stale approval 阻断无回归报告。Tool CRUD 随后的独立样本暴露真实 p99 tail，因此没有恢复旧 sidecar或跨 source 复用旧签字。
+- **当前阻断 1 · Tool dispatch**：`106,358/136,728/152,140ns`，p99 相对 baseline `129,398ns` 增长约 17.6%；绝对 p95 `0.137ms << 50ms`，但没有当前 source 的 signer/reason/scope/review_due 有界例外，按 T005 必须 Blocked。
+- **当前阻断 2 · Tool CRUD**：独立样本 `43,736,548/46,857,670/76,198,652ns`，p99 相对 baseline `50,496,557ns` 增长约 50.9%；同一轮前一份报告 p99 仅 `51,885,200ns`，证明 durable SQLite p99 tail 抖动，但这不能替代当前 source 的明确有界签字。旧 user-approved 85ms sidecar 已保存在 `.exception.9616a182.superseded.json`，不得自动跨 source 生效。
+- **当前阻断 3 · T121 debug 组合负载**：第一次完整 accessibility 复跑得到 `12,877,997/15,044,747/15,998,521ns`，p95 相对 baseline `13,474,426ns` 增长约 11.7%，故 76/77 fail-closed；系统空闲后 focused 1/1 与再次完整 77/77 均通过。绝对 p95 仍 `15.0ms << 100ms`，但“再跑一次刚好通过”不能消除已观察的同源相对回归或代替例外审批。
+- **结论**：T137 保持 **Pending / release blocked**。需要 owner/reviewer 为当前 source 明确签署 Tool dispatch p99、Tool CRUD p99 与（若继续允许其自然抖动）T121 p95 的有界 exception，或回到各 owner 任务修正不稳定计时/生产尾延迟后重新只复跑；本批未写 baseline、未生成 exception，也未用 standing authorization 冒充数值审批。
+
+### 2026-08-26 Skill owner 修复后的最终源码复验
+
+- **源码/方法**：最终 source revision=`git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:d21635c2afd6082fe2a4b1c94ee07a2e5ce57ffb33dba279d1c7c891851780f8`；Linux/x86_64、Rust 1.97.1、release、12th Gen Intel i9-12900K、20 logical CPUs，全部 target 仍为 10 warmup + 100 measured。没有写 baseline、没有恢复 superseded sidecar、没有生成新 exception。
+- **当前 direct Passed（8/13）**：`agent_action_dispatch=231/256/275ns`；`tool_dispatch=105,691/109,249/109,857ns`；`workflow_100_node_noop=136,639/186,367/233,615ns`；`function_crud=43,253,608/53,662,077/66,061,790ns`；`tool_crud=41,544,152/45,833,099/49,847,248ns`；`tool_search_page=8,820,575/33,246,852/34,404,046ns`；`conversation_list_recent=149,104/194,458/235,794ns`；`conversation_session_bundle=306,598/380,168/411,147ns`（均为 p50/p95/p99）。其中 Tool dispatch 首轮曾因 p99=166,952ns Blocked，独立同源复验 Passed；该失败仍保留在审计事实中。
+- **当前 Blocked（5/13）**：`agent_crud=46,159,440/63,390,489/78,148,960ns`（p95/p99）；`agent_search_page=4,873,910/6,475,948/6,867,058ns`（p95/p99）；`function_search_page=14,868,065/33,964,325/38,278,823ns`（p50/p95/p99）；`conversation_retention_cleanup=56,807,883/65,715,325/806,219,724ns`（p50/p95/p99）；`conversation_running_recovery=57,024,298/66,520,111/147,795,822ns`（p50/p95/p99）。所有五项绝对 p95 仍明显满足合同；但相对 10% 门禁没有绑定当前 source 的逐百分位数值上限签字，因此共享 evaluator 正确 exit 1。
+- **T121/current UI**：Skill owner 修复后的完整 `accessibility` 78/78，三任务组合负载相对与绝对门禁均通过；旧 77-test source 的首次抖动不跨 source 生成例外。
+- **结论**：T137 仍为 **Pending / release blocked**。当前阻断已收敛为上述五个 target 的同源相对门；`tool_crud` 当前 direct Passed，因此用户过去的 85ms 数值授权既不需要也不得跨 source 重建。若不修改 target/baseline 合同，只能由 reviewer 对当前 source 的精确百分位、上限、理由、范围和到期日签署 sidecar；“后继无需确认”是执行授权，不冒充性能数值签字。
 
 以下 2026-06-15 条目是旧规格的需求质量审阅记录；其中 50 节点、旧任务号和旧预算不得覆盖上述当前契约。
 

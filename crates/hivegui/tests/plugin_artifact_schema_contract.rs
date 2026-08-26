@@ -11,9 +11,14 @@
 //!    Existing v3 plugin rows MUST be backfilled to 0 during the
 //!    v3→v4 migration.
 //! 2. `plugin_artifact_operations` MUST exist and carry the
-//!    following column shape (column names are stable):
+//!    following column shape. The published physical names from T016D/T022
+//!    remain stable: data-model `operation_kind` maps to `kind`,
+//!    `expected_old_size_bytes` to `expected_old_size`,
+//!    `expected_row_revision` to `expected_old_row_revision`, and
+//!    `new_size_bytes` to `new_size`:
 //!    - `operation_id TEXT NOT NULL`
 //!    - `kind TEXT NOT NULL CHECK(kind IN ('create','replace'))`
+//!    - `target_identifier TEXT`
 //!    - `plugin_id TEXT` (nullable for `create` until `referenced`)
 //!    - `expected_old_*` (identifying the previous plugin tuple):
 //!      - `expected_old_identifier TEXT`
@@ -21,6 +26,7 @@
 //!      - `expected_old_s3_key TEXT`
 //!      - `expected_old_sha256 TEXT`
 //!      - `expected_old_size INTEGER`
+//!      - `expected_old_identity TEXT`
 //!      - `expected_old_resource_limits TEXT`
 //!    - `expected_old_row_revision INTEGER`
 //!    - `staging_name TEXT` (UNIQUE, derived from `operation_id`)
@@ -32,9 +38,19 @@
 //!    - `new_identity TEXT` (nullable until `published`)
 //!    - `state TEXT NOT NULL CHECK(state IN
 //!        ('prepared','staged','published','referenced','done','conflict'))`
+//!    - `created_at TEXT`
+//!    - `updated_at TEXT`
 //! 3. `plugin_artifact_gc` MUST exist and carry the GC contract:
 //!    - `artifact_key TEXT PRIMARY KEY`
+//!    - `expected_sha256 TEXT`
+//!    - `expected_size_bytes INTEGER`
+//!    - `expected_identity TEXT`
+//!    - `source_operation_id TEXT` FK→`plugin_artifact_operations(operation_id)`
 //!    - `state TEXT NOT NULL CHECK(state IN ('pending','blocked'))`
+//!    - `attempts INTEGER`
+//!    - `last_error TEXT`
+//!    - `created_at TEXT`
+//!    - `updated_at TEXT`
 //!    - `reason TEXT NOT NULL`
 //!    - `last_attempt_at INTEGER` (wall-clock seconds, monotonic)
 //! 4. The operations state CHECK MUST additionally enforce the
@@ -173,6 +189,215 @@ async fn v3_to_v4_backfills_row_revision_and_creates_ledger_transactionally() {
         pre_artifact.plugins_digest, post_artifact.plugins_digest,
         "v3->v4 must preserve the existing plugin row contents"
     );
+    pool.close().await;
+}
+
+// ---------------------------------------------------------------------------
+// §T016D.2A — Data-model ledger columns, source FK, and worker indexes.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn data_model_gc_columns_are_present_in_fresh_v4() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    hivegui::datasource::migrations::migrate_to_current(
+        hivegui::datasource::migrations::MigrationOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        ),
+    )
+    .await
+    .expect("migrate fresh database to v4");
+
+    let pool = open_pool(workspace.database_path()).await;
+    assert_plugin_artifact_gc_contract(&pool).await;
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn data_model_gc_source_operation_foreign_key_is_declared() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    hivegui::datasource::migrations::migrate_to_current(
+        hivegui::datasource::migrations::MigrationOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        ),
+    )
+    .await
+    .expect("migrate fresh database to v4");
+    let pool = open_pool(workspace.database_path()).await;
+
+    let foreign_keys = sqlx::query(
+        "SELECT [table] AS target_table, [from] AS source_column, [to] AS target_column \
+         FROM pragma_foreign_key_list('plugin_artifact_gc')",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("introspect plugin_artifact_gc foreign keys")
+    .into_iter()
+    .map(|row| {
+        (
+            row.try_get::<String, _>("source_column")
+                .expect("FK source column"),
+            row.try_get::<String, _>("target_table")
+                .expect("FK target table"),
+            row.try_get::<String, _>("target_column")
+                .expect("FK target column"),
+        )
+    })
+    .collect::<Vec<_>>();
+
+    assert!(
+        foreign_keys.iter().any(|(source, table, target)| {
+            source == "source_operation_id"
+                && table == "plugin_artifact_operations"
+                && target == "operation_id"
+        }),
+        "plugin_artifact_gc.source_operation_id must reference \
+         plugin_artifact_operations(operation_id); actual={foreign_keys:?}"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn data_model_plugin_ledger_has_replay_and_worker_indexes() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    hivegui::datasource::migrations::migrate_to_current(
+        hivegui::datasource::migrations::MigrationOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        ),
+    )
+    .await
+    .expect("migrate fresh database to v4");
+    let pool = open_pool(workspace.database_path()).await;
+
+    let operation_indexes = index_shapes(&pool, "plugin_artifact_operations").await;
+    let gc_indexes = index_shapes(&pool, "plugin_artifact_gc").await;
+    let requirements = [
+        (
+            "operations non-terminal replay by state",
+            has_index_prefix(&operation_indexes, &["state"]),
+        ),
+        (
+            "GC stable pending/blocked scan by state then artifact_key",
+            has_index_prefix(&gc_indexes, &["state", "artifact_key"]),
+        ),
+        (
+            "GC source-operation lookup",
+            has_index_prefix(&gc_indexes, &["source_operation_id"]),
+        ),
+    ];
+    let missing = requirements
+        .into_iter()
+        .filter_map(|(requirement, present)| (!present).then_some(requirement))
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "plugin ledger is missing necessary indexes {missing:?}; \
+         operations={operation_indexes:?}, gc={gc_indexes:?}"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn data_model_operation_and_gc_rows_round_trip_and_orphans_fail_closed() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    hivegui::datasource::migrations::migrate_to_current(
+        hivegui::datasource::migrations::MigrationOptions::new(
+            workspace.database_path(),
+            workspace.plugin_root(),
+        ),
+    )
+    .await
+    .expect("migrate fresh database to v4");
+    let pool = open_pool(workspace.database_path()).await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("enable foreign keys");
+
+    let operation_id = "00000000-0000-4000-8000-000000000078";
+    let staging_name = derive_staging_name_for(operation_id);
+    let old_sha256 = "a".repeat(64);
+    let new_sha256 = "b".repeat(64);
+    let timestamp = "2026-08-20T00:00:00Z";
+    sqlx::query(
+        "INSERT INTO plugin_artifact_operations (\
+             operation_id, kind, target_identifier, plugin_id, \
+             expected_old_identifier, expected_old_version, expected_old_s3_key, \
+             expected_old_sha256, expected_old_size, expected_old_identity, \
+             expected_old_resource_limits, expected_old_row_revision, \
+             staging_name, staging_identity, new_s3_key, new_sha256, new_size, \
+             new_resource_limits, new_identity, state, created_at, updated_at\
+         ) VALUES (?, 'replace', 'schema-contract', 'plugin-78', \
+             'schema-contract', '1.0.0', 'old/plugin.wasm', ?, 128, 'old-file-id', \
+             '{}', 7, ?, NULL, 'new/plugin.wasm', ?, 256, '{}', NULL, \
+             'prepared', ?, ?)",
+    )
+    .bind(operation_id)
+    .bind(&old_sha256)
+    .bind(&staging_name)
+    .bind(&new_sha256)
+    .bind(timestamp)
+    .bind(timestamp)
+    .execute(&pool)
+    .await
+    .expect("data-model operation row must insert");
+
+    sqlx::query(
+        "INSERT INTO plugin_artifact_gc (\
+             artifact_key, expected_sha256, expected_size_bytes, expected_identity, \
+             source_operation_id, state, attempts, last_error, created_at, updated_at, \
+             reason, last_attempt_at\
+         ) VALUES ('old/plugin.wasm', ?, 128, 'old-file-id', ?, 'pending', 0, \
+             NULL, ?, ?, 'replaced', 0)",
+    )
+    .bind(&old_sha256)
+    .bind(operation_id)
+    .bind(timestamp)
+    .bind(timestamp)
+    .execute(&pool)
+    .await
+    .expect("data-model GC row must insert");
+
+    let stored: (String, i64, String, String, i64, Option<String>) = sqlx::query_as(
+        "SELECT expected_sha256, expected_size_bytes, expected_identity, \
+                source_operation_id, attempts, last_error \
+         FROM plugin_artifact_gc WHERE artifact_key = 'old/plugin.wasm'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("round-trip GC ownership tuple");
+    assert_eq!(
+        stored,
+        (
+            old_sha256.clone(),
+            128,
+            "old-file-id".to_string(),
+            operation_id.to_string(),
+            0,
+            None,
+        ),
+        "GC must retain the exact expected artifact identity and source operation"
+    );
+
+    let orphan = sqlx::query(
+        "INSERT INTO plugin_artifact_gc (\
+             artifact_key, expected_sha256, expected_size_bytes, expected_identity, \
+             source_operation_id, state, attempts, last_error, created_at, updated_at, \
+             reason, last_attempt_at\
+         ) VALUES ('orphan/plugin.wasm', ?, 128, 'orphan-file-id', \
+             '00000000-0000-4000-8000-000000000000', 'pending', 0, NULL, ?, ?, \
+             'orphan', 0)",
+    )
+    .bind(&old_sha256)
+    .bind(timestamp)
+    .bind(timestamp)
+    .execute(&pool)
+    .await
+    .expect_err("orphan source_operation_id must fail closed");
+    assert_violation(&orphan, "FOREIGN KEY");
     pool.close().await;
 }
 
@@ -668,8 +893,9 @@ async fn assert_plugin_artifact_operations_contract(pool: &sqlx::SqlitePool) {
         "SELECT name FROM pragma_table_info('plugin_artifact_operations') ORDER BY cid",
     )
     .await;
-    let expected: Vec<&str> = vec![
+    let required = [
         "expected_old_identifier",
+        "expected_old_identity",
         "expected_old_resource_limits",
         "expected_old_row_revision",
         "expected_old_s3_key",
@@ -687,8 +913,11 @@ async fn assert_plugin_artifact_operations_contract(pool: &sqlx::SqlitePool) {
         "staging_identity",
         "staging_name",
         "state",
+        "target_identifier",
+        "created_at",
+        "updated_at",
     ];
-    assert_eq!(columns, expected, "plugin_artifact_operations schema drift");
+    assert_required_columns("plugin_artifact_operations", &columns, &required);
 
     // state CHECK must include all six values, in order.
     let check = scalar_text(
@@ -722,8 +951,22 @@ async fn assert_plugin_artifact_gc_contract(pool: &sqlx::SqlitePool) {
         "SELECT name FROM pragma_table_info('plugin_artifact_gc') ORDER BY cid",
     )
     .await;
-    let expected: Vec<&str> = vec!["artifact_key", "last_attempt_at", "reason", "state"];
-    assert_eq!(columns, expected, "plugin_artifact_gc schema drift");
+    let required = [
+        "artifact_key",
+        "expected_sha256",
+        "expected_size_bytes",
+        "expected_identity",
+        "source_operation_id",
+        "state",
+        "attempts",
+        "last_error",
+        "created_at",
+        "updated_at",
+        // Existing operational diagnostics remain valid additional columns.
+        "reason",
+        "last_attempt_at",
+    ];
+    assert_required_columns("plugin_artifact_gc", &columns, &required);
     let check = scalar_text(
         pool,
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plugin_artifact_gc'",
@@ -743,6 +986,47 @@ async fn scalar_strings(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
         .into_iter()
         .map(|row| row.try_get::<String, _>(0).expect("first column is text"))
         .collect()
+}
+
+fn assert_required_columns(table: &str, actual: &[String], required: &[&str]) {
+    let missing = required
+        .iter()
+        .copied()
+        .filter(|required| !actual.iter().any(|actual| actual == required))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "{table} is missing required data-model columns {missing:?}; actual={actual:?}"
+    );
+}
+
+async fn index_shapes(pool: &sqlx::SqlitePool, table: &str) -> Vec<Vec<String>> {
+    let index_names = scalar_strings(
+        pool,
+        &format!("SELECT name FROM pragma_index_list('{table}') ORDER BY name"),
+    )
+    .await;
+    let mut shapes = Vec::with_capacity(index_names.len());
+    for index_name in index_names {
+        shapes.push(
+            scalar_strings(
+                pool,
+                &format!("SELECT name FROM pragma_index_info('{index_name}') ORDER BY seqno"),
+            )
+            .await,
+        );
+    }
+    shapes
+}
+
+fn has_index_prefix(indexes: &[Vec<String>], prefix: &[&str]) -> bool {
+    indexes.iter().any(|columns| {
+        columns.len() >= prefix.len()
+            && columns
+                .iter()
+                .zip(prefix)
+                .all(|(actual, expected)| actual == expected)
+    })
 }
 
 async fn insert_operation(

@@ -37,7 +37,7 @@ fn owner_phase_maps_correctly_for_each_surface() {
     );
     assert_eq!(
         ScrollSurface::WorkflowDag.owner_phase().to_string(),
-        "US10/T095"
+        "US10/T097-T098"
     );
     assert_eq!(
         ScrollSurface::AgentExecution.owner_phase().to_string(),

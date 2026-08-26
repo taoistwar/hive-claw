@@ -98,6 +98,14 @@ struct FsWriteArgs<'a> {
 
 // ---------- Plugin exports ----------
 
+/// Reserved host compatibility probe. This export is not a user-callable
+/// Plugin function; both hosts invoke it before a business export to bind the
+/// artifact to the shared Extism ABI v1 contract.
+#[plugin_fn]
+pub fn _hive_plugin_abi_version(_: String) -> FnResult<String> {
+    Ok("hive-extism/v1".to_owned())
+}
+
 #[plugin_fn]
 pub fn ping(_: String) -> FnResult<String> {
     let envelope = HostCallEnvelope {

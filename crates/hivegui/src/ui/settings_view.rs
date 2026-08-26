@@ -3,6 +3,7 @@
 //! Provides session retention entry points, backup restore precheck +
 //! replacement confirmation, export/import controls, and diagnostic
 //! bundle export with redaction.
+//! scroll:agent_execution
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,8 +16,11 @@ use sqlx::query_scalar;
 
 use crate::datasource::Store;
 use crate::datasource::backup::{BackupExporter, BackupImporter};
+use crate::datasource::conversation_store::ConversationStore;
 use crate::runtime::diagnostics::{DiagnosticBundle, ExecutionEventCollector, RedactionConfig};
 const RETENTION_KEY: &str = "conversation_retention_days";
+
+actions!(hivegui_settings, [SettingsEscape]);
 
 pub struct SettingsView {
     store: Option<Store>,
@@ -40,12 +44,21 @@ pub struct SettingsView {
     is_restoring_prechecked: bool,
     is_replacement_confirmed: bool,
     is_exporting_diagnostic: bool,
+    restore_precheck_focus: FocusHandle,
+    settings_focus: FocusHandle,
+    content_scroll: ScrollHandle,
+    initial_focus_installed: bool,
     status_message: Option<SharedString>,
     is_error: bool,
 }
 
 impl SettingsView {
-    pub fn new(_cx: &mut Context<Self>, collector: Option<Arc<ExecutionEventCollector>>) -> Self {
+    pub fn new(cx: &mut Context<Self>, collector: Option<Arc<ExecutionEventCollector>>) -> Self {
+        cx.bind_keys([KeyBinding::new(
+            "escape",
+            SettingsEscape,
+            Some("HiveguiSettings"),
+        )]);
         Self {
             store: None,
             collector,
@@ -69,6 +82,10 @@ impl SettingsView {
             is_restoring_prechecked: false,
             is_replacement_confirmed: false,
             is_exporting_diagnostic: false,
+            restore_precheck_focus: cx.focus_handle(),
+            settings_focus: cx.focus_handle(),
+            content_scroll: ScrollHandle::default(),
+            initial_focus_installed: false,
             status_message: None,
             is_error: false,
         }
@@ -205,6 +222,14 @@ impl SettingsView {
             self.retention_days = state.read(cx).value().to_string().into();
         }
 
+        if !self.initial_focus_installed {
+            self.initial_focus_installed = true;
+            let focus = self.settings_focus.clone();
+            cx.on_next_frame(window, move |_view, window, cx| {
+                focus.focus(window, cx);
+            });
+        }
+
         if let Some(store) = self.store.as_ref()
             && !self.retention_loaded
         {
@@ -270,6 +295,41 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn preview_retention(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            self.set_status("Store 未就绪，无法预览清理影响", true);
+            cx.notify();
+            return;
+        };
+        let retention_days = self.retention_days.to_string().parse::<i64>().ok();
+        let entity = cx.entity();
+        cx.spawn(async move |_this, cx| {
+            let outcome = match ConversationStore::from_store(&store, retention_days) {
+                Ok(conversations) => conversations
+                    .preview_retention("expired")
+                    .await
+                    .map(|preview| preview.affected_count()),
+                Err(error) => Err(error),
+            };
+            entity.update(cx, move |view, cx| {
+                match outcome {
+                    Ok(count) => view.set_status(format!("预计清理过期会话 {count} 条"), false),
+                    Err(error) => view.set_status(format!("预览会话清理影响失败：{error}"), true),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape" {
+            self.is_replacement_confirmed = false;
+            self.restore_precheck_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
     fn preview_restore(&mut self, cx: &mut Context<Self>) {
         if self.store.is_none() {
             self.set_status("Store 未就绪", true);
@@ -299,11 +359,14 @@ impl SettingsView {
         cx.notify();
 
         let entity = cx.entity();
-        cx.spawn(async move |_this, cx| {
-            let importer = BackupImporter::new(store.database_path().parent().unwrap_or(Path::new(".")));
-            let manifest = importer.inspect_manifest(Path::new(&path), &passphrase).await;
+        let task = crate::ui::spawn_tokio(async move {
+            let importer =
+                BackupImporter::new(store.database_path().parent().unwrap_or(Path::new(".")));
+            let manifest = importer
+                .inspect_manifest(Path::new(&path), &passphrase)
+                .await;
 
-            let outcome = match manifest {
+            match manifest {
                 Ok(manifest) => {
                     let chat_sessions =
                         query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_sessions")
@@ -321,12 +384,12 @@ impl SettingsView {
                     match (chat_sessions, chat_messages, agent_executions) {
                         (Ok(chat_sessions), Ok(chat_messages), Ok(agent_executions)) => {
                             Ok(format!(
-                                "恢复预检通过：manifest schema={}, format={}, role={}, ownership={}。\
+                                "恢复预检通过：manifest schema={}, format={} v{}，导出时间 {}。\
 影响预计（当前实例）: 会话 {} 条、消息 {} 条、执行 {} 条，预估将被完整替换。",
                                 manifest.schema_version,
                                 manifest.format,
-                                manifest.role,
-                                manifest.ownership_state,
+                                manifest.format_version,
+                                manifest.exported_at,
                                 chat_sessions,
                                 chat_messages,
                                 agent_executions,
@@ -338,24 +401,28 @@ impl SettingsView {
                     }
                 }
                 Err(err) => Err(err.to_string()),
-            };
+            }
+        });
 
-            entity
-                .update(cx, move |view, cx| {
-                    match outcome {
-                        Ok(msg) => {
-                            view.restore_impact_preview = msg;
-                            view.is_restoring_prechecked = true;
-                            view.set_status("恢复预检通过", false);
-                        }
-                        Err(err) => {
-                            view.restore_impact_preview = "恢复前请先预检".to_string();
-                            view.is_restoring_prechecked = false;
-                            view.set_status(format!("恢复预检失败：{err}"), true);
-                        }
+        cx.spawn(async move |_this, cx| {
+            let outcome = task
+                .await
+                .unwrap_or_else(|error| Err(format!("恢复预检后台任务失败：{error}")));
+            entity.update(cx, move |view, cx| {
+                match outcome {
+                    Ok(msg) => {
+                        view.restore_impact_preview = msg;
+                        view.is_restoring_prechecked = true;
+                        view.set_status("恢复预检通过", false);
                     }
-                    cx.notify();
-                });
+                    Err(err) => {
+                        view.restore_impact_preview = "恢复前请先预检".to_string();
+                        view.is_restoring_prechecked = false;
+                        view.set_status(format!("恢复预检失败：{err}"), true);
+                    }
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -385,16 +452,30 @@ impl SettingsView {
         self.set_status("正在导出...", false);
         cx.notify();
 
-        cx.spawn(async move |_this, cx| {
+        let task = crate::ui::spawn_tokio(async move {
             let exporter = BackupExporter::new(store.database_path());
             let outcome = exporter.export_age(Path::new(&path), &passphrase).await;
+            (path, outcome)
+        });
+        cx.spawn(async move |_this, cx| {
+            let (path, outcome) = match task.await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    entity.update(cx, move |view, cx| {
+                        view.is_exporting = false;
+                        view.set_status(format!("导出后台任务失败：{error}"), true);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
             entity.update(cx, move |view, cx| {
                 view.is_exporting = false;
                 match outcome {
                     Ok(manifest) => view.set_status(
                         format!(
-                            "导出完成：{path}（版本 {}, format {}）",
-                            manifest.uuid, manifest.format
+                            "导出完成：{path}（{} v{}，schema {}）",
+                            manifest.format, manifest.format_version, manifest.schema_version
                         ),
                         false,
                     ),
@@ -441,7 +522,7 @@ impl SettingsView {
         self.set_status("正在恢复...", false);
         cx.notify();
 
-        cx.spawn(async move |_this, cx| {
+        let task = crate::ui::spawn_tokio(async move {
             let importer =
                 BackupImporter::new(store.database_path().parent().unwrap_or(Path::new(".")));
             let final_target = store
@@ -452,6 +533,20 @@ impl SettingsView {
             let outcome = importer
                 .import_age(Path::new(&path), &passphrase, final_target)
                 .await;
+            (path, outcome)
+        });
+        cx.spawn(async move |_this, cx| {
+            let (path, outcome) = match task.await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    entity.update(cx, move |view, cx| {
+                        view.is_importing = false;
+                        view.set_status(format!("恢复后台任务失败：{error}"), true);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
             entity.update(cx, move |view, cx| {
                 view.is_importing = false;
                 match outcome {
@@ -491,9 +586,22 @@ impl SettingsView {
         self.set_status("正在导出脱敏诊断样例...", false);
         cx.notify();
 
-        cx.spawn(async move |_this, cx| {
+        let task = crate::ui::spawn_tokio_blocking(move || {
             let bundle = DiagnosticBundle::new(collector);
-            let result = bundle.export_redacted(Path::new(&path), &RedactionConfig::default());
+            bundle.export_redacted(Path::new(&path), &RedactionConfig::default())
+        });
+        cx.spawn(async move |_this, cx| {
+            let result = match task.await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    entity.update(cx, move |view, cx| {
+                        view.is_exporting_diagnostic = false;
+                        view.set_status(format!("诊断导出后台任务失败：{error}"), true);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
             entity.update(cx, move |view, cx| {
                 view.is_exporting_diagnostic = false;
                 match result {
@@ -560,6 +668,19 @@ impl Render for SettingsView {
 
         div()
             .id("settings-view")
+            .track_focus(&self.settings_focus)
+            .tab_index(0)
+            .key_context("HiveguiSettings")
+            .on_action(cx.listener(
+                |view, _: &SettingsEscape, window, cx| {
+                    view.is_replacement_confirmed = false;
+                    view.restore_precheck_focus.focus(window, cx);
+                    cx.notify();
+                },
+            ))
+            .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                view.on_key_down(event, window, cx);
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -575,9 +696,14 @@ impl Render for SettingsView {
             )
             .child(
                 div()
+                    .id("settings-native-scroll")
+                    .debug_selector(|| "SETTINGS_SCROLL".to_string())
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
+                    .pr(px(12.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.content_scroll)
+                    .vertical_scrollbar(&self.content_scroll)
                     .p(px(16.0))
                     .flex()
                     .flex_col()
@@ -596,8 +722,13 @@ impl Render for SettingsView {
                             .child(
                                 div().flex().flex_row().gap(px(8.0)).items_center()
                                     .child(div().w(px(96.0)).child("保留天数"))
-                                    .child(Input::new(&retention_input).w(px(120.0)))
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "SETTINGS_RETENTION_DAYS".to_string())
+                                            .child(Input::new(&retention_input).w(px(120.0))),
+                                    )
                                     .child(btn(
+                                        "settings-retention-save",
                                         "保存保留期",
                                         theme.success,
                                         theme.success_hover,
@@ -608,6 +739,22 @@ impl Render for SettingsView {
                                             move |_, _, cx| {
                                                 let _ = value
                                                     .update(cx, |view, cx| view.save_retention(cx));
+                                            }
+                                        },
+                                    ))
+                                    .child(btn(
+                                        "SETTINGS_RETENTION_PREVIEW",
+                                        "预览清理影响",
+                                        theme.secondary,
+                                        theme.secondary_hover,
+                                        theme.foreground,
+                                        theme.foreground,
+                                        {
+                                            let value = view.clone();
+                                            move |_, _, cx| {
+                                                let _ = value.update(cx, |view, cx| {
+                                                    view.preview_retention(cx)
+                                                });
                                             }
                                         },
                                     )),
@@ -644,6 +791,7 @@ impl Render for SettingsView {
                             )
                             .child(
                                 btn(
+                                    "SETTINGS_BACKUP_EXPORT",
                                     if self.is_exporting { "导出中..." } else { "导出数据" },
                                     theme.primary,
                                     theme.primary_hover,
@@ -676,6 +824,7 @@ impl Render for SettingsView {
                             .child(
                                 div().flex().flex_row().gap(px(8.0)).items_center()
                                     .child(btn(
+                                        "SETTINGS_RESTORE_PRECHECK",
                                         if self.is_restoring_prechecked { "已预检" } else { "预检恢复" },
                                         theme.warning,
                                         theme.warning_hover,
@@ -687,8 +836,13 @@ impl Render for SettingsView {
                                                 let _ = view.update(cx, |view, cx| view.preview_restore(cx));
                                             }
                                         },
-                                    ))
+                                    )
+                                    .track_focus(&self.restore_precheck_focus)
+                                    .child(focus_marker(
+                                        "SETTINGS_RESTORE_PRECHECK_FOCUSED",
+                                    )))
                                     .child(btn(
+                                        "SETTINGS_RESTORE_CONFIRM",
                                         if self.is_replacement_confirmed {
                                             "取消确认"
                                         } else {
@@ -708,6 +862,7 @@ impl Render for SettingsView {
                                         },
                                     ))
                                     .child(btn(
+                                        "settings-restore-execute",
                                         if self.is_importing { "恢复中..." } else { "执行恢复" },
                                         theme.primary,
                                         theme.primary_hover,
@@ -738,6 +893,7 @@ impl Render for SettingsView {
                                     .child(Input::new(&diagnostic_input).w(px(420.0))),
                             )
                             .child(btn(
+                                "SETTINGS_DIAGNOSTIC_EXPORT",
                                 if self.is_exporting_diagnostic {
                                     "导出中..."
                                 } else {
@@ -768,14 +924,21 @@ impl Render for SettingsView {
 }
 
 fn btn(
+    selector: &'static str,
     label: &'static str,
     bg: Hsla,
     hover: Hsla,
     fg: Hsla,
     hover_fg: Hsla,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Stateful<Div> {
+    let debug_selector = selector.to_string();
     div()
+        .id(selector)
+        .debug_selector(move || debug_selector.clone())
+        .tab_index(0)
+        .role(Role::Button)
+        .aria_label(label)
         .px(px(12.0))
         .py(px(8.0))
         .bg(bg)
@@ -786,6 +949,17 @@ fn btn(
         .hover(|s| s.bg(hover).text_color(hover_fg))
         .on_mouse_down(MouseButton::Left, handler)
         .child(label)
+}
+
+fn focus_marker(selector: impl Into<SharedString>) -> Stateful<Div> {
+    let selector = selector.into();
+    let debug_selector = selector.clone();
+    div()
+        .id(selector)
+        .debug_selector(move || debug_selector.to_string())
+        .w(px(0.0))
+        .h(px(0.0))
+        .overflow_hidden()
 }
 
 #[cfg(test)]

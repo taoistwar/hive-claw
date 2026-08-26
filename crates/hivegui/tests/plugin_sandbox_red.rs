@@ -30,10 +30,25 @@ use std::time::Duration;
 use hivegui::runtime::PluginExecutor;
 use tempfile::TempDir;
 
+#[path = "support/plugin_wat.rs"]
+mod plugin_wat;
+
 fn write_wat(temp_dir: &TempDir, name: &str, source: &str) -> std::path::PathBuf {
     let path = temp_dir.path().join(name);
     let wasm = wat::parse_str(source).expect("compile WAT fixture");
     std::fs::write(&path, wasm).expect("write WASM fixture");
+    path
+}
+
+fn write_v1_wat(
+    temp_dir: &TempDir,
+    name: &str,
+    extra_imports: &str,
+    functions: &str,
+) -> std::path::PathBuf {
+    let path = temp_dir.path().join(name);
+    std::fs::write(&path, plugin_wat::compile_v1(extra_imports, functions))
+        .expect("write Extism v1 WASM fixture");
     path
 }
 
@@ -244,17 +259,17 @@ async fn plugin_with_only_host_call_can_still_be_built_after_wasi_lockdown() {
     // After the T025R ③ lockdown, the legitimate `host_call` import must
     // still build; only WASI imports are forbidden.
     let temp_dir = TempDir::new().expect("tempdir");
-    let wasm = write_wat(
+    let wasm = write_v1_wat(
         &temp_dir,
         "host-call-only.wasm",
         r#"
-        (module
-          (type $host-call-type (func (param i64) (result i64)))
-          (import "extism:host/user" "host_call" (func $host_call (type $host-call-type)))
+          (import "extism:host/user" "host_call"
+            (func $host_call (param i64) (result i64)))
+        "#,
+        r#"
           (func (export "noop") (result i32)
             i32.const 0
           )
-        )
         "#,
     );
 

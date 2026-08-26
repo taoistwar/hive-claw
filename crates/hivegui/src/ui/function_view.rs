@@ -2,9 +2,10 @@
 //! scroll:function_list
 
 use crate::datasource::{
-    Store,
-    entity_store::{Capability, Function, Plugin},
+    FunctionInput, FunctionKind, FunctionRecord, FunctionStore, Store,
+    entity_store::{Capability, Category, Function as RuntimeFunction, Plugin},
     plugin_manifest::manifest_exports,
+    validation::{PublicBoundaryError, PublicErrorEnvelope},
 };
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -13,10 +14,15 @@ use crate::ui::management_style::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::scroll::{Scrollable, ScrollableElement};
+use gpui_component::{ActiveTheme as _, FocusTrapElement as _};
 use std::collections::{HashMap, HashSet};
+
+actions!(
+    hivegui_function_form,
+    [FunctionFormTab, FunctionFormTabPrev]
+);
 
 /// Parsed schema field for test input form
 #[derive(Debug, Clone)]
@@ -37,11 +43,133 @@ enum TestState {
     Error { message: String },
 }
 
+#[derive(Debug, Clone)]
+struct FunctionUiError {
+    summary: String,
+    semantic: FunctionSemanticStatus,
+}
+
+/// Semantic states emitted by the Function management surface.
+///
+/// The same builder is used by the rendered view and the narrow AccessKit
+/// probe below, so tests inspect GPUI's actual `Element` accessibility data
+/// instead of a parallel label registry.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionSemanticStatus {
+    BuiltinImmutable {
+        id: i64,
+        identifier: String,
+    },
+    PlaceholderNonExecutable {
+        id: i64,
+        identifier: String,
+    },
+    PlaceholderSchemaOnly,
+    IdentifierConflict {
+        value: String,
+        field: String,
+        reason: String,
+    },
+    FormError {
+        label: String,
+    },
+    TestSuccess,
+    TestError,
+}
+
+impl FunctionSemanticStatus {
+    fn element_id(&self) -> String {
+        match self {
+            Self::BuiltinImmutable { id, .. } => format!("FUNCTION_BUILTIN_READONLY-{id}"),
+            Self::PlaceholderNonExecutable { id, .. } => {
+                format!("FUNCTION_PLACEHOLDER_NON_EXECUTABLE-{id}")
+            }
+            Self::PlaceholderSchemaOnly => "function-placeholder-schema-only".to_string(),
+            Self::IdentifierConflict { value, .. } => {
+                format!("FUNCTION_IDENTIFIER_CONFLICT-{value}")
+            }
+            Self::FormError { .. } => "FUNCTION_FORM_ERROR".to_string(),
+            Self::TestSuccess => "function-test-success".to_string(),
+            Self::TestError => "function-test-error".to_string(),
+        }
+    }
+
+    fn debug_selector(&self) -> String {
+        match self {
+            Self::PlaceholderSchemaOnly => "FUNCTION_PLACEHOLDER_SCHEMA_ONLY".to_string(),
+            Self::TestSuccess => "FUNCTION_TEST_SUCCESS".to_string(),
+            Self::TestError => "FUNCTION_TEST_ERROR".to_string(),
+            _ => self.element_id(),
+        }
+    }
+
+    fn role(&self) -> Role {
+        match self {
+            Self::IdentifierConflict { .. } | Self::FormError { .. } | Self::TestError => {
+                Role::Alert
+            }
+            Self::BuiltinImmutable { .. }
+            | Self::PlaceholderNonExecutable { .. }
+            | Self::PlaceholderSchemaOnly
+            | Self::TestSuccess => Role::Status,
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::BuiltinImmutable { identifier, .. } => {
+                format!("{identifier} builtin_immutable")
+            }
+            Self::PlaceholderNonExecutable { identifier, .. } => {
+                format!("{identifier} function_not_executable")
+            }
+            Self::PlaceholderSchemaOnly => "function_not_executable schema_only".to_string(),
+            Self::IdentifierConflict {
+                value,
+                field,
+                reason,
+            } => format!("{value} field={field} reason={reason}"),
+            Self::FormError { label } => label.clone(),
+            Self::TestSuccess => "status=success".to_string(),
+            Self::TestError => "status=error".to_string(),
+        }
+    }
+}
+
+fn function_semantic_element(semantic: FunctionSemanticStatus) -> Stateful<Div> {
+    let element_id = semantic.element_id();
+    let debug_selector = semantic.debug_selector();
+    let role = semantic.role();
+    let label = semantic.label();
+    div()
+        .id(element_id)
+        .debug_selector(move || debug_selector.clone())
+        .role(role)
+        .aria_label(label)
+}
+
+/// Build the exact semantic element used by `FunctionView` and ask GPUI's
+/// `Element` implementation to populate a real AccessKit node.
+#[doc(hidden)]
+pub fn function_semantic_accesskit_probe(
+    semantic: FunctionSemanticStatus,
+) -> gpui::accesskit::Node {
+    let element = function_semantic_element(semantic);
+    let role = element
+        .a11y_role()
+        .expect("Function semantic elements always expose an AccessKit role");
+    let mut node = gpui::accesskit::Node::new(role);
+    element.write_a11y_info(&mut node);
+    node
+}
+
 pub struct FunctionView {
     store: Entity<Store>,
-    items: Vec<Function>,
+    items: Vec<RuntimeFunction>,
     plugins: Vec<Plugin>,
     capabilities: Vec<Capability>,
+    categories: Vec<Category>,
     loading: bool,
     search_text: String,
     current_page: i64,
@@ -49,6 +177,16 @@ pub struct FunctionView {
     total_count: i64,
     show_form: bool,
     form_focus: FocusHandle,
+    add_focus: FocusHandle,
+    kind_focus: FocusHandle,
+    plugin_focus: FocusHandle,
+    export_focus: FocusHandle,
+    capability_focus: FocusHandle,
+    category_focus: FocusHandle,
+    cancel_focus: FocusHandle,
+    save_focus: FocusHandle,
+    error_focus: FocusHandle,
+    test_capability_focus: FocusHandle,
     form_scroll: ScrollHandle,
     editing_id: Option<i64>,
     form_identifier: String,
@@ -58,14 +196,17 @@ pub struct FunctionView {
     form_plugin_id: Option<i64>,
     form_plugin_export: Option<String>,
     form_capability: Option<String>,
+    form_category_id: Option<i64>,
     plugin_exports: Vec<String>,
     kind_select_open: bool,
     plugin_select_open: bool,
     export_select_open: bool,
     capability_select_open: bool,
+    category_select_open: bool,
     form_input_schema: String,
     form_output_schema: String,
     error_message: Option<String>,
+    form_error: Option<FunctionUiError>,
     confirm_delete_id: Option<i64>,
     identifier_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
@@ -75,7 +216,7 @@ pub struct FunctionView {
     search_input: Option<Entity<InputState>>,
     // Test dialog fields
     show_test: bool,
-    test_function: Option<Function>,
+    test_function: Option<RuntimeFunction>,
     test_scroll: ScrollHandle,
     test_state: TestState,
     test_inputs: HashMap<String, String>,
@@ -92,35 +233,57 @@ pub struct FunctionView {
 
 impl FunctionView {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+        cx.bind_keys([
+            KeyBinding::new("tab", FunctionFormTab, Some("HiveguiFunctionForm")),
+            KeyBinding::new(
+                "shift-tab",
+                FunctionFormTabPrev,
+                Some("HiveguiFunctionForm"),
+            ),
+        ]);
         let mut v = Self {
             store,
             items: Vec::new(),
             plugins: Vec::new(),
             capabilities: Vec::new(),
+            categories: Vec::new(),
             loading: false,
             search_text: String::new(),
-            current_page: 0,
+            current_page: 1,
             page_size: 20,
             total_count: 0,
             show_form: false,
             form_focus: cx.focus_handle(),
+            add_focus: cx.focus_handle(),
+            kind_focus: cx.focus_handle(),
+            plugin_focus: cx.focus_handle(),
+            export_focus: cx.focus_handle(),
+            capability_focus: cx.focus_handle(),
+            category_focus: cx.focus_handle(),
+            cancel_focus: cx.focus_handle(),
+            save_focus: cx.focus_handle(),
+            error_focus: cx.focus_handle(),
+            test_capability_focus: cx.focus_handle(),
             form_scroll: ScrollHandle::default(),
             editing_id: None,
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
-            form_kind: "builtin".to_string(),
+            form_kind: "placeholder".to_string(),
             form_plugin_id: None,
             form_plugin_export: None,
             form_capability: None,
+            form_category_id: None,
             plugin_exports: Vec::new(),
             kind_select_open: false,
             plugin_select_open: false,
             export_select_open: false,
             capability_select_open: false,
+            category_select_open: false,
             form_input_schema: "{}".into(),
             form_output_schema: "{}".into(),
             error_message: None,
+            form_error: None,
             confirm_delete_id: None,
             identifier_input: None,
             name_input: None,
@@ -153,9 +316,11 @@ impl FunctionView {
         cx.spawn(async move |this, cx| {
             let plugins = Plugin::list(store.pool(), None, 1_000, 0).await?;
             let capabilities = Capability::list(store.pool(), None, 1_000, 0).await?;
+            let categories = Category::list_all(store.pool()).await?;
             this.update(cx, |view, cx| {
                 view.plugins = plugins;
                 view.capabilities = capabilities;
+                view.categories = categories;
                 view.refresh_plugin_exports();
                 cx.notify();
             })
@@ -183,21 +348,39 @@ impl FunctionView {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
-        let store = self.store.read(cx).clone();
+        let pool = self.store.read(cx).pool().clone();
         let search = if self.search_text.is_empty() {
             None
         } else {
             Some(self.search_text.clone())
         };
-        let offset = self.current_page * self.page_size;
+        let page = self.current_page;
         cx.spawn(async move |this, cx| {
-            let items = Function::list(store.pool(), search.clone(), 20, offset).await?;
-            let count = Function::count(store.pool(), search).await?;
-            this.update(cx, |v, cx| {
-                v.items = items;
-                v.total_count = count;
-                v.loading = false;
-                cx.notify();
+            let result = match FunctionStore::new(pool) {
+                Ok(store) => store.list(search, page).await,
+                Err(error) => Err(error),
+            };
+            this.update(cx, |v, cx| match result {
+                Ok(page) => {
+                    v.items = page
+                        .items()
+                        .iter()
+                        .cloned()
+                        .map(FunctionRecord::into_legacy_entity)
+                        .collect();
+                    v.total_count = page.total();
+                    v.current_page = page.page();
+                    v.loading = false;
+                    cx.notify();
+                }
+                Err(error) => {
+                    v.loading = false;
+                    v.error_message = Some(format!(
+                        "加载失败: {}",
+                        FunctionUiError::from_public(&error).summary
+                    ));
+                    cx.notify();
+                }
             })
         })
         .detach();
@@ -209,18 +392,22 @@ impl FunctionView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_kind = "builtin".to_string();
+        self.form_kind = "placeholder".to_string();
         self.form_plugin_id = None;
         self.form_plugin_export = None;
         self.form_capability = None;
+        self.form_category_id = None;
         self.plugin_exports.clear();
         self.kind_select_open = false;
         self.plugin_select_open = false;
         self.export_select_open = false;
         self.capability_select_open = false;
+        self.category_select_open = false;
         self.form_input_schema = "{}".into();
         self.form_output_schema = "{}".into();
         self.error_message = None;
+        self.form_error = None;
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
 
         self.identifier_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -248,10 +435,19 @@ impl FunctionView {
                 .default_value("{}")
         }));
 
+        self.install_form_focus_lifecycle(window, cx);
         cx.notify();
     }
 
-    fn show_edit_form(&mut self, window: &mut Window, item: Function, cx: &mut Context<Self>) {
+    fn show_edit_form(
+        &mut self,
+        window: &mut Window,
+        item: RuntimeFunction,
+        cx: &mut Context<Self>,
+    ) {
+        if item.kind == "builtin" {
+            return;
+        }
         self.show_form = true;
         self.editing_id = Some(item.id);
         self.form_identifier = item.identifier.clone();
@@ -260,6 +456,7 @@ impl FunctionView {
         self.form_kind = item.kind;
         self.form_plugin_id = item.plugin_id;
         self.form_plugin_export = item.plugin_export.clone();
+        self.form_category_id = item.category_id;
         self.form_capability = item
             .required_capabilities
             .as_deref()
@@ -269,10 +466,13 @@ impl FunctionView {
         self.plugin_select_open = false;
         self.export_select_open = false;
         self.capability_select_open = false;
+        self.category_select_open = false;
         self.refresh_plugin_exports();
         self.form_input_schema = item.input_schema.clone();
         self.form_output_schema = item.output_schema.clone();
         self.error_message = None;
+        self.form_error = None;
+        self.form_scroll.set_offset(point(px(0.0), px(0.0)));
 
         self.identifier_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
@@ -300,38 +500,97 @@ impl FunctionView {
                 .default_value(&item.output_schema)
         }));
 
+        self.install_form_focus_lifecycle(window, cx);
         cx.notify();
     }
 
-    /// Keyboard handler for the function form/modal. Esc closes the form,
-    /// Enter submits when the form is visible.
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn install_form_focus_lifecycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let identifier = self
+            .identifier_input
+            .as_ref()
+            .expect("Function identifier input initialized")
+            .clone();
+        let identifier_focus = identifier.read(cx).focus_handle(cx);
+        cx.on_focus(&identifier_focus, window, |view, _, cx| {
+            view.form_scroll.scroll_to_item(1);
+            cx.notify();
+        })
+        .detach();
+        let save_focus = self.save_focus.clone();
+        cx.on_focus(&save_focus, window, |view, _, cx| {
+            view.form_scroll.scroll_to_bottom();
+            cx.notify();
+        })
+        .detach();
+        cx.on_next_frame(window, move |_view, window, cx| {
+            identifier.update(cx, |input, cx| input.focus(window, cx));
+        });
+        self.identifier_input
+            .as_ref()
+            .expect("Function identifier input initialized")
+            .update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Keyboard handler for the Function modal. The gpui-component focus trap
+    /// owns Tab/Shift-Tab; Escape closes, and Enter/Space activates Save only
+    /// when the real Save focus handle owns focus. Textarea Enter is therefore
+    /// left to the multiline editor.
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.show_form {
             return;
         }
         match event.keystroke.key.as_str() {
-            "escape" => self.hide_form(cx),
-            "enter" => {
-                self.save(cx);
+            "escape" => {
+                cx.stop_propagation();
+                self.hide_form(window, cx);
+            }
+            "enter" | " " | "space" if self.save_focus.is_focused(window) => {
+                cx.stop_propagation();
+                self.save(window, cx);
             }
             _ => {}
         }
     }
 
-    fn hide_form(&mut self, cx: &mut Context<Self>) {
+    fn focus_form_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        window.focus_next(cx);
+        if !self.form_focus.contains_focused(window, cx)
+            && let Some(identifier) = self.identifier_input.as_ref()
+        {
+            self.form_scroll.set_offset(point(px(0.0), px(0.0)));
+            identifier.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn focus_form_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        window.focus_prev(cx);
+        if !self.form_focus.contains_focused(window, cx) {
+            self.form_scroll.scroll_to_bottom();
+            self.save_focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn hide_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form_scroll.set_offset(point(px(0.0), px(0.0)));
         let hidden = false;
         self.show_form = hidden;
         self.editing_id = None;
         self.error_message = None;
+        self.form_error = None;
         self.kind_select_open = false;
         self.plugin_select_open = false;
         self.export_select_open = false;
         self.capability_select_open = false;
+        self.category_select_open = false;
+        self.add_focus.focus(window, cx);
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ref inp) = self.identifier_input {
             self.form_identifier = inp.read(cx).value().to_string();
         }
@@ -348,18 +607,7 @@ impl FunctionView {
             self.form_output_schema = inp.read(cx).value().to_string();
         }
 
-        if self.form_identifier.trim().is_empty() || self.form_name.trim().is_empty() {
-            self.error_message = Some("Identifier 和名称不能为空".into());
-            cx.notify();
-            return;
-        }
         let kind = self.form_kind.clone();
-        if kind == "custom" && (self.form_plugin_id.is_none() || self.form_plugin_export.is_none())
-        {
-            self.error_message = Some("插件函数必须选择关联插件和插件导出函数名".into());
-            cx.notify();
-            return;
-        }
         let plugin_id = (kind == "custom").then_some(self.form_plugin_id).flatten();
         let plugin_export = (kind == "custom")
             .then_some(self.form_plugin_export.clone())
@@ -370,7 +618,13 @@ impl FunctionView {
         if kind == "placeholder" {
             required_capabilities = None;
         }
-        let store = self.store.read(cx).clone();
+        let kind = match FunctionKind::try_from(kind.as_str()) {
+            Ok(kind) => kind,
+            Err(error) => {
+                self.publish_form_error("保存失败", error, window, cx);
+                return;
+            }
+        };
         let idf = self.form_identifier.clone();
         let name = self.form_name.clone();
         let desc = if self.form_description.is_empty() {
@@ -380,109 +634,125 @@ impl FunctionView {
         };
         let is = self.form_input_schema.clone();
         let os = self.form_output_schema.clone();
+        let input = match FunctionInput::for_write(
+            idf,
+            name,
+            desc,
+            kind,
+            is,
+            os,
+            plugin_id,
+            plugin_export,
+            self.form_category_id,
+            required_capabilities,
+        ) {
+            Ok(input) => input,
+            Err(error) => {
+                self.publish_form_error("保存失败", error, window, cx);
+                return;
+            }
+        };
+        let pool = self.store.read(cx).pool().clone();
 
         if let Some(eid) = self.editing_id {
-            cx.spawn(async move |this, cx| {
-                match Function::update(
-                    store.pool(),
-                    eid,
-                    idf,
-                    name,
-                    desc,
-                    kind,
-                    is,
-                    os,
-                    plugin_id,
-                    plugin_export,
-                    None,
-                    required_capabilities,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        this.update(cx, |v, cx| {
-                            v.hide_form(cx);
+            cx.spawn_in(window, async move |this, cx| {
+                let result = match FunctionStore::new(pool) {
+                    Ok(store) => store.update(eid, input).await,
+                    Err(error) => Err(error),
+                };
+                _ = cx.update(|window, cx| {
+                    _ = this.update(cx, |v, cx| match result {
+                        Ok(_) => {
+                            v.hide_form(window, cx);
                             v.load(cx);
-                        })
-                        .ok();
-                    }
-                    Err(e) => {
-                        this.update(cx, |v, cx| {
-                            v.error_message = Some(format!("更新失败: {}", e));
+                        }
+                        Err(error) => {
+                            let ui_error = FunctionUiError::from_public(&error);
+                            v.error_message = Some(format!("更新失败: {}", ui_error.summary));
+                            v.form_error = Some(ui_error);
+                            v.error_focus.focus(window, cx);
                             cx.notify();
-                        })
-                        .ok();
-                    }
-                }
+                        }
+                    });
+                });
             })
             .detach();
         } else {
-            cx.spawn(async move |this, cx| {
-                match Function::create(
-                    store.pool(),
-                    idf,
-                    name,
-                    desc,
-                    kind,
-                    is,
-                    os,
-                    plugin_id,
-                    plugin_export,
-                    None,
-                    required_capabilities,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        this.update(cx, |v, cx| {
-                            v.hide_form(cx);
+            cx.spawn_in(window, async move |this, cx| {
+                let result = match FunctionStore::new(pool) {
+                    Ok(store) => store.create(input).await,
+                    Err(error) => Err(error),
+                };
+                _ = cx.update(|window, cx| {
+                    _ = this.update(cx, |v, cx| match result {
+                        Ok(_) => {
+                            v.hide_form(window, cx);
                             v.load(cx);
-                        })
-                        .ok();
-                    }
-                    Err(e) => {
-                        this.update(cx, |v, cx| {
-                            v.error_message = Some(format!("创建失败: {}", e));
+                        }
+                        Err(error) => {
+                            let ui_error = FunctionUiError::from_public(&error);
+                            v.error_message = Some(format!("创建失败: {}", ui_error.summary));
+                            v.form_error = Some(ui_error);
+                            v.error_focus.focus(window, cx);
                             cx.notify();
-                        })
-                        .ok();
-                    }
-                }
+                        }
+                    });
+                });
             })
             .detach();
         }
     }
 
+    fn publish_form_error(
+        &mut self,
+        prefix: &str,
+        error: PublicBoundaryError,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let error = FunctionUiError::from_public(&error);
+        self.error_message = Some(format!("{prefix}: {}", error.summary));
+        self.form_error = Some(error);
+        self.error_focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
-        let store = self.store.read(cx).clone();
-        cx.spawn(
-            async move |this, cx| match Function::delete(store.pool(), id).await {
-                Ok(_) => {
-                    this.update(cx, |v, cx| {
-                        v.load(cx);
-                    })
-                    .ok();
+        let pool = self.store.read(cx).pool().clone();
+        cx.spawn(async move |this, cx| match FunctionStore::new(pool) {
+            Ok(store) => match store.delete(id).await {
+                Ok(()) => {
+                    this.update(cx, |v, cx| v.load(cx)).ok();
                 }
-                Err(e) => {
+                Err(error) => {
+                    let error = FunctionUiError::from_public(&error);
                     this.update(cx, |v, cx| {
-                        v.error_message = Some(format!("删除失败: {}", e));
+                        v.error_message = Some(format!("删除失败: {}", error.summary));
                         cx.notify();
                     })
                     .ok();
                 }
             },
-        )
+            Err(error) => {
+                let error = FunctionUiError::from_public(&error);
+                this.update(cx, |v, cx| {
+                    v.error_message = Some(format!("删除失败: {}", error.summary));
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
         .detach();
     }
 
     fn next_page(&mut self, cx: &mut Context<Self>) {
-        if (self.current_page + 1) * self.page_size < self.total_count {
+        if self.current_page * self.page_size < self.total_count {
             self.current_page += 1;
             self.load(cx);
         }
     }
     fn prev_page(&mut self, cx: &mut Context<Self>) {
-        if self.current_page > 0 {
+        if self.current_page > 1 {
             self.current_page -= 1;
             self.load(cx);
         }
@@ -524,7 +794,7 @@ impl FunctionView {
     fn show_test_dialog(
         &mut self,
         window: &mut Window,
-        function: Function,
+        function: RuntimeFunction,
         cx: &mut Context<Self>,
     ) {
         self.show_test = true;
@@ -690,21 +960,17 @@ impl FunctionView {
             serde_json::Value::Object(map)
         };
 
-        let base_dir = Store::default_db_path();
+        let plugin_root = self.store.read(cx).plugin_root().to_path_buf();
         let pool = self.store.read(cx).pool().clone();
+        let executor = crate::runtime::FunctionTestExecutor::new(plugin_root, pool);
         let mut allowed_capabilities = self.test_capabilities.iter().cloned().collect::<Vec<_>>();
         allowed_capabilities.sort();
 
         cx.spawn(async move |this, cx| {
             let start = std::time::Instant::now();
-            let result = crate::runtime::FunctionTestExecutor::execute_with_verification(
-                &function,
-                input,
-                &base_dir,
-                allowed_capabilities,
-                &pool,
-            )
-            .await;
+            let result = executor
+                .execute_with_capabilities(&function, input, allowed_capabilities)
+                .await;
 
             let elapsed_ms = start.elapsed().as_millis() as i64;
 
@@ -723,6 +989,74 @@ impl FunctionView {
             };
         })
         .detach();
+    }
+}
+
+impl FunctionUiError {
+    fn from_public(error: &PublicBoundaryError) -> Self {
+        match error.envelope() {
+            PublicErrorEnvelope::InvalidInput { field, reason } => {
+                let summary = format!("field={field} reason={reason}");
+                Self {
+                    semantic: FunctionSemanticStatus::FormError {
+                        label: summary.clone(),
+                    },
+                    summary,
+                }
+            }
+            PublicErrorEnvelope::Conflict {
+                shape,
+                field,
+                reason,
+            } => {
+                if shape == "value" {
+                    let value = error.value().unwrap_or_default();
+                    let summary = format!("field={field} reason={reason} value={value}");
+                    let selector = if field == "identifier" && !value.is_empty() {
+                        FunctionSemanticStatus::IdentifierConflict {
+                            value: value.to_string(),
+                            field: field.to_string(),
+                            reason: reason.to_string(),
+                        }
+                    } else {
+                        FunctionSemanticStatus::FormError {
+                            label: summary.clone(),
+                        }
+                    };
+                    Self {
+                        semantic: selector,
+                        summary,
+                    }
+                } else {
+                    let references = error.references().join(",");
+                    let summary = format!("field={field} reason={reason} references={references}");
+                    Self {
+                        semantic: FunctionSemanticStatus::FormError {
+                            label: summary.clone(),
+                        },
+                        summary,
+                    }
+                }
+            }
+            PublicErrorEnvelope::NotFound => Self {
+                summary: "reason=not_found".to_string(),
+                semantic: FunctionSemanticStatus::FormError {
+                    label: "reason=not_found".to_string(),
+                },
+            },
+            PublicErrorEnvelope::Forbidden => Self {
+                summary: "reason=forbidden".to_string(),
+                semantic: FunctionSemanticStatus::FormError {
+                    label: "reason=forbidden".to_string(),
+                },
+            },
+            PublicErrorEnvelope::Internal { reason } => Self {
+                summary: format!("reason={reason}"),
+                semantic: FunctionSemanticStatus::FormError {
+                    label: format!("reason={reason}"),
+                },
+            },
+        }
     }
 }
 
@@ -768,7 +1102,7 @@ impl Render for FunctionView {
                 cx.subscribe_in(input, window, |this, state, event, _window, cx| {
                     if let InputEvent::Change = event {
                         this.search_text = state.read(cx).value().to_string();
-                        this.current_page = 0;
+                        this.current_page = 1;
                         this.load(cx);
                     }
                 })
@@ -785,6 +1119,12 @@ impl Render for FunctionView {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .when(self.loading, |view| {
+                view.child(focus_marker("FUNCTION_LIST_LOADING"))
+            })
+            .when(!self.loading, |view| {
+                view.child(focus_marker("FUNCTION_LIST_LOADED"))
+            })
             .child(
                 div()
                     .flex()
@@ -807,11 +1147,28 @@ impl Render for FunctionView {
                             ActionSize::Page,
                             style,
                         )
-                        .on_mouse_down(MouseButton::Left, {
+                        .debug_selector(|| "FUNCTION_ADD".to_string())
+                        .role(Role::Button)
+                        .aria_label("添加函数")
+                        .track_focus(&self.add_focus)
+                        .tab_index(0)
+                        .on_key_down(cx.listener(
+                            |view, event: &KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | " " | "space")
+                                {
+                                    cx.stop_propagation();
+                                    view.show_add_form(window, cx);
+                                }
+                            },
+                        ))
+                        .on_click({
                             let t = cx.weak_entity();
                             move |_, window, cx| {
                                 t.update(cx, |v, cx| v.show_add_form(window, cx)).ok();
                             }
+                        })
+                        .when(self.add_focus.is_focused(window), |button| {
+                            button.child(focus_marker("FUNCTION_ADD_FOCUSED"))
                         }),
                     ),
             )
@@ -866,6 +1223,7 @@ impl Render for FunctionView {
                             .children(self.items.iter().map(|item| {
                                 let id = item.id;
                                 let ic = item.clone();
+                                let identifier = item.identifier.clone();
                                 list_row(style)
                                     .child(list_cell(Some(col_widths[0]), style).child(format!("{}", item.id)))
                                     .child(
@@ -881,7 +1239,36 @@ impl Render for FunctionView {
                                     )
                                     .child(
                                         list_cell(Some(col_widths[3]), style)
-                                            .child(function_kind_label(&item.kind)),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.0))
+                                            .child(function_kind_label(&item.kind))
+                                            .when(item.kind == "builtin", |cell| {
+                                                cell.child(
+                                                    function_semantic_element(
+                                                        FunctionSemanticStatus::BuiltinImmutable {
+                                                            id,
+                                                            identifier: identifier.clone(),
+                                                        },
+                                                    )
+                                                        .text_size(px(10.0))
+                                                        .text_color(theme.muted_foreground)
+                                                        .child("只读"),
+                                                )
+                                            })
+                                            .when(item.kind == "placeholder", |cell| {
+                                                cell.child(
+                                                    function_semantic_element(
+                                                        FunctionSemanticStatus::PlaceholderNonExecutable {
+                                                            id,
+                                                            identifier: identifier.clone(),
+                                                        },
+                                                    )
+                                                        .text_size(px(10.0))
+                                                        .text_color(theme.muted_foreground)
+                                                        .child("不可执行"),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         list_actions(Some(col_widths[4]), style)
@@ -893,6 +1280,9 @@ impl Render for FunctionView {
                                                     ActionSize::Row,
                                                     style,
                                                 )
+                                                .debug_selector(move || format!("FUNCTION_TEST-{id}"))
+                                                .role(Role::Button)
+                                                .aria_label(format!("测试 {}", ic.identifier))
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let t = cx.weak_entity();
                                                     let ic_test = ic.clone();
@@ -913,6 +1303,9 @@ impl Render for FunctionView {
                                                         ActionSize::Row,
                                                         style,
                                                     )
+                                                    .debug_selector(move || format!("FUNCTION_EDIT-{id}"))
+                                                    .role(Role::Button)
+                                                    .aria_label(format!("编辑 {}", ic.identifier))
                                                     .on_mouse_down(MouseButton::Left, {
                                                         let t = cx.weak_entity();
                                                         let ic_edit = ic.clone();
@@ -932,6 +1325,9 @@ impl Render for FunctionView {
                                                         ActionSize::Row,
                                                         style,
                                                     )
+                                                    .debug_selector(move || format!("FUNCTION_DELETE-{id}"))
+                                                    .role(Role::Button)
+                                                    .aria_label(format!("删除 {}", ic.identifier))
                                                     .on_mouse_down(MouseButton::Left, {
                                                         let t = cx.weak_entity();
                                                         move |_, _, cx| {
@@ -971,7 +1367,7 @@ impl Render for FunctionView {
                                 action_button(
                                     "prev",
                                     "上一页",
-                                    if self.current_page > 0 {
+                                    if self.current_page > 1 {
                                         ActionRole::Main
                                     } else {
                                         ActionRole::Disabled
@@ -988,14 +1384,14 @@ impl Render for FunctionView {
                             )
                             .child(div().text_size(px(13.0)).child(format!(
                                 "第 {} / {} 页",
-                                self.current_page + 1,
+                                self.current_page,
                                 tp.max(1)
                             )))
                             .child(
                                 action_button(
                                     "next",
                                     "下一页",
-                                    if (self.current_page + 1) * self.page_size < self.total_count {
+                                    if self.current_page * self.page_size < self.total_count {
                                         ActionRole::Main
                                     } else {
                                         ActionRole::Disabled
@@ -1018,6 +1414,15 @@ impl Render for FunctionView {
                 let description_input = self.description_input.clone().unwrap();
                 let input_schema_input = self.input_schema_input.clone().unwrap();
                 let output_schema_input = self.output_schema_input.clone().unwrap();
+                let identifier_focused = identifier_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window);
+                let input_schema_focused = input_schema_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window);
+                let current_identifier = identifier_input.read(cx).value().to_string();
                 let kind_label = function_kind_label(&self.form_kind);
                 let plugin_label = self
                     .form_plugin_id
@@ -1032,6 +1437,11 @@ impl Render for FunctionView {
                     .form_capability
                     .clone()
                     .unwrap_or_else(|| "无".into());
+                let category_label = self
+                    .form_category_id
+                    .and_then(|id| self.categories.iter().find(|category| category.id == id))
+                    .map(|category| category.name.clone())
+                    .unwrap_or_else(|| "无".into());
 
                 this.child(
                     div()
@@ -1045,8 +1455,8 @@ impl Render for FunctionView {
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
-                            move |_, _, cx| {
-                                t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                            move |_, window, cx| {
+                                t.update(cx, |v, cx| v.hide_form(window, cx)).ok();
                             }
                         }),
                 )
@@ -1057,8 +1467,21 @@ impl Render for FunctionView {
                         theme.foreground,
                         theme.border,
                     )
+                        .debug_selector(|| "FUNCTION_MODAL".to_string())
                         .track_focus(&self.form_focus)
-                        .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
+                        .focus_trap("function-form-focus-trap", &self.form_focus)
+                        .key_context("HiveguiFunctionForm")
+                        .on_action(cx.listener(
+                            |view, _: &FunctionFormTab, window, cx| {
+                                view.focus_form_next(window, cx);
+                            },
+                        ))
+                        .on_action(cx.listener(
+                            |view, _: &FunctionFormTabPrev, window, cx| {
+                                view.focus_form_prev(window, cx);
+                            },
+                        ))
+                        .capture_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
                             v.on_key_down(event, window, cx);
                         }))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -1066,6 +1489,7 @@ impl Render for FunctionView {
                         })
                         .child(
                             management_modal_scroll("function-form-scroll", &self.form_scroll)
+                                .debug_selector(|| "FUNCTION_FORM_SCROLL".to_string())
                                 .gap(px(12.0))
                                 .child(
                                     div()
@@ -1077,9 +1501,32 @@ impl Render for FunctionView {
                                             "添加函数"
                                         }),
                                 )
-                                .child(form_field("Identifier *", identifier_input, theme))
-                                .child(form_field("名称 *", name_input, theme))
-                                .child(form_field("描述", description_input, theme))
+                                .child(form_field(
+                                    "Identifier *",
+                                    identifier_input,
+                                    "FUNCTION_IDENTIFIER",
+                                    identifier_focused.then_some("FUNCTION_IDENTIFIER_FOCUSED"),
+                                    Some(format!(
+                                        "FUNCTION_IDENTIFIER_VALUE-{current_identifier}"
+                                    )),
+                                    theme,
+                                ))
+                                .child(form_field(
+                                    "名称 *",
+                                    name_input,
+                                    "FUNCTION_NAME",
+                                    None,
+                                    None,
+                                    theme,
+                                ))
+                                .child(form_field(
+                                    "描述",
+                                    description_input,
+                                    "FUNCTION_DESCRIPTION",
+                                    None,
+                                    None,
+                                    theme,
+                                ))
                                 .child(
                                     selector_field(
                                         "Kind *",
@@ -1101,10 +1548,31 @@ impl Render for FunctionView {
                                             }
                                         },
                                     )
+                                    .id("function-kind-selector-a11y")
+                                    .debug_selector(|| "FUNCTION_KIND_SELECTOR".to_string())
+                                    .track_focus(&self.kind_focus)
+                                    .tab_index(0)
+                                    .role(Role::Button)
+                                    .aria_label(format!("Kind {kind_label}"))
+                                    .on_key_down(cx.listener(
+                                        |view, event: &KeyDownEvent, _window, cx| {
+                                            if matches!(
+                                                event.keystroke.key.as_str(),
+                                                "enter" | " " | "space"
+                                            ) {
+                                                cx.stop_propagation();
+                                                view.kind_select_open = !view.kind_select_open;
+                                                view.plugin_select_open = false;
+                                                view.export_select_open = false;
+                                                view.capability_select_open = false;
+                                                view.category_select_open = false;
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
                                     .when(self.kind_select_open, |field| {
                                         field.child(selector_menu(theme).children(
                                             [
-                                                ("builtin", "内置函数"),
                                                 ("custom", "自定义函数"),
                                                 ("placeholder", "占位"),
                                             ]
@@ -1135,6 +1603,11 @@ impl Render for FunctionView {
                                                             }
                                                         },
                                                     )
+                                                    .debug_selector(move || {
+                                                        format!("FUNCTION_KIND_OPTION-{kind}")
+                                                    })
+                                                    .role(Role::Button)
+                                                    .aria_label(label)
                                                 }),
                                         ))
                                     }),
@@ -1148,7 +1621,7 @@ impl Render for FunctionView {
                                             theme,
                                             {
                                                 let view = cx.weak_entity();
-                                                move |_, _, cx| {
+                                                move |_, _window, cx| {
                                                     view.update(cx, |view, cx| {
                                                         view.plugin_select_open =
                                                             !view.plugin_select_open;
@@ -1161,6 +1634,14 @@ impl Render for FunctionView {
                                                 }
                                             },
                                         )
+                                        .id("function-plugin-selector-a11y")
+                                        .debug_selector(|| {
+                                            "FUNCTION_PLUGIN_SELECTOR".to_string()
+                                        })
+                                        .track_focus(&self.plugin_focus)
+                                        .tab_index(0)
+                                        .role(Role::Button)
+                                        .aria_label("关联插件")
                                         .when(self.plugin_select_open, |field| {
                                             field.child(selector_menu(theme).children(
                                                 self.plugins.iter().map(|plugin| {
@@ -1210,7 +1691,7 @@ impl Render for FunctionView {
                                             theme,
                                             {
                                                 let view = cx.weak_entity();
-                                                move |_, _, cx| {
+                                                move |_, _window, cx| {
                                                     view.update(cx, |view, cx| {
                                                         view.export_select_open =
                                                             !view.export_select_open;
@@ -1223,6 +1704,14 @@ impl Render for FunctionView {
                                                 }
                                             },
                                         )
+                                        .id("function-export-selector-a11y")
+                                        .debug_selector(|| {
+                                            "FUNCTION_EXPORT_SELECTOR".to_string()
+                                        })
+                                        .track_focus(&self.export_focus)
+                                        .tab_index(0)
+                                        .role(Role::Button)
+                                        .aria_label("插件导出函数名")
                                         .when(self.export_select_open, |field| {
                                             field.child(selector_menu(theme).children(
                                                 self.plugin_exports.iter().map(|name| {
@@ -1273,6 +1762,14 @@ impl Render for FunctionView {
                                             }
                                         },
                                     )
+                                    .id("function-capability-selector-a11y")
+                                    .debug_selector(|| {
+                                        "FUNCTION_CAPABILITY_SELECTOR".to_string()
+                                    })
+                                    .track_focus(&self.capability_focus)
+                                    .tab_index(0)
+                                    .role(Role::Button)
+                                    .aria_label("所属 Capability")
                                     .when(self.capability_select_open, |field| {
                                         field.child(
                                             selector_menu(theme)
@@ -1326,21 +1823,142 @@ impl Render for FunctionView {
                                         )
                                     }))
                                 })
-                                .child(form_field_multiline("Input Schema (JSON)", input_schema_input, theme))
-                                .child(form_field_multiline("Output Schema (JSON)", output_schema_input, theme))
+                                .child(
+                                    selector_field(
+                                        "所属 Category",
+                                        category_label,
+                                        "category-selector",
+                                        theme,
+                                        {
+                                            let view = cx.weak_entity();
+                                            move |_, _, cx| {
+                                                view.update(cx, |view, cx| {
+                                                    view.category_select_open =
+                                                        !view.category_select_open;
+                                                    view.kind_select_open = false;
+                                                    view.plugin_select_open = false;
+                                                    view.export_select_open = false;
+                                                    view.capability_select_open = false;
+                                                    cx.notify();
+                                                })
+                                                .ok();
+                                            }
+                                        },
+                                    )
+                                    .id("function-category-selector-a11y")
+                                    .debug_selector(|| {
+                                        "FUNCTION_CATEGORY_SELECTOR".to_string()
+                                    })
+                                    .track_focus(&self.category_focus)
+                                    .tab_index(0)
+                                    .role(Role::Button)
+                                    .aria_label("所属 Category")
+                                    .when(self.category_select_open, |field| {
+                                        field.child(
+                                            selector_menu(theme)
+                                                .child(selector_option(
+                                                    "category-option-none",
+                                                    "无",
+                                                    self.form_category_id.is_none(),
+                                                    theme,
+                                                    {
+                                                        let view = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            view.update(cx, |view, cx| {
+                                                                view.form_category_id = None;
+                                                                view.category_select_open = false;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    },
+                                                ))
+                                                .children(self.categories.iter().map(|category| {
+                                                    let category_id = category.id;
+                                                    selector_option(
+                                                        format!(
+                                                            "category-option-{category_id}"
+                                                        ),
+                                                        category.name.clone(),
+                                                        self.form_category_id
+                                                            == Some(category_id),
+                                                        theme,
+                                                        {
+                                                            let view = cx.weak_entity();
+                                                            move |_, _, cx| {
+                                                                view.update(cx, |view, cx| {
+                                                                    view.form_category_id =
+                                                                        Some(category_id);
+                                                                    view.category_select_open =
+                                                                        false;
+                                                                    cx.notify();
+                                                                })
+                                                                .ok();
+                                                            }
+                                                        },
+                                                    )
+                                                })),
+                                        )
+                                    }),
+                                )
+                                .when(self.form_kind == "placeholder", |form| {
+                                    form.child(
+                                        function_semantic_element(
+                                            FunctionSemanticStatus::PlaceholderSchemaOnly,
+                                        )
+                                            .p(px(8.0))
+                                            .rounded(px(4.0))
+                                            .bg(theme.muted)
+                                            .text_size(px(12.0))
+                                            .text_color(theme.muted_foreground)
+                                            .child("占位函数仅保存 Schema，不可执行"),
+                                    )
+                                })
+                                .child(form_field_multiline(
+                                    "Input Schema (JSON)",
+                                    input_schema_input,
+                                    "FUNCTION_INPUT_SCHEMA",
+                                    input_schema_focused
+                                        .then_some("FUNCTION_INPUT_SCHEMA_FOCUSED"),
+                                    theme,
+                                ))
+                                .child(form_field_multiline(
+                                    "Output Schema (JSON)",
+                                    output_schema_input,
+                                    "FUNCTION_OUTPUT_SCHEMA",
+                                    None,
+                                    theme,
+                                ))
                                 .when_some(self.error_message.as_ref(), |this, err| {
+                                    let semantic = self
+                                        .form_error
+                                        .as_ref()
+                                        .map(|error| error.semantic.clone())
+                                        .unwrap_or_else(|| FunctionSemanticStatus::FormError {
+                                            label: "reason=validation".to_string(),
+                                        });
                                     this.child(
-                                        div()
+                                        function_semantic_element(semantic)
+                                            .track_focus(&self.error_focus)
+                                            .tab_index(0)
                                             .p(px(8.0))
                                             .bg(theme.warning.opacity(0.15))
                                             .rounded(px(4.0))
                                             .text_size(px(12.0))
                                             .text_color(theme.warning)
-                                            .child(err.clone()),
+                                            .child(err.clone())
+                                            .when(self.error_focus.is_focused(window), |error| {
+                                                error.child(focus_marker(
+                                                    "FUNCTION_FORM_ERROR_FOCUSED",
+                                                ))
+                                            }),
                                     )
                                 })
                                 .child(
                                     div()
+                                        .debug_selector(|| {
+                                            "FUNCTION_FORM_ACTIONS".to_string()
+                                        })
                                         .flex()
                                         .justify_end()
                                         .gap(px(8.0))
@@ -1352,10 +1970,31 @@ impl Render for FunctionView {
                                                 ActionSize::Dialog,
                                                 style,
                                             )
+                                            .debug_selector(|| {
+                                                "FUNCTION_FORM_CANCEL".to_string()
+                                            })
+                                            .track_focus(&self.cancel_focus)
+                                            .tab_index(0)
+                                            .role(Role::Button)
+                                            .aria_label("取消")
+                                            .on_key_down(cx.listener(
+                                                |view, event: &KeyDownEvent, window, cx| {
+                                                    if matches!(
+                                                        event.keystroke.key.as_str(),
+                                                        "enter" | " " | "space"
+                                                    ) {
+                                                        cx.stop_propagation();
+                                                        view.hide_form(window, cx);
+                                                    }
+                                                },
+                                            ))
                                             .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
-                                                move |_, _, cx| {
-                                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                                                move |_, window, cx| {
+                                                    t.update(cx, |v, cx| {
+                                                        v.hide_form(window, cx)
+                                                    })
+                                                    .ok();
                                                 }
                                             }),
                                         )
@@ -1367,11 +2006,23 @@ impl Render for FunctionView {
                                                 ActionSize::Dialog,
                                                 style,
                                             )
+                                            .debug_selector(|| {
+                                                "FUNCTION_FORM_SAVE".to_string()
+                                            })
+                                            .track_focus(&self.save_focus)
+                                            .tab_index(0)
+                                            .role(Role::Button)
+                                            .aria_label("保存")
                                             .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
-                                                move |_, _, cx| {
-                                                    t.update(cx, |v, cx| v.save(cx)).ok();
+                                                move |_, window, cx| {
+                                                    t.update(cx, |v, cx| v.save(window, cx)).ok();
                                                 }
+                                            })
+                                            .when(self.save_focus.is_focused(window), |button| {
+                                                button.child(focus_marker(
+                                                    "FUNCTION_FORM_SAVE_FOCUSED",
+                                                ))
                                             }),
                                         ),
                                 ),
@@ -1539,6 +2190,7 @@ impl Render for FunctionView {
                         theme.foreground,
                         theme.border,
                     )
+                    .debug_selector(|| "FUNCTION_TEST_DIALOG".to_string())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
@@ -1623,9 +2275,11 @@ impl Render for FunctionView {
 
                                             let key_clone = key.clone();
                                             let key_hash = key.chars().map(|c| c as u64).sum::<u64>();
+                                            let input_selector = format!("FUNCTION_TEST_INPUT-{key}");
                                             field_div.child(
                                                 div()
                                                     .id(("test-enum", key_hash))
+                                                    .debug_selector(move || input_selector.clone())
                                                     .h(px(32.0))
                                                     .flex()
                                                     .items_center()
@@ -1656,14 +2310,20 @@ impl Render for FunctionView {
                                         } else {
                                             // Text input - use pre-created InputState
                                             if let Some((_, input_state)) = self.test_input_states.iter().find(|(k, _)| k == &key) {
+                                                let input_selector = format!("FUNCTION_TEST_INPUT-{key}");
                                                 field_div.child(
-                                                    Input::new(input_state)
-                                                        .w_full()
-                                                        .h(px(32.0))
-                                                        .px(px(8.0))
-                                                        .border_1()
-                                                        .border_color(theme.border)
-                                                        .rounded(px(4.0))
+                                                    div()
+                                                        .debug_selector(move || input_selector.clone())
+                                                        .child(
+                                                            Input::new(input_state)
+                                                                .aria_label(format!("Function test input {key}"))
+                                                                .w_full()
+                                                                .h(px(32.0))
+                                                                .px(px(8.0))
+                                                                .border_1()
+                                                                .border_color(theme.border)
+                                                                .rounded(px(4.0)),
+                                                        )
                                                 )
                                             } else {
                                                 field_div
@@ -1696,6 +2356,14 @@ impl Render for FunctionView {
                                                 }
                                             },
                                         )
+                                        .id("function-test-capability-selector-a11y")
+                                        .debug_selector(|| {
+                                            "FUNCTION_TEST_CAPABILITY_SELECTOR".to_string()
+                                        })
+                                        .track_focus(&self.test_capability_focus)
+                                        .tab_index(0)
+                                        .role(Role::Button)
+                                        .aria_label("允许的 Capabilities")
                                         .when(self.test_capability_select_open, |field| {
                                             field.child(
                                                 div()
@@ -1796,9 +2464,14 @@ impl Render for FunctionView {
                             )
                             .child(
                                 match &self.test_state {
-                                    TestState::Idle => div().flex().flex_col().gap(px(8.0)),
+                                    TestState::Idle => div()
+                                        .id("function-test-idle")
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(8.0)),
                                     TestState::Running => {
                                         div()
+                                            .id("function-test-running")
                                             .flex()
                                             .flex_col()
                                             .gap(px(8.0))
@@ -1816,7 +2489,9 @@ impl Render for FunctionView {
                                             )
                                     }
                                     TestState::Success { output, elapsed_ms } => {
-                                        div()
+                                        function_semantic_element(
+                                            FunctionSemanticStatus::TestSuccess,
+                                        )
                                             .flex()
                                             .flex_col()
                                             .gap(px(8.0))
@@ -1847,7 +2522,7 @@ impl Render for FunctionView {
                                             )
                                     }
                                     TestState::Error { message } => {
-                                        div()
+                                        function_semantic_element(FunctionSemanticStatus::TestError)
                                             .flex()
                                             .flex_col()
                                             .gap(px(8.0))
@@ -1938,6 +2613,9 @@ impl Render for FunctionView {
                                             ActionSize::Dialog,
                                             style,
                                         )
+                                        .debug_selector(|| "FUNCTION_TEST_RUN".to_string())
+                                        .role(Role::Button)
+                                        .aria_label("执行测试")
                                         .on_mouse_down(MouseButton::Left, {
                                             let t = cx.weak_entity();
                                             move |_, _, cx| {
@@ -1964,8 +2642,12 @@ fn function_kind_label(kind: &str) -> &'static str {
 fn form_field(
     label: &'static str,
     input: Entity<InputState>,
+    selector: &'static str,
+    focused_selector: Option<&'static str>,
+    value_selector: Option<String>,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
+    let debug_selector = selector.to_string();
     div()
         .flex()
         .flex_col()
@@ -1977,21 +2659,35 @@ fn form_field(
                 .child(label),
         )
         .child(
-            Input::new(&input)
-                .w_full()
-                .h(px(32.0))
-                .px(px(8.0))
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(4.0)),
+            div()
+                .debug_selector(move || debug_selector.clone())
+                .child(
+                    Input::new(&input)
+                        .aria_label(label)
+                        .w_full()
+                        .h(px(32.0))
+                        .px(px(8.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(4.0)),
+                )
+                .when_some(focused_selector, |field, selector| {
+                    field.child(focus_marker(selector))
+                })
+                .when_some(value_selector, |field, selector| {
+                    field.child(focus_marker(selector))
+                }),
         )
 }
 
 fn form_field_multiline(
     label: &'static str,
     input: Entity<TextareaState>,
+    selector: &'static str,
+    focused_selector: Option<&'static str>,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
+    let debug_selector = selector.to_string();
     div()
         .flex()
         .flex_col()
@@ -2003,15 +2699,34 @@ fn form_field_multiline(
                 .child(label),
         )
         .child(
-            Textarea::new(&input)
-                .w_full()
-                .h(px(120.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(4.0)),
+            div()
+                .debug_selector(move || debug_selector.clone())
+                .child(
+                    Textarea::new(&input)
+                        .aria_label(label)
+                        .w_full()
+                        .h(px(120.0))
+                        .px(px(8.0))
+                        .py(px(8.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(4.0)),
+                )
+                .when_some(focused_selector, |field, selector| {
+                    field.child(focus_marker(selector))
+                }),
         )
+}
+
+fn focus_marker(selector: impl Into<SharedString>) -> Stateful<Div> {
+    let selector = selector.into();
+    let debug_selector = selector.clone();
+    div()
+        .id(selector)
+        .debug_selector(move || debug_selector.to_string())
+        .w(px(0.0))
+        .h(px(0.0))
+        .overflow_hidden()
 }
 
 fn selector_field(

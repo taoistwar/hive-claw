@@ -16,164 +16,14 @@ use std::{
 };
 
 use async_trait::async_trait;
+use hiveweb::db::connection::{
+    MysqlConnectFailureReason, MysqlPoolTransport, MysqlTlsConfigErrorReason, MysqlTransportError,
+    StrictMysqlConnectOptions, create_pool, create_pool_with_transport,
+};
 use sqlx::{
-    ConnectOptions, MySqlPool,
+    MySqlPool,
     mysql::{MySqlConnectOptions, MySqlSslMode},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MysqlConnectFailureReason {
-    TlsUnavailable,
-    TlsHandshakeFailed,
-    CertificateChainRejected,
-    CertificateHostnameMismatch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MysqlTlsConfigErrorReason {
-    TlsModeNotVerifyIdentity,
-    MissingCa,
-    InvalidCa,
-    MissingHostname,
-    HostnameMismatch,
-}
-
-#[derive(Debug)]
-struct MysqlTransportError {
-    reason: MysqlConnectFailureReason,
-}
-
-impl MysqlTransportError {
-    fn new(reason: MysqlConnectFailureReason, _: impl std::fmt::Display) -> Self {
-        Self { reason }
-    }
-
-    fn reason(&self) -> MysqlConnectFailureReason {
-        self.reason
-    }
-}
-
-impl std::fmt::Display for MysqlTransportError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "mysql transport failed: {:?}", self.reason)
-    }
-}
-
-#[derive(Debug)]
-struct MysqlTlsConfigError {
-    reason: MysqlTlsConfigErrorReason,
-}
-
-impl MysqlTlsConfigError {
-    fn reason(&self) -> MysqlTlsConfigErrorReason {
-        self.reason
-    }
-}
-
-impl std::fmt::Display for MysqlTlsConfigError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "mysql tls config rejected: {:?}", self.reason)
-    }
-}
-
-impl std::error::Error for MysqlTlsConfigError {}
-
-#[derive(Debug)]
-struct StrictMysqlConnectOptions {
-    options: MySqlConnectOptions,
-}
-
-impl StrictMysqlConnectOptions {
-    fn try_from_database_url(
-        database_url: &str,
-        ca_path: &Path,
-        expected_hostname: &str,
-    ) -> Result<Self, MysqlTlsConfigError> {
-        let options =
-            database_url
-                .parse::<MySqlConnectOptions>()
-                .map_err(|_| MysqlTlsConfigError {
-                    reason: MysqlTlsConfigErrorReason::InvalidCa,
-                })?;
-        if expected_hostname.is_empty() {
-            return Err(MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::MissingHostname,
-            });
-        }
-        if options.get_host() != expected_hostname {
-            return Err(MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::HostnameMismatch,
-            });
-        }
-        if !matches!(options.get_ssl_mode(), MySqlSslMode::VerifyIdentity) {
-            return Err(MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::TlsModeNotVerifyIdentity,
-            });
-        }
-        if ca_path.to_string_lossy().is_empty() {
-            return Err(MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::MissingCa,
-            });
-        }
-        if !ca_path.is_file() {
-            return Err(MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::InvalidCa,
-            });
-        }
-        let cert_text = fs::read_to_string(ca_path).map_err(|_| MysqlTlsConfigError {
-            reason: MysqlTlsConfigErrorReason::InvalidCa,
-        })?;
-        if !cert_text.contains("BEGIN CERTIFICATE") || !cert_text.contains("END CERTIFICATE") {
-            return Err(MysqlTlsConfigError {
-                reason: MysqlTlsConfigErrorReason::InvalidCa,
-            });
-        }
-
-        let mut strict_url = database_url.to_owned();
-        if !strict_url.contains("ssl-ca=") {
-            strict_url.push(if strict_url.contains('?') { '&' } else { '?' });
-            strict_url.push_str("ssl-ca=");
-            strict_url.push_str(&ca_path.to_string_lossy());
-        }
-        let options =
-            strict_url
-                .parse::<MySqlConnectOptions>()
-                .map_err(|_| MysqlTlsConfigError {
-                    reason: MysqlTlsConfigErrorReason::InvalidCa,
-                })?;
-
-        Ok(Self { options })
-    }
-
-    fn as_ref(&self) -> &MySqlConnectOptions {
-        &self.options
-    }
-
-    fn allows_plaintext_fallback(&self) -> bool {
-        !matches!(self.options.get_ssl_mode(), MySqlSslMode::VerifyIdentity)
-    }
-}
-
-#[async_trait]
-trait MysqlPoolTransport {
-    async fn connect(
-        &self,
-        options: &MySqlConnectOptions,
-    ) -> Result<MySqlPool, MysqlTransportError>;
-}
-
-fn create_pool(
-    _options: StrictMysqlConnectOptions,
-) -> impl std::future::Future<Output = anyhow::Result<MySqlPool>> {
-    std::future::pending()
-}
-
-async fn create_pool_with_transport(
-    strict: StrictMysqlConnectOptions,
-    transport: &impl MysqlPoolTransport,
-) -> Result<MySqlPool, MysqlTransportError> {
-    transport.connect(strict.as_ref()).await
-}
 
 const SENSITIVE_SENTINEL: &str = "redaction-sentinel-4f16";
 const DATABASE_HOST: &str = "mysql.production.test";
@@ -246,13 +96,7 @@ fn strict_options_require_ca_hostname_and_verify_identity() {
     ));
     assert_eq!(options.get_host(), DATABASE_HOST);
     assert!(!strict.allows_plaintext_fallback());
-
-    let serialized = options.to_url_lossy();
-    assert!(
-        serialized.query_pairs().any(|(key, value)| {
-            key == "ssl-ca" && value == ca.path().to_string_lossy().as_ref()
-        })
-    );
+    assert_eq!(strict.ca_path(), ca.path());
 
     // Compile-time boundary check only: constructing the future performs no
     // network I/O, but proves create_pool cannot receive an unchecked URL.

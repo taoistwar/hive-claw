@@ -3,11 +3,20 @@
 //! Loads and executes WASM plugins from local filesystem using extism runtime.
 
 use extism::{
-    CurrentPlugin, Error as ExtismError, Manifest, PluginBuilder, UserData, Val, ValType, Wasm,
+    CurrentPlugin, Error as ExtismError, Manifest, Plugin as ExtismPlugin, PluginBuilder, UserData,
+    Val, ValType, Wasm,
 };
 use hive_runtime_core::wasm::HOST_CALL_IMPORT;
-use std::collections::{HashMap, VecDeque};
-use std::{path::Path, time::Duration};
+use hive_runtime_core::{
+    abi::HIVE_EXTISM_ABI_V1,
+    wasm::{ABI_VERSION_EXPORT, WasmModuleShape, WasmValidationError, validate_wasm_shape},
+};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    path::Path,
+    sync::{LazyLock, Mutex, MutexGuard},
+    time::Duration,
+};
 use thiserror::Error;
 
 use crate::plugin::plugin_store::PluginStore;
@@ -313,10 +322,10 @@ impl InstanceCacheKey {
 /// the least-recently-used instance is evicted when the global cap is
 /// reached; on [`Self::get`] a hit is promoted to most-recently-used.
 ///
-/// This container is value-type agnostic: the production executor layers
-/// it over `extism` instances (which are `!Send`) inside a dedicated
-/// `spawn_blocking` worker, keeping the container itself testable without
-/// the Extism runtime.
+/// This container is value-type agnostic. The production executor stores
+/// Extism 1.30 instances here (that release is `Send + Sync`) and checks each
+/// one out before moving it into a `spawn_blocking` call, keeping the
+/// container itself testable without the Extism runtime.
 #[derive(Debug)]
 pub struct BoundedInstancePool<V> {
     capacity: usize,
@@ -419,6 +428,272 @@ impl<V> Default for BoundedInstancePool<V> {
     }
 }
 
+/// Exact store-local ownership of a managed artifact execution.
+///
+/// The process-wide instance pool is intentionally shared by freshly-created
+/// [`PluginExecutor`] values. A persisted `s3_key` alone is not a sufficient
+/// owner id for legacy numeric keys because two independent stores can contain
+/// the same relative key, so the canonical store root and Plugin id are part
+/// of the runtime-reference identity. They are deliberately *not* part of the
+/// nine-component instance cache key: identical verified bytes and execution
+/// policy remain reusable across stores, while ownership is reassigned to the
+/// current checkout before the instance becomes idle again.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ManagedArtifactRef {
+    scope: String,
+    plugin_id: i64,
+    artifact_key: String,
+}
+
+impl ManagedArtifactRef {
+    fn new(plugin_root: &Path, plugin_id: i64, artifact_key: &str) -> Self {
+        Self {
+            scope: normalized_plugin_scope(plugin_root),
+            plugin_id,
+            artifact_key: artifact_key.to_string(),
+        }
+    }
+}
+
+/// One reusable Extism instance plus the host context shared with its
+/// registered `host_call` function. The context is refreshed on every
+/// checkout so a pooled instance never retains a stale Tokio runtime handle
+/// or Capability policy.
+struct PooledPlugin {
+    plugin: ExtismPlugin,
+    host_context: UserData<DesktopHostContext>,
+    owner: Option<ManagedArtifactRef>,
+}
+
+/// Process-wide production pool state.
+///
+/// Extism 1.30's `Plugin` is `Send + Sync`, so the bounded idle LRU can be
+/// shared directly instead of being stranded in a short-lived executor. No
+/// plugin call runs while this mutex is held: checkout removes the instance,
+/// and only a successful, healthy call returns it.
+struct ProductionPool {
+    idle: BoundedInstancePool<PooledPlugin>,
+    active: HashMap<ManagedArtifactRef, usize>,
+    artifact_generation: HashMap<ManagedArtifactRef, u64>,
+    key_generation: HashMap<InstanceCacheKey, u64>,
+}
+
+impl ProductionPool {
+    fn new() -> Self {
+        Self {
+            idle: BoundedInstancePool::new(POOL_CAPACITY),
+            active: HashMap::new(),
+            artifact_generation: HashMap::new(),
+            key_generation: HashMap::new(),
+        }
+    }
+
+    fn active_increment(&mut self, owner: Option<&ManagedArtifactRef>) {
+        if let Some(owner) = owner {
+            *self.active.entry(owner.clone()).or_default() += 1;
+        }
+    }
+
+    fn active_decrement(&mut self, owner: Option<&ManagedArtifactRef>) {
+        let Some(owner) = owner else {
+            return;
+        };
+        let Some(count) = self.active.get_mut(owner) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.active.remove(owner);
+        }
+    }
+
+    fn artifact_generation(&self, owner: Option<&ManagedArtifactRef>) -> u64 {
+        owner
+            .and_then(|owner| self.artifact_generation.get(owner).copied())
+            .unwrap_or_default()
+    }
+
+    fn key_generation(&self, key: &InstanceCacheKey) -> u64 {
+        self.key_generation.get(key).copied().unwrap_or_default()
+    }
+}
+
+static PRODUCTION_POOL: LazyLock<Mutex<ProductionPool>> =
+    LazyLock::new(|| Mutex::new(ProductionPool::new()));
+
+fn production_pool() -> MutexGuard<'static, ProductionPool> {
+    PRODUCTION_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Active checkout guard. Dropping it on any build/call/trap/output error
+/// releases the active reference without returning the instance to the idle
+/// pool. Successful completion explicitly calls [`Self::finish_healthy`].
+struct ActiveInstance {
+    key: InstanceCacheKey,
+    owner: Option<ManagedArtifactRef>,
+    artifact_generation: u64,
+    key_generation: u64,
+    pooled: Option<PooledPlugin>,
+    released: bool,
+}
+
+impl ActiveInstance {
+    /// Remove an idle value and record the active reference before the caller
+    /// enters `spawn_blocking`.
+    fn checkout(key: InstanceCacheKey, owner: Option<ManagedArtifactRef>) -> Self {
+        let mut pool = production_pool();
+        let pooled = pool.idle.remove(&key);
+        let artifact_generation = pool.artifact_generation(owner.as_ref());
+        let key_generation = pool.key_generation(&key);
+        pool.active_increment(owner.as_ref());
+        drop(pool);
+
+        Self {
+            key,
+            owner,
+            artifact_generation,
+            key_generation,
+            pooled,
+            released: false,
+        }
+    }
+
+    fn take_pooled(&mut self) -> Option<PooledPlugin> {
+        self.pooled.take()
+    }
+
+    /// Return a healthy instance only if neither artifact invalidation nor a
+    /// timeout/key invalidation happened while the call was in flight.
+    fn finish_healthy(mut self, mut pooled: PooledPlugin) {
+        let mut pool = production_pool();
+        pool.active_decrement(self.owner.as_ref());
+        let generation_is_current = pool.artifact_generation(self.owner.as_ref())
+            == self.artifact_generation
+            && pool.key_generation(&self.key) == self.key_generation;
+        if generation_is_current {
+            pooled.owner = self.owner.clone();
+            let _ = pool.idle.insert(self.key.clone(), pooled);
+        }
+        self.released = true;
+    }
+}
+
+impl Drop for ActiveInstance {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let mut pool = production_pool();
+        pool.active_decrement(self.owner.as_ref());
+    }
+}
+
+fn normalized_plugin_scope(plugin_root: &Path) -> String {
+    let absolute = std::fs::canonicalize(plugin_root).unwrap_or_else(|_| {
+        if plugin_root.is_absolute() {
+            plugin_root.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(plugin_root)
+        }
+    });
+    absolute.to_string_lossy().into_owned()
+}
+
+fn invalidate_cache_key(key: &InstanceCacheKey) {
+    let mut pool = production_pool();
+    let generation = pool.key_generation.entry(key.clone()).or_default();
+    *generation = generation.saturating_add(1);
+    let _ = pool.idle.remove(key);
+}
+
+fn invalidate_matching_artifacts(matches: impl Fn(&ManagedArtifactRef) -> bool) -> bool {
+    let mut pool = production_pool();
+    let mut owners = pool
+        .artifact_generation
+        .keys()
+        .chain(pool.active.keys())
+        .filter(|owner| matches(owner))
+        .cloned()
+        .collect::<HashSet<_>>();
+    owners.extend(
+        pool.idle
+            .slots
+            .values()
+            .filter_map(|pooled| pooled.owner.as_ref())
+            .filter(|owner| matches(owner))
+            .cloned(),
+    );
+
+    for owner in &owners {
+        let generation = pool.artifact_generation.entry(owner.clone()).or_default();
+        *generation = generation.saturating_add(1);
+    }
+    let idle_keys = pool
+        .idle
+        .slots
+        .iter()
+        .filter_map(|(key, pooled)| {
+            pooled
+                .owner
+                .as_ref()
+                .filter(|owner| matches(owner))
+                .map(|_| key.clone())
+        })
+        .collect::<Vec<_>>();
+    for key in idle_keys {
+        let _ = pool.idle.remove(&key);
+    }
+
+    pool.active
+        .iter()
+        .any(|(owner, count)| *count > 0 && matches(owner))
+}
+
+/// Evict idle instances for one exact store artifact and invalidate all
+/// in-flight generations so a pre-delete/config-change call cannot reinsert
+/// itself afterward. Returns `true` while an active call still references the
+/// artifact.
+pub(crate) fn invalidate_artifact_instances(
+    plugin_root: &Path,
+    plugin_id: i64,
+    artifact_key: &str,
+) -> bool {
+    let owner = ManagedArtifactRef::new(plugin_root, plugin_id, artifact_key);
+    invalidate_matching_artifacts(|candidate| candidate == &owner)
+}
+
+/// Same invalidation boundary for entity-store updates that know the Plugin
+/// id and persisted key but do not own a PluginStore/root path. It is
+/// intentionally conservative and evicts matching references in every
+/// process-local store scope.
+pub(crate) fn invalidate_artifact_instances_any_scope(plugin_id: i64, artifact_key: &str) -> bool {
+    invalidate_matching_artifacts(|owner| {
+        owner.plugin_id == plugin_id && owner.artifact_key == artifact_key
+    })
+}
+
+/// Whether an exact managed artifact currently has an active call or owns an
+/// idle pooled instance. GC uses this after invalidation to wait for active
+/// checkouts to drain before unlinking the artifact.
+pub(crate) fn artifact_has_runtime_references(
+    plugin_root: &Path,
+    plugin_id: i64,
+    artifact_key: &str,
+) -> bool {
+    let owner = ManagedArtifactRef::new(plugin_root, plugin_id, artifact_key);
+    let pool = production_pool();
+    pool.active.get(&owner).copied().unwrap_or_default() > 0
+        || pool
+            .idle
+            .slots
+            .values()
+            .any(|pooled| pooled.owner.as_ref() == Some(&owner))
+}
+
 #[derive(Clone)]
 struct DesktopHostContext {
     runtime: tokio::runtime::Handle,
@@ -455,6 +730,7 @@ pub struct PluginExecutor {
     store: PluginStore,
     limits: PluginLimits,
     pool_capacity: usize,
+    artifact_scope: Option<String>,
 }
 
 impl PluginExecutor {
@@ -465,6 +741,18 @@ impl PluginExecutor {
             store,
             limits: PluginLimits::default_limits(),
             pool_capacity: POOL_CAPACITY,
+            artifact_scope: None,
+        }
+    }
+
+    /// Construct a managed executor whose pooled active/idle references are
+    /// attributable to an exact plugin artifact root for protected GC.
+    pub(crate) fn new_scoped(store: PluginStore, plugin_root: &Path) -> Self {
+        Self {
+            store,
+            limits: PluginLimits::default_limits(),
+            pool_capacity: POOL_CAPACITY,
+            artifact_scope: Some(normalized_plugin_scope(plugin_root)),
         }
     }
 
@@ -474,6 +762,7 @@ impl PluginExecutor {
             store,
             limits,
             pool_capacity: POOL_CAPACITY,
+            artifact_scope: None,
         }
     }
 
@@ -491,6 +780,110 @@ impl PluginExecutor {
     /// Underlying plugin store.
     pub fn store(&self) -> &PluginStore {
         &self.store
+    }
+
+    /// Execute a plugin export by reading the artifact through the
+    /// controlled no-follow store handle and re-verifying its SHA-256
+    /// before any byte reaches Extism (T079 ①).
+    ///
+    /// Unlike the path-based [`PluginExecutor::execute_with_verified_limits`],
+    /// this opens the artifact exactly once via
+    /// [`PluginStore::read_verified_artifact`] (`O_NOFOLLOW` + `fstat`,
+    /// link-count-1 regular file) and re-derives the digest from those exact
+    /// bytes. There is no check-then-reopen window between verification and
+    /// execution: the verified bytes are the bytes handed to `Wasm::data`.
+    ///
+    /// # Arguments
+    /// * `identifier` / `version` / `plugin_id` — the artifact identity
+    ///   resolved through the store root (never a raw `s3_key` path).
+    /// * `expected_sha256` — the trusted lower-case hex digest recorded at
+    ///   import time.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_verified(
+        &self,
+        identifier: &str,
+        version: &str,
+        plugin_id: i64,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+        expected_sha256: &str,
+        memory_mb: u64,
+        output_bytes: u64,
+    ) -> Result<String, String> {
+        let wasm_bytes = self
+            .store
+            .read_verified_artifact(identifier, version, plugin_id)
+            .map_err(|e| format!("读取插件制品失败（{}），请重新上传关联插件", e.reason()))?;
+        let actual = sha256_hex(&wasm_bytes);
+        if !actual.eq_ignore_ascii_case(expected_sha256) {
+            return Err(format!(
+                "WASM 制品校验失败：期望 SHA-256 {expected_sha256}，实际 {actual}"
+            ));
+        }
+        Self::execute_bytes(
+            wasm_bytes,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+            memory_mb,
+            output_bytes,
+        )
+        .await
+    }
+
+    /// Execute a persisted opaque artifact key through the no-follow store
+    /// boundary and associate its process-wide pool checkout with an exact
+    /// `(store root, Plugin id, s3_key)` runtime reference.
+    ///
+    /// This is the production T079 path for operation-UUID keys. It keeps the
+    /// legacy identifier/version/id API above available for older callers,
+    /// while avoiding any attempt to reconstruct a key from the database id.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_verified_key(
+        &self,
+        plugin_id: i64,
+        artifact_key: &str,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+        expected_sha256: &str,
+        memory_mb: u64,
+        output_bytes: u64,
+    ) -> Result<String, String> {
+        let wasm_bytes = self
+            .store
+            .read_verified_artifact_key(artifact_key)
+            .map_err(|e| format!("读取插件制品失败（{}），请重新上传关联插件", e.reason()))?;
+        let actual = sha256_hex(&wasm_bytes);
+        if !actual.eq_ignore_ascii_case(expected_sha256) {
+            return Err(format!(
+                "WASM 制品校验失败：期望 SHA-256 {expected_sha256}，实际 {actual}"
+            ));
+        }
+        let scope = self
+            .artifact_scope
+            .clone()
+            .ok_or_else(|| "插件执行器缺少制品作用域，无法建立受保护的运行时引用".to_string())?;
+        let owner = ManagedArtifactRef {
+            scope,
+            plugin_id,
+            artifact_key: artifact_key.to_string(),
+        };
+        Self::execute_bytes_with_owner(
+            wasm_bytes,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+            memory_mb,
+            output_bytes,
+            Some(owner),
+        )
+        .await
     }
 
     /// Execute a plugin export function
@@ -650,6 +1043,53 @@ impl PluginExecutor {
         memory_mb: u64,
         output_bytes: u64,
     ) -> Result<String, String> {
+        Self::execute_bytes_with_owner(
+            wasm_bytes,
+            export_name,
+            input_json,
+            timeout,
+            allowed_capabilities,
+            memory_mb,
+            output_bytes,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_bytes_with_owner(
+        wasm_bytes: Vec<u8>,
+        export_name: &str,
+        input_json: &str,
+        timeout: Duration,
+        allowed_capabilities: Vec<String>,
+        memory_mb: u64,
+        output_bytes: u64,
+        owner: Option<ManagedArtifactRef>,
+    ) -> Result<String, String> {
+        let validation = validate_wasm_shape(&wasm_bytes, false);
+        if !validation.is_ok() {
+            return Err(validation.to_string());
+        }
+
+        if timeout.is_zero() || timeout > Duration::from_secs(HARD_MAX_TIMEOUT_SECS) {
+            return Err(format!(
+                "插件超时上限无效: {} 秒（允许范围 0..={} 秒）",
+                timeout.as_secs_f64(),
+                HARD_MAX_TIMEOUT_SECS
+            ));
+        }
+        if !(1..=HARD_MAX_MEMORY_MB).contains(&memory_mb) {
+            return Err(format!(
+                "内存上限无效: {memory_mb} MiB（允许范围 1..={HARD_MAX_MEMORY_MB} MiB）"
+            ));
+        }
+        if !(1..=HARD_MAX_OUTPUT_BYTES).contains(&output_bytes) {
+            return Err(format!(
+                "输出上限无效: {output_bytes} 字节（允许范围 1..={HARD_MAX_OUTPUT_BYTES} 字节）"
+            ));
+        }
+
         // Convert MiB → 64 KiB WASM pages (T074: never pass MiB or bytes
         // directly to the page parameter). Clamp-out and zero are rejected.
         let memory_pages = memory_mb
@@ -657,38 +1097,100 @@ impl PluginExecutor {
             .and_then(|pages| u32::try_from(pages).ok())
             .ok_or_else(|| format!("内存上限无效: {memory_mb} MiB"))?;
 
+        let artifact_sha256 = sha256_hex(&wasm_bytes);
+        let allowed_capabilities = normalized_capability_policy(allowed_capabilities);
+        let capability_policy_hash = capability_policy_hash(&allowed_capabilities);
+        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        let key = InstanceCacheKey::new(
+            artifact_sha256,
+            HIVE_EXTISM_ABI_V1,
+            "extism",
+            extism::extism_version().trim_end_matches('\0'),
+            Some(DEFAULT_FUEL),
+            timeout_ms,
+            memory_mb,
+            output_bytes,
+            capability_policy_hash,
+        );
+        // Checkout happens before `spawn_blocking`: an idle instance is never
+        // concurrently callable, and GC sees the managed artifact as active
+        // for the entire blocking build/call lifetime.
+        let active = ActiveInstance::checkout(key.clone(), owner);
         let export_name = export_name.to_string();
         let input_json = input_json.to_string();
         let runtime = tokio::runtime::Handle::current();
 
         let execution = tokio::task::spawn_blocking(move || {
-            let manifest = Manifest::new([Wasm::data(wasm_bytes)])
-                .with_timeout(timeout)
-                .with_memory_max(memory_pages);
-            // T025R ③ / T082: sandbox must keep WASI disabled. Plugins that
-            // import any WASI snapshot0/preview1 function (fd_write,
-            // fd_read, proc_exit, …) are rejected at instantiation time;
-            // only the `host_call` host import is exposed. Fuel (instruction
-            // budget) and memory are enforced by Extism; the output cap is
-            // checked by the host after the call because Extism has no
-            // built-in output limit.
-            let mut plugin = PluginBuilder::new(manifest)
-                .with_wasi(false)
-                .with_fuel_limit(DEFAULT_FUEL)
-                .with_function(
-                    HOST_CALL_IMPORT,
-                    [ValType::I64],
-                    [ValType::I64],
-                    UserData::new(DesktopHostContext {
-                        runtime,
-                        allowed_capabilities,
-                    }),
-                    host_call,
-                )
-                .build()
-                .map_err(|e| format!("构建插件失败: {e}"))?;
+            let mut active = active;
+            let mut pooled = if let Some(pooled) = active.take_pooled() {
+                pooled
+            } else {
+                let manifest = Manifest::new([Wasm::data(wasm_bytes)])
+                    .with_timeout(timeout)
+                    .with_memory_max(memory_pages);
+                // T025R ③ / T082: sandbox must keep WASI disabled. Plugins
+                // importing WASI are rejected at instantiation; only the
+                // `host_call` bridge is exposed.
+                let host_context = UserData::new(DesktopHostContext {
+                    runtime: runtime.clone(),
+                    allowed_capabilities: allowed_capabilities.clone(),
+                });
+                let mut plugin = PluginBuilder::new(manifest)
+                    .with_wasi(false)
+                    .with_fuel_limit(DEFAULT_FUEL)
+                    .with_function(
+                        HOST_CALL_IMPORT,
+                        [ValType::I64],
+                        [ValType::I64],
+                        host_context.clone(),
+                        host_call,
+                    )
+                    .build()
+                    .map_err(|e| format!("构建插件失败: {e}"))?;
 
-            let output = plugin
+                // Probe the mandatory ABI exactly once, when a new Extism
+                // instance is built. Healthy pool hits skip this call.
+                let abi_version = plugin
+                    .call::<&str, String>(ABI_VERSION_EXPORT, "{}")
+                    .map_err(|_| {
+                        WasmValidationError::rejected(
+                            WasmModuleShape::UnsupportedAbiVersion,
+                            Some("abi version export could not be queried".to_string()),
+                        )
+                        .to_string()
+                    })?;
+                if abi_version != HIVE_EXTISM_ABI_V1 {
+                    return Err(WasmValidationError::rejected(
+                        WasmModuleShape::UnsupportedAbiVersion,
+                        None,
+                    )
+                    .to_string());
+                }
+
+                PooledPlugin {
+                    plugin,
+                    host_context,
+                    owner: None,
+                }
+            };
+
+            // A process-wide pool can outlive both a short current-thread test
+            // runtime and a Capability snapshot. Refresh both before *every*
+            // business call, including pool hits.
+            {
+                let context = pooled
+                    .host_context
+                    .get()
+                    .map_err(|e| format!("读取插件主机上下文失败: {e}"))?;
+                let mut context = context
+                    .lock()
+                    .map_err(|_| "插件主机上下文锁已损坏".to_string())?;
+                context.runtime = runtime;
+                context.allowed_capabilities = allowed_capabilities;
+            }
+
+            let output = pooled
+                .plugin
                 .call::<&str, String>(&export_name, &input_json)
                 .map_err(|e| {
                     let message = e.to_string();
@@ -707,15 +1209,38 @@ impl PluginExecutor {
                     output_bytes
                 ));
             }
+            active.finish_healthy(pooled);
             Ok(output)
         });
 
         match tokio::time::timeout(timeout, execution).await {
-            Err(_) => Err(format!("插件执行超时（{} 秒）", timeout.as_secs_f64())),
+            Err(_) => {
+                // The blocking call may still be unwinding. Key generation
+                // invalidation evicts any just-returned idle value and makes a
+                // still-running checkout ineligible for reinsertion.
+                invalidate_cache_key(&key);
+                Err(format!("插件执行超时（{} 秒）", timeout.as_secs_f64()))
+            }
             Ok(Err(e)) => Err(format!("插件执行任务失败: {e}")),
             Ok(Ok(result)) => result,
         }
     }
+}
+
+fn normalized_capability_policy(mut capabilities: Vec<String>) -> Vec<String> {
+    capabilities.sort_unstable();
+    capabilities.dedup();
+    capabilities
+}
+
+fn capability_policy_hash(capabilities: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for capability in capabilities {
+        hasher.update((capability.len() as u64).to_be_bytes());
+        hasher.update(capability.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Compute the lower-case SHA-256 hex digest of a byte slice.

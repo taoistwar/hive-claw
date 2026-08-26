@@ -23,10 +23,15 @@
 
 mod support;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+};
 
+use hivegui::logging_v1::SystemClock;
 use hivegui::runtime::diagnostics::{
-    DiagnosticRecord, DiagnosticSink, RuntimeErrorBoundary, RuntimeFailure,
+    DiagnosticRecord, DiagnosticSink, RuntimeDiagnosticPipeline, RuntimeErrorBoundary,
+    RuntimeFailure,
 };
 use support::TestWorkspace;
 use support::sensitive_canary::{
@@ -294,4 +299,81 @@ async fn diagnostic_record_sensitive_canary_leaves_zero_residue_on_persistence_m
         scan.hits
     );
     let _ = sink.records(); // ensure sink is observed (lint guard)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn persisted_pipeline_correlates_six_layers_exactly_once_and_exports_only_redacted_data() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let canary = place_canary_for_test(
+        SensitiveField::ChatMessageToolCalls,
+        &unique_canary_payload("T120-persisted-pipeline"),
+    )
+    .expect("diagnostic canary");
+    let token = canary.plaintext_token();
+    let pipeline = RuntimeDiagnosticPipeline::open(workspace.root(), SystemClock)
+        .expect("open production diagnostic pipeline");
+    pipeline.record_agent_event(EXECUTION_ID, "turn_started", "agent started");
+    pipeline.record_llm_event(EXECUTION_ID, "provider_resolved", "provider local");
+    pipeline.record_tool_event(EXECUTION_ID, "tool_failed", format!("tool_payload={token}"));
+    pipeline.record_workflow_event(EXECUTION_ID, "node_failed", "workflow node failed");
+    pipeline.record_plugin_event(EXECUTION_ID, "trap", "plugin trapped");
+    pipeline.record_capability_event(EXECUTION_ID, "denied", "capability denied");
+
+    let failure = RuntimeFailure::internal(
+        EXECUTION_ID,
+        format!(
+            "tool_payload={token}; prompt=<private-prompt>; token=provider-secret; \
+             backup_password=backup-secret"
+        ),
+    )
+    .with_context("provider_adapter")
+    .with_context("agent_runner_adapter")
+    .with_context("tool_adapter")
+    .with_context("workflow_adapter")
+    .with_context("plugin_adapter")
+    .with_context("capability_adapter");
+    let first = pipeline.handle_failure("local_agent.execute", failure.clone());
+    let second = pipeline.handle_failure("local_agent.execute", failure);
+    assert_eq!(first, second);
+
+    let bundle_path = workspace.root().join("diagnostics/t120-bundle.json");
+    let bundle = pipeline
+        .export_redacted_bundle(&bundle_path)
+        .expect("export final diagnostic bundle");
+    assert_eq!(bundle.event_count(), 6);
+    let activity = fs::read_to_string(workspace.root().join("logs/activity.open"))
+        .expect("persisted activity log");
+    let log_rows = activity.lines().collect::<Vec<_>>();
+    assert_eq!(log_rows.len(), 1, "same internal failure is persisted once");
+    let row: serde_json::Value = serde_json::from_str(log_rows[0]).expect("v1 log JSON");
+    assert_eq!(row["schema_version"], 1);
+    assert_eq!(row["execution_id"], EXECUTION_ID);
+    assert_eq!(row["operation"], "local_agent.execute");
+    assert_eq!(row["result"], "Failed");
+    assert!(row["cause_summary"].as_str().unwrap_or_default().len() <= 512);
+    let bundle_bytes = fs::read(&bundle_path).expect("bundle bytes");
+    for sensitive in [
+        token.as_bytes(),
+        b"private-prompt".as_slice(),
+        b"provider-secret".as_slice(),
+        b"backup-secret".as_slice(),
+    ] {
+        assert!(
+            !activity
+                .as_bytes()
+                .windows(sensitive.len())
+                .any(|w| w == sensitive)
+        );
+        assert!(
+            !bundle_bytes
+                .windows(sensitive.len())
+                .any(|w| w == sensitive)
+        );
+    }
+    let scan = scan_all_mediums_for_test(workspace.root(), &canary).expect("scan every medium");
+    assert!(
+        scan.hits.is_empty(),
+        "diagnostic pipeline leaked canary into log/bundle/error/recovery: {:?}",
+        scan.hits
+    );
 }

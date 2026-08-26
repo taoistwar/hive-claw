@@ -14,12 +14,10 @@
 //!    function identifier (`namespace.short_slug`); `workflow-wrap` requires
 //!    a workflow identifier. Mixing the two is rejected with
 //!    [`PersistedToolError::TargetKindMismatch`].
-//! 3. Required capabilities are stored as a `BTreeSet<CapabilityId>` so
-//!    that two semantically equal sets produce identical serialised bytes
-//!    regardless of insertion order.
-//! 4. The serialised form is byte-stable: `from_bytes(to_bytes(x)) == x`
-//!    and `to_bytes(a) == to_bytes(b)` for any `a`, `b` with equal kind,
-//!    target, and required capabilities.
+//! 3. Required capabilities preserve their declared order. Product adapters
+//!    construct them through [`RequiredCapabilities::from_ordered`], which
+//!    rejects duplicates and capabilities absent from the local registry.
+//! 4. The serialised form is byte-stable: `from_bytes(to_bytes(x)) == x`.
 
 #![forbid(unsafe_code)]
 
@@ -28,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::capability::CapabilityId;
+use crate::capability::{CapabilityId, CapabilitySet};
 
 /// Stable, portable Tool kind.
 ///
@@ -122,26 +120,55 @@ impl PersistedToolTarget {
     }
 }
 
-/// Required capability set.
+/// Ordered required capability declaration.
 ///
-/// Stored as a `BTreeSet<CapabilityId>` so the serialised form is canonical
-/// regardless of insertion order.
+/// The declaration order is part of the persisted contract. Product adapters
+/// should use [`Self::from_ordered`] at their validation boundary so duplicate
+/// and unavailable capabilities fail closed before persistence.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequiredCapabilities {
-    inner: BTreeSet<CapabilityId>,
+    inner: Vec<CapabilityId>,
 }
 
 impl RequiredCapabilities {
     /// Returns an empty set.
     pub fn empty() -> Self {
-        Self {
-            inner: BTreeSet::new(),
-        }
+        Self { inner: Vec::new() }
     }
 
-    /// Inserts a capability. No-op if the id is already present.
+    /// Constructs an ordered declaration against the locally known
+    /// capability registry.
+    pub fn from_ordered(
+        capabilities: Vec<CapabilityId>,
+        known: &CapabilitySet,
+    ) -> Result<Self, PersistedToolError> {
+        let mut seen = BTreeSet::new();
+        for capability in &capabilities {
+            if !seen.insert(capability.clone()) {
+                return Err(PersistedToolError::DuplicateCapability {
+                    capability: capability.clone(),
+                });
+            }
+            if !known.contains(capability) {
+                return Err(PersistedToolError::UnknownCapability {
+                    capability: capability.clone(),
+                });
+            }
+        }
+        Ok(Self {
+            inner: capabilities,
+        })
+    }
+
+    /// Inserts a capability at the end of the declaration. No-op if the id is
+    /// already present. Product persistence boundaries should prefer
+    /// [`Self::from_ordered`] so registry membership is also validated.
     pub fn insert(&mut self, id: CapabilityId) -> bool {
-        self.inner.insert(id)
+        if self.inner.contains(&id) {
+            return false;
+        }
+        self.inner.push(id);
+        true
     }
 
     /// Returns the number of capabilities.
@@ -154,12 +181,7 @@ impl RequiredCapabilities {
         self.inner.is_empty()
     }
 
-    /// Returns a reference to the underlying canonical set.
-    pub fn as_set(&self) -> &BTreeSet<CapabilityId> {
-        &self.inner
-    }
-
-    /// Returns an iterator over the set in canonical order.
+    /// Returns an iterator in the original declared order.
     pub fn iter(&self) -> impl Iterator<Item = &CapabilityId> {
         self.inner.iter()
     }
@@ -255,7 +277,16 @@ pub struct PersistedTool {
 impl PersistedTool {
     /// Reconstructs a `PersistedTool` from its serialised bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PersistedToolError> {
-        serde_json::from_slice(bytes).map_err(PersistedToolError::from)
+        let tool: Self = serde_json::from_slice(bytes).map_err(PersistedToolError::from)?;
+        let mut seen = BTreeSet::new();
+        for capability in tool.required_capabilities.iter() {
+            if !seen.insert(capability.clone()) {
+                return Err(PersistedToolError::DuplicateCapability {
+                    capability: capability.clone(),
+                });
+            }
+        }
+        Ok(tool)
     }
 
     /// Serialises this tool to canonical bytes.
@@ -300,6 +331,18 @@ pub enum PersistedToolError {
     InvalidIdentifier {
         /// The rejected identifier string.
         identifier: String,
+    },
+    /// A required capability was declared more than once.
+    #[error("required capability is duplicated: {capability}")]
+    DuplicateCapability {
+        /// The duplicated capability.
+        capability: CapabilityId,
+    },
+    /// A required capability is absent from the local known-capability set.
+    #[error("required capability is unknown: {capability}")]
+    UnknownCapability {
+        /// The unavailable capability.
+        capability: CapabilityId,
     },
     /// `build()` was called before `target()`.
     #[error("target was not supplied before build")]

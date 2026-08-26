@@ -1,147 +1,324 @@
-//! T102 [P] [US11] Tool dispatch contract.
+//! T102 [P] [US11] persisted Tool dispatch supplemental Red.
 //!
-//! Source of truth: `specs/011-hivegui-standalone-mode/tasks.md` §T102
-//! ("编写 schema 校验到执行器启动、Function/Workflow 分派、Capability
-//! 拒绝和稳定错误测试").
-//!
-//! The adapter under test is
-//! `hivegui::runtime::tool_adapter::LocalToolAdapter`. The real
-//! Function/Workflow runtimes are swapped for an injected dispatcher so
-//! the routing, capability rejection and stable-error mapping can be
-//! asserted without invoking any backend.
+//! This contract loads one persisted Tool, validates input and Capability
+//! policy before any target starts, routes the XOR target locally, validates
+//! output, and returns stable non-leaking errors.
 
-use std::pin::Pin;
-use std::sync::Arc;
+mod support;
 
-use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 
-use hivegui::runtime::execution::{FailureCategory, LocalExecutionOutcome};
-use hivegui::runtime::tool_adapter::{
-    InMemoryToolDispatcher, LocalToolAdapter, LocalToolDispatcher, ToolAdapterError,
-    ToolCallRequest, ToolCallResult, ToolKind, outcome_to_result, tool_error_to_failure,
+use hivegui::{
+    datasource::store::{Store, StoreOpenOptions},
+    runtime::tool_adapter::{
+        PersistedToolExecutor, ToolExecutionContext, ToolExecutionError, ToolTargetFuture,
+        ToolTargetRunner,
+    },
 };
+use serde_json::{Value, json};
+use support::TestWorkspace;
 
-/// A dispatcher that always returns `NotFound` for the first call and a
-/// fixed terminal result for subsequent calls.
-struct FixedDispatcher {
-    error: ToolAdapterError,
+const INPUT_SCHEMA: &str =
+    r#"{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}"#;
+const OUTPUT_SCHEMA: &str =
+    r#"{"type":"object","properties":{"result":{"type":"string"}},"required":["result"]}"#;
+const FIXTURE_TIME: &str = "2026-08-25T00:00:00Z";
+
+#[derive(Debug, Clone, PartialEq)]
+enum TargetCall {
+    Function(i64, Value),
+    Workflow(i64, Value),
 }
 
-impl LocalToolDispatcher for FixedDispatcher {
-    fn dispatch(
-        &self,
-        _request: ToolCallRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<ToolCallResult, ToolAdapterError>> + Send>>
-    {
-        let error = self.error.clone();
-        Box::pin(async move { Err(error) })
-    }
+#[derive(Clone)]
+struct RecordingTargetRunner {
+    calls: Arc<Mutex<Vec<TargetCall>>>,
+    output: Value,
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_delegates_function_call_to_dispatcher() {
-    let dispatcher = Arc::new(InMemoryToolDispatcher::new());
-    let adapter = LocalToolAdapter::new(dispatcher.clone());
-
-    let request = ToolCallRequest::new("json_parse", ToolKind::Function, json!({"x": 1}));
-    let result = adapter.dispatch(request.clone()).await.expect("dispatch");
-    assert!(result.succeeded);
-    assert_eq!(result.call_id, request.call_id);
-
-    let calls = dispatcher.calls();
-    assert_eq!(calls.len(), 1, "function call must reach the dispatcher");
-    assert_eq!(calls[0].call_id, request.call_id);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_delegates_workflow_call_to_dispatcher() {
-    let dispatcher = Arc::new(InMemoryToolDispatcher::new());
-    let adapter = LocalToolAdapter::new(dispatcher.clone());
-
-    let request = ToolCallRequest::new("daily-report", ToolKind::Workflow, json!({}));
-    let result = adapter.dispatch(request.clone()).await.expect("dispatch");
-    assert!(result.succeeded);
-
-    let calls = dispatcher.calls();
-    assert_eq!(calls.len(), 1, "workflow call must reach the dispatcher");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn remote_prefix_is_rejected_without_invoking_dispatcher() {
-    let dispatcher = Arc::new(InMemoryToolDispatcher::new());
-    let adapter = LocalToolAdapter::new(dispatcher.clone());
-
-    let request = ToolCallRequest::new("https://evil.example/x", ToolKind::Function, json!({}));
-    let err = adapter
-        .dispatch(request)
-        .await
-        .expect_err("remote must be rejected");
-    match err {
-        ToolAdapterError::RemoteForbidden(identifier) => {
-            assert_eq!(identifier, "https://evil.example/x");
+impl RecordingTargetRunner {
+    fn returning(output: Value) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            output,
         }
-        other => panic!("expected RemoteForbidden, got {other:?}"),
     }
 
+    fn calls(&self) -> Vec<TargetCall> {
+        self.calls.lock().expect("target call lock").clone()
+    }
+}
+
+impl ToolTargetRunner for RecordingTargetRunner {
+    fn execute_function(
+        &self,
+        function_id: i64,
+        input: Value,
+        _granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture {
+        self.calls
+            .lock()
+            .expect("target call lock")
+            .push(TargetCall::Function(function_id, input));
+        let output = self.output.clone();
+        Box::pin(async move { Ok(output) })
+    }
+
+    fn execute_workflow(
+        &self,
+        workflow_id: i64,
+        input: Value,
+        _granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture {
+        self.calls
+            .lock()
+            .expect("target call lock")
+            .push(TargetCall::Workflow(workflow_id, input));
+        let output = self.output.clone();
+        Box::pin(async move { Ok(output) })
+    }
+}
+
+async fn open_store(workspace: &TestWorkspace) -> Store {
+    Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open canonical v4 Store")
+}
+
+async fn seed_function(store: &Store, identifier: &str, kind: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(concat!(
+        "INSERT INTO functions (identifier, name, description, kind, input_schema, ",
+        "output_schema, plugin_id, plugin_export, category_id, required_capabilities, ",
+        "created_at, updated_at) ",
+        "VALUES (?, ?, '', ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?) RETURNING id"
+    ))
+    .bind(identifier)
+    .bind(identifier)
+    .bind(kind)
+    .bind(INPUT_SCHEMA)
+    .bind(OUTPUT_SCHEMA)
+    .bind(FIXTURE_TIME)
+    .bind(FIXTURE_TIME)
+    .fetch_one(store.pool())
+    .await
+    .expect("seed Function target")
+}
+
+async fn seed_workflow(store: &Store, identifier: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(concat!(
+        "INSERT INTO workflows (identifier, name, description, timeout_ms, input_schema, ",
+        "start_description, output_schema, required_capabilities, created_at, updated_at) ",
+        "VALUES (?, ?, '', 30000, ?, '', ?, NULL, ?, ?) RETURNING id"
+    ))
+    .bind(identifier)
+    .bind(identifier)
+    .bind(INPUT_SCHEMA)
+    .bind(OUTPUT_SCHEMA)
+    .bind(FIXTURE_TIME)
+    .bind(FIXTURE_TIME)
+    .fetch_one(store.pool())
+    .await
+    .expect("seed Workflow target")
+}
+
+async fn seed_tool(
+    store: &Store,
+    identifier: &str,
+    kind: &str,
+    function_id: Option<i64>,
+    workflow_id: Option<i64>,
+    required_capabilities: Option<&str>,
+) -> i64 {
+    sqlx::query_scalar::<_, i64>(concat!(
+        "INSERT INTO tools (identifier, name, description, kind, source, is_always, ",
+        "function_id, workflow_id, input_schema, output_schema, category_id, ",
+        "required_capabilities, created_at, updated_at) ",
+        "VALUES (?, ?, '', ?, 'workspace', 0, ?, ?, ?, ?, NULL, ?, ?, ?) RETURNING id"
+    ))
+    .bind(identifier)
+    .bind(identifier)
+    .bind(kind)
+    .bind(function_id)
+    .bind(workflow_id)
+    .bind(INPUT_SCHEMA)
+    .bind(OUTPUT_SCHEMA)
+    .bind(required_capabilities)
+    .bind(FIXTURE_TIME)
+    .bind(FIXTURE_TIME)
+    .fetch_one(store.pool())
+    .await
+    .expect("seed persisted Tool")
+}
+
+fn context(capabilities: &[&str]) -> ToolExecutionContext {
+    ToolExecutionContext::new(capabilities.iter().map(|value| value.to_string()).collect())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn input_schema_rejection_happens_before_any_target_starts() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let store = open_store(&workspace).await;
+    let function_id = seed_function(&store, "dispatch_input_function", "builtin").await;
+    let tool_id = seed_tool(
+        &store,
+        "dispatch_input_tool",
+        "function-wrap",
+        Some(function_id),
+        None,
+        None,
+    )
+    .await;
+    let runner = Arc::new(RecordingTargetRunner::returning(json!({"result":"unused"})));
+    let executor = PersistedToolExecutor::new(store.pool().clone(), runner.clone());
+
+    let error = executor
+        .execute(tool_id, json!({"value": 7}), context(&[]))
+        .await
+        .expect_err("wrong input type must fail");
+    assert_eq!(error.code(), "input_schema_mismatch");
+    assert!(runner.calls().is_empty(), "schema failure started a target");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn capability_denial_happens_before_any_target_starts() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let store = open_store(&workspace).await;
+    let function_id = seed_function(&store, "dispatch_capability_function", "builtin").await;
+    let tool_id = seed_tool(
+        &store,
+        "dispatch_capability_tool",
+        "function-wrap",
+        Some(function_id),
+        None,
+        Some(r#"["log.emit"]"#),
+    )
+    .await;
+    let runner = Arc::new(RecordingTargetRunner::returning(json!({"result":"unused"})));
+    let executor = PersistedToolExecutor::new(store.pool().clone(), runner.clone());
+
+    let error = executor
+        .execute(tool_id, json!({"value":"ok"}), context(&[]))
+        .await
+        .expect_err("missing Capability must fail");
+    assert_eq!(error.code(), "capability_denied");
     assert!(
-        dispatcher.calls().is_empty(),
-        "a rejected remote call must never reach the dispatcher"
+        runner.calls().is_empty(),
+        "Capability denial started a target"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn not_found_error_is_stable() {
-    let dispatcher = Arc::new(FixedDispatcher {
-        error: ToolAdapterError::NotFound("missing".to_string()),
-    });
-    let adapter = LocalToolAdapter::new(dispatcher);
+async fn function_and_workflow_xor_targets_route_once_and_locally() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let store = open_store(&workspace).await;
+    let function_id = seed_function(&store, "dispatch_function", "builtin").await;
+    let workflow_id = seed_workflow(&store, "dispatch_workflow").await;
+    let function_tool = seed_tool(
+        &store,
+        "dispatch_function_tool",
+        "function-wrap",
+        Some(function_id),
+        None,
+        None,
+    )
+    .await;
+    let workflow_tool = seed_tool(
+        &store,
+        "dispatch_workflow_tool",
+        "workflow-wrap",
+        None,
+        Some(workflow_id),
+        None,
+    )
+    .await;
+    let runner = Arc::new(RecordingTargetRunner::returning(json!({"result":"ok"})));
+    let executor = PersistedToolExecutor::new(store.pool().clone(), runner.clone());
 
-    let request = ToolCallRequest::new("missing", ToolKind::Local, json!({}));
-    let err = adapter.dispatch(request).await.expect_err("not found");
-    assert_eq!(err, ToolAdapterError::NotFound("missing".to_string()));
+    assert_eq!(
+        executor
+            .execute(function_tool, json!({"value":"function"}), context(&[]))
+            .await
+            .expect("function dispatch"),
+        json!({"result":"ok"})
+    );
+    assert_eq!(
+        executor
+            .execute(workflow_tool, json!({"value":"workflow"}), context(&[]))
+            .await
+            .expect("workflow dispatch"),
+        json!({"result":"ok"})
+    );
+    assert_eq!(
+        runner.calls(),
+        vec![
+            TargetCall::Function(function_id, json!({"value":"function"})),
+            TargetCall::Workflow(workflow_id, json!({"value":"workflow"})),
+        ]
+    );
 }
 
-#[test]
-fn tool_error_to_failure_categories_are_stable() {
-    assert_eq!(
-        tool_error_to_failure(&ToolAdapterError::RemoteForbidden("x".into())),
-        FailureCategory::Auth
-    );
-    assert_eq!(
-        tool_error_to_failure(&ToolAdapterError::NotFound("x".into())),
-        FailureCategory::NotFound
-    );
-    assert_eq!(
-        tool_error_to_failure(&ToolAdapterError::NonTerminal("x".into())),
-        FailureCategory::Internal
-    );
-    assert_eq!(
-        tool_error_to_failure(&ToolAdapterError::Cancelled("x".into())),
-        FailureCategory::Internal
-    );
-    assert_eq!(
-        tool_error_to_failure(&ToolAdapterError::AtCapacity),
-        FailureCategory::Internal
-    );
-    assert_eq!(
-        tool_error_to_failure(&ToolAdapterError::Backend("x".into())),
-        FailureCategory::Internal
+#[tokio::test(flavor = "current_thread")]
+async fn placeholder_function_fails_before_capability_or_target_lookup() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let store = open_store(&workspace).await;
+    let function_id = seed_function(&store, "dispatch_placeholder", "placeholder").await;
+    let tool_id = seed_tool(
+        &store,
+        "dispatch_placeholder_tool",
+        "function-wrap",
+        Some(function_id),
+        None,
+        Some(r#"["log.emit"]"#),
+    )
+    .await;
+    let runner = Arc::new(RecordingTargetRunner::returning(json!({"result":"unused"})));
+    let executor = PersistedToolExecutor::new(store.pool().clone(), runner.clone());
+
+    let error = executor
+        .execute(tool_id, json!({"value":"ok"}), context(&[]))
+        .await
+        .expect_err("Placeholder Function must never execute");
+    assert_eq!(error.code(), "function_not_executable");
+    assert!(
+        runner.calls().is_empty(),
+        "Placeholder reached the target runner"
     );
 }
 
-#[test]
-fn outcome_conversion_is_stable() {
-    let completed = outcome_to_result("c1", LocalExecutionOutcome::Completed);
-    assert!(completed.succeeded);
-    assert_eq!(completed.call_id, "c1");
+#[tokio::test(flavor = "current_thread")]
+async fn output_schema_failure_is_stable_and_does_not_leak_backend_text() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let store = open_store(&workspace).await;
+    let function_id = seed_function(&store, "dispatch_output_function", "builtin").await;
+    let tool_id = seed_tool(
+        &store,
+        "dispatch_output_tool",
+        "function-wrap",
+        Some(function_id),
+        None,
+        None,
+    )
+    .await;
+    let runner = Arc::new(RecordingTargetRunner::returning(json!({"result":7})));
+    let executor = PersistedToolExecutor::new(store.pool().clone(), runner.clone());
 
-    let failed = outcome_to_result(
-        "c2",
-        LocalExecutionOutcome::Failed(FailureCategory::NotFound),
+    let error: ToolExecutionError = executor
+        .execute(tool_id, json!({"value":"ok"}), context(&[]))
+        .await
+        .expect_err("wrong output type must fail");
+    assert_eq!(error.code(), "output_schema_mismatch");
+    let public = error.to_string().to_ascii_lowercase();
+    for forbidden in ["sqlx", "sqlite", "select ", "insert ", "database"] {
+        assert!(
+            !public.contains(forbidden),
+            "public Tool execution error leaked backend detail: {public}"
+        );
+    }
+    assert_eq!(
+        runner.calls(),
+        vec![TargetCall::Function(function_id, json!({"value":"ok"}))]
     );
-    assert!(!failed.succeeded);
-
-    let cancelled = outcome_to_result("c3", LocalExecutionOutcome::Cancelled);
-    assert!(!cancelled.succeeded);
-    assert_eq!(cancelled.output, Value::String("cancelled".to_string()));
 }

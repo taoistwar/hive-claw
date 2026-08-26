@@ -35,13 +35,21 @@ pub enum PublicErrorEnvelope {
     NotFound,
     /// Caller is not allowed to perform the action.
     Forbidden,
+    /// The request reached an internal boundary that could not complete. The
+    /// stable reason never contains backend text; the cause remains private.
+    Internal {
+        /// Stable, non-sensitive failure category.
+        reason: String,
+    },
 }
 
 /// Public error type. Wraps an envelope and an optional cause that
 /// MUST NOT be propagated to the UI layer.
 #[derive(Debug)]
 pub struct PublicBoundaryError {
-    envelope: PublicErrorEnvelope,
+    envelope: Box<PublicErrorEnvelope>,
+    value: Option<String>,
+    references: Vec<String>,
     cause: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
@@ -49,9 +57,23 @@ impl PublicBoundaryError {
     /// Build a new public boundary error with no underlying cause.
     pub fn new(envelope: PublicErrorEnvelope) -> Self {
         Self {
-            envelope,
+            envelope: Box::new(envelope),
+            value: None,
+            references: Vec::new(),
             cause: None,
         }
+    }
+
+    /// Attach the safe conflicting value for a `shape = "value"` envelope.
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// Attach safe identifiers for a `shape = "references"` envelope.
+    pub fn with_references(mut self, references: impl IntoIterator<Item = String>) -> Self {
+        self.references = references.into_iter().collect();
+        self
     }
 
     /// Attach an underlying cause (e.g. a `sqlx::Error`).
@@ -66,6 +88,17 @@ impl PublicBoundaryError {
     /// Returns the envelope.
     pub fn envelope(&self) -> &PublicErrorEnvelope {
         &self.envelope
+    }
+
+    /// Return the safe conflicting value, when the envelope uses value shape.
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+
+    /// Return safe referencing identifiers, when the envelope uses reference
+    /// shape. SQL fragments and raw row payloads are never stored here.
+    pub fn references(&self) -> &[String] {
+        &self.references
     }
 }
 
@@ -1101,6 +1134,18 @@ pub fn public_write_dto_fields(entity: &str) -> Option<&'static [&'static str]> 
         "tag" => Some(&["name", "color"]),
         "category" => Some(&["parent_id", "name", "slug", "description"]),
         "capability" => Some(&["name", "description", "is_dangerous", "category_id"]),
+        "function" => Some(&[
+            "identifier",
+            "name",
+            "description",
+            "kind",
+            "input_schema",
+            "output_schema",
+            "plugin_id",
+            "plugin_export",
+            "category_id",
+            "required_capabilities",
+        ]),
         _ => None,
     }
 }

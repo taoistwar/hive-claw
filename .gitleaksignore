@@ -1,0 +1,14 @@
+# Exact historic fingerprints reviewed on 2026-08-25. These are inert test or
+# documentation examples, not credentials. Keep this list commit/path/rule/line
+# specific so new findings in the same files still block CI.
+fd95355bdc55a641621bb867a33838ff988a3f02:crates/hivegui/tests/logging_contract.rs:generic-api-key:156
+56355f117d83b079595fc819eb16cfad44d6cdb0:docs/prod/install.md:generic-api-key:120
+a0609cf50d49598e0ca2f42141e535b132b4d83f:docs/prod/install.md:generic-api-key:119
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/contracts/api.md:jwt:118
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/contracts/api.md:jwt:119
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/quickstart.md:generic-api-key:156
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/quickstart.md:generic-api-key:157
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/quickstart.md:generic-api-key:151
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/quickstart.md:generic-api-key:152
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/contracts/api.md:jwt:118
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/contracts/api.md:jwt:119

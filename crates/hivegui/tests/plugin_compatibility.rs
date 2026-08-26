@@ -22,6 +22,8 @@ use hivegui::plugin::plugin_store::{PluginArtifactInput, PluginInstallErrorKind,
 use support::TestWorkspace;
 use tempfile::TempDir;
 
+const SHARED_ABI_V1_WASM: &[u8] = include_bytes!("fixtures/plugins/shared-smoke/plugin.wasm");
+
 async fn migrated_pool(workspace: &TestWorkspace) -> sqlx::SqlitePool {
     migrate_to_current(MigrationOptions::new(
         workspace.database_path(),
@@ -64,11 +66,11 @@ async fn no_replace_rejects_duplicate_identifier_and_version_silently() {
     let store = PluginStore::new(pool, workspace.plugin_root()).expect("store");
 
     store
-        .install(PluginArtifactInput::new("dup", "1.0.0", b"v1").unwrap())
+        .install(PluginArtifactInput::new("dup", "1.0.0", SHARED_ABI_V1_WASM).unwrap())
         .await
         .expect("first install");
     let err = store
-        .install(PluginArtifactInput::new("dup", "1.0.0", b"v2").unwrap())
+        .install(PluginArtifactInput::new("dup", "1.0.0", SHARED_ABI_V1_WASM).unwrap())
         .await
         .expect_err("must reject replace");
     assert_eq!(err.reason(), "no_replace");
@@ -95,15 +97,20 @@ async fn install_with_custom_root_creates_artifact_directory() {
     let workspace = TestWorkspace::new().expect("test workspace");
     let pool = migrated_pool(&workspace).await;
     let custom_root = TempDir::new().expect("tmpdir");
-    let store = PluginStore::new(pool, custom_root.path()).expect("store");
+    let store = PluginStore::new(pool.clone(), custom_root.path()).expect("store");
 
-    let bytes = b"abc";
+    let bytes = SHARED_ABI_V1_WASM;
     let plugin = store
         .install(PluginArtifactInput::new("custom-root", "1.0.0", bytes).unwrap())
         .await
         .expect("install");
     assert_eq!(plugin.name(), "custom-root");
-    let on_disk = custom_root.path().join("custom-root").join("1.0.0.wasm");
+    let artifact_key: String = sqlx::query_scalar("SELECT s3_key FROM plugins WHERE id = ?")
+        .bind(plugin.id())
+        .fetch_one(&pool)
+        .await
+        .expect("query persisted artifact key");
+    let on_disk = custom_root.path().join(artifact_key);
     assert!(
         on_disk.exists(),
         "artifact must be written under custom root"

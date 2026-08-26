@@ -1,17 +1,23 @@
 #[path = "../tests/support/performance.rs"]
 mod performance;
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
 use hivegui::datasource::workflow_store::{NodeType, WorkflowGraph, WorkflowNode};
-use hivegui::runtime::tool_adapter::{LocalToolAdapter, ToolCallRequest, ToolKind};
+use hivegui::datasource::{
+    store::{Store, StoreOpenOptions},
+    tool_store::{ToolInput, ToolKind as PersistedToolKind, ToolSource, ToolStore},
+};
+use hivegui::runtime::tool_adapter::{
+    PersistedToolExecutor, ToolExecutionContext, ToolTargetFuture, ToolTargetRunner,
+};
 use hivegui::runtime::{CancelHandle, WorkflowExecutor, WorkflowNodeExecutor};
 use serde_json::Value;
 
 use performance::{
-    BenchmarkBaseline, BenchmarkReport, ComparisonOutcome, EnvironmentFingerprint,
-    MeasurementError, TOOL_DISPATCH_ID, TargetSpec, WORKFLOW_100_NODE_ID, baseline_path,
-    compare_to_baseline, measure_local_async, target_specs,
+    BenchmarkReport, ComparisonOutcome, EnvironmentFingerprint, TOOL_DISPATCH_ID, TargetSpec,
+    WORKFLOW_100_NODE_ID, baseline_path, evaluate_benchmark_gate, measure_local_async,
+    measure_local_async_batched, regression_exception_path, source_revision, target_specs,
 };
 
 fn main() {
@@ -47,6 +53,20 @@ fn main() {
                 print_usage();
                 std::process::exit(2);
             }
+            "--exception-path" => {
+                let _ = args.next();
+                if let Some(target_id) = args.next() {
+                    print_exception_path(target_id.as_str());
+                    return;
+                }
+                eprintln!("--exception-path requires an argument: target id");
+                print_usage();
+                std::process::exit(2);
+            }
+            "--source-revision" => {
+                print_source_revision();
+                return;
+            }
             "--manifest" => {
                 print_manifest();
                 return;
@@ -70,14 +90,19 @@ fn main() {
 
 fn print_usage() {
     let message = concat!(
-        "Usage: cargo bench -p hivegui --bench local_runtime [--help|-h] [--manifest] [--targets] [--target <id>] [--baseline-path <id>]\n",
+        "Usage: cargo bench -p hivegui --bench local_runtime [--help|-h] [--manifest] [--targets] [--target <id>] [--baseline-path <id>] [--exception-path <id>] [--source-revision] [--run <id>]\n",
         "\n",
         "  --help|-h         Show this help text\n",
         "  --manifest        Print the shared benchmark manifest (default)\n",
         "  --targets         Print supported benchmark target identifiers\n",
         "  --target <id>     Print target metadata by id\n",
         "  --baseline-path <id>\n",
-        "                   Print expected baseline path for a given target\n"
+        "                   Print expected baseline path for a given target\n",
+        "  --exception-path <id>\n",
+        "                   Print the canonical regression-exception sidecar path\n",
+        "  --source-revision\n",
+        "                   Print the deterministic dirty-worktree source revision\n",
+        "  --run <id>       Execute one real target, print its JSON report, and compare its baseline\n"
     );
     println!("{}", message);
 }
@@ -93,6 +118,7 @@ fn print_manifest() {
         "targets": targets.iter().map(|target| serde_json::json!({
             "target": target,
             "baseline_path": baseline_path(target, &environment),
+            "exception_path": regression_exception_path(target, &environment),
         })).collect::<Vec<_>>(),
     });
 
@@ -101,7 +127,7 @@ fn print_manifest() {
         serde_json::to_string_pretty(&manifest).expect("serialize benchmark manifest")
     );
     eprintln!(
-        "No placeholder timing was recorded: T093, T103, and T122 own the first approved Green runs."
+        "No placeholder timing was recorded: each target's owning task supplies its first approved Green run."
     );
 }
 
@@ -137,6 +163,38 @@ fn print_baseline_path(target_id: &str) {
     std::process::exit(2);
 }
 
+fn print_exception_path(target_id: &str) {
+    if let Some(target) = target_by_id(target_id) {
+        let environment = EnvironmentFingerprint::capture();
+        println!(
+            "{}",
+            regression_exception_path(&target, &environment).display()
+        );
+        return;
+    }
+
+    eprintln!("target not found: {}", target_id);
+    print_targets();
+    std::process::exit(2);
+}
+
+fn print_source_revision() {
+    match source_revision(repository_root()) {
+        Ok(revision) => println!("{revision}"),
+        Err(error) => {
+            eprintln!("cannot capture source revision: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn repository_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("hivegui manifest directory must be nested under the repository root")
+}
+
 fn target_by_id(id: &str) -> Option<TargetSpec> {
     target_specs()
         .iter()
@@ -145,10 +203,20 @@ fn target_by_id(id: &str) -> Option<TargetSpec> {
 }
 
 /// Execute one or more benchmark targets and print each report. The
-/// process exits non-zero if any executed target fails its absolute
-/// p95 budget. Baseline comparison and approval are review actions and
-/// are intentionally not performed by the harness itself.
+/// process exits non-zero if a target fails its absolute p95 budget, an
+/// existing baseline cannot be loaded, or comparison blocks. Baseline
+/// approval and file creation remain explicit review actions.
 fn run_benchmarks(target_id: Option<&str>) {
+    let revision = match source_revision(repository_root()) {
+        Ok(revision) => revision,
+        Err(error) => {
+            eprintln!("cannot capture source revision: {error}");
+            std::process::exit(1);
+        }
+    };
+    let as_of = chrono::Utc::now().date_naive();
+    eprintln!("source revision: {revision}");
+    eprintln!("performance gate date (UTC): {as_of}");
     let environment = EnvironmentFingerprint::capture();
     let targets: Vec<TargetSpec> = target_specs()
         .into_iter()
@@ -174,16 +242,8 @@ fn run_benchmarks(target_id: Option<&str>) {
                     "{}",
                     serde_json::to_string_pretty(&report).expect("serialize benchmark report")
                 );
-                if !report.meets_absolute_budget() {
-                    eprintln!(
-                        "FAIL {}: p95={}ns exceeds budget {}ns",
-                        target.id, report.percentiles_ns.p95, target.p95_budget_ns
-                    );
-                    failed = true;
-                    continue;
-                }
                 eprintln!(
-                    "PASS {}: p50={}ns p95={}ns p99={}ns (budget p95<={}ns)",
+                    "REPORT {}: p50={}ns p95={}ns p99={}ns (absolute budget p95<={}ns)",
                     target.id,
                     report.percentiles_ns.p50,
                     report.percentiles_ns.p95,
@@ -195,34 +255,50 @@ fn run_benchmarks(target_id: Option<&str>) {
                 // entry reports PendingBaseline until a reviewer
                 // approves its first Green run; thereafter any tracked
                 // percentile regression >10% blocks.
-                let baseline = read_baseline(&baseline_path(&target, &environment));
-                let comparison = compare_to_baseline(
+                let baseline_path = baseline_path(&target, &environment);
+                let exception_path = regression_exception_path(&target, &environment);
+                eprintln!("  baseline path: {}", baseline_path.display());
+                eprintln!("  exception path: {}", exception_path.display());
+                let comparison = evaluate_benchmark_gate(
                     &report,
-                    baseline.as_ref(),
-                    None,
-                    chrono::Utc::now().date_naive(),
+                    &revision,
+                    &baseline_path,
+                    &exception_path,
+                    as_of,
                 );
                 match comparison {
-                    Ok(result) => match result.outcome {
-                        ComparisonOutcome::Passed => {
-                            eprintln!("  baseline: passed");
-                        }
-                        ComparisonOutcome::PendingBaseline => {
-                            eprintln!("  baseline: pending (first approved Green establishes it)");
-                        }
-                        ComparisonOutcome::Blocked => {
+                    Ok(result) => {
+                        for regression in &result.regressions {
                             eprintln!(
-                                "  baseline: BLOCKED ({} regression(s) >10%)",
-                                result.regressions.len()
+                                "  regression {:?}: baseline={}ns current={}ns",
+                                regression.percentile,
+                                regression.baseline_ns,
+                                regression.current_ns
                             );
-                            failed = true;
                         }
-                        ComparisonOutcome::ApprovedException => {
-                            eprintln!("  baseline: approved exception");
+                        if let Some(rejection) = &result.exception_rejection {
+                            eprintln!("  exception: rejected ({rejection})");
                         }
-                    },
+                        match result.outcome {
+                            ComparisonOutcome::Passed => {
+                                eprintln!("  performance gate: passed");
+                            }
+                            ComparisonOutcome::PendingBaseline => {
+                                eprintln!(
+                                    "  performance gate: pending (first approved Green establishes its baseline)"
+                                );
+                            }
+                            ComparisonOutcome::Blocked => {
+                                eprintln!("  performance gate: BLOCKED");
+                                failed = true;
+                            }
+                            ComparisonOutcome::ApprovedException => {
+                                eprintln!("  performance gate: approved exception");
+                            }
+                        }
+                    }
                     Err(error) => {
-                        eprintln!("  baseline: incompatible ({error})");
+                        eprintln!("  performance gate: invalid ({error})");
                         failed = true;
                     }
                 }
@@ -247,21 +323,70 @@ fn run_benchmarks(target_id: Option<&str>) {
 async fn run_target(
     target: &TargetSpec,
     environment: &EnvironmentFingerprint,
-) -> Result<Option<BenchmarkReport>, MeasurementError> {
+) -> Result<Option<BenchmarkReport>, Box<dyn std::error::Error>> {
+    if let Some(report) = performance::run_target(target, environment).await? {
+        return Ok(Some(report));
+    }
+
     match target.id.as_str() {
         TOOL_DISPATCH_ID => {
-            let adapter = LocalToolAdapter::default_in_memory();
-            measure_local_async(target.clone(), environment.clone(), move || {
-                let adapter = adapter.clone();
+            let temporary_root = tempfile::tempdir()?;
+            let store = Store::open_local(StoreOpenOptions::new(
+                temporary_root.path().join("hivegui.db"),
+                temporary_root.path().join("plugins"),
+            ))
+            .await?;
+            let schema = r#"{"type":"object"}"#;
+            let now = chrono::Utc::now().to_rfc3339();
+            let function_id = sqlx::query_scalar::<_, i64>(
+                "INSERT INTO functions (identifier, name, description, kind, input_schema, \
+                 output_schema, plugin_id, plugin_export, category_id, required_capabilities, \
+                 created_at, updated_at) VALUES ('tool_dispatch_benchmark_function', \
+                 'Tool dispatch benchmark Function', '', 'builtin', ?, ?, NULL, NULL, NULL, \
+                 NULL, ?, ?) RETURNING id",
+            )
+            .bind(schema)
+            .bind(schema)
+            .bind(&now)
+            .bind(&now)
+            .fetch_one(store.pool())
+            .await?;
+            let tools = ToolStore::new(store.pool().clone())?;
+            let tool = tools
+                .create(ToolInput::for_write(
+                    "tool_dispatch_benchmark".to_string(),
+                    "Tool dispatch benchmark".to_string(),
+                    "Persisted production Tool dispatch fixture".to_string(),
+                    PersistedToolKind::FunctionWrap,
+                    ToolSource::Workspace,
+                    false,
+                    Some(function_id),
+                    None,
+                    schema.to_string(),
+                    schema.to_string(),
+                    None,
+                    None,
+                )?)
+                .await?;
+            let executor =
+                PersistedToolExecutor::new(store.pool().clone(), Arc::new(NoopPersistedToolRunner));
+            let tool_id = tool.id();
+            let _fixture_lifetime = (store, temporary_root);
+            measure_local_async_batched(target.clone(), environment.clone(), 256, move || {
+                let executor = executor.clone();
                 async move {
-                    let request = ToolCallRequest::new("noop", ToolKind::Local, Value::Null);
-                    // Excludes "user Function or Plugin execution": the
-                    // in-memory dispatcher is a no-op terminal result.
-                    let _ = adapter.dispatch(request).await;
+                    let _ = executor
+                        .execute(
+                            tool_id,
+                            serde_json::json!({}),
+                            ToolExecutionContext::new(Vec::new()),
+                        )
+                        .await;
                 }
             })
             .await
             .map(Some)
+            .map_err(Into::into)
         }
         WORKFLOW_100_NODE_ID => {
             let graph = build_100_node_graph();
@@ -279,8 +404,31 @@ async fn run_target(
             })
             .await
             .map(Some)
+            .map_err(Into::into)
         }
         _ => Ok(None),
+    }
+}
+
+struct NoopPersistedToolRunner;
+
+impl ToolTargetRunner for NoopPersistedToolRunner {
+    fn execute_function(
+        &self,
+        _function_id: i64,
+        input: Value,
+        _granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture {
+        Box::pin(async move { Ok(input) })
+    }
+
+    fn execute_workflow(
+        &self,
+        _workflow_id: i64,
+        input: Value,
+        _granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture {
+        Box::pin(async move { Ok(input) })
     }
 }
 
@@ -299,13 +447,6 @@ fn build_100_node_graph() -> WorkflowGraph {
     }
     builder = builder.edge("n97", "end");
     builder.build()
-}
-
-/// Read a versioned baseline file, returning `None` when the file is
-/// absent (a brand-new entry) or malformed.
-fn read_baseline(path: &std::path::Path) -> Option<BenchmarkBaseline> {
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
 }
 
 /// No-op workflow node executor used by the benchmark. Every node

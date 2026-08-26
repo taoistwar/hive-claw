@@ -38,6 +38,7 @@ config = { path = "../config" }
 security = { path = "../security" }
 cron = { path = "../cron" }
 hive-runtime-core = { path = "../hive-runtime-core" }
+hive-json-schema = { path = "../hive-json-schema" }
 
 [dev-dependencies]
 tokio = { workspace = true }

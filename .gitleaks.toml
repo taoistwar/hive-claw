@@ -12,6 +12,11 @@ title = "hive-claw-gitleaks-v1"
 # Default rules cover high-entropy strings, AWS keys, GitHub tokens, etc.
 useDefault = true
 
+[[rules]]
+id = "hive-ci-gitleaks-canary"
+description = "Fail-closed CI proof that the pinned scanner executes reviewed rules"
+regex = '''HIVE_GITLEAKS_CI_CANARY_[A-Z0-9]{16}'''
+
 [allowlist]
 description = "Allow reviewable fixtures, generated artifacts, and docs"
 paths = [

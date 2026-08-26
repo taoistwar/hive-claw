@@ -77,11 +77,10 @@ jobs:
           curl --fail --silent --show-error --location \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${ARCH}.tar.gz" \
             -o gitleaks.tar.gz
-          echo "GITLEAKS_SHA256=placeholder_digest_for_test_purposes_only_aaaaaaaaaaaaaaaaaa" > gitleaks.sha256
 
       - name: Gitleaks checksum verification
         env:
-          GITLEAKS_SHA256: "f8a30ec64d4e7a0a3a8c5e0a4f6f3b1e7a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
         run: |
           set -euo pipefail
           echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check
@@ -92,10 +91,25 @@ jobs:
           tar -xzf gitleaks.tar.gz
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
 
+      - name: Gitleaks canary verification
+        run: |
+          set -euo pipefail
+          canary_path="$(mktemp)"
+          trap 'rm -f "${canary_path}"' EXIT
+          printf 'HIVE_GITLEAKS_CI_CANARY_%s%s\n' '01234567' '89ABCDEF' > "${canary_path}"
+          set +e
+          gitleaks dir "${canary_path}" --config .gitleaks.toml --redact --no-banner
+          canary_status=$?
+          set -e
+          if [ "${canary_status}" -ne 1 ]; then
+            echo "::error::Gitleaks canary expected leak exit code 1, got ${canary_status}" >&2
+            exit 1
+          fi
+
       - name: Gitleaks secret scan
         run: |
           set -euo pipefail
-          gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+          gitleaks git --config .gitleaks.toml --redact --no-banner
 
       - name: cargo-deny installation
         env:
@@ -117,7 +131,8 @@ jobs:
       - name: SQLx offline metadata freshness check
         env:
           SQLX_OFFLINE: "true"
-        run: SQLX_OFFLINE=true cargo sqlx prepare --workspace --check
+          DATABASE_URL: "sqlite::memory:"
+        run: SQLX_OFFLINE=true cargo sqlx prepare --workspace --check --no-dotenv
 
       - name: cargo fmt
         run: cargo +1.97.1 fmt --all -- --check

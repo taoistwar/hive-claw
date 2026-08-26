@@ -1,0 +1,13 @@
+[package]
+name = "hive-json-schema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fail-closed Draft 7 JSON Schema validation shared by HiveClaw products"
+
+[dependencies]
+jsonschema = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }

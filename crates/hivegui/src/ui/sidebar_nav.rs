@@ -8,8 +8,8 @@
 //! `SIDEBAR_A11Y-{key}` selectors exercised by `tests/accessibility.rs`.
 
 use gpui::{
-    Anchor, AnyElement, App, Context, CursorStyle, FocusHandle, IntoElement, KeyBinding,
-    KeyDownEvent, Render, SharedString, Window, actions, div, prelude::*, px,
+    Anchor, AnyElement, App, Context, CursorStyle, Div, FocusHandle, IntoElement, KeyBinding,
+    KeyDownEvent, Render, SharedString, Stateful, Window, actions, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable,
@@ -58,6 +58,37 @@ impl SidebarKey {
             Self::UserConfig => None,
         }
     }
+
+    fn visible_label(self) -> &'static str {
+        match self {
+            Self::Home => "首页",
+            Self::Ai => "AI 管理",
+            Self::Tools => "工具",
+            Self::UserConfig => "用户配置",
+        }
+    }
+}
+
+fn sidebar_focusable_element(key: SidebarKey) -> Stateful<Div> {
+    let id = key.as_str();
+    div()
+        .id(id)
+        .accessibility_id(format!("hivegui-sidebar-{id}"))
+        .role(gpui::accesskit::Role::Button)
+        .aria_label(key.visible_label())
+}
+
+/// Build the exact focusable base element used by the production sidebar and
+/// ask GPUI to populate a real AccessKit node.
+#[doc(hidden)]
+pub fn sidebar_focusable_accesskit_probe(key: SidebarKey) -> gpui::accesskit::Node {
+    let element = sidebar_focusable_element(key);
+    let role = element
+        .a11y_role()
+        .expect("sidebar focus targets always expose an AccessKit role");
+    let mut node = gpui::accesskit::Node::new(role);
+    element.write_a11y_info(&mut node);
+    node
 }
 
 pub struct SidebarNav {
@@ -408,8 +439,7 @@ impl SidebarNav {
             SidebarKey::Tools => 2,
             SidebarKey::UserConfig => 3,
         };
-        div()
-            .id(SharedString::from(key_str))
+        sidebar_focusable_element(key)
             .debug_selector(move || key_str.to_string())
             .w(px(40.0))
             .h(px(40.0))
@@ -502,8 +532,7 @@ impl SidebarNav {
             registry.register("SIDEBAR_A11Y-user_config", a11y_label.to_string());
         });
 
-        div()
-            .id("user_config")
+        sidebar_focusable_element(SidebarKey::UserConfig)
             .debug_selector(|| "user_config".to_string())
             .track_focus(&focus_handle)
             .w(px(40.0))

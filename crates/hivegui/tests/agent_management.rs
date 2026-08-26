@@ -22,22 +22,103 @@
 
 mod support;
 
-use std::time::Instant;
+use std::{collections::BTreeSet, path::Path};
 
-use hivegui::datasource::entity_store::{
-    AgentFilter, AgentInput, AgentPage, AgentRecord, AgentStore, init_tables,
+use chrono::Utc;
+use hivegui::datasource::{
+    entity_store::{AgentFilter, AgentInput, AgentPage, AgentRecord, AgentStore},
+    query_count::{QueryCountObserver, evaluate_query_count, production_query_count_catalog},
+    query_plan::{QueryDialect, SqlitePlanRow, evaluate_sqlite_query, production_query_catalog},
+    store::{Store, StoreOpenOptions},
 };
-use support::TestWorkspace;
+use sqlx::{AssertSqlSafe, Row};
+use support::{
+    TestWorkspace,
+    performance::{
+        AGENT_CRUD_ID, AGENT_FIXTURE_ROWS, AGENT_SEARCH_PAGE_ID, AGENT_SEARCH_PAGE_SCHEDULE,
+        ComparisonOutcome, EnvironmentFingerprint, MEASURED_SAMPLES, baseline_path,
+        evaluate_benchmark_gate, regression_exception_path, run_target, source_revision,
+        target_specs,
+    },
+};
 
 const AGENT_FIXTURE_SIZE: usize = 100;
 const PAGE_SIZE: usize = 20;
 
 async fn fresh_store() -> (TestWorkspace, AgentStore) {
     let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let database = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open canonical v4 Store");
+    let store = AgentStore::from_store(&database).expect("Agent Store");
     (workspace, store)
+}
+
+async fn open_observed_store(
+    workspace: &TestWorkspace,
+    observer: QueryCountObserver,
+) -> (Store, AgentStore) {
+    let database = Store::open_local(
+        StoreOpenOptions::new(workspace.database_path(), workspace.plugin_root())
+            .with_query_count_observer(observer),
+    )
+    .await
+    .expect("open canonical v4 Store");
+    let agents = AgentStore::from_store(&database).expect("observed Agent Store");
+    (database, agents)
+}
+
+async fn seed_resource_fixture(database: &Store) -> (i64, i64, String) {
+    const FIXTURE_TIME: &str = "2026-08-25T00:00:00Z";
+    sqlx::query(
+        "INSERT OR IGNORE INTO capabilities (name, description, is_dangerous, category_id, created_at) \
+         VALUES ('log.emit', 'Agent fixture capability', 0, NULL, ?)",
+    )
+    .bind(FIXTURE_TIME)
+    .execute(database.pool())
+    .await
+    .expect("seed Capability");
+    let function_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO functions (identifier, name, description, kind, input_schema, \
+         output_schema, plugin_id, plugin_export, category_id, required_capabilities, \
+         created_at, updated_at) \
+         VALUES ('agent_fixture_function', 'Agent fixture Function', '', 'builtin', \
+         '{}', '{}', NULL, NULL, NULL, NULL, ?, ?) RETURNING id",
+    )
+    .bind(FIXTURE_TIME)
+    .bind(FIXTURE_TIME)
+    .fetch_one(database.pool())
+    .await
+    .expect("seed Function");
+    let tool_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO tools (identifier, name, description, kind, source, is_always, \
+         function_id, workflow_id, input_schema, output_schema, category_id, \
+         required_capabilities, created_at, updated_at) \
+         VALUES ('agent_fixture_tool', 'Agent fixture Tool', '', 'function-wrap', \
+         'workspace', 0, ?, NULL, '{}', '{}', NULL, '[\"log.emit\"]', ?, ?) \
+         RETURNING id",
+    )
+    .bind(function_id)
+    .bind(FIXTURE_TIME)
+    .bind(FIXTURE_TIME)
+    .fetch_one(database.pool())
+    .await
+    .expect("seed Tool");
+    let skill_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO skills (identifier, name, description, frontmatter, content, source, \
+         is_always, category_id, required_capabilities, created_at, updated_at) \
+         VALUES ('agent_fixture_skill', 'Agent fixture Skill', '', NULL, \
+         'fixture skill', 'workspace', 0, NULL, '[\"log.emit\"]', ?, ?) RETURNING id",
+    )
+    .bind(FIXTURE_TIME)
+    .bind(FIXTURE_TIME)
+    .fetch_one(database.pool())
+    .await
+    .expect("seed Skill");
+    (tool_id, skill_id, "log.emit".to_string())
 }
 
 fn root_input(identifier: &str, name: &str) -> AgentInput {
@@ -102,10 +183,7 @@ async fn default_replacement_is_atomic_and_keeps_invariant() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn parent_agent_id_computes_depth_automatically() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     let parent = store
         .create(root_input("parent", "Parent"))
@@ -121,10 +199,7 @@ async fn parent_agent_id_computes_depth_automatically() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn non_default_root_cannot_become_default() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     let parent = store
         .create(root_input("parent", "Parent"))
@@ -145,10 +220,7 @@ async fn non_default_root_cannot_become_default() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn list_children_returns_only_direct_children() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     let parent = store
         .create(root_input("parent", "Parent"))
@@ -197,10 +269,7 @@ async fn empty_identifier_is_rejected_with_field_level_error() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invalid_charset_identifier_is_rejected() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     let err = AgentInput::new_root("invalid name with spaces", "Bad", "prompt")
         .expect_err("invalid identifier must fail at input layer");
@@ -211,10 +280,7 @@ async fn invalid_charset_identifier_is_rejected() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn duplicate_identifier_returns_conflict() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     store
         .create(root_input("dup", "First"))
@@ -230,10 +296,7 @@ async fn duplicate_identifier_returns_conflict() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn search_filter_pages_records_in_groups_of_twenty() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     for i in 0..AGENT_FIXTURE_SIZE {
         store
@@ -267,10 +330,7 @@ async fn search_filter_pages_records_in_groups_of_twenty() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn search_by_normalized_term_returns_matching_agents() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     store
         .create(root_input("alpha", "Alpha Searcher"))
@@ -290,66 +350,328 @@ async fn search_by_normalized_term_returns_matching_agents() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn one_hundred_crud_operations_p95_under_one_second() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
-
-    let mut samples = Vec::with_capacity(100);
-    for i in 0..100 {
-        let started = Instant::now();
-        store
-            .create(root_input(&format!("perf-{i:03}"), &format!("Perf {i}")))
+async fn hierarchy_cycle_and_depth_over_ten_are_rejected_without_modification() {
+    let (_workspace, store) = fresh_store().await;
+    let root = store
+        .create(root_input("depth-root", "Depth root"))
+        .await
+        .expect("create root");
+    let mut parent = root.clone();
+    for depth in 1..=10 {
+        parent = store
+            .create(
+                root_input(&format!("depth-{depth:02}"), &format!("Depth {depth}"))
+                    .with_parent(Some(parent.id())),
+            )
             .await
-            .expect("create");
-        samples.push(started.elapsed());
+            .expect("create accepted depth");
+        assert_eq!(parent.depth(), depth);
     }
-    samples.sort();
-    let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
+    let before_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(store.pool())
+        .await
+        .expect("count before depth rejection");
+    let depth_error = store
+        .create(root_input("depth-11", "Depth 11").with_parent(Some(parent.id())))
+        .await
+        .expect_err("depth 11 must fail before mutation");
+    assert_eq!(depth_error.field(), "parent_agent_id");
+    assert_eq!(depth_error.reason(), "depth_exceeded");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agents")
+            .fetch_one(store.pool())
+            .await
+            .expect("count after depth rejection"),
+        before_count
+    );
+
+    let cycle_error = store
+        .update(
+            root.id(),
+            root_input("depth-root", "Depth root").with_parent(Some(parent.id())),
+        )
+        .await
+        .expect_err("an ancestor cannot be moved below its descendant");
+    assert_eq!(cycle_error.field(), "parent_agent_id");
+    assert_eq!(cycle_error.reason(), "cycle");
+    let root_after = store
+        .fetch_one(root.id())
+        .await
+        .expect("reload root")
+        .expect("root remains");
+    let deepest_after = store
+        .fetch_one(parent.id())
+        .await
+        .expect("reload deepest")
+        .expect("deepest remains");
+    assert_eq!(root_after.parent_agent_id(), None);
+    assert_eq!(root_after.depth(), 0);
+    assert_eq!(deepest_after.depth(), 10);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_model_preset_is_field_invalid_input_with_zero_modification() {
+    let (_workspace, store) = fresh_store().await;
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(store.pool())
+        .await
+        .expect("count before invalid preset");
+    let error = store
+        .create(
+            root_input("missing-preset", "Missing preset")
+                .with_model_preset("preset-does-not-exist"),
+        )
+        .await
+        .expect_err("non-empty model_preset must reference LlmPreset.name");
+    assert_eq!(error.field(), "model_preset");
+    assert_eq!(error.reason(), "not_found");
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(store.pool())
+        .await
+        .expect("count after invalid preset");
+    assert_eq!(after, before, "invalid preset must not write an Agent");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn three_resource_relations_batch_load_in_four_constant_queries() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let observer = QueryCountObserver::new();
+    let (database, agents) = open_observed_store(&workspace, observer.clone()).await;
+    let (tool_id, skill_id, capability) = seed_resource_fixture(&database).await;
+    let mut ids = Vec::new();
+    for index in 0..25 {
+        let record = agents
+            .create(
+                root_input(
+                    &format!("resource-{index:03}"),
+                    &format!("Resource {index:03}"),
+                )
+                .with_tools([tool_id])
+                .with_skills([skill_id])
+                .with_capabilities([capability.clone()]),
+            )
+            .await
+            .expect("seed resource Agent");
+        ids.push(record.id());
+    }
+
+    let contract = production_query_count_catalog()
+        .iter()
+        .find(|contract| contract.id == "agent.resource_snapshot")
+        .expect("Agent resource query-count contract");
+    assert_eq!(contract.owner_phase, "US13");
+    assert_eq!(contract.activation_task, "T115");
     assert!(
-        p95 <= std::time::Duration::from_secs(1),
-        "100 Agent CRUD p95 = {p95:?}; budget is 1s"
+        contract.active,
+        "T115 must activate the production observer"
+    );
+    assert_eq!(contract.maximum_queries, 4);
+
+    let small_scope = observer.start_scope(contract.id, 1);
+    let small = agents
+        .load_resource_snapshots(&ids[..1])
+        .await
+        .expect("load one Agent snapshot");
+    let small_sample = small_scope.finish();
+    let large_scope = observer.start_scope(contract.id, ids.len());
+    let large = agents
+        .load_resource_snapshots(&ids)
+        .await
+        .expect("load many Agent snapshots");
+    let large_sample = large_scope.finish();
+
+    assert_eq!(small.len(), 1);
+    assert_eq!(large.len(), ids.len());
+    for record in &large {
+        assert_eq!(record.tool_ids(), [tool_id]);
+        assert_eq!(record.skill_ids(), [skill_id]);
+        assert_eq!(record.capability_names(), [capability.as_str()]);
+    }
+    let verdict = evaluate_query_count(contract.maximum_queries, &small_sample, &large_sample);
+    assert!(
+        verdict.is_accepted(),
+        "Agent resource hydration must remain four indexed production queries: {:?}",
+        verdict.failures()
+    );
+}
+
+#[test]
+fn agent_query_catalog_owns_every_filter_and_association_route() {
+    let activated = production_query_catalog()
+        .iter()
+        .filter(|query| {
+            query.active
+                && query.owner_phase == "US13"
+                && query.activation_task == "T115"
+                && query.dialect == QueryDialect::Sqlite
+        })
+        .collect::<Vec<_>>();
+    let required_tables = BTreeSet::from([
+        "agents",
+        "search_documents",
+        "search_documents_fts",
+        "search_short_grams",
+        "agent_tools",
+        "agent_skills",
+        "agent_capabilities",
+        "tools",
+        "skills",
+        "capabilities",
+        "llm_presets",
+    ]);
+    let observed_tables = activated
+        .iter()
+        .flat_map(|query| {
+            query
+                .requirements
+                .iter()
+                .map(|requirement| requirement.table)
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !activated.is_empty()
+            && activated
+                .iter()
+                .all(|query| { !query.sql.trim().is_empty() && !query.requirements.is_empty() })
+            && required_tables.is_subset(&observed_tables),
+        "active US13/T115 production query catalog is incomplete: required={required_tables:?}, observed={observed_tables:?}"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn search_pagination_p95_under_five_hundred_ms() {
+async fn every_active_agent_query_explains_its_exact_registered_production_sql() {
     let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
-
-    for i in 0..AGENT_FIXTURE_SIZE {
-        store
-            .create(root_input(&format!("page-{i:03}"), &format!("Page {i}")))
-            .await
-            .expect("create");
-    }
-
-    let mut samples = Vec::with_capacity(100);
-    for i in 0..100 {
-        let started = Instant::now();
-        let _ = store
-            .search(&AgentFilter::first().with_page((i % 5) + 1))
-            .await
-            .expect("search");
-        samples.push(started.elapsed());
-    }
-    samples.sort();
-    let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
+    let database = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open canonical v4 Store");
+    let activated = production_query_catalog()
+        .iter()
+        .filter(|query| {
+            query.active
+                && query.owner_phase == "US13"
+                && query.activation_task == "T115"
+                && query.dialect == QueryDialect::Sqlite
+        })
+        .collect::<Vec<_>>();
     assert!(
-        p95 <= std::time::Duration::from_millis(500),
-        "100 search/page p95 = {p95:?}; budget is 500ms"
+        !activated.is_empty(),
+        "T115 must activate exact production SQL"
     );
+
+    for query in activated {
+        let explain_sql = format!("EXPLAIN QUERY PLAN {}", query.sql);
+        let mut statement = sqlx::query(AssertSqlSafe(explain_sql));
+        for _ in 0..query.sql.matches('?').count() {
+            statement = statement.bind(Option::<String>::None);
+        }
+        let rows = statement
+            .fetch_all(database.pool())
+            .await
+            .unwrap_or_else(|error| panic!("EXPLAIN exact {}: {error}", query.id));
+        let plan = rows
+            .into_iter()
+            .map(|row| {
+                let detail = row.try_get::<String, _>(3).expect("SQLite EXPLAIN detail");
+                SqlitePlanRow {
+                    id: row.try_get(0).expect("SQLite EXPLAIN id"),
+                    parent: row.try_get(1).expect("SQLite EXPLAIN parent"),
+                    not_used: row.try_get(2).expect("SQLite EXPLAIN not-used"),
+                    detail: Box::leak(detail.into_boxed_str()),
+                }
+            })
+            .collect::<Vec<_>>();
+        let verdict = evaluate_sqlite_query(query, &plan, "2026-08-25");
+        assert!(
+            verdict.is_accepted(),
+            "Agent query {} failed exact production EXPLAIN: {:?}; plan={plan:?}",
+            query.id,
+            verdict.failures()
+        );
+    }
+}
+
+#[test]
+fn agent_management_uses_exactly_two_canonical_t005_targets() {
+    let owned = target_specs()
+        .into_iter()
+        .filter(|target| target.owner_task == "T115")
+        .collect::<Vec<_>>();
+    let ids = owned
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids, BTreeSet::from([AGENT_CRUD_ID, AGENT_SEARCH_PAGE_ID]));
+    assert_eq!(owned.len(), 2);
+    const { assert!(AGENT_FIXTURE_ROWS >= 100) };
+    assert_eq!(AGENT_SEARCH_PAGE_SCHEDULE.len(), MEASURED_SAMPLES);
+    for target in owned {
+        assert_eq!(target.warmup_iterations, 10);
+        assert_eq!(target.measured_samples, MEASURED_SAMPLES);
+        match target.id.as_str() {
+            AGENT_CRUD_ID => assert_eq!(target.p95_budget_ns, 1_000_000_000),
+            AGENT_SEARCH_PAGE_ID => assert_eq!(target.p95_budget_ns, 500_000_000),
+            other => panic!("unexpected Agent management target {other}"),
+        }
+    }
+}
+
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only T005 benchmark gate; debug has a distinct environment fingerprint"
+)]
+#[tokio::test(flavor = "current_thread")]
+async fn agent_performance_runner_meets_budgets_and_approved_baselines() {
+    let current_source_revision = source_revision(Path::new(env!("CARGO_MANIFEST_DIR")))
+        .expect("capture repository-anchored benchmark source revision");
+    let as_of = Utc::now().date_naive();
+    let environment = EnvironmentFingerprint::capture();
+    for target in target_specs()
+        .into_iter()
+        .filter(|target| target.id == AGENT_CRUD_ID || target.id == AGENT_SEARCH_PAGE_ID)
+    {
+        let report = run_target(&target, &environment)
+            .await
+            .unwrap_or_else(|error| panic!("run canonical {} benchmark: {error}", target.id))
+            .unwrap_or_else(|| panic!("T005 runner must own {}", target.id));
+        assert_eq!(report.target, target);
+        assert_eq!(report.environment, environment);
+        assert_eq!(report.sample_count, MEASURED_SAMPLES);
+        let baseline = baseline_path(&target, &environment);
+        let exception = regression_exception_path(&target, &environment);
+        let evaluation = evaluate_benchmark_gate(
+            &report,
+            &current_source_revision,
+            &baseline,
+            &exception,
+            as_of,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} gate error: baseline={}, exception={}, error={error}",
+                target.id,
+                baseline.display(),
+                exception.display()
+            )
+        });
+        assert!(
+            matches!(
+                evaluation.outcome,
+                ComparisonOutcome::Passed | ComparisonOutcome::ApprovedException
+            ),
+            "{} requires an approved T005 baseline comparison: baseline={}, exception={}, evaluation={evaluation:?}",
+            target.id,
+            baseline.display(),
+            exception.display()
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn delete_agent_clears_default_invariant() {
-    let workspace = TestWorkspace::new().expect("test workspace");
-    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
-    init_tables(&pool).await.expect("init_tables");
-    let store = AgentStore::new(pool).expect("store");
+    let (_workspace, store) = fresh_store().await;
 
     let first = store
         .create(root_input("first", "First"))

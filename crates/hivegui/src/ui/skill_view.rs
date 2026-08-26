@@ -628,82 +628,101 @@ impl Render for SkillView {
                             ),
                     ),
             )
-            .when(self.show_form, {
-                let identifier_input = self.identifier_input.clone().unwrap();
-                let name_input = self.name_input.clone().unwrap();
-                let description_input = self.description_input.clone().unwrap();
-                let source_input = self.source_input.clone().unwrap();
-                let content_input = self.content_input.clone().unwrap();
-                let frontmatter_input = self.frontmatter_input.clone().unwrap();
-                |root| {
-                    root.child(
-                        div()
-                            .absolute()
-                            .top(px(0.0))
-                            .left(px(0.0))
-                            .right(px(0.0))
-                            .bottom(px(0.0))
-                            .track_focus(&self.modal_focus)
-                            .bg(theme.overlay)
-                            .opacity(0.3)
-                            .cursor(CursorStyle::PointingHand)
-                            .on_mouse_down(MouseButton::Left, {
-                                let t = cx.weak_entity();
-                                move |_, _, cx| {
-                                    t.update(cx, |v, cx| v.hide_form(cx)).ok();
-                                }
-                            }),
+            .when(self.show_form, |root| {
+                let identifier_input = self
+                    .identifier_input
+                    .clone()
+                    .expect("visible Skill form must initialize identifier input");
+                let name_input = self
+                    .name_input
+                    .clone()
+                    .expect("visible Skill form must initialize name input");
+                let description_input = self
+                    .description_input
+                    .clone()
+                    .expect("visible Skill form must initialize description input");
+                let source_input = self
+                    .source_input
+                    .clone()
+                    .expect("visible Skill form must initialize source input");
+                let content_input = self
+                    .content_input
+                    .clone()
+                    .expect("visible Skill form must initialize content input");
+                let frontmatter_input = self
+                    .frontmatter_input
+                    .clone()
+                    .expect("visible Skill form must initialize frontmatter input");
+                root.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(0.0))
+                        .track_focus(&self.modal_focus)
+                        .bg(theme.overlay)
+                        .opacity(0.3)
+                        .cursor(CursorStyle::PointingHand)
+                        .on_mouse_down(MouseButton::Left, {
+                            let t = cx.weak_entity();
+                            move |_, _, cx| {
+                                t.update(cx, |v, cx| v.hide_form(cx)).ok();
+                            }
+                        }),
+                )
+                .child(
+                    management_modal_panel(
+                        management_modal_layer(px(550.0)),
+                        theme.popover,
+                        theme.foreground,
+                        theme.border,
                     )
+                    .track_focus(&self.form_focus)
+                    .debug_selector(|| SKILL_MODAL.to_owned())
+                    .id(SKILL_MODAL)
+                    .on_key_down(cx.listener(|v, event, window, cx| {
+                        v.on_key_down(event, window, cx);
+                    }))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
                     .child(
-                        management_modal_panel(
-                            management_modal_layer(px(550.0)),
-                            theme.popover,
-                            theme.foreground,
-                            theme.border,
-                        )
-                        .track_focus(&self.form_focus)
-                        .debug_selector(|| SKILL_MODAL.to_owned())
-                        .id(SKILL_MODAL)
-                        .on_key_down(cx.listener(|v, event, window, cx| {
-                            v.on_key_down(event, window, cx);
-                        }))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            management_modal_scroll("skill-form-scroll", &self.form_scroll)
-                                .id(SKILL_FORM)
-                                .gap(px(12.0))
-                                .child(
-                                    div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(if self.editing_id.is_some() {
-                                            "编辑技能"
-                                        } else {
-                                            "添加技能"
-                                        }),
-                                )
-                                .child(form_field("Identifier *", identifier_input, theme))
-                                .child(form_field("名称 *", name_input, theme))
-                                .child(form_field("描述 *", description_input, theme))
-                                .child(form_field("Source", source_input, theme))
-                                .child(form_field("Frontmatter", frontmatter_input, theme))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(div().text_size(px(13.0)).child("始终注入"))
-                                        .child(if self.form_is_always {
-                                            action_button(
-                                                "toggle-always",
-                                                "是",
-                                                ActionRole::Main,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                        management_modal_scroll("skill-form-scroll", &self.form_scroll)
+                            .id(SKILL_FORM)
+                            .gap(px(12.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_id.is_some() {
+                                        "编辑技能"
+                                    } else {
+                                        "添加技能"
+                                    }),
+                            )
+                            .child(form_field("Identifier *", identifier_input, theme))
+                            .child(form_field("名称 *", name_input, theme))
+                            .child(form_field("描述 *", description_input, theme))
+                            .child(form_field("Source", source_input, theme))
+                            .child(form_field("Frontmatter", frontmatter_input, theme))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(div().text_size(px(13.0)).child("始终注入"))
+                                    .child(if self.form_is_always {
+                                        action_button(
+                                            "toggle-always",
+                                            "是",
+                                            ActionRole::Main,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| {
@@ -712,16 +731,19 @@ impl Render for SkillView {
                                                     })
                                                     .ok();
                                                 }
-                                            })
-                                        } else {
-                                            action_button(
-                                                "toggle-always",
-                                                "否",
-                                                ActionRole::Neutral,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                            },
+                                        )
+                                    } else {
+                                        action_button(
+                                            "toggle-always",
+                                            "否",
+                                            ActionRole::Neutral,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| {
@@ -730,60 +752,66 @@ impl Render for SkillView {
                                                     })
                                                     .ok();
                                                 }
-                                            })
-                                        }),
-                                )
-                                .child(form_field("Content (Markdown) *", content_input, theme))
-                                .when_some(self.error_message.as_ref(), |scroll, err| {
-                                    scroll.child(
-                                        div()
-                                            .p(px(8.0))
-                                            .bg(theme.warning.opacity(0.15))
-                                            .rounded(px(4.0))
-                                            .text_size(px(12.0))
-                                            .text_color(theme.warning)
-                                            .child(err.clone()),
-                                    )
-                                })
-                                .child(
+                                            },
+                                        )
+                                    }),
+                            )
+                            .child(form_field("Content (Markdown) *", content_input, theme))
+                            .when_some(self.error_message.as_ref(), |scroll, err| {
+                                scroll.child(
                                     div()
-                                        .flex()
-                                        .justify_end()
-                                        .gap(px(8.0))
-                                        .child(
-                                            action_button(
-                                                "cancel",
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .p(px(8.0))
+                                        .bg(theme.warning.opacity(0.15))
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme.warning)
+                                        .child(err.clone()),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        action_button(
+                                            "cancel",
+                                            "取消",
+                                            ActionRole::Neutral,
+                                            ActionSize::Dialog,
+                                            style,
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.hide_form(cx)).ok();
                                                 }
-                                            }),
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "save",
+                                            "保存",
+                                            ActionRole::Main,
+                                            ActionSize::Dialog,
+                                            style,
                                         )
-                                        .child(
-                                            action_button(
-                                                "save",
-                                                "保存",
-                                                ActionRole::Main,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(MouseButton::Left, {
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.save(cx)).ok();
                                                 }
-                                            }),
+                                            },
                                         ),
-                                ),
-                        ),
-                    )
-                }
+                                    ),
+                            ),
+                    ),
+                )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
                 let _id = self.confirm_delete_id.unwrap();

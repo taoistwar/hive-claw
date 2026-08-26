@@ -29,9 +29,11 @@ pub use capability_adapter::{
 };
 pub use desktop_host::DesktopHostDispatcher;
 pub use execution::{
-    CANCEL_DEADLINE, CancelHandle, ExecutionId, FailureCategory, FoundationRuntimeComposition,
-    LocalExecutionAdapter, LocalExecutionError, LocalExecutionFuture, LocalExecutionOutcome,
-    LocalExecutionRequest, LocalFunctionExecutionAdapter,
+    CANCEL_DEADLINE, CancelHandle, CancellationLayer, ExecutionId, FailureCategory,
+    FoundationRuntimeComposition, LayerCancellationAdapter, LayerCancellationError,
+    LayerCancellationFuture, LayerCancellationSummary, LayerExecutionRequest,
+    LayeredCancellationRuntime, LocalExecutionAdapter, LocalExecutionError, LocalExecutionFuture,
+    LocalExecutionOutcome, LocalExecutionRequest, LocalFunctionExecutionAdapter,
 };
 pub use function_test_executor::{
     FUNCTION_TEST_TIMEOUT, FunctionTestExecutor, capability_matches_filter, format_test_output,
@@ -45,6 +47,7 @@ pub use provider_resolver::{
     ProviderResolver, ProviderTransport, TransportError, TransportOutcome, TransportRequest,
 };
 pub use workflow_executor::{
-    WorkflowExecutionError, WorkflowExecutionOutcome, WorkflowExecutor, WorkflowNodeExecutor,
-    WorkflowNodeResult, WorkflowValidationError,
+    LocalWorkflowNodeExecutor, WorkflowExecutionError, WorkflowExecutionOutcome,
+    WorkflowExecutionReport, WorkflowExecutor, WorkflowNodeExecutor, WorkflowNodeReport,
+    WorkflowNodeResult, WorkflowNodeStatus, WorkflowRunStatus, WorkflowValidationError,
 };

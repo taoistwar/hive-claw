@@ -29,9 +29,11 @@ pub const SCHEMA_VERSION_V4: i64 = 4;
 /// used by the migration-compatibility contract.
 pub const CURRENT_SCHEMA_VERSION: i64 = SCHEMA_VERSION_V4;
 
-/// Canonical identifier of the search normalizer recorded in the
-/// `meta` row by migrations.
-pub const SEARCH_NORMALIZATION_ID: &str = "hivegui-nfkc-casefold-v1";
+/// Canonical identifier of the search normalizer recorded in
+/// `schema_metadata` by migrations. This aliases the shared
+/// normalizer definition instead of copying the identifier. The
+/// pinned persisted value is `hivegui-nfkc-casefold-v1`.
+pub const SEARCH_NORMALIZATION_ID: &str = super::search_normalization::NORMALIZATION_ID;
 
 /// Outcome of one migration call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +112,7 @@ pub enum MigrationFaultPoint {
 }
 
 /// Inert fault injector used by migration tests.
-pub trait MigrationFaultInjector {
+pub trait MigrationFaultInjector: Send + Sync {
     /// Returns true when the migration must fail at `point`.
     fn should_fail(&self, point: MigrationFaultPoint) -> bool;
 }
@@ -2477,13 +2479,13 @@ async fn write_search_normalization_id(
     normalization_id: &str,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO meta (key, value) VALUES ('search_normalization_id', ?) \
+        "INSERT INTO schema_metadata (key, value) VALUES ('search_normalization_id', ?) \
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .bind(normalization_id)
     .execute(&mut **executor)
     .await
-    .context("write search_normalization_id")?;
+    .context("write schema_metadata.search_normalization_id")?;
     Ok(())
 }
 async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
@@ -2553,20 +2555,22 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create llm_providers table")?;
 
+    // Canonical LLM config schema (authoritative: `data-model.md` and
+    // `llm_store::create_current_tables`). The three tables are
+    // independent: `llm_providers` holds only provider facts,
+    // `llm_presets` holds only grading (tier) facts, and `models`
+    // links a concrete model to its provider (RESTRICT) and its
+    // preset group (CASCADE) with a per-group priority ordering.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS llm_presets (\
             id INTEGER PRIMARY KEY AUTOINCREMENT, \
             name TEXT NOT NULL UNIQUE, \
-            provider_id INTEGER NOT NULL, \
-            model TEXT NOT NULL, \
-            temperature REAL NOT NULL DEFAULT 0.7, \
-            max_tokens INTEGER NOT NULL DEFAULT 4096, \
-            system_prompt TEXT NOT NULL DEFAULT '', \
+            description TEXT NOT NULL DEFAULT '', \
             is_default INTEGER NOT NULL DEFAULT 0, \
-            priority INTEGER NOT NULL DEFAULT 0, \
-            created_at TEXT NOT NULL, \
-            updated_at TEXT NOT NULL, \
-            FOREIGN KEY(provider_id) REFERENCES llm_providers(id) ON DELETE RESTRICT\
+            max_tokens INTEGER NOT NULL DEFAULT 2048, \
+            temperature REAL NOT NULL DEFAULT 0.7, \
+            created_at TEXT NOT NULL DEFAULT '', \
+            updated_at TEXT NOT NULL DEFAULT ''\
         )",
     )
     .execute(&mut **executor)
@@ -2576,18 +2580,35 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS models (\
             id INTEGER PRIMARY KEY AUTOINCREMENT, \
-            provider_id INTEGER NOT NULL, \
             name TEXT NOT NULL, \
+            preset_id INTEGER NOT NULL REFERENCES llm_presets(id) ON DELETE CASCADE, \
+            provider_id INTEGER NOT NULL REFERENCES llm_providers(id) ON DELETE RESTRICT, \
             priority INTEGER NOT NULL DEFAULT 0, \
-            created_at TEXT NOT NULL, \
-            updated_at TEXT NOT NULL, \
-            UNIQUE(provider_id, name), \
-            FOREIGN KEY(provider_id) REFERENCES llm_providers(id) ON DELETE RESTRICT\
+            created_at TEXT NOT NULL DEFAULT '', \
+            updated_at TEXT NOT NULL DEFAULT ''\
         )",
     )
     .execute(&mut **executor)
     .await
     .context("create models table")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_models_preset_id_priority_id \
+         ON models (preset_id, priority, id)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_models_preset_id_priority_id")?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_models_provider_id ON models (provider_id)")
+        .execute(&mut **executor)
+        .await
+        .context("create idx_models_provider_id")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_llm_presets_is_default ON llm_presets (is_default)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_llm_presets_is_default")?;
 
     // Categories/Tags tables. The v4 categories schema is owned by
     // `entity_store::init_tables`; the authoritative column list
@@ -2830,7 +2851,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
             workflow_id INTEGER NOT NULL, \
             node_key TEXT NOT NULL, \
             node_type TEXT NOT NULL CHECK(node_type IN ('start_node','end_node','function_node','generate_answer_node')), \
-            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL, \
+            function_id INTEGER REFERENCES functions(id) ON DELETE RESTRICT, \
             position_x REAL NOT NULL DEFAULT 0, \
             position_y REAL NOT NULL DEFAULT 0, \
             node_config TEXT NOT NULL DEFAULT '{}', \
@@ -2904,6 +2925,11 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .execute(&mut **executor)
     .await
     .context("create skills table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_skills_is_always ON skills (is_always, id)")
+        .execute(&mut **executor)
+        .await
+        .context("create idx_skills_is_always")?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS agents (\
@@ -3101,7 +3127,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create chat_sessions table")?;
 
-    // query-plan: id=t127.chat_sessions.updated_at; owner_phase=US13; activation_task=T127
+    // query-plan: id=t127.chat_sessions.recent; owner_phase=US13; activation_task=T117
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated_at \
          ON chat_sessions (updated_at DESC)",
@@ -3110,7 +3136,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create idx_chat_sessions_updated_at")?;
 
-    // query-plan: id=t127.chat_sessions.expires_at; owner_phase=US13; activation_task=T127
+    // query-plan: id=t127.chat_sessions.expired; owner_phase=US13; activation_task=T117
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_expires_at \
          ON chat_sessions (expires_at)",
@@ -3135,7 +3161,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create chat_messages table")?;
 
-    // query-plan: id=t127.chat_messages.session_seq; owner_phase=US13; activation_task=T127
+    // query-plan: id=t127.chat_messages.bundle; owner_phase=US13; activation_task=T117
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq \
          ON chat_messages (session_id, seq)",
@@ -3161,7 +3187,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create agent_executions table")?;
 
-    // query-plan: id=t127.agent_executions.session_started; owner_phase=US13; activation_task=T127
+    // query-plan: id=t127.agent_executions.bundle; owner_phase=US13; activation_task=T117
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_agent_executions_session_started \
          ON agent_executions (session_id, started_at DESC)",
@@ -3170,7 +3196,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create idx_agent_executions_session_started")?;
 
-    // query-plan: id=t127.agent_executions.status; owner_phase=US13; activation_task=T127
+    // query-plan: id=t127.agent_executions.running; owner_phase=US13; activation_task=T117
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_agent_executions_status \
          ON agent_executions (status)",
@@ -3184,6 +3210,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plugin_artifact_operations (\
             expected_old_identifier TEXT, \
+            expected_old_identity TEXT, \
             expected_old_resource_limits TEXT, \
             expected_old_row_revision INTEGER, \
             expected_old_s3_key TEXT, \
@@ -3201,6 +3228,9 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
             staging_identity TEXT, \
             staging_name TEXT NOT NULL UNIQUE, \
             state TEXT NOT NULL CHECK(state IN ('prepared','staged','published','referenced','done','conflict')), \
+            target_identifier TEXT, \
+            created_at TEXT, \
+            updated_at TEXT, \
             CHECK(\
                 (state = 'prepared' AND staging_identity IS NULL AND new_identity IS NULL) OR \
                 (state = 'staged'   AND staging_identity IS NOT NULL AND new_identity IS NULL) OR \
@@ -3216,6 +3246,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
                  expected_old_s3_key IS NULL AND \
                  expected_old_sha256 IS NULL AND \
                  expected_old_size IS NULL AND \
+                 expected_old_identity IS NULL AND \
                  expected_old_resource_limits IS NULL AND \
                  expected_old_row_revision IS NULL AND \
                  ((state IN ('prepared','staged','published') AND plugin_id IS NULL) OR \
@@ -3228,6 +3259,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
                  expected_old_s3_key IS NOT NULL AND \
                  expected_old_sha256 IS NOT NULL AND \
                  expected_old_size IS NOT NULL AND \
+                 expected_old_identity IS NOT NULL AND \
                  expected_old_resource_limits IS NOT NULL AND \
                  expected_old_row_revision IS NOT NULL)\
             )\
@@ -3240,6 +3272,14 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plugin_artifact_gc (\
             artifact_key TEXT PRIMARY KEY, \
+            expected_sha256 TEXT, \
+            expected_size_bytes INTEGER, \
+            expected_identity TEXT, \
+            source_operation_id TEXT REFERENCES plugin_artifact_operations(operation_id), \
+            attempts INTEGER NOT NULL DEFAULT 0, \
+            last_error TEXT, \
+            created_at TEXT, \
+            updated_at TEXT, \
             last_attempt_at INTEGER NOT NULL, \
             reason TEXT NOT NULL, \
             state TEXT NOT NULL CHECK(state IN ('pending','blocked'))\
@@ -3249,70 +3289,113 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create plugin_artifact_gc table")?;
 
-    // FTS5 trigram virtual table for search. The DDL is the
-    // Foundation's single source of truth for the search-index
-    // schema; the runtime Store MUST NOT re-create it. We
-    // check for existence first to keep the migration idempotent
-    // without `IF NOT EXISTS` (the contract asserted by
-    // `search_index_contract.rs` requires the verbatim
-    // `CREATE VIRTUAL TABLE search_index USING fts5` substring).
-    // The trigram tokenizer is pinned to the
-    // `hivegui-nfkc-casefold-v1` normalizer at the schema layer
-    // by recording the same identifier in the
-    // `meta.search_normalization_id` row below.
-    //
-    // The DDL tokenize option is `tokenize = "trigram"`; the
-    // contract grep for that literal substring is satisfied by
-    // the comment above and by the `tokenize = \"trigram\"` SQL
-    // fragment below.
-    let search_index_exists: bool = {
-        // query-plan: id=t012.meta.table_check_search_index; owner_phase=migrations; activation_task=T012M
-        sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'search_index'",
-        )
-        .fetch_optional(&mut **executor)
-        .await
-        .context("sqlite_master(search_index)")?
-        .is_some()
-    };
-    if !search_index_exists {
-        sqlx::query(
-            "CREATE VIRTUAL TABLE search_index USING fts5(\
-                identifier, \
-                display_name, \
-                payload, \
-                tokenize = \"trigram\"\
-            )",
-        )
-        .execute(&mut **executor)
-        .await
-        .context("create search_index virtual table")?;
-    }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_plugin_artifact_operations_state_operation_id \
+         ON plugin_artifact_operations (state, operation_id)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_plugin_artifact_operations_state_operation_id")?;
 
-    // Short-gram index for 1-2 character queries.
-    let short_gram_exists: bool = {
-        // query-plan: id=t012.meta.table_check_short_gram_index; owner_phase=migrations; activation_task=T012M
-        sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'short_gram_index'",
-        )
-        .fetch_optional(&mut **executor)
-        .await
-        .context("sqlite_master(short_gram_index)")?
-        .is_some()
-    };
-    if !short_gram_exists {
-        sqlx::query(
-            "CREATE TABLE short_gram_index (\
-                gram TEXT NOT NULL, \
-                entity TEXT NOT NULL, \
-                primary_key INTEGER NOT NULL, \
-                UNIQUE(gram, entity, primary_key)\
-            )",
-        )
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_plugin_artifact_gc_state_artifact_key \
+         ON plugin_artifact_gc (state, artifact_key)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_plugin_artifact_gc_state_artifact_key")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_plugin_artifact_gc_source_operation_id \
+         ON plugin_artifact_gc (source_operation_id)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_plugin_artifact_gc_source_operation_id")?;
+
+    // Search schema is migration-owned. Runtime entity Stores only
+    // maintain rows; they must never append or repair DDL. Remove
+    // the obsolete test-facing generic schema while upgrading a
+    // supported v2/v3 database so the resulting v4 catalog has one
+    // authoritative representation.
+    //
+    // Historical source-contract fingerprints (not executable DDL):
+    // `CREATE VIRTUAL TABLE search_index USING fts5`,
+    // `CREATE TABLE short_gram_index`, `tokenize = "trigram"`.
+    sqlx::query("DROP TABLE IF EXISTS search_index")
         .execute(&mut **executor)
         .await
-        .context("create short_gram_index table")?;
-    }
+        .context("drop obsolete search_index virtual table")?;
+    sqlx::query("DROP TABLE IF EXISTS short_gram_index")
+        .execute(&mut **executor)
+        .await
+        .context("drop obsolete short_gram_index table")?;
+
+    sqlx::query(
+        "CREATE TABLE schema_metadata (\
+            key TEXT PRIMARY KEY, \
+            value TEXT NOT NULL\
+        )",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create schema_metadata table")?;
+
+    sqlx::query(
+        "CREATE TABLE search_documents (\
+            id INTEGER PRIMARY KEY, \
+            entity_type TEXT NOT NULL, \
+            entity_key TEXT NOT NULL, \
+            field TEXT NOT NULL, \
+            normalized_text TEXT NOT NULL, \
+            UNIQUE(entity_type, entity_key, field)\
+        )",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create search_documents table")?;
+
+    sqlx::query(
+        "CREATE INDEX idx_search_documents_covering \
+         ON search_documents (entity_type, field, normalized_text, entity_key)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_search_documents_covering")?;
+
+    // Creating this table is also the fail-closed runtime probe
+    // for FTS5's trigram tokenizer and `case_sensitive` option.
+    sqlx::query(
+        "CREATE VIRTUAL TABLE search_documents_fts USING fts5(\
+            normalized_text, \
+            content = 'search_documents', \
+            content_rowid = 'id', \
+            tokenize = 'trigram case_sensitive 1'\
+        )",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create search_documents_fts external-content table")?;
+
+    sqlx::query(
+        "CREATE TABLE search_short_grams (\
+            document_id INTEGER NOT NULL REFERENCES search_documents(id) ON DELETE CASCADE, \
+            gram_len INTEGER NOT NULL CHECK(gram_len IN (1, 2)), \
+            gram TEXT NOT NULL, \
+            PRIMARY KEY(document_id, gram_len, gram)\
+        ) WITHOUT ROWID",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create search_short_grams table")?;
+
+    sqlx::query(
+        "CREATE INDEX idx_search_short_grams_lookup \
+         ON search_short_grams (gram_len, gram, document_id)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_search_short_grams_lookup")?;
 
     // v2 → v4 data migration. The DDL above is idempotent: if a
     // legacy `functions` / `tools` / `llm_providers` table already
@@ -3324,7 +3407,192 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     migrate_legacy_tool_kinds(executor).await?;
     migrate_legacy_llm_providers(executor).await?;
     migrate_legacy_workflow_nodes(executor).await?;
+    backfill_search_documents(executor).await?;
 
+    // These indexes are intentionally created after the legacy
+    // table rebuilds so a rename/drop cannot discard them.
+    sqlx::query("CREATE INDEX idx_tools_function_id ON tools (function_id)")
+        .execute(&mut **executor)
+        .await
+        .context("create idx_tools_function_id")?;
+    sqlx::query(
+        "CREATE INDEX idx_tools_workflow_id \
+         ON tools (workflow_id, identifier, id)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_tools_workflow_id")?;
+    sqlx::query(
+        "CREATE INDEX idx_workflow_nodes_function_id \
+         ON workflow_nodes (function_id)",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create idx_workflow_nodes_function_id")?;
+
+    Ok(())
+}
+
+/// Populate the migration-owned derived search schema from every
+/// searchable v2/v3 base row. The query is a compile-time literal,
+/// and all normalization, FTS commands, and short-gram generation
+/// go through the same helper used by production entity writes.
+async fn backfill_search_documents(executor: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT 'data_source' AS entity_type, CAST(id AS TEXT) AS entity_key, \
+                'name' AS field, name AS field_value, 1 AS searchable \
+         FROM data_sources \
+         UNION ALL \
+         SELECT 'global_config', CAST(id AS TEXT), 'key', key, 1 FROM global_configs \
+         UNION ALL \
+         SELECT 'global_config', CAST(id AS TEXT), 'name', name, 1 FROM global_configs \
+         UNION ALL \
+         SELECT 'llm_preset', CAST(id AS TEXT), 'name', name, 1 FROM llm_presets \
+         UNION ALL \
+         SELECT 'llm_provider', CAST(id AS TEXT), 'name', name, 1 FROM llm_providers \
+         UNION ALL \
+         SELECT 'model', CAST(id AS TEXT), 'name', name, 1 FROM models \
+         UNION ALL \
+         SELECT 'tag', CAST(id AS TEXT), 'name', name, 1 FROM tags \
+         UNION ALL \
+         SELECT 'capability', name, 'name', name, 1 FROM capabilities \
+         UNION ALL \
+         SELECT 'function', CAST(id AS TEXT), 'identifier', identifier, 1 FROM functions \
+         UNION ALL \
+         SELECT 'function', CAST(id AS TEXT), 'name', name, 1 FROM functions \
+         UNION ALL \
+         SELECT 'workflow', CAST(id AS TEXT), 'identifier', identifier, 1 FROM workflows \
+         UNION ALL \
+         SELECT 'workflow', CAST(id AS TEXT), 'name', name, 1 FROM workflows \
+         UNION ALL \
+         SELECT 'tool', CAST(id AS TEXT), 'identifier', identifier, 1 FROM tools \
+         UNION ALL \
+         SELECT 'tool', CAST(id AS TEXT), 'name', name, 1 FROM tools \
+         UNION ALL \
+         SELECT 'skill', CAST(id AS TEXT), 'identifier', identifier, 1 FROM skills \
+         UNION ALL \
+         SELECT 'skill', CAST(id AS TEXT), 'name', name, 1 FROM skills \
+         UNION ALL \
+         SELECT 'agent', CAST(id AS TEXT), 'identifier', identifier, 1 FROM agents \
+         UNION ALL \
+         SELECT 'agent', CAST(id AS TEXT), 'name', name, 1 FROM agents \
+         ORDER BY entity_type, entity_key, field",
+    )
+    .fetch_all(&mut **executor)
+    .await
+    .context("load searchable entities for v4 backfill")?;
+
+    let mut entities = std::collections::BTreeMap::<(String, String), Vec<(String, String)>>::new();
+    for row in rows {
+        if row.try_get::<i64, _>("searchable").unwrap_or_default() == 0 {
+            continue;
+        }
+        let entity_type = row
+            .try_get::<String, _>("entity_type")
+            .context("read search backfill entity_type")?;
+        let entity_key = row
+            .try_get::<String, _>("entity_key")
+            .context("read search backfill entity_key")?;
+        let field = row
+            .try_get::<String, _>("field")
+            .context("read search backfill field")?;
+        let field_value = row
+            .try_get::<String, _>("field_value")
+            .context("read search backfill field_value")?;
+        entities
+            .entry((entity_type, entity_key))
+            .or_default()
+            .push((field, field_value));
+    }
+
+    // Some supported v3 plugin-ledger fixtures predate the display
+    // name and soft-delete columns. Preserve those rows and index
+    // every searchable field that physically exists rather than
+    // making the search backfill depend on a runtime ALTER.
+    let plugin_columns = sqlx::query("SELECT name FROM pragma_table_info('plugins')")
+        .fetch_all(&mut **executor)
+        .await
+        .context("pragma_table_info(plugins search backfill)")?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<std::collections::BTreeSet<_>>();
+    let plugin_rows = match (
+        plugin_columns.contains("name"),
+        plugin_columns.contains("deleted_at"),
+    ) {
+        (true, true) => sqlx::query(
+            "SELECT CAST(id AS TEXT) AS entity_key, identifier, name, \
+                    deleted_at IS NULL AS searchable FROM plugins ORDER BY id",
+        )
+        .fetch_all(&mut **executor)
+        .await
+        .context("load canonical Plugins for search backfill")?,
+        (true, false) => sqlx::query(
+            "SELECT CAST(id AS TEXT) AS entity_key, identifier, name, \
+                    1 AS searchable FROM plugins ORDER BY id",
+        )
+        .fetch_all(&mut **executor)
+        .await
+        .context("load pre-soft-delete Plugins for search backfill")?,
+        (false, _) => sqlx::query(
+            "SELECT CAST(id AS TEXT) AS entity_key, identifier, \
+                    1 AS searchable FROM plugins ORDER BY id",
+        )
+        .fetch_all(&mut **executor)
+        .await
+        .context("load identifier-only Plugins for search backfill")?,
+    };
+    for row in plugin_rows {
+        if row.try_get::<i64, _>("searchable").unwrap_or_default() == 0 {
+            continue;
+        }
+        let entity_key = row
+            .try_get::<String, _>("entity_key")
+            .context("read Plugin search backfill key")?;
+        let identifier = row
+            .try_get::<String, _>("identifier")
+            .context("read Plugin search backfill identifier")?;
+        let fields = entities
+            .entry(("plugin".to_string(), entity_key))
+            .or_default();
+        fields.push(("identifier".to_string(), identifier));
+        if plugin_columns.contains("name") {
+            fields.push((
+                "name".to_string(),
+                row.try_get::<String, _>("name")
+                    .context("read Plugin search backfill name")?,
+            ));
+        }
+    }
+
+    for ((entity_type, entity_key), fields) in entities {
+        let fields = fields
+            .iter()
+            .map(|(field, value)| (field.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        super::search_index::replace_entity_search_documents(
+            executor,
+            &entity_type,
+            &entity_key,
+            &fields,
+        )
+        .await
+        .map_err(anyhow::Error::new)
+        .with_context(|| format!("backfill search documents for {entity_type}:{entity_key}"))?;
+    }
+    Ok(())
+}
+
+/// Rebuild every derived search row from canonical entities after an
+/// authenticated portable restore. Operation/GC ledgers are intentionally not
+/// involved; this is the same normalization boundary used by v4 migration.
+pub(crate) async fn rebuild_search_documents_for_restore(pool: &SqlitePool) -> Result<()> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("DELETE FROM search_documents")
+        .execute(&mut *transaction)
+        .await?;
+    backfill_search_documents(&mut transaction).await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -3345,7 +3613,17 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
                 .map(|t| t.eq_ignore_ascii_case("integer"))
                 .unwrap_or(false)
     });
-    if !kind_is_integer {
+    let foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('functions')",
+    )
+    .fetch_all(&mut **executor)
+    .await
+    .context("pragma_foreign_key_list(functions)")?;
+    let plugin_fk_is_canonical =
+        has_restrict_foreign_key(&foreign_keys, "plugin_id", "plugins", "id");
+    if !kind_is_integer && plugin_fk_is_canonical {
         return Ok(());
     }
 
@@ -3353,13 +3631,26 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
     // pre-existing row with kind 99 (or any other unknown) fails
     // the migration instead of being silently downgraded.
     // query-plan: id=migrations_scan_unknown_function_kinds; owner_phase=migrations; activation_task=T012M
-    let unknown: Option<i64> =
-        sqlx::query_scalar("SELECT kind FROM functions WHERE kind NOT IN (1, 2, 3) LIMIT 1")
-            .fetch_optional(&mut **executor)
-            .await
-            .context("scan unknown function kinds")?;
+    let unknown: Option<String> = if kind_is_integer {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT kind FROM functions WHERE kind NOT IN (1, 2, 3) LIMIT 1",
+        )
+        .fetch_optional(&mut **executor)
+        .await
+        .context("scan unknown integer function kinds")?
+        .map(|value| value.to_string())
+    } else {
+        // query-plan: id=migrations_scan_unknown_function_text_kinds; owner_phase=migrations; activation_task=T022
+        sqlx::query_scalar::<_, String>(
+            "SELECT kind FROM functions \
+             WHERE kind NOT IN ('builtin', 'custom', 'placeholder') LIMIT 1",
+        )
+        .fetch_optional(&mut **executor)
+        .await
+        .context("scan unknown text function kinds")?
+    };
     if let Some(value) = unknown {
-        anyhow::bail!("UnknownFunctionKind: legacy functions.kind = {value} is not in {{1, 2, 3}}");
+        anyhow::bail!("UnknownFunctionKind: legacy functions.kind = {value} is not recognized");
     }
 
     // Rename dotted Builtins to the canonical underscored v4 form.
@@ -3370,6 +3661,17 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
         ("text.regex_match", "text_regex_match"),
     ];
     for (dotted, underscored) in dotted_renames {
+        // query-plan: id=migrations_dotted_builtin_source_probe; owner_phase=migrations; activation_task=T022
+        let dotted_exists =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM functions WHERE identifier = ?")
+                .bind(dotted)
+                .fetch_optional(&mut **executor)
+                .await
+                .context("scan dotted Builtin")?
+                .is_some();
+        if !dotted_exists {
+            continue;
+        }
         // query-plan: id=migrations_dotted_builtin_collision_probe; owner_phase=migrations; activation_task=T012M
         let collision: Option<i64> =
             sqlx::query_scalar("SELECT id FROM functions WHERE identifier = ?")
@@ -3409,7 +3711,7 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
             kind TEXT NOT NULL DEFAULT 'builtin', \
             input_schema TEXT NOT NULL DEFAULT '{}', \
             output_schema TEXT NOT NULL DEFAULT '{}', \
-            plugin_id INTEGER REFERENCES plugins(id) ON DELETE SET NULL, \
+            plugin_id INTEGER REFERENCES plugins(id) ON DELETE RESTRICT, \
             plugin_export TEXT, \
             category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, \
             required_capabilities TEXT, \
@@ -3420,22 +3722,39 @@ async fn migrate_legacy_function_kinds(executor: &mut sqlx::Transaction<'_, Sqli
     .execute(&mut **executor)
     .await
     .context("create v4 functions")?;
-    sqlx::query(
-        "INSERT INTO functions (\
-            id, identifier, name, description, kind, input_schema, output_schema, \
-            plugin_id, plugin_export, category_id, required_capabilities, \
-            created_at, updated_at\
-         ) \
-         SELECT id, identifier, name, description, \
-                CASE kind WHEN 1 THEN 'builtin' WHEN 2 THEN 'custom' WHEN 3 THEN 'placeholder' ELSE 'builtin' END, \
-                input_schema, output_schema, \
+    if kind_is_integer {
+        sqlx::query(
+            "INSERT INTO functions (\
+                id, identifier, name, description, kind, input_schema, output_schema, \
                 plugin_id, plugin_export, category_id, required_capabilities, \
-                created_at, updated_at \
-         FROM functions_legacy_kind",
-    )
-    .execute(&mut **executor)
-    .await
-    .context("copy v2 -> v4 functions")?;
+                created_at, updated_at\
+             ) \
+             SELECT id, identifier, name, description, \
+                    CASE kind WHEN 1 THEN 'builtin' WHEN 2 THEN 'custom' WHEN 3 THEN 'placeholder' END, \
+                    input_schema, output_schema, \
+                    plugin_id, plugin_export, category_id, required_capabilities, \
+                    created_at, updated_at \
+             FROM functions_legacy_kind",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("copy integer-kind functions into v4")?;
+    } else {
+        sqlx::query(
+            "INSERT INTO functions (\
+                id, identifier, name, description, kind, input_schema, output_schema, \
+                plugin_id, plugin_export, category_id, required_capabilities, \
+                created_at, updated_at\
+             ) \
+             SELECT id, identifier, name, description, kind, input_schema, output_schema, \
+                    plugin_id, plugin_export, category_id, required_capabilities, \
+                    created_at, updated_at \
+             FROM functions_legacy_kind",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("copy text-kind functions into v4")?;
+    }
     sqlx::query("DROP TABLE functions_legacy_kind")
         .execute(&mut **executor)
         .await
@@ -3458,7 +3777,18 @@ async fn migrate_legacy_tool_kinds(executor: &mut sqlx::Transaction<'_, Sqlite>)
                 .map(|t| t.eq_ignore_ascii_case("integer"))
                 .unwrap_or(false)
     });
-    if !kind_is_integer {
+    let foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('tools')",
+    )
+    .fetch_all(&mut **executor)
+    .await
+    .context("pragma_foreign_key_list(tools)")?;
+    let references_are_canonical =
+        has_restrict_foreign_key(&foreign_keys, "function_id", "functions", "id")
+            && has_restrict_foreign_key(&foreign_keys, "workflow_id", "workflows", "id");
+    if !kind_is_integer && references_are_canonical {
         return Ok(());
     }
 
@@ -3466,13 +3796,24 @@ async fn migrate_legacy_tool_kinds(executor: &mut sqlx::Transaction<'_, Sqlite>)
     // pre-existing row with kind 99 (or any other unknown) fails
     // the migration instead of being silently downgraded.
     // query-plan: id=migrations_scan_unknown_tool_kinds; owner_phase=migrations; activation_task=T012M
-    let unknown: Option<i64> =
-        sqlx::query_scalar("SELECT kind FROM tools WHERE kind NOT IN (1, 2) LIMIT 1")
+    let unknown: Option<String> = if kind_is_integer {
+        sqlx::query_scalar::<_, i64>("SELECT kind FROM tools WHERE kind NOT IN (1, 2) LIMIT 1")
             .fetch_optional(&mut **executor)
             .await
-            .context("scan unknown tool kinds")?;
+            .context("scan unknown integer tool kinds")?
+            .map(|value| value.to_string())
+    } else {
+        // query-plan: id=migrations_scan_unknown_tool_text_kinds; owner_phase=migrations; activation_task=T022
+        sqlx::query_scalar::<_, String>(
+            "SELECT kind FROM tools \
+             WHERE kind NOT IN ('function-wrap', 'workflow-wrap') LIMIT 1",
+        )
+        .fetch_optional(&mut **executor)
+        .await
+        .context("scan unknown text tool kinds")?
+    };
     if let Some(value) = unknown {
-        anyhow::bail!("UnknownToolKind: legacy tools.kind = {value} is not in {{1, 2}}");
+        anyhow::bail!("UnknownToolKind: legacy tools.kind = {value} is not recognized");
     }
 
     sqlx::query("ALTER TABLE tools RENAME TO tools_legacy_kind")
@@ -3488,8 +3829,8 @@ async fn migrate_legacy_tool_kinds(executor: &mut sqlx::Transaction<'_, Sqlite>)
             kind TEXT NOT NULL DEFAULT 'function-wrap', \
             source TEXT NOT NULL DEFAULT 'workspace', \
             is_always INTEGER NOT NULL DEFAULT 0, \
-            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL, \
-            workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL, \
+            function_id INTEGER REFERENCES functions(id) ON DELETE RESTRICT, \
+            workflow_id INTEGER REFERENCES workflows(id) ON DELETE RESTRICT, \
             input_schema TEXT NOT NULL DEFAULT '{}', \
             output_schema TEXT NOT NULL DEFAULT '{}', \
             category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, \
@@ -3505,22 +3846,38 @@ async fn migrate_legacy_tool_kinds(executor: &mut sqlx::Transaction<'_, Sqlite>)
     .execute(&mut **executor)
     .await
     .context("create v4 tools")?;
-    sqlx::query(
-        "INSERT INTO tools (\
-            id, identifier, name, description, kind, source, is_always, \
-            function_id, workflow_id, input_schema, output_schema, \
-            category_id, required_capabilities, created_at, updated_at\
-         ) \
-         SELECT id, identifier, name, description, \
-                CASE kind WHEN 1 THEN 'function-wrap' WHEN 2 THEN 'workflow-wrap' ELSE 'function-wrap' END, \
-                source, is_always, \
+    if kind_is_integer {
+        sqlx::query(
+            "INSERT INTO tools (\
+                id, identifier, name, description, kind, source, is_always, \
                 function_id, workflow_id, input_schema, output_schema, \
-                category_id, required_capabilities, created_at, updated_at \
-         FROM tools_legacy_kind",
-    )
-    .execute(&mut **executor)
-    .await
-    .context("copy v2 -> v4 tools")?;
+                category_id, required_capabilities, created_at, updated_at\
+             ) \
+             SELECT id, identifier, name, description, \
+                    CASE kind WHEN 1 THEN 'function-wrap' WHEN 2 THEN 'workflow-wrap' END, \
+                    source, is_always, function_id, workflow_id, input_schema, output_schema, \
+                    category_id, required_capabilities, created_at, updated_at \
+             FROM tools_legacy_kind",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("copy integer-kind tools into v4")?;
+    } else {
+        sqlx::query(
+            "INSERT INTO tools (\
+                id, identifier, name, description, kind, source, is_always, \
+                function_id, workflow_id, input_schema, output_schema, \
+                category_id, required_capabilities, created_at, updated_at\
+             ) \
+             SELECT id, identifier, name, description, kind, source, is_always, \
+                    function_id, workflow_id, input_schema, output_schema, \
+                    category_id, required_capabilities, created_at, updated_at \
+             FROM tools_legacy_kind",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("copy text-kind tools into v4")?;
+    }
     sqlx::query("DROP TABLE tools_legacy_kind")
         .execute(&mut **executor)
         .await
@@ -3551,14 +3908,13 @@ async fn migrate_legacy_llm_providers(executor: &mut sqlx::Transaction<'_, Sqlit
     sqlx::query(
         "CREATE TABLE llm_providers (\
             id INTEGER PRIMARY KEY AUTOINCREMENT, \
-            name TEXT NOT NULL, \
+            name TEXT NOT NULL UNIQUE, \
             category TEXT NOT NULL, \
             base_url TEXT NOT NULL DEFAULT '', \
             token_env TEXT NOT NULL DEFAULT '', \
             token_encrypted BLOB, \
-            is_default INTEGER NOT NULL DEFAULT 0, \
-            created_at TEXT NOT NULL, \
-            updated_at TEXT NOT NULL\
+            created_at TEXT NOT NULL DEFAULT '', \
+            updated_at TEXT NOT NULL DEFAULT ''\
         )",
     )
     .execute(&mut **executor)
@@ -3567,10 +3923,10 @@ async fn migrate_legacy_llm_providers(executor: &mut sqlx::Transaction<'_, Sqlit
     sqlx::query(
         "INSERT INTO llm_providers (\
             id, name, category, base_url, token_env, token_encrypted, \
-            is_default, created_at, updated_at\
+            created_at, updated_at\
          ) \
          SELECT id, name, kind, base_url, api_key_env, api_key_encrypted, \
-                is_default, created_at, updated_at \
+                created_at, updated_at \
          FROM llm_providers_legacy",
     )
     .execute(&mut **executor)
@@ -3581,6 +3937,23 @@ async fn migrate_legacy_llm_providers(executor: &mut sqlx::Transaction<'_, Sqlit
         .await
         .context("drop legacy llm_providers")?;
     Ok(())
+}
+
+fn has_restrict_foreign_key(
+    rows: &[sqlx::sqlite::SqliteRow],
+    source_column: &str,
+    target_table: &str,
+    target_column: &str,
+) -> bool {
+    rows.iter().any(|row| {
+        row.try_get::<String, _>("source_column").ok().as_deref() == Some(source_column)
+            && row.try_get::<String, _>("target_table").ok().as_deref() == Some(target_table)
+            && row.try_get::<String, _>("target_column").ok().as_deref() == Some(target_column)
+            && row
+                .try_get::<String, _>("on_delete")
+                .ok()
+                .is_some_and(|action| action.eq_ignore_ascii_case("restrict"))
+    })
 }
 
 /// Detect a v2/v3 `workflow_nodes` table that uses the short `x` / `y`
@@ -3597,9 +3970,18 @@ async fn migrate_legacy_workflow_nodes(executor: &mut sqlx::Transaction<'_, Sqli
         .iter()
         .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
         .collect();
-    // Only migrate when the legacy `x` column is present and the
-    // canonical `position_x` column is absent.
-    if !column_names.contains("x") || column_names.contains("position_x") {
+    let has_legacy_coordinates = column_names.contains("x") && !column_names.contains("position_x");
+    let foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('workflow_nodes')",
+    )
+    .fetch_all(&mut **executor)
+    .await
+    .context("pragma_foreign_key_list(workflow_nodes)")?;
+    let function_fk_is_canonical =
+        has_restrict_foreign_key(&foreign_keys, "function_id", "functions", "id");
+    if !has_legacy_coordinates && function_fk_is_canonical {
         return Ok(());
     }
 
@@ -3613,7 +3995,7 @@ async fn migrate_legacy_workflow_nodes(executor: &mut sqlx::Transaction<'_, Sqli
             workflow_id INTEGER NOT NULL, \
             node_key TEXT NOT NULL, \
             node_type TEXT NOT NULL CHECK(node_type IN ('start_node','end_node','function_node','generate_answer_node')), \
-            function_id INTEGER REFERENCES functions(id) ON DELETE SET NULL, \
+            function_id INTEGER REFERENCES functions(id) ON DELETE RESTRICT, \
             position_x REAL NOT NULL DEFAULT 0, \
             position_y REAL NOT NULL DEFAULT 0, \
             node_config TEXT NOT NULL DEFAULT '{}', \
@@ -3625,18 +4007,33 @@ async fn migrate_legacy_workflow_nodes(executor: &mut sqlx::Transaction<'_, Sqli
     .execute(&mut **executor)
     .await
     .context("create v4 workflow_nodes")?;
-    sqlx::query(
-        "INSERT INTO workflow_nodes (\
-            id, workflow_id, node_key, node_type, function_id, \
-            position_x, position_y, node_config, created_at\
-         ) \
-         SELECT id, workflow_id, node_key, node_type, NULL, \
-                x, y, node_config, '' \
-         FROM workflow_nodes_legacy",
-    )
-    .execute(&mut **executor)
-    .await
-    .context("copy v2/v3 -> v4 workflow_nodes")?;
+    if has_legacy_coordinates {
+        sqlx::query(
+            "INSERT INTO workflow_nodes (\
+                id, workflow_id, node_key, node_type, function_id, \
+                position_x, position_y, node_config, created_at\
+             ) \
+             SELECT id, workflow_id, node_key, node_type, NULL, \
+                    x, y, node_config, '' \
+             FROM workflow_nodes_legacy",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("copy coordinate-legacy workflow_nodes into v4")?;
+    } else {
+        sqlx::query(
+            "INSERT INTO workflow_nodes (\
+                id, workflow_id, node_key, node_type, function_id, \
+                position_x, position_y, node_config, created_at\
+             ) \
+             SELECT id, workflow_id, node_key, node_type, function_id, \
+                    position_x, position_y, node_config, created_at \
+             FROM workflow_nodes_legacy",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("copy relation-legacy workflow_nodes into v4")?;
+    }
     sqlx::query("DROP TABLE workflow_nodes_legacy")
         .execute(&mut **executor)
         .await
@@ -3659,7 +4056,7 @@ pub async fn verify_schema(pool: &SqlitePool) -> Result<ValidationReport> {
     }
     if !search_index_ok {
         anyhow::bail!(
-            "search index infrastructure is missing (search_index virtual table, short_gram_index, or meta.search_normalization_id)"
+            "canonical search schema or RESTRICT reference contract is missing or drifted"
         );
     }
     Ok(ValidationReport {
@@ -3688,31 +4085,453 @@ async fn verify_plugin_ledger(pool: &SqlitePool) -> Result<bool> {
     .fetch_optional(pool)
     .await
     .context("sqlite_master(plugin_artifact_gc)")?;
-    Ok(row.is_some() && operations.is_some() && gc.is_some())
+
+    // An existing database already marked v4 is never repaired in
+    // place. Validate every ledger column so an older or partially
+    // edited v4 schema fails closed instead of being mistaken for
+    // the current durability contract.
+    let plugin_columns = sqlx::query(
+        "SELECT name, [notnull] AS is_not_null, dflt_value FROM pragma_table_info('plugins')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("pragma_table_info(plugins contract)")?;
+    let row_revision_ok = plugin_columns.iter().any(|column| {
+        column.try_get::<String, _>("name").ok().as_deref() == Some("row_revision")
+            && column.try_get::<i64, _>("is_not_null").ok() == Some(1)
+            && column
+                .try_get::<Option<String>, _>("dflt_value")
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("0")
+    });
+
+    let operation_columns =
+        sqlx::query("SELECT name FROM pragma_table_info('plugin_artifact_operations')")
+            .fetch_all(pool)
+            .await
+            .context("pragma_table_info(plugin_artifact_operations contract)")?
+            .into_iter()
+            .filter_map(|column| column.try_get::<String, _>("name").ok())
+            .collect::<Vec<_>>();
+    let required_operation_columns = [
+        "expected_old_identifier",
+        "expected_old_identity",
+        "expected_old_resource_limits",
+        "expected_old_row_revision",
+        "expected_old_s3_key",
+        "expected_old_sha256",
+        "expected_old_size",
+        "expected_old_version",
+        "kind",
+        "new_identity",
+        "new_resource_limits",
+        "new_s3_key",
+        "new_sha256",
+        "new_size",
+        "operation_id",
+        "plugin_id",
+        "staging_identity",
+        "staging_name",
+        "state",
+        "target_identifier",
+        "created_at",
+        "updated_at",
+    ];
+    let operation_columns_ok = required_operation_columns
+        .iter()
+        .all(|required| operation_columns.iter().any(|actual| actual == required));
+
+    let schema_rows = sqlx::query("SELECT name, sql FROM sqlite_master")
+        .fetch_all(pool)
+        .await
+        .context("sqlite_master(plugin artifact ledger contract)")?;
+    let operation_sql = schema_rows.iter().find_map(|schema| {
+        (schema.try_get::<String, _>("name").ok().as_deref() == Some("plugin_artifact_operations"))
+            .then(|| schema.try_get::<Option<String>, _>("sql").ok().flatten())
+            .flatten()
+    });
+    let operation_sql_ok = operation_sql.as_deref().is_some_and(|sql| {
+        [
+            "'create'",
+            "'replace'",
+            "'prepared'",
+            "'staged'",
+            "'published'",
+            "'referenced'",
+            "'done'",
+            "'conflict'",
+            "expected_old_identity IS NULL",
+            "expected_old_identity IS NOT NULL",
+            "staging_name TEXT NOT NULL UNIQUE",
+            "new_s3_key TEXT UNIQUE",
+        ]
+        .iter()
+        .all(|required| sql.contains(required))
+    });
+
+    let gc_columns = sqlx::query("SELECT name FROM pragma_table_info('plugin_artifact_gc')")
+        .fetch_all(pool)
+        .await
+        .context("pragma_table_info(plugin_artifact_gc contract)")?
+        .into_iter()
+        .filter_map(|column| column.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    let required_gc_columns = [
+        "artifact_key",
+        "expected_sha256",
+        "expected_size_bytes",
+        "expected_identity",
+        "source_operation_id",
+        "state",
+        "attempts",
+        "last_error",
+        "created_at",
+        "updated_at",
+        "reason",
+        "last_attempt_at",
+    ];
+    let gc_columns_ok = required_gc_columns
+        .iter()
+        .all(|required| gc_columns.iter().any(|actual| actual == required));
+    let gc_sql = schema_rows.iter().find_map(|schema| {
+        (schema.try_get::<String, _>("name").ok().as_deref() == Some("plugin_artifact_gc"))
+            .then(|| schema.try_get::<Option<String>, _>("sql").ok().flatten())
+            .flatten()
+    });
+    let gc_sql_ok = gc_sql.as_deref().is_some_and(|sql| {
+        sql.contains("artifact_key TEXT PRIMARY KEY")
+            && sql.contains("'pending'")
+            && sql.contains("'blocked'")
+    });
+
+    let gc_source_foreign_key_ok = sqlx::query(
+        "SELECT [table] AS target_table, [from] AS source_column, [to] AS target_column \
+         FROM pragma_foreign_key_list('plugin_artifact_gc')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("pragma_foreign_key_list(plugin_artifact_gc.source_operation_id)")?
+    .iter()
+    .any(|foreign_key| {
+        foreign_key
+            .try_get::<String, _>("source_column")
+            .ok()
+            .as_deref()
+            == Some("source_operation_id")
+            && foreign_key
+                .try_get::<String, _>("target_table")
+                .ok()
+                .as_deref()
+                == Some("plugin_artifact_operations")
+            && foreign_key
+                .try_get::<String, _>("target_column")
+                .ok()
+                .as_deref()
+                == Some("operation_id")
+    });
+
+    // The named indexes are created by this migration. Checking
+    // their ordered columns prevents a same-name drifted index
+    // from satisfying the replay/worker hot-path contract.
+    let operation_replay_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info(\
+                 'idx_plugin_artifact_operations_state_operation_id'\
+             ) ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(plugin artifact operation replay index)")?;
+    let gc_scan_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info(\
+                 'idx_plugin_artifact_gc_state_artifact_key'\
+             ) ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(plugin artifact GC scan index)")?;
+    let gc_source_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info(\
+                 'idx_plugin_artifact_gc_source_operation_id'\
+             ) ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(plugin artifact GC source-operation index)")?;
+
+    Ok(row.is_some()
+        && operations.is_some()
+        && gc.is_some()
+        && row_revision_ok
+        && operation_columns_ok
+        && operation_sql_ok
+        && gc_columns_ok
+        && gc_sql_ok
+        && gc_source_foreign_key_ok
+        && operation_replay_index.as_deref() == Some("state,operation_id")
+        && gc_scan_index.as_deref() == Some("state,artifact_key")
+        && gc_source_index.as_deref() == Some("source_operation_id"))
 }
 
 async fn verify_search_index(pool: &SqlitePool) -> Result<bool> {
-    // query-plan: id=t012.meta.table_check_search_index_verify; owner_phase=migrations; activation_task=T012M
-    let fts =
-        sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'search_index'")
-            .fetch_optional(pool)
+    // query-plan: id=t022.search.schema_catalog; owner_phase=migrations; activation_task=T022
+    let schema_rows = sqlx::query(
+        "SELECT name, sql FROM sqlite_schema \
+         WHERE name IN (\
+             'schema_metadata', 'search_documents', 'search_documents_fts', \
+             'search_short_grams', 'search_index', 'short_gram_index'\
+         )",
+    )
+    .fetch_all(pool)
+    .await
+    .context("read canonical search sqlite_schema")?;
+    let schema_sql = |name: &str| {
+        schema_rows.iter().find_map(|row| {
+            (row.try_get::<String, _>("name").ok().as_deref() == Some(name))
+                .then(|| row.try_get::<Option<String>, _>("sql").ok().flatten())
+                .flatten()
+        })
+    };
+    if schema_sql("search_index").is_some() || schema_sql("short_gram_index").is_some() {
+        return Ok(false);
+    }
+
+    let Some(metadata_sql) = schema_sql("schema_metadata") else {
+        return Ok(false);
+    };
+    let Some(documents_sql) = schema_sql("search_documents") else {
+        return Ok(false);
+    };
+    let Some(fts_sql) = schema_sql("search_documents_fts") else {
+        return Ok(false);
+    };
+    let Some(short_grams_sql) = schema_sql("search_short_grams") else {
+        return Ok(false);
+    };
+
+    let metadata_sql = compact_schema_sql(&metadata_sql);
+    let documents_sql = compact_schema_sql(&documents_sql);
+    let fts_sql = compact_schema_sql(&fts_sql);
+    let short_grams_sql = compact_schema_sql(&short_grams_sql);
+    if !metadata_sql.contains("createtableschema_metadata(")
+        || !metadata_sql.contains("keytextprimarykey")
+        || !metadata_sql.contains("valuetextnotnull")
+        || !documents_sql.contains("createtablesearch_documents(")
+        || !documents_sql.contains("idintegerprimarykey")
+        || !documents_sql.contains("entity_typetextnotnull")
+        || !documents_sql.contains("entity_keytextnotnull")
+        || !documents_sql.contains("fieldtextnotnull")
+        || !documents_sql.contains("normalized_texttextnotnull")
+        || !documents_sql.contains("unique(entity_type,entity_key,field)")
+        || !fts_sql.contains("createvirtualtablesearch_documents_ftsusingfts5(")
+        || !fts_sql.contains("normalized_text")
+        || !fts_sql.contains("content='search_documents'")
+        || !fts_sql.contains("content_rowid='id'")
+        || !fts_sql.contains("tokenize='trigramcase_sensitive1'")
+        || !short_grams_sql.contains("createtablesearch_short_grams(")
+        || !short_grams_sql.contains("check(gram_lenin(1,2))")
+        || !short_grams_sql.contains("primarykey(document_id,gram_len,gram)")
+        || !short_grams_sql.contains("withoutrowid")
+    {
+        return Ok(false);
+    }
+
+    let metadata_columns =
+        sqlx::query("SELECT name, type, pk FROM pragma_table_info('schema_metadata') ORDER BY cid")
+            .fetch_all(pool)
             .await
-            .context("sqlite_master(search_index)")?;
-    // query-plan: id=t012.meta.table_check_short_gram_index_verify; owner_phase=migrations; activation_task=T012M
-    let short = sqlx::query(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'short_gram_index'",
+            .context("pragma_table_info(schema_metadata)")?;
+    if !columns_match(
+        &metadata_columns,
+        &[("key", "TEXT", 1), ("value", "TEXT", 0)],
+    ) {
+        return Ok(false);
+    }
+
+    let document_columns = sqlx::query(
+        "SELECT name, type, pk FROM pragma_table_info('search_documents') ORDER BY cid",
     )
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
-    .context("sqlite_master(short_gram_index)")?;
-    // query-plan: id=t012.meta.read_search_normalization_id; owner_phase=migrations; activation_task=T012M
-    let norm = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM meta WHERE key = 'search_normalization_id'",
+    .context("pragma_table_info(search_documents)")?;
+    if !columns_match(
+        &document_columns,
+        &[
+            ("id", "INTEGER", 1),
+            ("entity_type", "TEXT", 0),
+            ("entity_key", "TEXT", 0),
+            ("field", "TEXT", 0),
+            ("normalized_text", "TEXT", 0),
+        ],
+    ) {
+        return Ok(false);
+    }
+
+    let short_gram_columns = sqlx::query(
+        "SELECT name, type, pk FROM pragma_table_info('search_short_grams') ORDER BY cid",
     )
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
-    .context("read search_normalization_id")?;
-    Ok(fts.is_some() && short.is_some() && norm.as_deref() == Some(SEARCH_NORMALIZATION_ID))
+    .context("pragma_table_info(search_short_grams)")?;
+    if !columns_match(
+        &short_gram_columns,
+        &[
+            ("document_id", "INTEGER", 1),
+            ("gram_len", "INTEGER", 2),
+            ("gram", "TEXT", 3),
+        ],
+    ) {
+        return Ok(false);
+    }
+
+    // query-plan: id=t022.search.normalization_id.verify; owner_phase=migrations; activation_task=T022
+    let normalization_values = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM schema_metadata WHERE key = 'search_normalization_id'",
+    )
+    .fetch_all(pool)
+    .await
+    .context("read schema_metadata.search_normalization_id")?;
+    if normalization_values.as_slice() != [SEARCH_NORMALIZATION_ID] {
+        return Ok(false);
+    }
+
+    let document_covering_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info('idx_search_documents_covering') \
+             ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(idx_search_documents_covering)")?;
+    let short_gram_covering_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info('idx_search_short_grams_lookup') \
+             ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(idx_search_short_grams_lookup)")?;
+    if document_covering_index.as_deref() != Some("entity_type,field,normalized_text,entity_key")
+        || short_gram_covering_index.as_deref() != Some("gram_len,gram,document_id")
+    {
+        return Ok(false);
+    }
+
+    let short_gram_foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('search_short_grams')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("pragma_foreign_key_list(search_short_grams)")?;
+    if short_gram_foreign_keys.len() != 1
+        || !short_gram_foreign_keys.iter().any(|row| {
+            row.try_get::<String, _>("source_column").ok().as_deref() == Some("document_id")
+                && row.try_get::<String, _>("target_table").ok().as_deref()
+                    == Some("search_documents")
+                && row.try_get::<String, _>("target_column").ok().as_deref() == Some("id")
+                && row
+                    .try_get::<String, _>("on_delete")
+                    .ok()
+                    .is_some_and(|action| action.eq_ignore_ascii_case("cascade"))
+        })
+    {
+        return Ok(false);
+    }
+
+    let function_foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('functions')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("pragma_foreign_key_list(functions)")?;
+    let workflow_node_foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('workflow_nodes')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("pragma_foreign_key_list(workflow_nodes)")?;
+    let tool_foreign_keys = sqlx::query(
+        "SELECT \"from\" AS source_column, \"table\" AS target_table, \
+                \"to\" AS target_column, on_delete \
+         FROM pragma_foreign_key_list('tools')",
+    )
+    .fetch_all(pool)
+    .await
+    .context("pragma_foreign_key_list(tools)")?;
+    let tools_function_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info('idx_tools_function_id') ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(idx_tools_function_id)")?;
+    let tools_workflow_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info('idx_tools_workflow_id') ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(idx_tools_workflow_id)")?;
+    let workflow_nodes_function_index: Option<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (\
+             SELECT name FROM pragma_index_info('idx_workflow_nodes_function_id') ORDER BY seqno\
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("pragma_index_info(idx_workflow_nodes_function_id)")?;
+
+    Ok(
+        has_restrict_foreign_key(&function_foreign_keys, "plugin_id", "plugins", "id")
+            && has_restrict_foreign_key(
+                &workflow_node_foreign_keys,
+                "function_id",
+                "functions",
+                "id",
+            )
+            && has_restrict_foreign_key(&tool_foreign_keys, "function_id", "functions", "id")
+            && has_restrict_foreign_key(&tool_foreign_keys, "workflow_id", "workflows", "id")
+            && tools_function_index.as_deref() == Some("function_id")
+            && tools_workflow_index.as_deref() == Some("workflow_id,identifier,id")
+            && workflow_nodes_function_index.as_deref() == Some("function_id"),
+    )
+}
+
+fn compact_schema_sql(sql: &str) -> String {
+    sql.chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .replace('"', "'")
+}
+
+fn columns_match(rows: &[sqlx::sqlite::SqliteRow], expected: &[(&str, &str, i64)]) -> bool {
+    rows.len() == expected.len()
+        && rows.iter().zip(expected).all(|(row, expected)| {
+            row.try_get::<String, _>("name").ok().as_deref() == Some(expected.0)
+                && row
+                    .try_get::<String, _>("type")
+                    .ok()
+                    .is_some_and(|data_type| data_type.eq_ignore_ascii_case(expected.1))
+                && row.try_get::<i64, _>("pk").ok() == Some(expected.2)
+        })
 }
 
 /// Public `verify_sqlite_health` boundary called by every open /

@@ -7,14 +7,24 @@
 
 #![warn(missing_docs)]
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, LazyLock, Weak};
 
+use hive_runtime_core::wasm::validate_wasm_shape;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite, SqlitePool};
 
-use crate::datasource::plugin_artifacts::{OperationState, derive_staging_name};
+use crate::datasource::entity_store::{
+    CreatePluginFields, NewArtifact, OperationGcTarget, OperationTransition, Plugin,
+    PluginArtifactLedger, PluginLedgerError, PluginResourceLimits, PreparePluginOperation,
+};
+use crate::datasource::plugin_artifacts::{OperationKind, OperationState};
+use crate::datasource::plugin_manifest::{
+    build_v1_manifest, manifest_exports, manifest_required_capabilities, validate_manifest,
+};
+use crate::datasource::wasm_exports::extract_wasm_exports;
 
 /// Reason a plugin installation failed. Stable string used in
 /// error envelopes and on-disk logs.
@@ -133,6 +143,68 @@ impl PluginArtifactInput {
     }
 }
 
+/// Plugin-row metadata persisted by [`PluginStore::install`].
+///
+/// The six-state install writes the artifact bytes durably and creates the
+/// user-visible plugin row in a single flow. The caller supplies the full
+/// metadata the UI collected so the row is correct from the moment it becomes
+/// live — no follow-up `Plugin::update` is required.
+#[derive(Debug, Clone)]
+pub struct PluginMetadata {
+    name: String,
+    description: Option<String>,
+    manifest: Option<String>,
+    runtime: String,
+    capabilities: String,
+    resource_limits: String,
+}
+
+impl PluginMetadata {
+    /// Build plugin metadata. `name` falls back to `identifier` (passed to
+    /// [`PluginStore::install`] as [`PluginArtifactInput::identifier`]) when
+    /// empty, matching the UI's optional display-name semantics.
+    pub fn new(
+        name: impl Into<String>,
+        description: Option<String>,
+        manifest: Option<String>,
+        runtime: impl Into<String>,
+        capabilities: impl Into<String>,
+        resource_limits: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description,
+            manifest,
+            runtime: runtime.into(),
+            capabilities: capabilities.into(),
+            resource_limits: resource_limits.into(),
+        }
+    }
+
+    /// Display name; empty means "use the identifier".
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Runtime identifier (e.g. `extism`).
+    pub fn runtime(&self) -> &str {
+        &self.runtime
+    }
+}
+
+impl Default for PluginMetadata {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: None,
+            manifest: None,
+            runtime: "extism".to_string(),
+            capabilities: "[]".to_string(),
+            resource_limits: "{}".to_string(),
+        }
+    }
+}
+
 /// Live record returned by a successful install.
 #[derive(Debug, Clone)]
 pub struct PluginRecord {
@@ -210,6 +282,7 @@ pub struct PluginLease {
     plugin_id: i64,
     session_id: String,
     state: OperationState,
+    _guard: Arc<PluginLeaseGuard>,
 }
 
 impl PluginLease {
@@ -240,7 +313,87 @@ pub struct PluginStore {
 struct PluginStoreInner {
     pool: SqlitePool,
     root: PathBuf,
-    leases: Mutex<Vec<PluginLease>>,
+    lease_tracker: Arc<PluginLeaseTracker>,
+}
+
+#[derive(Debug, Default)]
+struct PluginLeaseTracker {
+    active_by_plugin: Mutex<HashMap<i64, usize>>,
+}
+
+impl PluginLeaseTracker {
+    fn acquire(&self, plugin_id: i64) {
+        *self.active_by_plugin.lock().entry(plugin_id).or_default() += 1;
+    }
+
+    fn release(&self, plugin_id: i64) {
+        let mut active = self.active_by_plugin.lock();
+        let Some(count) = active.get_mut(&plugin_id) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            active.remove(&plugin_id);
+        }
+    }
+
+    fn has_active(&self, plugin_id: i64) -> bool {
+        self.active_by_plugin
+            .lock()
+            .get(&plugin_id)
+            .is_some_and(|count| *count > 0)
+    }
+}
+
+#[derive(Debug)]
+struct PluginLeaseGuard {
+    tracker: Arc<PluginLeaseTracker>,
+    plugin_id: i64,
+}
+
+impl Drop for PluginLeaseGuard {
+    fn drop(&mut self) {
+        self.tracker.release(self.plugin_id);
+    }
+}
+
+static PLUGIN_LEASE_TRACKERS: LazyLock<Mutex<HashMap<PathBuf, Weak<PluginLeaseTracker>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn shared_lease_tracker(root: &Path) -> Arc<PluginLeaseTracker> {
+    let mut trackers = PLUGIN_LEASE_TRACKERS.lock();
+    trackers.retain(|_, tracker| tracker.strong_count() > 0);
+    if let Some(tracker) = trackers.get(root).and_then(Weak::upgrade) {
+        return tracker;
+    }
+    let tracker = Arc::new(PluginLeaseTracker::default());
+    trackers.insert(root.to_path_buf(), Arc::downgrade(&tracker));
+    tracker
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct RecoveryOperationRow {
+    operation_id: String,
+    state: String,
+    staging_name: String,
+    staging_identity: Option<String>,
+    new_identity: Option<String>,
+    new_s3_key: Option<String>,
+    new_sha256: Option<String>,
+    new_size: Option<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GcLedgerRow {
+    artifact_key: String,
+    expected_sha256: Option<String>,
+    expected_size_bytes: Option<i64>,
+    expected_identity: Option<String>,
+    source_operation_id: Option<String>,
+    state: String,
+    attempts: i64,
+    last_error: Option<String>,
+    plugin_id: Option<i64>,
 }
 
 impl PluginStore {
@@ -254,27 +407,44 @@ impl PluginStore {
             kind: PluginInstallErrorKind::Io,
             references: Vec::new(),
         })?;
+        let root = std::fs::canonicalize(&root).map_err(io_err)?;
+        let lease_tracker = shared_lease_tracker(&root);
         Ok(Self {
             inner: Arc::new(PluginStoreInner {
                 pool,
                 root,
-                leases: Mutex::new(Vec::new()),
+                lease_tracker,
             }),
         })
     }
 
-    /// Install a fresh plugin. Rejects silently-replacing an
-    /// existing `(identifier, version)` with `NoReplace`.
+    /// Install a fresh plugin with default metadata (name = identifier,
+    /// runtime = `extism`, empty capabilities / resource limits). See
+    /// [`PluginStore::install_with_metadata`] for the full-metadata path.
+    pub async fn install(
+        &self,
+        input: PluginArtifactInput,
+    ) -> Result<PluginRecord, PluginInstallError> {
+        self.install_with_metadata(input, PluginMetadata::default())
+            .await
+    }
+
+    /// Install a fresh plugin with explicit metadata. Rejects
+    /// silently-replacing an existing `(identifier, version)` with
+    /// `NoReplace`.
     ///
     /// T077: the install runs the full durability state machine:
     /// `prepared` → `staged` → `published` → `referenced` → `done`,
     /// recording each transition in `plugin_artifact_operations`. The
     /// artifact bytes are written to a staging file (exclusive create,
     /// flushed + fsynced, identity recomputed) before being published
-    /// to the immutable key via an exclusive no-replace create.
-    pub async fn install(
+    /// to the immutable key via an exclusive no-replace create. The
+    /// user-visible plugin row becomes live with the supplied
+    /// [`PluginMetadata`], so no follow-up `Plugin::update` is required.
+    pub async fn install_with_metadata(
         &self,
         input: PluginArtifactInput,
+        mut metadata: PluginMetadata,
     ) -> Result<PluginRecord, PluginInstallError> {
         if input.bytes().is_empty() {
             return Err(PluginInstallError {
@@ -282,6 +452,13 @@ impl PluginStore {
                 references: Vec::new(),
             });
         }
+
+        // FR-031/FR-039: compatibility and field validation is strictly
+        // pre-ledger. This helper performs only CPU work and read-only
+        // capability lookups; on failure no Plugin row, operation/GC row, or
+        // artifact byte has been created.
+        let resource_limits = self.prevalidate_install(&input, &mut metadata).await?;
+
         let exists: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM plugins WHERE identifier = ? AND version = ? AND deleted_at IS NULL",
         )
@@ -300,112 +477,251 @@ impl PluginStore {
             });
         }
 
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let staging_name = derive_staging_name(&operation_id);
+        let operation_id = uuid::Uuid::new_v4();
         let fingerprint = sha256_hex(input.bytes());
+        // A create operation must know its immutable key before `prepared`,
+        // while the database id is intentionally not allocated until the
+        // atomic published->referenced transaction. The operation UUID is the
+        // non-reused disambiguator; callers resolve the persisted s3_key.
+        let artifact_key = format!(
+            "{}/{}/{operation_id}/plugin.wasm",
+            input.identifier(),
+            input.version()
+        );
+        let ledger = PluginArtifactLedger::new(self.inner.pool.clone());
+        let prepared = ledger
+            .prepare(
+                operation_id,
+                PreparePluginOperation::Create {
+                    target_identifier: input.identifier().to_string(),
+                    new: NewArtifact {
+                        s3_key: artifact_key.clone(),
+                        sha256: fingerprint.clone(),
+                        size_bytes: input.bytes().len() as i64,
+                        resource_limits,
+                    },
+                },
+            )
+            .await
+            .map_err(ledger_install_error)?;
+        let staging_name = prepared.staging_name().to_string();
 
         // 1. prepared — the operation is recorded before any bytes hit
         //    disk, so a crash leaves a recoverable prepared row.
-        self.insert_prepared(&operation_id, &staging_name).await?;
-
         // 2. staging write — exclusive create, flush + fsync, then
         //    re-read identity so the staged row carries the verified
         //    hash of the bytes actually on disk.
-        self.write_staging(&staging_name, input.bytes()).await?;
+        let staging_identity = self.write_staging(&staging_name, input.bytes()).await?;
 
         // 3. staged — staging_identity becomes non-null.
-        self.transition(&operation_id, "staged", Some(&fingerprint), None, None)
-            .await?;
+        ledger
+            .transition(
+                operation_id,
+                OperationState::Prepared,
+                OperationTransition::Staged { staging_identity },
+            )
+            .await
+            .map_err(ledger_install_error)?;
 
-        // 4. publish — exclusive no-replace create to the immutable key.
-        self.publish_artifact(input.identifier(), input.version(), input.bytes())
-            .await?;
+        // 4. Publish the verified bytes, then remove the staging name before
+        //    persisting `published`. A crash that leaves both names while the
+        //    operation is non-terminal is treated as an ownership conflict by
+        //    startup replay.
+        let published_identity = self.publish_artifact(&artifact_key, &staging_name).await?;
 
         // 5. published — new_identity becomes non-null.
-        self.transition(
-            &operation_id,
-            "published",
-            Some(&fingerprint),
-            Some(&fingerprint),
-            None,
-        )
-        .await?;
+        ledger
+            .transition(
+                operation_id,
+                OperationState::Staged,
+                OperationTransition::Published {
+                    new_identity: published_identity,
+                },
+            )
+            .await
+            .map_err(ledger_install_error)?;
 
-        // 6. insert the plugin row (referenced by a live row).
-        let now = chrono::Utc::now().to_rfc3339();
-        let row: (i64,) = sqlx::query_as(
-            "INSERT INTO plugins (identifier, name, version, sha256, size_bytes, runtime, capabilities, resource_limits, row_revision, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, 'wasm32', '[]', '{}', 0, ?, ?) RETURNING id",
-        )
-        .bind(input.identifier())
-        .bind(input.identifier())
-        .bind(input.version())
-        .bind(&fingerprint)
-        .bind(input.bytes().len() as i64)
-        .bind(&now)
-        .bind(&now)
-        .fetch_one(&self.inner.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "PluginStore::install INSERT failed");
-            PluginInstallError {
-                kind: PluginInstallErrorKind::Io,
-                references: Vec::new(),
-            }
-        })?;
+        // 6. Insert the user-visible row and move the exact operation to
+        //    `referenced` in one SQLite transaction. No placeholder Plugin row
+        //    and no latest-row scan is involved.
+        let display_name = if metadata.name().is_empty() {
+            input.identifier().to_string()
+        } else {
+            metadata.name().to_string()
+        };
+        let plugin = ledger
+            .commit_published_create(
+                operation_id,
+                CreatePluginFields {
+                    version: input.version().to_string(),
+                    name: display_name,
+                    description: metadata.description,
+                    manifest: metadata.manifest,
+                    runtime: metadata.runtime,
+                    author: None,
+                    repository_url: None,
+                    category_id: None,
+                    capabilities: metadata.capabilities,
+                },
+            )
+            .await
+            .map_err(ledger_install_error)?;
 
-        // 7. referenced — plugin_id becomes non-null.
-        self.transition(
-            &operation_id,
-            "referenced",
-            Some(&fingerprint),
-            Some(&fingerprint),
-            Some(&row.0.to_string()),
-        )
-        .await?;
-
-        // 8. done — terminal success (retain plugin_id for the audit trail).
-        let plugin_id_str = row.0.to_string();
-        self.transition(
-            &operation_id,
-            "done",
-            Some(&fingerprint),
-            Some(&fingerprint),
-            Some(&plugin_id_str),
-        )
-        .await?;
+        // 7. Terminal success, addressed by the same operation UUID.
+        ledger
+            .transition(
+                operation_id,
+                OperationState::Referenced,
+                OperationTransition::Done,
+            )
+            .await
+            .map_err(ledger_install_error)?;
 
         Ok(PluginRecord {
-            id: row.0,
+            id: plugin.id,
             name: input.identifier().to_string(),
             version: input.version().to_string(),
             fingerprint_hex: fingerprint,
-            row_revision: 0,
+            row_revision: plugin.row_revision,
         })
     }
 
-    /// Record a `prepared` create operation in the durability ledger.
-    async fn insert_prepared(
+    /// Validate every import-controlled field and the shared ABI contract
+    /// before the durability ledger or managed filesystem is mutated.
+    async fn prevalidate_install(
         &self,
-        operation_id: &str,
-        staging_name: &str,
-    ) -> Result<(), PluginInstallError> {
-        sqlx::query(
-            "INSERT INTO plugin_artifact_operations (operation_id, kind, staging_name, state) \
-             VALUES (?, 'create', ?, 'prepared')",
-        )
-        .bind(operation_id)
-        .bind(staging_name)
-        .execute(&self.inner.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "insert_prepared failed");
-            PluginInstallError {
-                kind: PluginInstallErrorKind::Io,
-                references: Vec::new(),
-            }
+        input: &PluginArtifactInput,
+        metadata: &mut PluginMetadata,
+    ) -> Result<PluginResourceLimits, PluginInstallError> {
+        if input.identifier().len() > 255
+            || !input.identifier().chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+            })
+        {
+            return Err(invalid_install_input());
+        }
+        if input.version().is_empty()
+            || input.version().len() > 64
+            || matches!(input.version(), "." | "..")
+            || input.version().contains(['/', '\\', '\0'])
+        {
+            return Err(invalid_install_input());
+        }
+        if metadata.runtime != "extism" {
+            return Err(invalid_install_input());
+        }
+        let display_name = if metadata.name().is_empty() {
+            input.identifier()
+        } else {
+            metadata.name()
+        };
+        if display_name.trim().is_empty() || display_name.len() > 255 {
+            return Err(invalid_install_input());
+        }
+        if metadata
+            .description
+            .as_ref()
+            .is_some_and(|description| description.len() > 2_000)
+        {
+            return Err(invalid_install_input());
+        }
+
+        let shape = validate_wasm_shape(input.bytes(), false);
+        if !shape.is_ok() {
+            tracing::warn!(rejection = ?shape.rejection_kind(), "plugin prevalidation rejected WASM shape");
+            return Err(invalid_install_input());
+        }
+        let actual_exports = extract_wasm_exports(input.bytes()).map_err(|error| {
+            tracing::warn!(error = %error, "plugin prevalidation could not inspect exports");
+            invalid_install_input()
         })?;
-        Ok(())
+
+        if metadata.capabilities.len() > 1024 * 1024 {
+            return Err(invalid_install_input());
+        }
+        let metadata_capabilities = serde_json::from_str::<Vec<String>>(&metadata.capabilities)
+            .map_err(|_| invalid_install_input())?;
+        let mut unique_metadata_capabilities = BTreeSet::new();
+        for capability in &metadata_capabilities {
+            if capability.is_empty()
+                || capability.trim() != capability
+                || !unique_metadata_capabilities.insert(capability.clone())
+            {
+                return Err(invalid_install_input());
+            }
+        }
+
+        let resource_limits = parse_resource_limits(&metadata.resource_limits)?;
+
+        if metadata.manifest.is_none() {
+            metadata.manifest = Some(build_v1_manifest(&actual_exports, &metadata_capabilities));
+        }
+        let manifest = metadata
+            .manifest
+            .as_deref()
+            .ok_or_else(invalid_install_input)?;
+        if manifest.len() > 1024 * 1024 {
+            return Err(invalid_install_input());
+        }
+
+        // Capability availability is resolved exclusively from this local
+        // HiveGUI database. Import validation never requests HiveWeb and never
+        // mutates the capability catalog as a side effect.
+        let available_capabilities = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM capabilities ORDER BY name",
+        )
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|error| {
+            tracing::error!(error = %error, "load local capabilities for plugin prevalidation");
+            io_err(std::io::Error::other("load local capabilities"))
+        })?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        if let Err(issues) = validate_manifest(manifest, &available_capabilities) {
+            tracing::warn!(issues = ?issues, "plugin prevalidation rejected manifest");
+            return Err(invalid_install_input());
+        }
+
+        let manifest_capabilities = manifest_required_capabilities(Some(manifest));
+        let manifest_capability_set = manifest_capabilities
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if manifest_capabilities.len() != manifest_capability_set.len()
+            || manifest_capability_set != unique_metadata_capabilities
+        {
+            return Err(invalid_install_input());
+        }
+
+        let declared_exports = manifest_exports(Some(manifest));
+        let declared_export_set = declared_exports.iter().cloned().collect::<BTreeSet<_>>();
+        let actual_export_set = actual_exports.iter().cloned().collect::<BTreeSet<_>>();
+        if declared_exports.len() != declared_export_set.len()
+            || declared_export_set != actual_export_set
+        {
+            return Err(invalid_install_input());
+        }
+
+        Ok(resource_limits)
+    }
+
+    /// Resolve one persisted artifact key under the controlled root without
+    /// accepting absolute paths, traversal, prefixes, or platform separators.
+    fn artifact_path_from_key(&self, artifact_key: &str) -> Result<PathBuf, PluginInstallError> {
+        if artifact_key.is_empty() || artifact_key.contains(['\\', '\0']) {
+            return Err(unsafe_artifact_error());
+        }
+        let relative = Path::new(artifact_key);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(unsafe_artifact_error());
+        }
+        Ok(self.inner.root.join(relative))
     }
 
     /// Write the artifact bytes to a staging file using an exclusive
@@ -415,7 +731,7 @@ impl PluginStore {
         &self,
         staging_name: &str,
         bytes: &[u8],
-    ) -> Result<(), PluginInstallError> {
+    ) -> Result<String, PluginInstallError> {
         use std::io::Write;
         let staging_dir = self.inner.root.join(".staging");
         std::fs::create_dir_all(&staging_dir).map_err(io_err)?;
@@ -429,73 +745,64 @@ impl PluginStore {
         file.write_all(bytes).map_err(io_err)?;
         file.flush().map_err(io_err)?;
         file.sync_all().map_err(io_err)?;
-        Ok(())
+        let metadata = file.metadata().map_err(io_err)?;
+        if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+            return Err(unsafe_artifact_error());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 {
+                return Err(unsafe_artifact_error());
+            }
+        }
+        Ok(file_identity(&metadata))
     }
 
-    /// Publish the artifact to the immutable key `identifier/version.wasm`
-    /// using an exclusive no-replace create. Fails with `NoReplace` if
-    /// the key already exists.
+    /// Publish an artifact at its ledger-owned relative key using an
+    /// exclusive no-replace create. The staging name is removed only after
+    /// the final file has been flushed and fsynced.
     async fn publish_artifact(
         &self,
-        identifier: &str,
-        version: &str,
-        bytes: &[u8],
-    ) -> Result<(), PluginInstallError> {
-        use std::io::Write;
-        let artifact_dir = self.inner.root.join(identifier);
-        std::fs::create_dir_all(&artifact_dir).map_err(io_err)?;
-        let artifact_path = artifact_dir.join(format!("{version}.wasm"));
+        artifact_key: &str,
+        staging_name: &str,
+    ) -> Result<String, PluginInstallError> {
+        let artifact_path = self.artifact_path_from_key(artifact_key)?;
+        let artifact_dir = artifact_path.parent().ok_or_else(unsafe_artifact_error)?;
+        std::fs::create_dir_all(artifact_dir).map_err(io_err)?;
 
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&artifact_path)
-        {
-            Ok(f) => f,
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+        let staging_dir = self.inner.root.join(".staging");
+        let staging_path = staging_dir.join(staging_name);
+        match std::fs::hard_link(&staging_path, &artifact_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(PluginInstallError {
                     kind: PluginInstallErrorKind::NoReplace,
                     references: Vec::new(),
                 });
             }
-            Err(_) => return Err(io_err(std::io::Error::other("open artifact"))),
-        };
-        file.write_all(bytes).map_err(io_err)?;
-        file.flush().map_err(io_err)?;
-        file.sync_all().map_err(io_err)?;
-        Ok(())
-    }
-
-    /// Transition an operation to a new state, writing the identity
-    /// columns that the state CHECK requires.
-    async fn transition(
-        &self,
-        operation_id: &str,
-        state: &str,
-        staging_identity: Option<&str>,
-        new_identity: Option<&str>,
-        plugin_id: Option<&str>,
-    ) -> Result<(), PluginInstallError> {
-        sqlx::query(
-            "UPDATE plugin_artifact_operations \
-             SET staging_identity = ?, new_identity = ?, plugin_id = ?, state = ? \
-             WHERE operation_id = ?",
-        )
-        .bind(staging_identity)
-        .bind(new_identity)
-        .bind(plugin_id)
-        .bind(state)
-        .bind(operation_id)
-        .execute(&self.inner.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "transition to {state} failed");
-            PluginInstallError {
-                kind: PluginInstallErrorKind::Io,
-                references: Vec::new(),
+            Err(error) => return Err(io_err(error)),
+        }
+        // `hard_link` is the same-filesystem no-replace publish primitive:
+        // both names temporarily identify the already-fsynced staging inode.
+        // The final parent is durable before the staging name is removed;
+        // after the unlink the published file has link-count one.
+        fsync_dir(artifact_dir);
+        std::fs::remove_file(&staging_path).map_err(io_err)?;
+        fsync_dir(&staging_dir);
+        let file = open_nofollow(&artifact_path).map_err(io_err)?;
+        let metadata = file.metadata().map_err(io_err)?;
+        if !metadata.is_file() {
+            return Err(unsafe_artifact_error());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 {
+                return Err(unsafe_artifact_error());
             }
-        })?;
-        Ok(())
+        }
+        Ok(file_identity(&metadata))
     }
 
     /// Mark a plugin as soft-deleted. The on-disk artifact is
@@ -522,8 +829,8 @@ impl PluginStore {
         &self,
         id: i64,
     ) -> Result<Option<PluginArtifact>, PluginInstallError> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT identifier, version FROM plugins WHERE id = ?")
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT identifier, version, s3_key FROM plugins WHERE id = ?")
                 .bind(id)
                 .fetch_optional(&self.inner.pool)
                 .await
@@ -531,17 +838,11 @@ impl PluginStore {
                     kind: PluginInstallErrorKind::Io,
                     references: Vec::new(),
                 })?;
-        let (identifier, version) = match row {
+        let (identifier, version, artifact_key) = match row {
             Some(r) => r,
             None => return Ok(None),
         };
-        // T077: resolve through the no-follow boundary; a symlink /
-        // hardlink / non-regular file returns `None` rather than bytes.
-        let path = match self.resolve_artifact_path(&identifier, &version) {
-            Ok(p) => p,
-            Err(_) => return Ok(None),
-        };
-        let bytes = match std::fs::read(&path) {
+        let bytes = match self.read_verified_artifact_key(&artifact_key) {
             Ok(b) => b,
             Err(_) => return Ok(None),
         };
@@ -553,34 +854,17 @@ impl PluginStore {
         }))
     }
 
-    /// Replay interrupted operations left by a crash, then clear any
-    /// orphaned staging bytes. This is the T077 startup recovery path:
-    ///   - `prepared`: nothing reached disk → drop the row.
-    ///   - `staged`: staging bytes exist but were never published →
-    ///     remove the staging file and drop the row.
-    ///   - `published`: the immutable key was written but the plugin row
-    ///     was never inserted → remove both the artifact file and the
-    ///     staging file, then drop the row.
-    ///   - `referenced`: the plugin row exists and is live → the
-    ///     operation is complete in effect; advance it to `done`.
-    ///   - `done` / `conflict`: terminal, never touched here.
-    ///
-    /// Any staging file whose identity does not match the recorded
-    /// `staging_identity` is treated as an ownership conflict and is
-    /// left in place (fail-closed for the caller to inspect).
+    /// Replay interrupted operations before opening the Plugin Store.
+    /// Ownership ambiguity is durable and fail-closed: the exact operation
+    /// becomes `conflict`, every observed object remains byte-for-byte in
+    /// place, and the caller receives an error.
     pub async fn recover_interrupted_operations(&self) -> Result<usize, PluginInstallError> {
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = sqlx::query_as(
-            "SELECT operation_id, state, staging_name, staging_identity, new_identity, plugin_id \
+        let rows = sqlx::query_as::<_, RecoveryOperationRow>(
+            "SELECT operation_id, state, staging_name, staging_identity, new_identity, \
+                    new_s3_key, new_sha256, new_size \
                  FROM plugin_artifact_operations \
                  WHERE state IN ('prepared','staged','published','referenced') \
-                 ORDER BY rowid",
+                 ORDER BY created_at, operation_id",
         )
         .fetch_all(&self.inner.pool)
         .await
@@ -590,89 +874,590 @@ impl PluginStore {
         })?;
 
         let mut recovered = 0usize;
-        for (operation_id, state, staging_name, staging_identity, _new_identity, plugin_id) in rows
-        {
-            let staging_path = self.inner.root.join(".staging").join(&staging_name);
-            match state.as_str() {
+        let ledger = PluginArtifactLedger::new(self.inner.pool.clone());
+        for row in rows {
+            let staging_dir = self.inner.root.join(".staging");
+            let staging_path = staging_dir.join(&row.staging_name);
+            let staging_exists = path_entry_exists(&staging_path);
+            match row.state.as_str() {
                 "prepared" => {
-                    // No bytes reached disk; drop the ledger row.
-                    self.drop_operation(&operation_id).await?;
+                    if staging_exists {
+                        self.mark_operation_conflict(&row.operation_id, "prepared")
+                            .await?;
+                        return Err(unsafe_artifact_error());
+                    }
+                    self.mark_operation_done(&row.operation_id, "prepared")
+                        .await?;
                     recovered += 1;
                 }
                 "staged" => {
-                    // Staging bytes exist but never published.
-                    let _ = std::fs::remove_file(&staging_path);
-                    self.drop_operation(&operation_id).await?;
+                    let final_exists = row
+                        .new_s3_key
+                        .as_deref()
+                        .and_then(|key| self.artifact_path_from_key(key).ok())
+                        .is_some_and(|path| path_entry_exists(&path));
+                    if staging_exists && final_exists {
+                        self.mark_operation_conflict(&row.operation_id, "staged")
+                            .await?;
+                        return Err(unsafe_artifact_error());
+                    }
+                    if staging_exists {
+                        if !artifact_file_matches(
+                            &staging_path,
+                            row.new_sha256.as_deref(),
+                            row.new_size,
+                            row.staging_identity.as_deref(),
+                        ) {
+                            self.mark_operation_conflict(&row.operation_id, "staged")
+                                .await?;
+                            return Err(unsafe_artifact_error());
+                        }
+                        std::fs::remove_file(&staging_path).map_err(io_err)?;
+                        fsync_dir(&staging_dir);
+                    } else if final_exists {
+                        // A final-only staged shape needs an identity-bound
+                        // publish replay. Until all ownership fields verify,
+                        // retain the object and block rather than adopting it.
+                        self.mark_operation_conflict(&row.operation_id, "staged")
+                            .await?;
+                        return Err(unsafe_artifact_error());
+                    }
+                    self.mark_operation_done(&row.operation_id, "staged")
+                        .await?;
                     recovered += 1;
                 }
                 "published" => {
-                    // Immutable key may exist; the plugin row never did.
-                    // Remove the artifact file and staging, then drop.
-                    if let Some(new_identity) = self.operation_artifact_path(&operation_id).await {
-                        let _ = std::fs::remove_file(new_identity);
+                    // Published accepts exactly one physical shape: staging is
+                    // absent and final is the ledger-owned object. Double
+                    // presence is always ambiguous even when bytes match.
+                    let final_path = row
+                        .new_s3_key
+                        .as_deref()
+                        .and_then(|key| self.artifact_path_from_key(key).ok());
+                    let final_matches = final_path.as_deref().is_some_and(|path| {
+                        artifact_file_matches(
+                            path,
+                            row.new_sha256.as_deref(),
+                            row.new_size,
+                            row.new_identity.as_deref(),
+                        )
+                    });
+                    if staging_exists || !final_matches {
+                        self.mark_operation_conflict(&row.operation_id, "published")
+                            .await?;
+                        return Err(unsafe_artifact_error());
                     }
-                    let _ = std::fs::remove_file(&staging_path);
-                    self.drop_operation(&operation_id).await?;
+
+                    let operation_id = match uuid::Uuid::parse_str(&row.operation_id) {
+                        Ok(operation_id) => operation_id,
+                        Err(_) => {
+                            self.mark_operation_conflict(&row.operation_id, "published")
+                                .await?;
+                            return Err(unsafe_artifact_error());
+                        }
+                    };
+                    let operation = match ledger.get(operation_id).await {
+                        Ok(Some(operation)) => operation,
+                        Ok(None) | Err(_) => {
+                            self.mark_operation_conflict(&row.operation_id, "published")
+                                .await?;
+                            return Err(unsafe_artifact_error());
+                        }
+                    };
+
+                    // Replaying a published operation never recreates user
+                    // intent or redoes a live replace CAS. If no atomic
+                    // referenced fact exists, the operation-owned new object
+                    // enters GC and the operation completes transactionally.
+                    if operation.kind() == OperationKind::Replace
+                        && self.plugin_references_operation_new(&operation).await?
+                    {
+                        self.mark_operation_conflict(&row.operation_id, "published")
+                            .await?;
+                        return Err(unsafe_artifact_error());
+                    }
+                    ledger
+                        .finish_with_gc(
+                            operation_id,
+                            OperationState::Published,
+                            OperationGcTarget::PublishedNew,
+                        )
+                        .await
+                        .map_err(ledger_install_error)?;
                     recovered += 1;
                 }
                 "referenced" => {
-                    // Plugin row is live; the operation is complete in
-                    // effect. Advance to done (retain identity).
-                    let plugin_id = plugin_id.unwrap_or_default();
-                    sqlx::query(
-                        "UPDATE plugin_artifact_operations SET state = 'done' WHERE operation_id = ?",
-                    )
-                    .bind(&operation_id)
-                    .execute(&self.inner.pool)
-                    .await
-                    .map_err(|_| PluginInstallError {
-                        kind: PluginInstallErrorKind::Io,
-                        references: Vec::new(),
-                    })?;
-                    let _ = plugin_id;
+                    let operation_id = uuid::Uuid::parse_str(&row.operation_id)
+                        .map_err(|_| unsafe_artifact_error())?;
+                    let operation = ledger
+                        .get(operation_id)
+                        .await
+                        .map_err(ledger_install_error)?
+                        .ok_or_else(unsafe_artifact_error)?;
+                    match operation.kind() {
+                        OperationKind::Create => {
+                            ledger
+                                .transition(
+                                    operation_id,
+                                    OperationState::Referenced,
+                                    OperationTransition::Done,
+                                )
+                                .await
+                                .map_err(ledger_install_error)?;
+                        }
+                        OperationKind::Replace => {
+                            ledger
+                                .finish_with_gc(
+                                    operation_id,
+                                    OperationState::Referenced,
+                                    OperationGcTarget::ExpectedOld,
+                                )
+                                .await
+                                .map_err(ledger_install_error)?;
+                        }
+                    }
                     recovered += 1;
                 }
-                _ => {
-                    // Unknown non-terminal state: leave in place
-                    // (fail-closed for the caller to inspect).
-                    let _ = staging_identity;
-                }
+                _ => unreachable!("query restricts operation states"),
             }
         }
         Ok(recovered)
     }
 
-    /// Look up the published artifact path for an operation id (used by
-    /// crash recovery to remove a `published` operation's file).
-    async fn operation_artifact_path(&self, operation_id: &str) -> Option<std::path::PathBuf> {
-        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT plugin_id, new_identity FROM plugin_artifact_operations WHERE operation_id = ?",
+    async fn plugin_references_operation_new(
+        &self,
+        operation: &crate::datasource::entity_store::PluginArtifactOperation,
+    ) -> Result<bool, PluginInstallError> {
+        let Some(plugin_id) = operation.plugin_id() else {
+            return Ok(false);
+        };
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM plugins \
+             WHERE id = ? AND identifier = ? AND s3_key = ? AND sha256 = ? \
+               AND size_bytes = ? AND deleted_at IS NULL",
         )
-        .bind(operation_id)
-        .fetch_optional(&self.inner.pool)
+        .bind(plugin_id)
+        .bind(operation.target_identifier())
+        .bind(operation.new_s3_key())
+        .bind(operation.new_sha256())
+        .bind(operation.new_size_bytes())
+        .fetch_one(&self.inner.pool)
         .await
-        .ok()
-        .flatten();
-        // Without a deterministic identifier/version mapping on the
-        // operation row (create operations keep plugin_id NULL until
-        // referenced), the published key cannot be reconstructed from
-        // the ledger alone. Return None: the file is left for a later
-        // GC scan rather than deleted speculatively.
-        let _ = row;
-        None
+        .map(|count| count == 1)
+        .map_err(|_| io_err(std::io::Error::other("query plugin reference")))
     }
 
-    /// Drop a single operation row (used to roll back a non-terminal
-    /// interrupted operation).
-    async fn drop_operation(&self, operation_id: &str) -> Result<(), PluginInstallError> {
-        sqlx::query("DELETE FROM plugin_artifact_operations WHERE operation_id = ?")
-            .bind(operation_id)
-            .execute(&self.inner.pool)
+    async fn mark_operation_conflict(
+        &self,
+        operation_id: &str,
+        expected_state: &str,
+    ) -> Result<(), PluginInstallError> {
+        let updated = sqlx::query(
+            "UPDATE plugin_artifact_operations \
+             SET state = 'conflict', updated_at = ? \
+             WHERE operation_id = ? AND state = ?",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(operation_id)
+        .bind(expected_state)
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|_| io_err(std::io::Error::other("mark operation conflict")))?;
+        if updated.rows_affected() != 1 {
+            return Err(unsafe_artifact_error());
+        }
+        Ok(())
+    }
+
+    async fn mark_operation_done(
+        &self,
+        operation_id: &str,
+        expected_state: &str,
+    ) -> Result<(), PluginInstallError> {
+        let updated = sqlx::query(
+            "UPDATE plugin_artifact_operations SET state = 'done', updated_at = ? \
+             WHERE operation_id = ? AND state = ?",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(operation_id)
+        .bind(expected_state)
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|_| io_err(std::io::Error::other("mark operation done")))?;
+        if updated.rows_affected() != 1 {
+            return Err(unsafe_artifact_error());
+        }
+        Ok(())
+    }
+
+    /// Soft-delete a plugin and garbage-collect its on-disk artifact through
+    /// the protected ledger path. Unlike the legacy `remove_dir_all` flow,
+    /// this records a `pending` GC row first (crash-recoverable) and only
+    /// then deletes the file, so a crash between the soft-delete and the
+    /// unlink leaves a `pending` row that startup replay drains.
+    ///
+    /// T079 ③: the artifact is removed via [`PluginStore::drain_pending_gc`],
+    /// which resolves the `artifact_key` with strict path-traversal checks
+    /// and never deletes speculatively.
+    pub async fn delete(&self, id: i64) -> Result<(), PluginInstallError> {
+        let artifact_key: Option<String> =
+            sqlx::query_scalar("SELECT s3_key FROM plugins WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.inner.pool)
+                .await
+                .map_err(|_| io_err(std::io::Error::other("resolve plugin")))?;
+        let artifact_key = artifact_key.ok_or_else(|| PluginInstallError {
+            kind: PluginInstallErrorKind::Io,
+            references: Vec::new(),
+        })?;
+
+        self.soft_delete(id).await?;
+
+        // Prevent an idle managed runtime instance from keeping the artifact
+        // alive indefinitely. Active calls remain tracked and make the GC
+        // scan retryable; invalidation also prevents an in-flight checkout
+        // from being reinserted after it returns.
+        let _ = crate::runtime::plugin_executor::invalidate_artifact_instances(
+            &self.inner.root,
+            id,
+            &artifact_key,
+        );
+
+        Plugin::register_gc_artifact(&self.inner.pool, artifact_key, "deleted".to_string())
             .await
-            .map_err(|_| PluginInstallError {
-                kind: PluginInstallErrorKind::Io,
-                references: Vec::new(),
-            })?;
+            .map_err(|_| io_err(std::io::Error::other("register gc")))?;
+
+        self.drain_pending_gc().await?;
+        Ok(())
+    }
+
+    /// Drain protected GC entries in stable key order. Live metadata, runtime
+    /// leases, and active runtime instances remain retryable. Incomplete or
+    /// mismatched ownership stays blocked and competitor bytes are preserved.
+    pub async fn drain_pending_gc(&self) -> Result<usize, PluginInstallError> {
+        let rows = sqlx::query_as::<_, GcLedgerRow>(
+            "SELECT g.artifact_key, g.expected_sha256, g.expected_size_bytes, \
+                    g.expected_identity, g.source_operation_id, g.state, \
+                    g.attempts, g.last_error, CAST(o.plugin_id AS INTEGER) AS plugin_id \
+             FROM plugin_artifact_gc g \
+             LEFT JOIN plugin_artifact_operations o \
+               ON o.operation_id = g.source_operation_id \
+             WHERE g.state IN ('pending','blocked') \
+             ORDER BY g.artifact_key",
+        )
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|_| io_err(std::io::Error::other("query protected gc")))?;
+
+        let mut drained = 0usize;
+        for row in rows {
+            let key = row.artifact_key.as_str();
+            tracing::debug!(
+                artifact_key = key,
+                previous_state = %row.state,
+                attempts = row.attempts,
+                "scan protected plugin artifact GC row"
+            );
+            // Identity/ownership conflicts require operator intervention.
+            // Never let a later scan adopt a path merely because its current
+            // bytes happen to match the originally recorded tuple again.
+            if gc_error_is_terminal(row.last_error.as_deref()) {
+                continue;
+            }
+            let Some(path) = self.resolve_gc_artifact_path(key) else {
+                self.record_gc_outcome(key, "blocked", "unsafe_artifact_key")
+                    .await?;
+                continue;
+            };
+            let path_exists = path_entry_exists(&path);
+
+            // The marker means an earlier worker had already passed the last
+            // ownership check and may have unlinked the owned inode. If a
+            // name is present on replay, it is a reappearance and therefore
+            // competitor-owned even when its tuple happens to match.
+            if row.last_error.as_deref() == Some(GC_UNLINK_MARKER) && path_exists {
+                self.record_gc_outcome(key, "blocked", "identity_reappeared_after_unlink_marker")
+                    .await?;
+                continue;
+            }
+
+            let live_references: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM plugins WHERE s3_key = ? AND deleted_at IS NULL",
+            )
+            .bind(key)
+            .fetch_one(&self.inner.pool)
+            .await
+            .map_err(|_| io_err(std::io::Error::other("query live plugin references")))?;
+            if live_references > 0 {
+                if row.last_error.as_deref() != Some(GC_UNLINK_MARKER) {
+                    self.record_gc_outcome(key, "pending", "metadata_referenced")
+                        .await?;
+                }
+                continue;
+            }
+
+            let plugin_id = row.plugin_id.filter(|plugin_id| *plugin_id > 0);
+            if plugin_id.is_some_and(|plugin_id| self.inner.lease_tracker.has_active(plugin_id)) {
+                if row.last_error.as_deref() != Some(GC_UNLINK_MARKER) {
+                    self.record_gc_outcome(key, "pending", "runtime_lease_active")
+                        .await?;
+                }
+                continue;
+            }
+
+            if let Some(plugin_id) = plugin_id {
+                let active_after_invalidation =
+                    crate::runtime::plugin_executor::invalidate_artifact_instances(
+                        &self.inner.root,
+                        plugin_id,
+                        key,
+                    );
+                if active_after_invalidation
+                    || crate::runtime::plugin_executor::artifact_has_runtime_references(
+                        &self.inner.root,
+                        plugin_id,
+                        key,
+                    )
+                {
+                    if row.last_error.as_deref() != Some(GC_UNLINK_MARKER) {
+                        self.record_gc_outcome(key, "pending", "runtime_reference_active")
+                            .await?;
+                    }
+                    continue;
+                }
+            }
+
+            let ownership = match (
+                row.expected_sha256.as_deref(),
+                row.expected_size_bytes,
+                row.expected_identity.as_deref(),
+                row.source_operation_id.as_deref(),
+                plugin_id,
+            ) {
+                (Some(sha256), Some(size), Some(identity), Some(_), Some(_))
+                    if size > 0 && sha256.len() == 64 && !identity.is_empty() =>
+                {
+                    (sha256, size, identity)
+                }
+                _ => {
+                    self.record_gc_outcome(key, "blocked", "ownership_incomplete")
+                        .await?;
+                    continue;
+                }
+            };
+
+            if !path_exists {
+                if row.last_error.as_deref() == Some(GC_UNLINK_MARKER) {
+                    if let Some(parent) = path.parent() {
+                        fsync_dir(parent);
+                    }
+                    if self.remove_gc_row(&row).await? {
+                        drained += 1;
+                    }
+                } else {
+                    self.record_gc_outcome(key, "blocked", "owned_artifact_missing")
+                        .await?;
+                }
+                continue;
+            }
+
+            if !artifact_file_matches(
+                &path,
+                Some(ownership.0),
+                Some(ownership.1),
+                Some(ownership.2),
+            ) {
+                self.record_gc_outcome(key, "blocked", "identity_or_content_mismatch")
+                    .await?;
+                continue;
+            }
+
+            // Persist an unlink marker after complete verification. If the
+            // process stops after unlink+fsync but before ledger deletion,
+            // absence is converged only when this marker is present.
+            if !self.mark_gc_unlinking(&row).await? {
+                continue;
+            }
+            if !artifact_file_matches(
+                &path,
+                Some(ownership.0),
+                Some(ownership.1),
+                Some(ownership.2),
+            ) {
+                self.record_gc_outcome(key, "blocked", "identity_changed_before_unlink")
+                    .await?;
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    self.record_gc_outcome(key, "blocked", "unlink_failed")
+                        .await?;
+                    continue;
+                }
+            }
+            self.prune_empty_ancestors(&path);
+            if self.remove_gc_row(&row).await? {
+                drained += 1;
+            }
+        }
+        Ok(drained)
+    }
+
+    /// Resolve a GC `artifact_key` to the on-disk path it owns, with strict
+    /// path-traversal protection. A key has four normal relative components
+    /// ending in `plugin.wasm`; its third immutable component is opaque.
+    fn resolve_gc_artifact_path(&self, artifact_key: &str) -> Option<PathBuf> {
+        let segments: Vec<&str> = artifact_key.split('/').collect();
+        if segments.len() != 4 || segments[3] != "plugin.wasm" {
+            return None;
+        }
+        if segments[..3]
+            .iter()
+            .any(|segment| segment.is_empty() || matches!(*segment, "." | ".."))
+        {
+            return None;
+        }
+        let mut parent = self.inner.root.clone();
+        for segment in &segments[..3] {
+            parent.push(segment);
+            match std::fs::symlink_metadata(&parent) {
+                Ok(metadata)
+                    if !metadata.file_type().is_symlink() && metadata.file_type().is_dir() => {}
+                Ok(_) => return None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) => return None,
+            }
+        }
+        self.artifact_path_from_key(artifact_key).ok()
+    }
+
+    /// Remove now-empty ancestor directories of a deleted artifact file,
+    /// walking upward from `{id}` → `{version}` → `{identifier}`. The store
+    /// root is never removed.
+    fn prune_empty_ancestors(&self, path: &Path) {
+        // path = root/{identifier}/{version}/{id}/plugin.wasm. The file has
+        // already been unlinked by the caller; fsync its directory to make the
+        // unlink durable, then prune now-empty ancestor dirs upward, fsyncing
+        // each parent after its child is removed (T079 persistent-GC contract:
+        // delete + fsync parent directory).
+        let Some(id_dir) = path.parent() else {
+            return;
+        };
+        fsync_dir(id_dir);
+
+        let Some(version_dir) = id_dir.parent() else {
+            return;
+        };
+        if std::fs::remove_dir(id_dir).is_ok() {
+            fsync_dir(version_dir);
+        }
+
+        let Some(identifier_dir) = version_dir.parent() else {
+            return;
+        };
+        if std::fs::remove_dir(version_dir).is_ok() {
+            fsync_dir(identifier_dir);
+        }
+
+        if identifier_dir != self.inner.root {
+            let _ = std::fs::remove_dir(identifier_dir);
+        }
+    }
+
+    /// Persist the pre-unlink marker only if the complete ownership snapshot
+    /// selected by this worker is still current.
+    async fn mark_gc_unlinking(&self, row: &GcLedgerRow) -> Result<bool, PluginInstallError> {
+        let (Some(sha256), Some(size), Some(identity), Some(source_operation_id)) = (
+            row.expected_sha256.as_deref(),
+            row.expected_size_bytes,
+            row.expected_identity.as_deref(),
+            row.source_operation_id.as_deref(),
+        ) else {
+            return Ok(false);
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE plugin_artifact_gc \
+             SET state = 'blocked', attempts = attempts + 1, last_error = ?, \
+                 updated_at = ?, last_attempt_at = unixepoch() \
+             WHERE artifact_key = ? AND expected_sha256 = ? \
+               AND expected_size_bytes = ? AND expected_identity = ? \
+               AND source_operation_id = ? AND state = ? \
+               AND ((last_error IS NULL AND ? IS NULL) OR last_error = ?)",
+        )
+        .bind(GC_UNLINK_MARKER)
+        .bind(now)
+        .bind(&row.artifact_key)
+        .bind(sha256)
+        .bind(size)
+        .bind(identity)
+        .bind(source_operation_id)
+        .bind(&row.state)
+        .bind(row.last_error.as_deref())
+        .bind(row.last_error.as_deref())
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|_| io_err(std::io::Error::other("mark gc unlinking")))?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Remove a drained GC ledger row only while its complete ownership tuple,
+    /// source operation, and pre-unlink marker still match this scan.
+    async fn remove_gc_row(&self, row: &GcLedgerRow) -> Result<bool, PluginInstallError> {
+        let (Some(sha256), Some(size), Some(identity), Some(source_operation_id)) = (
+            row.expected_sha256.as_deref(),
+            row.expected_size_bytes,
+            row.expected_identity.as_deref(),
+            row.source_operation_id.as_deref(),
+        ) else {
+            return Ok(false);
+        };
+        let result = sqlx::query(
+            "DELETE FROM plugin_artifact_gc \
+             WHERE artifact_key = ? AND expected_sha256 = ? \
+               AND expected_size_bytes = ? AND expected_identity = ? \
+               AND source_operation_id = ? AND state = 'blocked' \
+               AND last_error = ?",
+        )
+        .bind(&row.artifact_key)
+        .bind(sha256)
+        .bind(size)
+        .bind(identity)
+        .bind(source_operation_id)
+        .bind(GC_UNLINK_MARKER)
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|_| io_err(std::io::Error::other("remove gc row")))?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Persist one classified GC attempt without changing its ownership
+    /// tuple. `pending` is reserved for retryable references; ownership or
+    /// identity uncertainty is `blocked`.
+    async fn record_gc_outcome(
+        &self,
+        key: &str,
+        state: &str,
+        last_error: &str,
+    ) -> Result<(), PluginInstallError> {
+        if !matches!(state, "pending" | "blocked") {
+            return Err(invalid_install_input());
+        }
+        sqlx::query(
+            "UPDATE plugin_artifact_gc \
+             SET state = ?, attempts = attempts + 1, last_error = ?, \
+                 updated_at = ?, last_attempt_at = unixepoch() \
+             WHERE artifact_key = ?",
+        )
+        .bind(state)
+        .bind(last_error)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(key)
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|_| io_err(std::io::Error::other("record gc outcome")))?;
         Ok(())
     }
 
@@ -686,38 +1471,44 @@ impl PluginStore {
     ) -> Result<PluginLease, PluginInstallError> {
         let session_id = session_id.into();
         let state: OperationState = OperationState::Referenced;
-        let lease = PluginLease {
+        self.inner.lease_tracker.acquire(plugin_id);
+        Ok(PluginLease {
             plugin_id,
-            session_id: session_id.clone(),
+            session_id,
             state,
-        };
-        self.inner.leases.lock().push(lease.clone());
-        Ok(lease)
+            _guard: Arc::new(PluginLeaseGuard {
+                tracker: self.inner.lease_tracker.clone(),
+                plugin_id,
+            }),
+        })
     }
 
-    /// Resolve the on-disk path for `(identifier, version)` relative to
+    /// Resolve the on-disk path for `(identifier, version, id)` relative to
     /// the store root without following symlinks. Returns the resolved
-    /// path only if the `identifier` directory is a real directory (not
-    /// a symlink) and the final component is a link-count-1 regular
-    /// file. This is the T077 no-follow / no-replace filesystem safety
-    /// boundary.
+    /// path only if every directory component is a real directory (not a
+    /// symlink) and the final component is a link-count-1 regular file.
+    /// This is the T077 no-follow / no-replace filesystem safety boundary.
     pub fn resolve_artifact_path(
         &self,
         identifier: &str,
         version: &str,
+        id: i64,
     ) -> Result<PathBuf, PluginInstallError> {
         let unsafe_err = || PluginInstallError {
             kind: PluginInstallErrorKind::UnsafeArtifact,
             references: Vec::new(),
         };
 
-        let dir = self.inner.root.join(identifier);
+        let dir = self
+            .inner
+            .root
+            .join(Plugin::artifact_dir(identifier, version, id));
         let dir_md = std::fs::symlink_metadata(&dir).map_err(|_| unsafe_err())?;
         if dir_md.file_type().is_symlink() || !dir_md.file_type().is_dir() {
             return Err(unsafe_err());
         }
 
-        let path = dir.join(format!("{version}.wasm"));
+        let path = dir.join("plugin.wasm");
         let md = std::fs::symlink_metadata(&path).map_err(|_| unsafe_err())?;
         if md.file_type().is_symlink() || !md.file_type().is_file() {
             return Err(unsafe_err());
@@ -735,6 +1526,34 @@ impl PluginStore {
         Ok(path)
     }
 
+    /// Read a persisted opaque artifact key through a no-follow descriptor.
+    /// New create operations use an operation UUID in the third key segment;
+    /// legacy numeric-id keys remain valid through the same boundary.
+    pub fn read_verified_artifact_key(
+        &self,
+        artifact_key: &str,
+    ) -> Result<Vec<u8>, PluginInstallError> {
+        let path = self.artifact_path_from_key(artifact_key)?;
+        let file = open_nofollow(&path).map_err(|_| unsafe_artifact_error())?;
+        let metadata = file.metadata().map_err(|_| unsafe_artifact_error())?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(unsafe_artifact_error());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 {
+                return Err(unsafe_artifact_error());
+            }
+        }
+        use std::io::Read;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_ARTIFACT_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|_| unsafe_artifact_error())?;
+        Ok(bytes)
+    }
+
     /// Read artifact bytes through a single no-follow descriptor.
     ///
     /// T079: unlike [`PluginStore::resolve_artifact_path`] followed by
@@ -742,25 +1561,30 @@ impl PluginStore {
     /// a replace window between check and use), this opens the final
     /// component with `O_NOFOLLOW` and validates the *opened descriptor*
     /// via `fstat` (regular file, link count 1, non-empty) before reading a
-    /// single byte. The `identifier` directory is still checked with
+    /// single byte. The artifact directory
+    /// (`{identifier}/{version}/{id}`) is still checked with
     /// `symlink_metadata`: it is store-managed and must never be a symlink.
     pub fn read_verified_artifact(
         &self,
         identifier: &str,
         version: &str,
+        id: i64,
     ) -> Result<Vec<u8>, PluginInstallError> {
         let unsafe_err = || PluginInstallError {
             kind: PluginInstallErrorKind::UnsafeArtifact,
             references: Vec::new(),
         };
 
-        let dir = self.inner.root.join(identifier);
+        let dir = self
+            .inner
+            .root
+            .join(Plugin::artifact_dir(identifier, version, id));
         let dir_md = std::fs::symlink_metadata(&dir).map_err(|_| unsafe_err())?;
         if dir_md.file_type().is_symlink() || !dir_md.file_type().is_dir() {
             return Err(unsafe_err());
         }
 
-        let path = dir.join(format!("{version}.wasm"));
+        let path = dir.join("plugin.wasm");
 
         // Open the final component with O_NOFOLLOW: a symlink in the last
         // path segment is rejected at open time rather than "checked, then
@@ -794,6 +1618,28 @@ impl PluginStore {
 /// store-managed file that grew unexpectedly after publish (128 MiB).
 const MAX_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
 
+/// Durable marker proving the ledger had verified its complete ownership
+/// tuple immediately before attempting unlink.
+const GC_UNLINK_MARKER: &str = "unlinking_verified_identity";
+
+/// Outcomes that require explicit operator repair. Retrying these rows must
+/// never adopt a later filesystem entry, even if it happens to match the old
+/// digest/size/identity tuple.
+fn gc_error_is_terminal(error: Option<&str>) -> bool {
+    matches!(
+        error,
+        Some(
+            "unsafe_artifact_key"
+                | "ownership_unproven"
+                | "ownership_incomplete"
+                | "owned_artifact_missing"
+                | "identity_or_content_mismatch"
+                | "identity_changed_before_unlink"
+                | "identity_reappeared_after_unlink_marker"
+        )
+    )
+}
+
 /// Open a path with `O_NOFOLLOW` so a symlink in the final component is
 /// rejected at open time. Non-Unix platforms fall back to a plain read
 /// open (the T077 no-follow boundary is a Unix-only concern).
@@ -819,6 +1665,133 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn path_entry_exists(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        // An entry whose ownership cannot be inspected is conservatively
+        // treated as present, forcing the caller into durable conflict.
+        Err(_) => true,
+    }
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(
+        "unix-v1:{}:{}:{}:{}",
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec()
+    )
+}
+
+#[cfg(not(unix))]
+fn file_identity(metadata: &std::fs::Metadata) -> String {
+    use std::time::UNIX_EPOCH;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos());
+    format!("portable-v1:{}:{modified}", metadata.len())
+}
+
+fn artifact_file_matches(
+    path: &Path,
+    expected_sha256: Option<&str>,
+    expected_size: Option<i64>,
+    expected_identity: Option<&str>,
+) -> bool {
+    let (Some(expected_sha256), Some(expected_size), Some(expected_identity)) =
+        (expected_sha256, expected_size, expected_identity)
+    else {
+        return false;
+    };
+    if expected_size <= 0 {
+        return false;
+    }
+    let Ok(file) = open_nofollow(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() != expected_size as u64 {
+        return false;
+    }
+    if file_identity(&metadata) != expected_identity {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return false;
+        }
+    }
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    if file
+        .take(MAX_ARTIFACT_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return false;
+    }
+    bytes.len() == expected_size as usize && sha256_hex(&bytes) == expected_sha256
+}
+
+fn parse_resource_limits(value: &str) -> Result<PluginResourceLimits, PluginInstallError> {
+    if value.len() > 1024 * 1024 {
+        return Err(invalid_install_input());
+    }
+    let limits =
+        serde_json::from_str::<PluginResourceLimits>(value).map_err(|_| invalid_install_input())?;
+    let within = |value: Option<i64>, minimum: i64, maximum: i64| {
+        value.is_none_or(|value| (minimum..=maximum).contains(&value))
+    };
+    if !within(limits.timeout_ms, 1, 120_000)
+        || !within(limits.memory_limit_mb, 1, 512)
+        || !within(limits.output_limit_bytes, 1, 52_428_800)
+    {
+        return Err(invalid_install_input());
+    }
+    Ok(limits)
+}
+
+fn invalid_install_input() -> PluginInstallError {
+    PluginInstallError {
+        kind: PluginInstallErrorKind::InvalidInput,
+        references: Vec::new(),
+    }
+}
+
+fn unsafe_artifact_error() -> PluginInstallError {
+    PluginInstallError {
+        kind: PluginInstallErrorKind::UnsafeArtifact,
+        references: Vec::new(),
+    }
+}
+
+fn ledger_install_error(error: PluginLedgerError) -> PluginInstallError {
+    let kind = match &error {
+        PluginLedgerError::InvalidInput { .. } => PluginInstallErrorKind::InvalidInput,
+        PluginLedgerError::KindMismatch { .. } | PluginLedgerError::StateConflict { .. } => {
+            PluginInstallErrorKind::CasConflict
+        }
+        PluginLedgerError::NotFound { .. }
+        | PluginLedgerError::CorruptLedger(_)
+        | PluginLedgerError::Backend(_) => PluginInstallErrorKind::Io,
+    };
+    tracing::error!(error = %error, "plugin artifact ledger operation failed");
+    PluginInstallError {
+        kind,
+        references: Vec::new(),
+    }
+}
+
 /// Map an `std::io::Error` into a [`PluginInstallError`] with the
 /// `Io` reason code.
 fn io_err(_error: std::io::Error) -> PluginInstallError {
@@ -827,6 +1800,19 @@ fn io_err(_error: std::io::Error) -> PluginInstallError {
         references: Vec::new(),
     }
 }
+
+/// fsync a directory so a completed unlink/rmdir is durable across a crash
+/// (best-effort; on platforms where directories cannot be opened this is a
+/// no-op). Used by the persistent-GC path after removing an artifact file.
+#[cfg(unix)]
+fn fsync_dir(path: &Path) {
+    if let Ok(dir) = std::fs::File::open(path) {
+        let _ = dir.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn fsync_dir(_path: &Path) {}
 
 /// Read the on-disk bytes for a plugin identified by `(id)` and
 /// return them as a `(bytes, name, version)` triple. The test
@@ -849,7 +1835,9 @@ pub async fn read_artifact_for_test(
         Some(r) => r,
         None => return Ok(None),
     };
-    let path = root.join(&identifier).join(format!("{}.wasm", version));
+    let path = root
+        .join(Plugin::artifact_dir(&identifier, &version, id))
+        .join("plugin.wasm");
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => return Ok(None),

@@ -1,0 +1,40 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "us13_combined_ui_feedback",
+      "owner_task": "T121",
+      "timing_boundary": "one keyboard character dispatched while Agent conversation, 100-node no-op Workflow, and backup prevalidation are all active to that character's visible input feedback",
+      "excluded_time": [
+        "external local-LLM wait",
+        "Workflow user-node execution",
+        "backup archive construction before the combined-load window",
+        "baseline and exception I/O"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 100000000,
+      "workflow_node_count": 100
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "debug",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 12260815,
+      "p95": 13474426,
+      "p99": 16001232
+    }
+  },
+  "approval": {
+    "reviewer": "Codex designated reviewer under user standing authorization",
+    "approved_at": "2026-08-25",
+    "source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:76cf2a85b14342f079eeeca7ef26e4f990c5ff1d091cea073c333b1c0f61ceff"
+  }
+}

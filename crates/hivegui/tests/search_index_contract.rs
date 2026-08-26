@@ -67,13 +67,17 @@ use std::{
 };
 
 use hivegui::datasource::{
+    function_store::{FunctionInput, FunctionKind, FunctionRecord, FunctionStore},
+    query_plan::production_query_catalog,
     search_index::{
         IndexBackend, IndexSelection, MAX_PAGE_SIZE, NormalizationIdError, SearchError, SearchHit,
         SearchIndex, SearchInput, SearchNormalizer, SearchOrdering,
     },
     search_normalization::{NormalizationFailure, NormalizationId, NormalizerProvenance},
+    store::{Store, StoreOpenOptions},
 };
 use serde_json::json;
+use sqlx::{Pool, Row, Sqlite};
 use support::TestWorkspace;
 
 const NORMALIZATION_ID: &str = "hivegui-nfkc-casefold-v1";
@@ -90,6 +94,10 @@ const HIVEGUI_SEARCH_INDEX_SRC: &str = concat!(
 const HIVEGUI_STORE_SRC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/datasource/store.rs");
 const HIVEGUI_MIGRATIONS_SRC: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/src/datasource/migrations.rs");
+const HIVEGUI_FUNCTION_STORE_SRC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/datasource/function_store.rs"
+);
 
 // ---------------------------------------------------------------------------
 // §T017G.1 — Normalization ID is fixed and versioned.
@@ -656,8 +664,764 @@ fn migrations_creates_fts5_trigram_and_short_gram_indices_with_normalization_id(
 }
 
 // ---------------------------------------------------------------------------
+// 2026-08-20 supplemental T022/T028/T083 Red — exercise the authoritative
+// data-model schema and the real v4 Store / EntityFunction path. The historic
+// Foundation seam above is deliberately retained as evidence; these tests
+// prevent its generic `search_index` model from being mistaken for the
+// external-content, cross-entity schema required by data-model.md §9.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn real_v4_store_has_the_exact_external_content_search_schema() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let store = open_real_v4_store(&workspace).await;
+    let pool = store.pool();
+    let mut violations = Vec::new();
+
+    let metadata_columns = column_signature(pool, "schema_metadata")
+        .await
+        .expect("inspect schema_metadata columns");
+    if metadata_columns
+        != vec![
+            ("key".to_string(), "TEXT".to_string(), 1),
+            ("value".to_string(), "TEXT".to_string(), 0),
+        ]
+    {
+        violations.push(format!(
+            "schema_metadata columns must be [(key,TEXT,pk=1),(value,TEXT,pk=0)], got {metadata_columns:?}"
+        ));
+    }
+    match sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM schema_metadata \
+         WHERE key = 'search_normalization_id' \
+           AND value = 'hivegui-nfkc-casefold-v1'",
+    )
+    .fetch_one(pool)
+    .await
+    {
+        Ok(1) => {}
+        Ok(count) => violations.push(format!(
+            "schema_metadata must contain exactly one search_normalization_id row, got {count}"
+        )),
+        Err(error) => violations.push(format!(
+            "schema_metadata normalization row is not queryable: {error}"
+        )),
+    }
+
+    let document_columns = column_signature(pool, "search_documents")
+        .await
+        .expect("inspect search_documents columns");
+    if document_columns
+        != vec![
+            ("id".to_string(), "INTEGER".to_string(), 1),
+            ("entity_type".to_string(), "TEXT".to_string(), 0),
+            ("entity_key".to_string(), "TEXT".to_string(), 0),
+            ("field".to_string(), "TEXT".to_string(), 0),
+            ("normalized_text".to_string(), "TEXT".to_string(), 0),
+        ]
+    {
+        violations.push(format!(
+            "search_documents has the wrong columns/order/primary key: {document_columns:?}"
+        ));
+    }
+    for (columns, unique, label) in [
+        (
+            &["entity_type", "entity_key", "field"][..],
+            true,
+            "UNIQUE(entity_type, entity_key, field)",
+        ),
+        (
+            &["entity_type", "field", "normalized_text", "entity_key"][..],
+            false,
+            "covering (entity_type, field, normalized_text, entity_key)",
+        ),
+    ] {
+        match has_index_with_columns(pool, "search_documents", columns, unique).await {
+            Ok(true) => {}
+            Ok(false) => violations.push(format!("search_documents is missing {label} index")),
+            Err(error) => violations.push(format!("inspect search_documents {label}: {error}")),
+        }
+    }
+
+    let fts_sql = table_sql(pool, "search_documents_fts")
+        .await
+        .expect("inspect search_documents_fts")
+        .unwrap_or_default();
+    let compact_fts = compact_sql(&fts_sql);
+    for required in [
+        "usingfts5(normalized_text",
+        "content='search_documents'",
+        "content_rowid='id'",
+        "tokenize='trigramcase_sensitive1'",
+    ] {
+        if !compact_fts.contains(required) {
+            violations.push(format!(
+                "search_documents_fts must be an external-content, case-sensitive trigram table; missing {required:?} in {fts_sql:?}"
+            ));
+        }
+    }
+
+    let short_columns = column_signature(pool, "search_short_grams")
+        .await
+        .expect("inspect search_short_grams columns");
+    if short_columns
+        != vec![
+            ("document_id".to_string(), "INTEGER".to_string(), 1),
+            ("gram_len".to_string(), "INTEGER".to_string(), 2),
+            ("gram".to_string(), "TEXT".to_string(), 3),
+        ]
+    {
+        violations.push(format!(
+            "search_short_grams must use PRIMARY KEY(document_id, gram_len, gram), got {short_columns:?}"
+        ));
+    }
+    let short_sql = table_sql(pool, "search_short_grams")
+        .await
+        .expect("inspect search_short_grams")
+        .unwrap_or_default();
+    let compact_short = compact_sql(&short_sql);
+    for required in ["check(gram_lenin(1,2))", "withoutrowid"] {
+        if !compact_short.contains(required) {
+            violations.push(format!(
+                "search_short_grams DDL is missing {required:?}: {short_sql:?}"
+            ));
+        }
+    }
+    let foreign_keys = sqlx::query(
+        "SELECT \"table\" AS parent_table, \"from\" AS child_column, \
+                \"to\" AS parent_column, on_delete \
+         FROM pragma_foreign_key_list('search_short_grams')",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("inspect search_short_grams foreign keys");
+    let has_cascade = foreign_keys.iter().any(|row| {
+        row.get::<String, _>("parent_table") == "search_documents"
+            && row.get::<String, _>("child_column") == "document_id"
+            && row.get::<String, _>("parent_column") == "id"
+            && row
+                .get::<String, _>("on_delete")
+                .eq_ignore_ascii_case("cascade")
+    });
+    if !has_cascade {
+        violations.push(
+            "search_short_grams.document_id must FK to search_documents.id ON DELETE CASCADE"
+                .to_string(),
+        );
+    }
+    match has_index_with_columns(
+        pool,
+        "search_short_grams",
+        &["gram_len", "gram", "document_id"],
+        false,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => violations.push(
+            "search_short_grams is missing covering (gram_len, gram, document_id) index"
+                .to_string(),
+        ),
+        Err(error) => violations.push(format!(
+            "inspect search_short_grams covering index: {error}"
+        )),
+    }
+
+    for obsolete in ["search_index", "short_gram_index"] {
+        if table_sql(pool, obsolete)
+            .await
+            .expect("inspect obsolete search table")
+            .is_some()
+        {
+            violations.push(format!(
+                "obsolete generic table {obsolete} must not replace the authoritative v4 schema"
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "real v4 Store search schema drifted from data-model.md:288,296-297:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn entity_function_crud_and_all_derived_search_rows_are_one_atomic_state() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let store = open_real_v4_store(&workspace).await;
+    let pool = store.pool();
+    let functions = FunctionStore::new(pool.clone()).expect("Function Store");
+
+    let original =
+        create_indexed_placeholder(pool, "atomic-function-original", "Original Atomic Function")
+            .await;
+    assert_function_search_state(pool, &original, "original").await;
+
+    let conflict =
+        create_indexed_placeholder(pool, "atomic-function-conflict", "Conflict Function").await;
+    let before_failed_update = function_document_snapshot(pool, original.id()).await;
+    let failed_update = functions
+        .update(
+            original.id(),
+            placeholder_input(conflict.identifier(), "Must Not Commit"),
+        )
+        .await;
+    assert!(
+        failed_update.is_err(),
+        "a duplicate identifier must abort the Function transaction"
+    );
+    assert_eq!(
+        functions
+            .get(original.id())
+            .await
+            .expect("reload Function after rejected update")
+            .expect("Function survives rejected update")
+            .identifier(),
+        original.identifier(),
+        "the base row must roll back with the derived rows"
+    );
+    assert_eq!(
+        function_document_snapshot(pool, original.id()).await,
+        before_failed_update,
+        "a rejected base-row update must not partially mutate search_documents/FTS/short grams"
+    );
+
+    let updated = functions
+        .update(
+            original.id(),
+            placeholder_input("atomic-function-updated", "Updated Atomic Function"),
+        )
+        .await
+        .expect("update Function and derived search state");
+    assert_function_search_state(pool, &updated, "updated").await;
+    assert!(
+        !fts_function_keys(pool, "original")
+            .await
+            .contains(&updated.id().to_string()),
+        "an update must issue the external-content FTS delete command for old text"
+    );
+
+    functions
+        .delete(updated.id())
+        .await
+        .expect("delete Function and derived search state");
+    assert!(
+        function_document_snapshot(pool, updated.id())
+            .await
+            .is_empty(),
+        "Function delete must remove both search_documents rows"
+    );
+    let orphan_grams: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM search_short_grams AS grams \
+         JOIN search_documents AS documents ON documents.id = grams.document_id \
+         WHERE documents.entity_type = 'function' AND documents.entity_key = ?",
+    )
+    .bind(updated.id().to_string())
+    .fetch_one(pool)
+    .await
+    .expect("count short grams after Function delete");
+    assert_eq!(orphan_grams, 0, "Function delete must cascade short grams");
+    assert!(
+        !fts_function_keys(pool, "updated")
+            .await
+            .contains(&updated.id().to_string()),
+        "Function delete must issue the external-content FTS delete command"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn entity_function_search_is_literal_deduped_total_ordered_and_stably_paged() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let store = open_real_v4_store(&workspace).await;
+    let pool = store.pool();
+    let functions = FunctionStore::new(pool.clone()).expect("Function Store");
+
+    for row in 0..23 {
+        let identifier = format!("route-{:02}", 22 - row);
+        let name = if row % 2 == 0 {
+            format!("ALPHA route {row:02}")
+        } else {
+            format!("alpha route {row:02}")
+        };
+        create_indexed_placeholder(pool, &identifier, &name).await;
+    }
+    create_indexed_placeholder(pool, "short-alpha", "xy beacon").await;
+    create_indexed_placeholder(pool, "short-beta", "prefix xy").await;
+    create_indexed_placeholder(pool, "literal-percent", "Literal 100% marker").await;
+    create_indexed_placeholder(pool, "literal-underscore", "Literal under_score marker").await;
+
+    let all = collect_function_pages(&functions, None).await;
+    let normalizer = load_normalizer();
+    let expected_for = |needle: &str| {
+        let normalized_needle = normalizer
+            .normalize(needle)
+            .expect("normalize search oracle input");
+        let mut rows = all
+            .iter()
+            .filter(|function| {
+                normalizer
+                    .normalize(function.name())
+                    .expect("normalize Function name")
+                    .contains(&normalized_needle)
+                    || normalizer
+                        .normalize(function.identifier())
+                        .expect("normalize Function identifier")
+                        .contains(&normalized_needle)
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|function| {
+            (
+                normalizer
+                    .normalize(function.name())
+                    .expect("normalize display name for total order"),
+                normalizer
+                    .normalize(function.identifier())
+                    .expect("normalize identifier for total order"),
+                function.id(),
+            )
+        });
+        rows.into_iter()
+            .map(|function| function.id())
+            .collect::<Vec<_>>()
+    };
+
+    let mut violations = Vec::new();
+    let route_page_1 = functions
+        .list(Some("route".to_string()), 1)
+        .await
+        .expect("load first FTS Function page");
+    let route_page_2 = functions
+        .list(Some("route".to_string()), 2)
+        .await
+        .expect("load second FTS Function page");
+    let route_ids = route_page_1
+        .items()
+        .iter()
+        .chain(route_page_2.items())
+        .map(|function| function.id())
+        .collect::<Vec<_>>();
+    let expected_route_ids = expected_for("route");
+    if route_ids != expected_route_ids {
+        violations.push(format!(
+            "3+ scalar FTS results/paging must follow normalized (name,identifier,id) total order; expected {expected_route_ids:?}, got {route_ids:?}"
+        ));
+    }
+    let unique_route_ids = route_ids.iter().copied().collect::<BTreeSet<_>>();
+    if unique_route_ids.len() != route_ids.len() {
+        violations.push(format!(
+            "a Function matching name and identifier must be deduped across pages: {route_ids:?}"
+        ));
+    }
+    let route_count = route_page_1.total();
+    if route_count != expected_route_ids.len() as i64 {
+        violations.push(format!(
+            "Function FTS count must use the same deduped predicate; expected {}, got {route_count}",
+            expected_route_ids.len()
+        ));
+    }
+
+    for needle in ["xy", "%", "_"] {
+        let actual = collect_function_pages(&functions, Some(needle.to_string()))
+            .await
+            .into_iter()
+            .map(|function| function.id())
+            .collect::<Vec<_>>();
+        let expected = expected_for(needle);
+        if actual != expected {
+            violations.push(format!(
+                "{needle:?} must be literal normalized contains search (1-2 scalars use short grams), expected {expected:?}, got {actual:?}"
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "real EntityFunction search violated canonical routing/ordering semantics:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn entity_function_search_routes_are_t083_owned_indexed_and_never_like_or_business_scan() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let store = open_real_v4_store(&workspace).await;
+    let pool = store.pool();
+    let mut violations = Vec::new();
+
+    let source = fs::read_to_string(HIVEGUI_FUNCTION_STORE_SRC)
+        .unwrap_or_else(|error| panic!("read {HIVEGUI_FUNCTION_STORE_SRC}: {error}"));
+    let function_impl = source
+        .split_once("impl FunctionStore {")
+        .map(|(_, tail)| tail)
+        .expect("locate unique FunctionStore production implementation");
+    if function_impl.contains(" LIKE ") {
+        violations
+            .push("FunctionStore::list still contains a business-table LIKE fallback".to_string());
+    }
+
+    let owned_tables = production_query_catalog()
+        .iter()
+        .filter(|query| {
+            query.active && query.owner_phase == "US9" && query.activation_task == "T083"
+        })
+        .map(|query| query.table)
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "functions",
+        "search_documents",
+        "search_documents_fts",
+        "search_short_grams",
+    ] {
+        if !owned_tables.contains(required) {
+            violations.push(format!(
+                "production query catalog is missing active US9/T083 ownership for {required}"
+            ));
+        }
+    }
+
+    let plans = [
+        (
+            "short-gram route",
+            "EXPLAIN QUERY PLAN \
+             SELECT documents.entity_key \
+             FROM search_short_grams AS grams \
+             JOIN search_documents AS documents ON documents.id = grams.document_id \
+             WHERE grams.gram_len = 2 AND grams.gram = 'xy' \
+               AND documents.entity_type = 'function'",
+            "grams",
+        ),
+        (
+            "FTS trigram route",
+            "EXPLAIN QUERY PLAN \
+             SELECT DISTINCT documents.entity_key \
+             FROM search_documents_fts \
+             JOIN search_documents AS documents \
+               ON documents.id = search_documents_fts.rowid \
+             WHERE search_documents_fts MATCH '\"route\"' \
+               AND documents.entity_type = 'function'",
+            "search_documents_fts",
+        ),
+        (
+            "normalized ordered page",
+            "EXPLAIN QUERY PLAN \
+             SELECT names.entity_key \
+             FROM search_documents AS names \
+             JOIN search_documents AS identifiers \
+               ON identifiers.entity_type = names.entity_type \
+              AND identifiers.entity_key = names.entity_key \
+              AND identifiers.field = 'identifier' \
+             WHERE names.entity_type = 'function' AND names.field = 'name' \
+             ORDER BY names.normalized_text, identifiers.normalized_text, \
+                      CAST(names.entity_key AS INTEGER) \
+             LIMIT 20 OFFSET 0",
+            "names",
+        ),
+    ];
+    for (label, sql, expected_plan_subject) in plans {
+        match explain_details_result(pool, sql).await {
+            Ok(details) => {
+                let indexed = details.iter().any(|detail| {
+                    detail.contains("USING INDEX")
+                        || detail.contains("USING COVERING INDEX")
+                        || detail.contains("VIRTUAL TABLE INDEX")
+                });
+                let business_scan = details
+                    .iter()
+                    .any(|detail| detail.starts_with("SCAN functions"));
+                let expected_table_present = details
+                    .iter()
+                    .any(|detail| detail.contains(expected_plan_subject));
+                if !indexed || business_scan || !expected_table_present {
+                    violations.push(format!(
+                        "{label} must use indexed {expected_plan_subject} without scanning functions: {details:?}"
+                    ));
+                }
+            }
+            Err(error) => violations.push(format!(
+                "{label} cannot be explained against the real v4 Store: {error}"
+            )),
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "EntityFunction search has no approved canonical indexed route:\n{}",
+        violations.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
+
+async fn open_real_v4_store(workspace: &TestWorkspace) -> Store {
+    Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open real v4 Store")
+}
+
+async fn create_indexed_placeholder(
+    pool: &Pool<Sqlite>,
+    identifier: &str,
+    name: &str,
+) -> FunctionRecord {
+    FunctionStore::new(pool.clone())
+        .expect("Function Store")
+        .create(placeholder_input(identifier, name))
+        .await
+        .unwrap_or_else(|error| panic!("create Function fixture {identifier:?}: {error}"))
+}
+
+fn placeholder_input(identifier: impl Into<String>, name: impl Into<String>) -> FunctionInput {
+    FunctionInput::for_write(
+        identifier.into(),
+        name.into(),
+        None,
+        FunctionKind::Placeholder,
+        r#"{"type":"object"}"#.to_string(),
+        r#"{"type":"object"}"#.to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("validate placeholder Function input")
+}
+
+async fn collect_function_pages(
+    store: &FunctionStore,
+    search: Option<String>,
+) -> Vec<FunctionRecord> {
+    let mut rows = Vec::new();
+    let mut page_number = 1;
+    loop {
+        let page = store
+            .list(search.clone(), page_number)
+            .await
+            .unwrap_or_else(|error| panic!("list Function page {page_number}: {error}"));
+        rows.extend_from_slice(page.items());
+        if rows.len() as i64 >= page.total() {
+            return rows;
+        }
+        page_number += 1;
+    }
+}
+
+fn load_normalizer() -> SearchNormalizer {
+    SearchNormalizer::load(NORMALIZATION_ID)
+        .expect("load pinned normalizer")
+        .expect("normalizer is registered")
+}
+
+async fn assert_function_search_state(
+    pool: &Pool<Sqlite>,
+    function: &FunctionRecord,
+    fts_probe: &str,
+) {
+    let normalizer = load_normalizer();
+    let expected_documents = vec![
+        (
+            function.id().to_string(),
+            "identifier".to_string(),
+            normalizer
+                .normalize(function.identifier())
+                .expect("normalize Function identifier"),
+        ),
+        (
+            function.id().to_string(),
+            "name".to_string(),
+            normalizer
+                .normalize(function.name())
+                .expect("normalize Function name"),
+        ),
+    ];
+    let actual_documents = function_document_snapshot(pool, function.id()).await;
+    assert_eq!(
+        actual_documents, expected_documents,
+        "Function base row and its two search_documents rows must commit together"
+    );
+
+    let expected_grams = expected_short_grams(&expected_documents);
+    let actual_grams = sqlx::query(
+        "SELECT documents.field, grams.gram_len, grams.gram \
+         FROM search_short_grams AS grams \
+         JOIN search_documents AS documents ON documents.id = grams.document_id \
+         WHERE documents.entity_type = 'function' AND documents.entity_key = ?",
+    )
+    .bind(function.id().to_string())
+    .fetch_all(pool)
+    .await
+    .expect("load Function short grams")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<String, _>("field"),
+            row.get::<i64, _>("gram_len"),
+            row.get::<String, _>("gram"),
+        )
+    })
+    .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_grams, expected_grams,
+        "Function write must transactionally replace every distinct 1/2-scalar short gram"
+    );
+    assert!(
+        fts_function_keys(pool, fts_probe)
+            .await
+            .contains(&function.id().to_string()),
+        "Function write must transactionally publish external-content FTS rows"
+    );
+}
+
+async fn function_document_snapshot(
+    pool: &Pool<Sqlite>,
+    function_id: i64,
+) -> Vec<(String, String, String)> {
+    sqlx::query(
+        "SELECT entity_key, field, normalized_text \
+         FROM search_documents \
+         WHERE entity_type = 'function' AND entity_key = ? \
+         ORDER BY field",
+    )
+    .bind(function_id.to_string())
+    .fetch_all(pool)
+    .await
+    .expect("load canonical Function search_documents")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<String, _>("entity_key"),
+            row.get::<String, _>("field"),
+            row.get::<String, _>("normalized_text"),
+        )
+    })
+    .collect()
+}
+
+fn expected_short_grams(documents: &[(String, String, String)]) -> BTreeSet<(String, i64, String)> {
+    let mut grams = BTreeSet::new();
+    for (_, field, normalized_text) in documents {
+        let scalars = normalized_text.chars().collect::<Vec<_>>();
+        for gram_len in [1_usize, 2] {
+            for window in scalars.windows(gram_len) {
+                grams.insert((
+                    field.clone(),
+                    gram_len as i64,
+                    window.iter().collect::<String>(),
+                ));
+            }
+        }
+    }
+    grams
+}
+
+async fn fts_function_keys(pool: &Pool<Sqlite>, input: &str) -> BTreeSet<String> {
+    let normalized = load_normalizer()
+        .normalize(input)
+        .expect("normalize FTS probe");
+    let phrase = format!("\"{}\"", normalized.replace('\"', "\"\""));
+    sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT documents.entity_key \
+         FROM search_documents_fts \
+         JOIN search_documents AS documents ON documents.id = search_documents_fts.rowid \
+         WHERE search_documents_fts MATCH ? AND documents.entity_type = 'function' \
+         ORDER BY documents.entity_key",
+    )
+    .bind(phrase)
+    .fetch_all(pool)
+    .await
+    .expect("query canonical Function FTS index")
+    .into_iter()
+    .collect()
+}
+
+async fn table_sql(pool: &Pool<Sqlite>, table: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ? ORDER BY name",
+    )
+    .bind(table)
+    .fetch_optional(pool)
+    .await
+}
+
+async fn column_signature(
+    pool: &Pool<Sqlite>,
+    table: &str,
+) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
+    Ok(
+        sqlx::query("SELECT name, type, pk FROM pragma_table_info(?) ORDER BY cid")
+            .bind(table)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("name"),
+                    row.get::<String, _>("type").to_ascii_uppercase(),
+                    row.get::<i64, _>("pk"),
+                )
+            })
+            .collect(),
+    )
+}
+
+async fn has_index_with_columns(
+    pool: &Pool<Sqlite>,
+    table: &str,
+    expected_columns: &[&str],
+    must_be_unique: bool,
+) -> Result<bool, sqlx::Error> {
+    let indices =
+        sqlx::query("SELECT name, \"unique\" AS is_unique FROM pragma_index_list(?) ORDER BY name")
+            .bind(table)
+            .fetch_all(pool)
+            .await?;
+    for index in indices {
+        let unique = index.get::<i64, _>("is_unique") != 0;
+        if must_be_unique != unique {
+            continue;
+        }
+        let name = index.get::<String, _>("name");
+        let columns =
+            sqlx::query_scalar::<_, String>("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
+                .bind(name)
+                .fetch_all(pool)
+                .await?;
+        if columns
+            == expected_columns
+                .iter()
+                .map(|column| (*column).to_string())
+                .collect::<Vec<_>>()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn compact_sql(sql: &str) -> String {
+    sql.chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .replace('\"', "'")
+}
+
+async fn explain_details_result(
+    pool: &Pool<Sqlite>,
+    sql: &'static str,
+) -> Result<Vec<String>, sqlx::Error> {
+    Ok(sqlx::query(sql)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect())
+}
 
 fn assert_provenance_complete(provenance: &NormalizerProvenance) {
     assert_eq!(provenance.unicode_version(), (17, 0, 0));

@@ -25,23 +25,285 @@
 | Phase | 连续任务范围 | 审批关口 | 测试提交/变更集 | Reviewer 审批 | Red 命令 | Red 输出/退出状态 | Green 命令 | Green 输出/退出状态 | 重构结果 | 阶段状态 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 · Setup | T001-T008 | 独立 quality baseline 先闭合；T001 重基后保持三文件；T001 完成后逐项重验 T002-T008；T006 审批后方可 T007 | `codex/rust-1.97.1-toolchain` / `bf3690d` 已推送；`origin/codex/ci-quality-baseline-rust-1.97.1` / `7db3940` 已合并（PR #3, `19fbc40`）；`codex/fix-collapsible-if-1.97.1` / `b28168d` 已合并（PR #5, hiveweb clippy）；`codex/fix-hivegui-collapsible-if-1.97.1` / `d899e6f` 已合并（PR #6, `8157458`, hivegui clippy）；T001 重基后 commit `7e689f2` 与 `origin/main` 仅 `3 files changed, 23 insertions(+), 4 deletions(-)`（rust-toolchain.toml / Cargo.toml / .github/workflows/ci.yml）；PR #4 / `2eee211` 合并至 `origin/main`；CI run 30996686002 全 success | 用户于 2026-07-23 批准三文件隔离范围及方案 A 质量前置批次；2026-07-27 批准四项审计修正及 quality commit/push；2026-08-05 批准 clippy 修复并独立合并后重基 | 见下方 T001 详细 Red/Green 命令（`cargo fmt`、`cargo clippy --locked --workspace --all-targets -- -D warnings`、`cargo test --locked --workspace`、`cargo check --locked -p hiveweb --bin api-test --bin seed --bin seed-bench`、`rustc --version --verbose` 1.97.1 断言、`cargo --version --verbose` 1.97.1 断言） | 退出 1/101（按预期）→ 远端 CI run 30996686002 fmt+clippy+test 92275343896 success、hiveweb integration 92275343921 success；本地离线门禁 1.97.1 全部通过 | 远端 CI run 30996686002：`Install Rust toolchain (pinned by rust-toolchain.toml)` success，`cargo fmt`、`cargo clippy --locked --workspace --all-targets -- -D warnings`、`cargo test --locked --workspace --exclude hiveweb`、`cargo test --locked -p hiveweb --lib --bins`、`cargo check --locked -p hiveweb --bin api-test --bin seed --bin seed-bench`、`cargo test --locked -p hiveweb --doc` 全部 success；`hiveweb integration` 含 MySQL 8 + Redis 7 + MinIO disposable 库 + 迁移 + 完整 HiveWeb integration suite success | 质量提交与 T001 继续隔离；PR #5/PR #6 独立 PR 合并；T001 重基/合并后保持三文件约束 | **T001 Closed (2026-08-05)**：T001 PR #4 merged、远端 CI success、三文件约束复核通过；T002-T008 已解锁重验 |
-| 2 · Foundational | T009-T028 | T017 审批 T009-T016 后方可 T018；新增 T021/T022/T025/T027/T028 还受 T017F/T017H 定向阻断 | 工作树未提交；精确文件清单见下方 T017 记录 | 用户（本会话）于 2026-07-22 批准 T009-T016 测试及四项契约推荐，追踪消息：`按推荐项批准` | 见下方 15 条精确命令 | 15/15 命令均以 101 退出并命中预期未实现边界；无测试语法错误 | Pending | Pending | 无重构；本批仅同步测试/规范并观察 Red | 既有 T017 Red 门禁完成且不重开；补充门禁与 Green Pending |
-| 2A · Supplemental Foundation | T016A-T016F、T017F-T017H | T017F 审批 T016A-D/F 的 Foundation Red 以及 T016E inventory/helper/source-contract 自测；所有产品 scroll 行（含 sidebar）保持 Pending；T017H 审批 T017G Red（search/normalized SQL source inventory + T017B' 刷新） | **本批次 4 批 Red 已编写并实际观察 Red**：T016A-F (T017F 闭合 2026-07-30)、T017G 4 批（search_index_contract / sql_safety_contract / storage_query_plans / contract_sqlx_09_sql_safety）2026-07-30；详见表内 | 用户于 2026-07-28 以"全按推荐 A"批准规范与待编写测试方案；T017F 已于 2026-07-30 self-attest（**单开发者条款**）；T017H 2026-07-30 self-attest（**单开发者条款**） | `cargo test -p hivegui --test search_index_contract --no-run` 退出 101（7 个 E0432/E0433）；`cargo test -p hivegui --test sql_safety_contract --no-run` 退出 101（8 个 E0433 sql_source_inventory）；`cargo test -p hivegui --test storage_query_plans --no-run` 退出 101（6 个 E0432 query_plan / FtsPlanExpectation / evaluate_fts_plan）；`cargo test -p hiveweb --test contract_sqlx_09_sql_safety --no-run` 退出 101（2 个 E0432 db::sql_safety + AssertSqlSafe） | 4/4 退出 101，Red 仅由 `search_index` / `search_normalization` / `query_plan` / `sql_source_inventory` / `db::sql_safety` / `sqlx::AssertSqlSafe` 等未来公开边界缺失产生；T016A-F 1 个 self-test Green 维持；T016F 5/7 Green（仅 inventory 完整性 + helper 通过，2/7 命中 `place_canary_for_test` 缺失） | **T017H.11 已签字 2026-07-30（单开发者条款）**；T017D/T017E Green 仍 Pending；T016E/T016F 产品行仍待各故事 owner 激活 |
-| 2S · Security remediation | T017A-T017E | T017C 保留既有审批；T001、T017C 与 T017H 完成后方可 T017D | 工作树未提交；`crates/hivegui/tests/ci_security_contract.rs`、`crates/hiveweb/tests/contract_mysql_tls_policy.rs`、`contract_sqlx_09_sql_safety.rs` | 用户于 2026-07-23 以 `A` 批准零例外目标并批准 T017C；2026-07-28 方案 A 要求先经 T017G/T017H 更新 SQL Red | 既有 3 条精确命令见下方；T017G 命令 Pending | 既有 3/3 命令退出 101；T017G Red Pending | Pending | Pending | 无重构；尚未修改生产/Cargo/锁文件 | T017C 保持完成；T017H、T001 与 T017E 仍阻断 T017D/T018 |
+| 2 · Foundational | T009-T028 | T017 审批 T009-T016 后方可 T018；新增 T021/T022/T025/T027/T028 还受 T017F/T017H 定向阻断 | 工作树未提交；精确文件清单见下方 T017 记录 | 用户（本会话）于 2026-07-22 批准 T009-T016 测试及四项契约推荐，追踪消息：`按推荐项批准` | 见下方 15 条精确命令 | 15/15 命令均以 101 退出并命中预期未实现边界；无测试语法错误 | 2026-08-20 T028 supplemental 既有 Foundation suites，见 §T017F.12 | 全部 exit 0：370 passed / 0 failed / 1 designed ignored | 只复跑；未新增断言 | **Closed — T028 supplemental Green** |
+| 2A · Supplemental Foundation | T016A-T016F、T017F-T017H | T017F 审批 Foundation Red；2026-08-20 新增 T016D schema Red 后须重新审批，方可重开 T022/T028 | 历史 T016A-F/T017G 证据保留；新增 `plugin_artifact_schema_contract.rs` ownership/FK/index/round-trip tests 见 §T017F.12 | 历史 self-attest 保留；**2026-08-20 supplemental reviewer Approved — user, reply `yes`** | `cargo +1.97.1 test --locked -p hivegui --test plugin_artifact_schema_contract -- --nocapture` | 退出 101；14 run，8 pass/6 fail：operations/GC 缺列、source FK、三类索引及 round-trip 写入缺失 | T022 schema Green + T028 Foundation rerun，见 §T017F.12 | schema 14/14；T028 370 passed / 1 designed ignored，全部 exit 0 | 最小 schema 修复后只复跑 | **Closed — supplemental schema/Foundation Green** |
+| 2B · Supplemental search Foundation | T017G/T017H、T022/T028 | 新真实 schema/migration/entity-search/query-plan Red 须经 T017H supplemental reviewer，方可再次实施 T022/T028 | `search_index_contract.rs`、`migration_compatibility.rs`、`storage_query_plans.rs`，见 §T017H.12 | **Approved — user, 2026-08-20, reply `yes`；历史 2026-07-30 self-attest 不追认新增断言** | 见 §T017H.12 | search 22 pass/4 fail；migration 9 pass/3 fail/1 designed ignored；query-plan 唯一 E0609 compile Red | §T017H.12 supplemental Green | T022 targeted 66/66 + T028 Foundation 407/407；1 designed ignored | canonical schema/runtime/catalog 最小实现；T028 只复跑 | **Closed — T022/T028 supplemental search Foundation Green** |
+| 2S · Security remediation | T017A-T017E | T017C 保留既有审批；T001、T017C 与 T017H 完成后方可 T017D | 历史 Red 保留；最终实现/测试/依赖范围见 §T017E.2026-08-25 | 2026-07-23/07-28 零例外与 SQL 方案审批保留；2026-08-25 按 Constitution v1.5.0 single-developer clause 完成 dedicated security self-attest | 历史三组 Red 见 §T017C；2026-08-25 source-true TLS 复核另观察到测试替身与生产 `&str` 边界冲突 | TLS 旧实现 3/4、严格 CA 序列化/生产边界失败；历史依赖/SQL Red 保留 | §T017E.2026-08-25 精确命令 | TLS 4/4；SQL 10/10；S3 5/5；dependency 16/16；SQL inventory 9/9；workspace all-targets、SQLx offline、deny 四门全 exit 0 | 最小可审计 AWS/Extism patch；测试改为直接调用生产严格 TLS 类型；无 advisory ignore/明文 fallback | **Closed — T017A-T017E 零例外 Green** |
 | 3 · US1 首页导航 | T029-T033 | T031 审批后方可 T032 | **本批次 Red 已编写并实际观察 Red**：`crates/hivegui/tests/navigation.rs` 新建（T029 7 项 assertion：默认 Home、`navigate_to`/`current_route`/`for_test`/`install_for_test`/`assert_no_hiveweb_prerequisite`/`default_route` 公共边界 + `CapturedHttpServer` 无 HiveWeb 验证）；`crates/hivegui/tests/accessibility.rs` 追加（T030 6 批：source tag、T016E inventory 注册、Tab 顺序、Enter/Space 激活、AccessKit 名称、p95≤100ms 焦点延迟）详见表内 | **Self-attested (v1.5.0 *Single-developer repository clause*, 2026-07-30)** | `cargo test -p hivegui --test navigation --no-run` 退出 101；7 个 `error[E0599]`：未解析方法/函数 `HiveGuiAppState::default_route` + `HiveGuiAppState::for_test`（×2）+ `HiveGuiAppState::install_for_test`（×2）+ `cx.global::<HiveGuiAppState>`（×2）均命中未来公开边界缺失。`cargo test -p hivegui --test accessibility --no-run` 退出 101；1 个 `error[E0432]`：未解析 import `hivegui::ui::key_recovery_view` + `hivegui::ui::migration_recovery_view`（T016 历史未补齐模块）；T030 测试位于同一文件，编译失败覆盖 T030 全部子断言（scroll tag、键盘激活、AccessKit、p95）。两份 Red 退出 101 且 Red **仅** 由未来公开边界缺失/未实现模块产生；无测试语法错误 | **Approved（2026-07-30，§T031.11）** |
 | 4 · US2 数据源管理 | T034-T040 | T037 审批后方可 T038 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 5 · US3 全局配置管理 | T041-T046 | T043 审批后方可 T044 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 6 · US4 LLM 配置管理 | T047-T054 | T050 审批后方可 T051 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 6 · US4 LLM 配置管理 | T047-T054 | T050 审批后方可 T051；2026-08-25 T052 supplemental Red 重新审批 | `llm_provider.rs` 既有 T048 5 项 + T052 supplemental 单一路径、Preset priority、runtime evidence、在途取消测试，见 §T050.2 | **Approved — user, 2026-08-25, reply `yes`** | §T050.2 source behavior Red + compile Red | source test 0/1；supplemental `--no-run` 7 个 E0599，均退出 101 | §T050.2 supplemental Green | `llm_provider` 8/8；`llm_config_store` 18/18；accessibility `llm_config` 5/5；lib `llm_config` 4/4；`execution_contract` 4/4；`workflow_execution` 14/14 | 最小共享 ExecutionContext/provider/caller 实现；移除第二套 blocking vendor client | **Closed — T019/T052/T054 supplemental Green** |
 | 7 · US5 标签管理 | T055-T059 | T057 审批后方可 T058 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 8 · US6 分类管理 | T060-T065 | T062 审批后方可 T063 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 9 · US7 能力管理 | T066-T072（含 T067A） | T068 审批 T066-T067A 后方可 T069/T070；二者 Green 后方可 T071；T072 self-attest 闭合 US7 | Green | Green | Green | Green | Green | Pending | Pending | Pending | Pending |
-| 10 · US8 插件管理 | T072-T082 | T076 审批 T072-T075（含并发普通文件、no-replace、不可变键与旧句柄/租约）后方可 T077-T081 | Green (T072 5/5 + T073 4/4 + T074 6/6 = 15/15) | Pending (T075) | T073 4/4 Red 由 plugin 子模块缺失产生；T072 5/5 + T074 6/5 Green 已实查 | Green (T072 5/5 + T073 4/4 + T074 6/6 = 15/15) | Pending (T075/T077-T081) | Pending (T077-T081 完整 plugin artifact ledger / row_revision CAS / instance pool LRU) | Pending |
-| 11 · US9 函数管理 | T083-T089 | T086 审批后方可 T087 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 12 · US10 Workflow DAG | T090-T100 | T094 审批后方可 T095 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 13 · US11 工具管理 | T101-T107 | T104 审批后方可 T105 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 10 · US8 插件管理 | T072-T082 | T076 审批 T072-T075；2026-08-20 T077-T079 supplemental Red 须 reviewer 后实施 | T072-T074 历史 15/15；T075/T080-T081 见 §T076.6；T077-T079 新 Red 见 §T076.7 | T080/T081：**Approved — user, 2026-08-20, reply `yes`**；T077-T079 supplemental Red：**Approved — user, 2026-08-20, reply `yes`** | §T076.6 六组；§T076.7 schema/T077/T078/T079 四组 | §T076.7：schema 8 pass/6 fail；T077 0/4；T078 E0432 typed API；T079 15 pass/4 fail，均退出 101 | §T081.1 与 §T076.7/T082.2 最终 Green | T077 21/21；T078 5/5；T079 19/19；T082 99/99 + Plugin scroll 5/5、1/1，全部 exit 0 | 仅实现已审批 Red；最终汇合未新增断言 | **Closed — US8 Green** |
+| 11 · US9 函数管理 | T083-T089 | T086 审批后方可 T087；T087 另等待 reopened T022/T028 Green | `function_management.rs`、`function_test_execution.rs`、`accessibility.rs` supplemental tests，见 §T086.3 | **Approved — user, 2026-08-20, reply `yes`；决策 A-F** | 见 §T086.3 | 已观察 Store/runtime/真实 GPUI/T005 Red；精确结果见 §T086.3/§T089.3/§T089.4 | T087/T088/§T089.4 Green；同源复跑通过 | 非性能 20/17/11 + query 14/26 + support 25 全 Green；两 target 性能目标亦通过（`function_crud` 例外留存） | 最小实现；`function_crud` 例外留存在 `function_crud/...exception.json`，`function_search_page` 无 exception；FTS fresh/no-stat join 固定 FTS-first；无 raw 旁路；缺 baseline sidecar 时不得新 baseline | **Passed — 同源 release 复跑与性能复测通过；`T089` 当前可作为 US9 的同源 release 汇合。** |
+| 12 · US10 Workflow DAG | T090-T100 | T094 审批后方可 T095；另依赖 US9 Green 与 T052 | T090-T093 完整补充测试，见 §T094.5；T052 supplemental 见 §T050.2 | **Approved — user, 2026-08-25, replies `yes`；首份 baseline 另以 `yes-baselin` 批准** | 见 §T094.5 / §T050.2 | runtime/compile/真实 GPUI/真实 HTTP cancellation Red 已观察 | 见 §T100.4 | Store 15/15 + execution 14/14 + accessibility 66/66；当前 source release benchmark Passed | 首份 baseline 保持；无 Workflow exception；T052 单一 workspace provider path/事件/计时/中途取消 Green | **Closed — T090-T100 Green** |
+| 13 · US11 工具管理 | T101-T107 | T104 审批后方可 T105 | Supplemental Red files, see §T104.2 | **Approved — user, 2026-08-25, reply `yes`；后续同范围无需逐批确认** | §T104.2 exact commands | Store/runtime/UI/benchmark boundary Red observed | §T107.3 | core 27；Store 7+1；dispatch 5；UI 6；query 14；support 27；runtime 11；integration 77；migration 12+1 ignored；search 26；release 1；三项 CLI passed | 唯一 SQL Store/persisted local executor/native scroll；亚毫秒 dispatch 固定批量归一化；有界 sidecar 不豁免绝对预算 | **Closed — T101-T107 Green** |
 | 14 · US12 技能管理 | T108-T114 | T111 审批后方可 T112 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 15 · US13 本地 Agent | T115-T136 | T123 审批并观察 T115-T122 Red 后方可 T124-T135；T130 另等待 T129 | **Green（13+11+9+4+6+9 = 52/52, 2026-08-04）**：T115 13/13 + T116 11/11 + T117 9/9 + T118 4/4 + T119 6/6 + T120 9/9 + agent_session 4/4；T016F `ChatSessionTitle` / `ChatMessageContent` / `ChatMessageToolCalls` / `AgentExecutionState` canary 0 命中；T140 HiveGUI 独立契约 0 网络命中；Foundation T016A T027 仍 Pending（logging_contract 8 Red 仅因 `ActivityLog::open` 未实现） | Green（§T123.5 签字 2026-08-04，*Single-developer repository clause*） | `cargo test -p hivegui --test {agent_management,local_agent_runtime,conversation_retention,cancellation,backup_restore,diagnostics,agent_session} --no-run` 全部退出 0 | Red 7 批全部退出 0，无测试语法错误 | 同左 | `test result: ok.` 全部通过；Foundation T016A 仍 Red 等待 T027 | 无重构；本批仅修复 redact_cause 三遍脱敏 pass + async 化 conversation_store + 显式 windows 调用点 | **Green (full stack)**：T124-T135 子任务实现可继续；T136 仅做 Green 复跑与汇总；T138 跨介质汇总仍需 T016A 全部 Foundation 行闭合后复跑 |
-| 16 · Polish / Cross-cutting | T137-T147 | T138/T139/T142 仅复跑既有安全 canary、原生滚动与 keyboard-only/响应性断言；T145 质量证据（**Closed 2026-08-17**：clippy `--all-targets -- -D warnings` 0 error + deny advisories/licenses/bans/sources 全过；constitution 两人审批门槛同日移除）；T146 全量测试；T147 核验全部 Red→审查→Green→复跑链后发布签字 | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 15 · US13 本地 Agent | T115-T136 | T123 审批 T115-T122；T124-T135 按依赖实施；T130 等待 T129；T136 最终只复跑 | §US13.T115-T123 Red/reviewer；§US13.T124-T135 Green；§US13.T129-T130.2026-08-26；§US13.T136.2026-08-26 | **Approved — §US13.T123，standing authorization 下 source-true review** | T115-T122 已观察行为/compile/GPUI/T005 Red | 各 owner 最小 Green，T129/T130 另补 cleanup-order 与内部耐久边界 Red→Green | T136：207 passed / 0 failed / 2 release-only ignored；T129/T130：backup 52/52、store resilience 11/11 | 单一本地 Store/Provider/Tool/backup/logging 边界；零 HiveWeb request/fallback；72 个持久化 crash points | **Closed — T115-T136 全部 Green，US13 Closed** |
+| 16 · Polish / Cross-cutting | T137-T147 | T138/T139/T142 仅复跑已闭合 owner 行；T145 零 advisory ignore；T147 等全部门禁 | §Polish.2026-08-25、§Polish.T140-T142.2026-08-26、§Polish.T138.2026-08-26 | standing authorization；安全由 Constitution v1.5.0 单开发者条款 source-true self-attest | 既有 CI/依赖/TLS/owner Red，均在其 owner Green 后才进入汇合 | T138 固定 scanner/dependency/Unicode/SQL/敏感介质全 Green | T138 221/221 + Gitleaks/cargo-deny；T140 24/24；T141 73/73 +1 ignored；T142 77/77 | 只复跑既有断言；零 advisory ignore；不复用旧 baseline/sidecar | T137 性能总汇与 T139 macOS/Windows 真实 AT 仍 Pending | **Partial Closed — T138/T140/T141/T142 Closed；T137/T139/T145/T147 Pending** |
+
+## §Polish.2026-08-25 — 最终 Linux 复跑、CI 实执行与发布阻断
+
+### 已观察 CI Red → 最小 Green
+
+- **Gitleaks Red**：`.github/workflows/ci.yml` 使用占位摘要与伪 SHA；新增合同后 `secret_scan_is_fixed_version_checksum_verified_full_history_and_blocking` 退出 101，0/1，精确失败 `the blocking workflow must not contain a placeholder Gitleaks digest`。官方 v8.30.1 Linux x64 制品本地下载后 SHA-256 验证为 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`。
+- **Gitleaks Green**：CI 固定官方 SHA；新增 reviewed canary rule，只有 scanner 返回精确 leak exit code 1 才继续；实际 canary Green。首次 405 commits 全历史扫描报告 11 个已 redact finding，逐项确认均为历史 test/doc 示例后写入 commit/path/rule/line 精确 `.gitleaksignore` fingerprint，不使用宽路径豁免；最终同一命令退出 0、0 findings。合同定向 1/1 与全文件 14/14 Green。
+- **SQLx Red**：原样 `SQLX_OFFLINE=true cargo sqlx prepare --workspace --check` 退出 1，精确错误 ``--database-url` or `DATABASE_URL` must be set`；补充合同定向退出 101，0/1，精确失败 `SQLx CLI 0.9.0 requires an explicit SQLite URL`。
+- **SQLx Green**：CI 使用 `DATABASE_URL=sqlite::memory:`、`SQLX_OFFLINE=true` 和 `--no-dotenv`；原样复跑退出 0（保留 sqlx-cli 的 `potentially unused queries` warning，不隐藏）。合同定向 1/1 Green。
+
+### Linux Green 汇总
+
+- `cargo +1.97.1 test --locked -p hivegui --test accessibility -- --nocapture`：71/71，exit 0；T142 Closed。一次旧二进制在 SQLx pool cleanup 上失败后，工具表单真实 VisualTestContext 增加显式 window teardown + pool close；定向 `tool_` 6/6，最终全量 accessibility 71/71。
+- `cargo +1.97.1 test --locked -p hivegui --tests --no-fail-fast`：exit 0，所有 test target 0 failed；Function/Tool 的两项 release-only T005 基准在 debug 环境各 1 个 designed ignored；T146 Closed。
+- `hive-runtime-core` 45、`agent` 60、`hivegui --lib` 119 全部 Green；`hive-builtins` 编译/文档 Green。
+- `cargo +1.97.1 fmt --all -- --check`、`cargo +1.97.1 clippy --locked --workspace --all-targets -- -D warnings`、`git diff --check` 均 exit 0。
+- 固定 Gitleaks canary + 405 commits 全历史扫描 exit 0；`cargo deny --offline check licenses bans sources` exit 0。
+
+### 当次 fail-closed 发布门禁（T017E/AT 项已由后续小节更正）
+
+- `cargo deny --offline check advisories` exit 1：RUSTSEC-2026-0253（`lru 0.16.4` ← `aws-sdk-s3 1.141.0`）与 RUSTSEC-2026-0222（`wasmtime 43.0.2` ← `extism 1.30.0`）。`deny.toml` 为零 advisory ignore；不固定未合并/未审 fork。
+- 当前源码指纹 `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:3478ed47fbb945140cc2f0ae42a1e81ed27ea62f516f64c9ed712e33f2282d3d` 与现有 Function/Tool exception 的 source binding 不同；七 target 原样结果见 `checklists/performance.md`，T137 不能沿用旧 sidecar。
+- Linux 真实 AT-SPI smoke 已执行并发现 focused element 无 role 及退出 leaked-handle；macOS VoiceOver/Windows Narrator 仍未执行。更早的 accessibility 71/71 不包含 T121 Agent/会话/设置产品行为，因此 T142 已回退 Pending。
+- **当时发布结论**：T017E、T137-T142/T145/T147 Pending；T143/T144/T146 保持完成。T017E 与 Linux AT focused role/leak 的当前状态见下方更正；其它发布门禁仍不得签字或发布。
+
+## §US13.2026-08-25 — source-true 回退、T122 Red→Green 与发布阻断
+
+### 完整性审计
+
+- `local_agent_runtime.rs` 的 11 项只覆盖默认根、消息大小、直接子路由、会话状态、空资源列表和网络捕获；没有 mock LLM、真实持久 Tool 执行、invalid session/execution UUID、retention filter、显式∪always资源、跨 adapter 终态或失败 fallback。`snapshot_contains_resource_and_capability_lists` 以 `empty || !empty` 恒真断言代替内容验证。
+- `cancellation.rs` 只有通用 `FoundationRuntimeComposition` 的 4 项，未分层覆盖 Agent/子 Agent/LLM/Tool/Workflow/Plugin、停止后零新调度、其它会话存活和副作用提示。
+- `accessibility.rs` 没有 Agent/会话/设置产品 `VisualTestContext` case；T016E inventory 只有 `AgentExecution` 枚举/owner metadata，没有实际产品注册与 wheel/keyboard/bounds Green。
+- `conversation_view.rs` 仍调用 `simulation_streaming_reply`，并写入 `assistant("处理中")` / `assistant("完成")` 占位消息；生产树没有把 ProviderResolver、ToolAdapter、Function/Workflow/Plugin executor 组合成 Agent LLM tool-calling loop。任务正文指向的 `src/runtime/local_agent.rs` 与 `agent_content.rs` 也不存在。
+- T115/T117/T119/T120 的现有测试分别缺 T005 baseline/完整 EXPLAIN、100 次会话/执行性能、完整备份状态机/崩溃矩阵、持久日志轮转/容量/诊断包 E2E。故历史 52/52 只证明小测试集合 Green，不能作为任务全文或 reviewer 链 Green。
+
+### T122 strict-TDD 补充
+
+- **Red**：`cargo +1.97.1 test --locked -p hivegui --test support_contract agent_action_dispatch_target_executes_the_production_boundary -- --nocapture` 退出 101，0/1；精确原因为 target 返回 `SKIP operation not implemented yet`。
+- **Green**：`LocalAgentRuntime::schedule_decision` 解析 ≤1MiB 的本地 JSON decision，按 immutable turn snapshot fail-closed 校验 Tool/direct child 后交给注入的 `LocalAgentActionScheduler`；不请求 HiveWeb。focused 1/1、`local_agent_runtime` 11/11、`support_contract` 28/28、目标 lib/bench clippy 均 Green。
+- **release report**：当前 source `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:3478ed47fbb945140cc2f0ae42a1e81ed27ea62f516f64c9ed712e33f2282d3d`，Agent 10 warmup + 100 measured 为 p50=206ns、p95=229ns、p99=247ns，绝对 p95≤200ms；evaluator=`PendingBaseline`。没有 reviewer 对该实际报告的首份 baseline 审批，因此 T122 仍 Pending。
+
+### 外部门禁复核
+
+- `cargo deny --offline check advisories` 仍阻断 RUSTSEC-2026-0253 与 RUSTSEC-2026-0222，`deny.toml` advisory ignore=0。Smithy 修复 PR 已合并但 AWS SDK issue 仍 `pending-release`；Extism 升级仍在 Draft/issue 阶段，未采用未发布/未审 fork。
+- 真实 Linux AT-SPI 暴露 `hivegui` Application root 与子窗口，但运行日志两次报告 focused element 有 id 无 role，退出触发 `InputBaseState` leaked-handle panic；系统 a11y flags 已恢复，隔离数据已移入回收站。该结果是失败证据，不是 T139 Green。
+- **当时状态更正**：T017E、T115-T136、T137-T142、T145、T147 全部 Pending；物理任务统计为 139/170 完成、31/170 Pending。当前状态见紧接的 §T017E.2026-08-25 与 §US13.2026-08-25.1。
+
+## §T017E.2026-08-25 — 零 advisory、生产严格 TLS 与 dedicated security review
+
+本节是上方 2026-08-25 两项 RustSec/测试替身阻断的后续 source-true 更正；历史失败证据保留，不再作为当前状态。
+
+### 修复与边界复核
+
+- `aws-sdk-s3 1.141.0` 的 workspace patch 指向 `third_party/aws-sdk-s3-1.141.0`；`PROVENANCE.md` 固定上游 revision `edce1e88c8803e14865addfb83b8531c014e7f6d`、crates.io archive SHA-256 `d9f9420d3a2467eed22ed3635ca653653162c386a0b0f65c78189f9bd3c1379e`，唯一变更是生成 manifest 的 `lru ^0.16.3` → `lru 0.18.2`。`cargo tree --locked -p hiveweb -i lru@0.18.2` 只显示 `lru 0.18.2 ← aws-sdk-s3 1.141.0 ← hiveweb`。
+- `extism 1.30.0` 的 workspace patch 指向 `third_party/extism-1.30.0`；`PROVENANCE.md` 固定发布 revision/archive checksum，并应用上游 PR #905 的 `2e660c1`、`bb7752b` 两项 Wasmtime 46 迁移提交，固定 `wasmtime/wasi-common 46.0.3`。`cargo tree --locked -p hiveweb -i wasmtime@46.0.3` 只显示该 Extism/WASI 链；共享 ABI、host-call、timeout/fuel/pool 回归保持 Green。
+- 复跑首先发现旧 `contract_mysql_tls_policy.rs` 在测试文件内部复制 `StrictMysqlConnectOptions`，而生产 `db::connection::create_pool` 仍接受未经检查的 `&str`；旧 TLS 合同因此不是生产 Green。修复后严格类型、稳定错误分类、单次可注入 transport 与 `create_pool(StrictMysqlConnectOptions)` 均位于生产 `hiveweb::db::connection`。主库和外部库启动分别从 `DATABASE_TLS_CA`/`DATABASE_TLS_HOSTNAME` 与 `EXTERNAL_DATABASE_TLS_CA`/`EXTERNAL_DATABASE_TLS_HOSTNAME` 取得显式信任边界；URL 必须含 `ssl-mode=VERIFY_IDENTITY`，CA/host/mode 任一不符即在建池前拒绝。测试直接导入生产类型，不再维护同名替身；SQLx 原始错误不会跨边界输出，且无重试或明文/RSA fallback。
+
+### 精确 Green 证据
+
+- `cargo +1.97.1 test --locked -p hiveweb --test contract_mysql_tls_policy -- --nocapture`：exit 0，4/4；覆盖严格 CA/hostname/mode、所有宽松 mode、缺失/错误 CA/hostname、四类注入 transport 失败的一次尝试/零明文尝试/脱敏。
+- `cargo +1.97.1 test --locked -p hiveweb --test contract_sqlx_09_sql_safety -- --nocapture`：exit 0，10/10；`cargo +1.97.1 test --locked -p hivegui --test sql_safety_contract -- --nocapture`：exit 0，9/9；生产 `QueryBuilder`=0、唯一 `AssertSqlSafe` owner 与全部 security-remediation SQL inventory Green。
+- `cargo +1.97.1 test --locked -p hiveweb --lib storage::s3 -- --nocapture`：exit 0，5/5；`cargo +1.97.1 test --locked -p hivegui --test ci_security_contract -- --nocapture`：exit 0，16/16。
+- `cargo +1.97.1 check --locked -p hiveweb --all-targets` 与 `cargo +1.97.1 check --workspace --all-targets --locked`：均 exit 0。
+- `DATABASE_URL=sqlite::memory: SQLX_OFFLINE=true cargo +1.97.1 sqlx prepare --workspace --check --no-dotenv`：exit 0；只保留 CLI 的 `potentially unused queries` 提示，不隐藏。
+- 联网 `cargo deny check advisories`、`licenses`、`bans`、`sources`：四项均 exit 0；`deny.toml` 不定义 advisory ignore。licenses/bans/sources 的已审 warning 不改变 exit 0，且不包含 advisory 豁免。
+
+### `/security-review` 结论
+
+按 Constitution v1.5.0 *Single-developer repository clause* 对上述依赖 provenance/最小补丁、TLS fail-closed、SQL/SQLx、S3、feature/tree、offline metadata 与完整锁文件逐项 self-attest：**PASS**。用户此前的 standing instruction 允许连续执行，但本节不伪造新的用户逐字审批；结论来自本节列出的可复核机器证据。T017E 现为 Closed。该结论不补签 T138 的 CHK010/CHK011、US13 故事 owner、性能 baseline/exception、macOS/Windows 辅助技术或 T147 最终发布签字。
+
+本次只新增 T017E 一个完成 checkbox；当前物理任务统计为 140/170 完成、30/170 Pending。后续 US13 production 子链虽已推进，但其 task 正文范围仍大于本批证据，故不改 checkbox。
+
+## §US13.2026-08-25.1 — 本地 Provider→Tool→reply 与真实 Stop 子链 Green
+
+上方 source audit 关于 `simulation_streaming_reply`、mock LLM/真实 Tool 缺失和 Stop 未接 Provider 的结论已由本批部分修复；T115-T136 的其它正文仍按 owner gate 保持 Pending。
+
+- `TurnSnapshot` 现在按轮次载入显式∪always Tool/Skill 及 Agent Capability，并保存 Tool identifier/name/description/input schema 与 Skill content；决策 prompt 只使用该不可变本地快照、会话消息和直接子 Agent，不读取 HiveWeb 配置。
+- `LocalProviderDecisionModel` 通过唯一 `LlmStore` 的 Agent preset→Model priority→Provider 链调用本地配置 Provider，输出严格本地 `tool_call|route|reply` decision；`LocalPersistedToolTargetRunner` 复用 Function/Workflow/Plugin Store 与 executor。Workflow/Function 的 Capability snapshot 由调用者传入且默认 deny，不再由节点自行授予。
+- `ConversationView` 已删除 `simulation_streaming_reply` 及 runtime assistant “处理中/完成”占位写入；发送只追加一次用户消息，调用真实 local runtime，最终结果替换 UI 临时行。Stop 触发会话 `CancelToken`，Provider HTTP future 被丢弃，运行时在模型/工具边界拒绝迟到结果；没有 HiveWeb client、URL 或失败 fallback。
+- `cargo +1.97.1 test --locked -p hivegui --test local_agent_runtime`：17/17，包含真实进程内 Provider HTTP→持久 Tool(`format_template`)→最终 reply 及 hanging Provider Stop≤250ms/无迟到 assistant；`workflow_execution` 15/15（含 caller Capability snapshot）；`function_test_execution` 17/17；`tool_dispatch` 5/5；真实 Conversation Visual lib test 1/1；workspace all-targets exit 0。
+- 未闭合范围：T115 Agent 100+ CRUD/查询/基线；T117 保留期和全介质 canary；T118 子 Agent/Workflow/Plugin 2 秒强停全矩阵；T119/T129/T130 备份恢复状态机；T120/T131 诊断；T121/T132-T135 Agent/会话/设置 GPUI 原生滚动、历史管理与完整设置入口；T122 当前源码首份 baseline；T123 全批 reviewer 及 T136 只复跑汇合。因此本节只记录 T116/T126/T128/T133 的 production 子链进展，不改变这些 task checkbox。
+
+## §US13.T115.2026-08-25 — Agent 管理完整合同补充 Red
+
+- **历史基线（非完整 T115）**：编辑前原样运行 `cargo +1.97.1 test --locked -p hivegui --test agent_management -- --nocapture`，exit 0，13/13。该集合仍仅证明历史字段/default/分页与手写 `Instant` 绝对预算，不包含 T005 环境指纹/版本化基线、三关联固定查询批量加载或完整生产 SQL catalog。
+- **测试变更集（未提交）**：仅 `crates/hivegui/tests/agent_management.rs`。保留既有 default/分页断言；新增循环与 depth>10 零修改、缺失 `model_preset` 字段级 `invalid_input`/零修改、真实 Tool/Skill/Capability 三关联 fixture、1/25 Agent 快照固定四查询 observer、US13/T115 active production filter/association query catalog，以及严格两个 canonical T005 Agent CRUD/search-page target 和 release baseline evaluator。原两项手写 `Instant` 测试被 canonical T005 runner 合同替代。
+- **已观察 Red**：`cargo +1.97.1 test --locked -p hivegui --test agent_management --no-run`，exit 101。唯一失败面为一组 E0432（缺 `AGENT_CRUD_ID`、`AGENT_FIXTURE_ROWS`、`AGENT_SEARCH_PAGE_ID`、`AGENT_SEARCH_PAGE_SCHEDULE`）与三处 E0599（缺 `AgentStore::from_store` 及两处 `load_resource_snapshots`）；无测试语法、fixture 或非目标诊断。`rustfmt +1.97.1 --edition 2024 crates/hivegui/tests/agent_management.rs` 与 scoped `git diff --check` exit 0。
+- **Reviewer/Green 状态**：Pending。本 Red 只建立 T115 完整任务缺口；不得倒推 T124 实现或 T123 全批审批。T115 checkbox 保持 `[ ]`，T124-T135 仍受 T123 阻断。
+
+## §US13.T116.2026-08-25 — 本地运行时公开命令补充 Red
+
+- **历史基线（非完整 T116）**：编辑前原样运行 `cargo +1.97.1 test --locked -p hivegui --test local_agent_runtime -- --nocapture`，exit 0，17/17。production Provider/真实本地 Tool/Stop 子链为 Green，但历史 `snapshot_contains_resource_and_capability_lists` 使用恒真断言，cycle case 未实际制造循环，且 runtime controls case 未覆盖合同中的持久会话/执行和公开控制命令。
+- **测试变更集（未提交）**：`crates/hivegui/tests/local_agent_runtime.rs` 在既有真实 E2E 上追加公开 `continue_session`、`stop_execution`、`delete_session`、`clear_history` 的非法 UUID/retention_filter 零修改合同；新增 trim 后空消息零写入与成功启动必须持久 UUID ChatSession/AgentExecution；将 Skill/always-Skill/Capability 快照改为真实关系和内容断言；把伪 cycle case 改为真实 ancestor→descendant update、错误分类与前后层级零修改。
+- **已观察 Red**：`cargo +1.97.1 test --locked -p hivegui --test local_agent_runtime --no-run`，exit 101。精确 6 个 E0599：缺 `continue_session`、`stop_execution`、`delete_session`、`clear_history`，以及 `LocalAgentError::field/reason`；无测试语法、Skill/Capability fixture 或非目标诊断。`rustfmt +1.97.1 --edition 2024 crates/hivegui/tests/local_agent_runtime.rs` 与 scoped `git diff --check` exit 0。
+- **Reviewer/Green 状态**：Pending。2026-08-25 production Provider/Tool/Stop Green 不追认本批公开命令/持久化 Red；T116 与 T123 保持 Pending。
+
+## §US13.T117.2026-08-25 — 会话保留、密文与查询/性能补充 Red
+
+- **历史基线（非完整 T117）**：编辑前原样运行 `cargo +1.97.1 test --locked -p hivegui --test conversation_retention -- --nocapture`，exit 0，9/9。该集合使用运行时 `CREATE TABLE IF NOT EXISTS` 与内存消息/执行缓存，`DEFAULT_RETENTION_DAYS=36500` 也不等于从 `created_at` 增加 100 个日历年；既有 canary 将 raw payload 而非 scanner 的完整 plaintext token 写入 Store，零命中不能证明公开写入边界无泄漏。
+- **测试变更集（未提交）**：仅 `crates/hivegui/tests/conversation_retention.rs`。新增真实 v4 `Store`/Agent 关联会话、100 日历年 `expires_at`、会话删除级联但保留 Agent、保留期 preview/apply 竞态零删除、遗留 `running→failed/interrupted` 一次性恢复、1/25 会话消息与执行两查询批量加载、US13/T117 active query/query-count catalog、四个 canonical T005 会话目标与 release evaluator。T016F 行改为把 scanner 的完整 token 实际写入 SQL，并为 `title_encrypted`、`content_encrypted`、`tool_calls_encrypted`、`state_encrypted` 各使用独立 canary，覆盖成功、错误脱敏与中断恢复后全介质零命中。
+- **已观察 Red**：`cargo +1.97.1 test --locked -p hivegui --test conversation_retention --no-run`，exit 101。精确失败面为一组 E0432（缺 `CONVERSATION_LIST/BUNDLE/CLEANUP/RECOVERY_ID` 与固定 fixture 常量）和 17 处 E0599（缺 canonical `from_store`、Agent 关联 create、delete、preview/apply、running recovery、批量 bundle load 与版本化 state writer）；无测试语法、canary helper 或非目标诊断。`rustfmt +1.97.1 --edition 2024 crates/hivegui/tests/conversation_retention.rs` 与 scoped `git diff --check` exit 0。
+- **Reviewer/Green 状态**：Pending。T016F 四行与 T117 性能/查询合同已建立但尚未由 T123 审批；不得执行 T127 或把历史 9/9 倒推为 Green。
+
+## §US13.T118.2026-08-25 — 分层取消传播补充 Red
+
+- **历史基线（非完整 T118）**：编辑前原样运行 `cargo +1.97.1 test --locked -p hivegui --test cancellation -- --nocapture`，exit 0，4/4。该集合只验证单个 Foundation adapter 的即时 `Cancelled`、迟到结果丢弃、unknown id 和稳定 wire string；它没有 Agent/子 Agent/LLM/Tool/Workflow/Plugin 分层传播、停止后零新调度、仅 Plugin 的 2 秒强停、其它会话存活或外部副作用明细。
+- **测试变更集（未提交）**：仅 `crates/hivegui/tests/cancellation.rs`。新增 production-facing layered execution 合同与 recording adapter：同一 execution 规划六层，实际启动 Agent/ChildAgent/LLM/Tool/Plugin，保留 Workflow 为未开始；Tool 先完成并标记外部副作用，Stop 后新 Workflow 调度必须以 `field=execution_id/reason=scheduling_closed` 拒绝，协作层进入 interrupted，非协作 Plugin 在 2 秒+250ms 内强停，summary 精确列 completed/interrupted/not-started 与副作用提示。独立第二会话的 LLM 必须继续 completed。
+- **已观察 Red**：`cargo +1.97.1 test --locked -p hivegui --test cancellation --no-run`，exit 101。唯一失败面为 E0432：缺 `CancellationLayer`、`LayerCancellationAdapter/Future`、`LayerExecutionRequest` 与 `LayeredCancellationRuntime`；无旧 4 项回归或测试 fixture 诊断。`rustfmt +1.97.1 --edition 2024 crates/hivegui/tests/cancellation.rs` 与 scoped `git diff --check` exit 0。
+- **Reviewer/Green 状态**：Pending。T118 的六层传播/强停/隔离/副作用合同尚待 T123 审批，T128 不得据历史 Foundation 4/4 提前完成。
+
+## §US13.T119.2026-08-25 — portable backup、切换与 retirement 补充 Red
+
+- **历史基线（非完整 T119）**：编辑前原样运行 `cargo +1.97.1 test --locked -p hivegui --test backup_restore -- --nocapture`，exit 0，6/6。该集合只把一个伪 SQLite header 整文件装入内存 tar+gzip+age 并 rename 到 final；没有真实 Store/关系/WASM、设备密钥重加密、派生索引重建、ledger 排除、冻结/checkpoint、instance/owner/retirement 或 crash replay。
+- **已观察行为 Red 1 · WAL/跨设备密钥**：新增真实 `Store` 写入 DataSource 后保持连接打开，export→另一设备目录 import→用目标 `Store` 打开。`cargo +1.97.1 test --locked -p hivegui --test backup_restore open_store_backup_includes_committed_wal_and_reencrypts_for_the_target_device -- --nocapture`，exit 101，0/1；已提交行存在，但目标设备解密精确失败为 `Decryption failed: aead::Error`，证明当前实现复制旧密文而未目标重加密。
+- **已观察行为 Red 2 · portable 内容边界**：真实 Plugin 行+托管 WASM、operation/GC ledger 和故意陈旧派生 search row 后 export/import。定向命令 `... portable_archive_carries_managed_wasm_but_rebuilds_derived_search_and_excludes_ledgers ...`，exit 101，0/1；首个断言实际 ledger counts=`(1,1)`、期望 `(0,0)`，证明当前整库复制把内部 ledger 错装入 portable archive；后续 search 重建/WASM roundtrip 断言保留待 Green。
+- **测试变更集（未提交）**：仅 `crates/hivegui/tests/backup_restore.rs`。除上述两条真实行为外，新增 preview 后最后合法写入、确认后持续冻结及 checkpoint/sidecar 收敛；backup/restore/retirement 全 crash-point 唯一 inventory；每个 switch/retirement fault 的新进程 startup replay，要求 instance UUID≠cleanup UUID、unarmed/no-owner staging、单一 old/new、无 DB/Plugin mixed tree、`aborted_pre_switch|old|new` 精确 retirement done 与写闸门；T016F 备份介质 canary 覆盖成功、错误、崩溃和跨设备路径。
+- **最终 compile Red**：`cargo +1.97.1 test --locked -p hivegui --test backup_restore --no-run`，exit 101；唯一失败面为 E0432，缺 `BackupCoordinator`、`RestoreCoordinator`、三组 crash-point inventory 与 `RetirementOutcome`，无测试语法或非目标诊断。`rustfmt +1.97.1 --edition 2024 crates/hivegui/tests/backup_restore.rs` 与 scoped `git diff --check` exit 0。
+- **Reviewer/Green 状态**：Pending。T119 的 portable 内容、冻结、restore ownership/retirement 与备份介质 canary 已建立 Red，但未由 T123 审批；T129/T130 均不得开始。
+
+## §US13.T120.2026-08-25 — runtime 诊断持久化全链补充 Red
+
+- **历史基线（非完整 T120）**：编辑前原样运行 `cargo +1.97.1 test --locked -p hivegui --test diagnostics -- --nocapture`，exit 0，9/9。全部记录只进入测试内 `Mutex<Vec<DiagnosticRecord>>`；所谓 canary 既未把 scanner 的完整 token 写入持久边界，也未创建 activity log 或最终诊断包，因此零命中不证明 T016F 日志/诊断介质。
+- **Foundation 复用边界**：T016A/T027 已拥有 `ActivityLog` 对 v1 字段、UTF-8 512-byte sanitise、逐记录 7×24h、retention high-watermark/clock rollback、100,000,000-byte precheck、rotation/compaction/crash replay 的首个 Red→Green；T120 不复制算法，只要求 US13 pipeline 真实复用该唯一公开日志边界，并把同一 collector 导出为 redacted bundle。
+- **测试变更集（未提交）**：仅 `crates/hivegui/tests/diagnostics.rs`。新增 `RuntimeDiagnosticPipeline` E2E：同一 execution_id 记录 Agent/LLM/Tool/Workflow/Plugin/Capability 六层事件；同一带六 adapter context 的内部失败调用两次，activity v1 必须只有一行并具 exact schema/execution/operation/result/cause≤512；最终 bundle 精确 6 events。prompt、provider token、会话/Tool payload、备份口令及完整 T016F canary 必须同时从 activity、bundle、错误/恢复及全介质扫描消失。
+- **已观察 Red**：`cargo +1.97.1 test --locked -p hivegui --test diagnostics --no-run`，exit 101；唯一失败面为 E0432 缺 `hivegui::runtime::diagnostics::RuntimeDiagnosticPipeline`，无旧 RuntimeErrorBoundary、scanner 或测试语法诊断。`rustfmt +1.97.1 --edition 2024 crates/hivegui/tests/diagnostics.rs` 与 scoped `git diff --check` exit 0。
+- **Reviewer/Green 状态**：Pending。T120/T016F 日志与诊断包故事行尚待 T123 审批；T131 不得以历史内存 sink 9/9 提前完成。
+
+## §US13.T121.2026-08-25 — Agent/会话/设置 VisualTestContext 与组合负载 Red
+
+- **测试变更集（未提交）**：`crates/hivegui/tests/accessibility.rs` 与测试支持 `tests/support/scroll_inventory.rs`。T016E `AgentExecution` owner 从过期的 `US13/T124` 校正为唯一实现链 `US13/T132-T135`；Agent 长表单覆盖 duplicate conflict、表单安全值、错误焦点、Escape focus restore、真实 native wheel/bounds/actions；Conversation 覆盖 new/input/send、history/messages native scroll、Stop 立即 stopping、历史删除确认和键盘焦点；Settings 覆盖 retention、backup export、restore precheck/confirm、diagnostic export、native wheel 与 modal focus。三个真实产品模块必须共同携带 `scroll:agent_execution`，且 source contract 禁止手写 wheel。
+- **组合负载合同**：同一真实 `VisualTestContext` 中启动本地 Store/Provider Agent 对话（loopback HTTP 保持 in-flight）、循环执行真实 100 节点 no-op `WorkflowExecutor`、循环执行真实 age archive `BackupImporter::inspect_manifest`；固定 10 warmup + 100 measured 键盘输入，以实际 value selector、Stop bounds/focus/stopping 和事件时间戳构造 T005 `BenchmarkReport`。强制 p95≤100ms、任一 heartbeat≤250ms、110/110 时刻 Stop 可见，且 canonical baseline/exception evaluator 只接受 `Passed|ApprovedException`。
+- **独立组合负载 Red**：`cargo +1.97.1 test --locked -p hivegui --test accessibility agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive -- --nocapture --test-threads=1`，exit 101，0/1；Workflow 与 backup 后台任务真实启动并安全收尾，首个产品失败为 `the real local Agent conversation must be in flight`，即 Conversation 稳定 selector/发送链尚未接通，未用合成 heartbeat 冒充。
+- **完整可识别 Red**：`cargo +1.97.1 test --locked -p hivegui --test accessibility -- --nocapture --test-threads=1`，exit 101，**72 passed / 5 failed / 0 ignored**。五项新增失败精确为：Agent Add 不可达；Conversation 缺 `NEW/MESSAGE_INPUT/SEND/HISTORY_SCROLL/MESSAGES_SCROLL`；Settings 缺 native `SETTINGS_SCROLL`；三个产品源缺 `scroll:agent_execution`；组合负载无法发起真实 local Agent request。72 项既有 Recovery/Sidebar/Function/Workflow/Tool/Skill 等全部通过，无非目标回归。`us13_ --no-run`、specific rustfmt、scoped diff-check 均 Green。
+- **Reviewer/Green 状态**：Pending 至下方 T123 批量审批；T132-T135 只能闭合上述已观察产品失败，不得更改 native-scroll/T005 合同或首次补验收断言。
+
+## §US13.T122.2026-08-25 — Agent 动作调度 release benchmark 首份基线 Red
+
+- **现有生产边界核对**：`AGENT_ACTION_DISPATCH_ID=agent_action_dispatch` 由 T122 唯一拥有，固定边界为“已解析 LLM decision → 下一本地 action 被 scheduler 接受”；外部 LLM、网络和用户 Function/Plugin 执行明确排除，10 warmup + 100 measured，p95 绝对预算 200ms，统一走 T005 canonical evaluator。
+- **当前源码报告**：source revision=`git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:f53547fa4b08076417cd84f3b75d2c3fe7ab7e6ece6aefc94ca2fa6b019cd68c`。原样 `cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run agent_action_dispatch`，exit 0；release 环境 `linux/x86_64/rustc 1.97.1/20 logical CPUs`，`p50/p95/p99=223/271/289ns`，绝对 p95≤200ms Green。
+- **已观察门禁 Red**：canonical baseline 与 exception 均不存在；同一命令输出 `performance gate: pending (first approved Green establishes its baseline)`。CLI 不自动写文件、不把绝对预算通过冒充版本化比较 Green。本 pending 是 T122 首份 baseline 的预期、可识别 Red。
+- **Reviewer/Green 状态**：Pending 至下方 T123 审批；审批后只允许把上述精确 report/source/environment 写为首份 baseline，并同源复跑，禁止创建 regression exception。
+
+## §US13.T123.2026-08-25 — T115-T122 Red reviewer 审批
+
+- **Reviewer 身份与授权**：Codex 作为 designated reviewer 执行本批 source-true review；用户已明确给出持续授权“后继都不需要我确认了，直接继续执行”与“继续推荐，直到结果”。该授权允许 reviewer 在不反复中断用户的前提下逐项审查并推进，但不豁免 Constitution II 的测试先行、实际观察 Red、最小 Green、证据落账或任何安全/性能门禁。
+- **审查结论**：**Approved — 2026-08-25**。逐文件复核 T115-T122 测试变更、未来公共 API、fixture、失败点与任务正文；所有 production Green 仅可闭合以下已观察 Red，不得删减断言、把 compile Red 改成 source-string、用 HiveWeb fallback，或跨 owner 借证据。
+- **T115**：批准 100+ Agent、唯一/default/depth/cycle、model_preset、三资源快照、固定查询/EXPLAIN、CRUD/search T005 双目标；已观察缺 performance constants、`from_store`、`load_resource_snapshots`。
+- **T116**：批准公开 session 控制、真实 Store 持久化、非法输入零修改、显式∪always snapshot/直接子 route/真实 cycle；已观察 6 个目标 E0599。既有 Provider→真实本地 Tool→reply/零 HiveWeb 和 hanging Provider Stop Green 只作 fixture 基础。
+- **T117**：批准 100 calendar years、preview/apply race、cascade/legacy recovery、两查询 bundle、四目标 T005、四个独立 T016F canary 全介质扫描；已观察 performance/API 18 项缺口。
+- **T118**：批准 Agent/Child/LLM/Tool/Workflow/Plugin 六层传播、零新调度、Plugin 2s force-stop、其它 session 存活与外部副作用提示；已观察唯一 E0432 API 面。
+- **T119**：批准真实 portable/archive/local-safety 区分、跨设备重加密、ledger/search/WASM、写冻结/WAL、fixed staging/manifest/owner/retirement/crash matrix 与备份介质 canary；已观察跨设备 decrypt、portable ledger 两项行为 Red及 6 项 coordinator/inventory compile Red。T130 仍必须等待 T129 Green。
+- **T120**：批准复用 T027 ActivityLog 的六 adapter同 execution_id、exactly-once、稳定字段/512-byte cause、最终 bundle 与全介质脱敏；已观察 `RuntimeDiagnosticPipeline` 缺失。
+- **T121**：批准单一 Agent/Conversation/Settings owner row、真实 GPUI wheel/keyboard/focus/bounds、5 项产品 Red与真实三任务组合负载/T005 gate；72 个既有用例 Green 排除 fixture 误伤。
+- **T122**：批准 source revision `f53547fa…cd68c` 的首份 release report `223/271/289ns` 建 baseline；仅限 canonical `agent_action_dispatch` baseline，不批准例外。baseline 写入后必须同源复跑为 `Passed` 才能闭合。
+- **T016E/T016F owner 审批**：实际审批并观察 Agent/会话/设置 scroll owner Red；ChatSession title、ChatMessage content/tool_calls、AgentExecution state；portable/local-safety/restore/crash/cross-device backup；ActivityLog/diagnostic bundle 全故事行 Red。T138/T139/T142 仍只能最终复跑，不能首次修复。
+- **解锁边界**：T124-T135 现可按依赖顺序执行最小 Green；T130 另等待 T129。T115-T122 测试任务在各自 Red 证据与本 reviewer 审批后可记完成，但 US13 仍 **not Closed**，直至 T136 原样全复跑及所有 canonical performance gates Passed/ApprovedException。
+- **T122 同源 Green**：首份 baseline 已写入 canonical `agent_action_dispatch/<environment>.json`，reviewer 字段明确记录 designated-reviewer/standing-authorization，不冒充逐字 user 签名；source revision 仍为 `f53547fa…cd68c`（baseline/spec 文件均在 source fingerprint 排除范围）。同源原样复跑 exit 0，`p50/p95/p99=237/280/293ns`，绝对预算 Green，`performance gate: passed`，canonical exception 不存在。T122 闭合且未使用例外。
+
+## §US13.T124.2026-08-25 — Agent Store、索引搜索与资源快照 Green
+
+- **审批边界**：仅实现 §US13.T123 已审批的 T115 Red；不借此完成 T125-T136，也不把 standing authorization 写成用户逐字性能签名。HiveGUI 全程只使用本地 `Store`/SQLite/FTS5，未构造 HiveWeb client、未读取 HiveWeb URL、没有 HiveWeb fallback。
+- **已观察 Red**：最初 `agent_management --no-run` 精确缺少 `AgentStore::from_store` 与 `load_resource_snapshots`（3 个 E0599）；首次行为运行又暴露 canonical Store 已注册 Capability 的重复 fixture，以及 FTS `VIRTUAL TABLE INDEX` 被通用 EXPLAIN 解析器误判为 scan。首次 canonical release 报告因 baseline 不存在进入 `PendingBaseline`；后续搜索样本的相对漂移先 fail closed，并以 `agent_search_benchmark_repeats_each_scheduled_step_in_a_normalized_batch` 的 E0432 记录缺失固定批量边界，获批后才实现同一步骤 16 次批量并按操作归一。最终 release 汇合还实际观察到 CRUD 仅 p99 超过 10%，默认门禁先 `Blocked`，随后才建立下述精确绑定、有期且有上限的 sidecar。
+- **最小生产 Green**：`AgentStore::from_store` 复用 canonical query observer；创建/更新/删除在同一事务维护 Agent `search_documents`；搜索仅走共享 NFKC_CF normalizer、FTS5 trigram 或 1–2 scalar short-gram；层级/default/depth/cycle、model preset、三类资源关联和替代默认均在 Store 边界 fail closed。资源快照以固定四个生产查询加载 Agent、Tool、显式∪always Skill 与 Capability，查询数不随 1/25 Agent 线性增长。所有 Agent 过滤/分页/关联 SQL 均进入 active `US13/T115` query catalog 并在真实 v4 Store 上 EXPLAIN；新增 `idx_skills_is_always(is_always,id)` 支撑 always Skill 路由。
+- **功能与计划 Green**：原样组合命令 `cargo +1.97.1 test --locked -p hivegui --test agent_management --test storage_query_plans --test search_index_contract --test support_contract --test migration_compatibility -- --nocapture --test-threads=1` exit 0：Agent 17 passed/1 release-only ignored、migration 12 passed/1 designed ignored、search 26/26、query plan 14/14、support 29/29，合计 **98 passed / 0 failed / 2 ignored**。`cargo +1.97.1 check --locked -p hivegui --lib`、`cargo +1.97.1 fmt --all -- --check` 与 `git diff --check` 均 exit 0。
+- **版本化性能证据**：最终源码 `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:63008fdb1ed518481d5cbfe7c69c3d4ce2ce443d9490f21bf44c730a31a972e6`。首份获批 baseline：`agent_crud=45,650,266/50,540,772/52,787,314ns`，`agent_search_page=4,580,607/5,005,863/5,174,671ns`（p50/p95/p99）。最终同源 search 报告 `4,571,265/4,907,828/5,060,272ns`，正常 `Passed` 且绝对 p95≤500ms。
+- **受限例外与最终 release Green**：CRUD sidecar 仅授权 p99：baseline `52,787,314ns`、实际观察 `74,244,789ns`、硬上限 `85,000,000ns`；精确绑定上述最终源码、baseline approval、target/environment，范围明确排除 p50、p95、Agent search/action 与绝对预算，复核截止 `2026-09-25`。原样 `cargo +1.97.1 test --locked --release -p hivegui --test agent_management agent_performance_runner_meets_budgets_and_approved_baselines -- --nocapture --test-threads=1` exit 0，**1/1 Green**；evaluator 只接受 `Passed|ApprovedException`，绝对 p95≤1s 从未被例外豁免。
+- **状态**：T124 Closed；US13 overall **not Closed**。下一依赖为 T125，本节不声称运行时、会话、备份、诊断或 UI 已闭合。
+
+## §US13.T125.2026-08-25 — 公开会话启动、不可变快照与直接子路由 Green
+
+- **已观察 Red**：原样 `cargo +1.97.1 test --locked -p hivegui --test local_agent_runtime --no-run` exit 101，精确 6 个 E0599：缺 `continue_session`、`stop_execution`、`delete_session`、`clear_history` 以及 `LocalAgentError::field/reason`。这是 §US13.T116/T123 已审批的公开命令 Red；未新增或弱化测试。
+- **最小 Green**：`start_session` 无入口 Agent 参数且只解析唯一默认根；trim 后的 `user_message`、session/execution UUID 与 positive unit retention filter 全部在任何写入前返回稳定 field/reason。默认 Agent 与 T124 资源快照完整加载后，单一 SQLite 事务创建 UUID ChatSession/AgentExecution 元数据，再发布内存 Session/CancelToken；失败不会留下部分记录。每轮快照复用 `AgentStore::load_resource_snapshots`，冻结显式∪always Tool/Skill、当前 Agent Capability、system prompt 和仅直接子 Agent；跨级路由 fail closed。公开控制命令不会进入 Tool Store。
+- **边界说明**：本批只建立 T125 元数据/运行控制边界；`title_encrypted`/ChatMessage/Tool payload/`state_encrypted` 的真实设备密钥加密、100 年保留与遗留执行恢复仍由 T127 闭合，不把空/nullable 敏感载荷占位写作加密 Green。T126 的完整 Function/Workflow/Plugin tool-calling/fallback/streaming 也不由本节完成。
+- **Green 证据**：`local_agent_runtime -- --nocapture --test-threads=1` **19/19**；组合 `agent_management` 17 passed/1 release-only ignored、`entity_validation` 7/7、`local_agent_runtime` 19/19，合计 **43 passed / 0 failed / 1 ignored**。`cargo +1.97.1 check --locked -p hivegui --lib`、`cargo +1.97.1 fmt --all -- --check`、`git diff --check` 均 exit 0。无 HiveWeb server、URL、client 或失败 fallback。
+- **状态**：T125 Closed；US13 overall **not Closed**。下一任务 T126 只可闭合已审批的本地 LLM tool-calling、流事件、fallback 与 Function/Workflow/Plugin 调用链。
+
+## §US13.T126.2026-08-25 — 本地 LLM tool-calling、fallback 与三执行链 Green
+
+- **组合边界**：T126 复用已经过各 owner Red→review→Green 的唯一生产实现，不复制 Provider、Function、Workflow 或 Plugin executor。`LocalProviderDecisionModel` 从当前 Agent 的 immutable `model_preset` 构建本地 Provider fallback 链并转发 token/fallback 事件；`LocalAgentRuntime::run_turn` 只接受快照内 Tool；`PersistedToolExecutor` 先执行 schema/Capability/Placeholder/XOR 校验，再把 Function（Builtin 或 Custom Plugin）和 Workflow 分别交给唯一受管本地边界。任何一层都没有 HiveWeb client、URL 或失败 fallback。
+- **Provider/流/取消**：`llm_provider` **8/8**，包含 priority 与 `ProviderBuildConfig`、transient fallback、`fallback_used` 先于 token、auth/cancel 不 fallback、mid-flight HTTP cancel 无 late token。`local_agent_runtime` **19/19**，包含真实 local Provider 两轮决策、persisted Tool/Builtin 输出回灌、单一 final reply、hanging Provider Stop 和网络捕获零 HiveWeb 请求。
+- **Function/Workflow/Plugin**：`function_test_execution` **17/17**（Builtin、真实 Custom Plugin、schema、Capability、Placeholder）；`tool_dispatch` **5/5**（Function/Workflow XOR 且各只路由一次）；`workflow_execution` **15/15**（dataflow、并行、timeout/cancel、GenerateAnswer preset、调用者 Capability）；`plugin_shared_fixture_contract` **4/4**（ABI fail-closed 与真实 shared guest）。组合原样命令 exit 0，合计 **49 passed / 0 failed**；加上本地 Agent E2E 为 **68 passed / 0 failed**。
+- **状态**：T126 Closed；T118/T128 仍独占跨 Agent/Tool/Workflow/Plugin 的分层取消与 Plugin 2 秒强停，T120/T131 仍独占持久诊断；本节不提前完成它们。US13 overall **not Closed**，下一依赖任务为 T127。
+
+## §US13.T127.2026-08-25 — 会话密文、保留/恢复、批量查询与性能 Green
+
+- **审批与 Red 边界**：仅实现 §US13.T117/§US13.T123 已审批并实际观察的 18 项 compile Red；不借此完成 T128-T136。生产 `ConversationStore::from_store` 只使用 canonical v4 schema 和本地设备密钥 AEAD `Crypto`，没有运行时 DDL、HiveWeb client、URL 或 fallback。
+- **最小生产 Green**：会话标题、消息正文、Tool payload 与执行状态在任何 SQLite 写入前逐字段加密；默认到期按 `created_at + 100 calendar years` 计算。删除依赖 v4 FK cascade 且保留 Agent；retention preview 绑定精确 session id 集合，确认前集合漂移则零删除；遗留 `running` 只转换一次为密文 `failed/interrupted`。列表、过期扫描、running 扫描及 1/25 session bundle 使用共享静态 SQL，bundle 固定两查询并由 observer 验证查询数不随 session 数线性增加；相关索引由 migration 唯一拥有并注册为 active `US13/T117` query catalog。
+- **密文与功能证据**：`conversation_retention` **16 passed / 0 failed / 1 release-only ignored**。四个独立 T016F canary 覆盖 `title_encrypted`、`content_encrypted`、`tool_calls_encrypted`、`state_encrypted`，成功、错误和中断恢复后扫描 SQLite 主文件、WAL/SHM/journal、临时目录及错误字符串均为零明文命中。100 calendar years、显式 retention、级联、stale preview、幂等 recovery 和 1/25 bundle 全 Green。
+- **组合回归**：原样 `cargo +1.97.1 test --locked -p hivegui --test conversation_retention --test storage_query_plans --test support_contract --test migration_compatibility -- --nocapture --test-threads=1` exit 0：Conversation 16、migration 12、query plan 14、support 29，合计 **71 passed / 0 failed / 2 designed ignored**。`cargo +1.97.1 check --locked -p hivegui --lib`、`cargo +1.97.1 fmt --all -- --check`、`git diff --check` 均 exit 0。
+- **版本化性能证据**：最终 source revision `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:d80224e895a662b5db98b9da91d60fbf74b3ec6ec95178c6587cbfbba91e3d9f`。首次 baseline p50/p95/p99：list `141978/196008/301598ns`、25-session bundle `341127/516091/615282ns`、cleanup lifecycle `37881906/43177602/80004219ns`、recovery lifecycle `36973438/43491708/44748133ns`。独立同源复跑四项均 `performance gate: passed`；所有 p95 均远低于 1s 绝对预算。
+- **受限例外与 release 汇合**：完整 release 集成第一次 fail closed 于 list p50 `161225ns` 相对 baseline `141978ns`；此前同源独立复跑为 `128036/173452/197788ns` 且全百分位 Passed。sidecar 因而只授权 `conversation_list_recent` p50≤`200000ns`，精确绑定上述 source、target、environment 和 baseline，截止 `2026-09-25`；明确不覆盖 p95、p99、其它 Conversation target 或绝对预算。原样 `cargo +1.97.1 test --locked --release -p hivegui --test conversation_retention conversation_performance_runner_meets_budgets_and_approved_baselines -- --nocapture --test-threads=1` exit 0，**1/1 Green**。
+- **状态**：T127 Closed；US13 overall **not Closed**。下一依赖任务为 T128；备份/restore、diagnostics 与 Agent/Conversation/Settings UI 仍由 T129-T135 独占。
+
+## §US13.T128.2026-08-25 — 分层协作取消、迟到丢弃与 Plugin 强停 Green
+
+- **已观察 Red**：原样 `cargo +1.97.1 test --locked -p hivegui --test cancellation --no-run` exit 101，唯一 E0432 精确缺少 `CancellationLayer`、`LayerCancellationAdapter/Future`、`LayerExecutionRequest` 与 `LayeredCancellationRuntime`；无测试语法或旧 Foundation 4 项回归。该 Red 已在 §US13.T118/§US13.T123 审批。
+- **最小生产 Green**：新增唯一 process-local layered coordinator；每个 execution 独享不可变 planned set、session id、CancelHandle、active abort handles 与 terminal summary。Stop 原子关闭后续 scheduling 并传播协作 cancel；已完成 Tool 保持 completed 和外部副作用提示，未启动 Workflow 保持 not-started，Agent/ChildAgent/LLM 协作返回 interrupted。非协作 Plugin 到 `CANCEL_DEADLINE=2s` 后由 watchdog abort 并进入 interrupted；terminal 一旦 `cancelled` 不接受迟到 Completed/Failed 覆写。另一 execution/session 使用独立 token 和 active map，不受 Stop 影响。
+- **定向证据**：`cargo +1.97.1 test --locked -p hivegui --test cancellation -- --nocapture --test-threads=1` exit 0，**6/6**；真实 elapsed 在 2s + 250ms 合同内，第二 session completed，稳定 terminal wire=`cancelled`。
+- **真实适配器回归**：组合 `local_agent_runtime` 19、`llm_provider` 8、`workflow_execution` 15、`plugin_sandbox_red` 8、`plugin_limits` 19、`function_test_execution` 17、`tool_dispatch` 5，合计 **91 passed / 0 failed**。覆盖 hanging production Provider Stop/no late reply/no fallback、HTTP mid-flight cancel、Workflow 后续 level 零调度、managed Plugin sandbox/pool、Function/Workflow persisted Tool route；没有 HiveWeb 请求或 fallback。
+- **质量门禁与状态**：`cargo +1.97.1 check --locked -p hivegui --lib`、`cargo +1.97.1 fmt --all -- --check`、`git diff --check` 均 exit 0。T128 Closed；US13 overall **not Closed**，下一串行依赖为 T129→T130，T131-T135 仍 Pending。
+
+## §US13.T129-T130.2026-08-26 — portable restore、offline switch 与耐久恢复 Green
+
+- **审批与依赖**：§US13.T119 已实际观察历史 6/6 不完整基线、跨设备密钥与 portable ledger 两项行为 Red，以及 coordinator/inventory E0432 compile Red；§US13.T123 于 2026-08-25 明确批准该 portable/local-safety/restore ownership/retirement/crash-matrix 合同。T129 先闭合 authenticated unpack/unarmed instance，T130 才 arm、发布 owner 并切换；未倒置该依赖，也未新增 HiveWeb client、URL 或 fallback。
+- **T129 Green**：唯一 `backup.rs` 边界以 age passphrase 认证加密、流式 tar manifest 和 no-replace final publish 导出全部用户实体及托管 WASM；portable archive 排除 Plugin operation/GC ledger、派生搜索和所有 locator/control state。restore 在数据根句柄下排他创建 `.hivegui-db-staging-v1/restore-{UUID}`，先耐久发布六元组 unarmed manifest，再完成 format 1/2/3、Builtin/Function/WorkflowNode、路径/特殊文件、关系/制品和目标设备密钥重加密校验；任一失败只允许 unarmed/no-owner 的 `aborted_pre_switch` retirement，不直接删除 live payload/manifest。
+- **T130 Green**：确认后持续冻结写闸门；managed Store clone 仍存时精确返回 `connections_open/connection`，真实 reader/busy WAL 返回 `checkpoint_busy/checkpoint`，损坏数据库返回脱敏 `checkpoint_failed/checkpoint`。current/staging checkpoint、连接关闭与 sidecar 收敛后才生成并验证包含主库、Plugin operation/GC ledger、派生搜索及完整 Plugin 树的 safety snapshot。manifest `unarmed→armed` 后，owner 仅按 `prepared→applying→committed` 发布；prepared/applying 重启恢复并验证完整 old，完整 health/search/artifact/object identity 验证后才允许 committed/new。
+- **启动与 retirement 顺序**：启动固定先重放 retirement final/staging/tombstone，再全量 ASCII/no-follow 映射 manifest/owner；随后先收敛 current、再收敛各 live cleanup，最后才允许 owner/aborted retirement 产生切换或删除副作用。新增真实 Red 证明旧实现会在 current recoverable journal 阻断前提前退休 committed live owner；最小三遍式启动实现后，`startup_checks_current_cleanup_before_replaying_a_committed_live_owner` Green 且阻断时 live、current 与 sidecar 字节均原样保留。armed owner final 缺失、staging-only、损坏或不匹配统一 fail-closed 为 `storage_recovery_blocked { reason: sidecar_unknown_owner, artifact: wal }`。
+- **locator 与恢复证据**：owner/retirement journal 绑定 manifest、old/new database、old/new Plugin root、完整 safety snapshot、live/tombstone 和 terminal current 的相对路径、identity、size/SHA；安全快照缺失 old 时只在全量证据验证后恢复 DB+Plugin。retirement `aborted_pre_switch|old|new × prepared|renamed|done` 使用 exact basename、identity-bound no-replace 整目录 rename、no-follow 逐叶删除/父目录 fsync/rmdir/journal 删除；final+exact-next staging 可协调，staging-only 仅在完整 live/terminal/owner 证据证明未发布时删除，否则保留并阻断。
+- **逐耐久边界矩阵**：在既有高层边界之外，manifest arm、owner prepared/applying/committed、retirement prepared/renamed/done 都新增 staging write、文件 fsync、rename/no-replace publish、父目录 fsync 的独立 fault point；另覆盖 live→tombstone rename/父目录 fsync/identity verify 与 retirement journal unlink/父目录 fsync。稳定 inventory 为 backup 6 + sidecar 16 + switch 26 + retirement 24，共 **72 个唯一且互不重叠的命名边界**；restore+retirement 50 点和 sidecar 16 点均执行真实中断→新 coordinator 启动重放。
+- **最终 Green 证据**：`cargo +1.97.1 test --locked -p hivegui --test backup_restore -- --nocapture` exit 0，**52 passed / 0 failed / 0 ignored**，241.22s；包含完整 portable roundtrip/canary、已提交 WAL、cleanup 五分支、72 边界 inventory、50 点 switch/retirement 与 16 点 sidecar 矩阵、safety fallback、启动顺序和跨设备恢复。`cargo +1.97.1 test --locked -p hivegui --test store_resilience -- --nocapture` exit 0，**11/11**；`cargo +1.97.1 check --locked -p hivegui --lib`、三文件 rustfmt check 与 scoped `git diff --check` 均 exit 0。
+- **状态**：T129 Closed，T130 Closed。T136 仍必须只复跑既有 US13 owner tests/canary 后才能关闭 US13；本节不代替 T136、T138/T141 或最终 T147 发布汇合。
+
+## §US13.T131.2026-08-25 — 持久诊断全链与脱敏导出 Green
+
+- **审批与 Red**：§US13.T120/§US13.T123 已批准复用 T027 的唯一持久日志边界。原样 `cargo +1.97.1 test --locked -p hivegui --test diagnostics --no-run` exit 101，唯一 E0432 为缺少 `hivegui::runtime::diagnostics::RuntimeDiagnosticPipeline`；旧 9 项、scanner 与测试 fixture 无编译回归。
+- **最小生产 Green**：`RuntimeDiagnosticPipeline` 只组合 `ExecutionEventCollector`、`RuntimeErrorBoundary`、T027 `logging_v1::ActivityLog` 与 `DiagnosticBundle`。Agent/LLM/Tool/Workflow/Plugin/Capability 六层事件按同一 execution_id 汇集；同一内部失败跨六 adapter 观察两次只持久化一条 v1 JSONL。activity 的 occurred_at 复用注入时钟，schema/result/category/cause 使用既有稳定类型；本任务没有重写轮转、high-watermark、逐记录 7×24h retention、容量、compaction 或原子文件协议。
+- **脱敏修复证据**：首轮行为运行为 9/10，唯一失败证明 bundle 的 `tool_payload=` canary 仍可见；实现没有弱化断言，而是把 bundle summary 收敛到与持久 failure 相同的中央 `redact_cause`。随后完整 canary、prompt、provider token、Tool payload 与备份口令在 activity、bundle、错误/恢复和 `scan_all_mediums_for_test` 全部零命中。
+- **Green 回归**：`cargo +1.97.1 test --locked -p hivegui --test diagnostics -- --nocapture` exit 0，**10/10**；`cargo +1.97.1 test --locked -p hivegui --test logging_contract --test diagnostics_exactly_once -- --nocapture` exit 0，分别 **10/10 + 1/1**。`cargo +1.97.1 check --locked -p hivegui --lib`、`cargo +1.97.1 fmt --all -- --check` 与 scoped `git diff --check` 均 exit 0。
+- **状态**：T131 Closed；T129/T130 的 portable restore/atomic switch 安全矩阵仍独立 Pending，T132-T135 UI 与 T136 最终只复跑仍未完成，US13 overall **not Closed**。
+
+## §US13.T132-T135.2026-08-25 — Agent/会话/设置产品 UI 与后台路由 Green
+
+- **T121 合同校正**：原 Red 把一次样本错误计成点击、Ctrl+A 和 18 个字符的总耗时，与“一个键盘输入派发到其可见反馈”不一致，并在真实三任务负载下产生 98–108ms 的边界抖动。保留同一真实 Agent loopback request、100-node Workflow、age manifest 预检、10 warmup+100 measured、Stop 100% 可用和 250ms ceiling，只把聚焦/清空移出计时，每个样本派发一个字符并等待该完整值 selector。修正后首份报告 p50/p95/p99=`12,260,815/13,474,426/16,001,232ns`，p95≤100ms；canonical debug baseline 绑定 source revision `76cf2a85…ceff`，同源复跑 `Passed`。
+- **T132/T133/T134 产品 Green**：AgentView 使用单一 `AgentStore` 实现 CRUD/default/parent/search-page 与 Tool/Skill/Capability 多选；ConversationView 使用本地 Store/`LocalAgentRuntime`/Provider/Tool/Workflow，真实 Stop 依次发布 stopping→stopped、丢弃迟到结果并保留历史确认；SettingsView 提供 retention persistence/真实影响计数、age export、manifest precheck、完整替换双确认及中央 redacted diagnostic export。三个产品模块均携带 `scroll:agent_execution`，只使用 gpui/gpui-component native overflow/scrollbar，无手写 wheel/箭头/track。
+- **T135 路由/线程 Green**：`RootView` 保持既有 Home/Ai/Tools 路由；AiView 13 页签真实实例化 Agent、Conversation、Settings。`ui::spawn_tokio`/`spawn_tokio_blocking` 是唯一长任务入口，对话执行/路由、archive export/import/precheck 与同步诊断打包均不在 GPUI render thread 执行；migration fault injector 补充 `Send+Sync` 后仍通过完整兼容矩阵。
+- **验证**：`accessibility -- --nocapture --test-threads=1` **77/77**；`ui::ai_view::tests`、`ui::conversation_view::tests`、`ui::settings_view::tests` 各 **1/1**；`migration_compatibility` **12 passed / 1 designed ignored**；`cargo check --locked -p hivegui --lib`、specific rustfmt 与 scoped diff check Green。
+- **状态**：T132-T135 Closed；T129/T130 仍须闭合 root-handle-relative no-follow/portable restore/durable switch 安全矩阵，T136 仍只可在其后全量复跑；US13 overall **not Closed**。
+
+## §US13.T136.2026-08-26 — US13 最终只复跑汇合
+
+- **依赖确认**：T124-T135（含 2026-08-26 闭合的 T129→T130）均已有各自 Red→review→Green 证据后才启动；本任务未新增、删除或改写任何验收断言，也未用 Polish 汇总测试替代 story owner。
+- **原样命令**：`cargo +1.97.1 test --locked -p hivegui --test agent_management --test local_agent_runtime --test conversation_retention --test cancellation --test backup_restore --test diagnostics --test logging_contract --test accessibility -- --nocapture --test-threads=1`，exit 0。
+- **精确结果**：Accessibility **77/77**；Agent management **17 passed / 1 release-only ignored**；Backup/restore **52/52**；Cancellation **6/6**；Conversation retention **16 passed / 1 release-only ignored**；Diagnostics **10/10**；Local Agent runtime **19/19**；Logging contract **10/10**。合计 **207 passed / 0 failed / 2 ignored**。
+- **owner 行复核**：Agent/Conversation/Settings 的真实 VisualTestContext keyboard/native-scroll/Stop/组合负载行通过；ChatSession title、ChatMessage content/tool_calls、AgentExecution state 的逐字段密文与全介质 canary 通过；portable/safety/错误/崩溃/跨设备 backup canary 通过；六层 diagnostics 与 T027 持久日志 exactly-once/rotation/crash/retention 继续 Green。HiveWeb 不运行，network capture 仍为零请求且无 fallback。
+- **状态**：T136 Closed，**US13 Closed**。后续 T137-T142/T145/T147 仍须按各自“只复跑/最终汇总”合同执行；本节不替代平台 smoke、安全清单或最终发布签字。
+
+## §Polish.T140-T142.2026-08-26 — 独立性、存储与 Accessibility 只复跑
+
+- **T140**：`cargo +1.97.1 test --locked -p hivegui --test hiveweb_independence --test local_agent_runtime -- --nocapture --test-threads=1` exit 0，分别 **5/5 + 19/19 = 24/24**。最终依赖图、composition factory 与 runtime-core 保持本地注入；完整 mock/production Provider→真实本地 Tool→final reply、Stop 和 session lifecycle 的网络捕获均为零 HiveWeb 请求，无 URL 读取、client 构造或失败 fallback。
+- **T141**：`cargo +1.97.1 test --locked -p hivegui --test migration_compatibility --test sqlite_health_contract --test backup_restore -- --nocapture` exit 0：migration **12 passed / 1 explicit fixture-regeneration ignored**、SQLite health **9/9**、backup/restore **52/52**，合计 **73 passed / 0 failed / 1 ignored**。覆盖 v2/v3→v4、v1/v5、Function/Tool/Builtin、双健康检查、normalization/search、WAL/checkpoint/cleanup journal、六元组 manifest/owner 双槽、armed owner loss、old/new commit、72 个命名耐久边界和三 outcome retirement；未新增断言或修复实现。
+- **T142**：T136 同一最终源码上的原样 `accessibility` 复跑 **77/77**，覆盖 Home/Ai/Tools、全部现役 CRUD、Workflow/DAG、Agent/历史/Settings/备份恢复 keyboard-only、原生 wheel/bounds/focus 与三任务响应性；未在 Polish 首次定义 selector/surface/fixture。
+- **状态（本节完成时）**：T140、T141、T142 Closed；T138 随后的独立汇合见 §Polish.T138.2026-08-26。T137 性能总汇、T139 三平台 UX/真实 AT smoke、T145 质量/依赖门禁与 T147 最终签字仍独立 Pending。
+
+## §Polish.T138.2026-08-26 — 最终安全、敏感介质与供应链只复跑汇合
+
+- **依赖与 owner 门禁**：T016F inventory 的 DataSource、LlmProvider、ChatSession、ChatMessage、AgentExecution、backup、logging/diagnostics 行均已由对应故事 Red→review→implementation→Green 闭合；US8 Plugin sandbox/有界实例池和 US13 T129/T130 durable restore/switch 也已闭合。T138 未首次定义字段、介质、fixture、断言或生产修复。
+- **安全/介质回归**：`cargo +1.97.1 test --locked -p hivegui --test ci_security_contract --test sensitive_persistence_contract --test plugin_sandbox_red --test backup_restore --test diagnostics --test logging_contract -- --nocapture` exit 0，**103/103**。覆盖 root-handle/no-follow、symlink/hardlink/junction/reparse/device/FIFO/socket/TOCTOU、目录外零 I/O、Plugin WASI/host-call/实例池失效、WAL/SHM/journal、72 个持久化 fault point、backup crypto、日志与诊断介质。
+- **逐字段 canary**：`cargo +1.97.1 test --locked -p hivegui --test datasource_store --test datasource_connection --test llm_config_store --test llm_provider --test conversation_retention --test auth_lock_red --test agent_session --test diagnostics_bundle -- --nocapture --test-threads=1` exit 0，**83 passed / 0 failed / 1 release-only ignored**。六类敏感列公开 roundtrip 可恢复原值，SQLite/sidecar/backup staging+final/temp/log/diagnostic/error/crash/cross-device 所有持久化介质明文命中数为零。
+- **Unicode/data/SQL**：`cargo +1.97.1 test --locked -p hivegui --test search_index_contract --test sql_safety_contract -- --nocapture` exit 0，**35/35**；`unicode-normalization =0.1.25` 直接依赖、Unicode 17.0.0 NFKC_CF+NFC provenance/checksum/generator/license、normalization ID fail-closed、FTS5/short-gram、零 LIKE/SCAN fallback、生产 QueryBuilder=0 与唯一 AssertSqlSafe owner 全部复核通过。
+- **工具实执行**：Gitleaks 8.30.1 Linux x64 官方 SHA-256 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb` 校验通过；reviewed canary 精确 leak exit code 1，405 commits/28.36 MB 全历史扫描 exit 0、零 finding。`cargo deny check advisories` 与 `cargo deny --offline check licenses bans sources` 均 exit 0；`deny.toml` 无 advisory ignore、无到期例外或第二审批债务。
+- **Reviewer 与状态**：总计 **221 passed / 0 failed / 1 release-only ignored**；`security.md` CHK010/CHK011 和全部适用 Pending checkbox 已清零。`user` 依据 Constitution v1.5.0 *Single-developer repository clause* 于 2026-08-26 完成 code-owner/security-context source-true self-attestation。**T138 Closed**；T137/T139/T145/T147 仍独立 Pending。
+
+## §Polish.T137-T145.2026-08-26 — 当前源码性能与质量门
+
+- **工具链/MSRV**：`rustc +1.97.1 --version --verbose`=`rustc 1.97.1 (8bab26f4f 2026-07-14)`；`cargo +1.97.1 --version --verbose`=`cargo 1.97.1 (c980f4866 2026-06-30)`；workspace `rust-version = "1.97.1"` 精确一致。`cargo +1.97.1 sqlx --version`=`sqlx-cli-sqlx 0.9.0`。
+- **格式/静态质量**：`cargo +1.97.1 fmt --all -- --check` 与 `git diff --check` exit 0。两轮 `cargo +1.97.1 clippy --locked -p hivegui --all-targets -- -D warnings` 共精确暴露 11 个当前源码 lint（backup 5、conversation unit binding 1、测试 constant assert 2、auto-deref 2、backup fixture 参数 1）；只做语义不变机械修复/fixture 参数结构化后原样严格 Clippy exit 0。
+- **SQLx offline**：`DATABASE_URL=sqlite::memory: SQLX_OFFLINE=true cargo +1.97.1 sqlx prepare --workspace --check --no-dotenv` exit 0；仅报告 `potentially unused queries` 提示，无 metadata missing/stale error。`storage_query_plans` 14/14、`query_count` 7/7、`search_index_contract` 26/26、`sql_safety_contract` 9/9；固定 SQL、封闭 enum/match、生产 QueryBuilder=0、唯一 AssertSqlSafe owner、FTS5/fail-closed/EXPLAIN/N+1 均 Green。
+- **安全工具复用 T138 实执行**：Gitleaks 8.30.1 固定制品 SHA 校验、canary exit 1、405 commits 零 finding；cargo-deny advisories/licenses/bans/sources 全部 exit 0，零 advisory ignore。T145 没有重复下载或产生另一套 scanner 证据。
+- **机械修复回归**：`backup_restore` **52/52**（531.12s）；`agent_management + conversation_retention` **33 passed / 2 release-only ignored**；`ui::conversation_view::tests` 1/1；Skill owner finding 修复后的最终完整 `accessibility` **78/78**。未发现行为回归。
+- **T137 gate（最终 source `d21635c2…`）**：13 个 release target 的绝对 p95 全部满足，8 个 direct Passed；`agent_crud`、`agent_search_page`、`function_search_page`、`conversation_retention_cleanup`、`conversation_running_recovery` 仍有未获当前 source 有界签字的相对回归。Tool dispatch 与 Tool CRUD 已在该 source direct Passed，T121/current UI 78/78。精确报告见 `performance.md` 2026-08-26 最终源码节。
+- **状态**：T145 的工具链、fmt、strict Clippy、SQLx offline、scanner/dependency、SQL inventory 和回归复跑技术面 Green；但任务正文明确要求未签字的 >10% 回归必须阻断，因此 **T145 保持 Pending**，只阻断于 T137 的五个当前 source 性能签字/修复。T139 的 Linux AT finding 已由 T110/T112 owner Red→Green 关闭，但 macOS VoiceOver 与 Windows Narrator 真实 smoke 仍未执行，故 T139 Pending；T147 不可签字。
 
 ## T002-T008 重验状态（Pending）
 
@@ -420,13 +682,13 @@ Red crash matrix 必须逐边界注入故障并重启：journal 确定性槽位/
 
 | 审阅项 | 证据链接/摘要 | Reviewer | 审批日期 | 状态 |
 |---|---|---|---|---|
-| FR-001 至 FR-048 追踪矩阵 | Pending | Pending | Pending | Pending |
-| SC-001 至 SC-032 追踪矩阵 | Pending | Pending | Pending | Pending |
+| FR-001 至 FR-051 追踪矩阵 | Pending | Pending | Pending | Pending |
+| SC-001 至 SC-035 追踪矩阵 | Pending | Pending | Pending | Pending |
 | 六份契约追踪（含 Placeholder、四个 `*_node`、四个下划线 Builtin、零点号别名） | Pending | Pending | Pending | Pending |
-| Constitution v1.4.0 修订 PR 的两名 maintainer 审批 | Pending | Pending | Pending | Pending |
+| Constitution v1.5.0 当前规则与适用 single-developer self-attestation | Pending | Pending | Pending | Pending |
 | 适用的 CODEOWNERS / security 审批 | Pending | Pending | Pending | Pending |
 | T016A-T016F/T017F 与 T017G-T017H 补充 Red、审批及 Green 证据；逐项核对上方 owner 矩阵，不得以 helper、目录或方案批准替代实际 Red/reviewer/Green | Pending | Pending | Pending | Pending |
-| T017A-T017E 零例外依赖、HiveWeb TLS、checked static SQL、生产 QueryBuilder=0 与唯一 AssertSqlSafe owner 证据 | Pending | Pending | Pending | Pending |
+| T017A-T017E 零例外依赖、HiveWeb TLS、checked static SQL、生产 QueryBuilder=0 与唯一 AssertSqlSafe owner 证据 | 见 §T017E.2026-08-25 | dedicated security self-attest（single-developer clause） | 2026-08-25 | Closed |
 | SQLx offline、FTS5 trigram 可用/fail-closed、short-gram、查询计划、冲突/关系 scope 与性能基线证据链闭合 | Pending | Pending | Pending | Pending |
 | Plugin v4 `row_revision`/operation/GC schema 的 T016D→T017F→T022→T028 链，以及 US8 create/replace ledger、no-replace、不可变键、CAS、旧句柄/租约与受保护 GC 行为链 | Pending | Pending | Pending | Pending |
 | SQLite 双健康检查、正常 WAL 与 hot/未知/可恢复 sidecar 分流、同目录 quarantine、外部 journal `prepared→quarantined→done`、完整 crash matrix、稳定 reason/artifact 优先级，以及迁移/备份/启动重放一致性 | Pending | Pending | Pending | Pending |
@@ -843,6 +1105,21 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
 - **T016F 激活**：`LlmProviderToken` canary（`token_canary_leaves_zero_residue_across_all_mediums`）。
 - **覆盖**：Provider 唯一 + 密文存储 + token mask + 11 介质 canary 扫描。
 
+### T050.2 — T052 Provider runtime supplemental Red（2026-08-25）
+
+- **测试变更集**：仅 `crates/hivegui/tests/llm_provider.rs`。保留 T048 历史 5 项；新增一条单一 workspace provider path source contract，以及两条真实 loopback HTTP 行为合同：Preset→Model `(priority,id)`→Provider 回退/流事件/`llm_ms`，和 HTTP 已在途时 execution cancellation。
+- **已观察 Red 1 · 单一 provider path**：`cargo +1.97.1 test --locked -p hivegui --test llm_provider t052_red_provider_resolver_has_one_workspace_provider_path -- --nocapture` 退出 101，`0 passed / 1 failed / 5 filtered`；精确失败为 `T052 must reuse the workspace provider path; missing providers::ProviderBuildConfig`。同一合同还要求 `providers::build_provider`、`providers::FallbackProvider`，并禁止 `reqwest::blocking`、公开 `ReqwestProviderTransport` 和手写 `build_chat_completions_url` vendor HTTP 路径。
+- **已观察 Red 2 · runtime API/事件/计时**：`cargo +1.97.1 test --locked -p hivegui --test llm_provider --no-run` 退出 101；仅 7 个目标 E0599：两处缺 `ProviderResolver::from_local_config`、两处缺 `ProviderCallRequest::for_preset`、两处缺 `RuntimeEventKind::FallbackUsed`、一处缺 `ExecutionContext::segment_ms`。没有 fixture、SQL、测试语法或非目标编译错误。
+- **行为合同 A · priority/fallback/evidence**：反向插入 fallback Provider 后，以同一 Preset 下 `primary-model priority=1`、`fallback-model priority=2` 发起本地请求；真实 primary loopback 返回 503、fallback 返回 OpenAI-compatible 200。Green 必须证明 primary/fallback 各精确一次且顺序由 Model priority 而非 Provider id 决定；两次请求均携带 Preset 的 `max_tokens=321`/`temperature=0.25`；`fallback_used` 先于 fallback `token`，事件不得含 prompt canary，并单列 `llm_ms`。
+- **行为合同 B · mid-flight cancellation**：primary loopback 已接收 HTTP 后保持悬挂，随后取消共享 `ExecutionContext`；Green 必须在 250ms 内以 typed `Cancelled(primary-provider)` 返回、drop 在途 HTTP future、fallback 零请求，且无 `fallback_used` 或迟到 `token`。这不是 pre-cancel boolean 的替代证明。
+- **产品边界**：测试仅绑定 `127.0.0.1`，HiveGUI 不查询或 fallback 到 HiveWeb；生产必须复用 workspace `providers` crate 的 vendor mapping/tool-call parser，不保留第二套 vendor client。
+- **Reviewer**：**Approved — user, 2026-08-25, reply `yes`**。批准范围仅为本节两条 supplemental 行为合同及使其 Green 的最小共享 ExecutionContext/provider/Workflow caller 实现；不豁免任何断言，也不将注入式 legacy transport 作为生产证据。
+- **Supplemental Green · 单一 workspace provider path**：`ProviderResolver::from_local_config` 以 `Preset.name→Model(priority,id)→Provider` 读取本地 SQLite 配置，逐 Model 构造 `providers::ProviderBuildConfig` 并调用 `providers::build_provider`，由 `providers::FallbackProvider` 统一 vendor HTTP、响应解析与 fallback classification；删除公开 `ReqwestProviderTransport`、手写 chat-completions URL/parser 和 workspace reqwest `blocking` feature。生产源码中三项禁止字符串与 HiveWeb 标识均 0 命中。
+- **Supplemental Green · runtime evidence / cancellation**：`ExecutionContext` 新增共享饱和分段计时与 callback-safe event emitter，`FallbackUsed` 事件为 provider-neutral；真实 loopback priority/fallback 测试证明 primary/fallback 各一次、Preset 参数一致、fallback event 先于 token、prompt canary 零泄漏且 `llm_ms` 存在。mid-flight 测试在 primary 已接收 HTTP 后取消，250ms 内返回 typed cancelled，fallback 零请求、无迟到事件。
+- **Workflow caller Green**：生产 `generate_answer_node` 从 `node_config.model_preset`（空时解析唯一默认 Preset）进入同一异步 provider path；Stop 通过共享 execution cancellation 取消在途 provider future。历史注入 transport 只保留给已审批 deterministic tests，不是生产分支。
+- **原样 Green 证据**：`llm_provider` 8/8、`llm_config_store` 18/18、`accessibility llm_config` 5/5、lib `llm_config` 4/4、`execution_contract` 4/4、`workflow_execution` 14/14，全部 exit 0；`cargo check --locked -p hivegui --lib`、hive-runtime-core strict Clippy、workspace fmt、targeted diff-check 均 exit 0。文档构建 exit 0；只报告既有 unrelated broken-link warnings。全 HiveGUI strict Clippy 仍被 `entity_store.rs` large-enum、`function_store.rs` result-large-err 与 `plugin_store.rs` needless-borrow 共 13 项既有范围外诊断阻断，本批未越界修改，且无诊断命中本节新增代码。
+- **状态**：T019/T050/T052/T054 supplemental chain Closed，US4 Closed；T096/T098/T100 只剩各自 US10 原样汇合门禁，不再受 T052 阻断。
+
 ### T057.1 — T055 Tag store Red 证据
 
 - **文件**：`crates/hivegui/tests/tag_management.rs`（新建，~110 行）。
@@ -1011,6 +1288,13 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
   1. `SkillList` 被 `ScrollSurface::SkillList` / `owner_phase = US12/T112` 接管，未提前计入 Foundation Green。✓
   2. `scroll:skill_list` 与 T110 在 reviewer 阶段未绕过 `assert_source_tag` / `scroll_inventory` 审核。✓
   3. reviewer 审批后方可进入 T112。✓
+
+### T111.3 / T112.1 — Linux AT-SPI finding 退回 Skill owner 的补充 Red→Green（2026-08-26）
+
+- **发现与 owner 边界**：T139 的真实 Linux AT-SPI 只复跑在遍历现役树时触发 `crates/hivegui/src/ui/skill_view.rs:632` 的隐藏表单 `Option::unwrap()`；没有在 Polish 就地修复，而是退回 T110/T112。用户此前明确要求后继 owner 修复无需逐次确认并继续执行，因此该授权只用于观察本条 Red 后实施最小 T112 Green，不豁免 macOS/Windows 真实 AT 或 T139 最终汇合。
+- **已观察 Red**：新增真实 `#[gpui::test] skill_view_initial_render_does_not_materialize_the_hidden_form` 后，`cargo +1.97.1 test --locked -p hivegui --test accessibility skill_view_initial_render_does_not_materialize_the_hidden_form -- --nocapture --test-threads=1` 退出 101，0/1；初始 `show_form=false` 渲染仍 eagerly 求值六个未初始化输入，在 `skill_view.rs:632` 精确 panic。
+- **最小 Green**：仅把六个输入的读取移入 `when(self.show_form, |root| ...)` 的惰性 closure；表单可见时仍以带语义的 `expect` fail-closed，未改变字段、滚动、焦点或保存合同。focused 原样命令 1/1；`cargo +1.97.1 test --locked -p hivegui --test accessibility skill_ -- --nocapture --test-threads=1` 6/6；完整 accessibility 78/78。
+- **真实 Linux AT-SPI 复验**：隔离根 `/tmp/hivegui-atspi-owned.LFKesP` 的当前 debug binary 暴露 Application/Window 及 Home、Ai、Tools、用户配置四个 PushButton；Home 的 `click`/`GrabFocus` 与 AI 的 `DoAction(0)` 均成功。本轮日志含 `Accessibility activated`，不含旧 focused-element/whole-window/leaked-handle/panic。进程以测试 SIGTERM 停止，status 143 不计作 graceful close。Linux finding Closed；VoiceOver/Narrator 未在本机执行，T139 继续 Pending。
 
 ### T123.1 — T115 Local Agent session Red 证据
 
@@ -1199,6 +1483,72 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
   5. `dispatch_with_caps` 已重命名为 `dispatch`（与 `DesktopHostDispatcher` 公开边界一致）✓
 - **US8 Green 门禁解除**: US9 (T083-T089) 可开始。
 
+> **2026-08-20 审计更正**：上述 2026-07-31 结论只覆盖当时的 store/limits 15/15 子集，不能作为当前完整 US8 解锁依据；以 §T076.6、§T081.1 与 §T082.2 为当前状态。
+
+### T076.6 — T075/T080 补充 Red 与 reviewer（2026-08-20）
+
+- **测试变更集（未提交）**：`crates/hivegui/tests/accessibility.rs`、`tests/support/scroll_inventory.rs`、`crates/hive-runtime-core/tests/shared_plugin_fixture_contract.rs`、`crates/hivegui/tests/plugin_shared_fixture_contract.rs`、`crates/hiveweb/tests/plugin_shared_fixture_contract.rs`、`crates/hivegui/tests/wasm_exports_test.rs`，以及 `hiveweb::runtime::invoker` 内的 shared-smoke ABI 时序负例；三端共用 `tests/fixtures/plugins/shared-smoke` 制品。
+- **已观察 Red 1 · T075 Plugin owner/tag**：`cargo +1.97.1 test -p hivegui --test accessibility plugin_` 退出 101，5 run / 3 passed / 2 failed；`PluginList` actual owner=`US8/T077`、expected=`US8/T081`，且 `plugin_view.rs` 缺 `scroll:plugin_list`。
+- **已观察 Red 2 · Core fixture**：`cargo +1.97.1 test -p hive-runtime-core --test shared_plugin_fixture_contract` 退出 101，0/1；共享 fixture 被 `MissingAbiVersionExport` / `missing abi version export` 拒绝。
+- **已观察 Red 3 · HiveGUI adapter**：批准前 `cargo +1.97.1 test -p hivegui --test plugin_shared_fixture_contract` 退出 101，1 passed / 2 failed：fixture 缺 ABI，且 missing-ABI 目标仍执行并返回 `{"ok":true,"data":{"logged":true}}`，仅 echo Green。user 批准 v2 语义负例后重跑仍退出 101，2 passed / 2 failed：missing ABI 仍执行，`hive-extism/v2` 仍执行业务 `echo`。
+- **已观察 Red 4 · HiveWeb upload**：`cargo +1.97.1 test -p hiveweb --test plugin_shared_fixture_contract` 退出 101，0/2；共享 fixture 缺 ABI，且 `scan_wasm_imports` 对 missing export 返回 `Ok`。
+- **已观察 Red 5 · HiveWeb invoker**：`cargo +1.97.1 test -p hiveweb --lib shared_smoke_fixture_` 退出 101，1 passed / 1 failed；echo Green，但 ABI probe 返回 `Function not found`。
+- **已观察 Red 6 · reserved export visibility**：fixture 重建后 `cargo +1.97.1 test -p hivegui --test wasm_exports_test` 退出 101，2 passed / 1 failed；业务 export 集合错误包含 `_hive_plugin_abi_version`。
+- **Reviewer**：user 于 2026-08-20 回复 `yes`，批准上述 Red 与以下产品决策后解锁 T080/T081 最小实现：①立即强制，无 legacy 宽限/fallback；②先共享静态 shape 校验，实例化后先调用 `_hive_plugin_abi_version`，仅 `hive-extism/v1` 可进入业务 export；③缺 export 统一为 `MissingAbiVersionExport`，不可查询/非 v1 统一为 `UnsupportedAbiVersion`，业务 export 不执行且不泄露 Extism 原始错误；④保留 export 从 HiveGUI 业务 Function/export 列表过滤。
+- **审批边界**：本 `yes` 只批准 T075/T080/T081 新批次，不补签、不豁免 T077-T079 已知缺口，也不完成 T082。
+
+### T081.1 — T080/T081 最小生产 Green（2026-08-20）
+
+- **Plugin 原生滚动**：`cargo +1.97.1 test -p hivegui --test accessibility plugin_` 退出 0，5/5；`cargo +1.97.1 test -p hivegui --lib plugin_form_stays_inside_the_viewport_and_scrolls` 退出 0，1/1。真实 GPUI `VisualTestContext` 注入 `ScrollWheelEvent`，断言 modal/scroll bounds、无自定义 up/down/track、offset 到达 max、actions 实际上移且底部仍在 modal 内。
+- **US8 指定 Green 汇总**：`cargo +1.97.1 test -p hivegui --test plugin_compatibility --test plugin_artifacts --test plugin_limits --test accessibility` 退出 0，`5 + 17 + 15 + 54 = 91/91`。
+- **共享 ABI/fixture Green**：Core shared contract 1/1；HiveGUI shared contract 4/4；`wasm_exports_test` 3/3；HiveWeb invoker 18/18、wasm_imports 7/7、shared contract 2/2，全部退出 0。
+- **冻结制品**：Rust 1.97.1、`--frozen`、固定 `SOURCE_DATE_EPOCH` 两次独立构建 byte-identical；SHA-256=`eadc63e84a5f605a15ef546a6f0779ce2a82926e6b690caa17f0b98c94680fdd`，大小 `325229 bytes`；manifest 仍只声明五个业务 exports。
+- **本批状态**：T080/T081 Green；实现严格限于已批准 Red，未改变 HiveGUI 独立性，也未请求真实 MySQL/S3。
+
+### T082.2 — US8 最终 Green 汇合（Closed，2026-08-20）
+
+- 2026-07-31 §T082.1 仅证明当时 store/limits 15/15 子集；2026-08-20 §T081.1 已补齐 shared ABI 与 Plugin native scroll，但二者都不代表完整 US8。
+- T082 必须只复跑既有 T072-T075/T080-T081 测试，不得首次增加断言；在此之前仍须闭合任务自身的 MUST 缺口：T077 strict `published`/双重存在 replay 与 ledger 前 manifest/Capability 预校验；T078 entity_store 六态/referenced 接线、`GC 登记 + operation→done` 同事务、资源限额校验及 replace 失败 GC；T079 生产 keyed LRU pool 与完整 lease/identity GC 条件。
+- **T077/T078/T079 owner Green**：focused `t077_red_` 4/4、完整 `plugin_artifacts` 21/21、typed ledger `plugin_entity_ledger_red` 5/5、schema contract 14/14、production pool/protected GC `plugin_limits` 19/19，全部退出 0。生产复用探针确认相同 full key 复用、Capability policy 变化 miss，四次调用只实例化两次；active lease、live metadata 与 identity reappearance 三条 GC 边界均保持字节/ledger 契约。
+- **T082 原样汇合 Green**：`cargo +1.97.1 test --locked -p hivegui --test accessibility plugin_` 5/5；真实 GPUI `plugin_form_stays_inside_the_viewport_and_scrolls` 1/1；`cargo +1.97.1 test --locked -p hivegui --test plugin_compatibility --test plugin_artifacts --test plugin_limits --test accessibility` 为 `5 + 21 + 19 + 54 = 99/99`。首次汇合暴露两个旧 arbitrary-byte 正向 fixture 后，回到 T072/T077 owner 将其机械迁移到冻结 ABI-v1 fixture 与 persisted `s3_key`；未改变断言，最终原命令退出 0。
+- **发布状态**：US8 Closed；本结论只解除 US8 依赖，不替代后续故事及最终安全/UX/发布门禁。
+
+### T017H.12 — 权威搜索 schema / production query 补充 Red（2026-08-20，reviewer Approved）
+
+- **触发原因**：历史 22/22 `search_index_contract` 只证明 test-facing `SearchIndex` facade 与 source-string；现行 `migrations.rs` 仍创建通用 `search_index/short_gram_index`，`EntityFunction::list/count` 仍直接使用业务表 `LIKE`。这与 `data-model.md` 明定的 `schema_metadata/search_documents/search_documents_fts/search_short_grams`、Unicode 17 `NFKC_CF`、1/2 与 3+ 分派、同事务派生索引和稳定总排序冲突。
+- **测试变更集（未提交）**：`crates/hivegui/tests/search_index_contract.rs`、`migration_compatibility.rs`、`storage_query_plans.rs`；未修改生产代码、Cargo 或迁移 fixture。
+- **真实 v4 / entity-search Red**：`cargo +1.97.1 test --locked -p hivegui --test search_index_contract -- --nocapture` 退出 101，26 run / 22 passed / 4 failed / 0 ignored。四项新增 Red 分别命中：权威三表/metadata/FK/覆盖索引缺失且旧通用表仍存在；Function CRUD 不同步 `search_documents`；规范化总排序错误且 `%/_` 仍为 `LIKE` 通配；生产仍含 Function `LIKE`，US9/T083 query catalog 与 canonical EXPLAIN 路径缺失。历史 22 项全部保持 Green，故本批不是旧 normalizer 单元回归。
+- **迁移/FK Red**：`cargo +1.97.1 test --locked -p hivegui --test migration_compatibility -- --nocapture` 退出 101，13 run / 9 passed / 3 failed / 1 designed ignored。fresh v4 与 v2/v3→v4 均在读取 `search_documents` 时 `RowNotFound`；已标 v4 但缺权威搜索表的库被错误接受为 `Unchanged`。新增合同还精确要求 Function→Plugin、WorkflowNode→Function、Tool→Function/Workflow 均 `ON DELETE RESTRICT`，以及迁移故障时 sqlite_schema/制品零部分修改。
+- **真实 production SQL catalog Red**：`cargo +1.97.1 test --locked -p hivegui --test storage_query_plans --no-run` 退出 101；唯一 `E0609` 为 `ProductionQuery` 缺少 `sql` 字段。测试要求 EXPLAIN catalog 携带并由生产实际执行的静态 SQL，不再根据 table/column metadata 现场合成一条更友好的测试查询。
+- **批准的最小 Green**：① fresh 与 v2/v3→v4 只创建权威 schema，已标 v4 但不完整者按既有 T022 规则 fail-closed，不运行时静默 `ALTER`；②删除/替换 test-only 通用 facade，写入与查询统一复用已审 Unicode 17 normalizer，1–2 只走 short-gram、3+ 只走 external-content trigram；③实体基础行、FTS delete/insert 与 short grams 同一事务；④ `ProductionQuery` 的 SQL 由与 checked production query 相同的 compile-time literal source 生成，catalog 直接 EXPLAIN 该语句；⑤本批不改变 HiveGUI 独立性，也不引入 HiveWeb 请求/fallback。
+- **Reviewer**：**Approved — user, 2026-08-20, reply `yes`**。批准范围仅为本节 Red 与上述最小 Green；T017H reviewer 可闭合，T022 解锁实施，T028 仍等待 T022 Green 后只复跑汇合。
+- **T022 supplemental Green**：`migration_compatibility` 12/12（另 1 个 fixture regeneration designed ignored）、`search_index_contract` 26/26、`storage_query_plans` 14/14、`plugin_artifact_schema_contract` 14/14，合计 66/66。fresh/v2/v3→v4 创建并回填权威 external-content search schema；current drifted v4 fail-closed；Function 基础行、FTS、short grams 同事务；Function list/count/get 复用 catalog 的 exact static SQL，禁止业务表 `LIKE`。`integration_test` 仅把 Function/Tool fixture 切换到正式 v4 migration，完整 77/77，未增加运行时 DDL。
+- **T028 只复跑汇合 Green**：Batch A 151/151（另上述 1 designed ignored）；Batch B `device_key_lifecycle/hiveweb_independence/logging/sensitive/ci_security/diagnostics/management_scroll` 57/57；Batch C `hivegui --lib` 122/122 + `integration_test` 77/77。总计 407 passed / 0 failed / 1 designed ignored；未运行或借用 US9 expected-Red accessibility 行。
+- **结论**：T022/T028 Closed；只解锁已批准 US9 T087/T088，不替代 T089 Green 或首次 T005 baseline 审批。
+
+### T017F.12 — T016D Plugin ledger schema 补充 Red（2026-08-20，reviewer Approved）
+
+- **测试变更集**：`crates/hivegui/tests/plugin_artifact_schema_contract.rs`。保留现行物理名映射：data-model `operation_kind→kind`、`expected_old_size_bytes→expected_old_size`、`expected_row_revision→expected_old_row_revision`、`new_size_bytes→new_size`；新增无既有等价项的 `target_identifier`、`expected_old_identity`、operation timestamps，以及 GC expected hash/size/identity、`source_operation_id`、attempt/error/timestamps。
+- **已观察 Red**：`cargo +1.97.1 test --locked -p hivegui --test plugin_artifact_schema_contract -- --nocapture` 退出 101，14 run / 8 passed / 6 failed。fresh v4 与 v3→v4 均缺 operations 四列；GC 缺八列；`source_operation_id→plugin_artifact_operations(operation_id)` FK 缺失；operations state、GC `(state,artifact_key)` 与 source-operation 三类索引缺失；round-trip 首个写入以 `no column named target_identifier` fail。
+- **审批状态**：**Approved — user, 2026-08-20, reply `yes`**。Reviewer 批准保留上述现行物理名映射，并补齐 operations/GC ownership tuple、source-operation FK 与 replay/worker indexes；该批准仅解锁 T022 生产实施，不代表 supplemental Green，T022/T028 仍为 Pending。
+- **T022 已观察 Green**：`cargo +1.97.1 test --locked -p hivegui --test plugin_artifact_schema_contract -- --nocapture` 退出 0，14/14；`migration_compatibility` 10/10（另1项 fixture regeneration 按设计 ignored）；production query inventory guard 1/1。fresh v4 与 v3→v4 事务创建完整 schema，已标 v4 但缺失/漂移的旧库 fail-closed，不运行时补 DDL。T022 Closed；T028 仍 Pending。
+
+- **T028 补充汇合 Green**：只复跑既有 Foundation 契约，hive-runtime-core 30/30；HiveGUI 两组命令合计 340/340；另跑 accessibility 54/54 作为故事层额外回归，总计 370 passed / 0 failed / 1 个 fixture regeneration 按设计 ignored。`management_scroll_contract` 12/12 是 T016E inventory/helper/source-contract 合成 self-test；未把故事产品滚动行冒充 Foundation 证据。T028 Closed。
+
+### T076.7 — T077-T079 补充 Red（2026-08-20，reviewer Approved）
+
+- **T077 · strict replay / pre-ledger**：`cargo +1.97.1 test -p hivegui --test plugin_artifacts t077_red_ -- --nocapture` 退出 101，0 passed / 4 failed / 17 filtered。`published` staging+final 双重存在当前返回 `Ok(1)`、删除 staging 与 operation；无效 v2 manifest、缺 reserved ABI export 的 WASM、不可用 Capability 均被错误安装，并分别留下 footprint `(plugins,operations,gc,files)=(1,1,0,2)`，而契约要求全零。
+- **T078 · typed ledger / atomic transactions**：`cargo +1.97.1 test --locked -p hivegui --test plugin_entity_ledger_red --no-run` 退出 101；唯一 E0432 精确命中 10 个尚未实现的 typed API：`PluginArtifactLedger`、`PreparePluginOperation`、`OperationTransition`、`NewArtifact`、`ExpectedPluginRevision`、`PluginResourceLimits`、`CreatePluginFields`、`OperationGcTarget`、`ReplaceOutcome`、`FinishOutcome`。获批后的测试将直接覆盖六态 query/transition、create INSERT+plugin_id+referenced 故障回滚、replace full-old-tuple CAS、CAS conflict 的 derived-new GC+done 原子收敛及 done-trigger 回滚；普通 `Plugin::create/replace` 不暗中扫描 operation。
+- **T078 · resource limits**：同一 typed test 文件保留公开 Store 行为断言：`timeout_ms` 必须 1..=120000、`memory_limit_mb` 1..=512、`output_limit_bytes` 1..=52428800；失败时值与 `row_revision` 均零修改。typed API 编译后该项才可实际执行。
+- **T078 已观察 Green**：`cargo +1.97.1 test --locked -p hivegui --test plugin_entity_ledger_red -- --nocapture` 退出 0，5/5。typed UUID prepare/query/list/transition、create Plugin+plugin_id+referenced 同事务、replace full-old-tuple/revision CAS、CAS conflict 的 derived-new GC+done 同事务、owned GC 幂等校验、资源限额零修改拒绝均通过；两条 trigger 故障注入证明整笔回滚。T078 Closed。
+- **T079 · production pool / protected GC**：`cargo +1.97.1 test --locked -p hivegui --test plugin_limits -- --nocapture` 退出 101，19 run / 15 passed / 4 failed。生产 `FunctionTestExecutor→PluginExecutor` 对同 full key 两次及 Capability policy 改变后两次实际实例化 4 次而非 2 次；active lease 时 delete 已 unlink；live metadata reference 的 GC 实际 drained=1；同键竞争 identity 重现也实际 drained=1，而契约要求保留、retry/block 且竞争者字节不变。
+- **Reviewer 批准的产品决策（Approved — user, 2026-08-20, reply `yes`）**：①补齐 T022 schema ownership tuple/FK/index；②采用显式 `operation_id` 的 `PluginArtifactLedger`，`Referenced` 只能由 create/replace commit 产生，普通 CRUD 不得隐式扫描 operation，GC target 只能从 operation 的 PublishedNew/ExpectedOld 派生；③T077 重放歧义 fail-closed 且 ledger 前预校验零 footprint；④production pool 使用完整九元 key，lease drop 触发可重试 GC，metadata/lease/identity 任一条件不满足不得 unlink。
+- **审批状态**：Approved。已观察 Red 获准按 `T022→T078→T077→T079` 依赖顺序进入生产实施；本记录不声称 Green，T077/T078/T079/T082 仍为 Pending，US8 overall not Closed。
+
+- **T077 最终 Green**：ledger 前 unsupported manifest、missing ABI export、unavailable Capability 均零 footprint；`published` staging+final 双重存在持久化 conflict 并保留两对象。focused 4/4、完整 `plugin_artifacts` 21/21。
+- **T079 最终 Green**：生产 `FunctionTestExecutor→PluginExecutor` 使用 persisted `s3_key`、进程级九元组 keyed bounded LRU、真实 Extism version 与规范化 Capability policy；只有健康成功实例回池。metadata/config/delete 失效与 active/idle 引用、共享 lease、ownership/identity、unlink marker 共同保护 GC。`plugin_limits` 19/19、`plugin_sandbox_red` 8/8、`function_test_execution` 13/13、shared fixture 4/4、desktop host 6/6。
+- **本批结论**：T077/T078/T079 Closed；T082 的原样汇合结果见 §T082.2。此前 Red/审批记录保持原样，不倒推或删除。
+
 ## T086-T089 US9 Function store + UI 实现 + Green 回归（2026-07-31）
 
 ### T089.1 — T089 US9 Function Green 回归证据（2026-07-31）
@@ -1221,7 +1571,64 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
   1. `FunctionKind` 三值（Builtin/Custom/Placeholder）稳定字符串 `"builtin"|"custom"|"placeholder"`，避免旧整数 `1/2/3` 直接 wire ✓
   2. 4 个下划线 reserved 集合在 `RESERVED_UNDERSCORE_IDENTIFIERS` 单点定义 ✓
   3. 任何含 `.` 的 name 在 `FunctionInput::new` 即拒（不延迟到 store）✓
-- **US9 Green 门禁解除**: US10 (T090-T100) 可开始。
+- **US9 Green 门禁解除（历史状态）**: 当时允许 US10 (T090-T100) 开始；该结论已由下方 §T086.3 的现行 supplemental Red 取代。
+
+### T086.3 — US9 Function supplemental Red（2026-08-20，reviewer Approved）
+
+- **状态边界**：历史 §T089.1/§T089.2 只证明 5 个内存 Store 子测试，不能覆盖当前 T083-T085 明文合同。本批仅新增/收敛测试与 reviewer 架构审查，未实施 US9 生产 Green；reopened T017H→T022/T028 是 T087 搜索实现的前置依赖，US10 继续被 US9/T052 阻断。
+- **测试变更集（未提交）**：`crates/hivegui/tests/function_management.rs`、`function_test_execution.rs`、`accessibility.rs`；US9 query-plan Red 还依赖 §T017H.12 的 `storage_query_plans.rs`，不得宣称 `function_management.rs` 单文件即可证明 production EXPLAIN。未修改本批 US9 生产、Cargo 或 benchmark baseline。
+- **T083 · 可运行行为 Red（收敛前）**：`cargo test -p hivegui --test function_management -- --nocapture` 退出 101，18 run / 2 passed / 16 failed / 0 ignored，199.66s。失败命中：内存 `FunctionStore` 不写真实 v4 pool；启动/重启无四个 Builtin；Builtin 可写删且保留 identifier 可被 Custom/Placeholder 占用；Custom Plugin/export/Capability、三值 kind/schema 与 Placeholder 关系校验缺失；WorkflowNode 删除错误地成功并 `SET NULL`，Tool 只返回 SQLite FK 而非 typed safe references；固定 20 分页、`%/_` 字面语义、NFKC/稳定总排序、US9 query catalog 与 baseline 未闭合。另单独观察 255-byte trimmed export 被拒的 0/1 Red；1 MiB schema 接受且 1 MiB+1 拒绝为 1/1 Green。
+- **T083 · 最终 reviewer API compile Red**：最终文件定义 20 项，并统一驱动 async SQL-backed `FunctionStore::{create,get,update,delete,list}`；`EntityFunction` 仅用于一处 RESTRICT fixture seed，性能直接调用两个 canonical T005 runner，Capability trim 后重复必须拒绝。`cargo +1.97.1 test --locked -p hivegui --test function_management --no-run` 退出 101，恰好 11 个目标诊断：E0432×1（缺 `FUNCTION_CRUD_ID/FUNCTION_SEARCH_PAGE_ID/FUNCTION_FIXTURE_ROWS/FUNCTION_SEARCH_PAGE_SCHEDULE/run_target`）、E0277×3（现行假 Store `create` 非 Future；`FunctionKind` 缺 `TryFrom<&str>`）、E0599×7（缺 `get/update/delete/list`、完整 `FunctionInput::for_write`、公共错误 `references/value`）。最终 20 项未执行；没有 fixture、SQL、语法或非目标错误。
+- **T084 · 行为 Red 与安全 API 收敛**：收敛前完整 20 项为 10 pass / 10 fail，命中 Builtin/真实冻结 ABI-v1 Custom 的 input/output schema、Placeholder/点号/Capability 稳定错误缺口。最终测试只接受 `FunctionTestExecutor::new(plugin_root,pool)` 与实例 `execute`、`execute_with_capabilities`，并以 public API inventory 禁止第三入口、静态/调用者路径式 Function 执行；两入口均锁定 exact `capability_denied/input_schema_mismatch/output_schema_mismatch/function_not_executable/not_found`。`cargo +1.97.1 test --locked -p hivegui --test function_test_execution --no-run` 退出 101，仅 3 个 E0599：缺 `new`，且两个现行执行函数没有 `self`。T074 的直接 `PluginExecutor` timeout test 明确排除在 Function API inventory 外。
+- **T085 · 真实 GPUI Red**：`cargo test -p hivegui --test accessibility function_ --no-run` 退出 0；`cargo test -p hivegui --test accessibility function_ -- --nocapture` 退出 101，11 run / 6 passed / 5 failed / 51 filtered。真实 `Window/VisualTestContext` 已覆盖 native wheel + Tab 到底部、modal/viewport bounds 与 actions 位移、无 handwritten scroll、Builtin/Placeholder AccessKit、本地 `json_parse` success/error terminal、键盘 duplicate conflict/安全摘要/错误焦点/Escape restore。Red 精确命中 owner 仍为 `US9/T087`（期望 `US9/T088`）及缺 `FUNCTION_ADD`、`FUNCTION_BUILTIN_READONLY-1`、`FUNCTION_TEST-1` 等真实产品边界。
+- **Approved reviewer 决策 A · Foundation 搜索**：批准 §T017H.12 的权威 `schema_metadata/search_documents/external-content search_documents_fts/search_short_grams`、Function 同事务索引维护、Unicode 17 normalizer、1–2/3+ 唯一路由、RESTRICT FK、exact production SQL catalog 与已标 v4 drift fail-closed；先完成 T022，再只复跑 T028。
+- **Approved reviewer 决策 B · 单一 JSON Schema 实现**：新增无 Store/transport/product 依赖的纯叶子 crate `hive-json-schema`，复用锁定 `jsonschema 0.17.1` Draft 7；仅允许本 schema 内 JSON Pointer，HTTP/file 外部引用 fail-closed，稳定脱敏错误。HiveGUI、HiveWeb 与 `agent` 都改为直接复用该 crate；HiveGUI 不依赖、不请求也不 fallback HiveWeb。
+- **Approved reviewer 决策 C · 单一 Function 数据边界**：删除 `Mutex<Vec<_>>` 假 Store；唯一 async SQL-backed `FunctionStore` 拥有完整共享写入 DTO、CRUD/分页、验证、事务与搜索。四 Builtin 的 identifier/metadata/schema/Capability/handler 只来自 `hive-builtins::BuiltinDefinition` registry，Store open 幂等同步 exact 4。扩展中央 `PublicErrorEnvelope` 的安全 `value` 或 typed `references`，不建立第二套 error/DTO/SQL；raw `EntityFunction` 仅限私有 restore/fixture DAO。
+- **Approved reviewer 决策 D · 恰好两个受管执行入口**：`FunctionTestExecutor` 构造时持有 Plugin root 与 pool；仅公开实例 `execute`（空权限快照）和 `execute_with_capabilities`（显式快照），共用 managed persisted-`s3_key`/ABI 验证路径。删除或私有化现有静态路径入口与 `execute_with_verification`；顺序固定 Placeholder guard → input schema → execute → parse JSON output → output schema。
+- **Approved reviewer 决策 E · T005 性能门禁**：只新增 `function_crud`（p95≤1s）与 `function_search_page`（10,000 rows、10 warmup/100 measured、p95≤500ms）两个 canonical target；setup/migration/seed/baseline I/O 排除计时。缺 baseline 必须 `PendingBaseline`；首次实测 Green 报告须另经 reviewer 批准后才写版本化环境 baseline，同 revision 复跑 `Passed`，以后任一 p50/p95/p99 回归 >10% 阻断。
+- **Approved reviewer 决策 F · Function UI**：按 T085 已观察 Red 实现稳定 selector 与真实 FocusHandle/AccessKit 状态，只用 GPUI/gpui-component 原生滚动；Builtin 只读，Placeholder schema-only/nonexec，测试 success/error terminal，duplicate conflict 保值/安全摘要/错误焦点/Escape 恢复。不得用 source-string 或 synthetic debug state 代替产品行为。
+- **Reviewer**：**Approved — user, 2026-08-20, reply `yes`**。T086 reviewer 可闭合；实施必须严格按 `T022→T028→T087/T088→T089`，首次 T005 baseline 仍需对实际测量结果另行审批，且本批准不解锁 T052/US10。
+- **Implementation / Green**：T022/T028 已先行 Closed，T087/T088 已 Green；T089 仍等待 §T089.3 的首次 baseline 审批、同源 `Passed` 与 release 只复跑汇合，US9 尚未 Closed。
+
+### T086.4 — T087/T088 production Green（2026-08-20）
+
+- **T087 Store/runtime**：唯一 async SQL-backed `FunctionStore` 闭合完整字段 CRUD、固定 20 分页、Builtin exact-4 幂等同步、Custom Plugin/export/Capability、Placeholder 三关系清空、typed RESTRICT conflict 与同事务权威搜索索引；raw `EntityFunction` 仅 crate-private delegation/fixture。`FunctionTestExecutor` 仅公开受管实例 `new`、`execute`、`execute_with_capabilities`，共用 persisted `s3_key`/ABI/Capability 与 input/output JSON Schema fail-closed 路径。
+- **T087 Green**：`function_management` 跳过首次 baseline 门时 19/19、`function_test_execution` 17/17、`search_index_contract` 26/26、`storage_query_plans` 14/14、`support_contract` 14/14；`cargo check --locked -p hivegui --lib`、bench `--no-run`、全仓 rustfmt/diff-check 均 exit 0。
+- **T088 UI/AccessKit**：Function UI 只经 `FunctionStore`；Builtin readonly、Placeholder schema-only/nonexec、Custom CRUD/Test success/error 终态、duplicate conflict 保值/安全摘要/错误焦点/Escape 恢复与原生滚动闭合。测试调用产品使用的同一 semantic element builder 写入真实 `accesskit::Node`；`VisualTestContext` 独立证明真实窗口、selector、Shift-Tab focus wrap、native wheel 位移/viewport 与保存持久化，不声称 pinned TestWindow 暴露完整 a11y tree。
+- **T088 Green**：`cargo +1.97.1 test --locked -p hivegui --test accessibility function_ -- --nocapture` 退出 0，11/11（51 filtered）；`function_test_execution` 17/17，`cargo check -p hivegui --lib`、scoped rustfmt/diff-check 全 Green。
+
+### T089.3 — 首次 Function 性能报告（2026-08-20，baseline reviewer Pending）
+
+- **确定性 source revision**：benchmark 通过只读 `git rev-parse` + `git ls-files --cached --others --exclude-standard`，对限定的 Cargo/toolchain/`.cargo`/`crates`/`third_party` tracked、deleted 与 nonignored untracked 文件按排序、长度分帧、path/state/executable/content-or-symlink-target 取 SHA-256；排除 baseline/spec/docs。合同 Red 为缺 `source_revision` 的 E0432；Green 为 focused 3/3、完整 `support_contract` 14/14。最终两份报告均绑定 `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:68e029864f2e6de345625b16aa10242a2882a4931df16fcb286312847d944a4b`。
+- **真实性能 Red→Green**：fresh/no-stat 10k typed Store 首轮 FTS page/count 被 SQLite 重排，release `function_search_page` p95 先后为 `5,383,715,629ns`、`3,457,200,750ns`、`3,798,960,467ns`，均正确退出 1；最终仅把 FTS list/count 的 virtual-table→rowid→name→identifier→Function 查找链固定为不可重排的 FTS-first `CROSS JOIN`，没有 benchmark-only `ANALYZE` 或 raw fixture 旁路。
+- **首次绝对预算 Green 1**：`cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run function_crud` 退出 0，release、10 warmup/100 measured，p50/p95/p99=`38,875,695/47,228,515/51,937,271ns`，p95≤`1,000,000,000ns`；状态 `PendingBaseline`。
+- **首次绝对预算 Green 2**：同命令 target=`function_search_page` 退出 0，10,000 typed rows、10 warmup/100 measured、固定 20 rows、精确 total 与逐行 identifier 总序，p50/p95/p99=`8,593,737/25,404,364/25,571,395ns`，p95≤`500,000,000ns`；状态 `PendingBaseline`。
+- **预期 baseline 路径**：`crates/hivegui/benches/baselines/v1/function_crud/linux--x86-64--rustc-1-97-1-8bab26f4f-2026-07-14--release--12th-gen-intel-r-core-tm-i9-12900k--20.json` 与对应 `function_search_page/...json`；当前 baseline 目录不存在，未写任何报告文件。
+- **Reviewer gate**：此前 user `yes` 只批准 T086/决策 A-F，不批准尚未产生的数字。必须取得 user 对上述两份实际报告的明确首次 baseline 审批后才可写文件；随后须在完全相同 source revision/environment 原样复跑为 `baseline: passed`，再执行 T089 release 汇合。当前 T089/US9 保持 Pending。
+
+### T089.4 — T089 性能门禁复跑与例外机制收口（2026-08-21，更新）
+
+- **用户确认**：user 2026-08-21 `yes` 批准 `function_crud` `p99` 例外（source `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:d29c1ad9ed24df0df48529312580d0119b7ab0f50c2cc70c7a5cc1ef47ef02ec`，`observed_current_ns=76,762,058`，`approved_max_current_ns=85,000,000`，`review_due=2026-09-21`）。
+- **同源复跑证据**：
+  - `cargo +1.97.1 test --locked -p hivegui --release --test function_management -- --nocapture --test-threads=1` 退出 0，`20 passed; 0 failed`。
+  - `cargo +1.97.1 test --locked -p hivegui --release --test function_test_execution -- --nocapture` 退出 0，`17 passed; 0 failed`。
+  - `cargo +1.97.1 test --locked -p hivegui --test accessibility function_ -- --nocapture` 退出 0，`11 passed; 0 failed`（51 filtered）。
+  - `cargo +1.97.1 test --locked -p hivegui --test support_contract -- --nocapture` 退出 0，`25 passed; 0 failed`。
+  - `cargo +1.97.1 test --locked -p hivegui --release --test search_index_contract -- --nocapture` 退出 0，`26 passed; 0 failed`；`cargo +1.97.1 test --locked -p hivegui --release --test storage_query_plans -- --nocapture` 退出 0，`14 passed; 0 failed`。
+- **bench 结果与阻断**（用于 release 机制与 sidecar 验证）
+  - `cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run function_crud`：
+    - source revision `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:d29c1ad9...`
+    - `report`: `p50=42,697,227ns p95=47,804,220ns p99=55,333,488ns`
+    - baseline path：`crates/hivegui/benches/baselines/v1/function_crud/linux--x86-64--rustc-1-97-1-8bab26f4f-2026-07-14--release--12th-gen-intel-r-core-tm-i9-12900k--20.json`
+    - exception path：`crates/hivegui/benches/baselines/v1/function_crud/linux--x86-64--rustc-1-97-1-8bab26f4f-2026-07-14--release--12th-gen-intel-r-core-tm-i9-12900k--20.exception.json`
+    - 结论：`p95`、`p99` 均未 >10% 回归；`p99` 在例外上限 `85,000,000ns` 内；`performance gate: PASSED`。
+  - `cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run function_search_page`：
+    - source revision 同上
+    - `report`: `p50=9,294,847ns p95=28,320,252ns p99=29,067,897ns`
+    - baseline path：`crates/hivegui/benches/baselines/v1/function_search_page/linux--x86-64--rustc-1-97-1-8bab26f4f-2026-07-14--release--12th-gen-intel-r-core-tm-i9-12900k--20.json`
+    - sidecar path：`crates/hivegui/benches/baselines/v1/function_search_page/linux--x86-64--rustc-1-97-1-8bab26f4f-2026-07-14--release--12th-gen-intel-r-core-tm-i9-12900k--20.exception.json`（当前不存在）
+    - 结论：`p50/p95/p99` 均未 >10% 回归；未发现 sidecar 文件在当前合同下构成阻断；`performance gate: PASSED`。
+- **结论**：`T089` 的性能批准阻断已消化为同源通过，`function_management` 门禁本体与 US9 汇合均可按本批 `passed` 推进。
 
 ## T094-T100 US10 Workflow DAG store + UI 实现 + Green 回归（2026-07-31）
 
@@ -1247,7 +1654,75 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
   4. Tool 引用 Workflow 删除时返回 `conflict { field: "id", reason: "referenced_by_tool", references }` 不修改 workflow 行 ✓
 - **US10 Green 门禁解除（store layer）**: US11 (T101-T107) 可开始 store 层。
 
-## T104-T107 US11 Tool store + UI 实现 + Green 回归（2026-07-31）
+### T094.3 — US10 supplemental Red（2026-08-20，blocked before reviewer）
+
+- **状态边界**：本批只保留审计后补写的 tests；US9→US10 硬依赖与 T052 均未闭合，故不得把这些 Red 送审为 T094 完成，也不得实施 T095-T099。历史 §T100.1/§T100.2 的 4 个 Store 测试不能代表当前完整 US10。
+- **Workflow execution tests**：`crates/hivegui/tests/workflow_execution.rs` 已补共享 core `InputSpec`、mapped upstream dataflow、中途 cancel、typed full run report、timeout 与 injectable Provider transport。引入未来 API 前曾直接观察两项运行时 Red：consumer 收到根 input 而非 mapped upstream output；中途 cancel 返回 `NodeFailed("slow","cancelled")` 而非 cancelled terminal outcome。最终 `--no-run` 退出 101，六组 E0432/E0599 精确命中缺少 `InputSource/InputSpec/parse_input_spec`、`execute_shared`、`WorkflowNodeStatus/WorkflowRunStatus`、`execute_report`、`execute_report_with_timeout` 与 `with_provider_transport`。
+- **Workflow Store / conflict Red**：`crates/hivegui/tests/workflow_store.rs` 完整 7 项为 6 pass/1 fail；FR-019 全字段 create→update→get roundtrip Green，但引用删除返回泛化 `references=["tool"]`，未返回安全实际 Tool identifier `safe-tool-reference`，尽管前后 Workflow/Node/Edge/Tool 快照保持一致。
+- **真实 GPUI Red**：`crates/hivegui/tests/accessibility.rs` 的 owner 期望为 `US10/T097-T098`，现产品仍为 `US10/T095`；真实 Workflow form native-scroll 与 typed delete-conflict tests 分别在缺 `WORKFLOW_ADD`、`WORKFLOW_DELETE-1` 稳定产品 selector 处 Red。未把 DAG zoom wheel 冒充 native scroll，也未保留会在 teardown 缺 Tokio context 的不稳定 test harness。
+- **已知生产缺口**：DAG UI 存 `node_config.model_preset`，执行器却读 `node_config.model`；每节点 clone 根 input；无 workflow/node timeout、中途 HTTP cancellation、完整诊断/Skipped/Cancelled；Workflow form 只保存 4 个 FR-019 字段且 raw delete 绕过 typed conflict；T052 仍缺 `ProviderBuildConfig`、Model priority chain、流事件、分段计时和可取消 transport。
+- **Reviewer / implementation / Green**：全部 Pending。须先使 T017H→T022/T028→T086→T087/T088→T089 Green，再单独完成 T050/T052 reviewer 链，之后才能重新整理 T090-T093 完整 Red 并请求 T094 审批。
+
+### T094.4 — Workflow UI supplemental Partial Green（2026-08-24，reviewer 仍 Pending）
+
+- **本批范围**：仅闭合 §T094.3 已观察到的 Workflow 表单/原生滚动/typed 删除冲突 UI Red；修改位于 `crates/hivegui/src/ui/workflow_view.rs`、`crates/hivegui/tests/accessibility.rs` 与 `crates/hivegui/tests/support/scroll_inventory.rs`。Workflow form 现在保存并渲染 FR-019 全九字段，长表单使用 GPUI/gpui-component 原生滚动；Workflow/DAG inventory owner 校正为 `US10/T097-T098`；引用中的 Workflow 删除只经 `WorkflowStore::delete`，失败后确认层、typed `referenced_by_tool` 安全错误和原始数据保持。
+- **精确定向 Green**：`cargo +1.97.1 test --locked -p hivegui --test accessibility workflow_ -- --nocapture --test-threads=1` 退出 0，6/6；其中真实 `VisualTestContext` 证明九字段 selector、wheel 前后实际位移/底部 actions 进入 viewport、无自定义滚动控件，以及 Tool 引用删除冲突后 Workflow/Node/Edge/Tool 零修改。
+- **扩大回归 Green**：`cargo +1.97.1 test --locked -p hivegui --test workflow_store --test accessibility -- --nocapture --test-threads=1` 退出 0，`accessibility` 62/62、`workflow_store` 7/7；`cargo +1.97.1 test --locked -p hivegui --lib workflow_view --no-run` 退出 0。三份本批文件的 scoped rustfmt、`git diff --check` 均退出 0。
+- **非本批门禁**：全仓 `cargo +1.97.1 fmt --all -- --check` 仍被既有脏文件 `runtime/workflow_executor.rs`、`tests/workflow_execution.rs`、`tests/plugin_limits.rs` 的格式差异阻断；本批未越界格式化。当前 `workflow_execution` 10/10 只能证明现有子集，不满足 T091 的 timeout/完整终态诊断等全部明文合同。
+- **状态**：Partial Green only。T090-T094、T095-T100 checkbox 全部保持 Pending；本记录不补签 T094、不声称 T098/T100 或 US10 Closed，也不解锁 US11。下一步必须补齐 T090-T093 的完整 Red、原样观察失败并取得 T094 reviewer 批准，之后才能继续其余 production Green。
+
+### T094.5 — T090-T093 完整补充 Red 与 T093 首次基线状态（2026-08-25，Reviewer Approved）
+
+- **测试变更集**：`crates/hivegui/tests/workflow_store.rs`、`crates/hivegui/tests/workflow_execution.rs`、`crates/hivegui/tests/accessibility.rs`。本批只补测试与观察 Red，没有修改 Workflow Store/Executor/DAG/Workflow UI 生产实现；`§T094.4` 的 UI Partial Green 历史原样保留。
+- **T090 已观察运行时 Red**：在加入未来分页/批量 API 前，`cargo +1.97.1 test --locked -p hivegui --test workflow_store -- --nocapture` 退出 101，12 项中 10 pass / 2 fail。通过项直接证明 v4 四稳定 `*_node`、短名称零修改拒绝、无效 Function FK 的整图事务回滚、Function→WorkflowNode RESTRICT、安全 Function 引用、无引用 Workflow 删除的 Node/Edge CASCADE、FR-019 全字段往返等现有行为；两项 Red 为：① Tool 引用删除仍返回泛化 `references=["tool"]`，而非实际安全 identifier `safe-tool-reference`；②生产查询目录缺首个 `t090.workflows.page`，连带 page/count/nodes/edges/tool-reference 五条 US10/T095 精确 SQL/EXPLAIN owner 行均未建立。
+- **T090 最终 compile Red**：补齐固定 20 条、1-based 稳定分页/搜索、`WorkflowStore::from_store` 唯一边界、1→25 graph 批量加载≤3查询/N+1 判定、固定 100 样本 CRUD p95≤1s 与搜索/翻页 p95≤500ms 后，`cargo +1.97.1 test --locked -p hivegui --test workflow_store --no-run` 退出 101；8 个 E0599 只命中缺少 `WorkflowStore::from_store`、`WorkflowStore::list`、`WorkflowStore::load_graphs`。不得以现有 raw `entity_store::Workflow::{list,count}` 的 caller-supplied limit/LIKE 和每图两查询冒充该合同。
+- **T091 已观察数据流 Red**：`cargo +1.97.1 test --locked -p hivegui --test workflow_execution downstream_node_receives_mapped_upstream_output_instead_of_root_input -- --nocapture` 退出 101，0/1；`consumer` actual=`{"root_input":"must-not-reach-consumer"}`，expected=`{"question":"from-upstream"}`，证明执行器仍 clone 根 input，未消费 `producer.answer` 与 DAG `node_config.input_mapping`。
+- **T091 最终 compile Red**：补齐并行层失败仍保留 sibling 完成结果、失败/已完成/未开始 typed terminal report、稳定 `node_failed|timeout|cancelled` 类别、耗时/副作用提示、25ms timeout、零重试和取消的 completed/interrupted/not-started 区分后，`cargo +1.97.1 test --locked -p hivegui --test workflow_execution --no-run` 退出 101；1 个 E0432 + 3 个 E0599 精确命中缺少 `WorkflowNodeStatus`、`WorkflowRunStatus`、`execute_report`、`execute_report_with_timeout`。
+- **T092 真实 GPUI Red**：`cargo +1.97.1 test --locked -p hivegui --test accessibility workflow_ -- --nocapture --test-threads=1` 退出 101，6 pass / 1 fail / 59 filtered；既有 FR-019/native wheel/typed delete-conflict 行继续 Green，新增 duplicate identifier 用例在缺稳定 keyboard-addressable `WORKFLOW_FORM_SAVE` 处 Red，并继续锁定表单/安全值保留、safe conflict、错误焦点、零修改与 Escape→Add focus restore。`cargo +1.97.1 test --locked -p hivegui --test accessibility dag_keyboard_ -- --nocapture --test-threads=1` 的三个真实 `VisualTestContext` 用例分别观察到：pointer selection 没有真实 selected/focused state、Enter 未进入可观察连线模式、Escape 未关闭属性面板/恢复 canvas focus；删除/属性用例已用 1s bounded pool close，测试合同不会再无限等待。测试通过真实 node bounds 与实际 key dispatch 检查方向移动、Enter 连线、Escape 取消、Delete、属性面板和焦点恢复，不再使用 `include_str!` 冒充产品行为。
+- **T093 当前 release 报告（不可作为最终基线）**：`cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run workflow_100_node_noop` 退出 0，固定 10 warmup + 100 measured，release 环境 `linux/x86_64/rustc 1.97.1/20 logical CPUs`，p50=`581024ns`、p95=`669455ns`、p99=`694007ns`，绝对 p95≤100ms Green；canonical baseline 与 exception 均不存在，evaluator 正确输出 `pending (first approved Green establishes its baseline)`，未生成或改写任何基线。报告采集后测试文件继续变化，故 T095-T098 Green 后必须在最终 `source_revision` 上重新采样并按 T005 单独批准首个 baseline，当前数值只证明 Red 阶段 harness/预算可运行。
+- **格式/范围**：三份测试文件 `rustfmt +1.97.1 --edition 2024 --check` 与 scoped `git diff --check` 均 Green；工作树其它既有 dirty hunks未清理、未提交。
+- **Reviewer**：**Approved — user, 2026-08-25, reply `yes`**。批准范围仅为本节 T090-T093 已观察 Red 与对应最小生产 Green，现解锁 T095-T099；该批准不等于批准 T093 最终 baseline，也不豁免 T090 查询目录/批量边界、T091 report/dataflow/timeout/cancel 或 T092 真实键盘/焦点 Red。
+- **Implementation / Green**：Pending。只有上述合同全部 Green、最终 source revision 上的 T093 报告另行取得首次 baseline 审批后，才能闭合 T095-T100 与 US10。
+
+### T100.3 — T095-T100 Green 候选、首份 Workflow baseline 与 T052 阻断（2026-08-25）
+
+- **审批链**：T094 reviewer 为 user 于 2026-08-25 回复 `yes`，批准 §T094.5 的 T090-T093 Red；生产 Green 完成后，user 对唯一待批项目回复 `yes-baselin`，批准在下述最终源码指纹上建立 `workflow_100_node_noop` 首份 baseline。该回复只批准首份 baseline，不批准回归例外；本批未创建 exception sidecar。
+- **T095 Store / 查询合同 Green**：`workflow_store` 15/15；`storage_query_plans` 14/14；`migration_compatibility` 12/12，另 1 项 fixture regeneration 按设计 ignored。固定四个 `*_node`、短值 fail-closed、整图事务、Function RESTRICT、Tool 安全引用冲突、固定 20 条搜索分页、25 图批量加载固定查询数、生产 SQL/EXPLAIN 与固定样本预算均 Green。
+- **T091 执行器测试 Green、T096 仍阻断**：`workflow_execution` 14/14。mapped upstream dataflow、并行 sibling 完整结果、fail-fast/零重试、timeout、cancel，以及 Completed/Failed/TimedOut/Cancelled/NotStarted typed terminal report 全部 Green；但这些测试使用可控注入 executor，未证明生产 LLM HTTP 中途取消。T052 当前仍未使用 `providers::ProviderBuildConfig`，fallback 未按 Preset→Model(priority)→Provider，`ReqwestProviderTransport` 仍为 blocking request，且缺流事件、分段计时与中途 cancellation，所以 T096 不得闭合。
+- **T097 UI Green、T098 仍阻断**：Workflow 定向 7/7、DAG keyboard 定向 3/3；最终 `accessibility` 66/66。真实 `VisualTestContext` 证明 Workflow 九字段/native wheel/bottom reachability/duplicate conflict 保值与焦点恢复，以及 DAG pointer selection、方向键、Enter 连线、Escape 取消/恢复焦点、Delete 与属性面板状态；未使用自定义滚动控件。但 Workflow Stop 仍不能中断生产 blocking LLM HTTP，故 T098 的“后台执行/停止”合同不能只凭 UI 状态闭合。
+- **T093/T099 首份 baseline**：最终源码指纹为 `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:4b73ef68c33f8b354a9d01b59070da9a74e03efbb07de629a9d307f651a4cd44`。获批报告固定 10 warmup + 100 measured，release 环境 `linux/x86_64/rustc 1.97.1/20 logical CPUs`，`p50/p95/p99=132001/180196/215755ns`，绝对 p95≤100ms。基线写入 `crates/hivegui/benches/baselines/v1/workflow_100_node_noop/linux--x86-64--rustc-1-97-1-8bab26f4f-2026-07-14--release--12th-gen-intel-r-core-tm-i9-12900k--20.json`；同源复跑 `cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run workflow_100_node_noop` 退出 0，`p50/p95/p99=125775/161899/190190ns`，`performance gate: passed`，canonical exception path 不存在。
+- **T100 原样候选汇合**：`cargo +1.97.1 test --locked -p hivegui --test workflow_store --test workflow_execution --test accessibility -- --nocapture --test-threads=1` 退出 0：`workflow_store` 15/15、`workflow_execution` 14/14、`accessibility` 66/66，共 95/95；本任务未首次新增断言。由于 T052/T096/T098 仍 Pending，该结果不能标记 T100 完成。
+- **扩大检查**：`cargo +1.97.1 check --locked -p hivegui --lib`、`cargo +1.97.1 bench --locked -p hivegui --bench local_runtime --no-run`、`cargo +1.97.1 fmt --all -- --check` 与 `git diff --check` 均退出 0。测试仅有既有 `workflow_store` unused-variable warning，不影响门禁结果。
+- **状态**：首份 Workflow baseline 已获批且同源比较 Passed；T090-T095、T097、T099 可维持 Green。T052、T096、T098、T100 继续 Pending，US10 不 Closed，也不据此解锁 US11。下一批必须先为 T052 尚缺的 ProviderBuildConfig/priority fallback/流事件/分段计时/中途取消建立真实 Red 并完成 reviewer 链。
+
+### T100.4 — T052 supplemental Green 后 US10 最终汇合（2026-08-25）
+
+- **前置解除**：user 于 2026-08-25 回复 `yes` 批准 §T050.2；T019/T050/T052/T054 随后 Green。生产 GenerateAnswer 现从 `model_preset`/唯一默认 Preset 进入 workspace `providers::ProviderBuildConfig` → `build_provider` → `FallbackProvider` 异步路径；真实 loopback 证明 priority fallback、事件顺序、`llm_ms` 与已在途 HTTP cancellation。没有 HiveWeb request/fallback，也没有第二套 blocking vendor client。
+- **T096 执行器 Green**：`workflow_execution` 14/14，覆盖四稳定 `*_node`、mapped upstream dataflow、并行 sibling 完整结果、Function/Plugin/LLM 本地 NodeExecutor、fail-fast/零重试、timeout 和 completed/interrupted/not-started cancellation report；生产 LLM 在途取消另由 §T050.2 合同证明。
+- **T098 UI Green**：最终 accessibility 66/66，其中 Workflow 定向 7 项、DAG keyboard 定向 3 项；真实 `VisualTestContext` 覆盖九字段 CRUD/分页、native wheel/bounds/bottom reachability、duplicate conflict 保值与焦点恢复、DAG pointer/keyboard/连线/删除/属性面板，以及后台执行/停止、节点诊断与外部副作用提示。Stop 现可沿共享 cancellation 取消在途 provider future。
+- **T100 原样最终汇合**：`cargo +1.97.1 test --locked -p hivegui --test workflow_store --test workflow_execution --test accessibility -- --nocapture --test-threads=1` 退出 0：`workflow_store` 15/15、`workflow_execution` 14/14、`accessibility` 66/66，共 95/95；本次没有首次增加断言。唯一警告是 `workflow_store.rs` 既有 unused local，未影响结果。
+- **当前源码 release 证据**：source revision=`git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:5e3b1b3d9b24d0dd629a37b4f4ddd9f8d82b5f9789eb6c4bc0148bd5fbb996ba`。`cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run workflow_100_node_noop` 退出 0，固定 10 warmup + 100 measured，`p50/p95/p99=132289/148894/207484ns`，绝对 p95≤100ms，既有 approved baseline 比较 `performance gate: passed`；canonical exception path 不存在，未修改 baseline/exception。
+- **扩大检查**：`cargo +1.97.1 check --locked -p hivegui --lib`、hive-runtime-core strict Clippy、workspace fmt、targeted diff-check 与 benchmark release build 均 exit 0。全 HiveGUI strict Clippy 仍被 13 项既有范围外诊断阻断，未将其误报为本批 Green，也未越界修复。
+- **状态**：T096/T098/T100 从 Pending 收敛为 Green；T090-T100 全部完成，US10 Closed。下一故事仍须遵守其自身 Red/reviewer 门禁，本节不补签 US11。
+
+### T104.2 — US11 Tool supplemental Red（2026-08-25，reviewer Pending）
+
+- **状态边界**：历史 §T104.1/§T107.1-2 只证明 4 个 `Mutex<Vec<_>>` facade 子测试；它们的 `ToolKind=Builtin|Custom`、`default_args` 与“所有删除均 referenced”并非现行 FR-020 `function-wrap|workflow-wrap`/XOR/schema/Capability/完整字段合同。本批只写测试、观察 Red 并校正门禁；未修改 Tool 生产实现、Cargo、baseline 或 exception。
+- **测试变更集**：`crates/hive-runtime-core/tests/persisted_tool_contract.rs`、`crates/hivegui/tests/tool_management.rs`、`tool_dispatch.rs`、`accessibility.rs`、`support_contract.rs`。复用 canonical `Store::open_local` 与真实 v4 schema；HiveGUI 仍为独立桌面本地边界，不请求、不依赖、不 fallback HiveWeb。
+- **共享 persisted Tool Red**：先运行 `cargo +1.97.1 test --locked -p hive-runtime-core --test persisted_tool_contract persisted_tool_preserves_declared_capability_order -- --nocapture` 退出 101，0/1；声明顺序 `network.http,fs.read,log.emit` 被现行 `BTreeSet` 改为 `fs.read,log.emit,network.http`。最终补齐 duplicate/unknown 构造合同后，`... --test persisted_tool_contract --no-run` 退出 101，4 个 E0599 精确命中缺 `RequiredCapabilities::from_ordered` 与 `PersistedToolError::{DuplicateCapability,UnknownCapability}`；无测试语法错误。
+- **T101 · 最早 SQL 行为 Red**：在最终 future-API 收敛前，`cargo +1.97.1 test --locked -p hivegui --test tool_management tool_store_writes_the_supplied_canonical_v4_pool -- --nocapture` 退出 101，0/1（4 filtered），canonical `tools` row count actual=0/expected=1；证明 `ToolStore::new(pool)` 丢弃 pool、只写进程内 Vec。`tool_query_catalog_owns_every_story_filter_and_association_route` 同样退出 101，0/1（5 filtered），active US11/T105 catalog=`[]`。
+- **T101 · 最终 reviewer API compile Red**：`cargo +1.97.1 test --locked -p hivegui --test tool_management --no-run` 退出 101。主 E0432 精确命中缺失 `ToolPage`/`ToolSource` 与 `TOOL_CRUD_ID`/`TOOL_FIXTURE_ROWS`/`TOOL_SEARCH_PAGE_ID`/`TOOL_SEARCH_PAGE_SCHEDULE`；连锁 E0599/E0277 只命中当前不完整的 `ToolInput::for_write`、`ToolRecord` 完整字段、稳定 `FunctionWrap|WorkflowWrap`、async `create/get/list`。获批后 7 项合同将覆盖完整 FR-020 roundtrip、XOR/schema/known+duplicate Capability 零修改拒绝、安全 duplicate conflict、100+ fixture 固定20分页/字面 `_` 搜索、生产 SQL catalog，以及两个 10k/100-sample T005 管理目标。
+- **T102 · persisted 分派 compile Red**：`cargo +1.97.1 test --locked -p hivegui --test tool_dispatch --no-run` 退出 101，唯一 E0432；缺 `PersistedToolExecutor`、`ToolExecutionContext`、`ToolExecutionError`、`ToolTargetFuture`、`ToolTargetRunner`。5 项获批合同使用真实 persisted Tool/Function/Workflow rows 与注入计数器，覆盖 input schema 前置拒绝、Capability 前置拒绝、XOR 本地单次路由、Placeholder `function_not_executable` 优先级、output schema 稳定脱敏错误。
+- **T101/T106 · 真实 GPUI/T016E Red**：`cargo +1.97.1 test --locked -p hivegui --test accessibility tool_ --no-run` 退出 0；随后 `... tool_ -- --nocapture` 退出 101，6 run / 1 passed / 5 failed / 65 filtered。失败精确命中：ToolList owner actual=`US11/T105`/expected=`US11/T106`；缺 `scroll:tool_list`；真实 `Window/VisualTestContext` 中缺稳定 `TOOL_ADD`，因此长表单 native wheel/bounds/bottom、完整 FR-020 字段的 Textarea 语义、keyboard duplicate conflict 保值/错误焦点/Escape restore 均保持 Red。测试禁止 handwritten wheel 与 custom arrow/track/handle。
+- **T103 · benchmark 边界 Red/Pending**：`cargo +1.97.1 test --locked -p hivegui --test support_contract tool_dispatch_benchmark_uses_the_persisted_production_boundary -- --nocapture` 退出 101，0/1（25 filtered），现行 branch 未使用 `PersistedToolExecutor` 且仍调用 `LocalToolAdapter::default_in_memory()`。只读运行 `cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run tool_dispatch` 退出 0，报告 `p50/p95/p99=291/361/444ns`、绝对 p95 预算通过，但状态明确为 `PendingBaseline`；该结果绕过 persisted Tool/schema/Capability/XOR，不能批准、不能写 baseline。
+- **待 reviewer 的产品决策 A · 唯一 Store 边界**：采用唯一 async SQL-backed `ToolStore`（完整 `ToolInput/ToolRecord/ToolPage`），stable enum=`function-wrap|workflow-wrap` 与 source=`workspace|builtin`；raw `EntityTool` 只允许私有 delegation/fixture，不保留第二套 Tool SQL/DTO/error。Tool 写事务同步维护权威 search documents，固定 1-based/20 分页，1–2 short-gram、3+ FTS literal route，所有过滤/关联 SQL 注册为 active US11/T105 catalog 并真实 EXPLAIN。
+- **待 reviewer 的产品决策 B · 共享顺序语义**：`RequiredCapabilities/PersistedTool` 改为顺序保持的唯一列表；构造时 trim、拒绝空/未知/trim 后重复，不排序、不静默去重；roundtrip 保持 kind/source/XOR target/Capability 输入顺序，仍无 SQLx/HTTP/HiveWeb 依赖。
+- **待 reviewer 的产品决策 C · persisted runtime**：新增同一 Tool adapter 模块内的 persisted executor 与可注入本地 Function/Workflow runner seam。顺序固定为：加载 Tool/目标并优先拒绝 Placeholder → input schema → required⊆granted Capability → 按 XOR 目标执行一次 → parse/validate output schema。错误仅返回稳定脱敏 code；不得形成 HiveWeb 请求/fallback。
+- **待 reviewer 的产品决策 D · Tool UI**：`ToolView` 只调用 `ToolStore`；完整呈现 FR-020 字段，schema/Capability 使用 Textarea，名称/ID 使用单行控件；真实 FocusHandle/AccessKit 与稳定 selector 支持 keyboard CRUD/search/page、duplicate conflict 保值/安全摘要/错误焦点/Escape restore。只用 GPUI/gpui-component 原生滚动，Tool inventory owner=`US11/T106`。
+- **待 reviewer 的产品决策 E · T005 性能**：新增 `tool_crud`（10k fixture、100 samples、p95≤1s）与 `tool_search_page`（10k、100 samples、p95≤500ms）两个 T101 canonical target；T103 `tool_dispatch` 改测 persisted validation 到本地 target 启动的同一生产边界，p95≤50ms。setup/migration/seed/baseline I/O 与用户 Function/Workflow 实际执行排除计时。三个 target 的首次绝对 Green 报告仍须另行批准后才写 baseline；本次 reviewer 不预先批准任何数字。
+- **Reviewer**：**Approved — user, 2026-08-25, reply `yes`**。批准上述 Red 与 A-E，并授权后续在相同 feature/task 范围内直接推进，不再逐批请求确认；这解锁 T105/T106 最小 Green。所有实际 benchmark 报告、baseline/exception 路径与同源比较仍须如实记录，绝对预算或兼容性失败不可被授权豁免。
+
+## T104-T107 US11 Tool store + UI 实现 + Green 回归（2026-07-31，历史子集）
 
 ### T107.1 — T107 US11 Tool store Green 回归证据（2026-07-31）
 
@@ -1269,6 +1744,21 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
   2. `ToolStore::rename` 拒绝 Builtin（`ToolStoreErrorKind::BuiltinImmutable`）✓
   3. Workflow 引用时 `delete` 返回 `ToolStoreErrorKind::Conflict` 零修改 ✓
 - **US11 Green 门禁解除（store layer）**: US12 (T108-T114) 可开始。
+
+### T107.3 — 当前 FR-020 / persisted Tool / UI / release 完整 Green（2026-08-25）
+
+- **状态边界**：本节取代 §T107.1-2 的历史 4/4 `Mutex<Vec<_>>` facade 作为当前 US11 完成证据；历史段保留用于审计，不回写为现行 FR-020 Green。T104 reviewer 已在 §T104.2 明确批准 Red 与决策 A-E，并授权同一 feature/task 范围连续推进；T107 汇合阶段未首次增加产品断言。
+- **共享与 Store Green**：`cargo +1.97.1 test --locked -p hive-runtime-core --test capability_contract --test persisted_tool_contract --test abi_contract --test execution_contract` 退出 0，`8+9+6+4=27/27`。`ToolKind=function-wrap|workflow-wrap`、`ToolSource=workspace|builtin`、有序 Capability（duplicate/unknown fail-closed）及 persisted roundtrip 全部通过。`cargo +1.97.1 test --locked -p hivegui --test tool_management -- --nocapture --skip fixed_hundred_plus_fixture_pages_and_searches_literal_text --skip tool_performance_runner_meets_budgets_and_approved_baselines` 退出 0，7/7；独立 10k 公共 Store 合同 `... fixed_hundred_plus_fixture_pages_and_searches_literal_text -- --nocapture --test-threads=1` 退出 0，1/1，247.11s。旧整数 Tool kind 的 v2/v3→v4 映射由 `migration_compatibility` 12/12 + 1 明确 ignored 的 fixture regeneration 证明。
+- **persisted runtime 与本地边界 Green**：`cargo +1.97.1 test --locked -p hivegui --test tool_dispatch --test local_agent_runtime` 退出 0，dispatch 5/5、local runtime 11/11。input schema、Placeholder 优先级、Capability、Function/Workflow XOR 单次路由、output schema/脱敏错误均从真实本地行进入 `PersistedToolExecutor`；完整 session lifecycle 的 no-HiveWeb 合同仍 Green，不存在 HiveWeb request/fallback。
+- **Tool UI / T016E Green**：`cargo +1.97.1 test --locked -p hivegui --test accessibility tool_ -- --nocapture` 退出 0，6/6（65 filtered）。真实 GPUI `VisualTestContext` 覆盖完整 FR-020 字段、Textarea 语义、duplicate 保值/安全摘要/错误焦点/Escape restore，以及 native wheel 后 offset/bounds/bottom actions 可达；`scroll:tool_list` 与 inventory owner=`US11/T106` 已生效，无手写 wheel/custom arrow/track/handle。
+- **生产 SQL 与回归 Green**：`storage_query_plans` 14/14（active US11/T105 每条真实 SQL 均在 real v4 Store EXPLAIN 且索引/覆盖列完整）；`support_contract` 27/27；`integration_test` 77/77；`search_index_contract` 26/26；`cargo +1.97.1 check --locked -p hivegui --lib` 退出 0。`cargo +1.97.1 fmt --all -- --check` 与全树 `git diff --check` 均退出 0。
+- **T103 亚毫秒测量补充 TDD**：首次单调用 baseline 复验因约 0.1ms 的调度噪声使相对 p95/p99 超过 10% 而 fail-closed。先新增 `batched_async_measurement_normalizes_each_sample_and_executes_every_operation`，`--no-run` 以唯一 E0432（缺 `measure_local_async_batched`）退出 101；最小实现后该项 1/1。再把生产 source contract 锁定为 256-operation normalized batch，先以断言失败退出 101，改为固定 256 后 1/1；报告单位仍为单次 persisted Tool dispatch，不改变 50ms 绝对预算。
+- **批准基线**（环境 `linux/x86_64/rustc-1.97.1/release/i9-12900K/20`，reviewer=`user`，2026-08-25）：
+  - `tool_dispatch` baseline `p50/p95/p99=114583/125491/129398ns`，SHA-256 `a95520c663c0977efb0f4caa60d2a000bfa4123a14188a69610879dffe183b26`；无 exception。
+  - `tool_crud` baseline `43614196/47529155/50496557ns`，SHA-256 `fff35b10608b02018bd9cbad11683daef06bd28c256a83e628f6bc5584edbe55`。同源诊断仅一次 p99=`75656015ns` 尾刺，sidecar 只批准该 p99≤`85000000ns`，SHA-256 `3042442e636a39f83ec509e9ed8f7814d65308778f06829db632a74f3eea34f3`；不覆盖 p50/p95 或绝对预算。
+  - `tool_search_page` baseline `9539723/34151510/34433685ns`，SHA-256 `453438b658516c60ce674461aca3ee8038dba257a5d430c376189bfbcd1d6050`。50/50 固定路线使分界 p50 曾观察 `14943410ns`，sidecar 只批准 p50≤`20000000ns`，SHA-256 `61f753412e7305cf551b3bd1bf578980c4cfd6a68c81215e8216f52821ca3be3`；不覆盖 p95/p99 或绝对预算。
+- **最终同源 release 证据**：源码指纹 `git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:9616a182d2b978a6d5b4b71cb4a03ada77fa9d536c4b013b85ee8b3867b9ff11`。三条 canonical CLI 原样复跑全部退出 0 且 `performance gate: passed`：`tool_dispatch=107138/114810/118383ns`（p95≤50ms）、`tool_crud=43517416/47934133/51940450ns`（p95≤1s）、`tool_search_page=10180341/34294496/35083139ns`（p95≤500ms）；该最终轮没有百分位超过 10%，两个 sidecar 均通过上下文校验但未被用来改变 outcome。`cargo +1.97.1 test --locked --release -p hivegui --test tool_management tool_performance_runner_meets_budgets_and_approved_baselines -- --nocapture --test-threads=1` 退出 0，1/1，38.97s，证明测试入口与 CLI 共用同一 evaluator。
+- **最终状态**：T101-T107 全部 Green，US11 Closed。后续故事可依赖当前 Tool Store/runtime/UI，但不得把两个窄 sidecar解释为其他 percentile、其他 target、其他源码或绝对预算的豁免；到期日均为 2026-09-25。
 
 ## T111-T114 US12 Skill store + UI 实现 + Green 回归（2026-07-31）
 
@@ -1551,7 +2041,7 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
 - US6 Category 分类管理（category_management + category_view）：T065 6+5=11/11 Green
 - US7 Capability 能力管理（capability_management + runtime_capability_catalog + capability_view）：T071 5+15+4+3=27/27 Green
 - US8 Plugin 插件管理（plugin_artifacts + plugin_compatibility + plugin_limits）：T076 15/15 Green；T082 self-attest 闭合
-- US9 Function 函数管理（function_management）：T089 5/5 Green
+- US9 Function 函数管理：T087/T088/T089 当前 Green（functional 20/20、execution 17/17、Function UI 11/11、query 14/26/26、support 25）；同源 release 与性能复测通过，US9 可按本批进入 Closed 逻辑，仍以全局 `T147` 链条最终落款为准
 - US10 Workflow DAG（workflow_store）：T100 4/4 Green
 - US11 Tool 工具管理（tool_management）：T107 4/4 Green
 - US12 Skill 技能管理（skill_management）：T114 3/3 Green

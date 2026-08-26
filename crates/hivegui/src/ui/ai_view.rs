@@ -78,6 +78,7 @@ impl AiView {
             ConversationView::new(
                 cx,
                 Some(local_agent_runtime.as_ref().clone()),
+                Some(store.read(cx).clone()),
                 execution_event_collector.clone(),
             )
         });

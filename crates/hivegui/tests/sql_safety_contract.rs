@@ -339,13 +339,17 @@ fn production_mysql_identifier_construction_only_through_allowlist() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn search_normalization_id_is_pinned_in_every_fts5_and_short_gram_ddl() {
+fn search_normalization_id_is_pinned_once_and_reused_by_search_schema() {
     let source = read(Path::new(DATASOURCE_ROOT).join("migrations.rs"));
     let occurrences = source.matches(NORMALIZATION_ID).count();
-    assert!(
-        occurrences >= 2,
-        "every FTS5 + short-gram DDL statement must reference {NORMALIZATION_ID}; got {occurrences} occurrences"
+    assert_eq!(
+        occurrences, 1,
+        "the normalization identifier must have one source of truth in migrations; got {occurrences} literals"
     );
+    assert!(source.contains("SEARCH_NORMALIZATION_ID"));
+    assert!(source.contains("schema_metadata"));
+    assert!(source.contains("search_documents_fts"));
+    assert!(source.contains("search_short_grams"));
 }
 
 // ---------------------------------------------------------------------------

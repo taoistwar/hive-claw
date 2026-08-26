@@ -15,6 +15,7 @@
 - 当前平台所需 GPUI 系统库与图形会话。
 - `wasm32-unknown-unknown` target，用于构建/更新 Plugin fixture。
 - HiveWeb MySQL TLS 集成测试使用临时 CA/服务器证书、与连接 URL 一致的测试 hostname，并只接受 `VERIFY_IDENTITY`；不得使用真实生产证书或把私钥提交到仓库。
+- HiveWeb 服务启动时，主库必须同时设置 `DATABASE_URL`（查询参数含 `ssl-mode=VERIFY_IDENTITY`）、`DATABASE_TLS_CA`（PEM CA 文件）和 `DATABASE_TLS_HOSTNAME`（与 URL host 逐字一致）。启用 `EXTERNAL_DB_URL` 时同样必须设置 `EXTERNAL_DATABASE_TLS_CA` 与 `EXTERNAL_DATABASE_TLS_HOSTNAME`；缺失、宽松模式、CA 无效或 hostname 不一致均 fail-closed，且不会退回明文连接。
 - 不提交真实 API key；LLM 端到端测试使用进程内 mock server。
 
 ```bash

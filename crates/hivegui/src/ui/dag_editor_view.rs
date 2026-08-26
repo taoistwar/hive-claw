@@ -4,6 +4,7 @@
 use crate::datasource::{
     Store,
     entity_store::{Function, Workflow, WorkflowEdge, WorkflowNode},
+    function_store::FunctionStore,
 };
 use crate::ui::management_style::{ActionRole, ActionSize, ManagementStyle, action_button};
 use gpui::{
@@ -124,7 +125,7 @@ impl DagEditorView {
             store,
             workflow_id,
             workflow: None,
-            nodes: Self::boundary_nodes(),
+            nodes: Vec::new(),
             edges: Vec::new(),
             functions: Vec::new(),
             loading: true,
@@ -164,7 +165,12 @@ impl DagEditorView {
             let workflow = Workflow::get(store.pool(), workflow_id).await?;
             let db_nodes = WorkflowNode::list_by_workflow(store.pool(), workflow_id).await?;
             let db_edges = WorkflowEdge::list_by_workflow(store.pool(), workflow_id).await?;
-            let functions = Function::list(store.pool(), None, 500, 0).await?;
+            let functions = FunctionStore::new(store.pool().clone())?
+                .list_window(None, 500, 0)
+                .await?
+                .into_iter()
+                .map(|record| record.into_legacy_entity())
+                .collect();
 
             this.update(cx, |v, cx| {
                 v.workflow = workflow;
@@ -529,7 +535,7 @@ impl DagEditorView {
         cx.notify();
     }
 
-    fn hide_node_config_panel(&mut self, cx: &mut Context<Self>) {
+    fn hide_node_config_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_node_config = false;
         self.config_node_key = None;
         self.config_input = None;
@@ -537,6 +543,7 @@ impl DagEditorView {
         self.config_history_window_input = None;
         self.config_system_prompt_input = None;
         self.config_error = None;
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -871,14 +878,14 @@ impl DagEditorView {
     ///     the context menu
     ///   - Delete / Backspace: delete the selected node (start/end are
     ///     protected) or selected edge
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         match key {
             "escape" => {
                 self.creating_edge = None;
                 self.context_menu = None;
                 if self.show_node_config {
-                    self.hide_node_config_panel(cx);
+                    self.hide_node_config_panel(window, cx);
                 } else {
                     cx.notify();
                 }
@@ -1061,7 +1068,7 @@ impl DagEditorView {
 }
 
 impl Render for DagEditorView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let style = ManagementStyle::current(cx);
 
@@ -1075,6 +1082,9 @@ impl Render for DagEditorView {
             .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
                 v.on_key_down(event, window, cx);
             }))
+            .when(self.focus_handle.is_focused(window), |view| {
+                view.child(debug_marker("DAG_CANVAS_FOCUSED"))
+            })
             // 工具栏
             .child(
                 div()
@@ -1317,6 +1327,9 @@ impl Render for DagEditorView {
                             .bottom(px(0.0))
                             .left(px(0.0)),
                     )
+                    .when_some(self.creating_edge.as_ref(), |canvas, (source, _, _)| {
+                        canvas.child(debug_marker(format!("DAG_EDGE_MODE-{source}")))
+                    })
                     // 节点
                     .children(self.nodes.iter().map(|node| {
                         let node_key = node.node_key.clone();
@@ -1359,9 +1372,10 @@ impl Render for DagEditorView {
                             .on_mouse_down(MouseButton::Left, {
                                 let t = cx.weak_entity();
                                 let key = node_key.clone();
-                                move |event, _, cx| {
+                                move |event, window, cx| {
                                     t.update(cx, |v, cx| {
                                         v.on_node_mouse_down(&key, position, event);
+                                        v.focus_handle.focus(window, cx);
                                         cx.notify();
                                     })
                                     .ok();
@@ -1392,10 +1406,11 @@ impl Render for DagEditorView {
                             .on_mouse_down(MouseButton::Right, {
                                 let t = cx.weak_entity();
                                 let key = node_key.clone();
-                                move |event, _, cx| {
+                                move |event, window, cx| {
                                     t.update(cx, |v, cx| {
                                         v.selected_node = Some(key.clone());
                                         v.selected_edge = None;
+                                        v.focus_handle.focus(window, cx);
                                         v.context_menu = Some((
                                             Point::new(
                                                 event.position.x - v.canvas_bounds.origin.x,
@@ -1408,6 +1423,9 @@ impl Render for DagEditorView {
                                     .ok();
                                     cx.stop_propagation();
                                 }
+                            })
+                            .when(is_selected, |node| {
+                                node.child(debug_marker(format!("DAG_SELECTED-{node_key}")))
                             })
                             .child(
                                 div()
@@ -1557,6 +1575,13 @@ impl Render for DagEditorView {
                             let end_y = dst_pos.y;
 
                             div()
+                                .debug_selector({
+                                    let selector = format!(
+                                        "DAG_EDGE-{}-{}",
+                                        edge.src_node_key, edge.dst_node_key
+                                    );
+                                    move || selector.clone()
+                                })
                                 .absolute()
                                 .top(start_y.min(end_y))
                                 .left(start_x.min(end_x))
@@ -2178,9 +2203,9 @@ impl Render for DagEditorView {
                                         )
                                         .on_mouse_down(MouseButton::Left, {
                                             let t = cx.weak_entity();
-                                            move |_, _, cx| {
+                                            move |_, window, cx| {
                                                 t.update(cx, |v, cx| {
-                                                    v.hide_node_config_panel(cx)
+                                                    v.hide_node_config_panel(window, cx)
                                                 })
                                                 .ok();
                                             }
@@ -2235,6 +2260,17 @@ impl Render for DagEditorView {
                 }
             })
     }
+}
+
+fn debug_marker(selector: impl Into<gpui::SharedString>) -> gpui::Stateful<gpui::Div> {
+    let selector = selector.into();
+    let debug_selector = selector.clone();
+    div()
+        .id(selector)
+        .debug_selector(move || debug_selector.to_string())
+        .w(px(0.0))
+        .h(px(0.0))
+        .overflow_hidden()
 }
 
 #[cfg(test)]

@@ -1,3 +1,6 @@
+use std::collections::BTreeSet;
+
+use hive_runtime_core::wasm::ABI_VERSION_EXPORT;
 use hivegui::datasource::wasm_exports::extract_wasm_exports;
 
 #[test]
@@ -20,4 +23,19 @@ fn rejects_modules_without_exported_functions() {
     ];
 
     assert!(extract_wasm_exports(&wasm).is_err());
+}
+
+#[test]
+fn shared_fixture_hides_the_reserved_abi_export_from_business_functions() {
+    let wasm = include_bytes!("fixtures/plugins/shared-smoke/plugin.wasm");
+    let exports = extract_wasm_exports(wasm).expect("shared fixture exports");
+    let export_set = exports.iter().map(String::as_str).collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        export_set,
+        ["echo", "fs_roundtrip", "full_demo", "http_get", "ping"]
+            .into_iter()
+            .collect()
+    );
+    assert!(!exports.iter().any(|name| name == ABI_VERSION_EXPORT));
 }

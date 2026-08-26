@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
 const GITLEAKS_VERSION: &str = "8.30.1";
+const GITLEAKS_LINUX_X64_SHA256: &str =
+    "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb";
 const CARGO_DENY_VERSION: &str = "0.20.2";
 const SQLX_CLI_VERSION: &str = "0.9.0";
 const MYSQL_ASYNC_VERSION: &str = "=0.37.0";
@@ -1030,6 +1032,11 @@ fn secret_scan_is_fixed_version_checksum_verified_full_history_and_blocking() {
     let steps = workflow_steps(&workflow);
 
     assert!(
+        !workflow.contains("placeholder_digest_for_test_purposes_only"),
+        "the blocking workflow must not contain a placeholder Gitleaks digest"
+    );
+
+    assert!(
         !steps.is_empty(),
         "CI workflow must contain parsed YAML steps"
     );
@@ -1114,7 +1121,30 @@ fn secret_scan_is_fixed_version_checksum_verified_full_history_and_blocking() {
         .expect(
             "Gitleaks checksum must bind the approved digest to the downloaded asset via `sha256sum --check` or an explicit strict comparison",
         );
+    assert!(
+        checksum_step.yaml.contains(GITLEAKS_LINUX_X64_SHA256),
+        "Gitleaks checksum verification must pin the official v{GITLEAKS_VERSION} linux_x64 SHA-256"
+    );
     assert_blocking(checksum_step, "Gitleaks checksum verification");
+
+    let canary_step = steps
+        .iter()
+        .find(|step| {
+            direct_yaml_value(step, "name").is_some_and(|name| {
+                name.trim_matches(['\'', '"']) == "Gitleaks canary verification"
+            })
+        })
+        .expect("CI must execute a Gitleaks canary before trusting a zero-finding scan");
+    let canary_script = canary_step
+        .run
+        .as_deref()
+        .expect("Gitleaks canary verification must be an executable step");
+    assert!(
+        canary_script.contains("HIVE_GITLEAKS_CI_CANARY_")
+            && canary_script.contains(".gitleaks.toml")
+            && canary_script.contains("-ne 1"),
+        "the canary must use the reviewed config and accept only Gitleaks' exact leak exit code"
+    );
 
     let install_step = run_step_matching(&steps, "Gitleaks installation", |command| {
         matches!(executable_name(command), "install" | "mv")
@@ -1279,6 +1309,104 @@ fn approved_dependency_remediation_aws_s3_uses_only_the_modern_https_client() {
 }
 
 #[test]
+fn approved_dependency_remediation_aws_s3_uses_reviewed_panic_safe_lru_patch() {
+    let root = repository_source("Cargo.toml");
+    let patch = toml_value(&root, "patch.crates-io", "aws-sdk-s3")
+        .expect("Cargo.toml [patch.crates-io] must route aws-sdk-s3 to the reviewed local copy");
+    assert_eq!(
+        inline_field(&patch, "path").and_then(unquoted),
+        Some("third_party/aws-sdk-s3-1.141.0"),
+        "aws-sdk-s3 must use the reviewed local copy; found `{patch}`"
+    );
+
+    let vendor = repository_source("third_party/aws-sdk-s3-1.141.0/Cargo.toml");
+    assert_eq!(
+        toml_value(&vendor, "package", "name")
+            .as_deref()
+            .and_then(unquoted),
+        Some("aws-sdk-s3"),
+        "vendored manifest must preserve the upstream crate identity"
+    );
+    assert_eq!(
+        toml_value(&vendor, "package", "version")
+            .as_deref()
+            .and_then(unquoted),
+        Some("1.141.0"),
+        "vendored manifest must preserve the reviewed upstream version"
+    );
+    assert_eq!(
+        toml_value(&vendor, "dependencies.lru", "version")
+            .as_deref()
+            .and_then(unquoted),
+        Some("0.18.2"),
+        "the local patch must change the S3 Express cache to the first RustSec-patched lru release"
+    );
+
+    let provenance = repository_source("third_party/aws-sdk-s3-1.141.0/PROVENANCE.md");
+    assert!(
+        provenance.contains("aws-sdk-s3 1.141.0")
+            && provenance.contains("RUSTSEC-2026-0253")
+            && provenance.contains("lru 0.18.2"),
+        "AWS SDK provenance must identify the upstream crate and the exact advisory remediation"
+    );
+}
+
+#[test]
+fn approved_dependency_remediation_extism_uses_reviewed_wasmtime_46_patch() {
+    let root = repository_source("Cargo.toml");
+    let patch = toml_value(&root, "patch.crates-io", "extism")
+        .expect("Cargo.toml [patch.crates-io] must route extism to the reviewed local copy");
+    assert_eq!(
+        inline_field(&patch, "path").and_then(unquoted),
+        Some("third_party/extism-1.30.0"),
+        "extism must use the reviewed local copy; found `{patch}`"
+    );
+
+    let vendor = repository_source("third_party/extism-1.30.0/Cargo.toml");
+    assert_eq!(
+        toml_value(&vendor, "package", "name")
+            .as_deref()
+            .and_then(unquoted),
+        Some("extism"),
+        "vendored manifest must preserve the upstream crate identity"
+    );
+    assert_eq!(
+        toml_value(&vendor, "package", "version")
+            .as_deref()
+            .and_then(unquoted),
+        Some("1.30.0"),
+        "vendored manifest must preserve the reviewed upstream version"
+    );
+    assert_eq!(
+        toml_value(&vendor, "dependencies.wasmtime", "version")
+            .as_deref()
+            .and_then(unquoted),
+        Some("=46.0.3"),
+        "the local patch must pin the reviewed advisory-free Wasmtime 46 patch release"
+    );
+    assert_eq!(
+        toml_value(&vendor, "dependencies.wasi-common", "version")
+            .as_deref()
+            .and_then(unquoted),
+        Some("=46.0.3"),
+        "Extism's WASI support crate must stay on the same patched Wasmtime release"
+    );
+    assert!(
+        toml_value(&vendor, "dependencies", "wiggle").is_none(),
+        "Wasmtime 46 exposes the required wiggle integration through wasi-common; the obsolete direct dependency must be removed"
+    );
+
+    let provenance = repository_source("third_party/extism-1.30.0/PROVENANCE.md");
+    assert!(
+        provenance.contains("extism 1.30.0")
+            && provenance.contains("RUSTSEC-2026-0222")
+            && provenance.contains("2e660c111791ac01f8cda84ca2e140cbda1a107a")
+            && provenance.contains("bb7752ba1ae5269d5aa3415b91fb8b8a70293b97"),
+        "Extism provenance must bind the upstream release, advisory, and both reviewed migration commits"
+    );
+}
+
+#[test]
 fn approved_dependency_remediation_wayland_scanner_is_a_reviewable_local_patch() {
     let root = repository_source("Cargo.toml");
     let patch = toml_value(&root, "patch.crates-io", "wayland-scanner").expect(
@@ -1358,6 +1486,8 @@ fn approved_dependency_remediation_lockfile_excludes_advisory_packages() {
     let forbidden = [
         ("rsa", None, "RUSTSEC-2023-0071"),
         ("lru", Some("0.12.5"), "RUSTSEC-2026-0002"),
+        ("lru", Some("0.16.4"), "RUSTSEC-2026-0253"),
+        ("wasmtime", Some("43.0.2"), "RUSTSEC-2026-0222"),
         ("quick-xml", Some("0.39.4"), "RUSTSEC-2026-0194/0195"),
         (
             "rustls-webpki",
@@ -1403,18 +1533,12 @@ fn approved_dependency_remediation_zbus_xml_is_exact() {
 #[test]
 fn approved_dependency_remediation_has_no_advisory_exceptions() {
     let deny = repository_source("deny.toml");
-    // 上游尚未发布修复版本的临时豁免（见 deny.toml 注释）：
-    //   RUSTSEC-2026-0253 (lru 0.16.4 via aws-sdk-s3 1.141.0)
-    //   RUSTSEC-2026-0222 (wasmtime 43.0.2 via extism 1.30.0)
-    // 仅允许这两个 RUSTSEC，任何其他 advisory 例外仍需安全复核审批。
-    const ALLOWED: [&str; 2] = ["RUSTSEC-2026-0253", "RUSTSEC-2026-0222"];
-    let allowed: BTreeSet<String> = ALLOWED.iter().map(|s| (*s).to_string()).collect();
     let actual = toml_value(&deny, "advisories", "ignore")
         .map(|value| quoted_values(&value))
         .unwrap_or_default();
     assert!(
-        actual.is_subset(&allowed),
-        "deny.toml [advisories].ignore must only contain the two upstream-unfixed temporary exemptions {allowed:?}; found {actual:?}"
+        actual.is_empty(),
+        "deny.toml [advisories].ignore must remain empty; found {actual:?}"
     );
 }
 
@@ -1450,6 +1574,17 @@ fn approved_dependency_remediation_sqlx_offline_check_uses_exact_cli_and_is_bloc
                 &["cargo", "sqlx", "prepare", "--workspace", "--check"],
             ) && command_has_assignment(raw_command, "SQLX_OFFLINE", "true")
         },
+    );
+    assert!(
+        scoped_exact_env(check_step, "DATABASE_URL", "sqlite::memory:"),
+        "SQLx CLI 0.9.0 requires an explicit SQLite URL even when compile-time query verification is offline"
+    );
+    assert!(
+        check_step
+            .run
+            .as_deref()
+            .is_some_and(|script| script.contains("--no-dotenv")),
+        "the offline metadata gate must not load a developer .env file"
     );
     assert_blocking(check_step, "SQLx offline metadata freshness check");
 }

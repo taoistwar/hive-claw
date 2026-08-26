@@ -151,7 +151,7 @@ fn unregister_store_owner(database_path: &Path) {
     }
 }
 
-fn store_already_owned(database_path: &Path) -> bool {
+pub(crate) fn store_already_owned(database_path: &Path) -> bool {
     let canonical =
         std::fs::canonicalize(database_path).unwrap_or_else(|_| database_path.to_path_buf());
     if let Some(registry) = STORE_OWNERS.get() {
@@ -974,6 +974,12 @@ struct StoreInner {
     /// Canonical database path (used by the in-process owner
     /// registry cleanup on drop).
     database_path: PathBuf,
+    /// Managed plugin artifact root (`{data_root}/plugins`). WASM
+    /// artifacts are materialised under this root by the controlled
+    /// [`crate::plugin::plugin_store::PluginStore`] as
+    /// `root/{identifier}/{version}/{id}/plugin.wasm`. This is the
+    /// single source of truth for the no-follow artifact boundary.
+    plugin_root: PathBuf,
     /// Owner id assigned by the in-process owner registry.
     owner_id: u64,
     /// Optional query-count observer. When wired, every public
@@ -991,7 +997,9 @@ pub struct Store {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        unregister_store_owner(&self.inner.database_path);
+        if self.inner.owner_id != 0 && Arc::strong_count(&self.inner) == 1 {
+            unregister_store_owner(&self.inner.database_path);
+        }
     }
 }
 
@@ -1046,6 +1054,7 @@ impl Store {
         // FR-027: 运行数据库迁移（包括初始化实体表）
         super::entity_store::run_migrations(&pool).await?;
         super::entity_store::register_runtime_capabilities(&pool).await?;
+        super::function_store::FunctionStore::synchronize_builtins(&pool).await?;
 
         // 执行数据库完整性检查
         let integrity_result = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
@@ -1074,6 +1083,7 @@ impl Store {
                 crypto,
                 process_lock: None,
                 database_path: db_dir.join(DB_FILENAME),
+                plugin_root: db_dir.join("plugins"),
                 owner_id: 0,
                 observer: None,
             }),
@@ -1084,6 +1094,7 @@ impl Store {
     pub async fn open_existing(db_path: &Path) -> Result<Self> {
         let conn_opts = SqliteConnectOptions::from_str(&db_path.to_string_lossy())?;
         let pool = SqlitePoolOptions::new().connect_with(conn_opts).await?;
+        super::function_store::FunctionStore::synchronize_builtins(&pool).await?;
         let key = Self::load_or_generate_key(db_path.parent().unwrap_or(Path::new(".")))?;
         let crypto = Crypto::new(&key);
         Ok(Self {
@@ -1092,6 +1103,10 @@ impl Store {
                 crypto,
                 process_lock: None,
                 database_path: db_path.to_path_buf(),
+                plugin_root: db_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("plugins"),
                 owner_id: 0,
                 observer: None,
             }),
@@ -1256,6 +1271,12 @@ impl Store {
         plugin_root: &Path,
     ) -> Result<StoreInner, StoreOpenError> {
         let database_path_buf = database_path.to_path_buf();
+        if super::backup::ensure_store_write_open(database_path).is_err() {
+            return Err(
+                StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf))
+                    .with_failure_class(DatabaseFailureClass::Persistent),
+            );
+        }
         let conn_opts = SqliteConnectOptions::from_str(&database_path.to_string_lossy())
             .map_err(|_error| {
                 StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
@@ -1311,6 +1332,15 @@ impl Store {
                 Some(database_path_buf),
             ));
         }
+        if let Err(_synchronize_error) =
+            super::function_store::FunctionStore::synchronize_builtins(&pool).await
+        {
+            return Err(StoreOpenError::new(
+                StoreOpenErrorKind::Io,
+                Some(database_path_buf.clone()),
+            )
+            .with_failure_class(DatabaseFailureClass::Persistent));
+        }
 
         let key_dir = database_path.parent().unwrap_or(Path::new("."));
         let key = Self::load_or_generate_key(key_dir).map_err(|_error| {
@@ -1324,6 +1354,7 @@ impl Store {
             crypto,
             process_lock: None,
             database_path: database_path_buf,
+            plugin_root: plugin_root.to_path_buf(),
             owner_id: 0,
             observer: None,
         })
@@ -1436,6 +1467,7 @@ impl Store {
                 crypto: crate::datasource::Crypto::placeholder(),
                 process_lock: None,
                 database_path: PathBuf::new(),
+                plugin_root: PathBuf::new(),
                 owner_id: 0,
                 observer: None,
             }),
@@ -1527,6 +1559,7 @@ impl Store {
         username: &str,
         password: &[u8],
     ) -> Result<DataSource> {
+        super::backup::ensure_store_write_open(&self.inner.database_path)?;
         let encrypted = self.inner.crypto.encrypt(password)?;
         let now = Utc::now();
         let result = sqlx::query("INSERT INTO data_sources (name, host, port, username, encrypted_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -1545,6 +1578,7 @@ impl Store {
         username: &str,
         password: Option<&[u8]>,
     ) -> Result<Option<DataSource>> {
+        super::backup::ensure_store_write_open(&self.inner.database_path)?;
         if self.get(id).await?.is_none() {
             return Ok(None);
         }
@@ -1563,6 +1597,7 @@ impl Store {
     }
 
     pub async fn delete(&self, id: i64) -> Result<bool> {
+        super::backup::ensure_store_write_open(&self.inner.database_path)?;
         // query-plan: id=t012.data_sources.delete; owner_phase=US1; activation_task=T021
         Ok(sqlx::query("DELETE FROM data_sources WHERE id = ?")
             .bind(id)
@@ -1586,6 +1621,14 @@ impl Store {
         &self.inner.pool
     }
 
+    /// Return the query-count observer attached at open time, when present.
+    /// Story-specific Store facades use this crate-private seam to preserve
+    /// the single production observer rather than constructing a test-only
+    /// counter.
+    pub(crate) fn query_count_observer(&self) -> Option<&QueryCountObserver> {
+        self.inner.observer.as_ref()
+    }
+
     /// Returns the absolute database path used by this store.
     pub fn database_path(&self) -> &Path {
         &self.inner.database_path
@@ -1593,6 +1636,18 @@ impl Store {
 
     pub fn crypto(&self) -> &Crypto {
         &self.inner.crypto
+    }
+
+    /// Managed plugin artifact root (`{data_root}/plugins`). This is
+    /// the directory under which the controlled [`PluginStore`] writes
+    /// and reads WASM artifacts via the no-follow boundary. Callers
+    /// MUST NOT reconstruct an artifact path by string-concatenating a
+    /// `s3_key` onto this root; use [`PluginStore::read_verified_artifact`]
+    /// or [`PluginStore::install`] instead.
+    ///
+    /// [`PluginStore`]: crate::plugin::plugin_store::PluginStore
+    pub fn plugin_root(&self) -> &Path {
+        &self.inner.plugin_root
     }
 
     /// Return the current schema version recorded in the `meta`

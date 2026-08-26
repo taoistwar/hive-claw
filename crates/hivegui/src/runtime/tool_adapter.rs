@@ -7,14 +7,330 @@
 
 #![warn(missing_docs)]
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
+use hive_json_schema::CompiledJsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::{FromRow, Pool, Sqlite};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::datasource::function_store::FunctionStore;
+use crate::datasource::workflow_store::WorkflowStore;
+use crate::datasource::{Crypto, Store};
+use crate::runtime::execution::CancelHandle;
 use crate::runtime::execution::{FailureCategory, LocalExecutionOutcome};
+use crate::runtime::workflow_executor::{LocalWorkflowNodeExecutor, WorkflowExecutor};
+
+/// Future returned by one local persisted-Tool target runner.
+pub type ToolTargetFuture =
+    Pin<Box<dyn Future<Output = Result<Value, ToolExecutionError>> + Send + 'static>>;
+
+/// Injected local Function/Workflow execution boundary.
+pub trait ToolTargetRunner: Send + Sync {
+    /// Execute one Function target locally.
+    fn execute_function(
+        &self,
+        function_id: i64,
+        input: Value,
+        granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture;
+    /// Execute one Workflow target locally.
+    fn execute_workflow(
+        &self,
+        workflow_id: i64,
+        input: Value,
+        granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture;
+}
+
+/// Production local target runner used by the Agent Tool loop.
+///
+/// Builtin and Custom Functions execute through the same managed
+/// [`crate::runtime::function_test_executor::FunctionTestExecutor`] boundary
+/// as the Function UI. Workflows load their persisted graph and execute every
+/// node through [`LocalWorkflowNodeExecutor`]. Neither branch contains a
+/// HiveWeb client or remote fallback.
+#[derive(Clone)]
+pub struct LocalPersistedToolTargetRunner {
+    pool: Pool<Sqlite>,
+    plugin_root: PathBuf,
+    crypto: Crypto,
+}
+
+impl LocalPersistedToolTargetRunner {
+    /// Bind the runner to one opened desktop-local Store.
+    pub fn from_store(store: &Store) -> Self {
+        Self {
+            pool: store.pool().clone(),
+            plugin_root: store.plugin_root().to_path_buf(),
+            crypto: store.crypto().clone(),
+        }
+    }
+}
+
+impl ToolTargetRunner for LocalPersistedToolTargetRunner {
+    fn execute_function(
+        &self,
+        function_id: i64,
+        input: Value,
+        granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture {
+        let pool = self.pool.clone();
+        let plugin_root = self.plugin_root.clone();
+        Box::pin(async move {
+            let function = FunctionStore::new(pool.clone())
+                .map_err(|_| ToolExecutionError::TargetFailed)?
+                .get(function_id)
+                .await
+                .map_err(|_| ToolExecutionError::TargetFailed)?
+                .ok_or(ToolExecutionError::TargetFailed)?
+                .into_legacy_entity();
+            let rendered = crate::runtime::function_test_executor::FunctionTestExecutor::new(
+                plugin_root,
+                pool,
+            )
+            .execute_with_capabilities(&function, input, granted_capabilities)
+            .await
+            .map_err(|_| ToolExecutionError::TargetFailed)?;
+            serde_json::from_str(&rendered).map_err(|_| ToolExecutionError::TargetFailed)
+        })
+    }
+
+    fn execute_workflow(
+        &self,
+        workflow_id: i64,
+        input: Value,
+        granted_capabilities: Vec<String>,
+    ) -> ToolTargetFuture {
+        let pool = self.pool.clone();
+        let plugin_root = self.plugin_root.clone();
+        let crypto = self.crypto.clone();
+        Box::pin(async move {
+            let name = sqlx::query_scalar::<_, String>("SELECT name FROM workflows WHERE id = ?")
+                .bind(workflow_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|_| ToolExecutionError::TargetFailed)?
+                .ok_or(ToolExecutionError::TargetFailed)?;
+            let graph = WorkflowStore::new(pool.clone())
+                .map_err(|_| ToolExecutionError::TargetFailed)?
+                .load_graph(workflow_id, name)
+                .await
+                .map_err(|_| ToolExecutionError::TargetFailed)?;
+            let executor = WorkflowExecutor::new(
+                LocalWorkflowNodeExecutor::new(pool, plugin_root, crypto)
+                    .with_capabilities(granted_capabilities),
+            );
+            let outcome = executor
+                .execute(&graph, input, CancelHandle::new())
+                .await
+                .map_err(|_| ToolExecutionError::TargetFailed)?;
+            outcome
+                .node_results
+                .last()
+                .map(|result| result.output.clone())
+                .ok_or(ToolExecutionError::TargetFailed)
+        })
+    }
+}
+
+/// Immutable Capability snapshot for one persisted Tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolExecutionContext {
+    granted_capabilities: BTreeSet<String>,
+}
+
+impl ToolExecutionContext {
+    /// Construct a snapshot. Capability ordering does not grant extra access;
+    /// membership is evaluated against the persisted declaration.
+    pub fn new(granted_capabilities: Vec<String>) -> Self {
+        Self {
+            granted_capabilities: granted_capabilities.into_iter().collect(),
+        }
+    }
+
+    fn grants(&self, capability: &str) -> bool {
+        self.granted_capabilities.contains(capability)
+    }
+
+    fn granted(&self) -> Vec<String> {
+        self.granted_capabilities.iter().cloned().collect()
+    }
+}
+
+/// Stable, non-leaking persisted Tool execution failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ToolExecutionError {
+    /// Persisted Tool id does not exist.
+    #[error("not_found")]
+    NotFound,
+    /// A Function target is schema-only and cannot execute.
+    #[error("function_not_executable")]
+    FunctionNotExecutable,
+    /// Input violates the persisted input JSON Schema.
+    #[error("input_schema_mismatch")]
+    InputSchemaMismatch,
+    /// Execution snapshot lacks a required Capability.
+    #[error("capability_denied")]
+    CapabilityDenied,
+    /// Target output violates the persisted output JSON Schema.
+    #[error("output_schema_mismatch")]
+    OutputSchemaMismatch,
+    /// Persisted kind, target XOR, schema, or capability metadata is invalid.
+    #[error("invalid_persisted_tool")]
+    InvalidPersistedTool,
+    /// The local target failed without exposing backend text.
+    #[error("target_failed")]
+    TargetFailed,
+}
+
+impl ToolExecutionError {
+    /// Stable public error code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::FunctionNotExecutable => "function_not_executable",
+            Self::InputSchemaMismatch => "input_schema_mismatch",
+            Self::CapabilityDenied => "capability_denied",
+            Self::OutputSchemaMismatch => "output_schema_mismatch",
+            Self::InvalidPersistedTool => "invalid_persisted_tool",
+            Self::TargetFailed => "target_failed",
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct PersistedToolRow {
+    kind: String,
+    function_id: Option<i64>,
+    workflow_id: Option<i64>,
+    input_schema: String,
+    output_schema: String,
+    required_capabilities: Option<String>,
+}
+
+/// Production persisted Tool executor. The executor loads the canonical local
+/// row, validates policy and schemas, then invokes exactly one injected local
+/// Function or Workflow target. No remote fallback exists.
+#[derive(Clone)]
+pub struct PersistedToolExecutor {
+    pool: Pool<Sqlite>,
+    runner: Arc<dyn ToolTargetRunner>,
+}
+
+impl PersistedToolExecutor {
+    /// Construct the local executor over the canonical Store pool.
+    pub fn new(pool: Pool<Sqlite>, runner: Arc<dyn ToolTargetRunner>) -> Self {
+        Self { pool, runner }
+    }
+
+    /// Execute one persisted Tool through the strict validation sequence.
+    pub async fn execute(
+        &self,
+        tool_id: i64,
+        input: Value,
+        context: ToolExecutionContext,
+    ) -> Result<Value, ToolExecutionError> {
+        if tool_id <= 0 {
+            return Err(ToolExecutionError::NotFound);
+        }
+        let tool = sqlx::query_as::<_, PersistedToolRow>(
+            "SELECT kind, function_id, workflow_id, input_schema, output_schema, \
+                    required_capabilities FROM tools WHERE id = ?",
+        )
+        .bind(tool_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| ToolExecutionError::InvalidPersistedTool)?
+        .ok_or(ToolExecutionError::NotFound)?;
+
+        let target = match (tool.kind.as_str(), tool.function_id, tool.workflow_id) {
+            ("function-wrap", Some(function_id), None) => {
+                let kind =
+                    sqlx::query_scalar::<_, String>("SELECT kind FROM functions WHERE id = ?")
+                        .bind(function_id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(|_| ToolExecutionError::InvalidPersistedTool)?
+                        .ok_or(ToolExecutionError::InvalidPersistedTool)?;
+                if kind == "placeholder" {
+                    return Err(ToolExecutionError::FunctionNotExecutable);
+                }
+                if !matches!(kind.as_str(), "builtin" | "custom") {
+                    return Err(ToolExecutionError::InvalidPersistedTool);
+                }
+                PersistedTarget::Function(function_id)
+            }
+            ("workflow-wrap", None, Some(workflow_id)) => PersistedTarget::Workflow(workflow_id),
+            _ => return Err(ToolExecutionError::InvalidPersistedTool),
+        };
+
+        validate_json_schema(
+            &tool.input_schema,
+            &input,
+            ToolExecutionError::InputSchemaMismatch,
+        )?;
+        let required = tool
+            .required_capabilities
+            .as_deref()
+            .map(serde_json::from_str::<Vec<String>>)
+            .transpose()
+            .map_err(|_| ToolExecutionError::InvalidPersistedTool)?
+            .unwrap_or_default();
+        let mut declared = BTreeSet::new();
+        for capability in required {
+            if capability.trim() != capability
+                || capability.is_empty()
+                || !declared.insert(capability.clone())
+            {
+                return Err(ToolExecutionError::InvalidPersistedTool);
+            }
+            if !context.grants(&capability) {
+                return Err(ToolExecutionError::CapabilityDenied);
+            }
+        }
+
+        let granted_capabilities = context.granted();
+        let output = match target {
+            PersistedTarget::Function(function_id) => {
+                self.runner
+                    .execute_function(function_id, input, granted_capabilities)
+                    .await
+            }
+            PersistedTarget::Workflow(workflow_id) => {
+                self.runner
+                    .execute_workflow(workflow_id, input, granted_capabilities)
+                    .await
+            }
+        }
+        .map_err(|_| ToolExecutionError::TargetFailed)?;
+        validate_json_schema(
+            &tool.output_schema,
+            &output,
+            ToolExecutionError::OutputSchemaMismatch,
+        )?;
+        Ok(output)
+    }
+}
+
+enum PersistedTarget {
+    Function(i64),
+    Workflow(i64),
+}
+
+fn validate_json_schema(
+    schema: &str,
+    value: &Value,
+    mismatch: ToolExecutionError,
+) -> Result<(), ToolExecutionError> {
+    let schema = serde_json::from_str::<Value>(schema)
+        .map_err(|_| ToolExecutionError::InvalidPersistedTool)?;
+    let compiled = CompiledJsonSchema::compile(&schema)
+        .map_err(|_| ToolExecutionError::InvalidPersistedTool)?;
+    compiled.validate(value).map_err(|_| mismatch)
+}
 
 /// Stable tool kind label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

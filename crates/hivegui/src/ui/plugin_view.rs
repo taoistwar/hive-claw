@@ -1,3 +1,5 @@
+//! scroll:plugin_list
+
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
@@ -12,6 +14,7 @@ use crate::datasource::{
     },
     wasm_exports::extract_wasm_exports,
 };
+use crate::plugin::plugin_store::{PluginArtifactInput, PluginMetadata, PluginStore};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
@@ -140,22 +143,6 @@ impl PluginView {
             .map(|(_, _, manifest)| manifest)
             .ok()
             .or_else(|| item.manifest.clone())
-    }
-
-    fn save_wasm_locally(
-        base_dir: &std::path::Path,
-        plugin_id: i64,
-        source_path: &std::path::Path,
-    ) -> anyhow::Result<()> {
-        let plugin_dir = Plugin::ensure_plugin_dir(base_dir, plugin_id)?;
-        let dest_path = plugin_dir.join("plugin.wasm");
-        std::fs::copy(source_path, &dest_path)?;
-        tracing::info!(
-            plugin_id = plugin_id,
-            dest = %dest_path.display(),
-            "WASM file saved locally"
-        );
-        Ok(())
     }
 
     fn pick_wasm_file(&mut self, cx: &mut Context<Self>) {
@@ -421,20 +408,12 @@ impl PluginView {
             cx.notify();
             return;
         }
-        // Import / replace / keep-existing fork:
+        // Import / edit fork:
         // - new plugin (import): a WASM file is required (checked above).
-        // - editing with a new file (replace): regenerate the artifact key.
-        // - editing without a new file (keep): preserve the original s3_key,
-        //   sha256 and size, and only update the remaining metadata.
-        let keep_existing = self.editing_id.is_some() && self.form_wasm_path.is_none();
-        let s3k = if keep_existing {
-            self.form_original_s3_key.clone()
-        } else {
-            format!(
-                "plugins/{}/{}.wasm",
-                self.form_identifier, self.form_version
-            )
-        };
+        // - editing: the artifact file is immutable (identifier/version/runtime
+        //   are locked in the UI), so the original s3_key, sha256 and size are
+        //   preserved and only display + runtime metadata are updated.
+        let original_s3_key = self.form_original_s3_key.clone();
         let size_bytes: i64 = self.form_size_bytes.parse().unwrap_or(0);
         let store = self.store.read(cx).clone();
         let idf = self.form_identifier.clone();
@@ -477,9 +456,11 @@ impl PluginView {
             &self.form_memory_mb,
             &self.form_output_mb,
         );
-        let base_dir = Store::default_db_path();
-
         if let Some(eid) = self.editing_id {
+            // T077: editing never replaces the WASM artifact. identifier/
+            // version/runtime are locked in the UI, so the original s3_key,
+            // sha256 and size are preserved and only metadata + limits update.
+            let s3k = original_s3_key;
             cx.spawn(async move |this, cx| {
                 match Plugin::update(
                     store.pool(),
@@ -500,12 +481,6 @@ impl PluginView {
                 .await
                 {
                     Ok(_) => {
-                        // Copy WASM file locally if a new one was selected
-                        if let Some(ref src) = wasm_path
-                            && let Err(e) = Self::save_wasm_locally(&base_dir, eid, src)
-                        {
-                            tracing::error!("Failed to save WASM locally: {}", e);
-                        }
                         if let Err(e) = Plugin::update_limits(
                             store.pool(),
                             eid,
@@ -534,41 +509,68 @@ impl PluginView {
             .detach();
         } else {
             let manifest = normalized_manifest;
+            // T077: the controlled import walks the full durability state
+            // machine (`prepared` → … → `done`) through `PluginStore::install`,
+            // replacing the old `Plugin::create` + `set_artifact_key` +
+            // `std::fs::copy` flow. The store writes the artifact to an
+            // immutable no-replace key under `plugin_root` and creates the
+            // live row with the full UI metadata in a single flow.
+            let plugin_root = store.plugin_root().to_path_buf();
             cx.spawn(async move |this, cx| {
-                match Plugin::create(
-                    store.pool(),
-                    idf,
+                let src = match wasm_path {
+                    Some(path) => path,
+                    None => {
+                        this.update(cx, |v, cx| {
+                            v.error_message = Some("请先选择 WASM 文件".to_string());
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                };
+                let bytes = match std::fs::read(&src) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        this.update(cx, |v, cx| {
+                            v.error_message = Some(format!("读取 WASM 文件失败: {e}"));
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                };
+                let metadata = PluginMetadata::new(
                     name,
                     desc,
                     manifest,
                     rt,
-                    ver,
-                    None,
-                    None,
-                    s3k,
-                    sha,
-                    size_bytes,
-                    None,
-                )
-                .await
-                {
-                    Ok(plugin) => {
-                        // Copy WASM file locally
-                        if let Some(ref src) = wasm_path
-                            && let Err(e) = Self::save_wasm_locally(&base_dir, plugin.id, src)
-                        {
-                            tracing::error!("Failed to save WASM locally: {}", e);
-                        }
-                        if let Err(e) = Plugin::update_limits(
-                            store.pool(),
-                            plugin.id,
-                            capabilities_json,
-                            resource_limits,
-                        )
-                        .await
-                        {
-                            tracing::error!("Failed to save resource limits: {}", e);
-                        }
+                    capabilities_json,
+                    resource_limits,
+                );
+                let input = match PluginArtifactInput::new(idf, ver, &bytes) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        this.update(cx, |v, cx| {
+                            v.error_message = Some(format!("插件输入无效: {e}"));
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                };
+                let plugin_store = match PluginStore::new(store.pool().clone(), plugin_root) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        this.update(cx, |v, cx| {
+                            v.error_message = Some(format!("初始化插件存储失败: {e}"));
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                };
+                match plugin_store.install_with_metadata(input, metadata).await {
+                    Ok(_record) => {
                         this.update(cx, |v, cx| {
                             v.hide_form(cx);
                             v.load(cx);
@@ -577,7 +579,7 @@ impl PluginView {
                     }
                     Err(e) => {
                         this.update(cx, |v, cx| {
-                            v.error_message = Some(format!("创建失败: {}", e));
+                            v.error_message = Some(format!("导入失败: {e}"));
                             cx.notify();
                         })
                         .ok();
@@ -590,21 +592,24 @@ impl PluginView {
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
-        let base_dir = Store::default_db_path();
-        cx.spawn(
-            async move |this, cx| match Plugin::delete(store.pool(), id).await {
+        let plugin_root = store.plugin_root().to_path_buf();
+        cx.spawn(async move |this, cx| {
+            // T079 ③: deletion goes through the controlled store — soft-delete
+            // + `pending` GC ledger row + protected drain — instead of the
+            // legacy `Plugin::delete` + immediate `remove_dir_all`.
+            let plugin_store = match PluginStore::new(store.pool().clone(), plugin_root) {
+                Ok(s) => s,
+                Err(e) => {
+                    this.update(cx, |v, cx| {
+                        v.error_message = Some(format!("初始化插件存储失败: {e}"));
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            match plugin_store.delete(id).await {
                 Ok(_) => {
-                    // Clean up local WASM directory
-                    let wasm_dir = base_dir.join("plugins").join(id.to_string());
-                    if wasm_dir.exists()
-                        && let Err(e) = std::fs::remove_dir_all(&wasm_dir)
-                    {
-                        tracing::warn!(
-                            plugin_id = id,
-                            error = %e,
-                            "Failed to cleanup plugin WASM directory"
-                        );
-                    }
                     this.update(cx, |v, cx| {
                         v.load(cx);
                     })
@@ -612,13 +617,13 @@ impl PluginView {
                 }
                 Err(e) => {
                     this.update(cx, |v, cx| {
-                        v.error_message = Some(format!("删除失败: {}", e));
+                        v.error_message = Some(format!("删除失败: {e}"));
                         cx.notify();
                     })
                     .ok();
                 }
-            },
-        )
+            }
+        })
         .detach();
     }
 
@@ -919,6 +924,11 @@ impl Render for PluginView {
                 };
                 let form_scroll =
                     management_modal_scroll_content("plugin-form-scroll", &self.form_scroll);
+                let editing = self.editing_id.is_some();
+                let edit_identifier = self.form_identifier.clone();
+                let edit_version = self.form_version.clone();
+                let form_wasm_path = self.form_wasm_path.clone();
+                let pick_weak = cx.weak_entity();
                 this.child(
                     div()
                         .absolute()
@@ -974,7 +984,20 @@ impl Render for PluginView {
                                                 "添加插件"
                                             }),
                                     )
-                                    .child(form_field("Identifier *", identifier_input, theme))
+                                    .when(!editing, move |this| {
+                                        this.child(form_field(
+                                            "Identifier *",
+                                            identifier_input.clone(),
+                                            theme,
+                                        ))
+                                    })
+                                    .when(editing, move |this| {
+                                        this.child(form_field_readonly(
+                                            "Identifier",
+                                            &edit_identifier,
+                                            theme,
+                                        ))
+                                    })
                                     .child(form_field("名称 *", name_input, theme))
                                     .child(form_field("描述", description_input, theme))
                                     .child(
@@ -1009,75 +1032,95 @@ impl Render for PluginView {
                                                     ),
                                             ),
                                     )
-                                    .child(form_field("Version *", version_input, theme))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(4.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .text_color(theme.foreground)
-                                                    .child("WASM 文件 *"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(8.0))
-                                                    .child(
-                                                        action_button(
-                                                            "pick-wasm",
-                                                            "选择 WASM 文件",
-                                                            ActionRole::Main,
-                                                            ActionSize::Page,
-                                                            style,
-                                                        )
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, cx| {
-                                                                    v.pick_wasm_file(cx)
-                                                                })
-                                                                .ok();
-                                                            }
-                                                        }),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .text_size(px(12.0))
-                                                            .text_color(
-                                                                theme.foreground.opacity(0.6),
+                                    .when(!editing, move |this| {
+                                        this.child(form_field(
+                                            "Version *",
+                                            version_input.clone(),
+                                            theme,
+                                        ))
+                                    })
+                                    .when(editing, move |this| {
+                                        this.child(form_field_readonly(
+                                            "Version",
+                                            &edit_version,
+                                            theme,
+                                        ))
+                                    })
+                                    .when(!editing, move |this| {
+                                        this.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(theme.foreground)
+                                                        .child("WASM 文件 *"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.0))
+                                                        .child(
+                                                            action_button(
+                                                                "pick-wasm",
+                                                                "选择 WASM 文件",
+                                                                ActionRole::Main,
+                                                                ActionSize::Page,
+                                                                style,
                                                             )
-                                                            .debug_selector(|| {
-                                                                "PLUGIN_WASM_SELECTION".to_owned()
-                                                            })
-                                                            .child(
-                                                                self.form_wasm_path
-                                                                    .as_ref()
-                                                                    .map(|p| {
-                                                                        p.file_name()
-                                                                            .and_then(|n| {
-                                                                                n.to_str()
-                                                                            })
-                                                                            .unwrap_or("")
-                                                                            .to_string()
-                                                                    })
-                                                                    .unwrap_or_else(|| {
-                                                                        if self.editing_id.is_some()
-                                                                        {
-                                                                            "保留既有文件（未替换）"
-                                                                                .to_string()
-                                                                        } else {
-                                                                            "未选择文件".to_string()
-                                                                        }
-                                                                    }),
+                                                            .on_mouse_down(
+                                                                MouseButton::Left,
+                                                                {
+                                                                    let t = pick_weak;
+                                                                    move |_, _, cx| {
+                                                                        t.update(cx, |v, cx| {
+                                                                            v.pick_wasm_file(cx)
+                                                                        })
+                                                                        .ok();
+                                                                    }
+                                                                },
                                                             ),
-                                                    ),
-                                            ),
-                                    )
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .text_size(px(12.0))
+                                                                .text_color(
+                                                                    theme.foreground.opacity(0.6),
+                                                                )
+                                                                .debug_selector(|| {
+                                                                    "PLUGIN_WASM_SELECTION"
+                                                                        .to_owned()
+                                                                })
+                                                                .child(
+                                                                    form_wasm_path
+                                                                        .as_ref()
+                                                                        .map(|p| {
+                                                                            p.file_name()
+                                                                                .and_then(|n| {
+                                                                                    n.to_str()
+                                                                                })
+                                                                                .unwrap_or("")
+                                                                                .to_string()
+                                                                        })
+                                                                        .unwrap_or_else(|| {
+                                                                            "未选择文件".to_string()
+                                                                        }),
+                                                                ),
+                                                        ),
+                                                ),
+                                        )
+                                    })
+                                    .when(editing, move |this| {
+                                        this.child(form_field_readonly(
+                                            "WASM 文件",
+                                            "不可修改（添加后文件不可替换）",
+                                            theme,
+                                        ))
+                                    })
                                     .when_some(self.form_file_path.as_ref(), |this, path| {
                                         this.child(
                                             div()
@@ -1595,6 +1638,44 @@ fn form_field(
         )
 }
 
+/// Read-only field rendering (same visual as the locked `Runtime` row).
+/// Used for `identifier` / `version` during edit, where the plugin artifact
+/// file is immutable.
+fn form_field_readonly(
+    label: &'static str,
+    value: &str,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme.foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(32.0))
+                .px(px(8.0))
+                .border_1()
+                .border_color(theme.border)
+                .rounded(px(4.0))
+                .bg(theme.background.opacity(0.3))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(theme.foreground.opacity(0.6))
+                        .child(value.to_string()),
+                ),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::{
@@ -1727,8 +1808,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temporary plugin directory");
         let mut plugin = test_plugin(42);
         plugin.manifest = None;
-        let plugin_dir =
-            Plugin::ensure_plugin_dir(temp_dir.path(), plugin.id).expect("create plugin directory");
+        let plugin_dir = Plugin::ensure_plugin_dir(
+            temp_dir.path(),
+            &plugin.identifier,
+            &plugin.version,
+            plugin.id,
+        )
+        .expect("create plugin directory");
         let wasm = wat::parse_str(
             r#"(module
                 (func (export "run"))

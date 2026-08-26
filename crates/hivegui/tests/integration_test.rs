@@ -1,9 +1,17 @@
 use anyhow::Result;
 use hivegui::datasource::entity_store::{
-    Agent, Capability, Category, Function, Plugin, Skill, Tag, Tool, Workflow, export_all_data,
+    Agent, Capability, Category, Plugin, Skill, Tag, Tool, Workflow, export_all_data,
     get_current_version, import_from_backup, init_tables, run_migrations,
 };
+use hivegui::datasource::function_store::{
+    FunctionInput, FunctionKind, FunctionRecord, FunctionStore,
+};
+use hivegui::datasource::migrations::{MigrationOptions, migrate_to_current};
 use sqlx::sqlite::SqlitePoolOptions;
+use std::sync::{Mutex, OnceLock};
+use tempfile::TempDir;
+
+static TEST_DATABASE_ROOTS: OnceLock<Mutex<Vec<TempDir>>> = OnceLock::new();
 
 async fn setup_test_db() -> Result<sqlx::Pool<sqlx::Sqlite>> {
     let pool = SqlitePoolOptions::new()
@@ -13,6 +21,56 @@ async fn setup_test_db() -> Result<sqlx::Pool<sqlx::Sqlite>> {
 
     init_tables(&pool).await?;
     Ok(pool)
+}
+
+async fn setup_v4_test_db() -> Result<sqlx::Pool<sqlx::Sqlite>> {
+    let root = tempfile::tempdir()?;
+    let database_path = root.path().join("datasources.db");
+    let plugin_root = root.path().join("plugins");
+    std::fs::create_dir_all(&plugin_root)?;
+    migrate_to_current(MigrationOptions::new(&database_path, &plugin_root)).await?;
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite://{}?mode=rw", database_path.display()))
+        .await?;
+
+    TEST_DATABASE_ROOTS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("test database root registry lock")
+        .push(root);
+    Ok(pool)
+}
+
+fn placeholder_function_input(
+    identifier: impl Into<String>,
+    name: impl Into<String>,
+    description: Option<String>,
+) -> Result<FunctionInput> {
+    Ok(FunctionInput::for_write(
+        identifier.into(),
+        name.into(),
+        description,
+        FunctionKind::Placeholder,
+        "{}".to_string(),
+        "{}".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )?)
+}
+
+async fn create_placeholder_function(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    identifier: impl Into<String>,
+    name: impl Into<String>,
+    description: Option<String>,
+) -> Result<FunctionRecord> {
+    Ok(FunctionStore::new(pool.clone())?
+        .create(placeholder_function_input(identifier, name, description)?)
+        .await?)
 }
 
 #[tokio::test]
@@ -340,58 +398,47 @@ async fn test_plugin_update_limits_persists_and_bumps_revision() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_crud() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
     // Create
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "test_function".to_string(),
         "Test Function".to_string(),
         Some("A test function".to_string()),
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
     )
     .await?;
 
-    assert_eq!(func.identifier, "test_function");
-    assert_eq!(func.kind, "builtin");
+    assert_eq!(func.identifier(), "test_function");
+    assert_eq!(func.kind(), FunctionKind::Placeholder);
 
     // Read
-    let retrieved = Function::get(&pool, func.id).await?.unwrap();
-    assert_eq!(retrieved.identifier, "test_function");
+    let retrieved = functions.get(func.id()).await?.unwrap();
+    assert_eq!(retrieved.identifier(), "test_function");
 
     // Update
-    let updated = Function::update(
-        &pool,
-        func.id,
-        "test_function".to_string(),
-        "Updated Function".to_string(),
-        Some("Updated description".to_string()),
-        "custom".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
+    let updated = functions
+        .update(
+            func.id(),
+            placeholder_function_input(
+                "test_function",
+                "Updated Function",
+                Some("Updated description".to_string()),
+            )?,
+        )
+        .await?;
 
-    assert_eq!(updated.name, "Updated Function");
-    assert_eq!(updated.kind, "custom");
+    assert_eq!(updated.name(), "Updated Function");
+    assert_eq!(updated.kind(), FunctionKind::Placeholder);
 
     // List
-    let functions = Function::list(&pool, None, 10, 0).await?;
-    assert_eq!(functions.len(), 1);
+    let page = functions.list(None, 1).await?;
+    assert_eq!(page.items().len(), 1);
 
     // Delete
-    Function::delete(&pool, func.id).await?;
-    let deleted = Function::get(&pool, func.id).await?;
+    functions.delete(func.id()).await?;
+    let deleted = functions.get(func.id()).await?;
     assert!(deleted.is_none());
 
     Ok(())
@@ -456,20 +503,13 @@ async fn test_workflow_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_tool_crud() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
 
     // Create a function first (tool requires function_id or workflow_id)
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "tool_function".to_string(),
         "Tool Function".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
@@ -483,7 +523,7 @@ async fn test_tool_crud() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -494,7 +534,7 @@ async fn test_tool_crud() -> Result<()> {
 
     assert_eq!(tool.identifier, "test-tool");
     assert_eq!(tool.kind, "function-wrap");
-    assert_eq!(tool.function_id, Some(func.id));
+    assert_eq!(tool.function_id, Some(func.id()));
 
     // Read
     let retrieved = Tool::get(&pool, tool.id).await?.unwrap();
@@ -510,7 +550,7 @@ async fn test_tool_crud() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -1432,66 +1472,47 @@ async fn test_plugin_update() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_create_and_get() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "test_function".to_string(),
         "Test Function".to_string(),
         Some("A test function".to_string()),
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
     )
     .await?;
 
-    assert_eq!(func.identifier, "test_function");
-    assert_eq!(func.kind, "builtin");
+    assert_eq!(func.identifier(), "test_function");
+    assert_eq!(func.kind(), FunctionKind::Placeholder);
 
-    let retrieved = Function::get(&pool, func.id).await?.unwrap();
-    assert_eq!(retrieved.identifier, "test_function");
+    let retrieved = functions.get(func.id()).await?.unwrap();
+    assert_eq!(retrieved.identifier(), "test_function");
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_function_identifier_unique() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
-    Function::create(
+    create_placeholder_function(
         &pool,
         "unique_func".to_string(),
         "Function 1".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
 
     // 重复 identifier 应该失败
-    let result = Function::create(
-        &pool,
-        "unique_func".to_string(),
-        "Function 2".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await;
+    let result = functions
+        .create(placeholder_function_input(
+            "unique_func",
+            "Function 2",
+            None,
+        )?)
+        .await;
 
     assert!(result.is_err());
 
@@ -1500,146 +1521,106 @@ async fn test_function_identifier_unique() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_list_pagination() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
     // 创建 25 个函数
     for i in 0..25 {
-        Function::create(
+        create_placeholder_function(
             &pool,
             format!("func_{}", i),
             format!("Function {}", i),
-            None,
-            "builtin".to_string(),
-            "{}".to_string(),
-            "{}".to_string(),
-            None,
-            None,
-            None,
             None,
         )
         .await?;
     }
 
-    // 第一页 10 条
-    let page1 = Function::list(&pool, None, 10, 0).await?;
-    assert_eq!(page1.len(), 10);
+    // Public Function paging is fixed at 20 rows.
+    let page1 = functions.list(None, 1).await?;
+    assert_eq!(page1.items().len(), 20);
 
-    // 第二页 10 条
-    let page2 = Function::list(&pool, None, 10, 10).await?;
-    assert_eq!(page2.len(), 10);
-
-    // 第三页 5 条
-    let page3 = Function::list(&pool, None, 10, 20).await?;
-    assert_eq!(page3.len(), 5);
+    let page2 = functions.list(None, 2).await?;
+    assert_eq!(page2.items().len(), 5);
+    assert_eq!(page2.total(), 25);
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_function_search() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
-    Function::create(
+    create_placeholder_function(
         &pool,
         "rust_func".to_string(),
         "Rust Function".to_string(),
         Some("Rust function".to_string()),
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
     )
     .await?;
 
-    Function::create(
+    create_placeholder_function(
         &pool,
         "python_func".to_string(),
         "Python Function".to_string(),
         Some("Python function".to_string()),
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
     )
     .await?;
 
     // 搜索 "Rust"
-    let results = Function::list(&pool, Some("Rust".to_string()), 10, 0).await?;
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].name, "Rust Function");
+    let results = functions.list(Some("Rust".to_string()), 1).await?;
+    assert_eq!(results.items().len(), 1);
+    assert_eq!(results.items()[0].name(), "Rust Function");
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_function_update() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "update_func".to_string(),
         "Original".to_string(),
         None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
     )
     .await?;
 
-    let updated = Function::update(
-        &pool,
-        func.id,
-        "update_func".to_string(),
-        "Updated".to_string(),
-        Some("Updated description".to_string()),
-        "custom".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
+    let updated = functions
+        .update(
+            func.id(),
+            placeholder_function_input(
+                "update_func",
+                "Updated",
+                Some("Updated description".to_string()),
+            )?,
+        )
+        .await?;
 
-    assert_eq!(updated.name, "Updated");
-    assert_eq!(updated.kind, "custom");
+    assert_eq!(updated.name(), "Updated");
+    assert_eq!(updated.kind(), FunctionKind::Placeholder);
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_function_delete() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
+    let functions = FunctionStore::new(pool.clone())?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "to_delete".to_string(),
         "To Delete".to_string(),
         None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
-        None,
     )
     .await?;
 
-    Function::delete(&pool, func.id).await?;
+    functions.delete(func.id()).await?;
 
-    let deleted = Function::get(&pool, func.id).await?;
+    let deleted = functions.get(func.id()).await?;
     assert!(deleted.is_none());
 
     Ok(())
@@ -1857,19 +1838,12 @@ async fn test_workflow_delete() -> Result<()> {
 
 #[tokio::test]
 async fn test_tool_create_and_get() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "tool_func".to_string(),
         "Tool Function".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
@@ -1882,7 +1856,7 @@ async fn test_tool_create_and_get() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -1893,7 +1867,7 @@ async fn test_tool_create_and_get() -> Result<()> {
 
     assert_eq!(tool.identifier, "test-tool");
     assert_eq!(tool.kind, "function-wrap");
-    assert_eq!(tool.function_id, Some(func.id));
+    assert_eq!(tool.function_id, Some(func.id()));
 
     let retrieved = Tool::get(&pool, tool.id).await?.unwrap();
     assert_eq!(retrieved.identifier, "test-tool");
@@ -1903,19 +1877,12 @@ async fn test_tool_create_and_get() -> Result<()> {
 
 #[tokio::test]
 async fn test_tool_identifier_unique() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "unique_tool_func".to_string(),
         "Function".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
@@ -1928,7 +1895,7 @@ async fn test_tool_identifier_unique() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -1946,7 +1913,7 @@ async fn test_tool_identifier_unique() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -2020,19 +1987,12 @@ async fn test_tool_check_constraint_kind2() -> Result<()> {
 
 #[tokio::test]
 async fn test_tool_list_pagination() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "pagination_func".to_string(),
         "Function".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
@@ -2047,7 +2007,7 @@ async fn test_tool_list_pagination() -> Result<()> {
             "function-wrap".to_string(),
             "workspace".to_string(),
             false,
-            Some(func.id),
+            Some(func.id()),
             None,
             "{}".to_string(),
             "{}".to_string(),
@@ -2074,19 +2034,12 @@ async fn test_tool_list_pagination() -> Result<()> {
 
 #[tokio::test]
 async fn test_tool_update() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "update_func".to_string(),
         "Function".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
@@ -2099,7 +2052,7 @@ async fn test_tool_update() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -2117,7 +2070,7 @@ async fn test_tool_update() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),
@@ -2134,19 +2087,12 @@ async fn test_tool_update() -> Result<()> {
 
 #[tokio::test]
 async fn test_tool_delete() -> Result<()> {
-    let pool = setup_test_db().await?;
+    let pool = setup_v4_test_db().await?;
 
-    let func = Function::create(
+    let func = create_placeholder_function(
         &pool,
         "delete_func".to_string(),
         "Function".to_string(),
-        None,
-        "builtin".to_string(),
-        "{}".to_string(),
-        "{}".to_string(),
-        None,
-        None,
-        None,
         None,
     )
     .await?;
@@ -2159,7 +2105,7 @@ async fn test_tool_delete() -> Result<()> {
         "function-wrap".to_string(),
         "workspace".to_string(),
         false,
-        Some(func.id),
+        Some(func.id()),
         None,
         "{}".to_string(),
         "{}".to_string(),

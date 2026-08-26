@@ -93,6 +93,17 @@ fn production_catalog_is_exhaustive_owned_and_phase_activated() {
                 "Foundation query {} has an unrelated activation task",
                 query.id
             );
+        } else if (query.owner_phase == "US9" && query.activation_task == "T083")
+            || (query.owner_phase == "US10" && query.activation_task == "T095")
+            || (query.owner_phase == "US11" && query.activation_task == "T105")
+            || (query.owner_phase == "US13" && query.activation_task == "T115")
+            || (query.owner_phase == "US13" && query.activation_task == "T117")
+        {
+            assert!(
+                query.active,
+                "reviewer-approved story query {} cannot remain deferred",
+                query.id
+            );
         } else {
             assert!(
                 !query.active,
@@ -441,6 +452,205 @@ async fn every_active_foundation_sqlite_query_is_explained_against_real_v4_store
             verdict.failures()
         );
     }
+}
+
+#[tokio::test]
+async fn active_t083_function_routes_explain_the_registered_production_sql() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    let store = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open real v4 Store");
+    let activated = production_query_catalog()
+        .iter()
+        .filter(|query| {
+            query.active
+                && query.owner_phase == "US9"
+                && query.activation_task == "T083"
+                && query.dialect == QueryDialect::Sqlite
+        })
+        .collect::<Vec<_>>();
+
+    // This inventory is deliberately expressed in catalog metadata rather
+    // than copied SQL. Each matching row must expose and EXPLAIN the exact
+    // static statement used by production; a test-only SELECT assembled from
+    // table/column names cannot satisfy this gate.
+    for (label, table, required_columns) in [
+        (
+            "three-or-more-scalar FTS search",
+            "search_documents_fts",
+            &[][..],
+        ),
+        (
+            "one-or-two-scalar short-gram search",
+            "search_short_grams",
+            &["gram_len", "gram"][..],
+        ),
+        (
+            "normalized deduped Function page",
+            "search_documents",
+            &["entity_type", "field"][..],
+        ),
+        ("Function entity load", "functions", &["id"][..]),
+        ("Tool references to Function", "tools", &["function_id"][..]),
+        (
+            "WorkflowNode references to Function",
+            "workflow_nodes",
+            &["function_id"][..],
+        ),
+    ] {
+        let query = activated
+            .iter()
+            .copied()
+            .find(|query| {
+                query.requirements.iter().any(|requirement| {
+                    requirement.table == table
+                        && required_columns.iter().all(|column| {
+                            requirement.filter_columns.contains(column)
+                                || requirement.join_columns.contains(column)
+                        })
+                })
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "active US9/T083 production catalog lacks {label} ownership for {table} columns {required_columns:?}"
+                )
+            });
+
+        let plan = explain_registered_production_sql(&store, query)
+            .await
+            .unwrap_or_else(|error| panic!("EXPLAIN registered {}: {error}", query.id));
+        assert_registered_access_paths(query, &plan, label);
+    }
+
+    let workflow_queries = production_query_catalog()
+        .iter()
+        .filter(|query| {
+            query.active
+                && query.owner_phase == "US10"
+                && query.activation_task == "T095"
+                && query.dialect == QueryDialect::Sqlite
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !workflow_queries.is_empty(),
+        "reviewer-approved US10/T095 query catalog must be active"
+    );
+    for query in workflow_queries {
+        let plan = explain_registered_production_sql(&store, query)
+            .await
+            .unwrap_or_else(|error| panic!("EXPLAIN registered {}: {error}", query.id));
+        assert_registered_access_paths(query, &plan, "Workflow Store");
+    }
+
+    let tool_queries = production_query_catalog()
+        .iter()
+        .filter(|query| {
+            query.active
+                && query.owner_phase == "US11"
+                && query.activation_task == "T105"
+                && query.dialect == QueryDialect::Sqlite
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !tool_queries.is_empty(),
+        "reviewer-approved US11/T105 query catalog must be active"
+    );
+    for query in tool_queries {
+        let plan = explain_registered_production_sql(&store, query)
+            .await
+            .unwrap_or_else(|error| panic!("EXPLAIN registered {}: {error}", query.id));
+        assert_registered_access_paths(query, &plan, "Tool Store");
+    }
+}
+
+fn assert_registered_access_paths(query: &ProductionQuery, plan: &[SqlitePlanRow], label: &str) {
+    for requirement in query.requirements {
+        let matching = plan
+            .iter()
+            .filter(|row| row.detail.contains(requirement.table))
+            .map(|row| row.detail)
+            .collect::<Vec<_>>();
+        assert!(
+            !matching.is_empty(),
+            "{label} query {} does not reach required table {}: {:?}",
+            query.id,
+            requirement.table,
+            plan
+        );
+
+        let indexed = if requirement.table == "search_documents_fts" {
+            matching
+                .iter()
+                .any(|detail| detail.contains("VIRTUAL TABLE INDEX"))
+        } else {
+            matching.iter().any(|detail| {
+                detail.starts_with("SEARCH ")
+                    || detail.contains("USING INDEX")
+                    || detail.contains("USING COVERING INDEX")
+                    || detail.contains("USING INTEGER PRIMARY KEY")
+            })
+        };
+        assert!(
+            indexed,
+            "{label} query {} does not use indexed access for {}: {matching:?}",
+            query.id, requirement.table
+        );
+        if let Some(expected_index) = requirement.expected_index {
+            assert!(
+                matching
+                    .iter()
+                    .any(|detail| detail.contains(expected_index)),
+                "{label} query {} does not use expected index {expected_index} for {}: {matching:?}",
+                query.id,
+                requirement.table
+            );
+        }
+    }
+
+    assert!(
+        !plan
+            .iter()
+            .any(|row| row.detail.starts_with("SCAN functions")),
+        "{label} query {} must not scan the Function business table: {plan:?}",
+        query.id
+    );
+}
+
+async fn explain_registered_production_sql(
+    store: &Store,
+    query: &ProductionQuery,
+) -> Result<Vec<SqlitePlanRow>, String> {
+    // `ProductionQuery::sql` is the production statement itself. Requiring it
+    // in the public catalog makes it impossible for this test to pass by
+    // synthesizing a friendlier query from `table`/`requirements` metadata.
+    let sql = query.sql;
+    if sql.trim().is_empty() {
+        return Err(format!("{} has no registered production SQL", query.id));
+    }
+    let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
+    let mut statement = sqlx::query(AssertSqlSafe(explain_sql));
+    for _ in 0..sql.matches('?').count() {
+        statement = statement.bind(Option::<String>::None);
+    }
+    let rows = statement
+        .fetch_all(store.pool())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let detail = row.try_get::<String, _>(3).expect("SQLite EXPLAIN detail");
+            SqlitePlanRow {
+                id: row.try_get(0).expect("SQLite EXPLAIN id"),
+                parent: row.try_get(1).expect("SQLite EXPLAIN parent"),
+                not_used: row.try_get(2).expect("SQLite EXPLAIN not-used"),
+                detail: Box::leak(detail.into_boxed_str()),
+            }
+        })
+        .collect())
 }
 
 fn evaluate_sqlite_plan_set(

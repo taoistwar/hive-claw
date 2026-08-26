@@ -110,19 +110,19 @@ impl ScrollSurface {
             },
             ScrollSurface::PluginList => OwnerPhase::Story {
                 story: "US8",
-                task: "T077",
+                task: "T081",
             },
             ScrollSurface::FunctionList => OwnerPhase::Story {
                 story: "US9",
-                task: "T087",
+                task: "T088",
             },
             ScrollSurface::WorkflowDag => OwnerPhase::Story {
                 story: "US10",
-                task: "T095",
+                task: "T097-T098",
             },
             ScrollSurface::ToolList => OwnerPhase::Story {
                 story: "US11",
-                task: "T105",
+                task: "T106",
             },
             ScrollSurface::SkillList => OwnerPhase::Story {
                 story: "US12",
@@ -130,7 +130,7 @@ impl ScrollSurface {
             },
             ScrollSurface::AgentExecution => OwnerPhase::Story {
                 story: "US13",
-                task: "T124",
+                task: "T132-T135",
             },
         }
     }

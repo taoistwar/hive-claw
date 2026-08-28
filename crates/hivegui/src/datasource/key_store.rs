@@ -412,11 +412,11 @@ impl DeviceKeyStore {
     /// when the file is missing / unreadable / has the wrong
     /// permissions.
     pub fn validate_owner_only(path: &Path) -> Result<(), DeviceKeyError> {
-        let metadata = fs::metadata(path)?;
+        let _metadata = fs::metadata(path)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = metadata.permissions().mode();
+            let mode = _metadata.permissions().mode();
             if mode & 0o077 != 0 {
                 return Err(DeviceKeyError::WrongPermissions);
             }

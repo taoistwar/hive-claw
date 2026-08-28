@@ -1644,18 +1644,18 @@ fn read_verified_open_file(
             ));
         }
     }
-    #[cfg(not(unix))]
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return Err(ExportError::UnsafeSource(
-            display_path.display().to_string(),
-        ));
-    }
     let mut bytes = Vec::with_capacity(expected_size.min(16 * 1024 * 1024) as usize);
     file.read_to_end(&mut bytes)
         .map_err(|_| ExportError::UnsafeSource(display_path.display().to_string()))?;
     let after = file
         .metadata()
         .map_err(|_| ExportError::UnsafeSource(display_path.display().to_string()))?;
+    #[cfg(not(unix))]
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err(ExportError::UnsafeSource(
+            display_path.display().to_string(),
+        ));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

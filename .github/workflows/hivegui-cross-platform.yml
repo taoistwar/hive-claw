@@ -1,0 +1,132 @@
+name: hivegui cross-platform
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hivegui-cross-platform.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/hivegui/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/hivegui-cross-platform.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/hivegui/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hivegui-cross-platform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  t139-automated-evidence:
+    name: T139 automated evidence (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - macos-15
+
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Install and verify Rust 1.97.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal
+          rustc_details="$(rustc +1.97.1 --version --verbose)"
+          cargo_details="$(cargo +1.97.1 --version --verbose)"
+          printf '%s\n' "$rustc_details"
+          printf '%s\n' "$cargo_details"
+          grep -Fqx -- "release: 1.97.1" <<<"$rustc_details"
+          grep -Fqx -- "release: 1.97.1" <<<"$cargo_details"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-hivegui-t139-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-hivegui-t139-rust-1.97.1-
+
+      - name: Compile every HiveGUI target
+        run: cargo +1.97.1 check --locked -p hivegui --all-targets
+
+      - name: Verify Home, Ai, Tools and local navigation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.97.1 test --locked -p hivegui --test navigation -- --nocapture
+          cargo +1.97.1 test --locked -p hivegui --test accessibility \
+            sidebar_tab_order_home_ai_tools_user_config -- --exact --nocapture
+          cargo +1.97.1 test --locked -p hivegui --test accessibility \
+            us13_agent_conversation_settings_activate_the_owner_native_scroll_row \
+            -- --exact --nocapture
+
+      - name: Verify current DataSource keyboard and native-scroll contracts
+        run: >-
+          cargo +1.97.1 test --locked -p hivegui
+          --test datasource_ui_contract -- --nocapture
+
+      - name: Verify keyboard, focus and real scroll-displacement harnesses
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.97.1 test --locked -p hivegui --test accessibility \
+            native_wheel_moves_bottom_actions_into_viewport -- --nocapture
+          cargo +1.97.1 test --locked -p hivegui --test accessibility \
+            dag_keyboard_delete_property_panel_and_focus_restore_are_real \
+            -- --exact --nocapture
+          cargo +1.97.1 test --locked -p hivegui --test accessibility \
+            conversation_stop_history_delete_and_keyboard_flow_are_real \
+            -- --exact --nocapture
+          cargo +1.97.1 test --locked -p hivegui --test accessibility \
+            settings_backup_restore_retention_and_diagnostics_are_keyboard_reachable \
+            -- --exact --nocapture
+
+      - name: Verify current v4 ownership and zero HiveWeb dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.97.1 test --locked -p hivegui --test tool_management \
+            tool_store_writes_the_supplied_canonical_v4_pool -- --exact --nocapture
+          cargo +1.97.1 test --locked -p hivegui --test local_agent_runtime \
+            no_hiveweb_request_is_issued_during_full_session_lifecycle \
+            -- --exact --nocapture
+
+      # GitHub-hosted runners provide real macOS/Windows compilation and
+      # automated test evidence, but not reviewer-observed VoiceOver/Narrator
+      # interaction in a logged-in desktop session. T139 must remain Pending
+      # until that separate manual or interactive self-hosted smoke is recorded.
+      - name: Summarize T139 evidence boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## T139 cross-platform automated evidence"
+            echo
+            echo "- Runner: ${{ runner.os }} / ${{ matrix.os }}"
+            echo "- Job status: ${{ job.status }}"
+            echo "- Rust: 1.97.1"
+            echo "- Scope: build, keyboard, focus, native-scroll, DataSource, v4 and zero-HiveWeb contracts"
+            echo "- Boundary: partial evidence only; this job does not satisfy reviewer-observed VoiceOver or Narrator smoke"
+          } >> "$GITHUB_STEP_SUMMARY"

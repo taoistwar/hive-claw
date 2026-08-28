@@ -115,7 +115,10 @@ async fn t048_granted_time_now_returns_ok_with_data() -> anyhow::Result<()> {
         v["data"]["unix_ms"].is_number(),
         "data.unix_ms missing: {resp}"
     );
-    assert!(v["data"]["iso"].is_string(), "data.iso missing: {resp}");
+    assert!(
+        v["data"]["rfc3339"].is_string(),
+        "data.rfc3339 missing: {resp}"
+    );
 
     // 清理（恢复原状）
     sqlx::query("DELETE FROM agent_permissions WHERE agent_id = 1 AND capability = ?")

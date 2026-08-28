@@ -4254,6 +4254,118 @@ async fn closed_current_snapshot_copy_rejects_a_leaf_exchange_without_competitor
     drop(stale);
 }
 
+mod t119_leaf_owner_red_contracts {
+    const BACKUP_SOURCE: &str = include_str!("../src/datasource/backup.rs");
+
+    fn normalized_source() -> String {
+        BACKUP_SOURCE
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn item_body<'a>(source: &'a str, marker: &str) -> &'a str {
+        let start = source
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing production boundary: {marker}"));
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("missing production body: {marker}"));
+        let mut depth = 0_u32;
+        for (offset, ch) in source[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..=body_start + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unterminated production body: {marker}");
+    }
+
+    #[test]
+    fn t119_sqlx_checkpoint_and_staging_share_one_bound_leaf_vfs() {
+        let source = normalized_source();
+        assert!(
+            source.contains("struct BoundSqliteLeaf"),
+            "T119 Red: production needs an owned BoundSqliteLeaf that pins the exact database object before SQLx checkpoint/open"
+        );
+        assert!(
+            source.contains("struct BoundSqliteLeafVfs")
+                && source.contains("fn checkpoint_bound_sqlite_leaf(")
+                && source.contains(".vfs("),
+            "T119 Red: current and staging SQLx connections must use one registered leaf-bound VFS instead of reopening an ambient path"
+        );
+        let checkpoint = item_body(&source, "fn checkpoint_bound_sqlite_leaf(");
+        assert!(
+            checkpoint.contains("leaf: &BoundSqliteLeaf")
+                && !checkpoint.contains("database_path: &Path")
+                && !checkpoint.contains("filename("),
+            "T119 Red: checkpoint must consume the held leaf and may not select a database by path: {checkpoint}"
+        );
+    }
+
+    #[test]
+    fn t119_plugin_switch_rollback_and_cleanup_are_descriptor_bound() {
+        let source = normalized_source();
+        let copy = item_body(&source, "fn copy_plugin_tree_with_descriptors(");
+        assert!(
+            copy.contains("source_directory: &cap_std::fs::Dir")
+                && !copy.contains("source: &Path")
+                && !copy.contains("fs::read_dir(")
+                && !copy.contains("fs::symlink_metadata("),
+            "T119 Red: Plugin snapshot traversal must consume a held source directory and relative names only: {copy}"
+        );
+        let cleanup = item_body(&source, "fn remove_tree_no_follow(");
+        assert!(
+            cleanup.contains("root_directory: &cap_std::fs::Dir")
+                && !cleanup.contains("root: &Path")
+                && !cleanup.contains("fs::read_dir("),
+            "T119 Red: rollback/cleanup must retain a root descriptor instead of reopening ambient paths: {cleanup}"
+        );
+    }
+
+    #[test]
+    fn t119_windows_identity_rejects_reparse_and_aba_replacement() {
+        let source = normalized_source();
+        assert!(
+            source.contains("struct WindowsFileIdentity")
+                && source.contains("FILE_ID_INFO")
+                && source.contains("GetFileInformationByHandleEx"),
+            "T119 Red: Windows identity must bind volume/file ID from the already-open handle"
+        );
+        assert!(
+            source.contains("FILE_FLAG_OPEN_REPARSE_POINT")
+                && source.contains("FSCTL_GET_REPARSE_POINT"),
+            "T119 Red: Windows opens must inspect and reject reparse points without following them"
+        );
+    }
+
+    #[test]
+    fn t119_non_unix_nofollow_uses_one_owned_leaf_api() {
+        let source = normalized_source();
+        assert!(
+            source.contains("struct NoFollowLeaf")
+                && source.contains("fn open_no_follow_leaf_at(")
+                && source.contains("#[cfg(not(unix))]"),
+            "T119 Red: non-Unix backup, staging, Plugin, rollback, and cleanup paths need one owned no-follow leaf API"
+        );
+        let open = item_body(&source, "fn open_no_follow_leaf_at(");
+        assert!(
+            open.contains("root: &cap_std::fs::Dir")
+                && open.contains("relative: &Path")
+                && open.contains("Result<NoFollowLeaf")
+                && !open.contains("canonicalize("),
+            "T119 Red: the common no-follow API must resolve a relative leaf beneath an already-open root: {open}"
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "current_thread")]
 async fn verified_safety_snapshot_current_exchange_is_owner_bound_before_rejection() {

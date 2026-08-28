@@ -1,9 +1,9 @@
 # 功能规格说明书: HiveGUI 独立本地 Agent
 
-**功能分支**: `260517-hivegui-standalone-mode`
+**功能分支**: `260518-fix-spec-consistency` | **功能 ID**: `011-hivegui-standalone-mode`
 **创建日期**: 2026-06-15
 **状态**: 草案
-**最后更新**: 2026-07-29（本地主密码认证 + 历史 Clarifications 统一压缩）
+**最后更新**: 2026-08-28
 **输入**: 用户描述: "将 hivegui 变为独立运行的桌面数据源管理工具，不依赖远程 hiveclaw/hiveweb 服务器。"；后续澄清: "hiveweb 是运行在云端的 Agent，hivegui 是运行在本地的 Agent。它们是独立的，只是代码复用，hivegui 不会请求 hiveweb。"
 
 ## Clarifications
@@ -14,52 +14,51 @@
 
 | 主题 | 当前决策 | 涉及 FR/任务 |
 |---|---|---|
-| 数据库 | hiveweb 用 MySQL，hivegui 用 SQLite；HiveGUI 可连接用户配置的外部 MySQL 数据源，**不**构成对 HiveWeb 的请求/依赖 | FR-001、FR-007、FR-048 |
-| 部署边界 | HiveWeb 云端 Agent，HiveGUI 本地 Agent，代码复用但不通信 | 全局 |
-| 数据迁移 | 不提供自动迁移；用户手动在 HiveGUI 重建配置 | US-Setup |
-| 远程 MySQL 数据源 | 默认隐藏的高级功能，与核心隔离 | US-DS |
-| WASM 插件兼容 | 共享 Extism ABI + manifest schema + host_call；缺 Capability 时拒绝导入 | FR-021、US-Plugin |
-| 内置函数 | 仅 4 个纯函数：`format_template` / `json_parse` / `json_stringify` / `text_regex_match`；唯一有效 identifier 为下划线名称，点号别名（`format.template` 等）不得注册/查询/执行；受信迁移可重命名旧记录，发生目标碰撞时整体回滚 | FR-008、FR-024 |
-| Builtin/Tool 分类 | Function: `builtin|custom|placeholder`；Tool: `function-wrap|workflow-wrap` | FR-008、FR-018 |
-| WorkflowNode 节点类型 | 共享 HiveWeb 契约：`start_node|end_node|function_node|generate_answer_node` | FR-018 |
-| 关系管理 | 完整本地 Agent：按 Agent 显式分配 Tool/Skill/Capability；`is_always=true` 自动可用 | FR-013、US-Agent |
-| 实体字段 | 完整对齐 HiveWeb（含 manifest/schema JSON/s3_key） | FR-013~FR-020 |
-| identifier 唯一 | 全部实体 `identifier` 字段 DB 层 UNIQUE | FR-013~FR-020 |
-| Workflow 编辑 | 完整 DAG：WorkflowNode/WorkflowEdge 本地管理、可视化编辑、校验、执行 | FR-018、US-Workflow |
-| Category 树 | 支持 `parent_id` 层级；单次批量查询加载完整树；搜索保留祖先路径 | FR-014、US-Category |
-| 错误恢复 | 临时错误自动重试 ≤ 3 次；提供从备份恢复 | FR-040、US-Backup |
-| 备份 | 单一可移植包（版本化 JSON 清单 + 全部托管 WASM + 校验值），事务式恢复；用户口令对包认证加密，跨设备时用目标设备密钥重新加密；恢复前预验证影响 + 计划安全备份位置，用户确认后冻结写入→安全备份→完整替换 | FR-026、US-Backup |
-| 升级/迁移 | 仅顺序向前；支持最近 2 个旧 schema/备份格式版本；升级前自动验证安全快照，失败回滚并阻止主 UI；不支持降级 | FR-040、SC-027 |
-| 子 Agent 路由 | 唯一默认根 Agent；LLM 仅可路由到直接子 Agent；最大深度 10；拒绝循环 | FR-013、US-Agent |
-| 跨设备恢复 | 用户口令对包认证加密；恢复时用目标设备密钥重新加密 | FR-026、SC-029 |
-| 恢复前确认 | 预验证展示影响 + 计划安全备份位置；用户确认后冻结写入→安全备份→完整替换 | FR-026、SC-030 |
-| Workflow 失败 | Fail-fast；停止未开始节点；保留节点级诊断；不回滚已执行外部副作用 | FR-018、SC-031 |
-| Rust 工具链 | 精确固定为查询当日最新稳定版（当前 1.97.1），本地与 CI 一致 | T001、SC-007 |
-| SQLx feature | HiveGUI `chrono|macros|runtime-tokio|sqlite`；HiveWeb `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`；两端不重复 `derive` | FR-048、T017A/T017G |
-| MySQL TLS | 仅 `VERIFY_IDENTITY` + 显式 CA/hostname；任何降级/不可用 fail-closed | FR-048、T017B |
-| SQLx 动态 SQL | 生产 `QueryBuilder=0`；固定 schema 用 checked macros；有限变体用封闭 enum/`match`；HiveGUI 外部 MySQL 用 `MysqlIdentifier` allowlist；唯一生产 `AssertSqlSafe` = HiveWeb reviewed `named_queries.toml` 中央边界 | FR-048、T017G |
-| 7 个 advisory | 全部立即无 ignore 修复（方案 A） | T017A/T017B/T017G |
+| 数据库 | hiveweb 用 MySQL，hivegui 用 SQLite；HiveGUI 可连接用户配置的外部 MySQL 数据源，**不**构成对 HiveWeb 的请求/依赖 | FR-002~FR-004、FR-007~FR-008、FR-028 |
+| 部署边界 | HiveWeb 云端 Agent，HiveGUI 本地 Agent，代码复用但不通信 | FR-028~FR-029、SC-012 |
+| 数据迁移 | 不提供自动迁移；用户手动在 HiveGUI 重建配置 | FR-028、假设条件 |
+| 远程 MySQL 数据源 | 默认隐藏的高级功能，与核心隔离 | FR-002~FR-004、US2 |
+| WASM 插件兼容 | 共享 Extism ABI + manifest schema + host_call；缺 Capability 时拒绝导入 | FR-039、SC-022 |
+| 内置函数 | 仅 4 个纯函数：`format_template` / `json_parse` / `json_stringify` / `text_regex_match`；唯一有效 identifier 为下划线名称，点号别名（`format.template` 等）不得注册/查询/执行；受信迁移可重命名旧记录，发生目标碰撞时整体回滚 | FR-018、FR-038、SC-021、SC-027 |
+| Builtin/Tool 分类 | Function: `builtin|custom|placeholder`；Tool: `function-wrap|workflow-wrap` | FR-018、FR-020、FR-038 |
+| WorkflowNode 节点类型 | 共享 HiveWeb 契约：`start_node|end_node|function_node|generate_answer_node` | FR-019、FR-033、SC-016、SC-027 |
+| 关系管理 | 完整本地 Agent：按 Agent 显式分配 Tool/Skill/Capability；`is_always=true` 自动可用 | FR-022、FR-030、SC-013 |
+| 实体字段 | 完整对齐 HiveWeb（含 manifest/schema JSON/s3_key） | FR-017~FR-022 |
+| identifier 唯一 | 全部实体 `identifier` 字段 DB 层 UNIQUE | FR-017~FR-022、SC-011 |
+| Workflow 编辑 | 完整 DAG：WorkflowNode/WorkflowEdge 本地管理、可视化编辑、校验、执行 | FR-019、FR-033、SC-016 |
+| Category 树 | 支持 `parent_id` 层级；单次批量查询加载完整树；搜索保留祖先路径 | FR-015、FR-024、SC-010 |
+| 错误恢复 | 临时错误自动重试 ≤ 3 次；提供从备份恢复 | FR-025~FR-026 |
+| 备份 | 单一可移植包（版本化 JSON 清单 + 全部托管 WASM + 校验值），事务式恢复；用户口令对包认证加密，跨设备时用目标设备密钥重新加密；恢复前预验证影响 + 计划安全备份位置，用户确认后冻结写入→安全备份→完整替换 | FR-026、FR-034~FR-036、SC-017~SC-019 |
+| 升级/迁移 | 仅顺序向前；支持最近 2 个旧 schema/备份格式版本；升级前自动验证安全快照，失败回滚并阻止主 UI；不支持降级 | FR-027、FR-044、SC-027 |
+| 子 Agent 路由 | 唯一默认根 Agent；LLM 仅可路由到直接子 Agent；最大深度 10；拒绝循环 | FR-032、SC-015 |
+| 跨设备恢复 | 用户口令对包认证加密；恢复时用目标设备密钥重新加密 | FR-035、SC-018 |
+| 恢复前确认 | 预验证展示影响 + 计划安全备份位置；用户确认后冻结写入→安全备份→完整替换 | FR-036、SC-019 |
+| Workflow 失败 | Fail-fast；停止未开始节点；保留节点级诊断；不回滚已执行外部副作用 | FR-037、SC-020 |
+| Rust 工具链 | 精确固定为查询当日最新稳定版（当前 1.97.1），本地与 CI 一致 | T001（计划/宪章门禁，非产品 SC） |
+| SQLx feature | HiveGUI `chrono|macros|runtime-tokio|sqlite`；HiveWeb `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`；两端不重复 `derive` | T017A/T017G（计划门禁） |
+| MySQL TLS | 仅 `VERIFY_IDENTITY` + 显式 CA/hostname；任何降级/不可用 fail-closed | T017B/T038（安全门禁） |
+| SQLx 动态 SQL | 生产 `QueryBuilder=0`；固定 schema 用 checked macros；有限变体用封闭 enum/`match`；HiveGUI 外部 MySQL 用 `MysqlIdentifier` allowlist；唯一生产 `AssertSqlSafe` = HiveWeb reviewed `named_queries.toml` 中央边界 | FR-024、FR-048、T017G |
+| 7 个 advisory | 全部立即无 ignore 修复（方案 A） | T017A/T017E |
 | `game_service.category_name` | checked static `JSON_OBJECT('name', ?)` + bind；用户值只经 bind | T017B/T017B' |
 | T001 独立批次 | 独立分支 `codex/rust-1.97.1-toolchain` 提交 `bf3690d` 已推送；T001 在 PR/CI 一致性证据闭合前保持未完成；T017D 不得把"已推送分支" 冒充"PR/CI 已闭合" | T001 |
-| Builtin/Tool 边界 | 消息回复和子 Agent 路由属于运行时控制能力，不进入 Tool CRUD；其他 Tool 用户显式创建分配 | FR-013、US-Tool |
-| 性能预算 | 编排/路由 p95 ≤ 200ms；Tool 分派 p95 ≤ 50ms；100 节点 Workflow 调度 p95 ≤ 100ms；外部 LLM/网络/用户代码不计入本地预算 | FR-029、SC-016 |
-| 运行日志 | 脱敏结构化日志，execution_id 贯穿全栈；滚动 7×24h 或 100MB；支持导出脱敏诊断包；不默认保存完整输入输出 | FR-031、SC-024 |
-| GUI 响应 | 输入到反馈 p95 ≤ 100ms；主 UI 线程阻塞 ≤ 250ms；取消控件始终可操作 | SC-021 |
-| 无障碍/键盘 | 全关键流程键盘可达；DAG 节点/连线键盘操作；焦点陷阱 + 焦点恢复；4.5:1 对比度；状态不依赖颜色 | SC-020 |
-| Plugin 资源限制 | 默认 30s/128MiB/10MiB，硬上限 120s/512MiB/50MiB；`memory_limit_mb` 仅兼容字段名 | FR-021、SC-018 |
-| 会话/消息 | 设备本地密钥加密；默认 100 年保留；可调；进入加密备份包，不进诊断日志/包 | FR-019、SC-019 |
-| 取消协作 | Agent/LLM/Tool/Workflow 协作取消；不再调度新节点；可取消网络请求；Plugin 2s 后强终止；状态持久化 `cancelled` | FR-022、SC-022 |
-| 数据库故障恢复 | 不存在→新建 v4；迁移失败→保留快照，可重试/退出；完整性损坏→阻止主 UI，可恢复/重建/退出（重建前二次确认） | FR-040、SC-025 |
-| 入口 Agent | 正式会话只允许唯一默认根 Agent；指定入口只允许于不导出的测试 helper | FR-013 |
-| Category 渲染 | 树用单次批量查询；保留匹配节点的祖先路径；禁止 N+1 | SC-013 |
-| 性能证据 | 固定数据量/输入/样本数/计时边界；p50/p95/p99；连接超时用可控时钟验证 5s | SC-008 |
-| 跨版本迁移 | 仅向前 + 最近 2 个旧版本；升级前自动验证安全快照；失败回滚并阻断主 UI；不支持降级 | FR-040、SC-027 |
-| 屏幕锁事件 | Linux `zbus` `org.freedesktop.ScreenSaver ActiveChanged`、macOS `NSWorkspaceScreensDidSleep`、Windows `WM_WTSSESSION_CHANGE=0x7` | FR-050、T-AUTH-3 |
-| 主密码 Argon2id 参数 | m=64MiB, t=3, p=1；派生耗时 < 5000ms 超时 fail-closed | FR-049、T-AUTH-1 |
-| i18n | 仅中文 | FR-005 |
-| LLM Preset/Model/Provider 关系 | Provider 独立后端；Model 属于 Preset 并引用 Provider；Preset 1→N Model，Provider 1→N Model | FR-011 |
-| global_configs schema | 完整复制 HiveWeb `global_configs` 表结构（id, name, key, type, data, created_at, updated_at），支持分页和搜索 | FR-007 |
-| 本地 Plugin WASM 存储 | 导入时复制到本地插件目录，DB 保存相对制品键，执行前校验 SHA-256 | FR-021 |
+| Builtin/Tool 边界 | 消息回复和子 Agent 路由属于运行时控制能力，不进入 Tool CRUD；其他 Tool 用户显式创建分配 | FR-020、FR-029、FR-038、SC-021 |
+| 性能预算 | 编排/路由 p95 ≤ 200ms；Tool 分派 p95 ≤ 50ms；100 节点 Workflow 调度 p95 ≤ 100ms；外部 LLM/网络/用户代码不计入本地预算 | FR-040、SC-023 |
+| 运行日志 | 脱敏结构化日志，execution_id 贯穿全栈；滚动 7×24h 或 100MB；支持导出脱敏诊断包；不默认保存完整输入输出 | FR-041、SC-024 |
+| GUI 响应 | 输入到反馈 p95 ≤ 100ms；主 UI 线程阻塞 ≤ 250ms；取消控件始终可操作 | FR-042、SC-005、SC-025 |
+| 无障碍/键盘 | 全关键流程键盘可达；DAG 节点/连线键盘操作；焦点陷阱 + 焦点恢复；4.5:1 对比度；状态不依赖颜色 | FR-043、SC-026 |
+| Plugin 资源限制 | 默认 30s/128MiB/10MiB，硬上限 120s/512MiB/50MiB；`memory_limit_mb` 仅兼容字段名 | FR-045、SC-028 |
+| 会话/消息 | 设备本地密钥加密；默认 100 年保留；可调；进入加密备份包，不进诊断日志/包 | FR-046、SC-029 |
+| 取消协作 | Agent/LLM/Tool/Workflow 协作取消；不再调度新节点；可取消网络请求；Plugin 2s 后强终止；状态持久化 `cancelled` | FR-047、SC-030 |
+| 数据库故障恢复 | 不存在→新建 v4；迁移失败→保留快照，可重试/退出；完整性损坏→阻止主 UI，可恢复/重建/退出（重建前二次确认） | FR-006、FR-025、FR-027、FR-044、SC-027 |
+| 入口 Agent | 正式会话只允许唯一默认根 Agent；指定入口只允许于不导出的测试 helper | FR-032、SC-015 |
+| Category 渲染 | 树用单次批量查询；保留匹配节点的祖先路径；禁止 N+1 | FR-015、FR-024、SC-010 |
+| 性能证据 | 固定数据量/输入/样本数/计时边界；p50/p95/p99；连接超时用可控时钟验证 5s | FR-040、SC-002~SC-010、SC-023 |
+| 屏幕锁事件 | Linux `zbus` `org.freedesktop.ScreenSaver ActiveChanged`、macOS `NSWorkspaceScreensDidSleep`、Windows `WM_WTSSESSION_CHANGE=0x7` | FR-050、SC-034、T-AUTH-3 |
+| 主密码 Argon2id 参数 | m=64MiB, t=3, p=1；派生耗时 < 5000ms 超时 fail-closed | FR-049、SC-033、T-AUTH-1 |
+| i18n | 仅中文 | FR-043、SC-026 |
+| LLM Preset/Model/Provider 关系 | Provider 独立后端；Model 属于 Preset 并引用 Provider；Preset 1→N Model，Provider 1→N Model | FR-009~FR-013 |
+| global_configs schema | 完整复制 HiveWeb `global_configs` 表结构（id, name, key, type, data, created_at, updated_at），支持分页和搜索 | FR-007~FR-008、SC-006 |
+| 本地 Plugin WASM 存储 | 导入时复制到本地插件目录，DB 保存相对制品键，执行前校验 SHA-256 | FR-017、FR-031、SC-014 |
 
 ### Session 2026-07-29 (Phase 1A Local Master-Password Authentication 激活)
 
@@ -478,7 +477,7 @@
 - **FR-040**: HiveGUI 必须分别测量 Agent 本地编排/路由开销、Tool 分派开销和 Workflow 调度开销，并将外部 LLM、网络等待及用户 Function/Plugin 执行耗时记录为独立区段。性能验收必须使用固定输入和固定 no-op 执行器，报告样本量、p50、p95、p99、测试环境和所比较的版本化基线；不得把外部耗时计入本地预算。任一跟踪百分位相对获批基线回归超过 10% 时必须阻断发布，除非存在明确签字并记录理由、影响范围和到期复核日期。
 - **FR-041**: 每次本地 Agent 对话必须生成唯一 execution_id，并传播至 Agent、子 Agent、LLM、Tool、Function、WorkflowNode、Plugin 和 Capability 的结构化日志。日志必须使用 v1 固定字段/类型记录操作、实体 identifier、结果、稳定错误类别、可选 `cause_summary` 和分段耗时；`cause_summary` 必须在唯一处理边界中央脱敏、保持合法 UTF-8 且不超过 512 UTF-8 bytes，不得记录原始 cause、凭据、备份口令或默认保存完整 prompt、模型响应和 Tool 输入输出。写入只允许追加到 `.open` 活动段且每条 JSON 记录必须以换行完整结束；滚动时必须 flush、fsync 活动段，原子重命名为不可变 `.jsonl` 段并 fsync 父目录。启动恢复只能舍弃活动段末尾不完整的一条记录，诊断读取不得暴露半写记录。日志边界必须支持可注入时钟和持久化 retention high-watermark；有效时间取注入时钟与 high-watermark 较大值，high-watermark 前进必须通过同目录 staging、flush/fsync、原子 replace 和父目录 fsync 持久化。活动段按最早记录强制时间轮转，混合完成段通过同类耐久协议逐记录压缩，保证每条记录自 `occurred_at` 起实际不超过 7×24 小时，且时钟回拨不复活已过期记录。追加前必须按序列化后的完整记录字节预检容量；若单条记录自身超过 100,000,000 bytes，必须零写入拒绝，否则先耐久轮转/清理到追加后全部可见日志实际总计仍不超过该上限。任一 high-watermark、轮转、压缩、删除、replace 或父目录 fsync 失败时，诊断读取/导出必须 fail-closed。系统必须支持按 execution_id 导出脱敏诊断包；诊断日志不得自动进入数据备份包。
 - **FR-042**: 任一后台任务运行期间，HiveGUI 从用户输入到可见反馈的 p95 必须 ≤ 100ms，主 UI 线程连续阻塞必须 ≤ 250ms，取消/停止控件必须始终可聚焦并可触发。停止请求触发后必须立即更新 UI 为“正在停止”或等价状态，底层任务随后执行安全终止。
-- **FR-043**: HiveGUI 的首页导航、CRUD、搜索、分页、Agent 分配与对话、备份/恢复及 DAG 编辑关键流程必须可仅用键盘完成。所有交互控件必须具有可见焦点，并向平台无障碍树暴露名称、角色、状态和错误；模态框必须实施焦点陷阱并在关闭后恢复触发焦点。状态不得仅依赖颜色表达，普通文本对比度必须 ≥ 4.5:1，大字号文字、焦点指示器和关键 UI 图形对比度必须 ≥ 3:1。
+- **FR-043**: HiveGUI 的首页导航、CRUD、搜索、分页、Agent 分配与对话、备份/恢复及 DAG 编辑关键流程必须可仅用键盘完成。所有交互控件必须具有可见焦点，并向平台无障碍树暴露名称、角色、状态和错误；模态框必须实施焦点陷阱并在关闭后恢复触发焦点。状态不得仅依赖颜色表达，普通文本对比度必须 ≥ 4.5:1，大字号文字、焦点指示器和关键 UI 图形对比度必须 ≥ 3:1。 所有第一方用户可见产品 UI、状态、字段标签、验证信息与错误提示必须仅使用简体中文；不可翻译的专有名词、标识符或原始外部错误码可以保留原文，但必须同时提供简体中文解释。
 - **FR-044**: schema 迁移前必须先对 source current 执行 `PRAGMA integrity_check`（精确返回唯一 `ok`）和 `PRAGMA foreign_key_check`（零行），冻结写入、完成非 busy 的 `wal_checkpoint(TRUNCATE)`、关闭全部连接并验证没有可恢复的 WAL/SHM/journal sidecar，再创建并验证 current 数据库与托管 Plugin 制品的安全快照；已提交未 checkpoint WAL 必须完整合并，全部异常按 local-runtime 的合法 reason/artifact 配对和固定优先级返回精确 `storage_recovery_blocked`。hot/unknown/recoverable sidecar 在 canonical 名称按字节保留且 Store 不开放；migration instance 必须在建库前以含 `ownership_state=unarmed` 的六元组 manifest 耐久登记于固定 `.hivegui-db-staging-v1/migration-{db_instance_operation_id}/.hivegui-db-instance-v1.json`，数据库 basename 固定为 `datasources.db`。安全残留只能通过 storage-migration 定义的确定性 v1 cleanup journal `prepared→quarantined→done` 五分支（含 `done` 收尾）与 identity-bound no-replace quarantine 协议耐久清理；损坏/重复/身份不明必须 fail-closed，journal 删除前不得快照或开放 Store。安全快照完成前失败时不得声称从尚不存在的快照恢复：必须保留 current 主文件、sidecar 与 cleanup journal/quarantine，保持 Store 关闭并只允许重放/重试或退出。快照验证完成后，必须把封闭 current 主文件复制到 unarmed migration instance；所有顺序迁移步骤只允许位于 staging SQLite 的同一事务边界内，并在该事务提交前对 staging 重复两项检查。SQLite commit 后必须在 staging 再次 checkpoint、关闭连接、按同一规则分流/重放 sidecar cleanup、fsync 主文件与父目录并重开验证；该 commit 不修改 current，也不是系统 commit point。只有 staging 全验证、manifest armed 且 owner `prepared|applying` 耐久后才可发布到 current；新 current 完整 health/search/artifact/identity 验证成功后才发布唯一系统 commit point `committed`。prepared/applying 失败恢复并验证 old，committed 后只通过 outcome=`new` retirement 收口已验证 new。旧备份格式必须在隔离暂存区逐步升级到当前格式，重建当前搜索索引并完成同样的目标健康检查后再提交恢复，且不得修改原备份包。
   前述迁移事务和 SQLite commit 只允许发生在从封闭 current 复制得到的 `.hivegui-db-staging-v1/migration-{UUID}/datasources.db`，绝不能原地修改 current；SQLite commit 不是系统 commit point。staging 在 commit 前后完成 checkpoint/sidecar/fsync/重开验证后，才把六元组 manifest 从 unarmed 推进 armed、发布 owner prepared、推进 applying 并按受控 rename 协议发布到 current。新 current 完整 health/search/artifact 验证成功后才发布 owner committed；此前失败恢复 old，之后只完成 new。aborted/old/new 都通过 registry-level retirement journal + 整 live instance tombstone rename 收口；armed owner 缺失、owner/manifest/retirement final/staging 歧义、unknown/hardlink/identity 竞态或 fsync 失败必须保留并阻断 Store。
 - **FR-045**: 每次 Plugin 调用的默认限制必须为 timeout_ms=30000、memory_limit_mb=128（128MiB）、output_limit_bytes=10485760（10MiB）；用户可按 Plugin 设置正数覆盖值，但不得超过 120000、512（512MiB）、52428800（50MiB）。`memory_limit_mb` 仅为兼容既有 schema 保留字段名，逻辑单位固定为 MiB，64KiB WASM page 数按 `memory_limit_mb × 16` 计算。达到任一限制必须立即终止调用并返回稳定错误类别。Plugin 默认不得直接访问 WASI 文件系统、网络、环境变量或宿主进程资源，所有宿主资源访问必须通过当前 Agent 已授权的 Capability；资源额度调整不得改变隔离或授权结果。
@@ -486,7 +485,7 @@
 - **FR-047**: 用户停止 Agent 执行时，HiveGUI 必须把协作取消信号传播到当前 Agent、子 Agent、LLM、Tool、Workflow 和 Plugin，停止调度新工作并取消可取消的网络请求。Plugin 必须获得最多 2 秒的协作终止宽限期，之后强制终止该 Plugin 实例且不得影响其他执行。最终 AgentExecution 必须持久化为 cancelled，记录已完成、被中断和未开始的步骤，并明确已完成的外部副作用不会自动回滚。
 - **FR-048**: 所有用户输入、配置写入和文件导入必须在其进入 Store、运行时或导入服务的公开边界时执行“字段验证规则”定义的校验，不得只依赖 UI 校验。普通校验失败必须返回稳定的 `invalid_input { field, reason }`；唯一性冲突必须返回 `conflict { field, value }`，其中 value 仅允许安全字段值；引用或状态冲突必须返回不含 value 的 `conflict { field, reason, references }`，references 只能包含安全实体标识。密码和 token 不得回显。字段、ABI、manifest、Capability 等预校验失败必须发生在任何 durability state machine 之前，使用户数据与内部 operation/GC ledger 都零修改；进入合法 `prepared` 之后的文件持久化失败仍不得产生用户可见部分状态，但可以且必须保留契约规定的内部恢复记录。UI 必须保留用户输入并显示字段及原因。
 - **FR-049** *(Session 2026-07-29 新增)*: HiveGUI 必须实施本地主密码认证。首次启动时强制用户在设置界面设置主密码（最低安全强度：长度 ≥ 12，混合大小写 + 数字 + 符号，且必须严格不等同于 `getpwuid(getuid()).pw_passwd` 同长同字符集），并通过 Argon2id（m=64MiB, t=3, p=1；派生耗时 < 5000ms；参数与 OWASP Password Storage Cheat Sheet 推荐基线一致）派生 wrapping KEK，将 FR-012 设备密钥材料以 ChaCha20Poly1305 包装持久化到 `.hivegui/keystore/wrapped_device_key.v1`（0600）；任何持久化或 fsync 失败必须保持设备密钥仅在内存并阻断进入主 UI。后续启动必须先显示解锁界面，密码字段不接受任何回显或剪贴板复制，最多 5 次连续错误后整应用 backoff 5 分钟并仅显示“从备份恢复” 入口；解锁成功后才把设备密钥材料解包到内存并按 FR-050 规则开始空闲计时。主密码与设备密钥材料相互独立：主密码错误只能让认证失败，绝不修改、删除或重新生成设备密钥或数据库。`keystore/` 目录不得进入任何形式的备份（FR-026 可移植包、本地回滚安全备份、staging/cleanup journal、owner/manifest/retirement 全部排除）；从备份恢复后**必须重新生成设备密钥**并以新主密码重新包装设备密钥材料（旧的 wrapped_device_key 物理字节保留仅用于审计），旧主密码不会随备份进入新设备。
-- **FR-050** *(Session 2026-07-29 新增)*: HiveGUI 解锁后必须按 FR-007 `GlobalConfig` 中 `auth.auto_lock_minutes` 字段（默认 15，范围 `1..=1440`，0 视为非法）维持空闲计时；**"活动" 仅包含 keypress、主窗口 mousedown 与 UI 焦点变化**（mousemove 不重置计时以防误触；Agent 对话心跳、Tool 调度、Plugin 调用同样重置）。计时到点后必须立即将所有内存中已派生设备密钥材料、未提交会话/消息明文、未持久化敏感值清零（`zeroize` + 编译器屏障），UI 回到解锁界面，停止任何后台任务并持久化 `current_agent_execution.status=cancelled` 与 `chat_session.status=locked`。操作系统屏幕锁 / 锁屏事件（Windows `WM_WTSSESSION_CHANGE=0x7`、macOS `NSWorkspaceScreensDidSleep`、Linux `org.freedesktop.ScreenSaver ActiveChanged=true`）必须立即触发同样的锁定与内存清零；事件被禁用 / DBus 不可用 / 通知 API 不可用时 **fail-closed = 整应用立即锁定 + 提示"无法验证屏幕锁事件" + 阻断主 UI**（非静默忽略，也非"禁用自动锁定"）。锁定不影响持久化日志的写入（按 FR-041），但禁止任何日志字段携带明文密码、KEK、设备密钥或 session 明文。
+- **FR-050** *(Session 2026-07-29 新增)*: HiveGUI 解锁后必须按 FR-007 `GlobalConfig` 中 `auth.auto_lock_minutes` 字段（默认 15，范围 `1..=1440`，0 视为非法）维持空闲计时；**"活动" 仅包含 keypress、主窗口 mousedown 与 UI 焦点变化**（mousemove 不重置计时以防误触；Agent 对话心跳、Tool 调度、Plugin 调用以及其他后台事件均不得重置）。计时到点后必须立即将所有内存中已派生设备密钥材料、未提交会话/消息明文、未持久化敏感值清零（`zeroize` + 编译器屏障），UI 回到解锁界面，停止任何后台任务并持久化 `current_agent_execution.status=cancelled` 与 `chat_session.status=locked`。操作系统屏幕锁 / 锁屏事件（Windows `WM_WTSSESSION_CHANGE=0x7`、macOS `NSWorkspaceScreensDidSleep`、Linux `org.freedesktop.ScreenSaver ActiveChanged=true`）必须立即触发同样的锁定与内存清零；事件被禁用 / DBus 不可用 / 通知 API 不可用时 **fail-closed = 整应用立即锁定 + 提示"无法验证屏幕锁事件" + 阻断主 UI**（非静默忽略，也非"禁用自动锁定"）。锁定不影响持久化日志的写入（按 FR-041），但禁止任何日志字段携带明文密码、KEK、设备密钥或 session 明文。
 - **FR-051** *(Session 2026-07-29 新增)*: HiveGUI 不得提供任何主密码重置、找回、旁路或安全问题流程。唯一可恢复路径是 FR-026/T129/T130 的可移植备份恢复。首次设置主密码时必须强制用户在 UI 看到“忘记主密码 = 只能从备份恢复” 风险说明并显式勾选确认；已存在历史 T129 备份时 UI 展示该备份的 SHA-256/创建时间并要求确认；不存在时必须立即引导用户跳到 T129 备份向导并完成首次导出后，才允许回到主 UI。备份恢复后用户必须按 FR-049 重新设置主密码并重新包装设备密钥材料；该过程必须独立 security review 并记录在 `checklists/security.md` 的“无密码重置” 边界。
 
 
@@ -522,16 +521,24 @@
 
 ### 可衡量的成果
 
-- **SC-001**: 用户启动 HiveGUI 后可直接看到首页，无需任何外部服务器配置。
-- **SC-002**: 在固定验收数据集和100次操作样本中，数据源增删改查 p95 ≤ 1 秒并持久化到本地。
+#### 固定性能验收 Fixture
+
+所有 **SC-002~SC-010** 与 **SC-023** 的性能结论必须使用同一规范 Fixture：`hivegui-local-runtime-v1`。
+
+- **数据清单**：验收证据必须附带该 Fixture 的版本化 manifest，冻结每个测量目标的精确记录数、确定性 seed、内容哈希、操作序列、计时边界与排除项；当前版本至少固定 GlobalConfig 10,000 条、Category 100 条、Capability 100 条，以及由 100 个 no-op 节点组成的 Workflow 调度样本。任一字段变化都必须分配新的 Fixture ID，不得沿用 `hivegui-local-runtime-v1`。
+- **采样协议**：每个目标先预热 10 次，再采集 100 个测量样本；p50、p95、p99 统一采用 nearest-rank 计算，不得删除慢样本。
+- **可比性门禁**：验收报告必须记录 Fixture ID、manifest 哈希、源码 revision 与环境指纹；Fixture、样本数或环境指纹不匹配时，比较结果无效并按验收失败处理。
+
+- **SC-001**: 用户首次启动 HiveGUI 时完成主密码设置与风险确认，后续启动完成本地解锁后即可进入首页；从启动、认证到首页的整个流程无需任何外部服务器配置，并且在 HiveWeb 未配置、不可达或未运行时验收成功率为 100%。
+- **SC-002**: 在hivegui-local-runtime-v1 固定验收 Fixture 中对应的数据集和100次操作样本中，数据源增删改查 p95 ≤ 1 秒并持久化到本地。
 - **SC-003**: 连接测试在 5 秒内返回结果（超时视为连接失败）。
 - **SC-004**: DataSource 密码、LLM Provider token、会话标题、消息正文、Tool 调用参数/结果和 AgentExecution 状态等全部公开敏感字段均不得以明文落盘。对每个字段执行公开写入/读取 roundtrip，并用唯一明文 canary 扫描 SQLite 主文件、WAL/SHM/journal、备份 staging/最终认证密文包、普通临时目录、结构化日志和诊断包；正常、错误、崩溃恢复和跨设备恢复路径的明文命中数必须均为 0。
 - **SC-005**: 在 Agent、Workflow、Plugin、备份等后台任务运行期间，用户输入到可见反馈 p95 ≤ 100ms，主 UI 线程无连续超过 250ms 的阻塞，且所有测试时刻均可触发取消/停止控件。
-- **SC-006**: 全局配置支持每页20条分页；在固定1万条验收数据集上，搜索和翻页 p95 ≤ 500ms。
-- **SC-007**: 在固定验收数据集和100次操作样本中，LLM 配置（Preset/Provider/Model）CRUD p95 ≤ 1 秒并持久化。
-- **SC-008**: 在各实体固定验收数据集和100次操作样本中，新增实体（Tag、Category、Capability、Plugin、Function、Workflow、Tool、Skill、Agent）CRUD p95 ≤ 1 秒并持久化。
-- **SC-009**: 除 Category 外，所有新增实体的列表支持分页（每页 20 条）；在固定验收数据集上，1 字符、2 字符及至少 3 字符的中英文搜索词、ASCII 大小写变体，以及包含 `%`、`_`、引号和 FTS 操作符的字面量输入都返回精确的大小写不敏感任意位置包含结果，搜索和翻页 p95 ≤ 500ms。每类搜索都必须以 `EXPLAIN QUERY PLAN` 证明使用 short-gram 或 FTS5 trigram 索引；FTS 的 `VIRTUAL TABLE INDEX` 计为索引访问，禁止退化为非小型业务表的前导通配全表扫描。`hivegui-nfkc-casefold-v1` fixture 必须锁定规范化结果；非空输入规范化为空时 100% 返回 `empty_after_normalization`，搜索索引格式标识不匹配时 100% 在开放 Store 前失败或经显式迁移重建。
-- **SC-010**: Category 使用一次批量查询加载完整树，搜索保留祖先路径；含 100+ 分类时从数据加载到树可见的 p95 ≤ 200ms，查询次数不随节点数量线性增长。
+- **SC-006**: 全局配置支持每页20条分页；在固定1万条验收数据集上，搜索和翻页 p95 ≤ 500ms。 该测量必须使用 hivegui-local-runtime-v1。
+- **SC-007**: 在hivegui-local-runtime-v1 固定验收 Fixture 中对应的数据集和100次操作样本中，LLM 配置（Preset/Provider/Model）CRUD p95 ≤ 1 秒并持久化。
+- **SC-008**: 在各实体hivegui-local-runtime-v1 固定验收 Fixture 中对应的数据集和100次操作样本中，新增实体（Tag、Category、Capability、Plugin、Function、Workflow、Tool、Skill、Agent）CRUD p95 ≤ 1 秒并持久化。
+- **SC-009**: 除 Category 外，所有新增实体的列表支持分页（每页 20 条）；在hivegui-local-runtime-v1 固定验收 Fixture 中对应的数据集上，1 字符、2 字符及至少 3 字符的中英文搜索词、ASCII 大小写变体，以及包含 `%`、`_`、引号和 FTS 操作符的字面量输入都返回精确的大小写不敏感任意位置包含结果，搜索和翻页 p95 ≤ 500ms。每类搜索都必须以 `EXPLAIN QUERY PLAN` 证明使用 short-gram 或 FTS5 trigram 索引；FTS 的 `VIRTUAL TABLE INDEX` 计为索引访问，禁止退化为非小型业务表的前导通配全表扫描。`hivegui-nfkc-casefold-v1` fixture 必须锁定规范化结果；非空输入规范化为空时 100% 返回 `empty_after_normalization`，搜索索引格式标识不匹配时 100% 在开放 Store 前失败或经显式迁移重建。
+- **SC-010**: Category 使用一次批量查询加载完整树，搜索保留祖先路径；含 100+ 分类时从数据加载到树可见的 p95 ≤ 200ms，查询次数不随节点数量线性增长。 该测量必须使用 hivegui-local-runtime-v1。
 - **SC-011**: Plugin、Function、Workflow、Tool、Skill、Agent 的 identifier 唯一性约束均在数据库层面强制执行；对六类实体逐一提交重复 identifier 时，请求全部在同一次提交中返回 `conflict { field: "identifier", value }`、不产生新记录或部分关联，UI 保留输入并显示安全冲突值。
 - **SC-012**: 在 HiveWeb 未配置、不可达或未运行时，HiveGUI 仍可启动、完成本地管理，并完成一次包含 LLM 调用和本地 Tool 执行的 Agent 对话；网络观测中不出现发往 HiveWeb 的请求。
 - **SC-013**: 对任一 Agent，其运行时可用 Tool/Skill 集合与“显式分配项 ∪ `is_always=true` 项”完全一致；缺少所需 Capability 的调用全部在执行前被拒绝。仅持久化 Capability 元数据而未注册本地 handler 时运行时可用项数量保持不变且调用稳定失败；显式注册后按确定性顺序可见，重复注册稳定失败。`function-wrap|workflow-wrap` Tool 的序列化 roundtrip 必须保持 kind、互斥目标和 required_capabilities 顺序，并可在不加载 HiveGUI/HiveWeb 存储或网络组件时完成。
@@ -545,10 +552,10 @@
 - **SC-020**: 对任一 Workflow 节点失败或超时，失败发生后不再启动新的节点，Workflow 层自动重试次数为 0；最终结果完整区分失败、已完成和未执行节点，并提示已完成外部副作用不会自动回滚。
 - **SC-021**: 任意次数启动 HiveGUI 后，Builtin Function 集合始终且仅包含 4 个下划线 identifier，记录无重复且均不可修改或删除；四个点号名称的记录和运行时别名数量均为 0、lookup/execute 全部失败；任一 Placeholder 调用均在 Capability/Plugin 解析前以 `function_not_executable` 拒绝；Tool 存储中不存在消息回复、结束对话或子 Agent 路由控制记录。
 - **SC-022**: 共享兼容性测试中的同一 Plugin WASM 与 manifest 在 HiveWeb 和 HiveGUI 上产生相同 ABI 输出；所有 ABI 版本不兼容、manifest 无效或 Capability 缺失的样例均在 HiveGUI 写入数据或复制制品前被拒绝，且网络观测中不出现 HiveWeb 请求。
-- **SC-023**: 在固定性能基准中，Agent 编排/路由本地开销 p95 ≤ 200ms，Tool 分派开销 p95 ≤ 50ms，100 节点 no-op Workflow 的调度开销 p95 ≤ 100ms；报告必须单列外部 LLM、网络等待和用户代码执行耗时，不得以其延迟作为本地预算超标的豁免。每项报告必须引用版本化基线和环境指纹；p50、p95 或 p99 任一项相对基线回归超过 10% 且没有明确签字、记录理由、影响范围和到期复核日期时，验收失败。
+- **SC-023**: 在固定性能基准中，Agent 编排/路由本地开销 p95 ≤ 200ms，Tool 分派开销 p95 ≤ 50ms，100 节点 no-op Workflow 的调度开销 p95 ≤ 100ms；报告必须单列外部 LLM、网络等待和用户代码执行耗时，不得以其延迟作为本地预算超标的豁免。每项报告必须引用版本化基线和环境指纹；p50、p95 或 p99 任一项相对基线回归超过 10% 且没有明确签字、记录理由、影响范围和到期复核日期时，验收失败。 基线与候选结果必须使用 hivegui-local-runtime-v1 及其规定的采样协议。
 - **SC-024**: 任一次本地 Agent 测试执行产生的 Agent、LLM、Tool、Function、WorkflowNode、Plugin 和 Capability 日志均可通过同一 execution_id 关联；v1 字段/类型完全匹配契约，`cause_summary` 不超过 512 UTF-8 bytes，原始 cause、凭据、备份口令和完整输入输出的泄漏测试结果为 0。对活动段记录写入、时间/容量轮转、flush/fsync、重命名、过期记录重写和父目录 fsync 各边界注入崩溃后，重启只能丢弃末尾不完整的一条 JSON，所有可见 `.jsonl` 记录都必须是完整换行 JSON 且不得重复；使用注入时钟时任何记录从 `occurred_at` 起不得保留超过 7×24 小时，活动段不得豁免，实际文件总量也不得超过 100,000,000 bytes，时钟回拨不复活已过期记录，导出的诊断包只包含脱敏记录。
 - **SC-025**: 在同时运行 Agent 对话、100 节点 no-op Workflow 和备份预验证的 UI 响应测试中，输入反馈和主线程阻塞均满足 SC-005，停止控件可用率为 100%。
-- **SC-026**: 自动化与人工无障碍测试可仅用键盘完成全部关键流程及 DAG 节点/连线操作；所有模态框通过焦点陷阱与焦点恢复测试，关键控件的名称、角色、状态和错误均可从平台无障碍树读取，颜色对比度测试全部满足 FR-043。
+- **SC-026**: 自动化与人工无障碍测试可仅用键盘完成全部关键流程及 DAG 节点/连线操作；所有模态框通过焦点陷阱与焦点恢复测试，关键控件的名称、角色、状态和错误均可从平台无障碍树读取，颜色对比度测试全部满足 FR-043。 第一方用户可见字符串的简体中文覆盖率必须为 100%；保留的专有名词、标识符或外部错误码必须同时带有简体中文解释。
 - **SC-027**: 当前版本对当前减 1、减 2 的 schema 和备份格式样例全部可逐步升级并保持实体、关联、敏感值与 Plugin 制品一致；迁移矩阵必须覆盖 Function 整数 `1/2/3`、四个稳定 `*_node` 值、旧点号 Builtin 到下划线名称的事务重命名，以及 v3→v4 搜索索引建表、`hivegui-nfkc-casefold-v1` 回填和一致性验证，未知 kind、名称碰撞或 normalization/index version 不匹配必须整体回滚或进入显式迁移。已有、新建和迁移目标数据库必须分别以结构损坏样例和在 `foreign_keys=OFF` 时制造的孤儿外键样例验证两项健康检查；WAL fixture 必须证明 checkpoint/关闭/sidecar 每个失败边界都不丢失已提交帧。任一失败都不得进入主界面或提交迁移。对迁移各步骤注入失败后数据库保持原版本、主界面不可进入且安全快照可用；新于当前或早于当前减 2 的版本全部被明确拒绝。
 - **SC-028**: Plugin 默认与最大资源限制的边界测试全部生效，timeout、memory 和 output 超限调用 100% 被终止且不阻塞主 UI；未授权的直接 WASI 文件、网络和环境变量访问 100% 被拒绝，调高资源限制不改变拒绝结果。
 - **SC-029**: 默认配置下新会话的 expires_at 对应创建时间后 100 年；重启后保留期内的会话、消息、execution_id 和执行状态可完整恢复，数据库明文扫描不出现消息或 Tool 调用内容。删除/清空操作级联清除全部关联历史且不影响 Agent 配置，诊断包中会话内容泄漏数为 0。
@@ -556,7 +563,7 @@
 - **SC-031**: 表驱动验收测试覆盖“字段验证规则”中的全部公开可写字段，且验证目录字段集合必须与公开写入 DTO 字段集合完全相等（仅排除明确标记的 Store 派生字段和受信迁移字段）；覆盖 identifier、name、slug、description、JSON/Capability 数组、color、外键/ID、布尔/枚举、DataSource、GlobalConfig、LLM 配置、Plugin/Workflow/Node/Edge、Function/Tool/Skill/Agent、分页/搜索和本地运行时命令的合法边界、越界及格式错误，并逐项覆盖三种 Function.kind、四种 `*_node`、点号 Builtin 负例和全部未知枚举。所有非法样例通过公开 Store、运行时或导入接口提交时均在数据库修改前返回 `invalid_input { field, reason }`；唯一性冲突返回 `conflict { field, value }` 且 value 仅限 identifier、name、slug、key 等安全值；引用或状态冲突返回不含 value 的 `conflict { field, reason, references }`。密码、token、消息正文和其他机密值只返回字段名与脱敏原因；数据库和 UI 表单数据均保持不变。
 - **SC-032**: 首次启动生成的设备密钥权限仅限当前用户，重启后复用同一密钥；删除、损坏或放宽密钥权限的所有测试均阻止敏感数据解密且不修改数据库、不静默生成替代密钥，并显示重新配置或从备份恢复入口。
 - **SC-033** *(Session 2026-07-29 新增)*: 全新首次启动必须强制进入主密码设置界面，弱密码（含长度 <12、缺少大小写/数字/符号、与系统 PWD 长度相等且字符集完全相同）100% 拒绝；设置成功后主密码经 Argon2id 派生 KEK，设备密钥材料以 ChaCha20Poly1305 包装到 `.hivegui/keystore/wrapped_device_key.v1`（0600），文件 fsync 与父目录 fsync 失败、权限被放宽（<0600）或文件不存在/不可读时主 UI 不可进入。重启后必须先显示解锁界面，密码字段不接受任何回显，5 次错误后整应用 5 分钟 backoff 且仅显示从备份恢复入口；正确密码可成功解包设备密钥并进入主 UI。`keystore/` 路径不出现在任何备份包、本地回滚安全备份、staging/cleanup journal、owner/manifest/retirement 槽位的物理文件清单中。
-- **SC-034** *(Session 2026-07-29 新增)*: 在解锁状态下，连续 15 分钟（按 `GlobalConfig.auth.auto_lock_minutes`）无键盘/鼠标活动、Agent 对话心跳、Tool 调度、Plugin 调用的事件时，应用自动锁定、内存中已派生设备密钥材料与所有未持久化敏感明文全部清零、UI 回到解锁界面、当前 AgentExecution 持久化为 cancelled、ChatSession.status=locked。操作系统屏幕锁/锁屏事件必须立即触发相同锁定与清零。`auth.auto_lock_minutes` 取值范围 `1..=1440`；0 或越界值使保存返回 `invalid_input`，主 UI 始终未解锁前不得出现该字段。锁定后任何对 SQLite 主文件、WAL/SHM、备份 staging、诊断包的明文 canary 扫描命中数为 0。
+- **SC-034** *(Session 2026-07-29 新增)*: 将 GlobalConfig.auth.auto_lock_minutes 设为 15 后，连续 15 分钟未发生 keypress、主窗口 mousedown 或 UI focus change 时，应用必须自动锁定、清零内存中的已派生设备密钥材料与未持久化敏感明文、返回解锁界面，并将当前 AgentExecution 持久化为 cancelled、ChatSession.status 持久化为 locked；期间持续注入 mousemove、Agent 对话心跳、Tool 调度与 Plugin 调用均不得推迟锁定。操作系统屏幕锁事件必须立即触发相同锁定与清零；取值 0 或超出 1..=1440 时保存必须返回 invalid_input；锁定后 SQLite 主文件、WAL/SHM、备份 staging 与诊断包的明文 canary 命中数必须为 0。
 - **SC-035** *(Session 2026-07-29 新增)*: 首次设置主密码完成后、进入主 UI 之前，UI 必须强制展示“忘记主密码 = 只能从备份恢复” 风险说明并要求用户勾选确认；若不存在 T129 备份文件，必须先引导用户完成 T129 备份向导并验证备份文件存在后才能进入主 UI。恢复备份后必须强制用户重新设置主密码并重新包装设备密钥材料。`GlobalConfig`、`datasources.db`、`.hivegui/keystore/`、`.hivegui-db-*`、`plugin_artifacts/` 的物理文件清单与 SC-033 一致；主密码错误 5 次后整应用 5 分钟 backoff 期间不能从“解锁”入口绕过。
 
 ## 假设条件

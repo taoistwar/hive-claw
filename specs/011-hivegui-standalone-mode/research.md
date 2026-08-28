@@ -16,7 +16,7 @@
 
 **Decision**: 采用用户批准的方案 A，在 Foundation 生产实现前用一个独立的 Red→review→Green 安全补救批次清除当前 7 个 advisory，不添加 `[advisories].ignore` 或其他临时例外：
 
-- `mysql_async` 精确升级到 `=0.36.2`，关闭默认 feature，只启用 `minimal` 与 `native-tls-tls`。隔离探针在当前 HiveGUI 使用面上得到 0 个 API 编译错误。
+- `mysql_async` 精确固定为 `=0.37.0`，关闭默认 feature，只启用 `minimal` 与 `native-tls-tls`。该值与 workspace 当前依赖源及 plan/quickstart 统一；隔离探针在当前 HiveGUI 使用面上得到 0 个 API 编译错误。
 - SQLx 与 CI `sqlx-cli` 统一为 `=0.9.0`。workspace 根不再聚合数据库或 TLS feature；HiveGUI 精确启用 `chrono|macros|runtime-tokio|sqlite`（外部 MySQL TLS 由 `mysql_async` 承担，SQLx 不启用 MySQL 或 TLS）。2026-07-23 的历史 Red 最初把 HiveWeb 目标记为 `chrono|derive|json|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`；2026-07-28 批准的 checked-static-query 方案 A 将最终目标升级为 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`。两端 `macros` 已包含 derive，均不重复声明 `derive`；`agent` 移除未使用的 SQLx 依赖，所有图中禁止 `mysql-rsa`。SQLx 0.9 隔离依赖图已不含 `rsa`，但全仓探针仍发现 HiveGUI 1 个、HiveWeb 40 个 0.9 API/SQL 安全类型迁移错误，因此这不是“直接改版本即可”的 Green 条件总结。
 - HiveWeb MySQL 连接改为强制 `VERIFY_IDENTITY`：必须显式提供 CA 并校验目标主机名；`DISABLED`、`PREFERRED`、`REQUIRED`、`VERIFY_CA`、CA/hostname 缺失、TLS 初始化失败或握手失败均拒绝连接，不得回退明文。2026-07-28 批准的查询方案 A 进一步要求固定应用 schema SQL 只使用 SQLx `query!`/`query_as!`/`query_scalar!` 与 offline metadata，有限变体以封闭 enum/`match` 选择静态 checked query，生产 `QueryBuilder` 调用数为 0。`game_service` 的 `category_name` 改为 checked static SQL 中的 `JSON_OBJECT('name', ?)` bind；恶意输入回归已存在于 T017B，T017D 只使 T017G 审批后的新版契约 Green，不新增测试专用 QueryBuilder helper。HiveGUI 外部 MySQL 继续只使用 `mysql_async` prepared values，并让 metadata allowlist 后的 `MysqlIdentifier` 序列化动态标识符。启动期从 `named_queries.toml` 读取的完整 SQL 保留，但只允许一个 reviewed-config 中央边界在拒绝多语句、SQL 注释、placeholder/参数不匹配、重复参数和 select/execute kind 不匹配后构造 `AssertSqlSafe`；其它生产调用点不得构造该类型。
 - `zbus_xml =5.2.1` 继续使用已修复版本；根 `[patch.crates-io]` 指向 `third_party/wayland-scanner`，该目录保留上游 `wayland-scanner =0.31.10`、精确小写地址 `https://github.com/smithay/wayland-rs` 与 MIT 来源证明，并只把 `quick-xml` 提升到 `0.41` 及将已更名的 `xml_content` 调整为 `xml10_content`。该最小 backport 与当前 wayland client/protocols、`zbus_xml =5.2.1` 已在隔离探针编译；直接跟随上游 git HEAD 会产生 21 个 API 编译错误，故不采用。
@@ -239,7 +239,7 @@ HiveGUI 沿用非阻塞 JSONL writer，但通过可直接测试、可注入 UTC 
 
 ## 13. GPUI 异步、键盘与可访问性
 
-**Decision**: 长任务全部在 Tokio runtime；GPUI 主线程只消费有界/合并后的事件。顶层保持真实的 Home/Ai/Tools 三路由，AI 页复用现有 12 Tab。新增 conversation view 和 runtime-event bridge，统一 action button、modal focus trap、焦点恢复与 DAG keyboard actions。
+**Decision**: 长任务全部在 Tokio runtime；GPUI 主线程只消费有界/合并后的事件。顶层保持真实的 Home/Ai/Tools 三路由，AI 页复用现有 13 Tab（Agent、工具、技能、函数、流程、插件、LLM、Capabilities、分类、标签、会话、数据管理、全局配置）。conversation view 与 runtime-event bridge 复用统一 action button、modal focus trap、焦点恢复与 DAG keyboard actions。
 
 自动测试使用 VisualTestContext 的 keystroke、focus、debug_bounds 和事件注入；主题色做对比度单测。AccessKit 完整树若测试平台不可见，则增加测试 hook 并保留各平台辅助技术 smoke test。
 

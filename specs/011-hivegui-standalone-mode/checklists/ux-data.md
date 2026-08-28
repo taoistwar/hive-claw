@@ -40,7 +40,7 @@ Linux 自动化与真实 AT finding 已闭合，但现役发布合同要求逐�
 - [ ] UXC-T139.3 复跑期间不得新增实现假设；若发现平台差异，先在 UXC008 记录差异说明并阻断 T139 完成，直到差异处理完成并回归。
 
 - [ ] UXC001 Linux、macOS、Windows 上顶层导航只显示 Home、Ai、Tools，默认 Home；已移除的 LockScreen、Dashboard、Game、SensitiveWord、Settings/Extension 顶层路由不得重现。（放行条件：待 T139 三平台复跑与 reviewer 签字）
-- [ ] UXC002 Ai 管理页 Tab 顺序精确为 Agent、工具、技能、函数、流程、插件、LLM、Capabilities、分类、标签、数据管理、全局配置，键盘顺序、可见焦点与 AccessKit 名称/角色一致。（放行条件：待 T139 三平台复跑与 reviewer 签字）
+- [ ] UXC002 Ai 管理页固定为 13 个 Tab，顺序精确为 Agent、工具、技能、函数、流程、插件、LLM、Capabilities、分类、标签、会话、数据管理、全局配置，键盘顺序、可见焦点与 AccessKit 名称/角色一致。（放行条件：待 T139 三平台复跑与 reviewer 签字）
 - [ ] UXC003 DataSource 是“数据管理”中的现役本地功能，不受 HiveWeb 或旧 feature gate 隐藏；添加、编辑、空密码保留、测试连接、删除和重启恢复的状态/错误均可访问。（放行条件：待 T139 三平台复跑与 reviewer 签字）
 - [ ] UXC004 全部 CRUD 表单在验证/唯一性/引用冲突后保留安全输入，显示非颜色唯一错误状态，把焦点移动到首个错误，并在 modal 关闭后恢复触发点焦点。（放行条件：待 T139 三平台复跑与 reviewer 签字）
 - [ ] UXC005 长列表、管理 modal、Plugin 表单、数据管理和侧栏使用 GPUI/gpui-component 原生滚动；以可见 bounds 和实际滚动位移证明底部控件未遮挡，不使用自定义滚动条/手柄/箭头或手写 wheel 逻辑。（放行条件：待 T139 三平台复跑与 reviewer 签字）

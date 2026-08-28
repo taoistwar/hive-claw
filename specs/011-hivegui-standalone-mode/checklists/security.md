@@ -85,14 +85,14 @@ HiveWeb 的产品源码、运行与网络边界保持独立，HiveGUI 不请求�
 
 | Advisory | 当前依赖链与产品范围 | 2026-07-23 已批准的无例外处置 |
 | --- | --- | --- |
-| RUSTSEC-2026-0002 | `lru 0.12.5 ← mysql_async 0.34.2 ← hivegui` | 精确升级为 `mysql_async = { version = "=0.36.2", default-features = false, features = ["minimal", "native-tls-tls"] }`；移除受影响的 `lru 0.12.5`，不扩大 MySQL feature 面 |
+| RUSTSEC-2026-0002 | `lru 0.12.5 ← mysql_async 0.34.2 ← hivegui` | 精确升级为 `mysql_async = { version = "=0.37.0", default-features = false, features = ["minimal", "native-tls-tls"] }`；移除受影响的 `lru 0.12.5`，不扩大 MySQL feature 面 |
 | RUSTSEC-2026-0194、RUSTSEC-2026-0195 | `quick-xml 0.39.4 ← wayland-scanner/zbus_xml ← GPUI Linux ← hivegui` | 精确升级 `zbus_xml` 至 `=5.2.1`；从 crates.io 发布的 `wayland-scanner 0.31.10` 源码建立本地 vendor（MIT），只把 `quick-xml` 约束改为 `0.41` 并把兼容 API `xml_content` 改为 `xml10_content`。固定 GPUI 可采用原生支持该版本的上游 `wayland-scanner` 后立即移除 vendor；除这两处适配外不得维护行为 fork |
 | RUSTSEC-2023-0071 | `rsa 0.9.10 ← sqlx-mysql 0.8.6 ← sqlx ← agent/hivegui/hiveweb` | workspace SQLx 与 CI `sqlx-cli` 精确升级到 `=0.9.0`，根依赖无共享 feature，`agent` 移除 SQLx；HiveGUI 精确启用 `chrono|macros|runtime-tokio|sqlite`，其外部 MySQL TLS 由 `mysql_async` 承担，SQLx 不编译 MySQL/TLS；HiveWeb 精确启用 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki` 且不启用 `mysql-rsa`；两端 `macros` 已包含 derive，不重复 `derive`。HiveWeb 固定应用 SQL 必须使用 checked macros、生产 `QueryBuilder` 为零，MySQL 连接必须 fail-closed 使用 `VERIFY_IDENTITY`，证书链或主机名验证失败即拒绝连接，不回退到明文、公钥获取或宽松 TLS 模式 |
 | RUSTSEC-2026-0098、RUSTSEC-2026-0099、RUSTSEC-2026-0104 | `rustls-webpki 0.101.7 ← rustls 0.21.12 ← AWS SDK/Smithy ← hiveweb` | 保持 `aws-sdk-s3 = "=1.133.0"`，设置 `default-features = false`，只启用 `default-https-client`、`http-1x`、`rt-tokio`、`sigv4a`；关闭 legacy `rustls` feature，保留现代 AWS-LC HTTPS client，使旧 `rustls-webpki 0.101.7` 退出依赖图 |
 
 批准前的只读审计与 workspace 外临时探针提供了以下实现前证据；它们用于确定 Red 合同，不替代 Green 后的 workspace 全量验证：
 
-- `mysql_async 0.36.2` 的最小 `minimal + native-tls-tls` 临时副本已通过编译探针；正式变更仍须由 HiveGUI 直接测试和全目标编译证明 API/行为兼容。
+- `mysql_async 0.37.0` 的最小 `minimal + native-tls-tls` 临时副本已通过编译探针；正式变更仍须由 HiveGUI 直接测试和全目标编译证明 API/行为兼容。
 - `wayland-scanner 0.31.10` 的最小 backport 仅包含 `quick-xml 0.41` 与 `xml_content` → `xml10_content` 两处适配；它和当前 `wayland-client`、`wayland-protocols` 及 `zbus_xml 5.2.1` 的隔离 `cargo check` 已通过。直接采用当时上游 git HEAD 则有 21 个兼容编译错误，因此批准的是可审计、可移除的最小 MIT vendor，不是 GPUI/Wayland 全栈升级。
 - SQLx 0.9 临时依赖图已无 `rsa`，且 `agent` crate 编译通过；源码审计仍识别出 **41 个**迁移点，其中 HiveGUI 有 1 个 `AssertSqlSafe` 迁移点、HiveWeb library 有 40 个迁移点，因此不得宣称 workspace 已完整编译通过。
 - AWS 显式使用上述 4 个现代 feature 后，依赖图中旧 `rustls 0.21` / `rustls-webpki 0.101.7` 消失，相关 AWS crates 编译通过；组合探针最终只被上述 SQLx 迁移错误阻断，正式 `Cargo.lock` 更新后仍必须编译并测试 HiveWeb S3。
@@ -805,7 +805,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 ### ⑥.9 已知非阻断工具链风险
 
 - 同 §⑤.8 / `tasks.md` "已知非阻断工具链风险"：本边界在 Rust 1.97.1 上无 future-incompat 警告。
-- `mysql_async = "=0.36.2"` `default-features = false` + `features = ["minimal", "native-tls-tls"]`（T007 决策）规避 RUSTSEC-2026-0002 受影响 `lru 0.12.5`；TLS 由 `native-tls-tls` 承担（系统 OpenSSL），不走 `mysql-rsa`
+- `mysql_async = "=0.37.0"` `default-features = false` + `features = ["minimal", "native-tls-tls"]`（T007 决策）规避 RUSTSEC-2026-0002 受影响 `lru 0.12.5`；TLS 由 `native-tls-tls` 承担（系统 OpenSSL），不走 `mysql-rsa`
 - `MysqlClient` TLS 行为：使用 `native-tls-tls` 默认 verify（系统 CA bundle + hostname 校验），无任何明文 / RSA / 宽松 TLS fallback（与 T017D HiveWeb `VERIFY_IDENTITY` 同等级）
 
 ### ⑥.10 测试命令与结果
@@ -826,7 +826,7 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
   6. 5 秒预算 + `tokio::select!` 可控时钟 + `CancellationToken` — §⑥.6 ✓
   7. `DataSourcePassword` 跨 11 介质 canary 0 命中 + `XChaCha20Poly1305` + 设备密钥 32B OsRng — §⑥.7 ✓
   8. 仓库 `.env` / `.env.example` / 文档 / fixture 不含 `HIVEGUI_TEST_MYSQL_URL` 等真实凭据 — §⑥.8 ✓
-  9. 已知非阻断工具链风险（`mysql_async 0.36.2` 最小 feature + `native-tls-tls` verify） — §⑥.9 ✓
+  9. 已知非阻断工具链风险（`mysql_async 0.37.0` 最小 feature + `native-tls-tls` verify） — §⑥.9 ✓
   10. 测试命令与结果 — §⑥.10 ✓
 - **Security-review 流程（dedicated）条件总结**: 通过。T025R 边界 ⑥.1-⑥.9 检查项已对照规格与实现逐条核对。无新增 finding；反引号注入 / 注释 / DROP / 跨设备密文搬运 / HiveWeb fallback / 明文 / RSA 宽松 TLS 7 类常见攻击面均被现有实现阻断。
 - **Code-quality / doc 硬门槛**: `mysql_client.rs` / `data_source_store.rs` / `crypto.rs` 涉及 `pub fn` 全部完成 doc comment；`#![warn(missing_docs)]` 编译 0 警告（其余模块遗留警告与本边界无关）。

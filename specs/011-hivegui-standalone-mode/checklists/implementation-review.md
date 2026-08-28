@@ -6,7 +6,7 @@
 
 **Created**: 2026-07-22
 
-**Status**: 所有尚未取得可追溯证据的字段均为 `Pending`；T001 已于 2026-08-05 通过独立 PR #4 远端 CI 闭合（`2eee211 chore: pin Rust 1.97.1 toolchain (#4)`，squash 合并至 `origin/main`），T002-T008 的后续重验也已闭合。当前现役 Pending 精确为 T119/T130/T136/T138/T139/T142/T147。
+**Status**: 所有尚未取得可追溯证据的字段均为 `Pending`；T001 已于 2026-08-05 通过独立 PR #4 远端 CI 闭合（`2eee211 chore: pin Rust 1.97.1 toolchain (#4)`，squash 合并至 `origin/main`），T002-T008 的后续重验也已闭合。当前现役 Pending 精确为 T130/T136/T138/T139/T142/T147。
 
 本账本是 Feature 011 当前实现的审批与证据记录。下方 2026-07-02 的实体管理检查清单仅作为历史材料保留，不代表本 Feature 的测试审批、Red/Green 证据或发布签字。
 
@@ -41,8 +41,8 @@
 | 12 · US10 Workflow DAG | T090-T100 | T094 审批后方可 T095；另依赖 US9 Green 与 T052 | T090-T093 完整补充测试，见 §T094.5；T052 supplemental 见 §T050.2 | **Approved — user, 2026-08-25, replies `yes`；首份 baseline 另以 `yes-baselin` 批准** | 见 §T094.5 / §T050.2 | runtime/compile/真实 GPUI/真实 HTTP cancellation Red 已观察 | 见 §T100.4 | Store 15/15 + execution 14/14 + accessibility 66/66；当前 source release benchmark Passed | 首份 baseline 保持；无 Workflow exception；T052 单一 workspace provider path/事件/计时/中途取消 Green | **Closed — T090-T100 Green** |
 | 13 · US11 工具管理 | T101-T107 | T104 审批后方可 T105；pair-v2/dispatch-v2 supplemental 见当前节 | Supplemental Red files, see §T104.2 与当前 supplemental | 非数值合同 ACCEPT；**两份首批 baseline Approved — user, 2026-08-27** | pair-v2 ID/routes、dispatch-v2 ID/E0432/E0603、T005 absolute-gate Red | 精确 runtime/compile Red 均 exit 101 | 两个 v2 harness/baseline 同源 Green | support 31/31；Tool 9/9 + 1 ignored；dispatch 5/5；`tool_search_page_pair_v2`/`tool_dispatch_batched_v2` 均 `Passed` | 13 targets 不扩容；旧 baselines 冻结；checked dispatch 与 pair combined wall-clock | **Closed — T103/T107/US11 Green** |
 | 14 · US12 技能管理 | T108-T114 | T111 审批后方可 T112 | 见 §T111-T114 | T111/T114 self-attest | Store/prompt/UI/scroll Red | 精确命中目标边界 | T112-T114 Green | Skill management 3/3，prompt/scroll owner 行 Green | 显式∪always 去重且不注册为 Tool | **Closed — T108-T114** |
-| 15 · US13 本地 Agent | T115-T136 | T123 审批 T115-T122；T130 等待 T129；T136 最终只复跑 | 历史 Green；当前 restore descriptor/snapshot binding、maintenance owner、Settings lifecycle 与 typed safety phase supplemental 见 §US13.T119-T134.2026-08-27 | 各 strict Red 均经独立 reviewer APPROVE；旧性能数值审批保留 | archive/current/snapshot A→B→A、owner ABA/recovery race、Settings cancel/confirmation phase Red 均实际观察 | supplemental core/UI 均 Green，但跨平台与 SQLx leaf/VFS blocker 保留 | `backup_restore` 65/65；`backup_maintenance` 8/8；`store_resilience` 12/12；Settings 18/18；startup 11/11；完整 restore crash/replay matrix Green | Linux held descriptor/owner handoff/三态 safety proof 已闭合；Windows file-id/reparse、非 Unix no-follow、SQLx checkpoint/staging 与部分 Plugin/cleanup TOCTOU 未闭合 | 只实现获批窄 Red；未把 partial Green 外推为 T119/T130 | **Reopened — T117/T121 Closed；T119/T130/T136 Pending** |
-| 16 · Polish / Cross-cutting | T137-T147 | T138/T139/T142 仅复跑已闭合 owner 行；T145 零 advisory ignore；T147 等全部门禁 | 历史证据保留；当前 source `53e3ae2b…` 结果见 §Polish.T137-T145.2026-08-27 | 历史 baseline/exception 审批保留；当前 source 无 active exception；跨平台签字 Pending | 旧性能与治理 Red 全部保留；T119/T130 owner inventory 缺口仍在 | 当前 canonical matrix 13 direct Passed；治理、Gitleaks、deny、SQLx、check/clippy/fmt/diff 与 SQL inventory Green | T137/T140/T141/T143/T144/T145/T146 Closed；T138 仍因 owner 缺口 Pending | current source=`source_stable=true/status=passed`、13 direct Passed、零 active exception | T119/T130/T136/T138/T139/T142/T147 Pending | **Partial Closed — T137/T145 新增当前源码闭合；现役 7 Pending** |
+| 15 · US13 本地 Agent | T115-T136 | T123 审批 T115-T122；T130 等待 T129；T136 最终只复跑 | 历史 Green；当前 restore descriptor/snapshot binding、maintenance owner、Settings lifecycle 与 typed safety phase supplemental 见 §US13.T119-T134.2026-08-27 | 各 strict Red 均经独立 reviewer APPROVE；旧性能数值审批保留 | archive/current/snapshot A→B→A、owner ABA/recovery race、Settings cancel/confirmation phase Red 均实际观察 | supplemental core/UI 均 Green，但跨平台与 SQLx leaf/VFS blocker 保留 | `backup_restore` 65/65；`backup_maintenance` 8/8；`store_resilience` 12/12；Settings 18/18；startup 11/11；完整 restore crash/replay matrix Green | Linux held descriptor/owner handoff/三态 safety proof 已闭合；Windows file-id/reparse、非 Unix no-follow、SQLx checkpoint/staging 与部分 Plugin/cleanup TOCTOU 未闭合 | 只实现获批窄 Red；未把 partial Green 外推为 T119/T130 | **Reopened — T117/T121 Closed；T119 Red Closed；T123A/T130/T136 Pending** |
+| 16 · Polish / Cross-cutting | T137-T147 | T138/T139/T142 仅复跑已闭合 owner 行；T145 零 advisory ignore；T147 等全部门禁 | 历史证据保留；当前 source `53e3ae2b…` 结果见 §Polish.T137-T145.2026-08-27 | 历史 baseline/exception 审批保留；当前 source 无 active exception；跨平台签字 Pending | 旧性能与治理 Red 全部保留；T119/T130 owner inventory 缺口仍在 | 当前 canonical matrix 13 direct Passed；治理、Gitleaks、deny、SQLx、check/clippy/fmt/diff 与 SQL inventory Green | T137/T140/T141/T143/T144/T145/T146 Closed；T138 仍因 owner 缺口 Pending | current source=`source_stable=true/status=passed`、13 direct Passed、零 active exception | T123A/T130/T136/T138/T139/T142/T147 Pending | **Partial Closed — T137/T145 新增当前源码闭合；现役 7 Pending** |
 
 ## §Polish.2026-08-25 — 最终 Linux 复跑、CI 实执行与发布阻断
 
@@ -2236,3 +2236,57 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
 2. **FR-025/026/027 技术细节完整** — 已实现指数退避重试、JSON 导出/导入、schema 版本管理
 3. **测试覆盖完整** — 76 个测试全部通过，包括并发访问、迁移回滚、分页性能、字段验证
 4. **FR-027 与现有代码无冲突** — 版本管理已集成到启动流程，替代原 init_tables 调用
+
+## US13 T119-T123A 2026-08-28 - leaf ownership and cross-platform no-follow Red
+
+- 范围：T119 在 crates/hivegui/tests/backup_restore.rs 补齐四个现役 owner 合同：SQLx current/staging checkpoint 必须共享同一 BoundSqliteLeaf/VFS；Plugin snapshot/switch/rollback/cleanup 必须消费 held root descriptor 与相对 leaf；Windows 必须从已打开 handle 取得稳定 volume/file ID 并拒绝 reparse；非 Unix 必须走单一 owned no-follow leaf API。同步保留既有 pinned-checkpoint 行为测试，不修改任何生产代码。
+- 新增测试：t119_sqlx_checkpoint_and_staging_share_one_bound_leaf_vfs、t119_plugin_switch_rollback_and_cleanup_are_descriptor_bound、t119_windows_identity_rejects_reparse_and_aba_replacement、t119_non_unix_nofollow_uses_one_owned_leaf_api。
+- 原样命令：cargo +1.97.1 test --locked -p hivegui --test backup_restore t119_ -- --nocapture
+- 退出状态：101。
+- 实际 Red：error[E0599]: no method named finish_with_pinned_checkpoint_interlocks_for_test found for struct RestoreConfirmation，位置 crates/hivegui/tests/backup_restore.rs:7952:14。编译器仅建议现有较弱的 finish_with_snapshot_binding_interlocks_for_test；该失败精确证明生产边界尚未提供 pinned current/staging checkpoint interlock，不是无关语法或依赖错误。
+- TDD 状态：T119 测试编写与可识别 Red 已闭合；四个 source-contract 测试已进入同一 test target，但因上述目标 API 缺失而尚未执行到运行期断言。T123A 保持 Pending，等待 user/designated reviewer 审批本节测试与 Red；审批前不得修改 backup.rs、store.rs 或 plugin_artifacts.rs，不得开始 T130。
+- **T123A reviewer approval（2026-08-28）**：user 明确回复“批准 T123A”。批准范围仅包含上一节四个 T119 leaf ownership / cross-platform no-follow 合同及已观察的 E0599 Red；允许开始 T130 最小生产实现，不授权修改或弱化已批准测试，也不提前解锁 T136/T138/T142。
+
+## T130 Green evidence (2026-08-28)
+
+- Implemented one descriptor-bound SQLite leaf owner for staging and current checkpoint work. The SQLx single-connection pool is established while the exact no-follow leaf is held, and checkpoint plus health verification complete before the canonical path is used for sidecar convergence.
+- Moved current-database leaf binding ahead of `prepare_restore_for_safety`, so both the current safety source and the checkpoint phase share the same pre-I/O owner boundary.
+- Converted restore safety Plugin copy and recursive retirement cleanup to `cap_std::fs::Dir`-relative traversal. File reads retain a no-follow source leaf and reject identity replacement before publication.
+- Added a common `NoFollowLeaf` API. Unix opens use `O_NOFOLLOW`; Windows opens request `FILE_FLAG_OPEN_REPARSE_POINT`, reject reparse-point attributes, and bind `FILE_ID_INFO` returned by `GetFileInformationByHandleEx`.
+- Green: `cargo +1.97.1 test --locked -p hivegui --test backup_restore t119_ -- --nocapture` (4 passed).
+- Green: `cargo +1.97.1 test --locked -p hivegui --test backup_restore checkpoint_uses_pinned_staging_and_current_leaves_during_a_b_a_exchange -- --nocapture` (1 passed).
+- Regression: full `backup_restore` run completed 69 passed and 1 parallel-timeout failure in the pre-existing archive preview A/B/A test; isolated rerun of `preview_restore_pins_one_archive_descriptor_across_a_b_a_path_exchange` passed (1 passed, 9.58s). No deterministic regression remains in this test file.
+- Release/security/UX acceptance checklist entries previously authorized as Pending remain Pending. They are not treated as Green evidence for T130.
+- Gate transition: T130 is complete. Next implementation work is T136/T138/T142; T139 remains a separate prerequisite before T147.
+
+## T136 US13 Green regression evidence (2026-08-28)
+
+- `accessibility`: 77 passed with the combined-load performance canary timing out/regressing under the first full-file load; its required isolated rerun passed with `p50=13,439,058ns`, `p95=15,485,355ns`, `p99=16,503,980ns`, comparison outcome `Passed`. This supplies all 78 test outcomes without changing assertions or baselines.
+- `backup_restore`: the T130 full-file run produced 69 passed plus one archive preview A/B/A parallel timeout; the required isolated rerun passed in 9.58s. All 70 test outcomes are accounted for, including the new pinned-leaf behavior.
+- `agent_management`: 19 passed, 1 explicitly ignored release-only benchmark.
+- `local_agent_runtime`: 19 passed, including complete local conversation flow and zero HiveWeb requests.
+- `conversation_retention`: 16 passed, 1 explicitly ignored release-only benchmark.
+- `cancellation`: 6 passed.
+- `diagnostics`: 10 passed, including persisted sensitive-canary and redacted export coverage.
+- `logging_contract`: 10 passed, including persistence, crash-boundary, retention, rotation, and redaction contracts.
+- No assertions, fixtures, baselines, or production code were introduced by T136. Release-only ignored benchmarks and the previously authorized release acceptance items remain Pending.
+
+## T138 remains Pending (2026-08-28)
+
+- T136 owner regressions and the T130 leaf/descriptor security contracts are Green, but T138's own completion rule requires CHK010/CHK011 and every applicable security checklist item to be non-Pending.
+- The user authorized implementation to continue while those release acceptance items remain Pending; that authorization is not a security reviewer approval and does not permit marking T138 or CHK010/CHK011 complete.
+- Per T138, no new sensitive-field inventory, leak assertion, production fix, baseline, advisory exception, or second-approval claim was introduced here. T138 remains unchecked and does not provide evidence for T147.
+
+## T142 accessibility regression evidence (2026-08-28)
+
+- Reused the exact no-new-assertion T136 run of `cargo +1.97.1 test --locked -p hivegui --test accessibility -- --nocapture`: 77 tests passed; the sole combined-load performance comparison was rerun in isolation and passed.
+- Isolated command: `cargo +1.97.1 test --locked -p hivegui --test accessibility agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive -- --nocapture` (1 passed; comparison outcome `Passed`).
+- The run covers the registered T016E native-scroll inventory, Home/Ai/Tools and CRUD surfaces, DAG keyboard operations, Agent/conversation/settings keyboard flow, backup/restore reachability, focus restoration, native wheel reachability, and responsive recovery/stop paths.
+- T142 introduced no surface, selector, fixture, assertion, baseline, or production UI change. Release checklist Pending items remain outside this Green regression summary.
+
+## T139 and T147 remain Pending (2026-08-28)
+
+- The Linux source/VisualTestContext accessibility regression is Green under T142, including the 13-tab inventory contract and native-scroll keyboard/wheel rows.
+- T139 additionally requires current Linux/macOS/Windows keyboard plus real assistive-technology smoke evidence, contrast evidence, visible bounds and actual displacement, focus restoration, current v4 data-model coverage, and the applicable UXC001-UXC012 owner chains. The preflight UX/data checklist still has 15 Pending items, so T139 remains unchecked.
+- The user's permission to continue implementation with release acceptance items Pending is preserved, but it is not evidence that these platform/AT observations occurred.
+- T147 remains dependency-blocked by unchecked T138 and T139. It was not started and no final release/acceptance claim was made.

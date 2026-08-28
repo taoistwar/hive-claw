@@ -12,7 +12,7 @@ Supporting design artifacts for the active feature:
 - specs/011-hivegui-standalone-mode/quickstart.md
 
 Constitution (always authoritative; cite, do not contradict):
-.specify/memory/constitution.md (v1.4.0)
+.specify/memory/constitution.md (v1.5.0)
 
 Product boundary (always authoritative): HiveWeb is the cloud-hosted Agent and
 HiveGUI is the independent desktop-local Agent. They may reuse code and

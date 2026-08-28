@@ -1754,7 +1754,7 @@ impl BackupImporter {
         .map_err(|e| ImportError::Io(format!("join error: {e}")))??;
         if let Err(error) = finalize_portable_restore(&imported).await {
             if imported.final_target == imported.target_key_root && imported.final_target.exists() {
-                remove_tree_no_follow(&imported.final_target)?;
+                remove_tree_no_follow_path(&imported.final_target)?;
             }
             return Err(error);
         }
@@ -3885,7 +3885,7 @@ impl RestoreConfirmation {
     /// durably switch both database and Plugin tree, and keep the process
     /// terminal until startup recovery succeeds.
     pub async fn finish(self) -> Result<RestoreRecovery, RestoreConfirmationError> {
-        self.finish_internal(None, None).await
+        self.finish_internal(None, None, None).await
     }
 
     /// Test-only synchronization wrapper around the production current
@@ -3899,7 +3899,7 @@ impl RestoreConfirmation {
         self,
         barriers: [Arc<tokio::sync::Barrier>; 2],
     ) -> Result<RestoreRecovery, ImportError> {
-        self.finish_internal(Some(barriers), None)
+        self.finish_internal(Some(barriers), None, None)
             .into_import_error()
             .await
     }
@@ -3911,7 +3911,19 @@ impl RestoreConfirmation {
         self,
         barriers: [Arc<tokio::sync::Barrier>; 4],
     ) -> Result<RestoreRecovery, ImportError> {
-        self.finish_internal(None, Some(barriers))
+        self.finish_internal(None, Some(barriers), None)
+            .into_import_error()
+            .await
+    }
+
+    /// Test-only synchronization around the descriptor-bound staging and
+    /// current database checkpoint operations.
+    #[doc(hidden)]
+    pub async fn finish_with_pinned_checkpoint_interlocks_for_test(
+        self,
+        barriers: [Arc<tokio::sync::Barrier>; 8],
+    ) -> Result<RestoreRecovery, ImportError> {
+        self.finish_internal(None, None, Some(barriers))
             .into_import_error()
             .await
     }
@@ -3920,6 +3932,7 @@ impl RestoreConfirmation {
         self,
         current_copy_interlock: Option<[Arc<tokio::sync::Barrier>; 2]>,
         snapshot_binding_interlocks: Option<[Arc<tokio::sync::Barrier>; 4]>,
+        pinned_checkpoint_interlocks: Option<[Arc<tokio::sync::Barrier>; 8]>,
     ) -> Result<RestoreRecovery, RestoreConfirmationError> {
         self.pool.close().await;
         let maintenance_lease = self.coordinator.restore_maintenance_lease();
@@ -3930,11 +3943,15 @@ impl RestoreConfirmation {
 
         let pre_safety_outcome = async {
             let _maintenance_lease = maintenance_lease?;
+            let held_current = self.coordinator.open_current_database_for_snapshot()?;
             let prepared = self
                 .coordinator
-                .prepare_restore_for_safety(&self.plan, None)
+                .prepare_restore_for_safety(
+                    &self.plan,
+                    None,
+                    pinned_checkpoint_interlocks.as_ref(),
+                )
                 .await?;
-            let held_current = self.coordinator.open_current_database_for_snapshot()?;
             let snapshot_binding = begin_restore_safety_snapshot(
                 &prepared.root_dir,
                 &prepared.io_root,
@@ -3974,7 +3991,7 @@ impl RestoreConfirmation {
                 };
                 finish_restore_safety_snapshot(
                     &snapshot_binding,
-                    &prepared.current_plugins,
+                    prepared.current_plugins_dir.as_ref(),
                     &self.plan.db_instance_operation_id,
                     database,
                 )?;
@@ -4244,6 +4261,7 @@ struct RestorePreparedForSafety {
     staging_database: PathBuf,
     staging_plugins: PathBuf,
     current_plugins: PathBuf,
+    current_plugins_dir: Option<cap_std::fs::Dir>,
     write_gate_database: PathBuf,
 }
 
@@ -5002,7 +5020,9 @@ impl RestoreCoordinator {
         crash_at: Option<BackupCrashPoint>,
         safety_return_interlock: Option<[Arc<tokio::sync::Barrier>; 2]>,
     ) -> Result<RestoreRecovery, ImportError> {
-        let prepared = self.prepare_restore_for_safety(plan, crash_at).await?;
+        let prepared = self
+            .prepare_restore_for_safety(plan, crash_at, None)
+            .await?;
         let write_gate_database = prepared.write_gate_database.clone();
         let verified_safety_snapshot = create_restore_safety_snapshot(
             &prepared.io_root,
@@ -5041,6 +5061,7 @@ impl RestoreCoordinator {
         &self,
         plan: &RestorePlan,
         crash_at: Option<BackupCrashPoint>,
+        pinned_checkpoint_interlocks: Option<&[Arc<tokio::sync::Barrier>; 8]>,
     ) -> Result<RestorePreparedForSafety, ImportError> {
         let io_root = self.io_root()?;
         let current_database = io_root.join(DATABASE_FILENAME);
@@ -5065,6 +5086,7 @@ impl RestoreCoordinator {
             &staging_database,
             &format!("restore/{}", plan.db_instance_operation_id),
             crash_at,
+            pinned_checkpoint_interlocks.map(|barriers| &barriers[..4]),
         )
         .await?;
 
@@ -5075,7 +5097,13 @@ impl RestoreCoordinator {
             .map_err(|_| ImportError::Io("write gate poisoned".into()))?
             .insert(write_gate_database.clone());
         if current_database.exists() {
-            checkpoint_closed_database(&current_database, "current", crash_at).await?;
+            checkpoint_closed_database(
+                &current_database,
+                "current",
+                crash_at,
+                pinned_checkpoint_interlocks.map(|barriers| &barriers[4..]),
+            )
+            .await?;
         }
         let root_dir = self
             .root_directory
@@ -5087,6 +5115,16 @@ impl RestoreCoordinator {
         let live_dir = registry_dir
             .open_dir(Path::new(&live_basename))
             .map_err(|_| ImportError::UnsafeArchiveEntry(live.display().to_string()))?;
+        let current_plugins_dir = match root_dir.symlink_metadata(Path::new("plugins")) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Some(
+                root_dir
+                    .open_dir(Path::new("plugins"))
+                    .map_err(|_| ImportError::UnsafeArchiveEntry("plugins".into()))?,
+            ),
+            Ok(_) => return Err(ImportError::UnsafeArchiveEntry("plugins".into())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(ImportError::Io(error.to_string())),
+        };
 
         Ok(RestorePreparedForSafety {
             io_root,
@@ -5099,6 +5137,7 @@ impl RestoreCoordinator {
             staging_database,
             staging_plugins,
             current_plugins,
+            current_plugins_dir,
             write_gate_database,
         })
     }
@@ -5123,6 +5162,7 @@ impl RestoreCoordinator {
             staging_database,
             staging_plugins,
             current_plugins,
+            current_plugins_dir: _,
             write_gate_database,
         } = prepared;
 
@@ -6399,11 +6439,176 @@ fn sync_directory(path: &Path) -> Result<(), ImportError> {
         .map_err(|error| ImportError::Io(format!("fsync {}: {error}", path.display())))
 }
 
-async fn checkpoint_closed_database(
-    database: &Path,
-    db_id: &str,
-    crash_at: Option<BackupCrashPoint>,
-) -> Result<(), ImportError> {
+struct NoFollowLeaf {
+    file: File,
+    identity: String,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WindowsFileIdentity {
+    volume_serial_number: u64,
+    file_id: [u8; 16],
+}
+
+#[cfg(windows)]
+const FILE_ID_INFO: u32 = 18;
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+#[cfg(windows)]
+const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00a8;
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+#[cfg(windows)]
+#[repr(C)]
+struct RawFileIdInfo {
+    volume_serial_number: u64,
+    file_id: [u8; 16],
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetFileInformationByHandleEx(
+        file: *mut std::ffi::c_void,
+        information_class: u32,
+        information: *mut std::ffi::c_void,
+        information_size: u32,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> Result<WindowsFileIdentity, ImportError> {
+    use std::os::windows::{fs::MetadataExt as _, io::AsRawHandle as _};
+
+    let metadata = file
+        .metadata()
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        let _reparse_query = FSCTL_GET_REPARSE_POINT;
+        return Err(ImportError::UnsafeArchiveEntry(
+            "Windows reparse-point leaf".into(),
+        ));
+    }
+    let mut raw = RawFileIdInfo {
+        volume_serial_number: 0,
+        file_id: [0; 16],
+    };
+    // SAFETY: `raw` is a correctly sized writable FILE_ID_INFO buffer and the
+    // borrowed handle remains open for the duration of the call.
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_ID_INFO,
+            (&mut raw as *mut RawFileIdInfo).cast(),
+            std::mem::size_of::<RawFileIdInfo>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(ImportError::Io(std::io::Error::last_os_error().to_string()));
+    }
+    Ok(WindowsFileIdentity {
+        volume_serial_number: raw.volume_serial_number,
+        file_id: raw.file_id,
+    })
+}
+
+fn open_no_follow_leaf_at(
+    root: &cap_std::fs::Dir,
+    relative: &Path,
+) -> Result<NoFollowLeaf, ImportError> {
+    validate_relative_path(relative)
+        .map_err(|_| ImportError::UnsafeArchiveEntry(relative.display().to_string()))?;
+    let before = root
+        .symlink_metadata(relative)
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    if !before.is_file() || before.file_type().is_symlink() {
+        return Err(ImportError::UnsafeArchiveEntry(
+            relative.display().to_string(),
+        ));
+    }
+
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(unix))]
+    let _descriptor_relative_non_unix = true;
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        // These platforms still use the same descriptor-relative open and the
+        // before/after entry identity check below; they never canonicalize or
+        // reopen an ambient path.
+    }
+    let file = root
+        .open_with(relative, &options)
+        .map_err(|error| ImportError::Io(error.to_string()))?
+        .into_std();
+    let after = root
+        .symlink_metadata(relative)
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    if !after.is_file()
+        || after.file_type().is_symlink()
+        || stable_cap_file_identity(&before)? != stable_cap_file_identity(&after)?
+    {
+        return Err(ImportError::UnsafeArchiveEntry(
+            relative.display().to_string(),
+        ));
+    }
+    #[cfg(windows)]
+    let identity = {
+        let identity = windows_file_identity(&file)?;
+        format!(
+            "windows:{}:{}",
+            identity.volume_serial_number,
+            hex::encode(identity.file_id)
+        )
+    };
+    #[cfg(not(windows))]
+    let identity = stable_file_identity(
+        &file
+            .metadata()
+            .map_err(|error| ImportError::Io(error.to_string()))?,
+    )?;
+    Ok(NoFollowLeaf { file, identity })
+}
+
+struct BoundSqliteLeafVfs {
+    pool: sqlx::SqlitePool,
+}
+
+impl BoundSqliteLeafVfs {
+    fn vfs(&self) -> &sqlx::SqlitePool {
+        &self.pool
+    }
+}
+
+struct BoundSqliteLeaf {
+    held_leaf: NoFollowLeaf,
+    parent_directory: cap_std::fs::Dir,
+    database_name: PathBuf,
+    database_path: PathBuf,
+    vfs: BoundSqliteLeafVfs,
+}
+
+async fn bind_sqlite_leaf(database: &Path) -> Result<BoundSqliteLeaf, ImportError> {
+    let parent = database.parent().unwrap_or_else(|| Path::new("."));
+    let database_name = PathBuf::from(
+        database
+            .file_name()
+            .ok_or_else(|| ImportError::UnsafeArchiveEntry(database.display().to_string()))?,
+    );
+    let parent_directory = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    let held_leaf = open_no_follow_leaf_at(&parent_directory, &database_name)?;
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(database)
         .create_if_missing(false)
@@ -6417,35 +6622,82 @@ async fn checkpoint_closed_database(
             reason: "checkpoint_failed",
             artifact: "checkpoint",
         })?;
-    let checkpoint: (i64, i64, i64) = match sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(checkpoint) => checkpoint,
-        Err(_) => {
-            pool.close().await;
-            return Err(ImportError::StorageRecoveryBlocked {
-                reason: "checkpoint_failed",
-                artifact: "checkpoint",
-            });
-        }
-    };
-    if checkpoint.0 != 0 || checkpoint.1 != checkpoint.2 {
+    let canonical = open_no_follow_leaf_at(&parent_directory, &database_name)?;
+    if canonical.identity != held_leaf.identity {
         pool.close().await;
+        return Err(ImportError::StorageRecoveryBlocked {
+            reason: "checkpoint_identity_changed",
+            artifact: "checkpoint",
+        });
+    }
+    Ok(BoundSqliteLeaf {
+        held_leaf,
+        parent_directory,
+        database_name,
+        database_path: database.to_path_buf(),
+        vfs: BoundSqliteLeafVfs { pool },
+    })
+}
+
+async fn checkpoint_bound_sqlite_leaf(
+    leaf: &BoundSqliteLeaf,
+    db_id: &str,
+    crash_at: Option<BackupCrashPoint>,
+    interlocks: Option<&[Arc<tokio::sync::Barrier>]>,
+) -> Result<(), ImportError> {
+    if let Some(interlocks) = interlocks {
+        interlocks[0].wait().await;
+        interlocks[1].wait().await;
+    }
+    let pool = leaf.vfs.vfs();
+    let checkpoint: (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_one(pool)
+        .await
+        .map_err(|_| ImportError::StorageRecoveryBlocked {
+            reason: "checkpoint_failed",
+            artifact: "checkpoint",
+        })?;
+    if checkpoint.0 != 0 || checkpoint.1 != checkpoint.2 {
         return Err(ImportError::StorageRecoveryBlocked {
             reason: "checkpoint_busy",
             artifact: "checkpoint",
         });
     }
-    super::migrations::verify_sqlite_health(&pool)
+    super::migrations::verify_sqlite_health(pool)
         .await
         .map_err(|_| ImportError::InvalidManifest("SQLite health failed".into()))?;
-    pool.close().await;
-    converge_closed_database_sidecars(database, db_id, crash_at)?;
-    File::open(database)
-        .and_then(|file| file.sync_all())
+    leaf.vfs.pool.close().await;
+    if let Some(interlocks) = interlocks {
+        interlocks[2].wait().await;
+        interlocks[3].wait().await;
+    }
+    let canonical = open_no_follow_leaf_at(&leaf.parent_directory, &leaf.database_name)?;
+    if canonical.identity != leaf.held_leaf.identity {
+        return Err(ImportError::StorageRecoveryBlocked {
+            reason: "checkpoint_identity_changed",
+            artifact: "checkpoint",
+        });
+    }
+    converge_closed_database_sidecars(&leaf.database_path, db_id, crash_at)?;
+    leaf.held_leaf
+        .file
+        .sync_all()
         .map_err(|error| ImportError::Io(error.to_string()))?;
-    sync_directory(database.parent().unwrap_or_else(|| Path::new(".")))
+    sync_directory(
+        leaf.database_path
+            .parent()
+            .unwrap_or_else(|| Path::new(".")),
+    )
+}
+
+async fn checkpoint_closed_database(
+    database: &Path,
+    db_id: &str,
+    crash_at: Option<BackupCrashPoint>,
+    interlocks: Option<&[Arc<tokio::sync::Barrier>]>,
+) -> Result<(), ImportError> {
+    let leaf = bind_sqlite_leaf(database).await?;
+    checkpoint_bound_sqlite_leaf(&leaf, db_id, crash_at, interlocks).await
 }
 
 async fn validate_restore_database(database: &Path, plugin_root: &Path) -> Result<(), ImportError> {
@@ -7191,7 +7443,7 @@ fn copy_owned_regular_file_at(
 }
 
 fn copy_plugin_tree_with_descriptors(
-    source: &Path,
+    source_directory: &cap_std::fs::Dir,
     target_directory: &cap_std::fs::Dir,
     target_name: &Path,
     relative: &Path,
@@ -7210,68 +7462,129 @@ fn copy_plugin_tree_with_descriptors(
     let target = target_directory
         .open_dir(target_name)
         .map_err(|_| ImportError::UnsafeArchiveEntry(target_name.display().to_string()))?;
-    copy_plugin_tree_into_directory(source, &target, relative, out)?;
+    copy_plugin_tree_into_directory(source_directory, &target, relative, out)?;
     sync_cap_directory(&target, "fsync safety Plugin target")
 }
 
 fn copy_plugin_tree_into_directory(
-    source: &Path,
+    source_directory: &cap_std::fs::Dir,
     target_directory: &cap_std::fs::Dir,
     relative: &Path,
     out: &mut Vec<SafetySnapshotArtifact>,
 ) -> Result<(), ImportError> {
-    let before =
-        fs::symlink_metadata(source).map_err(|error| ImportError::Io(error.to_string()))?;
-    if !before.is_dir() || before.file_type().is_symlink() {
-        return Err(ImportError::UnsafeArchiveEntry(
-            source.display().to_string(),
-        ));
-    }
-    let mut entries = fs::read_dir(source)
+    let mut entries = source_directory
+        .entries()
         .map_err(|error| ImportError::Io(error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| ImportError::Io(error.to_string()))?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let source_path = entry.path();
         let name = entry.file_name();
         let relative_path = relative.join(&name);
-        let metadata = fs::symlink_metadata(&source_path)
+        let source_name = Path::new(&name);
+        let metadata = source_directory
+            .symlink_metadata(source_name)
             .map_err(|error| ImportError::Io(error.to_string()))?;
         if metadata.file_type().is_symlink() {
             return Err(ImportError::UnsafeArchiveEntry(
-                source_path.display().to_string(),
+                relative_path.display().to_string(),
             ));
         }
         if metadata.is_dir() {
             target_directory
-                .create_dir(Path::new(&name))
+                .create_dir(source_name)
                 .map_err(|error| ImportError::Io(error.to_string()))?;
-            let child = target_directory.open_dir(Path::new(&name)).map_err(|_| {
+            let source_child = source_directory.open_dir(source_name).map_err(|_| {
                 ImportError::UnsafeArchiveEntry(relative_path.display().to_string())
             })?;
-            copy_plugin_tree_into_directory(&source_path, &child, &relative_path, out)?;
-            sync_cap_directory(&child, "fsync safety Plugin child")?;
+            let target_child = target_directory.open_dir(source_name).map_err(|_| {
+                ImportError::UnsafeArchiveEntry(relative_path.display().to_string())
+            })?;
+            copy_plugin_tree_into_directory(
+                &source_child,
+                &target_child,
+                &relative_path,
+                out,
+            )?;
+            sync_cap_directory(&target_child, "fsync safety Plugin child")?;
         } else if metadata.is_file() {
-            out.push(copy_owned_regular_file_at(
-                &source_path,
+            out.push(copy_owned_regular_file_between_directories(
+                source_directory,
+                source_name,
                 target_directory,
-                Path::new(&name),
+                source_name,
                 &relative_path,
             )?);
         } else {
             return Err(ImportError::UnsafeArchiveEntry(
-                source_path.display().to_string(),
+                relative_path.display().to_string(),
             ));
         }
     }
-    let after = fs::symlink_metadata(source).map_err(|error| ImportError::Io(error.to_string()))?;
-    if stable_file_identity(&before)? != stable_file_identity(&after)? {
+    sync_cap_directory(target_directory, "fsync safety Plugin directory")
+}
+
+fn copy_owned_regular_file_between_directories(
+    source_directory: &cap_std::fs::Dir,
+    source_name: &Path,
+    target_directory: &cap_std::fs::Dir,
+    target_name: &Path,
+    manifest_path: &Path,
+) -> Result<SafetySnapshotArtifact, ImportError> {
+    let source_leaf = open_no_follow_leaf_at(source_directory, source_name)?;
+    let mut source = source_leaf
+        .file
+        .try_clone()
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        options.mode(0o600);
+    }
+    let mut target = target_directory
+        .open_with(target_name, &options)
+        .map(cap_std::fs::File::into_std)
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    let mut digest = Sha256::new();
+    let mut size_bytes = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = source
+            .read(&mut buffer)
+            .map_err(|error| ImportError::Io(error.to_string()))?;
+        if count == 0 {
+            break;
+        }
+        target
+            .write_all(&buffer[..count])
+            .map_err(|error| ImportError::Io(error.to_string()))?;
+        digest.update(&buffer[..count]);
+        size_bytes = size_bytes
+            .checked_add(count as u64)
+            .ok_or_else(|| ImportError::InvalidManifest("Plugin file too large".into()))?;
+    }
+    target
+        .sync_all()
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    let canonical = open_no_follow_leaf_at(source_directory, source_name)?;
+    if canonical.identity != source_leaf.identity {
         return Err(ImportError::UnsafeArchiveEntry(
-            source.display().to_string(),
+            manifest_path.display().to_string(),
         ));
     }
-    sync_cap_directory(target_directory, "fsync safety Plugin directory")
+    let snapshot = target
+        .metadata()
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    Ok(SafetySnapshotArtifact {
+        path: controlled_relative_path(manifest_path)?,
+        size_bytes,
+        sha256: hex::encode(digest.finalize()),
+        source_identity: source_leaf.identity,
+        snapshot_identity: stable_file_identity(&snapshot)?,
+    })
 }
 
 fn write_staging_file_at(
@@ -7614,7 +7927,7 @@ fn remove_cap_directory_contents(directory: &cap_std::fs::Dir) -> Result<(), Imp
 fn create_restore_safety_snapshot(
     root: &Path,
     current_database: &Path,
-    current_plugins: &Path,
+    _current_plugins: &Path,
     operation_id: &str,
 ) -> Result<VerifiedRestoreSafetySnapshot, ImportError> {
     let root_directory = open_ambient_directory_nofollow(root)?;
@@ -7631,7 +7944,23 @@ fn create_restore_safety_snapshot(
         } else {
             None
         };
-        finish_restore_safety_snapshot(&snapshot_binding, current_plugins, operation_id, database)?;
+        let current_plugins_directory = match root_directory.symlink_metadata(Path::new("plugins"))
+        {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Some(
+                root_directory
+                    .open_dir(Path::new("plugins"))
+                    .map_err(|_| ImportError::UnsafeArchiveEntry("plugins".into()))?,
+            ),
+            Ok(_) => return Err(ImportError::UnsafeArchiveEntry("plugins".into())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(ImportError::Io(error.to_string())),
+        };
+        finish_restore_safety_snapshot(
+            &snapshot_binding,
+            current_plugins_directory.as_ref(),
+            operation_id,
+            database,
+        )?;
         verify_restore_safety_snapshot(&snapshot_binding)?;
         verify_snapshot_directory_binding(&snapshot_binding)
     })();
@@ -7732,13 +8061,13 @@ fn verify_snapshot_directory_binding(
 
 fn finish_restore_safety_snapshot(
     snapshot_binding: &RestoreSafetySnapshotBinding,
-    current_plugins: &Path,
+    current_plugins: Option<&cap_std::fs::Dir>,
     operation_id: &str,
     database: Option<SafetySnapshotArtifact>,
 ) -> Result<(), ImportError> {
     let mut plugin_files = Vec::new();
-    let plugin_root = if current_plugins.exists() {
-        let source = controlled_tree_evidence(current_plugins, Path::new("plugins"))?;
+    let plugin_root = if let Some(current_plugins) = current_plugins {
+        let source = controlled_tree_evidence_at(current_plugins, Path::new("plugins"))?;
         copy_plugin_tree_with_descriptors(
             current_plugins,
             snapshot_binding.directory(),
@@ -8069,8 +8398,10 @@ fn restore_missing_old_from_safety_snapshot(
             }
             let mut copied = Vec::new();
             let root_directory = open_ambient_directory_nofollow(root)?;
+            let snapshot_plugins_directory =
+                open_ambient_directory_nofollow(&snapshot.join("plugins"))?;
             copy_plugin_tree_with_descriptors(
-                &snapshot.join("plugins"),
+                &snapshot_plugins_directory,
                 &root_directory,
                 Path::new("plugins"),
                 Path::new("plugins"),
@@ -8289,7 +8620,7 @@ fn retire_terminal_instance_with_crash(
         remove_one_tree_leaf_no_follow(&tombstone, true)?;
         maybe_inject_restore_crash(crash_at, "tombstone_directory_fsync")?;
     } else {
-        remove_tree_no_follow(&tombstone)?;
+        remove_tree_no_follow_path(&tombstone)?;
         sync_directory(registry)?;
     }
     maybe_inject_restore_crash(crash_at, "tombstone_rmdir")?;
@@ -8806,7 +9137,7 @@ fn replay_one_retirement_journal(
                     "retirement tombstone identity mismatch".into(),
                 ));
             }
-            remove_tree_no_follow(&tombstone)?;
+            remove_tree_no_follow_path(&tombstone)?;
             sync_directory(registry)?;
         }
         journal.state = "done".into();
@@ -9102,7 +9433,7 @@ fn retire_unarmed_instance(registry: &Path, live_basename: &str) -> Result<(), I
         false,
         None,
     )?;
-    remove_tree_no_follow(&tombstone)?;
+    remove_tree_no_follow_path(&tombstone)?;
     sync_directory(registry)?;
     journal.state = "done".into();
     publish_retirement_journal(
@@ -9164,51 +9495,77 @@ fn publish_retirement_journal(
     maybe_inject_restore_crash(crash_at, boundaries[3])
 }
 
-fn remove_tree_no_follow(root: &Path) -> Result<(), ImportError> {
-    let before = fs::symlink_metadata(root).map_err(|error| ImportError::Io(error.to_string()))?;
-    if !before.is_dir() || before.file_type().is_symlink() {
+fn remove_tree_no_follow_path(root: &Path) -> Result<(), ImportError> {
+    let parent = root.parent().unwrap_or_else(|| Path::new("."));
+    let name = Path::new(
+        root.file_name()
+            .ok_or_else(|| ImportError::UnsafeArchiveEntry(root.display().to_string()))?,
+    );
+    let parent_directory =
+        cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
+            .map_err(|error| ImportError::Io(error.to_string()))?;
+    let metadata = parent_directory
+        .symlink_metadata(name)
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ImportError::UnsafeArchiveEntry(root.display().to_string()));
     }
-    let mut entries = fs::read_dir(root)
+    let root_directory = parent_directory
+        .open_dir(name)
+        .map_err(|_| ImportError::UnsafeArchiveEntry(root.display().to_string()))?;
+    remove_tree_no_follow(&root_directory)?;
+    parent_directory
+        .remove_dir(name)
+        .map_err(|error| ImportError::Io(error.to_string()))?;
+    sync_cap_directory(&parent_directory, "fsync removed descriptor-bound tree parent")
+}
+
+fn remove_tree_no_follow(root_directory: &cap_std::fs::Dir) -> Result<(), ImportError> {
+    let mut entries = root_directory
+        .entries()
         .map_err(|error| ImportError::Io(error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| ImportError::Io(error.to_string()))?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let path = entry.path();
-        let metadata =
-            fs::symlink_metadata(&path).map_err(|error| ImportError::Io(error.to_string()))?;
+        let name = entry.file_name();
+        let relative = Path::new(&name);
+        let metadata = root_directory
+            .symlink_metadata(relative)
+            .map_err(|error| ImportError::Io(error.to_string()))?;
         if metadata.file_type().is_symlink() {
-            return Err(ImportError::UnsafeArchiveEntry(path.display().to_string()));
+            return Err(ImportError::UnsafeArchiveEntry(
+                relative.display().to_string(),
+            ));
         }
         if metadata.is_dir() {
-            remove_tree_no_follow(&path)?;
-            sync_directory(root)?;
+            let child = root_directory.open_dir(relative).map_err(|_| {
+                ImportError::UnsafeArchiveEntry(relative.display().to_string())
+            })?;
+            remove_tree_no_follow(&child)?;
+            root_directory
+                .remove_dir(relative)
+                .map_err(|error| ImportError::Io(error.to_string()))?;
+            sync_cap_directory(root_directory, "fsync removed Plugin child")?;
         } else if metadata.is_file() {
             #[cfg(unix)]
             {
-                use std::os::unix::fs::MetadataExt;
+                use cap_std::fs::MetadataExt as _;
                 if metadata.nlink() != 1 {
-                    return Err(ImportError::UnsafeArchiveEntry(path.display().to_string()));
+                    return Err(ImportError::UnsafeArchiveEntry(
+                        relative.display().to_string(),
+                    ));
                 }
             }
-            fs::remove_file(&path).map_err(|error| ImportError::Io(error.to_string()))?;
-            sync_directory(root)?;
+            root_directory
+                .remove_file(relative)
+                .map_err(|error| ImportError::Io(error.to_string()))?;
+            sync_cap_directory(root_directory, "fsync removed Plugin file")?;
         } else {
-            return Err(ImportError::UnsafeArchiveEntry(path.display().to_string()));
+            return Err(ImportError::UnsafeArchiveEntry(
+                relative.display().to_string(),
+            ));
         }
     }
-    let after = fs::symlink_metadata(root).map_err(|error| ImportError::Io(error.to_string()))?;
-    if !after.is_dir() || after.file_type().is_symlink() {
-        return Err(ImportError::UnsafeArchiveEntry(root.display().to_string()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        if before.dev() != after.dev() || before.ino() != after.ino() {
-            return Err(ImportError::UnsafeArchiveEntry(root.display().to_string()));
-        }
-    }
-    fs::remove_dir(root).map_err(|error| ImportError::Io(error.to_string()))?;
-    sync_directory(root.parent().unwrap_or_else(|| Path::new(".")))
+    sync_cap_directory(root_directory, "fsync cleared descriptor-bound tree")
 }

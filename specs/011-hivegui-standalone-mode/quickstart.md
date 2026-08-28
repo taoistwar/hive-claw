@@ -267,7 +267,7 @@ cargo test -p hiveweb --test contract_mysql_tls_policy -- --nocapture
 cargo test -p hiveweb --test contract_sqlx_09_sql_safety -- --nocapture
 ```
 
-预期 Red 必须可识别地指出尚未满足的精确依赖/feature/lock/vendor、缺失的严格 MySQL TLS 公共边界或未经审计的 SQLx 0.9 查询；无关语法错误或模糊编译失败不算有效 Red。Green 时必须证明：`mysql_async =0.36.2` 使用最小 native-TLS feature；SQLx/CLI 为 0.9.0 且图中无 `mysql-rsa`/`rsa`；HiveGUI SQLx 精确启用 `chrono|macros|runtime-tokio|sqlite` 且不编译 MySQL/TLS；HiveWeb 精确启用 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`，固定应用 SQL 使用 checked macros、生产 `QueryBuilder` 为零且只用带 CA/hostname 的 `VERIFY_IDENTITY`；AWS S3 不激活旧 `rustls`；Wayland vendor 来源精确为 `https://github.com/smithay/wayland-rs` 且两处最小兼容差异可审计；锁文件不含 7 个 advisory 对应包且 `deny.toml` 无 ignore。
+预期 Red 必须可识别地指出尚未满足的精确依赖/feature/lock/vendor、缺失的严格 MySQL TLS 公共边界或未经审计的 SQLx 0.9 查询；无关语法错误或模糊编译失败不算有效 Red。Green 时必须证明：`mysql_async =0.37.0` 使用最小 native-TLS feature；SQLx/CLI 为 0.9.0 且图中无 `mysql-rsa`/`rsa`；HiveGUI SQLx 精确启用 `chrono|macros|runtime-tokio|sqlite` 且不编译 MySQL/TLS；HiveWeb 精确启用 `chrono|json|macros|mysql|runtime-tokio|rust_decimal|tls-rustls-ring-webpki`，固定应用 SQL 使用 checked macros、生产 `QueryBuilder` 为零且只用带 CA/hostname 的 `VERIFY_IDENTITY`；AWS S3 不激活旧 `rustls`；Wayland vendor 来源精确为 `https://github.com/smithay/wayland-rs` 且两处最小兼容差异可审计；锁文件不含 7 个 advisory 对应包且 `deny.toml` 无 ignore。
 
 SQL 安全 Green 还必须直接覆盖：`game_service.category_name` 的恶意引号/注释字符串只作为绑定值、查询结构不变；应用 schema 乐观锁只接受封闭表 enum；`named_queries.toml` 只由一个 reviewed-config 中央边界处理，并对多语句、SQL 注释、placeholder/参数不匹配、重复参数和 select/execute kind 不匹配全部 fail-closed；source contract 必须证明其它生产调用点不能构造 `AssertSqlSafe`。HiveGUI 外部 MySQL 的 `MysqlIdentifier` 仍只服务 metadata allowlist 后的本地直连，不得复用为 HiveWeb 应用 schema 类型或建立 HiveGUI→HiveWeb 请求。
 

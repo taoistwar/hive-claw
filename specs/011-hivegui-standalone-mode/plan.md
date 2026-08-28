@@ -1,13 +1,13 @@
 # Implementation Plan: HiveGUI 独立本地 Agent
 
-**Branch**: `260517-hivegui-standalone-mode` | **Date**: 2026-07-23 | **Spec**: [spec.md](spec.md)
+**Feature ID**: `011-hivegui-standalone-mode` | **Working Branch**: `260518-fix-spec-consistency` | **Date**: 2026-08-28 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/011-hivegui-standalone-mode/spec.md`
 
 ## Summary
 
 把现有 HiveGUI 管理面补齐为完整、独立的本地 Agent：直接使用本地 LLM 配置，执行 Tool、Skill、Function、Workflow 和 Extism Plugin，持久化加密会话与执行状态，并提供版本化迁移、认证加密备份、结构化诊断、全链路取消和无障碍操作。HiveGUI 不依赖、不请求 HiveWeb；两端只通过 `agent`、`providers`、`hive-builtins` 和新的存储无关 `hive-runtime-core` 复用代码与 ABI 契约。
 
-实施以现有 SQLite CRUD、12 个 AI 管理 Tab、DAG 编辑器、Function/Plugin 测试运行时为增量基础。先抽取共享协议和纯执行算法，再补齐 HiveGUI 本地 adapter、会话 UI、迁移与备份；不重写已经存在且符合规格的管理界面。
+实施以现有 SQLite CRUD、13 个 AI 管理 Tab（含会话）、DAG 编辑器、Function/Plugin 测试运行时为增量基础。先抽取共享协议和纯执行算法，再补齐 HiveGUI 本地 adapter、会话 UI、迁移与备份；不重写已经存在且符合规格的管理界面。
 
 ## Technical Context
 
@@ -21,7 +21,7 @@
 **Constraints**: 不请求 HiveWeb；Rust 1.97.1 精确固定且 CI/本地使用同一 toolchain；规划期识别的 7 个 advisory 必须零例外清除，当前已清零且 `deny.toml` 不得新增 ignore；HiveWeb MySQL 必须显式 CA + hostname 的 `VERIFY_IDENTITY`，TLS 缺失、失败或任何宽松模式均 fail-closed，且不得启用 SQLx `mysql-rsa`；应用 schema 固定查询只用 SQLx checked macros/offline metadata，有限变体使用封闭 enum/match，生产代码禁止 `QueryBuilder` 和运行时 SQL，唯一例外是 HiveWeb `named_queries.toml` 的 reviewed-config `AssertSqlSafe` 边界；默认无 WASI；Plugin 默认/最大 30s/120s、128/512MiB、10/50MiB；所有 Plugin/归档路径以受控根目录句柄逐段 no-follow 解析并拒绝 symlink/hardlink/junction/reparse/device/FIFO/socket 与 TOCTOU，新导入 no-replace、更新使用唯一不可变对象名并以旧键+`row_revision` CAS 切换，制品操作日志与 GC ledger 必须耐久重放且身份不明对象只能 blocked 保留；Agent 深度≤10；唯一默认根 Agent且公开会话入口不可覆盖；Category 整树一次批量加载；会话默认保留100年且静态加密；设备密钥原子生成并使用 owner-only 权限，已有密文时不得静默替换异常密钥；新建/既有/迁移 SQLite 均须通过完整性与外键双检查；搜索 normalization ID 固定为 `hivegui-nfkc-casefold-v1`，逐标量应用官方 Unicode 17 `NFKC_CF` 后以 Unicode 17 NFC 收口，变更必须显式迁移重建；数据库文件快照/切换前必须冻结写入、非 busy WAL checkpoint、关闭连接并区分可安全清理与 hot/未知 WAL/SHM/journal sidecar；备份恢复在认证流结尾和全部预检成功前只写目标密钥加密的隔离 staging，用户确认后在同一冻结周期先完成 checkpoint/关闭/sidecar 验证，再从封闭 current 生成并验证安全备份；owner `prepared|applying` 时失败恢复并验证 old，只有完整 new current 已通过 health/search/artifact/identity 验证后才可发布唯一 commit point `committed`，之后只通过 registry retirement 收口已验证的 new；日志逐记录精确保留7×24小时或总计100,000,000 bytes；迁移/损坏恢复不可产生混合状态
 **Durable sidecar cleanup**: 合法 `storage_recovery_blocked` 配对与总优先级由 local-runtime contract 唯一定义。已证明安全的残留使用 UTF-8 db_id、uint32 big-endian 长度和 domain separator 计算 64 位小写 SHA-256 token，三个 artifact 的 final/`.staging` basename 固定且 `schema_version=1`；孤立 staging 只在 canonical 未修改可证明时受控删除，final+staging、损坏/不匹配/未知版本 fail-closed。journal 位于数据库同目录、SQLite 外部且不进入备份；sidecar 以 identity-bound no-replace 移至唯一 quarantine，按 `prepared→quarantined→done` 逐步 fsync 并执行包含 `done` 收尾的五分支重放。journal 删除前不得快照、进入恢复 `applying` 或开放 Store。hot/unknown/recoverable sidecar 始终保持 canonical 名称和字节；安全残留中断后只保证完整字节位于 canonical/quarantine，或在 `quarantined` 后已删除并等待父目录耐久确认。
 **Staging database discovery**: current 固定为数据根句柄下 `datasources.db` 且 `db_id=current`；migration/restore live instance 固定为 `.hivegui-db-staging-v1/{role}-{UUID}/datasources.db`，建库前发布含 `ownership_state=unarmed` 的六元组 v1 manifest，切换前原子推进 armed。owner final 固定为 `.hivegui-db-recovery-v1.json`，owner staging 固定为 `.hivegui-db-recovery-v1.json.staging`；phase 只允许 `prepared|applying|committed`，且完整新 current 验证成功后才可 committed。只有 unarmed+owner final/staging 均无可派生 aborted；armed+owner 缺失/损坏必须 fail-closed。aborted、terminal old/new 都先创建 registry-level retirement journal，再把整个 live instance identity-bound rename 到 outcome tombstone，只有 tombstone 内逐叶清理。启动先重放 retirement/tombstone，再验证 live manifest/owner、cleanup 和 owner；所有 locator/control state 都不进入 archive、安全备份或新树。
-**Scale/Scope**: 13 个 P1 用户故事、51 个功能需求、35 个成功标准；3 个顶层路由、12 个 AI 管理 Tab；20条/页；至少100节点 DAG、100+分类；本地单用户多并发会话
+**Scale/Scope**: 13 个 P1 用户故事、51 个功能需求、35 个成功标准；3 个顶层路由、13 个 AI 管理 Tab；20条/页；至少100节点 DAG、100+分类；本地单用户多并发会话
 
 ## Constitution Check
 
@@ -40,7 +40,7 @@
 | Security | PASS WITH MANDATORY SEPARATE SIGN-OFF (T025R) | 默认 deny、WASI off、Capability gate、受控根目录句柄逐段 no-follow、SHA/大小验证、symlink/hardlink/junction/reparse 与 TOCTOU 拒绝、公开边界输入校验、设备密钥原子创建与 owner-only 权限、age 认证流隔离恢复、文件/目录 fsync 与可恢复切换日志；当前 7 个 advisory 不允许例外，T017A-T017C 必须先固定并审批依赖/lock/vendor、HiveWeb MySQL `VERIFY_IDENTITY` 与 SQL 安全 Red，补充的查询策略 Red/审批也必须在相关实现前闭合，T017D-T017E 再闭合生产与全量扫描；CI 必须以记录的精确版本运行阻断式 secret scanner 与 `cargo deny check advisories`，工具安装失败、发现任一 advisory 或扫描步骤缺失都必须阻断合并；**密码学/依赖/认证变更合并前必须由独立 security review + 第二人签字（每条边界 1 份签字），统一记入 `checklists/security.md` 6 节：①FR-012 设备密钥、②sidecar cleanup、③Plugin sandbox、④FR-026 备份 age 加密、⑤FR-049/050/051 主密码认证 + 自动锁定、⑥HiveGUI 远程 MySQL 公开边界**。按 Constitution v1.5.0 §Security Requirements *Single-developer repository clause*（2026-07-30 增补）批准，本仓库当前仅 1 名 active maintainer，由该 maintainer 同时承担 *dedicated security review* 与 *second approver* 角色，但 /security-review 流程必须完整运行并把条件总结、证据链接、self-attestation 写入 PR 描述与 `checklists/security.md` 对应行；如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复。FR-012 设备密钥、FR-049 主密码认证、FR-026 备份加密口令三者必须分别独立 security review，不允许一份签字覆盖另一份。 |
 | Technology Stack | PASS WITH HIVEGUI PROFILE + ONE ENUMERATED SQLX DEVIATION + BLOCKING TOOLCHAIN PIN | Constitution v1.5.0 的 HiveGUI desktop-local profile 正式授权 SQLite、加密 SQLite 会话/有界进程内缓存和托管本地文件；HiveWeb 继续 MySQL/Redis/Rustfs。应用 schema 固定 SQL 使用 SQLx checked macros，外部 MySQL 使用受维护的 `mysql_async` prepared API；唯一运行时 SQLx 偏离是 HiveWeb `named_queries.toml` 的 reviewed-config `AssertSqlSafe` 边界并在 Complexity Tracking 登记。Rust/gpui/Tokio/SQLx 符合；T001 必须在任何产品实现前把 toolchain 精确固定为 2026-07-22 的最新稳定版 Rust 1.97.1。Extism 的既有选择及维护影响见 Complexity Tracking。 |
 
-**Pre-design Gate Result**: BLOCKED PENDING IMPLEMENTATION PREREQUISITES。Constitution v1.5.0 已在本文档基线中消除 HiveGUI 本地存储配置冲突与单开发者批准结构；SQLite、加密本地会话/有界缓存和托管文件是该 profile 的合规选择，不再作为永久偏离。v1.5.0 *Single-developer repository clause* 由 user（2026-07-30）以方案 A 批准：本仓库当前仅 1 名 active maintainer，由该 maintainer 同时承担 dedicated security review 与 second approver 角色，self-attestation 与 `/security-review` 条件总结须写入 `checklists/security.md` 对应行；如未来新增 maintainer，"独立 security reviewer + 第二 maintainer 双签字" 立即恢复；T001 的 Rust 1.97.1 独立 PR/CI 证据、T017A-T017E 的零例外依赖安全补救、T016A-T016F→T017F 的日志/Capability/SQLite/Plugin schema/原生滚动/敏感介质 Red 审批、T017G→T017H 的搜索/SQL Red 审批、依赖/密码学审查以及 Security/SQLx CI 门禁都是阻断式实施前置任务，完成前不得开始对应产品实现。
+**Pre-design Gate Result**: PASS FOR PLANNING / IMPLEMENTATION RESUMPTION BLOCKED。当前已批准的 Constitution v1.5.0 已消除 HiveGUI desktop-local profile 与单维护者审批结构的规划冲突；SQLite、加密本地会话/有界缓存和托管文件均为合规选择。规划可以继续，但T119 Red 与 T123A reviewer approval 已闭合；实现恢复当前进入 T130，后续仍只能按 T119 → T123A（新 reviewer/Red 门）→ T130 → T136/T138/T142 → T147 推进；任何安全、TDD、reviewer 或 Green 证据仍按对应任务阻断。
 
 ### Post-design re-check
 
@@ -55,7 +55,7 @@
 - 搜索词保持大小写不敏感的纯文本任意位置包含语义；FTS5 trigram 与 short-gram 索引在同一实体事务维护，`%`、`_`、引号和 FTS 操作符不会改变语义。固定应用 SQL 使用 checked macros，有限变体使用封闭 enum/match；生产 `QueryBuilder` 为零。
 - 设计没有未决技术澄清，也没有绕过 strict TDD、版本化性能基线、EXPLAIN 索引断言、SQLx offline CI 或安全复核的实现捷径。
 
-**Post-design Gate Result**: BLOCKED PENDING IMPLEMENTATION PREREQUISITES。HiveGUI desktop-local profile 与拟议 Constitution v1.4.0 对齐；宪章修订所需 maintainer 审批、T001、T006-T017E、T016A-T016F→T017F 补充 Red 审批、T017G→T017H 搜索/SQL Red 审批、T018 及各故事 Red 审批仍按治理与任务依赖阻断后续生产实现。
+**Post-design Gate Result**: PASS FOR DESIGN / IMPLEMENTATION RESUMPTION BLOCKED。Phase 0/1 工件与当前 Constitution v1.5.0 对齐，无未解释的宪章偏离或 NEEDS CLARIFICATION；当前阻塞点不是规划缺口，而是 T119 Red 与 T123A reviewer approval 已闭合，当前执行 T130，后续必须依次经过 T123A、T130、T136/T138/T142 与 T147，不得直接开始 T130。
 
 ## Project Structure
 
@@ -148,7 +148,7 @@ crates/hivegui/
 │   ├── logging.rs                      # .open JSONL segment + fsync/atomic rotation
 │   └── ui/
 │       ├── app.rs                      # existing Home/Ai/Tools routes
-│       ├── ai_view.rs                  # existing 12 tabs
+│       ├── ai_view.rs                  # existing 13 tabs
 │       ├── conversation_view.rs        # local Agent conversation + stop/history
 │       ├── migration_recovery_view.rs
 │       ├── key_recovery_view.rs         # blocking missing/corrupt/unsafe key recovery
@@ -206,7 +206,7 @@ plugins/smoke-plugin/                    # shared compatibility fixture
 
 ### Phase 2: Task generation — complete and reconciled
 
-[tasks.md](tasks.md) 已生成 T001–T147；一致性分析新增的宪章门禁与测试职责已经同步到任务基线。实施时必须保持以下依赖顺序：
+[tasks.md](tasks.md) 已生成 T001–T147（含编号修复后的 T071A 与新增 reviewer/Red 门 T123A）；一致性分析新增的宪章门禁与测试职责已经同步到任务基线。实施时必须保持以下依赖顺序：
 
 1. 独立质量基线 `codex/ci-quality-baseline-rust-1.97.1` 先修复 `origin/main` 既有 fmt/Clippy/测试问题，删除已移除管理聊天能力的陈旧契约，并让现役 HiveWeb 集成测试在一次性 MySQL 8、Redis 7、MinIO 和迁移后的 CI 环境执行；该前置批次未实施 SQLx 0.9、严格 TLS、安全扫描、SQLx offline 或 HiveGUI 外部 DataSource。随后 `codex/rust-1.97.1-toolchain` 保留基础设施 job、以三文件差异固定 Rust 1.97.1，并已由 PR #4 / `2eee211` 与远端 CI run 30996686002 于 2026-08-05 闭合；T002-T008 的后续重验也已完成。原 `bf3690d` 推送后等待 PR/CI 的文字仅属历史 pre-merge 状态。
 2. 在不修改 Cargo/锁文件/生产代码的前提下，先写并观察 T017A-T017B 的依赖/lock/vendor、SQLx 0.9、HiveWeb MySQL `VERIFY_IDENTITY` 与动态 SQL Red contract；T017C 记录证据并取得用户/reviewer 批准。用户于 2026-07-23 又批准 T017D 实施前审计修正：HiveGUI 使用 `macros` 而非冗余 `derive`、Wayland 上游地址统一为小写、`game_service` 值绑定、named-query 唯一 reviewed-config 审计边界及乐观锁封闭枚举。`game_service` 的恶意 `category_name` 测试已经属于 T017B 已批准且观察过 Red 的变更集，T017D 只负责用静态 `JSON_OBJECT('name', ?)` 和 bind 使其 Green，不得在实现任务首次新增或弱化该测试。2026-07-28 推荐 A 的补充查询策略 Red/审批必须把两端应用 schema 固定 SQL 收口到 checked macros（HiveWeb 也由旧 `derive`-only 目标升级为 `macros` 且不重复 `derive`）、有限变体收口到封闭 enum/match，并证明生产 `QueryBuilder` 为零、`AssertSqlSafe` 所有者恰好一个。T001 的 PR/CI 与补充审批门禁完成后 T017D 才能执行零例外 Green 迁移，T017E 必须以全量构建、测试、SQLx offline 与联网 advisory scan 闭合。
@@ -245,9 +245,9 @@ plugins/smoke-plugin/                    # shared compatibility fixture
 
 | Profile use / Deviation | Why Needed | Simpler Alternative Rejected Because | Safeguard / Exit | Maintenance / Review-Expertise Impact |
 | --- | --- | --- | --- | --- |
-| Constitution v1.4.0 HiveGUI profile: SQLite | 独立桌面 Agent 必须无需服务器、随应用本地持久化并支持原子文件快照。 | 本地启动 MySQL 会增加服务部署并破坏离线/单应用体验；请求 HiveWeb 直接违反规格。 | SQLx checked macros/offline metadata、外键/WAL/busy timeout、单实例锁、版本化事务迁移；新建/既有/迁移数据库均要求 `integrity_check=ok` 且 `foreign_key_check` 零行；HiveWeb 继续 MySQL。 | HiveGUI datasource owner 维护 schema/迁移和损坏/孤儿外键 fixture；升级需 SQLite/SQLx reviewer，HiveWeb MySQL reviewer 无需承担桌面迁移。 |
-| Constitution v1.4.0 HiveGUI profile: 加密 SQLite 会话 + 有界进程内 Plugin pool | HiveGUI 不能依赖本地或远程 Redis；静态会话需要持久加密，而 Plugin 热实例只需进程生命周期内复用。 | 嵌入或启动 Redis 会新增 deployable；完全禁用复用会使固定 Plugin 性能目标不可实现。 | 会话通过 `expires_at` 和确认式清理实现 TTL。闲置 Plugin pool 全局最多 8 个实例、每个完整 cache key 最多 1 个实例；完整 key/失效矩阵见 tasks。 | Runtime owner 维护容量、key 和失效矩阵，crypto/data reviewer 审核会话保留；每次 Extism/额度升级必须重跑池隔离测试。 |
-| Constitution v1.4.0 HiveGUI profile: 本地托管 WASM、日志与备份文件 | HiveGUI 必须在 HiveWeb/Rustfs 不存在时导入和执行 Plugin，并让用户保存/恢复本地备份。 | 嵌入 Rustfs 或依赖云对象存储会把额外 deployable 带入桌面端。 | 受控根目录句柄逐段 no-follow，拒绝 symlink/hardlink/junction/reparse 与 TOCTOU；Plugin no-replace/不可变对象、`row_revision` CAS、耐久制品操作/GC ledger 与 blocked 保留；owner-only 权限、同目录 staging、文件和父目录 fsync、原子 rename、恢复切换日志、size/SHA-256、认证加密备份；日志使用 `.open` 活动段、high-watermark 与逐记录压缩。 | Desktop storage/security owners 维护跨平台 root-handle/no-follow/fsync/ACL/原子切换与 GC 重放；文件格式、平台或归档库升级要求安全 reviewer。 |
+| Constitution v1.5.0 HiveGUI profile: SQLite | 独立桌面 Agent 必须无需服务器、随应用本地持久化并支持原子文件快照。 | 本地启动 MySQL 会增加服务部署并破坏离线/单应用体验；请求 HiveWeb 直接违反规格。 | SQLx checked macros/offline metadata、外键/WAL/busy timeout、单实例锁、版本化事务迁移；新建/既有/迁移数据库均要求 `integrity_check=ok` 且 `foreign_key_check` 零行；HiveWeb 继续 MySQL。 | HiveGUI datasource owner 维护 schema/迁移和损坏/孤儿外键 fixture；升级需 SQLite/SQLx reviewer，HiveWeb MySQL reviewer 无需承担桌面迁移。 |
+| Constitution v1.5.0 HiveGUI profile: 加密 SQLite 会话 + 有界进程内 Plugin pool | HiveGUI 不能依赖本地或远程 Redis；静态会话需要持久加密，而 Plugin 热实例只需进程生命周期内复用。 | 嵌入或启动 Redis 会新增 deployable；完全禁用复用会使固定 Plugin 性能目标不可实现。 | 会话通过 `expires_at` 和确认式清理实现 TTL。闲置 Plugin pool 全局最多 8 个实例、每个完整 cache key 最多 1 个实例；完整 key/失效矩阵见 tasks。 | Runtime owner 维护容量、key 和失效矩阵，crypto/data reviewer 审核会话保留；每次 Extism/额度升级必须重跑池隔离测试。 |
+| Constitution v1.5.0 HiveGUI profile: 本地托管 WASM、日志与备份文件 | HiveGUI 必须在 HiveWeb/Rustfs 不存在时导入和执行 Plugin，并让用户保存/恢复本地备份。 | 嵌入 Rustfs 或依赖云对象存储会把额外 deployable 带入桌面端。 | 受控根目录句柄逐段 no-follow，拒绝 symlink/hardlink/junction/reparse 与 TOCTOU；Plugin no-replace/不可变对象、`row_revision` CAS、耐久制品操作/GC ledger 与 blocked 保留；owner-only 权限、同目录 staging、文件和父目录 fsync、原子 rename、恢复切换日志、size/SHA-256、认证加密备份；日志使用 `.open` 活动段、high-watermark 与逐记录压缩。 | Desktop storage/security owners 维护跨平台 root-handle/no-follow/fsync/ACL/原子切换与 GC 重放；文件格式、平台或归档库升级要求安全 reviewer。 |
 | Unicode 17 `NFKC_CF` 生成表 + SQLite FTS5 trigram/short-gram 搜索 | 产品契约要求 1..=255 字符大小写不敏感的任意位置纯文本包含，并锁定跨升级规范化语义；SQLite trigram 不负责 Unicode case fold。 | lowercase/simple fold 不满足 Unicode R5 且不能移除 default-ignorables；B-tree 前缀会改变包含语义；只用 trigram 无法覆盖 1–2 字符。 | 从官方 Unicode 17 `DerivedNormalizationProps.txt` 生成映射并记录 URL/SHA/命令，精确固定 `unicode-normalization =0.1.25` 做 Unicode 17 NFC；依赖版本、`UNICODE_VERSION`、表校验值和 golden fixture 进入 Red/reviewer 门禁。3+ 标量走 trigram，1–2 走事务同步 short-gram；EXPLAIN 认可 `VIRTUAL TABLE INDEX` 且拒绝扫描 fallback。 | Datasource/Unicode/security reviewer 维护 provenance、生成器、规范化 ID、事务索引路径与 fixture；Unicode、依赖或 tokenizer 升级必须分配新 ID、显式迁移并重跑全量契约。 |
 | HiveWeb `named_queries.toml` reviewed-config SQLx 边界 | 已部署的启动期命名查询是受信配置且查询文本不能在编译时枚举，SQLx checked macros 无法表达该单一现有能力。 | 删除命名查询或为每个部署配置重新编译会破坏现有运维契约；允许通用 `QueryBuilder`/raw SQL 会扩大不可审计面。 | 生产应用 schema 其它 SQL 全部使用 checked macros 或封闭 enum/match；唯一中央边界 fail-closed 拒绝多语句、注释、placeholder/参数不匹配、重复参数和 kind 不匹配，生产 `AssertSqlSafe` 所有者恰好一个、`QueryBuilder` 为零。 | HiveWeb data/security reviewer 共同维护唯一边界和配置审查；每次 SQLx 升级运行所有权 inventory、offline prepare 与恶意配置测试，若命名查询被静态替代则删除偏离。 |
 | Vendored `wayland-scanner =0.31.10` 最小兼容补丁 | 固定 GPUI/Wayland 图仍依赖该版本，而其 `quick-xml 0.39.4` 命中 advisory；直接上游 git HEAD 在当前图产生 21 个 API 错误。 | advisory ignore 或等待发布违反已批准零例外门禁；升级整套 GPUI/Wayland 扩大回归面。 | `third_party/wayland-scanner/PROVENANCE.md` 精确固定上游 `https://github.com/smithay/wayland-rs`、版本、MIT 和仅两处差异；当固定 GPUI 可使用原生支持 quick-xml 0.41 的发布版时立即删除 `[patch.crates-io]` 与 vendor。 | Desktop/security reviewer 必须逐行审核差异；每次 GPUI/Wayland 升级检查退出条件，禁止演变为行为 fork。 |
@@ -257,7 +257,7 @@ plugins/smoke-plugin/                    # shared compatibility fixture
 
 **2026-08-27 restore/maintenance 实现补充**：Store-bound Backup/Restore 现在复用 stable root key 的 exact owner-id/kind/phase maintenance lease；confirmation 把共享 Pool 同步置 closed，并把 OS flock 持有到 terminal startup replay 成功。Archive、closed-current 与 safety snapshot 的 Linux 路径使用 held descriptor/Dir binding，恢复错误以 `NotVerified|Verified|Invalidated` typed safety state 传给 Settings，避免根据字符串或路径存在性猜测。但 SQLx checkpoint/staging 尚未绑定同一 leaf fd/VFS，Plugin switch 与部分 rollback/cleanup 仍有 ambient-path TOCTOU，Windows file-id/reparse 与非 Unix no-follow 也未闭合；因此这只是 T119/T130 supplemental，不改变其 Pending 状态。
 
-**2026-08-27 当前源码门禁补充**：source `git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:53e3ae2b38876bc54e9e311793682e7f850f76a7e7f22035a5102879548174e6` 的 canonical matrix 只执行一次并得到 `source_stable=true/status=passed`、13 direct Passed、零 active exception；Rust/Cargo 1.97.1、HiveGUI all-target check/strict Clippy、fmt/diff、SQLx offline、Gitleaks 8.30.1、cargo-deny 与生产 SQL/FTS5/EXPLAIN/N+1 inventory 同源 Green。T137/T145 Closed；现役 Pending 为 T119/T130/T136/T138/T139/T142/T147。
+**2026-08-28 当前源码与宪章门禁补充**：source canonical matrix 的既有证据保持 source_stable=true/status=passed、13 direct Passed、零 active exception，T137/T145 Closed。Constitution v1.5.0 的规划与设计门禁当前为 PASS；实现恢复门禁仍为 BLOCKED AT T130，唯一允许的恢复链为 T119 → T123A（新 reviewer/Red 门）→ T130 → T136/T138/T142 → T147。不得用既有源码 Green、单维护者条款或规划通过状态绕过该任务链。
 
 `age` 和 `tar` 是 backup 实现依赖，不是新 deployable 或替代 canonical framework；加入前仍按 Security Requirements 做维护状态、许可证、CVE 和密码学 review。
 

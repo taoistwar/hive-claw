@@ -420,6 +420,7 @@ async fn install_walks_full_durability_state_machine_to_done() {
 mod no_follow_tests {
     use super::*;
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_artifact_path_rejects_symlink_directory() {
         let workspace = TestWorkspace::new().expect("test workspace");
@@ -443,6 +444,7 @@ mod no_follow_tests {
         assert_eq!(err.reason(), "unsafe_artifact");
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_artifact_path_rejects_symlink_final_file() {
         let workspace = TestWorkspace::new().expect("test workspace");
@@ -528,6 +530,7 @@ mod no_follow_tests {
         assert_eq!(bytes, VALID_V1_WASM);
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn read_verified_artifact_rejects_symlink_final_file() {
         let workspace = TestWorkspace::new().expect("test workspace");

@@ -53,10 +53,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn defaults_when_env_unset() {
-        // Safety: single-threaded test context.
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             std::env::remove_var("HIVECLAW_BIND_ADDR");
             std::env::remove_var("HIVECLAW_LOG_LEVEL");
@@ -72,6 +77,9 @@ mod tests {
 
     #[test]
     fn rejects_garbage_bind_addr() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             std::env::set_var("HIVECLAW_BIND_ADDR", "not-a-socket");
         }

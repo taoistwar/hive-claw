@@ -486,18 +486,18 @@ pub(crate) async fn replace_entity_search_documents(
                 .windows(gram_len)
                 .map(|window| window.iter().collect::<String>())
                 .collect::<BTreeSet<_>>();
-            for gram in grams {
-                sqlx::query(
-                    "INSERT INTO search_short_grams (document_id, gram_len, gram) \
-                     VALUES (?, ?, ?)",
-                )
-                .bind(document_id)
-                .bind(gram_len as i64)
-                .bind(gram)
-                .execute(&mut **transaction)
-                .await
-                .map_err(sqlx_to_search)?;
-            }
+            let grams_json = serde_json::to_string(&grams)
+                .map_err(|error| SearchError::Runtime(error.to_string()))?;
+            sqlx::query(
+                "INSERT INTO search_short_grams (document_id, gram_len, gram) \
+                 SELECT ?, ?, CAST(value AS TEXT) FROM json_each(?) ORDER BY key",
+            )
+            .bind(document_id)
+            .bind(gram_len as i64)
+            .bind(grams_json)
+            .execute(&mut **transaction)
+            .await
+            .map_err(sqlx_to_search)?;
         }
     }
     Ok(())

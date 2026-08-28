@@ -260,7 +260,7 @@ pub const FUNCTION_UNFILTERED_LIST_SQL: &str = "SELECT functions.id, functions.i
 
 /// Deduplicated Function page for a three-or-more-scalar FTS phrase. Bind
 /// order: encoded FTS `phrase`, `limit`, `offset`.
-pub const FUNCTION_FTS_LIST_SQL: &str = "WITH matched_function_keys AS ( \
+pub const FUNCTION_FTS_LIST_SQL: &str = "WITH matched_function_keys AS MATERIALIZED ( \
          SELECT DISTINCT search_documents.entity_key \
          FROM search_documents_fts \
          CROSS JOIN search_documents \
@@ -272,7 +272,8 @@ pub const FUNCTION_FTS_LIST_SQL: &str = "WITH matched_function_keys AS ( \
             functions.description, functions.kind, functions.input_schema, \
             functions.output_schema, functions.plugin_id, functions.plugin_export, \
             functions.category_id, functions.required_capabilities, \
-            functions.created_at, functions.updated_at \
+            functions.created_at, functions.updated_at, \
+            (SELECT COUNT(*) FROM matched_function_keys) AS total_count \
      FROM matched_function_keys \
      CROSS JOIN search_documents \
        ON search_documents.entity_type = 'function' \
@@ -527,7 +528,7 @@ pub const TOOL_UNFILTERED_LIST_SQL: &str = "SELECT tools.id, tools.identifier, t
 
 /// Deduplicated Tool page for a three-or-more-scalar FTS phrase. Bind order:
 /// encoded FTS `phrase`, `limit`, `offset`.
-pub const TOOL_FTS_LIST_SQL: &str = "WITH matched_tool_keys AS ( \
+pub const TOOL_FTS_LIST_SQL: &str = "WITH matched_tool_keys AS MATERIALIZED ( \
          SELECT DISTINCT search_documents.entity_key \
          FROM search_documents_fts \
          CROSS JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
@@ -536,7 +537,8 @@ pub const TOOL_FTS_LIST_SQL: &str = "WITH matched_tool_keys AS ( \
      SELECT tools.id, tools.identifier, tools.name, tools.description, tools.kind, tools.source, \
             tools.is_always, tools.function_id, tools.workflow_id, tools.input_schema, \
             tools.output_schema, tools.category_id, tools.required_capabilities, \
-            tools.created_at, tools.updated_at \
+            tools.created_at, tools.updated_at, \
+            (SELECT COUNT(*) FROM matched_tool_keys) AS total_count \
      FROM matched_tool_keys \
      CROSS JOIN search_documents \
        ON search_documents.entity_type = 'tool' \

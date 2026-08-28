@@ -2,8 +2,21 @@
 
 **Purpose**: Feature 011 的依赖、备份加密、归档解析、Plugin sandbox 与 CI 安全门禁
 **Created**: 2026-06-15
-**Current review**: 2026-08-26（T138 最终只复跑汇合完成；CHK010/CHK011、固定 secret/dependency scan、Unicode/data 与 SQL reviewer 证据全部闭合）
+**Current review**: 2026-08-27（当前供应链/质量门 Green；T138 仍因 backup leaf/SQLite VFS/跨平台 no-follow owner 缺口 Pending）
 **Feature**: [spec.md](../spec.md)
+
+## 2026-08-27 当前源码安全补充（不关闭 T119/T130/T138）
+
+- **当前源码与恢复补强**：source revision=`git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:53e3ae2b38876bc54e9e311793682e7f850f76a7e7f22035a5102879548174e6`。Linux 下已完成 pinned archive descriptor 的 A→B→A 路径交换防护、closed-current 与 safety snapshot held binding、root-scoped Backup/Restore maintenance owner、exact owner-id/OS flock/ABA、startup replay、Settings preview/confirmation/cancel 生命周期，以及 `NotVerified|Verified|Invalidated` 三态 held safety proof 的 Red→独立 review→Green。最终 `backup_restore` 65/65、`backup_maintenance` 8/8、`store_resilience` 12/12、Settings 18/18；恢复 crash/replay matrix、startup 11/11 与相关 store-bound regressions 均 Green。
+- **固定 secret scanner**：Gitleaks 8.30.1 官方 Linux x64 制品 SHA-256=`551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`；reviewed canary 精确返回 leak exit code 1。全历史初扫发现的 14 项均是 commit `c98cfe22…` 中两份 vendored AWS SDK endpoint fixture 的同一公开 AWS 示例；先以 strict Red 锁定 commit/path/rule/line 四字段集合、禁止 TOML path/rule/inline 宽豁免，再只向 `.gitleaksignore` 追加 14 条精确 fingerprint，`.gitleaks.toml` 零修改。最终 `ci_security_contract` 17/17，扫描 406 commits 零 finding；同值在路径外仍会被 canary 捕获。
+- **依赖、SQLx 与静态门**：`cargo +1.97.1 deny check advisories` 及 `cargo +1.97.1 deny --offline check licenses bans sources` 全部 exit 0，`deny.toml` 无 advisory ignore。`DATABASE_URL='sqlite::memory:' SQLX_OFFLINE=true cargo +1.97.1 sqlx prepare --workspace --check --no-dotenv` exit 0；Rust/Cargo 1.97.1、HiveGUI all-target check、strict Clippy、fmt、diff、SQL safety/query-plan/query-count/search-index inventory 全部 Green。现役性能矩阵亦为 13 direct Passed、零 active exception，因此 T145 Closed。
+- **仍属 owner blocker**：上述证据没有把 SQLx current/staging checkpoint 绑定到同一 leaf fd/VFS，也没有闭合 Plugin switch 与部分 rollback/cleanup 的 ambient-path TOCTOU，更没有证明 Windows file-id/reparse 或非 Unix no-follow 语义。因此 T119/T130 继续 Pending；CHK010/CHK011 维持 `[ ]`，T138 也维持 Pending。不得用 Linux supplemental Green 或供应链门 Green 倒推完整备份/跨平台安全签字。
+
+## 2026-08-26 冻结源码安全状态更正
+
+- 冻结 source revision 为 `git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:a1696bdb89fdc2a0a757091742aa9467d151d617f91e2801ce80d77da3244a2e`。
+- 下节 221 passed / 0 failed / 1 ignored、Gitleaks 与 cargo-deny 结果仍是已执行的历史 Green，但其既有断言没有覆盖 T119 的明文 leaf TOCTOU/跨平台 no-follow，也没有证明 T130 的生产 Linux fd-bound leaf VFS 与 Windows file-id/reparse。
+- 现有 Linux checkpoint 后 refresh 与 backup 52/52 只能证明当前普通路径；不得据此外推完整跨平台安全。T119、T130 已退回 owner，CHK010/CHK011 重新 Pending，故 T138 `[X]→[ ]`。T141 的既有断言复跑状态不倒推这些新发现的 owner 缺口。
 
 ## 2026-08-26 T138 最终安全汇合与 self-attestation
 
@@ -19,19 +32,19 @@
 
 - 安全/敏感持久化批次：`cargo +1.97.1 test --locked -p hivegui --test ci_security_contract --test sensitive_persistence_contract --test plugin_sandbox_red --test backup_restore --test diagnostics --test logging_contract -- --nocapture`，退出 0，54/54。
 - Secret scanner：Gitleaks `8.30.1` Linux x64 制品使用官方 SHA-256 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`；CI 先用 reviewed rule canary 要求精确 leak exit code 1，再扫描 405 commits。11 个历史 test/doc 示例以 commit/path/rule/line 精确 fingerprint 审阅，不使用宽路径规则；最终全历史扫描退出 0、0 findings。
-- SQLx：`DATABASE_URL=sqlite::memory: SQLX_OFFLINE=true cargo sqlx prepare --workspace --check --no-dotenv` 退出 0；显式 URL 是 sqlx-cli 0.9.0 的 CLI 前置条件，`--no-dotenv` 防止读取开发者配置。
+- SQLx：`DATABASE_URL='sqlite::memory:' SQLX_OFFLINE=true cargo +1.97.1 sqlx prepare --workspace --check --no-dotenv` 退出 0；显式 URL 是 sqlx-cli 0.9.0 的 CLI 前置条件，`--no-dotenv` 防止读取开发者配置。
 - Dependency policy：`cargo deny --offline check licenses bans sources` 退出 0；`deny.toml` advisory ignore 为零。
 - 历史发布阻断已经解除：`aws-sdk-s3 1.141.0` 的可审计本地副本只把生成 manifest 中的 `lru` 约束改为 `0.18.2`；`extism 1.30.0` 的可审计本地副本应用上游 PR #905 的两项 Wasmtime 46 迁移提交并固定 `wasmtime/wasi-common 46.0.3`。两份 `PROVENANCE.md` 均记录上游 revision、crates.io archive SHA-256 和精确补丁范围；生产回归通过后，联网 `cargo deny check advisories` 退出 0，`deny.toml` advisory ignore 仍为零。
 - US13 owner gate 重新打开：`local_agent_runtime.rs`、`cancellation.rs`、`backup_restore.rs` 与 `diagnostics.rs` 的局部 Green 不覆盖 T116-T120 完整正文，T123 reviewer 链未成立；因此 T138 也缺会话/备份/诊断全介质 owner Green，不能用本节 54/54 聚合倒推完成。
 - Reviewer 结论：T017E 的依赖、TLS、SQL/SQLx 与 S3 安全补救通过 dedicated security review；CHK010/CHK011 的 US13 故事 owner 证据尚未闭合，因此 `T138`/`T145`/`T147` 仍保持 Pending，但不得再以两项已清除的 RustSec advisory 作为阻断理由。
 
-## T006 与补充 T017G 当前候选依赖评估（方案目标已确认，实施审批仍 Pending）
+## T006 与补充 T017G 历史候选依赖评估（以下均为当时状态）
 
-**工具链基线**: Rust 1.97.1。版本信息来自 2026-07-22 的 registry metadata 和上游发布记录；实际合并仍由固定版本 `cargo deny check advisories` 重新扫描提交后的完整 `Cargo.lock`。
+**当时工具链基线**: Rust 1.97.1。版本信息来自 2026-07-22 的 registry metadata 和上游发布记录；当时要求后续实际合并仍由固定版本 `cargo deny check advisories` 重新扫描提交后的完整 `Cargo.lock`。
 
-**方案确认状态**: `Approved for T007`。用户/feature owner 于 2026-07-22 先选择推荐选项 A，批准下表精确版本、最小 feature、Extism 安全升级和 GPUI revision 固定；在发现 Extism 1.30.0 缺失 Wasmtime `anyhow` feature 后，又确认下方补充选项 A1。该确认仅授权本地 T007 实现；宪章要求的专门 security review 和第二批准仍是合并前门禁，由 T138 及最终 PR 审批闭合，不伪装成已经取得的 reviewer 签字。
+**当时方案确认状态**: `Approved for T007`。用户/feature owner 于 2026-07-22 先选择推荐选项 A，批准下表精确版本、最小 feature、Extism 安全升级和 GPUI revision 固定；在发现 Extism 1.30.0 缺失 Wasmtime `anyhow` feature 后，又确认下方补充选项 A1。该确认当时仅授权本地 T007 实现；宪章要求的专门 security review 和第二批准仍是后续合并前门禁，由 T138 及最终 PR 审批闭合，不伪装成已经取得的 reviewer 签字。
 
-**Advisory 修复确认状态**: `Historical Red approved; supplemental T017G/T017H pending; Green pending T001 PR/CI`。用户/feature owner 于 2026-07-23 选择推荐方案 A，批准下方 7 个 advisory 的无例外修复目标，随后批准 T017A-T017B Red 证据，并再次批准实施前审计提出的 SQLx feature、Wayland provenance、`game_service` 绑定、named-query 中央审计边界和乐观锁封闭枚举修正。2026-07-28 用户又批准 checked-static-query 推荐 A，使 HiveWeb 最终 SQLx feature 由历史 `derive`-only 目标升级为 `macros`、生产 `QueryBuilder` 为零；同日“全 A”批准 Unicode 17 `NFKC_CF`+NFC 的规范目标与候选依赖方向。上述目标必须先由 T017G 编写、实际观察 Red，并由 T017H 的 Unicode/data、dependency/security 与 SQL reviewer 审批；方案批准不代表 T017H、Green、专门 security review 或第二批准已经完成。
+**当时 Advisory 修复确认状态**: `Historical Red approved; supplemental T017G/T017H pending; Green pending T001 PR/CI`。用户/feature owner 于 2026-07-23 选择推荐方案 A，批准下方 7 个 advisory 的无例外修复目标，随后批准 T017A-T017B Red 证据，并再次批准实施前审计提出的 SQLx feature、Wayland provenance、`game_service` 绑定、named-query 中央审计边界和乐观锁封闭枚举修正。2026-07-28 用户又批准 checked-static-query 推荐 A，使 HiveWeb 最终 SQLx feature 由历史 `derive`-only 目标升级为 `macros`、生产 `QueryBuilder` 为零；同日“全 A”批准 Unicode 17 `NFKC_CF`+NFC 的规范目标与候选依赖方向。上述目标在当时必须先由 T017G 编写、实际观察 Red，并由 T017H 的 Unicode/data、dependency/security 与 SQL reviewer 审批；方案批准在当时不代表 T017H、Green、专门 security review 或第二批准已经完成。
 
 ### 依赖决策表
 
@@ -114,7 +127,7 @@ Wayland vendor 的上游 repository 字段必须精确保留 crates.io 0.31.10 m
 | --- | --- | --- | --- |
 | Gitleaks | `8.30.1`；使用官方 release asset，校验提交的 SHA-256 后执行全历史/当前树扫描；安装或扫描失败即失败 | 2026-07-22 上游 latest；不依赖 Rust toolchain | Pending T018 |
 | cargo-deny | `0.20.2`；`cargo install --locked cargo-deny --version 0.20.2`，执行 `cargo deny check advisories`；DB 更新失败或发现未批准 advisory 即失败 | 2026-07-09 上游 latest；Rust 1.97.1 可满足其 MSRV | Pending T018 |
-| cargo-sqlx | `sqlx-cli 0.9.0`；`cargo install --locked sqlx-cli --version 0.9.0 --no-default-features --features sqlite,mysql,rustls`，精确执行 `SQLX_OFFLINE=true cargo sqlx prepare --workspace --check` | 与已批准的 workspace SQLx 0.9.0 保持精确版本一致；CLI 不得通过额外 feature 重新带入 `mysql-rsa` | Pending T018 |
+| cargo-sqlx | `sqlx-cli 0.9.0`；`cargo install --locked sqlx-cli --version 0.9.0 --no-default-features --features sqlite,mysql,rustls`，精确执行 `DATABASE_URL='sqlite::memory:' SQLX_OFFLINE=true cargo +1.97.1 sqlx prepare --workspace --check --no-dotenv` | 与已批准的 workspace SQLx 0.9.0 保持精确版本一致；CLI 不得通过额外 feature 重新带入 `mysql-rsa` | Pending T018 |
 
 上游证据：[Gitleaks 8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1)、[cargo-deny 0.20.2](https://github.com/EmbarkStudios/cargo-deny/releases/tag/0.20.2)、[SQLx 0.9.0](https://github.com/launchbadge/sqlx/releases/tag/v0.9.0)。CI 实现还必须把 Action 固定到完整 commit SHA；浮动 tag 只作为下载版本标识，不作为不可变执行边界。
 
@@ -860,21 +873,23 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 - [x] CHK009 重加密过程中如果应用崩溃——是否需要定义部分重加密状态的数据一致性需求（事务性重加密 vs 逐条重加密）？[Gap, Spec §Edge Cases:加密密钥管理]
   > **评估**: T016c 定义了"如任一步骤失败，回滚到原始状态"。SQLite 事务机制支持原子性——重加密在单个事务中执行。崩溃后数据库回滚到操作前状态。数据一致性由 SQLite ACID 保证。
 
-- [x] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（条件总结：2026-08-26 闭合）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
+- [ ] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（2026-08-26 冻结源码更正：backup owner 跨平台边界 Pending）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
   > **条件总结**: 范围为 DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted`，并包含备份跨设备重加密与敏感落盘隔离。T138 的 83 项逐字段 owner 复跑与 103 项全介质/错误/恢复复跑均 Green：
   > 1. `T038`/`T047`（DataSource/LlmProvider）与 `T127`/`T136`（会话/消息/执行）已通过 `T016F` 持续可用 canary 与所有错误路径
   > 2. `T119`/`T120`（备份/日志）与 `T129`/`T130`（restore/safe backup）按现有公开矩阵跑通
   > 3. CHK011 的介质扫描证明未出现明文回归
   > 4. security reviewer/source-true self-attestation、review date、精确命令与标准化输出已记录于本清单顶部 2026-08-26 T138 节
+  > **冻结源码更正**: 上述 221 项历史结果未覆盖明文 leaf TOCTOU、跨平台 no-follow、生产 Linux fd-bound leaf VFS 与 Windows file-id/reparse；T119/T130 owner 闭合前本项不得重新勾选。
 
 ## Sensitive Data at Rest
 
-- [x] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（条件总结：2026-08-26 闭合）[Measurability, Spec §SC-004/FR-012/FR-046]
+- [ ] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（2026-08-26 冻结源码更正：backup leaf/跨平台介质 Pending）[Measurability, Spec §SC-004/FR-012/FR-046]
   > **评估**: 各 story owner 行已先行闭环；T138 在同一源码只复跑并取得以下可复核结果：
   > 1. 各字段公开 write/read roundtrip（DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution）
   > 2. 每个字段的全介质扫描（SQLite 主/WAL/SHM/journal、备份 staging、最终认证密文包、普通临时目录、脱敏错误、诊断包）
   > 3. 错误、崩溃恢复、跨设备恢复路径不落盘明文
   > 4. security reviewer 条件总结、命令/退出状态与 scanner 结果见顶部 2026-08-26 节；未发现任何明文落盘 finding
+  > **冻结源码更正**: 既有介质扫描不含上述 leaf TOCTOU 与跨平台文件身份边界；在 owner Red→review→implementation→Green 完成前，不能以零命中倒推完整覆盖。
 
 - [x] CHK012 SQLite 数据库文件本身是否需要加密（如 SQLCipher）？当前方案是应用层加密特定字段——数据库文件可能含非加密但敏感的结构信息（表名、列名）——此风险是否在需求中识别？[Gap, Spec §FR-001, Spec §FR-012]
   > **评估**: 应用层加密（字段级 chacha20poly1305）为当前设计选择。全数据库加密（SQLCipher）增加复杂度和依赖，且不影响功能正确性。表名/列名不包含敏感用户数据。此权衡已在 Complexity Tracking 中隐含——选择简单方案。

@@ -41,7 +41,7 @@ fn owner_phase_maps_correctly_for_each_surface() {
     );
     assert_eq!(
         ScrollSurface::AgentExecution.owner_phase().to_string(),
-        "US13/T124"
+        "US13/T132-T135"
     );
 }
 

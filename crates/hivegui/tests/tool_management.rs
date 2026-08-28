@@ -400,6 +400,48 @@ async fn duplicate_identifier_is_a_safe_typed_conflict_and_preserves_the_first_r
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn fts_empty_pages_preserve_the_exact_tool_match_total() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let (database, tools) = open_tool_store(&workspace).await;
+    let function_id = seed_function(&database, "empty_page_function").await;
+    tools
+        .create(
+            input(
+                "empty_page_tool",
+                "Empty page Tool",
+                ToolKind::FunctionWrap,
+                ToolSource::Workspace,
+                false,
+                Some(function_id),
+                None,
+                INPUT_SCHEMA,
+                OUTPUT_SCHEMA,
+                None,
+            )
+            .expect("valid empty-page fixture Tool"),
+        )
+        .await
+        .expect("create empty-page fixture Tool");
+
+    let beyond_last = tools
+        .list(Some("empty_page_tool".to_string()), 2)
+        .await
+        .expect("load the first empty Tool search page");
+    assert!(beyond_last.items().is_empty());
+    assert_eq!(
+        beyond_last.total(),
+        1,
+        "an empty page after the last row must preserve the exact match total"
+    );
+    let no_matches = tools
+        .list(Some("no_such_tool_fixture".to_string()), 1)
+        .await
+        .expect("load an empty Tool search result");
+    assert!(no_matches.items().is_empty());
+    assert_eq!(no_matches.total(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn fixed_hundred_plus_fixture_pages_and_searches_literal_text() {
     let workspace = TestWorkspace::new().expect("test workspace");
     let (database, tools) = open_tool_store(&workspace).await;
@@ -503,6 +545,11 @@ fn tool_query_catalog_owns_every_story_filter_and_association_route() {
 
 #[test]
 fn tool_management_uses_exactly_two_canonical_t005_targets() {
+    assert_eq!(
+        target_specs().len(),
+        13,
+        "the Tool search contract must replace one target rather than expand the release matrix"
+    );
     let owned = target_specs()
         .into_iter()
         .filter(|target| target.owner_task == "T101")
@@ -515,6 +562,37 @@ fn tool_management_uses_exactly_two_canonical_t005_targets() {
     assert_eq!(owned.len(), 2);
     assert_eq!(TOOL_FIXTURE_ROWS, 10_000);
     assert_eq!(TOOL_SEARCH_PAGE_SCHEDULE.len(), 100);
+    assert_eq!(
+        TOOL_SEARCH_PAGE_ID, "tool_search_page_pair_v2",
+        "the mixed-route v1 distribution must not share a baseline identity with paired samples"
+    );
+    for step in TOOL_SEARCH_PAGE_SCHEDULE {
+        assert_eq!(
+            step.routes(),
+            [(Some("fixture"), step.page), (None, step.page)],
+            "every measured sample must execute filtered then unfiltered at the same page depth"
+        );
+    }
+    let search_target = owned
+        .iter()
+        .find(|target| target.id == TOOL_SEARCH_PAGE_ID)
+        .expect("paired Tool search target");
+    let paired_baseline = baseline_path(search_target, &EnvironmentFingerprint::capture());
+    assert_eq!(
+        paired_baseline
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        Some(TOOL_SEARCH_PAGE_ID)
+    );
+    assert_ne!(
+        paired_baseline
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        Some("tool_search_page"),
+        "the old mixed-route baseline must remain isolated"
+    );
     assert_eq!(owned[0].measured_samples, 100);
     assert_eq!(owned[1].measured_samples, 100);
     for target in owned {
@@ -526,6 +604,13 @@ fn tool_management_uses_exactly_two_canonical_t005_targets() {
             },
             "unexpected Tool management target: {target:?}"
         );
+        if target.id == TOOL_SEARCH_PAGE_ID {
+            assert_eq!(
+                target.timing_boundary,
+                "one combined wall-clock sample covering filtered then unfiltered Tool search/page requests at the same page depth, from the filtered request accepted through both fixed 20-row pages and total-order metadata materialized, without per-request normalization",
+                "the manifest must fully define the paired sample unit"
+            );
+        }
     }
 }
 

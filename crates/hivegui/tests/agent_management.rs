@@ -31,7 +31,10 @@ use hivegui::datasource::{
     query_plan::{QueryDialect, SqlitePlanRow, evaluate_sqlite_query, production_query_catalog},
     store::{Store, StoreOpenOptions},
 };
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::{
+    AssertSqlSafe, Connection, Row,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 use support::{
     TestWorkspace,
     performance::{
@@ -347,6 +350,178 @@ async fn search_by_normalized_term_returns_matching_agents() {
         .expect("search");
     assert_eq!(page.total(), 1, "search must use the normalized name index");
     assert_eq!(page.records()[0].identifier(), "alpha");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn search_page_hydration_uses_five_queries_independent_of_page_cardinality() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let observer = QueryCountObserver::new();
+    let (database, agents) = open_observed_store(&workspace, observer.clone()).await;
+    let (tool_id, skill_id, capability) = seed_resource_fixture(&database).await;
+    for index in 0..PAGE_SIZE {
+        let name = if index == 0 {
+            "Unique needle"
+        } else {
+            "Ordinary fixture"
+        };
+        agents
+            .create(
+                root_input(&format!("search-batch-{index:02}"), name)
+                    .with_tools([tool_id])
+                    .with_skills([skill_id])
+                    .with_capabilities([capability.clone()]),
+            )
+            .await
+            .expect("seed Agent search page");
+    }
+
+    let contract = production_query_count_catalog()
+        .iter()
+        .find(|contract| contract.id == "agent.search_page")
+        .expect("Agent search-page query-count contract");
+    assert_eq!(contract.owner_phase, "US13");
+    assert_eq!(contract.activation_task, "T115");
+    assert!(contract.active);
+    assert_eq!(contract.maximum_queries, 5);
+
+    let small_scope = observer.start_scope(contract.id, 1);
+    let small_page = agents
+        .search(&AgentFilter::first().with_search("needle"))
+        .await
+        .expect("search one Agent");
+    let small = small_scope.finish();
+
+    let large_scope = observer.start_scope(contract.id, PAGE_SIZE);
+    let large_page = agents
+        .search(&AgentFilter::first())
+        .await
+        .expect("search full Agent page");
+    let large = large_scope.finish();
+
+    assert_eq!(small_page.records().len(), 1);
+    assert_eq!(large_page.records().len(), PAGE_SIZE);
+    assert_eq!(
+        large_page
+            .records()
+            .iter()
+            .map(AgentRecord::identifier)
+            .collect::<Vec<_>>(),
+        (1..PAGE_SIZE)
+            .chain(std::iter::once(0))
+            .map(|index| format!("search-batch-{index:02}"))
+            .collect::<Vec<_>>(),
+        "batch hydration must preserve the search query's stable ordering"
+    );
+    for record in large_page.records() {
+        assert_eq!(record.tool_ids(), [tool_id]);
+        assert_eq!(record.skill_ids(), [skill_id]);
+        assert_eq!(record.capability_names(), [capability.as_str()]);
+    }
+    assert_eq!(
+        (small.total_queries, large.total_queries),
+        (contract.maximum_queries, contract.maximum_queries),
+        "Agent search hydration must use one window, one count, and three batched relation queries"
+    );
+    let verdict = evaluate_query_count(contract.maximum_queries, &small, &large);
+    assert!(verdict.is_accepted(), "{:?}", verdict.failures());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn single_agent_fetch_reuses_four_query_hydration_and_missing_short_circuits() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let database = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open canonical v4 Store");
+    let agents = AgentStore::from_store(&database).expect("Agent Store");
+    let (tool_id, skill_id, capability) = seed_resource_fixture(&database).await;
+    let always_skill_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO skills (identifier, name, description, frontmatter, content, source, \
+         is_always, category_id, required_capabilities, created_at, updated_at) \
+         VALUES ('agent_fetch_always_skill', 'Agent fetch always Skill', '', NULL, \
+         'always fixture skill', 'workspace', 1, NULL, NULL, ?, ?) RETURNING id",
+    )
+    .bind("2026-08-26T00:00:00Z")
+    .bind("2026-08-26T00:00:00Z")
+    .fetch_one(database.pool())
+    .await
+    .expect("seed always-on Skill outside the measured fetch");
+    let expected = agents
+        .create(
+            root_input("fetch-query-count", "Fetch query count")
+                .with_tools([tool_id])
+                .with_skills([skill_id])
+                .with_capabilities([capability]),
+        )
+        .await
+        .expect("seed Agent with all three resource kinds");
+
+    let measured_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(workspace.database_path())
+                .foreign_keys(true),
+        )
+        .await
+        .expect("open one-connection query-count pool over the real v4 Store");
+    let measured_agents = AgentStore::new(measured_pool.clone()).expect("measured Agent Store");
+
+    let mut connection = measured_pool
+        .acquire()
+        .await
+        .expect("acquire measured pool");
+    connection
+        .clear_cached_statements()
+        .await
+        .expect("clear statements before existing fetch");
+    assert_eq!(connection.cached_statements_size(), 0);
+    drop(connection);
+
+    let fetched = measured_agents
+        .fetch_one(expected.id())
+        .await
+        .expect("fetch existing Agent")
+        .expect("existing Agent");
+    assert_eq!(fetched.tool_ids(), [tool_id]);
+    assert_eq!(fetched.skill_ids(), [skill_id]);
+    assert_eq!(fetched.always_skill_ids(), [always_skill_id]);
+    assert_eq!(fetched.capability_names(), ["log.emit"]);
+    let mut connection = measured_pool
+        .acquire()
+        .await
+        .expect("reacquire measured pool");
+    let existing_queries = connection.cached_statements_size();
+    connection
+        .clear_cached_statements()
+        .await
+        .expect("clear statements before missing fetch");
+    drop(connection);
+
+    assert!(
+        measured_agents
+            .fetch_one(i64::MAX)
+            .await
+            .expect("fetch missing Agent")
+            .is_none()
+    );
+    let mut connection = measured_pool
+        .acquire()
+        .await
+        .expect("reacquire measured pool");
+    let missing_queries = connection.cached_statements_size();
+    connection
+        .clear_cached_statements()
+        .await
+        .expect("clear statements after query-count sample");
+
+    assert_eq!(
+        (existing_queries, missing_queries),
+        (4, 1),
+        "existing Agent fetch must use one root plus three batched relation queries; missing fetch must stop after its root query"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

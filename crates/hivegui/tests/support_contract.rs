@@ -17,10 +17,12 @@ use support::{
         AGENT_SEARCH_PAGE_ID, ApprovedRegression, BASELINE_SCHEMA_VERSION, BaselineApproval,
         BenchmarkBaseline, BenchmarkReport, ComparisonOutcome, ComparisonResult,
         CompatibilityError, EnvironmentFingerprint, FIXTURE_VERSION, Percentile, PercentilesNs,
-        REGRESSION_EXCEPTION_SCHEMA_VERSION, RegressionException, TOOL_DISPATCH_ID,
-        WORKFLOW_100_NODE_ID, baseline_path, compare_to_baseline, evaluate_benchmark_gate,
-        load_baseline, load_regression_exception, measure_local_async_batched,
-        regression_exception_path, run_target, source_revision, target_specs,
+        REGRESSION_EXCEPTION_SCHEMA_VERSION, RELEASE_MATRIX_ID, RegressionException,
+        TOOL_DISPATCH_ID, TOOL_DISPATCH_OPERATIONS_PER_SAMPLE, WORKFLOW_100_NODE_ID, baseline_path,
+        compare_to_baseline, evaluate_benchmark_gate, load_baseline, load_regression_exception,
+        measure_local_async_batched, measure_local_async_checked_batched,
+        regression_exception_path, release_matrix_invocations, release_matrix_target_ids,
+        run_release_matrix_with, run_target, source_revision, target_specs,
     },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -154,6 +156,377 @@ fn performance_targets_have_fixed_boundaries_samples_and_budgets() {
     );
 }
 
+#[test]
+fn release_matrix_target_ids_follow_the_reviewed_interference_minimizing_order() {
+    // This reviewed order reduces preceding heavy-load interference. The new
+    // matrix remains falsifiable and does not claim that host affinity is controlled.
+    let expected = [
+        "agent_action_dispatch",
+        "tool_dispatch_batched_v2",
+        "conversation_list_recent_batched_v2",
+        "workflow_100_node_noop",
+        "conversation_session_bundle_batched_v2",
+        "agent_search_page",
+        "conversation_running_recovery",
+        "conversation_retention_cleanup",
+        "function_crud",
+        "tool_crud",
+        "agent_crud",
+        "function_search_page_pair_v2",
+        "tool_search_page_pair_v2",
+    ];
+    let actual: [&str; 13] = release_matrix_target_ids();
+    assert_eq!(
+        actual, expected,
+        "reviewed interference-minimizing matrix order drifted"
+    );
+
+    let unique = actual
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        unique.len(),
+        actual.len(),
+        "matrix target IDs must be unique"
+    );
+    let matrix_set = unique
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let manifest_set = target_specs()
+        .into_iter()
+        .map(|target| target.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        matrix_set, manifest_set,
+        "matrix and benchmark manifest must own exactly the same target set"
+    );
+}
+
+#[test]
+fn release_matrix_invocations_bind_exact_executable_source_and_single_target() {
+    assert_eq!(RELEASE_MATRIX_ID, "hivegui_local_runtime_release_matrix_v1");
+    let executable = PathBuf::from("/tmp/exact-local-runtime-benchmark");
+    let expected_source = "git:1111111111111111111111111111111111111111+hivegui-source-v1:2222222222222222222222222222222222222222222222222222222222222222";
+    let invocations = release_matrix_invocations(&executable, expected_source);
+    let expected = release_matrix_target_ids()
+        .into_iter()
+        .map(|target_id| {
+            serde_json::json!({
+                "executable": executable.as_path(),
+                "args": ["--run", target_id, "--expected-source", expected_source],
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        serde_json::to_value(invocations).expect("serialize matrix invocations"),
+        serde_json::Value::Array(expected)
+    );
+}
+
+#[test]
+fn release_matrix_collects_nonzero_and_spawn_failures_before_failing_aggregate() {
+    let executable = PathBuf::from("/tmp/exact-local-runtime-benchmark");
+    let expected_source = "git:1111111111111111111111111111111111111111+hivegui-source-v1:2222222222222222222222222222222222222222222222222222222222222222";
+    let source_probes = std::cell::Cell::new(0);
+    let mut invocations = Vec::<serde_json::Value>::new();
+    let report = run_release_matrix_with(
+        &executable,
+        expected_source,
+        || {
+            source_probes.set(source_probes.get() + 1);
+            expected_source.to_owned()
+        },
+        |child_executable: &Path, args: &[String]| {
+            invocations.push(serde_json::json!({
+                "executable": child_executable,
+                "args": args,
+            }));
+            match invocations.len() {
+                3 => Ok(3),
+                7 => Err("spawn sentinel".to_owned()),
+                _ => Ok(0),
+            }
+        },
+    );
+
+    assert_eq!(
+        source_probes.get(),
+        2,
+        "source must be probed at start and end"
+    );
+    assert_eq!(
+        invocations.len(),
+        13,
+        "failures must not truncate the matrix"
+    );
+    let expected_invocations = release_matrix_invocations(&executable, expected_source);
+    assert_eq!(
+        serde_json::Value::Array(invocations),
+        serde_json::to_value(expected_invocations).expect("serialize expected matrix invocations")
+    );
+
+    let expected_targets = release_matrix_target_ids()
+        .into_iter()
+        .enumerate()
+        .map(|(index, target_id)| {
+            let ordinal = index + 1;
+            match ordinal {
+                3 => serde_json::json!({
+                    "ordinal": ordinal,
+                    "target_id": target_id,
+                    "status": "failed",
+                    "exit_code": 3,
+                    "error": null,
+                }),
+                7 => serde_json::json!({
+                    "ordinal": ordinal,
+                    "target_id": target_id,
+                    "status": "failed",
+                    "exit_code": null,
+                    "error": "spawn sentinel",
+                }),
+                _ => serde_json::json!({
+                    "ordinal": ordinal,
+                    "target_id": target_id,
+                    "status": "passed",
+                    "exit_code": 0,
+                    "error": null,
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(report).expect("serialize matrix report"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": RELEASE_MATRIX_ID,
+            "source_revision": expected_source,
+            "affinity": "inherited/uncontrolled",
+            "source_stable": true,
+            "status": "failed",
+            "targets": expected_targets,
+        })
+    );
+}
+
+#[test]
+fn release_matrix_passes_only_when_all_children_pass_and_source_is_stable() {
+    let executable = PathBuf::from("/tmp/exact-local-runtime-benchmark");
+    let expected_source = "git:1111111111111111111111111111111111111111+hivegui-source-v1:2222222222222222222222222222222222222222222222222222222222222222";
+    let source_probes = std::cell::Cell::new(0);
+    let launches = std::cell::Cell::new(0);
+    let report = run_release_matrix_with(
+        &executable,
+        expected_source,
+        || {
+            source_probes.set(source_probes.get() + 1);
+            expected_source.to_owned()
+        },
+        |_child_executable: &Path, _args: &[String]| {
+            launches.set(launches.get() + 1);
+            Ok(0)
+        },
+    );
+
+    assert_eq!(source_probes.get(), 2);
+    assert_eq!(launches.get(), 13);
+    let expected_targets = release_matrix_target_ids()
+        .into_iter()
+        .enumerate()
+        .map(|(index, target_id)| {
+            serde_json::json!({
+                "ordinal": index + 1,
+                "target_id": target_id,
+                "status": "passed",
+                "exit_code": 0,
+                "error": null,
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(report).expect("serialize passing matrix report"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": RELEASE_MATRIX_ID,
+            "source_revision": expected_source,
+            "affinity": "inherited/uncontrolled",
+            "source_stable": true,
+            "status": "passed",
+            "targets": expected_targets,
+        })
+    );
+}
+
+#[test]
+fn release_matrix_fails_when_source_changes_between_start_and_end() {
+    let executable = PathBuf::from("/tmp/exact-local-runtime-benchmark");
+    let expected_source = "git:1111111111111111111111111111111111111111+hivegui-source-v1:2222222222222222222222222222222222222222222222222222222222222222";
+    let changed_source = "git:1111111111111111111111111111111111111111+hivegui-source-v1:3333333333333333333333333333333333333333333333333333333333333333";
+    let mut source_probes = [expected_source, changed_source].into_iter();
+    let report = run_release_matrix_with(
+        &executable,
+        expected_source,
+        || {
+            source_probes
+                .next()
+                .expect("matrix must probe source exactly twice")
+                .to_owned()
+        },
+        |_child_executable: &Path, _args: &[String]| Ok(0),
+    );
+    assert!(
+        source_probes.next().is_none(),
+        "matrix must probe source at both envelope boundaries"
+    );
+    let encoded = serde_json::to_value(report).expect("serialize source-drift matrix report");
+    assert_eq!(encoded["schema_version"], 1);
+    assert_eq!(encoded["id"], RELEASE_MATRIX_ID);
+    assert_eq!(encoded["source_revision"], expected_source);
+    assert_eq!(encoded["affinity"], "inherited/uncontrolled");
+    assert_eq!(encoded["source_stable"], false);
+    assert_eq!(encoded["status"], "failed");
+    assert_eq!(
+        encoded["targets"]
+            .as_array()
+            .expect("machine-readable matrix target results")
+            .len(),
+        13
+    );
+}
+
+#[test]
+fn canonical_release_baselines_match_all_current_targets() {
+    let environment = EnvironmentFingerprint {
+        os: "linux".into(),
+        architecture: "x86_64".into(),
+        rustc: "rustc 1.97.1 (8bab26f4f 2026-07-14)".into(),
+        build_profile: "release".into(),
+        cpu_model: "12th Gen Intel(R) Core(TM) i9-12900K".into(),
+        logical_cpus: 20,
+    };
+    let targets = target_specs();
+    assert_eq!(targets.len(), 13);
+
+    let mut baseline_count = 0;
+    for target in targets {
+        let path = baseline_path(&target, &environment);
+        assert!(
+            path.is_file(),
+            "missing canonical baseline: {}",
+            path.display()
+        );
+        let baseline = load_baseline(&path)
+            .unwrap_or_else(|error| {
+                panic!("invalid canonical baseline {}: {error}", path.display())
+            })
+            .unwrap_or_else(|| panic!("missing canonical baseline: {}", path.display()));
+        baseline_count += 1;
+        assert_eq!(
+            baseline.report.target,
+            target,
+            "canonical baseline target drifted at {}",
+            path.display()
+        );
+        assert_eq!(baseline.report.schema_version, BASELINE_SCHEMA_VERSION);
+        assert_eq!(baseline.report.fixture_version, FIXTURE_VERSION);
+        assert_eq!(baseline.report.environment, environment);
+        assert_eq!(baseline.report.sample_count, target.measured_samples);
+    }
+    assert_eq!(baseline_count, 13);
+}
+
+#[test]
+fn release_matrix_cli_owns_machine_readable_fresh_child_execution() {
+    let runtime = include_str!("../benches/local_runtime.rs");
+    assert!(
+        runtime.contains("\"--run-matrix\""),
+        "the canonical final matrix requires one source-owned --run-matrix entrypoint"
+    );
+    let start = runtime
+        .find("fn run_release_matrix(")
+        .expect("source-owned final release matrix driver");
+    let remaining = &runtime[start..];
+    let end = remaining[1..]
+        .find("\nfn ")
+        .map(|offset| offset + 1)
+        .unwrap_or(remaining.len());
+    let branch = &remaining[..end];
+    assert!(
+        branch.contains("std::env::current_exe()")
+            && branch.contains("run_release_matrix_with(")
+            && branch.contains("Command::new(child_executable)")
+            && branch.contains(".args(args)")
+            && branch.contains(".status()")
+            && branch.contains("serde_json::to_string_pretty(&report)"),
+        "CLI matrix mode must print its envelope and launch fresh exact-executable children"
+    );
+    let failure_gate = branch
+        .find("if report.status")
+        .expect("matrix report failure condition");
+    let gate_open = branch[failure_gate..]
+        .find('{')
+        .map(|offset| offset + failure_gate)
+        .expect("matrix report failure block");
+    let gate_close = branch[gate_open..]
+        .find("\n    }")
+        .map(|offset| offset + gate_open)
+        .expect("matrix report failure block end");
+    let failure_exit = branch
+        .find("std::process::exit(1);")
+        .expect("matrix aggregate failure exit");
+    assert_eq!(
+        branch.matches("std::process::exit(1);").count(),
+        1,
+        "matrix CLI must have exactly one aggregate failure exit"
+    );
+    assert!(
+        branch[failure_gate..gate_open]
+            .to_ascii_lowercase()
+            .contains("failed")
+            && gate_open < failure_exit
+            && failure_exit < gate_close,
+        "matrix CLI must exit non-zero only inside the failed-report condition"
+    );
+
+    assert!(
+        runtime.contains("\"--expected-source\"")
+            && runtime.contains("run_benchmarks(target_id.as_deref(), expected_source.as_deref())"),
+        "matrix children must forward their expected source into single-target execution"
+    );
+    let benchmark_start = runtime
+        .find("fn run_benchmarks(")
+        .expect("single-target benchmark runner");
+    let benchmark_branch = &runtime[benchmark_start..];
+    let mismatch = benchmark_branch
+        .find("expected source revision mismatch")
+        .expect("fail-closed expected-source diagnostic");
+    let exit = benchmark_branch[mismatch..]
+        .find("std::process::exit(1);")
+        .map(|offset| offset + mismatch)
+        .expect("fail-closed expected-source exit");
+    let target_execution = benchmark_branch
+        .find("run_target(&target")
+        .expect("production target execution");
+    assert!(
+        mismatch < exit && exit < target_execution,
+        "a child must reject source mismatch before timing or evaluation"
+    );
+
+    let quickstart = include_str!("../../../specs/011-hivegui-standalone-mode/quickstart.md");
+    assert!(
+        quickstart.contains(
+            "cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run-matrix"
+        ),
+        "quickstart must invoke the source-owned final matrix driver"
+    );
+    assert!(
+        !quickstart.contains("for target in \\") && !quickstart.contains("--run \"$target\""),
+        "quickstart must not duplicate or drift the source-owned matrix order"
+    );
+}
+
 #[tokio::test]
 async fn agent_action_dispatch_target_executes_the_production_boundary() {
     let target = target_specs()
@@ -178,6 +551,34 @@ async fn agent_action_dispatch_target_executes_the_production_boundary() {
 
 #[test]
 fn tool_dispatch_benchmark_uses_the_persisted_production_boundary() {
+    let targets = target_specs();
+    assert_eq!(targets.len(), 13);
+    let target = targets
+        .iter()
+        .find(|target| target.id == TOOL_DISPATCH_ID)
+        .expect("canonical Tool dispatch target");
+    assert_eq!(TOOL_DISPATCH_ID, "tool_dispatch_batched_v2");
+    assert_eq!(
+        target.timing_boundary,
+        "one per-dispatch normalized sample from a fixed batch of 1024 identical persisted Function-wrap Tool requests, each measured from persisted Tool execution acceptance through Tool/Function target lookup, input-schema and Capability validation, local no-op target return, output-schema validation, and validated result materialization"
+    );
+    let environment = fixture_environment();
+    let v2_baseline = baseline_path(target, &environment);
+    assert_eq!(
+        v2_baseline
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("tool_dispatch_batched_v2")
+    );
+    assert_ne!(
+        v2_baseline
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("tool_dispatch")
+    );
+
     let source = include_str!("../benches/local_runtime.rs");
     let start = source
         .find("TOOL_DISPATCH_ID =>")
@@ -197,8 +598,16 @@ fn tool_dispatch_benchmark_uses_the_persisted_production_boundary() {
         "T103 must not substitute an already-classified in-memory adapter for persisted Tool validation"
     );
     assert!(
-        branch.contains("measure_local_async_batched") && branch.contains("256"),
-        "sub-millisecond Tool dispatch samples must use the reviewed 256-operation normalized batch"
+        branch.contains("measure_local_async_checked_batched")
+            && branch.contains("TOOL_DISPATCH_OPERATIONS_PER_SAMPLE")
+            && !branch.contains("measure_local_async_batched("),
+        "sub-millisecond Tool dispatch samples must use the reviewed checked fixed batch"
+    );
+    assert!(
+        branch.contains("ToolExecutionContext::new(vec![")
+            && !branch.contains("ToolExecutionContext::new(Vec::new())")
+            && !branch.contains("let _ = executor"),
+        "the dispatch runner must exercise a granted Capability and propagate every execution error"
     );
 }
 
@@ -228,6 +637,44 @@ async fn batched_async_measurement_normalizes_each_sample_and_executes_every_ope
 
     assert_eq!(report.sample_count, 100);
     assert_eq!(calls.load(Ordering::Relaxed), expected_operations);
+}
+
+#[tokio::test]
+async fn checked_tool_dispatch_batch_propagates_the_first_operation_error() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    assert_eq!(TOOL_DISPATCH_OPERATIONS_PER_SAMPLE, 1024);
+    let target = target_specs()
+        .into_iter()
+        .find(|target| target.id == TOOL_DISPATCH_ID)
+        .expect("Tool dispatch v2 target");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = Arc::clone(&calls);
+    let error = measure_local_async_checked_batched(
+        target,
+        fixture_environment(),
+        TOOL_DISPATCH_OPERATIONS_PER_SAMPLE,
+        move || {
+            let observed_calls = Arc::clone(&observed_calls);
+            async move {
+                observed_calls.fetch_add(1, Ordering::Relaxed);
+                Err::<(), _>(support::performance::BenchmarkRunError::Operation(
+                    "checked-dispatch-sentinel".into(),
+                ))
+            }
+        },
+    )
+    .await
+    .expect_err("the checked batch must propagate the first dispatch error");
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        error.to_string(),
+        "benchmark operation failed: checked-dispatch-sentinel"
+    );
 }
 
 #[test]
@@ -809,6 +1256,34 @@ fn benchmark_gate_never_waives_the_absolute_p95_budget() {
             .as_deref()
             .is_some_and(|reason| reason.contains("absolute p95 budget")),
         "a signed relative-regression exception must never waive the absolute budget: {result:?}"
+    );
+}
+
+#[test]
+fn missing_baseline_never_waives_the_absolute_p95_budget() {
+    let mut current = fixture_report(PercentilesNs {
+        p50: 100,
+        p95: 111,
+        p99: 112,
+    });
+    current.target.p95_budget_ns = 110;
+    let directory = tempfile::tempdir().expect("create missing-baseline fixture directory");
+    let result = evaluate_benchmark_gate(
+        &current,
+        FIXTURE_CURRENT_SOURCE_REVISION,
+        &directory.path().join("missing.json"),
+        &directory.path().join("missing.exception.json"),
+        NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+    )
+    .expect("evaluate a first report above its absolute budget");
+
+    assert_eq!(result.outcome, ComparisonOutcome::Blocked);
+    assert!(
+        result
+            .exception_rejection
+            .as_deref()
+            .is_some_and(|reason| reason.contains("absolute p95 budget")),
+        "a missing baseline must not bypass the absolute budget: {result:?}"
     );
 }
 

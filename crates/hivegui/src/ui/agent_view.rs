@@ -17,6 +17,13 @@ use gpui_component::FocusTrapElement as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReferenceLoadState {
+    Loading,
+    Ready,
+    Failed,
+}
+
 pub struct AgentView {
     store: Entity<Store>,
     items: Vec<AgentRecord>,
@@ -45,6 +52,8 @@ pub struct AgentView {
     available_tools: Vec<(i64, String)>,
     available_skills: Vec<(i64, String)>,
     available_capabilities: Vec<String>,
+    reference_load_state: ReferenceLoadState,
+    reference_load_generation: u64,
     error_message: Option<String>,
     identifier_conflict: bool,
     confirm_delete_id: Option<i64>,
@@ -86,6 +95,8 @@ impl AgentView {
             available_tools: Vec::new(),
             available_skills: Vec::new(),
             available_capabilities: Vec::new(),
+            reference_load_state: ReferenceLoadState::Loading,
+            reference_load_generation: 0,
             error_message: None,
             identifier_conflict: false,
             confirm_delete_id: None,
@@ -148,6 +159,10 @@ impl AgentView {
     }
 
     fn load_references(&mut self, cx: &mut Context<Self>) {
+        self.reference_load_state = ReferenceLoadState::Loading;
+        self.reference_load_generation = self.reference_load_generation.wrapping_add(1);
+        let generation = self.reference_load_generation;
+        cx.notify();
         let store = self.store.read(cx).clone();
         cx.spawn(async move |this, cx| {
             let result = async {
@@ -184,7 +199,10 @@ impl AgentView {
 
             match result {
                 Ok((parents, tools, skills, capabilities)) => {
-                    this.update(cx, |view, _| {
+                    this.update(cx, |view, cx| {
+                        if view.reference_load_generation != generation {
+                            return;
+                        }
                         view.available_parents = parents;
                         view.available_tools = tools;
                         view.available_skills = skills;
@@ -192,12 +210,19 @@ impl AgentView {
                             .into_iter()
                             .map(|(capability,)| capability)
                             .collect();
+                        view.reference_load_state = ReferenceLoadState::Ready;
+                        cx.notify();
                     })
                     .ok();
                 }
                 Err(err) => {
-                    this.update(cx, |v, _| {
+                    this.update(cx, |v, cx| {
+                        if v.reference_load_generation != generation {
+                            return;
+                        }
                         v.error_message = Some(err);
+                        v.reference_load_state = ReferenceLoadState::Failed;
+                        cx.notify();
                     })
                     .ok();
                 }
@@ -614,6 +639,14 @@ impl Render for AgentView {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .when(
+                self.reference_load_state == ReferenceLoadState::Ready,
+                |root| root.child(focus_marker("AGENT_REFERENCES_READY")),
+            )
+            .when(
+                self.reference_load_state == ReferenceLoadState::Failed,
+                |root| root.child(focus_marker("AGENT_REFERENCES_ERROR")),
+            )
             .child(
                 div()
                     .flex()

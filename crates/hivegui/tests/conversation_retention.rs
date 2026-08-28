@@ -40,10 +40,11 @@ use support::sensitive_canary::{
 use support::{
     TestWorkspace,
     performance::{
-        CONVERSATION_BUNDLE_ID, CONVERSATION_CLEANUP_ID, CONVERSATION_FIXTURE_ROWS,
-        CONVERSATION_LIST_ID, CONVERSATION_RECOVERY_ID, ComparisonOutcome, EnvironmentFingerprint,
-        MEASURED_SAMPLES, baseline_path, evaluate_benchmark_gate, regression_exception_path,
-        run_target, source_revision, target_specs,
+        CONVERSATION_BUNDLE_ID, CONVERSATION_BUNDLE_OPERATIONS_PER_SAMPLE, CONVERSATION_CLEANUP_ID,
+        CONVERSATION_FIXTURE_ROWS, CONVERSATION_LIST_ID, CONVERSATION_LIST_OPERATIONS_PER_SAMPLE,
+        CONVERSATION_RECOVERY_ID, ComparisonOutcome, EnvironmentFingerprint, MEASURED_SAMPLES,
+        baseline_path, evaluate_benchmark_gate, regression_exception_path, run_target,
+        source_revision, target_specs,
     },
 };
 
@@ -476,6 +477,176 @@ fn conversation_performance_uses_four_canonical_t005_targets() {
             && target.measured_samples == MEASURED_SAMPLES
             && target.p95_budget_ns <= 1_000_000_000
     }));
+
+    assert_eq!(
+        CONVERSATION_LIST_ID, "conversation_list_recent_batched_v2",
+        "the sub-millisecond recent-list request requires a new fixed-batch baseline identity"
+    );
+    let recent_list = owned
+        .iter()
+        .find(|target| target.id == CONVERSATION_LIST_ID)
+        .expect("canonical recent Conversation list target");
+    assert_eq!(
+        recent_list.timing_boundary,
+        "one per-request normalized sample from a fixed batch of 16 recent Conversation requests against the same fixed 125-session fixture, each request using its own current UTC upper bound and accepted through one indexed 20-row encrypted-session page and exact newest-first total order materialized"
+    );
+    let environment = EnvironmentFingerprint::capture();
+    let recent_list_baseline = baseline_path(recent_list, &environment);
+    assert_eq!(
+        recent_list_baseline
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str),
+        Some("conversation_list_recent_batched_v2")
+    );
+    assert_ne!(
+        recent_list_baseline.parent(),
+        recent_list_baseline
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("conversation_list_recent"))
+            .as_deref(),
+        "the v2 target must not reuse or overwrite the frozen single-request baseline directory"
+    );
+    assert_eq!(CONVERSATION_LIST_OPERATIONS_PER_SAMPLE, 16);
+    assert_eq!(
+        (recent_list.warmup_iterations + recent_list.measured_samples)
+            * CONVERSATION_LIST_OPERATIONS_PER_SAMPLE,
+        1_760,
+        "10 warmups plus 100 measured samples must execute 16 real recent-list requests each"
+    );
+    let source = include_str!("support/performance.rs");
+    let list_start = source
+        .find("async fn run_conversation_list(")
+        .expect("recent Conversation list benchmark runner");
+    let list_end = source[list_start..]
+        .find("async fn run_conversation_bundle(")
+        .map(|offset| list_start + offset)
+        .expect("recent Conversation list benchmark boundary");
+    let list_branch = &source[list_start..list_end];
+    let list_fixture_open = list_branch
+        .find("ConversationBenchmarkFixture::open()")
+        .expect("Conversation fixture open");
+    let list_fixture_population = list_branch
+        .find("for index in 0..CONVERSATION_FIXTURE_ROWS")
+        .expect("125-session fixture population");
+    let list_measurement = list_branch
+        .find("measure_local_async_checked_batched(")
+        .expect("checked recent-list fixed-batch measurement helper");
+    let list_request = list_branch
+        .find("list_recent_sessions()")
+        .expect("one no-argument production recent-list request");
+    let list_error_propagation = list_branch[list_request..]
+        .find(".map_err(BenchmarkRunError::from_operation)?")
+        .map(|offset| list_request + offset)
+        .expect("recent-list request errors must propagate from the timed operation");
+    assert!(
+        list_fixture_open < list_fixture_population
+            && list_fixture_population < list_measurement
+            && list_measurement < list_request
+            && list_request < list_error_propagation,
+        "Store open and 125-session fixture setup must remain outside the timed batch"
+    );
+    assert!(
+        list_branch.contains("CONVERSATION_LIST_OPERATIONS_PER_SAMPLE")
+            && list_branch.matches("list_recent_sessions()").count() == 1,
+        "each real batch operation must issue exactly one no-argument production recent-list request so it captures its own current UTC upper bound"
+    );
+    assert!(
+        !list_branch.contains("let _ =")
+            && !list_branch.contains(".ok()")
+            && !list_branch.contains("unwrap_or_default"),
+        "the checked batch must not discard any recent-list request or validation error"
+    );
+    assert!(
+        list_branch.contains("expected_recent_ids")
+            && list_branch.contains("actual_ids")
+            && list_branch.contains(".take(20)")
+            && list_branch.contains("actual_ids != expected_recent_ids")
+            && list_branch.contains("right.updated_at().cmp(left.updated_at())")
+            && list_branch.contains("left.id().cmp(right.id())")
+            && list_branch.contains("Conversation recent page order drifted")
+            && list_branch.contains("then_with"),
+        "the runner must reject anything other than the exact 20 newest sessions in stable total order"
+    );
+    assert!(
+        !list_branch[list_measurement..].contains("create_session_for_agent"),
+        "fixture creation must not leak into the timed recent-list operation"
+    );
+
+    assert_eq!(
+        CONVERSATION_BUNDLE_ID, "conversation_session_bundle_batched_v2",
+        "the normalized fixed-batch contract requires a new baseline identity"
+    );
+    let bundle = owned
+        .iter()
+        .find(|target| target.id == CONVERSATION_BUNDLE_ID)
+        .expect("canonical Conversation bundle target");
+    assert_eq!(
+        bundle.timing_boundary,
+        "one per-request normalized sample from a fixed batch of 16 identical 25-session Conversation bundle requests, each request accepted through exactly two encrypted child queries with one message and one execution per session materialized"
+    );
+    let replacement_baseline = baseline_path(bundle, &environment);
+    assert_eq!(
+        replacement_baseline
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str),
+        Some("conversation_session_bundle_batched_v2")
+    );
+    assert_ne!(
+        replacement_baseline.parent(),
+        replacement_baseline
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("conversation_session_bundle"))
+            .as_deref(),
+        "the v2 target must not reuse or overwrite the frozen v1 baseline directory"
+    );
+
+    assert_eq!(CONVERSATION_BUNDLE_OPERATIONS_PER_SAMPLE, 16);
+    assert_eq!(
+        (bundle.warmup_iterations + bundle.measured_samples)
+            * CONVERSATION_BUNDLE_OPERATIONS_PER_SAMPLE,
+        1_760,
+        "10 warmups plus 100 measured samples must execute 16 real bundle requests each"
+    );
+
+    let start = source
+        .find("async fn run_conversation_bundle(")
+        .expect("Conversation bundle benchmark runner");
+    let end = source[start..]
+        .find("async fn run_conversation_cleanup(")
+        .map(|offset| start + offset)
+        .expect("Conversation bundle benchmark boundary");
+    let branch = &source[start..end];
+    let fixture_open = branch
+        .find("ConversationBenchmarkFixture::open()")
+        .expect("Conversation fixture open");
+    let fixture_population = branch
+        .find("for index in 0..25")
+        .expect("25-session fixture population");
+    let measurement = branch
+        .find("measure_local_async_checked_batched(")
+        .expect("checked fixed-batch measurement helper");
+    assert!(
+        fixture_open < fixture_population && fixture_population < measurement,
+        "Store open and 25-session fixture setup must remain outside the timed batch"
+    );
+    assert!(
+        branch.contains("CONVERSATION_BUNDLE_OPERATIONS_PER_SAMPLE")
+            && branch
+                .matches("load_session_bundles(ids.as_slice())")
+                .count()
+                == 1,
+        "each real batch operation must preserve the same 25-session bundle request semantics"
+    );
+    assert!(
+        !branch[measurement..].contains("create_session_for_agent")
+            && !branch[measurement..].contains("append_message")
+            && !branch[measurement..].contains("record_execution"),
+        "fixture creation must not leak into the timed operation"
+    );
 }
 
 #[cfg_attr(

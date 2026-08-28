@@ -1175,6 +1175,80 @@ fn secret_scan_is_fixed_version_checksum_verified_full_history_and_blocking() {
 }
 
 #[test]
+fn reviewed_aws_endpoint_fixtures_use_only_exact_gitleaks_fingerprints() {
+    const EXPECTED: [&str; 14] = [
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:333",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:362",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:380",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:398",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:416",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:488",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:2058",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:473",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:509",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:545",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:581",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:617",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:728",
+        "c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:1772",
+    ];
+
+    let ignored = repository_source(".gitleaksignore");
+    let actual = ignored
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#') && line.contains("third_party/aws-sdk-s3-1.141.0/"))
+        .collect::<BTreeSet<_>>();
+    let expected = EXPECTED.into_iter().collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual, expected,
+        "the reviewed AWS endpoint fixture findings must be ignored only by exact commit/path/rule/line fingerprints"
+    );
+
+    let config = repository_source(".gitleaks.toml");
+    let allowlist_declarations = config
+        .lines()
+        .map(without_toml_comment)
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty() && line.to_ascii_lowercase().contains("allowlist"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        allowlist_declarations,
+        BTreeSet::from(["[allowlist]".to_owned()]),
+        "rule-specific, inline, dotted, or additional Gitleaks allowlist declarations are forbidden"
+    );
+    let allowlisted_paths = toml_value(&config, "allowlist", "paths")
+        .expect("the reviewed Gitleaks configuration must define explicit paths")
+        .split_whitespace()
+        .collect::<String>();
+    assert_eq!(
+        allowlisted_paths,
+        concat!(
+            "['''(?:^|/)Cargo\\.lock$''',",
+            "'''(?:^|/)target/''',",
+            "'''(?:^|/)\\.sqlx/''',",
+            "'''(?:^|/)third_party/unicode-17\\.0\\.0/.*''',",
+            "'''(?:^|/)\\.gitleaks\\.toml$''',",
+            "'''(?:^|/)specs/.*/fixtures/''',]"
+        ),
+        "global path allowlists must remain the exact reviewed set; AWS vendor findings require exact fingerprints"
+    );
+    let allowlisted_regexes = toml_value(&config, "allowlist", "regexes")
+        .expect("the reviewed Gitleaks configuration must define explicit fixture regexes")
+        .split_whitespace()
+        .collect::<String>();
+    assert_eq!(
+        allowlisted_regexes,
+        "['''PLACEHOLDER_TOKEN''','''placeholder_digest_for_test_purposes_only''',]",
+        "global regex allowlists must remain the exact reviewed fixture set"
+    );
+    assert!(
+        !config.contains("mfzwi23gnjvgw"),
+        "the AWS endpoint fixture must not introduce a reusable regex allowlist"
+    );
+}
+
+#[test]
 fn dependency_advisory_scan_is_fixed_version_and_blocking() {
     let workflow = workflow_source();
     let steps = workflow_steps(&workflow);

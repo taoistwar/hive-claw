@@ -1,0 +1,39 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "function_search_page_pair_v2",
+      "owner_task": "T083",
+      "timing_boundary": "one combined wall-clock sample covering filtered then unfiltered Function search/page requests at the same page depth, from the filtered request accepted through both fixed 20-row pages and total-order metadata materialized, without per-request normalization",
+      "excluded_time": [
+        "external I/O",
+        "Plugin/WASM execution",
+        "Store open, migration, 10,000-row fixture loading, and baseline I/O"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 500000000,
+      "workflow_node_count": null
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "release",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 25488517,
+      "p95": 32755190,
+      "p99": 33837460
+    }
+  },
+  "approval": {
+    "reviewer": "user",
+    "approved_at": "2026-08-27",
+    "source_revision": "git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:a220ec13deac9ddc5a95f75e15d80e41ce3bf15cf9ec21962dba0b0c38349a68"
+  }
+}

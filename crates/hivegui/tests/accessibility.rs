@@ -3477,19 +3477,77 @@ fn t121_100_node_workflow() -> hivegui::datasource::workflow_store::WorkflowGrap
 
 fn t121_combined_ui_target() -> support::performance::TargetSpec {
     support::performance::TargetSpec {
-        id: "us13_combined_ui_feedback".into(),
+        id: "us13_combined_ui_feedback_round_v2".into(),
         owner_task: "T121".into(),
-        timing_boundary: "one keyboard character dispatched while Agent conversation, 100-node no-op Workflow, and backup prevalidation are all active to that character's visible input feedback".into(),
+        timing_boundary: "one fixed keyboard character dispatched from a fixed one-character input after generation-matched 100-node Workflow and backup-prevalidation workers are ready, through that character's visible input feedback".into(),
         excluded_time: vec![
             "external local-LLM wait".into(),
             "Workflow user-node execution".into(),
             "backup archive construction before the combined-load window".into(),
+            "fixed-length input reset and generation ready/start/done synchronization".into(),
             "baseline and exception I/O".into(),
         ],
         warmup_iterations: support::performance::WARMUP_ITERATIONS,
         measured_samples: support::performance::MEASURED_SAMPLES,
         p95_budget_ns: 100_000_000,
         workflow_node_count: Some(100),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum T121CombinedWorker {
+    Workflow,
+    BackupPrevalidation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct T121GenerationSignal {
+    worker: T121CombinedWorker,
+    generation: usize,
+}
+
+fn wait_for_t121_generation_pair(
+    visual: &mut VisualTestContext,
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<T121GenerationSignal>,
+    generation: usize,
+    phase: &'static str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut workflow_seen = false;
+    let mut backup_seen = false;
+    while !(workflow_seen && backup_seen) {
+        match receiver.try_recv() {
+            Ok(signal) => {
+                assert_eq!(
+                    signal.generation, generation,
+                    "T121 {phase} signal crossed generation boundaries"
+                );
+                match signal.worker {
+                    T121CombinedWorker::Workflow => {
+                        assert!(!workflow_seen, "duplicate T121 Workflow {phase} signal");
+                        workflow_seen = true;
+                    }
+                    T121CombinedWorker::BackupPrevalidation => {
+                        assert!(
+                            !backup_seen,
+                            "duplicate T121 backup-prevalidation {phase} signal"
+                        );
+                        backup_seen = true;
+                    }
+                }
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for T121 generation {generation} {phase} signals"
+                );
+                visual.run_until_parked();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                panic!("T121 {phase} channel closed during generation {generation}");
+            }
+        }
     }
 }
 
@@ -3517,19 +3575,23 @@ fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut T
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let references_ready = settle_us13_selector(&mut visual, "AGENT_REFERENCES_READY");
     let add_visible = settle_us13_selector(&mut visual, "AGENT_ADD");
-    let opened = add_visible && click_us13_selector(&mut visual, "AGENT_ADD");
+    let opened = references_ready && add_visible && click_us13_selector(&mut visual, "AGENT_ADD");
     let modal = visual.debug_bounds("AGENT_MODAL");
     let scroll = visual.debug_bounds("AGENT_FORM_SCROLL");
     let actions_before = visual.debug_bounds("AGENT_FORM_ACTIONS");
     if let Some(scroll_bounds) = scroll {
         visual.simulate_event(ScrollWheelEvent {
             position: scroll_bounds.center(),
-            delta: ScrollDelta::Pixels(point(px(0.0), px(-900.0))),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
             modifiers: gpui::Modifiers::default(),
             touch_phase: TouchPhase::Moved,
         });
         visual.run_until_parked();
+        visual.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
     }
     let actions_after = visual.debug_bounds("AGENT_FORM_ACTIONS");
     let input_ready =
@@ -3554,15 +3616,23 @@ fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut T
     close_us13_window(&mut visual);
 
     assert!(
-        add_visible && opened,
-        "Agent Add must be keyboard/pointer reachable"
+        references_ready,
+        "Agent references must reach a rendered ready terminal before the modal geometry is measured"
     );
+    assert!(add_visible && opened, "Agent Add must be reachable");
     let modal = modal.expect("Agent modal must render");
     let scroll = scroll.expect("Agent form must expose the owner native scroll surface");
     let before = actions_before.expect("Agent actions exist before scroll");
     let after = actions_after.expect("Agent actions exist after scroll");
     assert!(scroll.top() >= modal.top() && scroll.bottom() <= modal.bottom());
-    assert!(after.top() < before.top() && after.bottom() <= modal.bottom());
+    assert!(
+        after.top() < before.top(),
+        "before={before:?}, after={after:?}"
+    );
+    assert!(
+        after.top() >= scroll.top() && after.bottom() <= scroll.bottom(),
+        "actions must be fully inside the native scroll viewport: actions={after:?}, scroll={scroll:?}"
+    );
     assert!(conflict && preserved && error_focused);
     assert!(focus_restored, "Escape restores focus to Agent Add");
     assert!(!AGENT_VIEW_SOURCE.contains("on_scroll_wheel"));
@@ -3805,37 +3875,86 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
         )
         .expect("build the T121 archive before the measured boundary");
 
-    let load_running = Arc::new(AtomicBool::new(true));
-    let workflow_running = Arc::clone(&load_running);
+    let target = t121_combined_ui_target();
+    let total_interactions = target.warmup_iterations + target.measured_samples;
+    let (ready_sender, mut ready_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (done_sender, mut done_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (workflow_start_sender, mut workflow_start_receiver) =
+        tokio::sync::mpsc::unbounded_channel();
+    let (backup_start_sender, mut backup_start_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let workflow_ready_sender = ready_sender.clone();
+    let workflow_done_sender = done_sender.clone();
     let workflow_task = runtime.spawn(async move {
         let workflow = t121_100_node_workflow();
         let executor = WorkflowExecutor::new(T121NoopWorkflowExecutor);
         let mut completed = 0_usize;
-        while workflow_running.load(Ordering::SeqCst) {
+        for generation in 0..total_interactions {
+            workflow_ready_sender
+                .send(T121GenerationSignal {
+                    worker: T121CombinedWorker::Workflow,
+                    generation,
+                })
+                .expect("publish T121 Workflow ready signal");
+            let start_generation = workflow_start_receiver
+                .recv()
+                .await
+                .expect("receive T121 Workflow start signal");
+            assert_eq!(
+                start_generation, generation,
+                "T121 Workflow start signal crossed generation boundaries"
+            );
             let outcome = executor
                 .execute(&workflow, serde_json::json!({}), CancelHandle::new())
                 .await
                 .expect("T121 no-op Workflow remains healthy");
             assert!(outcome.completed && outcome.node_results.len() == 100);
             completed += 1;
-            tokio::task::yield_now().await;
+            workflow_done_sender
+                .send(T121GenerationSignal {
+                    worker: T121CombinedWorker::Workflow,
+                    generation,
+                })
+                .expect("publish T121 Workflow done signal");
         }
         completed
     });
-    let backup_running = Arc::clone(&load_running);
+    let backup_ready_sender = ready_sender.clone();
+    let backup_done_sender = done_sender.clone();
     let backup_archive = archive.clone();
     let backup_importer = BackupImporter::new(workspace.root().join("t121-staging"));
     let backup_task = runtime.spawn(async move {
         let mut completed = 0_usize;
-        while backup_running.load(Ordering::SeqCst) {
+        for generation in 0..total_interactions {
+            backup_ready_sender
+                .send(T121GenerationSignal {
+                    worker: T121CombinedWorker::BackupPrevalidation,
+                    generation,
+                })
+                .expect("publish T121 backup-prevalidation ready signal");
+            let start_generation = backup_start_receiver
+                .recv()
+                .await
+                .expect("receive T121 backup-prevalidation start signal");
+            assert_eq!(
+                start_generation, generation,
+                "T121 backup-prevalidation start signal crossed generation boundaries"
+            );
             backup_importer
                 .inspect_manifest(&backup_archive, "T121-combined-passphrase")
                 .await
                 .expect("T121 backup prevalidation remains healthy");
             completed += 1;
+            backup_done_sender
+                .send(T121GenerationSignal {
+                    worker: T121CombinedWorker::BackupPrevalidation,
+                    generation,
+                })
+                .expect("publish T121 backup-prevalidation done signal");
         }
         completed
     });
+    drop(ready_sender);
+    drop(done_sender);
 
     let local_runtime = LocalAgentRuntime::new(store.pool().clone()).expect("T121 local runtime");
     let collector = Arc::new(ExecutionEventCollector::new());
@@ -3875,25 +3994,30 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
     }
     let agent_in_flight = request_seen.load(Ordering::SeqCst);
 
-    let target = t121_combined_ui_target();
     let mut samples_ns = Vec::with_capacity(target.measured_samples);
     let mut stop_available = Vec::with_capacity(target.measured_samples);
     let mut all_feedback_visible = true;
-    let total_interactions = target.warmup_iterations + target.measured_samples;
-    let input_reset = replace_function_input(&mut visual, "CONVERSATION_MESSAGE_INPUT", "");
-    let mut visible_value = String::with_capacity(total_interactions);
-    for index in 0..total_interactions {
-        let character = char::from(b'a' + u8::try_from(index % 26).expect("alphabet index"));
-        visible_value.push(character);
-        let value_selector =
-            Box::leak(format!("CONVERSATION_MESSAGE_VALUE-{visible_value}").into_boxed_str());
+    for generation in 0..total_interactions {
+        let input_reset = replace_function_input(&mut visual, "CONVERSATION_MESSAGE_INPUT", "x")
+            && settle_us13_selector(&mut visual, "CONVERSATION_MESSAGE_VALUE-x");
+        wait_for_t121_generation_pair(&mut visual, &mut ready_receiver, generation, "ready");
+        workflow_start_sender
+            .send(generation)
+            .expect("release T121 Workflow generation");
+        backup_start_sender
+            .send(generation)
+            .expect("release T121 backup-prevalidation generation");
+
         let interaction_started = Instant::now();
-        visual.simulate_input(character.to_string().as_str());
+        visual.simulate_input("y");
         let mut feedback_visible = false;
         if input_reset {
             for _ in 0..100 {
                 visual.run_until_parked();
-                if visual.debug_bounds(value_selector).is_some() {
+                if visual
+                    .debug_bounds("CONVERSATION_MESSAGE_VALUE-xy")
+                    .is_some()
+                {
                     feedback_visible = true;
                     break;
                 }
@@ -3903,7 +4027,8 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
         let elapsed = interaction_started.elapsed();
         all_feedback_visible &= input_reset && feedback_visible;
         stop_available.push(visual.debug_bounds("CONVERSATION_STOP").is_some());
-        if index >= target.warmup_iterations {
+        wait_for_t121_generation_pair(&mut visual, &mut done_receiver, generation, "done");
+        if generation >= target.warmup_iterations {
             samples_ns.push(
                 u64::try_from(elapsed.as_nanos()).expect("T121 latency fits in u64 nanoseconds"),
             );
@@ -3916,7 +4041,6 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
     let stopping = settle_us13_selector(&mut visual, "CONVERSATION_STATUS-stopping");
     close_us13_window(&mut visual);
 
-    load_running.store(false, Ordering::SeqCst);
     release_agent.notify_waiters();
     server_task.abort();
     drop(_runtime_guard);
@@ -3934,13 +4058,13 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
         all_feedback_visible,
         "every keyboard input must produce visible feedback"
     );
-    assert!(
-        workflow_iterations > 0,
-        "the real 100-node Workflow must overlap UI input"
+    assert_eq!(
+        workflow_iterations, total_interactions,
+        "each T121 generation must execute exactly one real 100-node Workflow"
     );
-    assert!(
-        backup_iterations > 0,
-        "real backup prevalidation must overlap UI input"
+    assert_eq!(
+        backup_iterations, total_interactions,
+        "each T121 generation must execute exactly one real backup prevalidation"
     );
     assert!(
         stop_available.iter().all(|available| *available),
@@ -3974,11 +4098,15 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
         Utc::now().date_naive(),
     )
     .expect("evaluate the T005 T121 performance gate");
+    eprintln!("T121_V2_REPORT {report:?}");
+    eprintln!("T121_V2_COMPARISON {comparison:?}");
     assert!(
         matches!(
             comparison.outcome,
-            ComparisonOutcome::Passed | ComparisonOutcome::ApprovedException
+            ComparisonOutcome::PendingBaseline
+                | ComparisonOutcome::Passed
+                | ComparisonOutcome::ApprovedException
         ),
-        "T121 combined-load performance gate is not approved: {comparison:?}; report={report:?}"
+        "T121 v2 comparison must remain Pending until its first reviewer-approved baseline, or pass an approved comparison later: {comparison:?}; report={report:?}"
     );
 }

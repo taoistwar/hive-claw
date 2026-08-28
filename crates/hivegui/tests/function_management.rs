@@ -1438,6 +1438,21 @@ async fn function_search_paginates_in_exact_twenty_row_pages_without_overlap() {
         "fixed pages preserve the normalized name/identifier/id total order"
     );
 
+    let beyond_last = function_story_page(&function_store, Some("page_marker"), 4)
+        .await
+        .expect("load the first empty Function search page");
+    assert!(beyond_last.items().is_empty());
+    assert_eq!(
+        beyond_last.total(),
+        41,
+        "an empty page after the last row must preserve the exact match total"
+    );
+    let no_matches = function_story_page(&function_store, Some("no_such_function_fixture"), 1)
+        .await
+        .expect("load an empty Function search result");
+    assert!(no_matches.items().is_empty());
+    assert_eq!(no_matches.total(), 0);
+
     for invalid_page in [0, -1] {
         let error = function_story_page(&function_store, Some("page_marker"), invalid_page)
             .await
@@ -1643,6 +1658,11 @@ async fn function_query_catalog_owns_every_story_filter_and_association_route() 
 
 #[test]
 fn function_performance_uses_exactly_two_canonical_t005_targets() {
+    assert_eq!(
+        target_specs().len(),
+        13,
+        "the Function pair-v2 target replaces the mixed-distribution target without expanding the canonical release manifest"
+    );
     let function_targets = target_specs()
         .into_iter()
         .filter(|target| target.owner_task == "T083")
@@ -1676,11 +1696,30 @@ fn function_performance_uses_exactly_two_canonical_t005_targets() {
         .iter()
         .find(|target| target.id == FUNCTION_SEARCH_PAGE_ID)
         .expect("canonical combined Function search/page target");
+    assert_eq!(FUNCTION_SEARCH_PAGE_ID, "function_search_page_pair_v2");
     assert_eq!(
         search_page.timing_boundary,
-        "Function search/page request accepted through normalization and routing to one fixed 20-row page and total-order metadata materialized"
+        "one combined wall-clock sample covering filtered then unfiltered Function search/page requests at the same page depth, from the filtered request accepted through both fixed 20-row pages and total-order metadata materialized, without per-request normalization"
     );
     assert_eq!(search_page.p95_budget_ns, 500_000_000);
+    let environment = EnvironmentFingerprint::capture();
+    let pair_baseline = baseline_path(search_page, &environment);
+    assert_eq!(
+        pair_baseline
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("function_search_page_pair_v2"),
+        "pair-v2 must use a new baseline identity"
+    );
+    assert_ne!(
+        pair_baseline
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("function_search_page"),
+        "the old mixed-distribution baseline must remain frozen"
+    );
     assert_eq!(
         FUNCTION_FIXTURE_ROWS, 10_000,
         "the canonical runner must load the versioned Function fixture through the typed store boundary"
@@ -1688,8 +1727,15 @@ fn function_performance_uses_exactly_two_canonical_t005_targets() {
     assert_eq!(
         FUNCTION_SEARCH_PAGE_SCHEDULE.len(),
         MEASURED_SAMPLES,
-        "each sample must follow the canonical search + unfiltered-page schedule"
+        "each sample must follow the canonical filtered + unfiltered pair schedule"
     );
+    for step in FUNCTION_SEARCH_PAGE_SCHEDULE {
+        assert_eq!(
+            step.routes(),
+            [(Some("fixture"), step.page), (None, step.page)],
+            "each combined sample must execute filtered then unfiltered at the same page depth"
+        );
+    }
 
     assert!(function_targets.iter().all(|target| {
         target.warmup_iterations == 10

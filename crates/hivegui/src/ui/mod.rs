@@ -22,6 +22,7 @@ pub mod skill_view;
 pub mod strings_zh;
 pub mod table_viewer;
 pub mod tag_view;
+pub(crate) mod theme_contrast;
 pub mod tool_view;
 pub mod tree_nav;
 pub mod utility_view;

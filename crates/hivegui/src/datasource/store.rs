@@ -2,12 +2,13 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::{
     Pool, Row, Sqlite,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 
 use super::crypto::Crypto;
@@ -16,17 +17,294 @@ use super::query_count::QueryCountObserver;
 
 const DB_FILENAME: &str = "datasources.db";
 const KEY_SIZE: usize = 32;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const SQLITE_WAL_AUTOCHECKPOINT_PAGES: &str = "128";
 
 /// In-process owner registry. Tracks the canonical database
 /// path → owner-id of every live [`Store`] in this process. The
 /// registry is consulted by [`Store::open_local`] and enforces
 /// the "one process owns the local store write lock" contract
-/// (T012). The corresponding entry is removed when the Store
-/// is dropped.
+/// (T012). The corresponding entry is removed by the exact owner
+/// guard on normal drop or when ownership moves into restore.
 static STORE_OWNERS: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, u64>>> =
     std::sync::OnceLock::new();
 
 static NEXT_OWNER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Kind of one root-scoped backup/restore maintenance owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoreMaintenanceKind {
+    /// A backup preview or terminal confirmation owns the root.
+    Backup,
+    /// A restore preview, cancellation, confirmation, or terminal owns the root.
+    Restore,
+}
+
+/// Wire-visible phase of one root-scoped maintenance owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoreMaintenancePhase {
+    /// Backup preview is ready for confirmation or cancellation.
+    BackupReady,
+    /// Backup crossed the write-gate-close terminal boundary.
+    BackupTerminal,
+    /// Restore preview is ready for confirmation or cancellation.
+    RestoreReady,
+    /// Restore cancellation owns the root until retirement completes.
+    RestoreCancelling,
+    /// Restore crossed the synchronous confirmation CAS.
+    RestoreConfirmation,
+    /// Restore is fail-closed until exact-owner recovery completes.
+    RestoreTerminal,
+}
+
+impl StoreMaintenancePhase {
+    /// Stable maintenance-busy value exposed by backup/restore wire errors.
+    pub(crate) fn active(self) -> &'static str {
+        match self {
+            Self::BackupReady => "backup_ready",
+            Self::BackupTerminal => "backup_terminal",
+            Self::RestoreReady => "restore_ready",
+            Self::RestoreCancelling => "restore_cancelling",
+            Self::RestoreConfirmation => "restore_confirmation",
+            Self::RestoreTerminal => "restore_terminal",
+        }
+    }
+
+    fn is_abandonable_ready(self) -> bool {
+        matches!(self, Self::BackupReady | Self::RestoreReady)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StoreMaintenanceOwner {
+    owner_id: u64,
+    kind: StoreMaintenanceKind,
+    phase: StoreMaintenancePhase,
+    recovery_claimed: bool,
+}
+
+/// Snapshot of the current root-scoped maintenance owner.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StoreMaintenanceSnapshot {
+    /// Exact monotonically unique in-process owner id.
+    pub(crate) owner_id: u64,
+    /// Current wire-visible phase.
+    pub(crate) phase: StoreMaintenancePhase,
+}
+
+/// Failure to inspect or acquire the short-held maintenance registry.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StoreMaintenanceError {
+    /// Another exact owner already owns this root.
+    Busy(StoreMaintenancePhase),
+    /// The in-process registry cannot be trusted.
+    RegistryUnavailable,
+}
+
+static STORE_MAINTENANCE_OWNERS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<PathBuf, StoreMaintenanceOwner>>,
+> = std::sync::OnceLock::new();
+
+static NEXT_MAINTENANCE_OWNER_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// Exact root-scoped maintenance owner. Every mutation compares the stable
+/// key, unique owner id, kind, and expected phase while holding the registry
+/// only for that single in-memory transition.
+#[derive(Debug)]
+pub(crate) struct StoreMaintenanceLease {
+    registry_key: PathBuf,
+    owner_id: u64,
+    kind: StoreMaintenanceKind,
+    acquired_phase: StoreMaintenancePhase,
+}
+
+impl StoreMaintenanceLease {
+    /// Unique owner id used by exact-owner recovery checks.
+    pub(crate) fn owner_id(&self) -> u64 {
+        self.owner_id
+    }
+
+    /// Compare-and-transition only this exact current owner.
+    pub(crate) fn transition(
+        &self,
+        expected: StoreMaintenancePhase,
+        next: StoreMaintenancePhase,
+    ) -> Result<(), StoreMaintenanceError> {
+        let registry = STORE_MAINTENANCE_OWNERS
+            .get()
+            .ok_or(StoreMaintenanceError::RegistryUnavailable)?;
+        let mut owners = registry
+            .lock()
+            .map_err(|_| StoreMaintenanceError::RegistryUnavailable)?;
+        match owners.get_mut(&self.registry_key) {
+            Some(owner)
+                if owner.owner_id == self.owner_id
+                    && owner.kind == self.kind
+                    && owner.phase == expected =>
+            {
+                owner.phase = next;
+                Ok(())
+            }
+            Some(owner) => Err(StoreMaintenanceError::Busy(owner.phase)),
+            None => Err(StoreMaintenanceError::RegistryUnavailable),
+        }
+    }
+
+    /// Atomically admit only this exact terminal Restore owner to destructive
+    /// startup replay. The short-held registry claim is shared by every clone
+    /// and remains sticky until exact successful finalization or process exit.
+    pub(crate) fn claim_terminal_recovery(&self) -> Result<(), StoreMaintenanceError> {
+        let registry = STORE_MAINTENANCE_OWNERS
+            .get()
+            .ok_or(StoreMaintenanceError::RegistryUnavailable)?;
+        let mut owners = registry
+            .lock()
+            .map_err(|_| StoreMaintenanceError::RegistryUnavailable)?;
+        match owners.get_mut(&self.registry_key) {
+            Some(owner)
+                if owner.owner_id == self.owner_id
+                    && owner.kind == self.kind
+                    && owner.phase == StoreMaintenancePhase::RestoreTerminal
+                    && !owner.recovery_claimed =>
+            {
+                owner.recovery_claimed = true;
+                Ok(())
+            }
+            Some(owner) => Err(StoreMaintenanceError::Busy(owner.phase)),
+            None => Err(StoreMaintenanceError::RegistryUnavailable),
+        }
+    }
+
+    /// Validate this exact claimed terminal owner, perform one infallible
+    /// in-process finalization while the root registry is excluded, and only
+    /// then remove the registry entry. No I/O or async work belongs here.
+    pub(crate) fn release_with_finalize<F>(
+        &self,
+        expected: StoreMaintenancePhase,
+        finalize: F,
+    ) -> Result<(), StoreMaintenanceError>
+    where
+        F: FnOnce(),
+    {
+        let registry = STORE_MAINTENANCE_OWNERS
+            .get()
+            .ok_or(StoreMaintenanceError::RegistryUnavailable)?;
+        let mut owners = registry
+            .lock()
+            .map_err(|_| StoreMaintenanceError::RegistryUnavailable)?;
+        match owners.get(&self.registry_key).copied() {
+            Some(owner)
+                if owner.owner_id == self.owner_id
+                    && owner.kind == self.kind
+                    && owner.phase == expected
+                    && owner.recovery_claimed =>
+            {
+                finalize();
+                owners.remove(&self.registry_key);
+                Ok(())
+            }
+            Some(owner) => Err(StoreMaintenanceError::Busy(owner.phase)),
+            None => Err(StoreMaintenanceError::RegistryUnavailable),
+        }
+    }
+
+    /// Compare-and-remove only this exact current owner in the expected phase.
+    pub(crate) fn release(
+        &self,
+        expected: StoreMaintenancePhase,
+    ) -> Result<(), StoreMaintenanceError> {
+        let registry = STORE_MAINTENANCE_OWNERS
+            .get()
+            .ok_or(StoreMaintenanceError::RegistryUnavailable)?;
+        let mut owners = registry
+            .lock()
+            .map_err(|_| StoreMaintenanceError::RegistryUnavailable)?;
+        match owners.get(&self.registry_key).copied() {
+            Some(owner)
+                if owner.owner_id == self.owner_id
+                    && owner.kind == self.kind
+                    && owner.phase == expected =>
+            {
+                owners.remove(&self.registry_key);
+                Ok(())
+            }
+            Some(owner) => Err(StoreMaintenanceError::Busy(owner.phase)),
+            None => Err(StoreMaintenanceError::RegistryUnavailable),
+        }
+    }
+}
+
+impl Drop for StoreMaintenanceLease {
+    fn drop(&mut self) {
+        let Some(registry) = STORE_MAINTENANCE_OWNERS.get() else {
+            return;
+        };
+        let Ok(mut owners) = registry.lock() else {
+            return;
+        };
+        if owners.get(&self.registry_key).is_some_and(|owner| {
+            owner.owner_id == self.owner_id
+                && owner.kind == self.kind
+                && owner.phase == self.acquired_phase
+                && self.acquired_phase.is_abandonable_ready()
+        }) {
+            owners.remove(&self.registry_key);
+        }
+    }
+}
+
+/// Acquire one ready root-scoped maintenance lease before any archive or
+/// target-path I/O.
+pub(crate) fn acquire_store_maintenance(
+    database_path: &Path,
+    kind: StoreMaintenanceKind,
+    phase: StoreMaintenancePhase,
+) -> Result<Arc<StoreMaintenanceLease>, StoreMaintenanceError> {
+    let registry_key = store_owner_registry_key(database_path);
+    let registry = STORE_MAINTENANCE_OWNERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut owners = registry
+        .lock()
+        .map_err(|_| StoreMaintenanceError::RegistryUnavailable)?;
+    if let Some(owner) = owners.get(&registry_key) {
+        return Err(StoreMaintenanceError::Busy(owner.phase));
+    }
+    let owner_id = NEXT_MAINTENANCE_OWNER_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    owners.insert(
+        registry_key.clone(),
+        StoreMaintenanceOwner {
+            owner_id,
+            kind,
+            phase,
+            recovery_claimed: false,
+        },
+    );
+    Ok(Arc::new(StoreMaintenanceLease {
+        registry_key,
+        owner_id,
+        kind,
+        acquired_phase: phase,
+    }))
+}
+
+/// Read one root's current owner without retaining the registry lock.
+pub(crate) fn store_maintenance_snapshot(
+    database_path: &Path,
+) -> Result<Option<StoreMaintenanceSnapshot>, StoreMaintenanceError> {
+    let registry_key = store_owner_registry_key(database_path);
+    let Some(registry) = STORE_MAINTENANCE_OWNERS.get() else {
+        return Ok(None);
+    };
+    let owners = registry
+        .lock()
+        .map_err(|_| StoreMaintenanceError::RegistryUnavailable)?;
+    Ok(owners
+        .get(&registry_key)
+        .map(|owner| StoreMaintenanceSnapshot {
+            owner_id: owner.owner_id,
+            phase: owner.phase,
+        }))
+}
 
 /// Path of the inter-process advisory lock sidecar used by
 /// [`Store::open_local`]. The sidecar lives next to the
@@ -46,8 +324,8 @@ fn lock_sidecar_path(database_path: &Path) -> PathBuf {
 }
 
 /// Inter-process advisory lock implemented with `flock(2)` on
-/// unix. The `Store` owns a `File` for the duration of the
-/// open; dropping the `Store` releases the lock.
+/// unix. A [`RestoreStoreOwnerGuard`] owns the `File`; the lock can
+/// therefore outlive Store clones during an explicit restore handoff.
 struct ProcessLock {
     _file: std::fs::File,
 }
@@ -132,31 +410,102 @@ fn lock_for_path(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-fn register_store_owner(database_path: &Path) -> u64 {
-    let canonical =
-        std::fs::canonicalize(database_path).unwrap_or_else(|_| database_path.to_path_buf());
-    let registry = STORE_OWNERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut guard = registry.lock().expect("store owner registry poisoned");
-    let id = NEXT_OWNER_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    guard.insert(canonical, id);
-    id
-}
-
-fn unregister_store_owner(database_path: &Path) {
-    let canonical =
-        std::fs::canonicalize(database_path).unwrap_or_else(|_| database_path.to_path_buf());
-    if let Some(registry) = STORE_OWNERS.get() {
-        let mut guard = registry.lock().expect("store owner registry poisoned");
-        guard.remove(&canonical);
+/// Build a registry key that remains stable when the database leaf is
+/// renamed or replaced. Canonicalising the complete database path would make
+/// cleanup target whichever inode happens to occupy the path at drop time;
+/// instead, pin the existing parent identity and append the original leaf.
+fn store_owner_registry_key(database_path: &Path) -> PathBuf {
+    let parent = database_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stable_parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    match database_path.file_name() {
+        Some(file_name) => stable_parent.join(file_name),
+        None => stable_parent,
     }
 }
 
+/// Owns both the exact in-process registry entry and the inter-process file
+/// lock for a local Store. The key and id are captured once, so a stale Store
+/// can never unregister a newer owner after a path rename or replacement.
+#[derive(Debug)]
+pub(crate) struct RestoreStoreOwnerGuard {
+    registry_key: PathBuf,
+    owner_id: u64,
+    process_lock: Option<ProcessLock>,
+}
+
+impl Drop for RestoreStoreOwnerGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = STORE_OWNERS.get() {
+            let mut owners = registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if owners.get(&self.registry_key).copied() == Some(self.owner_id) {
+                owners.remove(&self.registry_key);
+            }
+            // Release the OS lock while the registry transition is still
+            // serialised, so another opener cannot observe an ownerless gap.
+            drop(self.process_lock.take());
+        } else {
+            drop(self.process_lock.take());
+        }
+    }
+}
+
+fn acquire_restore_store_owner(
+    database_path: &Path,
+) -> Result<RestoreStoreOwnerGuard, StoreOpenError> {
+    let registry_key = store_owner_registry_key(database_path);
+    let registry = STORE_OWNERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut owners = registry.lock().map_err(|_poisoned| {
+        StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path.to_path_buf()))
+            .with_failure_class(DatabaseFailureClass::Persistent)
+    })?;
+
+    if owners.contains_key(&registry_key) {
+        return Err(StoreOpenError::new(
+            StoreOpenErrorKind::AlreadyLocked,
+            Some(database_path.to_path_buf()),
+        ));
+    }
+
+    let process_lock = match ProcessLock::try_acquire(&lock_sidecar_path(database_path)) {
+        Ok(Some(process_lock)) => process_lock,
+        Ok(None) => {
+            return Err(StoreOpenError::new(
+                StoreOpenErrorKind::AlreadyLocked,
+                Some(database_path.to_path_buf()),
+            ));
+        }
+        Err(_error) => {
+            return Err(StoreOpenError::new(
+                StoreOpenErrorKind::Io,
+                Some(database_path.to_path_buf()),
+            )
+            .with_failure_class(DatabaseFailureClass::Persistent));
+        }
+    };
+
+    let owner_id = NEXT_OWNER_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    owners.insert(registry_key.clone(), owner_id);
+    Ok(RestoreStoreOwnerGuard {
+        registry_key,
+        owner_id,
+        process_lock: Some(process_lock),
+    })
+}
+
 pub(crate) fn store_already_owned(database_path: &Path) -> bool {
-    let canonical =
-        std::fs::canonicalize(database_path).unwrap_or_else(|_| database_path.to_path_buf());
+    let registry_key = store_owner_registry_key(database_path);
     if let Some(registry) = STORE_OWNERS.get() {
-        let guard = registry.lock().expect("store owner registry poisoned");
-        guard.contains_key(&canonical)
+        match registry.lock() {
+            Ok(owners) => owners.contains_key(&registry_key),
+            // A poisoned ownership registry cannot safely establish that the
+            // database is free, so callers must fail closed.
+            Err(_) => true,
+        }
     } else {
         false
     }
@@ -197,6 +546,17 @@ impl Default for StoreOpenOptions {
 }
 
 impl StoreOpenOptions {
+    /// Build production-style options for one managed data root.
+    ///
+    /// The root owns the canonical `datasources.db` database and
+    /// sibling `plugins` artifact directory. Keeping this mapping in
+    /// the Store boundary prevents startup, restore, and tests from
+    /// independently spelling the managed layout.
+    pub fn for_root(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref();
+        Self::new(root.join(DB_FILENAME), root.join("plugins"))
+    }
+
     /// Build a new options bundle from a database path and plugin
     /// artifact root. Both paths are stored verbatim; directory
     /// creation is performed by [`Store::open_local`].
@@ -967,12 +1327,11 @@ fn scan_sidecars(database_path: &Path) -> Vec<SidecarRecord> {
 struct StoreInner {
     pool: Pool<Sqlite>,
     crypto: Crypto,
-    /// Process-level write lock, held for the lifetime of the
-    /// `Store`. Dropping the `Store` releases the lock so the
-    /// next [`Store::open_local`] call can succeed.
-    process_lock: Option<ProcessLock>,
-    /// Canonical database path (used by the in-process owner
-    /// registry cleanup on drop).
+    /// Exact in-process owner registration plus the process-level
+    /// write lock. All Store clones share this single movable slot;
+    /// restore handoff leaves stale clones observing `None`.
+    restore_owner: std::sync::Mutex<Option<RestoreStoreOwnerGuard>>,
+    /// Database path used by guarded Store reads and writes.
     database_path: PathBuf,
     /// Managed plugin artifact root (`{data_root}/plugins`). WASM
     /// artifacts are materialised under this root by the controlled
@@ -980,8 +1339,6 @@ struct StoreInner {
     /// `root/{identifier}/{version}/{id}/plugin.wasm`. This is the
     /// single source of truth for the no-follow artifact boundary.
     plugin_root: PathBuf,
-    /// Owner id assigned by the in-process owner registry.
-    owner_id: u64,
     /// Optional query-count observer. When wired, every public
     /// store method that runs a checked SQL query routes its
     /// query-id through the observer so the query-count contract
@@ -995,21 +1352,17 @@ pub struct Store {
     inner: Arc<StoreInner>,
 }
 
-impl Drop for Store {
-    fn drop(&mut self) {
-        if self.inner.owner_id != 0 && Arc::strong_count(&self.inner) == 1 {
-            unregister_store_owner(&self.inner.database_path);
-        }
-    }
-}
-
 impl Store {
     pub async fn new(db_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(db_dir)?;
 
         let db_path = db_dir.join(DB_FILENAME);
-        let conn_opts =
-            SqliteConnectOptions::from_str(&db_path.to_string_lossy())?.create_if_missing(true);
+        let conn_opts = SqliteConnectOptions::from_str(&db_path.to_string_lossy())?
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .pragma("wal_autocheckpoint", SQLITE_WAL_AUTOCHECKPOINT_PAGES)
+            .busy_timeout(SQLITE_BUSY_TIMEOUT);
 
         let pool = SqlitePoolOptions::new().connect_with(conn_opts).await?;
 
@@ -1081,10 +1434,9 @@ impl Store {
             inner: Arc::new(StoreInner {
                 pool,
                 crypto,
-                process_lock: None,
+                restore_owner: std::sync::Mutex::new(None),
                 database_path: db_dir.join(DB_FILENAME),
                 plugin_root: db_dir.join("plugins"),
-                owner_id: 0,
                 observer: None,
             }),
         })
@@ -1092,7 +1444,11 @@ impl Store {
 
     /// Open an existing v4 Store without applying migrations.
     pub async fn open_existing(db_path: &Path) -> Result<Self> {
-        let conn_opts = SqliteConnectOptions::from_str(&db_path.to_string_lossy())?;
+        let conn_opts = SqliteConnectOptions::from_str(&db_path.to_string_lossy())?
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .pragma("wal_autocheckpoint", SQLITE_WAL_AUTOCHECKPOINT_PAGES)
+            .busy_timeout(SQLITE_BUSY_TIMEOUT);
         let pool = SqlitePoolOptions::new().connect_with(conn_opts).await?;
         super::function_store::FunctionStore::synchronize_builtins(&pool).await?;
         let key = Self::load_or_generate_key(db_path.parent().unwrap_or(Path::new(".")))?;
@@ -1101,16 +1457,50 @@ impl Store {
             inner: Arc::new(StoreInner {
                 pool,
                 crypto,
-                process_lock: None,
+                restore_owner: std::sync::Mutex::new(None),
                 database_path: db_path.to_path_buf(),
                 plugin_root: db_path
                     .parent()
                     .unwrap_or_else(|| Path::new("."))
                     .join("plugins"),
-                owner_id: 0,
                 observer: None,
             }),
         })
+    }
+
+    /// Whether this Store still owns the exact local-open guard shared by all
+    /// of its clones.
+    pub(crate) fn has_restore_owner(&self) -> bool {
+        match self.inner.restore_owner.lock() {
+            Ok(owner) => owner.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
+        }
+    }
+
+    /// Move the local-open owner into restore coordination without releasing
+    /// its inter-process lock. The exact registry entry is removed under the
+    /// same registry mutex used by open and Drop; stale Store clones then see
+    /// an empty shared slot and cannot unregister a future owner.
+    pub(crate) fn take_restore_owner_guard(&self) -> Result<RestoreStoreOwnerGuard, &'static str> {
+        let mut owner_slot = self
+            .inner
+            .restore_owner
+            .lock()
+            .map_err(|_| "restore store owner slot poisoned")?;
+        let owner = owner_slot
+            .as_ref()
+            .ok_or("restore store owner guard missing")?;
+        let registry = STORE_OWNERS
+            .get()
+            .ok_or("restore store owner registry missing")?;
+        let mut owners = registry
+            .lock()
+            .map_err(|_| "restore store owner registry poisoned")?;
+        if owners.get(&owner.registry_key).copied() != Some(owner.owner_id) {
+            return Err("restore store owner registry mismatch");
+        }
+        owners.remove(&owner.registry_key);
+        owner_slot.take().ok_or("restore store owner guard missing")
     }
 
     /// Open a [`Store`] from explicit [`StoreOpenOptions`].
@@ -1165,39 +1555,10 @@ impl Store {
             .with_failure_class(DatabaseFailureClass::Corrupt));
         }
 
-        // In-process lock check. Another live Store in this
-        // process already owns the same database file; refuse
-        // the second open. The in-process owner registry is
-        // updated when the Store is dropped.
-        if store_already_owned(&database_path) {
-            return Err(StoreOpenError::new(
-                StoreOpenErrorKind::AlreadyLocked,
-                Some(database_path_buf),
-            ));
-        }
-
-        // Inter-process lock: try to acquire an exclusive
-        // `flock(2)` on the lock sidecar. A second process
-        // holding the lock surfaces `AlreadyLocked`.
-        let lock_path = lock_sidecar_path(&database_path);
-        if let Some(parent) = lock_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let process_lock = match ProcessLock::try_acquire(&lock_path) {
-            Ok(Some(lock)) => Some(lock),
-            Ok(None) => {
-                return Err(StoreOpenError::new(
-                    StoreOpenErrorKind::AlreadyLocked,
-                    Some(database_path_buf),
-                ));
-            }
-            Err(_error) => None,
-        };
-
-        // Register the in-process owner BEFORE returning so the
-        // second open in the same process surfaces
-        // `AlreadyLocked`. The Drop impl unregisters.
-        let owner_id = register_store_owner(&database_path);
+        // Acquire the in-process registration and inter-process lock as one
+        // RAII guard. It remains local across all retry/error paths and moves
+        // into StoreInner only after the open succeeds.
+        let restore_owner = acquire_restore_store_owner(&database_path)?;
 
         // Retry loop — Foundation policy: 1 initial attempt + 3
         // retries for transient lock/busy failures, no retries
@@ -1211,7 +1572,6 @@ impl Store {
             {
                 let delays = policy.delays(class);
                 if delays.is_empty() || attempt + 1 >= max_attempts {
-                    unregister_store_owner(&database_path);
                     return Err(StoreOpenError::new(
                         StoreOpenErrorKind::Io,
                         Some(database_path_buf.clone()),
@@ -1232,8 +1592,7 @@ impl Store {
 
             match Self::try_open_once(&database_path, &plugin_root).await {
                 Ok(mut inner) => {
-                    inner.process_lock = process_lock;
-                    inner.owner_id = owner_id;
+                    inner.restore_owner = std::sync::Mutex::new(Some(restore_owner));
                     inner.observer = observer.clone();
                     return Ok(Self {
                         inner: Arc::new(inner),
@@ -1245,7 +1604,6 @@ impl Store {
                         .unwrap_or(DatabaseFailureClass::Transient);
                     let delays = policy.delays(class);
                     if delays.is_empty() || attempt + 1 >= max_attempts {
-                        unregister_store_owner(&database_path);
                         return Err(error);
                     }
                     if let Some(delay) = delays.get(attempt).copied() {
@@ -1255,7 +1613,6 @@ impl Store {
                 }
             }
         }
-        unregister_store_owner(&database_path);
         Err(last_error.unwrap_or_else(|| {
             StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf))
         }))
@@ -1282,7 +1639,11 @@ impl Store {
                 StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                     .with_failure_class(DatabaseFailureClass::InvalidInput)
             })?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .pragma("wal_autocheckpoint", SQLITE_WAL_AUTOCHECKPOINT_PAGES)
+            .busy_timeout(SQLITE_BUSY_TIMEOUT);
         let pool = SqlitePoolOptions::new()
             .connect_with(conn_opts)
             .await
@@ -1352,10 +1713,9 @@ impl Store {
         Ok(StoreInner {
             pool,
             crypto,
-            process_lock: None,
+            restore_owner: std::sync::Mutex::new(None),
             database_path: database_path_buf,
             plugin_root: plugin_root.to_path_buf(),
-            owner_id: 0,
             observer: None,
         })
     }
@@ -1465,10 +1825,9 @@ impl Store {
             inner: Arc::new(StoreInner {
                 pool,
                 crypto: crate::datasource::Crypto::placeholder(),
-                process_lock: None,
+                restore_owner: std::sync::Mutex::new(None),
                 database_path: PathBuf::new(),
                 plugin_root: PathBuf::new(),
-                owner_id: 0,
                 observer: None,
             }),
         }

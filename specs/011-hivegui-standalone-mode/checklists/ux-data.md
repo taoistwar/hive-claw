@@ -23,6 +23,16 @@
 
 Linux 自动化与真实 AT finding 已闭合，但现役发布合同要求逐项三平台真实辅助技术证据；本环境不是 macOS/Windows，不能执行 VoiceOver 或 Narrator，也不能以交叉编译、AccessKit 单测或 Linux AT-SPI 代替。UXC-T139.1/.2、UXC001-UXC012 继续保持未勾选，T139 不得完成。
 
+**2026-08-26 冻结源码更正**：最终 source revision=`git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:a1696bdb89fdc2a0a757091742aa9467d151d617f91e2801ce80d77da3244a2e`。T016 owner 的完整主题补充链先观察 built-in Dark `table_head/background=2.450:1` 与 registry fixture primary/hover/active/sidebar/table=`1.104/1.461/1.081/1.104/2.314` Red；唯一 policy 后 built-in、registry、startup 各 1/1，sidebar 6/6、sidebar accessibility 8/8、lib 123/123 Green。该 token 合同不替代逐平台真实辅助技术 smoke。
+
+最终串行 accessibility 只跑一次并为 **77/78**；唯一失败是 T121 组合负载三个相对百分位回归，故 T142 已回退 Pending。T139 仍缺 macOS VoiceOver、Windows Narrator 以及三平台逐项 reviewer 证据；UXC-T139.1-.3 与 UXC001-UXC012 全部继续未勾选。Linux backup 的现有普通路径证据也不能替代 macOS/Windows no-follow、file-id/reparse 或完整跨平台 TOCTOU 证明。
+
+**2026-08-26 deterministic v2 追加**：最终 source `...62b4e104...` 上完整 accessibility **78/78**；T121 v2 以 110 个 generation 各一次真实 Workflow+backup prevalidation 取得 `13.280/20.407/38.783ms`，绝对 p95、250ms ceiling、Stop 100% 全 Green。该自动化不替代新 identity 的数值 baseline 审批，也不替代 macOS VoiceOver、Windows Narrator 与三平台 UXC001-UXC012，故 T121/T139/T142 仍按各自剩余门禁 Pending。
+
+**2026-08-26 最终 source `a220ec13…` 复跑**：`cargo +1.97.1 test --locked -p hivegui --test accessibility -- --test-threads=1` exit 0，**78/78**，136.81s；T121 generation-v2=`13.134/14.853/17.227ms`，绝对 p95、250ms ceiling、Stop 100% 与 110/110 exact 均 Green，仍为 `PendingBaseline`。此前全套唯一 Agent native-scroll Red 已通过 reference-load `Loading/Ready/Failed`、generation guard、READY/ERROR root marker、单次真实 wheel 与严格 viewport 断言闭合；最终 `cargo +1.97.1 test --locked -p hivegui --tests --no-fail-fast -- --test-threads=1` exit 0。Linux 自动化已闭合当前代码路径，但没有生成 macOS VoiceOver、Windows Narrator 或逐平台 UXC001-UXC012 证据，因此 T121/T139/T142 仍按各自数值/平台依赖保持 Pending。
+
+**2026-08-27 T121 数值闭合与当前 UX 边界**：user 明确审批 source `a220ec13…` 的 `us13_combined_ui_feedback_round_v2=13.134/14.853/17.227ms` 为首份 debug baseline，同源 evaluator=`Passed`，未生成 exception；结合上述 78/78、110/110 generation、250ms ceiling、Stop 100% 与 Agent native-scroll owner Red→review→Green，T121 现已 Closed。本审批不产生 macOS VoiceOver、Windows Narrator 或三平台 UXC001-UXC012 证据，也不会倒推尚受 T117/T119/T130 阻断的 T136 owner 汇合；因此 T139 与 T142 仍保持 Pending，下方任何 UXC checkbox 均不变。
+
 ### T139/T142 执行模板（复跑时才可打勾）
 
 - [ ] UXC-T139.1 用统一 reviewer 清单逐项补齐三平台证据：Linux/macOS/Windows 的 smoke 命令或人工复测记录、退出码、时间戳与截图/日志位置。

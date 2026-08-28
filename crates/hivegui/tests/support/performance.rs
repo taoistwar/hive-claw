@@ -41,19 +41,166 @@ pub const AGENT_CRUD_ID: &str = "agent_crud";
 pub const AGENT_SEARCH_PAGE_ID: &str = "agent_search_page";
 pub const AGENT_FIXTURE_ROWS: usize = 125;
 pub const AGENT_SEARCH_OPERATIONS_PER_SAMPLE: usize = 16;
-pub const TOOL_DISPATCH_ID: &str = "tool_dispatch";
+pub const TOOL_DISPATCH_ID: &str = "tool_dispatch_batched_v2";
+pub const TOOL_DISPATCH_OPERATIONS_PER_SAMPLE: usize = 1024;
 pub const WORKFLOW_100_NODE_ID: &str = "workflow_100_node_noop";
 pub const FUNCTION_CRUD_ID: &str = "function_crud";
-pub const FUNCTION_SEARCH_PAGE_ID: &str = "function_search_page";
+pub const FUNCTION_SEARCH_PAGE_ID: &str = "function_search_page_pair_v2";
 pub const FUNCTION_FIXTURE_ROWS: usize = 10_000;
 pub const TOOL_CRUD_ID: &str = "tool_crud";
-pub const TOOL_SEARCH_PAGE_ID: &str = "tool_search_page";
+pub const TOOL_SEARCH_PAGE_ID: &str = "tool_search_page_pair_v2";
 pub const TOOL_FIXTURE_ROWS: usize = 10_000;
-pub const CONVERSATION_LIST_ID: &str = "conversation_list_recent";
-pub const CONVERSATION_BUNDLE_ID: &str = "conversation_session_bundle";
+pub const CONVERSATION_LIST_ID: &str = "conversation_list_recent_batched_v2";
+pub const CONVERSATION_LIST_OPERATIONS_PER_SAMPLE: usize = 16;
+pub const CONVERSATION_BUNDLE_ID: &str = "conversation_session_bundle_batched_v2";
+pub const CONVERSATION_BUNDLE_OPERATIONS_PER_SAMPLE: usize = 16;
 pub const CONVERSATION_CLEANUP_ID: &str = "conversation_retention_cleanup";
 pub const CONVERSATION_RECOVERY_ID: &str = "conversation_running_recovery";
 pub const CONVERSATION_FIXTURE_ROWS: usize = 125;
+pub const RELEASE_MATRIX_SCHEMA_VERSION: u32 = 1;
+pub const RELEASE_MATRIX_ID: &str = "hivegui_local_runtime_release_matrix_v1";
+const RELEASE_MATRIX_AFFINITY: &str = "inherited/uncontrolled";
+
+/// Reviewed interference-minimizing order for the final release matrix. This
+/// reduces preceding heavy-load interference while keeping the result
+/// falsifiable; it does not claim that host affinity is controlled.
+pub const fn release_matrix_target_ids() -> [&'static str; 13] {
+    [
+        AGENT_ACTION_DISPATCH_ID,
+        TOOL_DISPATCH_ID,
+        CONVERSATION_LIST_ID,
+        WORKFLOW_100_NODE_ID,
+        CONVERSATION_BUNDLE_ID,
+        AGENT_SEARCH_PAGE_ID,
+        CONVERSATION_RECOVERY_ID,
+        CONVERSATION_CLEANUP_ID,
+        FUNCTION_CRUD_ID,
+        TOOL_CRUD_ID,
+        AGENT_CRUD_ID,
+        FUNCTION_SEARCH_PAGE_ID,
+        TOOL_SEARCH_PAGE_ID,
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseMatrixInvocation {
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseMatrixTargetResult {
+    pub ordinal: usize,
+    pub target_id: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseMatrixReport {
+    pub schema_version: u32,
+    pub id: String,
+    pub source_revision: String,
+    pub affinity: String,
+    pub source_stable: bool,
+    pub status: String,
+    pub targets: Vec<ReleaseMatrixTargetResult>,
+}
+
+pub fn release_matrix_invocations(
+    executable: &Path,
+    expected_source: &str,
+) -> Vec<ReleaseMatrixInvocation> {
+    release_matrix_target_ids()
+        .into_iter()
+        .map(|target_id| ReleaseMatrixInvocation {
+            executable: executable.to_path_buf(),
+            args: vec![
+                "--run".into(),
+                target_id.into(),
+                "--expected-source".into(),
+                expected_source.into(),
+            ],
+        })
+        .collect()
+}
+
+pub fn run_release_matrix_with<SourceProbe, Launcher>(
+    executable: &Path,
+    expected_source: &str,
+    mut source_probe: SourceProbe,
+    mut launcher: Launcher,
+) -> ReleaseMatrixReport
+where
+    SourceProbe: FnMut() -> String,
+    Launcher: FnMut(&Path, &[String]) -> Result<i32, String>,
+{
+    let start_source = source_probe();
+    let mut targets = Vec::with_capacity(release_matrix_target_ids().len());
+    for (index, invocation) in release_matrix_invocations(executable, expected_source)
+        .into_iter()
+        .enumerate()
+    {
+        let (status, exit_code, error) = match launcher(&invocation.executable, &invocation.args) {
+            Ok(0) => ("passed", Some(0), None),
+            Ok(code) => ("failed", Some(code), None),
+            Err(error) => ("failed", None, Some(error)),
+        };
+        targets.push(ReleaseMatrixTargetResult {
+            ordinal: index + 1,
+            target_id: release_matrix_target_ids()[index].into(),
+            status: status.into(),
+            exit_code,
+            error,
+        });
+    }
+    let end_source = source_probe();
+    let source_stable = start_source == expected_source && end_source == expected_source;
+    let status = if source_stable && targets.iter().all(|target| target.status == "passed") {
+        "passed"
+    } else {
+        "failed"
+    };
+
+    ReleaseMatrixReport {
+        schema_version: RELEASE_MATRIX_SCHEMA_VERSION,
+        id: RELEASE_MATRIX_ID.into(),
+        source_revision: expected_source.into(),
+        affinity: RELEASE_MATRIX_AFFINITY.into(),
+        source_stable,
+        status: status.into(),
+        targets,
+    }
+}
+
+impl ReleaseMatrixReport {
+    pub fn failed_setup(source_revision: &str, error: impl Into<String>) -> Self {
+        let error = error.into();
+        Self {
+            schema_version: RELEASE_MATRIX_SCHEMA_VERSION,
+            id: RELEASE_MATRIX_ID.into(),
+            source_revision: source_revision.into(),
+            affinity: RELEASE_MATRIX_AFFINITY.into(),
+            source_stable: false,
+            status: "failed".into(),
+            targets: release_matrix_target_ids()
+                .into_iter()
+                .enumerate()
+                .map(|(index, target_id)| ReleaseMatrixTargetResult {
+                    ordinal: index + 1,
+                    target_id: target_id.into(),
+                    status: "failed".into(),
+                    exit_code: None,
+                    error: Some(error.clone()),
+                })
+                .collect(),
+        }
+    }
+}
 
 /// Fixed, deterministic 1-based page schedule used by the Function search/page
 /// benchmark. Setup and fixture loading happen before timing starts.
@@ -92,24 +239,21 @@ const fn agent_page_schedule() -> [AgentSearchPageStep; MEASURED_SAMPLES] {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionSearchPageStep {
-    pub search: Option<&'static str>,
     pub page: i64,
 }
 
+impl FunctionSearchPageStep {
+    pub const fn routes(self) -> [(Option<&'static str>, i64); 2] {
+        [(Some("fixture"), self.page), (None, self.page)]
+    }
+}
+
 const fn function_page_schedule() -> [FunctionSearchPageStep; MEASURED_SAMPLES] {
-    let mut schedule = [FunctionSearchPageStep {
-        search: None,
-        page: 1,
-    }; MEASURED_SAMPLES];
+    let mut schedule = [FunctionSearchPageStep { page: 1 }; MEASURED_SAMPLES];
     let mut index = 0;
     while index < MEASURED_SAMPLES {
         let last_fixture_page = FUNCTION_FIXTURE_ROWS / 20;
         schedule[index] = FunctionSearchPageStep {
-            search: if index % 2 == 0 {
-                Some("fixture")
-            } else {
-                None
-            },
             page: ((index * (last_fixture_page - 1) / (MEASURED_SAMPLES - 1)) + 1) as i64,
         };
         index += 1;
@@ -119,24 +263,21 @@ const fn function_page_schedule() -> [FunctionSearchPageStep; MEASURED_SAMPLES] 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolSearchPageStep {
-    pub search: Option<&'static str>,
     pub page: i64,
 }
 
+impl ToolSearchPageStep {
+    pub const fn routes(self) -> [(Option<&'static str>, i64); 2] {
+        [(Some("fixture"), self.page), (None, self.page)]
+    }
+}
+
 const fn tool_page_schedule() -> [ToolSearchPageStep; MEASURED_SAMPLES] {
-    let mut schedule = [ToolSearchPageStep {
-        search: None,
-        page: 1,
-    }; MEASURED_SAMPLES];
+    let mut schedule = [ToolSearchPageStep { page: 1 }; MEASURED_SAMPLES];
     let mut index = 0;
     while index < MEASURED_SAMPLES {
         let last_fixture_page = TOOL_FIXTURE_ROWS / 20;
         schedule[index] = ToolSearchPageStep {
-            search: if index % 2 == 0 {
-                Some("fixture")
-            } else {
-                None
-            },
             page: ((index * (last_fixture_page - 1) / (MEASURED_SAMPLES - 1)) + 1) as i64,
         };
         index += 1;
@@ -204,7 +345,7 @@ pub fn target_specs() -> [TargetSpec; 13] {
         TargetSpec {
             id: TOOL_DISPATCH_ID.into(),
             owner_task: "T103".into(),
-            timing_boundary: "Tool validation complete to local executor started".into(),
+            timing_boundary: "one per-dispatch normalized sample from a fixed batch of 1024 identical persisted Function-wrap Tool requests, each measured from persisted Tool execution acceptance through Tool/Function target lookup, input-schema and Capability validation, local no-op target return, output-schema validation, and validated result materialization".into(),
             excluded_time: vec![
                 "network latency".into(),
                 "user Function or Plugin execution".into(),
@@ -241,7 +382,7 @@ pub fn target_specs() -> [TargetSpec; 13] {
         TargetSpec {
             id: FUNCTION_SEARCH_PAGE_ID.into(),
             owner_task: "T083".into(),
-            timing_boundary: "Function search/page request accepted through normalization and routing to one fixed 20-row page and total-order metadata materialized".into(),
+            timing_boundary: "one combined wall-clock sample covering filtered then unfiltered Function search/page requests at the same page depth, from the filtered request accepted through both fixed 20-row pages and total-order metadata materialized, without per-request normalization".into(),
             excluded_time: vec![
                 "external I/O".into(),
                 "Plugin/WASM execution".into(),
@@ -269,7 +410,7 @@ pub fn target_specs() -> [TargetSpec; 13] {
         TargetSpec {
             id: TOOL_SEARCH_PAGE_ID.into(),
             owner_task: "T101".into(),
-            timing_boundary: "Tool search/page request accepted through normalization and routing to one fixed 20-row page and total-order metadata materialized".into(),
+            timing_boundary: "one combined wall-clock sample covering filtered then unfiltered Tool search/page requests at the same page depth, from the filtered request accepted through both fixed 20-row pages and total-order metadata materialized, without per-request normalization".into(),
             excluded_time: vec![
                 "external I/O".into(),
                 "Function, Workflow, Plugin, and Agent execution".into(),
@@ -283,7 +424,7 @@ pub fn target_specs() -> [TargetSpec; 13] {
         TargetSpec {
             id: CONVERSATION_LIST_ID.into(),
             owner_task: "T117".into(),
-            timing_boundary: "recent Conversation request accepted through one indexed 20-row encrypted-session page materialized".into(),
+            timing_boundary: "one per-request normalized sample from a fixed batch of 16 recent Conversation requests against the same fixed 125-session fixture, each request using its own current UTC upper bound and accepted through one indexed 20-row encrypted-session page and exact newest-first total order materialized".into(),
             excluded_time: vec![
                 "external I/O".into(),
                 "Store open, migration, 125-row fixture loading, and baseline I/O".into(),
@@ -296,7 +437,7 @@ pub fn target_specs() -> [TargetSpec; 13] {
         TargetSpec {
             id: CONVERSATION_BUNDLE_ID.into(),
             owner_task: "T117".into(),
-            timing_boundary: "25-session Conversation bundle request accepted through exactly two encrypted child queries materialized".into(),
+            timing_boundary: "one per-request normalized sample from a fixed batch of 16 identical 25-session Conversation bundle requests, each request accepted through exactly two encrypted child queries with one message and one execution per session materialized".into(),
             excluded_time: vec![
                 "external I/O".into(),
                 "Store open, migration, fixture loading, and baseline I/O".into(),
@@ -954,6 +1095,16 @@ pub fn evaluate_benchmark_gate(
     let baseline = load_baseline(baseline_path)?;
     let exception = load_regression_exception(exception_path)?;
     let Some(baseline) = baseline.as_ref() else {
+        if !current.meets_absolute_budget() {
+            return Ok(ComparisonResult {
+                outcome: ComparisonOutcome::Blocked,
+                regressions: Vec::new(),
+                exception_rejection: Some(format!(
+                    "absolute p95 budget exceeded: current={}ns budget={}ns",
+                    current.percentiles_ns.p95, current.target.p95_budget_ns
+                )),
+            });
+        }
         if exception.is_some() {
             return Ok(ComparisonResult {
                 outcome: ComparisonOutcome::Blocked,
@@ -1110,11 +1261,13 @@ pub async fn run_target(
         AGENT_CRUD_ID => run_agent_crud(target, environment).await.map(Some),
         AGENT_SEARCH_PAGE_ID => run_agent_search_page(target, environment).await.map(Some),
         FUNCTION_CRUD_ID => run_function_crud(target, environment).await.map(Some),
-        FUNCTION_SEARCH_PAGE_ID => run_function_search_page(target, environment)
+        FUNCTION_SEARCH_PAGE_ID => run_function_search_page_pair_v2(target, environment)
             .await
             .map(Some),
         TOOL_CRUD_ID => run_tool_crud(target, environment).await.map(Some),
-        TOOL_SEARCH_PAGE_ID => run_tool_search_page(target, environment).await.map(Some),
+        TOOL_SEARCH_PAGE_ID => run_tool_search_page_pair_v2(target, environment)
+            .await
+            .map(Some),
         CONVERSATION_LIST_ID => run_conversation_list(target, environment).await.map(Some),
         CONVERSATION_BUNDLE_ID => run_conversation_bundle(target, environment).await.map(Some),
         CONVERSATION_CLEANUP_ID => run_conversation_cleanup(target, environment)
@@ -1302,6 +1455,7 @@ async fn run_agent_search_page(
             .await
             .map_err(BenchmarkRunError::from_setup)?;
     }
+    checkpoint_fixture_wal(&fixture.store, "Agent search fixture").await?;
     let store = fixture.agents.clone();
     let sequence = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let _fixture_lifetime = (fixture.store, fixture.temporary_root);
@@ -1389,6 +1543,7 @@ impl AgentManagementBenchmarkFixture {
             )
             .await
             .map_err(BenchmarkRunError::from_setup)?;
+        checkpoint_fixture_wal(&store, "Agent management fixture").await?;
         Ok(Self {
             agents,
             store,
@@ -1446,7 +1601,7 @@ async fn run_function_crud(
     .await
 }
 
-async fn run_function_search_page(
+async fn run_function_search_page_pair_v2(
     target: &TargetSpec,
     environment: &EnvironmentFingerprint,
 ) -> Result<BenchmarkReport, BenchmarkRunError> {
@@ -1472,42 +1627,37 @@ async fn run_function_search_page(
             let index = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 % FUNCTION_SEARCH_PAGE_SCHEDULE.len();
             let step = FUNCTION_SEARCH_PAGE_SCHEDULE[index];
-            let page = store
-                .list(step.search.map(str::to_owned), step.page)
-                .await?;
-            let expected_total = if step.search.is_some() {
-                FUNCTION_FIXTURE_ROWS as i64
-            } else {
-                FUNCTION_FIXTURE_ROWS as i64 + 4
-            };
-            if page.items().len() != 20
-                || page.page() != step.page
-                || page.page_size() != 20
-                || page.total() != expected_total
-            {
-                return Err(BenchmarkRunError::Operation(format!(
-                    "Function page contract drifted: search={:?}, requested={}, actual_page={}, page_size={}, rows={}, total={}, expected_total={expected_total}",
-                    step.search,
-                    step.page,
-                    page.page(),
-                    page.page_size(),
-                    page.items().len(),
-                    page.total(),
-                )));
-            }
-            let offset = usize::try_from((step.page - 1) * page.page_size())
-                .map_err(BenchmarkRunError::from_operation)?;
-            for (item_index, item) in page.items().iter().enumerate() {
-                let expected_identifier =
-                    expected_function_identifier(step.search.is_some(), offset + item_index)?;
-                if item.identifier() != expected_identifier {
+            for (search, page_number) in step.routes() {
+                let page = store.list(search.map(str::to_owned), page_number).await?;
+                let expected_total = if search.is_some() {
+                    FUNCTION_FIXTURE_ROWS as i64
+                } else {
+                    FUNCTION_FIXTURE_ROWS as i64 + 4
+                };
+                if page.items().len() != 20
+                    || page.page() != page_number
+                    || page.page_size() != 20
+                    || page.total() != expected_total
+                {
                     return Err(BenchmarkRunError::Operation(format!(
-                        "Function page order drifted: search={:?}, requested={}, row={}, actual_identifier={}, expected_identifier={expected_identifier}",
-                        step.search,
-                        step.page,
-                        item_index,
-                        item.identifier(),
+                        "Function page contract drifted: search={search:?}, requested={page_number}, actual_page={}, page_size={}, rows={}, total={}, expected_total={expected_total}",
+                        page.page(),
+                        page.page_size(),
+                        page.items().len(),
+                        page.total(),
                     )));
+                }
+                let offset = usize::try_from((page_number - 1) * page.page_size())
+                    .map_err(BenchmarkRunError::from_operation)?;
+                for (item_index, item) in page.items().iter().enumerate() {
+                    let expected_identifier =
+                        expected_function_identifier(search.is_some(), offset + item_index)?;
+                    if item.identifier() != expected_identifier {
+                        return Err(BenchmarkRunError::Operation(format!(
+                            "Function page order drifted: search={search:?}, requested={page_number}, row={item_index}, actual_identifier={}, expected_identifier={expected_identifier}",
+                            item.identifier(),
+                        )));
+                    }
                 }
             }
             Ok(())
@@ -1573,8 +1723,9 @@ async fn run_conversation_list(
     environment: &EnvironmentFingerprint,
 ) -> Result<BenchmarkReport, BenchmarkRunError> {
     let fixture = ConversationBenchmarkFixture::open().await?;
+    let mut seeded_sessions = Vec::with_capacity(CONVERSATION_FIXTURE_ROWS);
     for index in 0..CONVERSATION_FIXTURE_ROWS {
-        fixture
+        let session = fixture
             .conversations
             .create_session_for_agent(
                 fixture.agent_id,
@@ -1582,25 +1733,47 @@ async fn run_conversation_list(
             )
             .await
             .map_err(BenchmarkRunError::from_setup)?;
+        seeded_sessions.push(session);
     }
+    seeded_sessions.sort_by(|left, right| {
+        let updated_at_order = right.updated_at().cmp(left.updated_at());
+        updated_at_order.then_with(|| left.id().cmp(right.id()))
+    });
+    let expected_recent_ids = std::sync::Arc::new(
+        seeded_sessions
+            .iter()
+            .take(20)
+            .map(|session| session.id().to_owned())
+            .collect::<Vec<_>>(),
+    );
     let conversations = fixture.conversations.clone();
     let _fixture_lifetime = (fixture.store, fixture.temporary_root);
-    measure_local_async_checked(target.clone(), environment.clone(), move || {
-        let conversations = conversations.clone();
-        async move {
-            let sessions = conversations
-                .list_recent_sessions()
-                .await
-                .map_err(BenchmarkRunError::from_operation)?;
-            if sessions.len() != 20 {
-                return Err(BenchmarkRunError::Operation(format!(
-                    "Conversation recent page returned {} rows instead of 20",
-                    sessions.len()
-                )));
+    measure_local_async_checked_batched(
+        target.clone(),
+        environment.clone(),
+        CONVERSATION_LIST_OPERATIONS_PER_SAMPLE,
+        move || {
+            let conversations = conversations.clone();
+            let expected_recent_ids = std::sync::Arc::clone(&expected_recent_ids);
+            async move {
+                let sessions = conversations
+                    .list_recent_sessions()
+                    .await
+                    .map_err(BenchmarkRunError::from_operation)?;
+                let actual_ids = sessions
+                    .iter()
+                    .map(|session| session.id().to_owned())
+                    .collect::<Vec<_>>();
+                let expected_recent_ids = expected_recent_ids.as_slice();
+                if actual_ids != expected_recent_ids {
+                    return Err(BenchmarkRunError::Operation(format!(
+                        "Conversation recent page order drifted: actual_ids={actual_ids:?}, expected_recent_ids={expected_recent_ids:?}"
+                    )));
+                }
+                Ok(())
             }
-            Ok(())
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -1631,26 +1804,31 @@ async fn run_conversation_bundle(
     let ids = std::sync::Arc::new(ids);
     let conversations = fixture.conversations.clone();
     let _fixture_lifetime = (fixture.store, fixture.temporary_root);
-    measure_local_async_checked(target.clone(), environment.clone(), move || {
-        let ids = std::sync::Arc::clone(&ids);
-        let conversations = conversations.clone();
-        async move {
-            let bundles = conversations
-                .load_session_bundles(ids.as_slice())
-                .await
-                .map_err(BenchmarkRunError::from_operation)?;
-            if bundles.len() != ids.len()
-                || bundles
-                    .iter()
-                    .any(|bundle| bundle.messages().len() != 1 || bundle.executions().len() != 1)
-            {
-                return Err(BenchmarkRunError::Operation(
-                    "Conversation bundle cardinality drifted".into(),
-                ));
+    measure_local_async_checked_batched(
+        target.clone(),
+        environment.clone(),
+        CONVERSATION_BUNDLE_OPERATIONS_PER_SAMPLE,
+        move || {
+            let ids = std::sync::Arc::clone(&ids);
+            let conversations = conversations.clone();
+            async move {
+                let bundles = conversations
+                    .load_session_bundles(ids.as_slice())
+                    .await
+                    .map_err(BenchmarkRunError::from_operation)?;
+                if bundles.len() != ids.len()
+                    || bundles.iter().any(|bundle| {
+                        bundle.messages().len() != 1 || bundle.executions().len() != 1
+                    })
+                {
+                    return Err(BenchmarkRunError::Operation(
+                        "Conversation bundle cardinality drifted".into(),
+                    ));
+                }
+                Ok(())
             }
-            Ok(())
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -1772,6 +1950,7 @@ impl ConversationBenchmarkFixture {
             .await
             .map_err(BenchmarkRunError::from_setup)?
             .id();
+        checkpoint_fixture_wal(&store, "Conversation fixture").await?;
         let conversations =
             ConversationStore::from_store(&store, None).map_err(BenchmarkRunError::from_setup)?;
         Ok(Self {
@@ -1781,6 +1960,19 @@ impl ConversationBenchmarkFixture {
             temporary_root,
         })
     }
+}
+
+async fn checkpoint_fixture_wal(store: &Store, fixture: &str) -> Result<(), BenchmarkRunError> {
+    let checkpoint: (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_one(store.pool())
+        .await
+        .map_err(BenchmarkRunError::from_setup)?;
+    if checkpoint != (0, 0, 0) {
+        return Err(BenchmarkRunError::Setup(format!(
+            "{fixture} WAL checkpoint did not converge: {checkpoint:?}"
+        )));
+    }
+    Ok(())
 }
 
 async fn run_tool_crud(
@@ -1836,7 +2028,7 @@ async fn run_tool_crud(
     .await
 }
 
-async fn run_tool_search_page(
+async fn run_tool_search_page_pair_v2(
     target: &TargetSpec,
     environment: &EnvironmentFingerprint,
 ) -> Result<BenchmarkReport, BenchmarkRunError> {
@@ -1863,34 +2055,31 @@ async fn run_tool_search_page(
             let index = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 % TOOL_SEARCH_PAGE_SCHEDULE.len();
             let step = TOOL_SEARCH_PAGE_SCHEDULE[index];
-            let page = store.list(step.search.map(str::to_owned), step.page).await?;
-            if page.items().len() != 20
-                || page.page() != step.page
-                || page.page_size() != 20
-                || page.total() != TOOL_FIXTURE_ROWS as i64
-            {
-                return Err(BenchmarkRunError::Operation(format!(
-                    "Tool page contract drifted: search={:?}, requested={}, actual_page={}, page_size={}, rows={}, total={}",
-                    step.search,
-                    step.page,
-                    page.page(),
-                    page.page_size(),
-                    page.items().len(),
-                    page.total(),
-                )));
-            }
-            let offset = usize::try_from((step.page - 1) * page.page_size())
-                .map_err(BenchmarkRunError::from_operation)?;
-            for (item_index, item) in page.items().iter().enumerate() {
-                let expected = format!("tool_fixture_{:05}", offset + item_index);
-                if item.identifier() != expected {
+            for (search, requested_page) in step.routes() {
+                let page = store.list(search.map(str::to_owned), requested_page).await?;
+                if page.items().len() != 20
+                    || page.page() != requested_page
+                    || page.page_size() != 20
+                    || page.total() != TOOL_FIXTURE_ROWS as i64
+                {
                     return Err(BenchmarkRunError::Operation(format!(
-                        "Tool page order drifted: search={:?}, requested={}, row={}, actual_identifier={}, expected_identifier={expected}",
-                        step.search,
-                        step.page,
-                        item_index,
-                        item.identifier(),
+                        "Tool page contract drifted: search={search:?}, requested={requested_page}, actual_page={}, page_size={}, rows={}, total={}",
+                        page.page(),
+                        page.page_size(),
+                        page.items().len(),
+                        page.total(),
                     )));
+                }
+                let offset = usize::try_from((requested_page - 1) * page.page_size())
+                    .map_err(BenchmarkRunError::from_operation)?;
+                for (item_index, item) in page.items().iter().enumerate() {
+                    let expected = format!("tool_fixture_{:05}", offset + item_index);
+                    if item.identifier() != expected {
+                        return Err(BenchmarkRunError::Operation(format!(
+                            "Tool page order drifted: search={search:?}, requested={requested_page}, row={item_index}, actual_identifier={}, expected_identifier={expected}",
+                            item.identifier(),
+                        )));
+                    }
                 }
             }
             Ok(())
@@ -2083,7 +2272,9 @@ where
     BenchmarkReport::from_samples(target, environment, &samples).map_err(Into::into)
 }
 
-async fn measure_local_async_checked_batched<F, Fut, R>(
+/// Measure a checked fast asynchronous boundary in fixed batches, normalize
+/// each sample to one operation, and fail immediately on any operation error.
+pub async fn measure_local_async_checked_batched<F, Fut, R>(
     target: TargetSpec,
     environment: EnvironmentFingerprint,
     operations_per_sample: usize,
@@ -2135,10 +2326,8 @@ impl BenchmarkRunError {
 impl fmt::Display for BenchmarkRunError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Setup(error) => write!(formatter, "Function benchmark setup failed: {error}"),
-            Self::Operation(error) => {
-                write!(formatter, "Function benchmark operation failed: {error}")
-            }
+            Self::Setup(error) => write!(formatter, "benchmark setup failed: {error}"),
+            Self::Operation(error) => write!(formatter, "benchmark operation failed: {error}"),
             Self::Measurement(error) => error.fmt(formatter),
         }
     }

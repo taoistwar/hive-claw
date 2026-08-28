@@ -401,6 +401,13 @@ struct ToolRow {
     updated_at: String,
 }
 
+#[derive(Debug, FromRow)]
+struct ToolFtsPageRow {
+    #[sqlx(flatten)]
+    tool: ToolRow,
+    total_count: i64,
+}
+
 impl TryFrom<ToolRow> for ToolRecord {
     type Error = PublicBoundaryError;
 
@@ -652,9 +659,44 @@ impl ToolStore {
             .and_then(|value| value.checked_mul(PAGE_SIZE))
             .ok_or_else(|| invalid_input("page", "out_of_range"))?;
         let route = ToolSearchRoute::for_input(search)?;
-        let items = self.fetch_window(&route, PAGE_SIZE, offset).await?;
-        let total = self.fetch_count(&route).await?;
+        let (items, total) = match &route {
+            ToolSearchRoute::FtsPhrase(phrase) => {
+                self.fetch_fts_page(phrase, PAGE_SIZE, offset).await?
+            }
+            _ => (
+                self.fetch_window(&route, PAGE_SIZE, offset).await?,
+                self.fetch_count(&route).await?,
+            ),
+        };
         Ok(ToolPage { items, total, page })
+    }
+
+    async fn fetch_fts_page(
+        &self,
+        phrase: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<ToolRecord>, i64), PublicBoundaryError> {
+        let rows = sqlx::query_as::<_, ToolFtsPageRow>(TOOL_FTS_LIST_SQL)
+            .bind(phrase)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        let total = match rows.first() {
+            Some(row) => row.total_count,
+            None => sqlx::query_scalar::<_, i64>(TOOL_FTS_COUNT_SQL)
+                .bind(phrase)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(storage_error)?,
+        };
+        let items = rows
+            .into_iter()
+            .map(|row| ToolRecord::try_from(row.tool))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((items, total))
     }
 
     pub(crate) async fn list_window(

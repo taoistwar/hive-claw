@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use gpui::{
     App, Bounds, Context, CursorStyle, Entity, Hsla, MouseButton, SharedString, Window,
@@ -11,11 +11,12 @@ use gpui_component::{
 
 use crate::agent::local_agent::LocalAgentRuntime;
 use crate::config::Config;
-use crate::datasource::Store;
+use crate::datasource::{Store, StoreOpenOptions, backup::RestoreCoordinator};
 use crate::runtime::diagnostics::ExecutionEventCollector;
 use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
 use crate::ui::{
-    ai_view::AiView, home::HomeView, sidebar_nav::SidebarNav, utility_view::UtilityView,
+    ai_view::AiView, home::HomeView, sidebar_nav::SidebarNav, theme_contrast,
+    utility_view::UtilityView,
 };
 
 /// Error returned when navigation cannot proceed.
@@ -236,14 +237,33 @@ fn install_app_globals(cx: &mut App, state: HiveGuiAppState) {
     cx.set_global(AccessKitLabelRegistry::new());
 }
 
+/// Replay every durable restore/retirement state before opening the
+/// owner-aware production Store for `root`.
+///
+/// Any ambiguous recovery state or incomplete recovery proof is returned to
+/// the caller before the SQLite database, sidecars, encryption key, or Plugin
+/// root can be created by Store startup.
+pub async fn open_store_after_restore_recovery(root: &Path) -> anyhow::Result<Store> {
+    let recovery = RestoreCoordinator::new(root)?.recover_startup().await?;
+    anyhow::ensure!(
+        recovery.store_may_open()
+            && recovery.has_exactly_one_live_database()
+            && recovery.has_no_mixed_database_or_plugin_tree()
+            && recovery.control_files_are_outside_live_tree()
+            && recovery.retirement_is_done()
+            && recovery.write_gate_is_open(),
+        "restore startup replay did not prove every Store-open invariant"
+    );
+    Ok(Store::open_local(StoreOpenOptions::for_root(root)).await?)
+}
+
 pub fn run(config: Config) -> anyhow::Result<()> {
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     let cfg = Arc::new(config);
 
-    let db_path = Store::default_db_path();
+    let default_root = Store::default_db_path();
     let store = tokio::runtime::Handle::current()
-        .block_on(Store::new(&db_path))
-        .expect("Failed to initialize data source store");
+        .block_on(open_store_after_restore_recovery(&default_root))?;
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     // T079 ③ startup replay: recover any plugin install operation interrupted
     // by a crash, then drain pending artifact GC so orphaned staging bytes and
@@ -300,6 +320,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
     app.run(move |cx: &mut App| {
         theme::init(cx);
         gpui_component::init(cx);
+        theme_contrast::install(cx);
 
         // Load custom themes
         let themes_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes");

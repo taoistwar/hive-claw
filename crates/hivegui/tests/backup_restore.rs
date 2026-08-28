@@ -26,24 +26,34 @@ mod support;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
     io::Read,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path, PathBuf},
+    process::{Command, Output},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use hivegui::datasource::backup::{
     BACKUP_CONFIRMATION_CRASH_POINTS, BackupCoordinator, BackupExporter, BackupImporter,
-    ExportError, ImportError, RESTORE_SWITCH_CRASH_POINTS, RETIREMENT_CRASH_POINTS,
-    RestoreCoordinator, RetirementOutcome, SIDECAR_CLEANUP_CRASH_POINTS,
+    ExportError, ImportError, PreparedRestore, RESTORE_SWITCH_CRASH_POINTS,
+    RETIREMENT_CRASH_POINTS, RestoreConfirmation, RestoreCoordinator, RetirementOutcome,
+    SIDECAR_CLEANUP_CRASH_POINTS,
 };
-use hivegui::datasource::{Crypto, Store, StoreOpenOptions};
+use hivegui::datasource::entity_store::{AgentInput, AgentStore};
+use hivegui::datasource::{
+    Crypto, DatabaseFailureClass, Store, StoreOpenErrorKind, StoreOpenOptions,
+};
+use hivegui::ui::app::open_store_after_restore_recovery;
 use sha2::{Digest, Sha256};
 use support::TestWorkspace;
 use support::sensitive_canary::{
     SensitiveField, place_canary_for_test, scan_all_mediums_for_test, unique_canary_payload,
 };
 use uuid::Uuid;
+
+const RESTORE_STORE_LOCK_CHILD_MODE: &str = "HIVEGUI_T130_RESTORE_STORE_LOCK_CHILD_MODE";
+const RESTORE_STORE_LOCK_CHILD_ROOT: &str = "HIVEGUI_T130_RESTORE_STORE_LOCK_CHILD_ROOT";
+const PREPARED_RESTORE_NOT_ACTIVE: &str = "prepared_restore_not_active";
 
 fn unique_target_path(workspace: &TestWorkspace, label: &str) -> std::path::PathBuf {
     let nanos = SystemTime::now()
@@ -70,8 +80,132 @@ async fn write_seed_database(workspace: &TestWorkspace) -> std::path::PathBuf {
         )
         .await
         .expect("seed real user entity");
+    store.pool().close().await;
     drop(store);
     workspace.database_path().to_path_buf()
+}
+
+async fn export_single_data_source_archive(
+    workspace: &TestWorkspace,
+    archive_label: &str,
+    data_source_name: &str,
+    passphrase: &str,
+) -> std::path::PathBuf {
+    let store = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open archive source Store");
+    store
+        .create(
+            data_source_name,
+            "127.0.0.1",
+            3306,
+            "archive-user",
+            b"archive-password",
+        )
+        .await
+        .expect("seed archive source state");
+    store.pool().close().await;
+    drop(store);
+
+    let archive = unique_target_path(workspace, archive_label);
+    BackupExporter::new(workspace.database_path())
+        .export_age(&archive, passphrase)
+        .await
+        .expect("export archive source state");
+    archive
+}
+
+async fn export_data_source_and_plugin_archive(
+    workspace: &TestWorkspace,
+    archive_label: &str,
+    data_source_name: &str,
+    plugin_identifier: &str,
+    artifact_key: &str,
+    wasm: &[u8],
+    passphrase: &str,
+) -> std::path::PathBuf {
+    let store = Store::open_local(StoreOpenOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("open archive source Store");
+    store
+        .create(
+            data_source_name,
+            "127.0.0.1",
+            3306,
+            "archive-user",
+            b"archive-password",
+        )
+        .await
+        .expect("seed archive source state");
+    let artifact = workspace.plugin_root().join(artifact_key);
+    fs::create_dir_all(artifact.parent().expect("new Plugin artifact parent"))
+        .expect("create new Plugin artifact parent");
+    fs::write(&artifact, wasm).expect("write new managed Plugin artifact");
+    sqlx::query(
+        "INSERT INTO plugins \
+         (identifier,name,version,s3_key,sha256,size_bytes,runtime,created_at,updated_at) \
+         VALUES (?,?,'1.0.0',?,?,?,'wasm32','2026-08-27T00:00:00Z','2026-08-27T00:00:00Z')",
+    )
+    .bind(plugin_identifier)
+    .bind("New Restore Plugin")
+    .bind(artifact_key)
+    .bind(hex::encode(Sha256::digest(wasm)))
+    .bind(i64::try_from(wasm.len()).expect("new WASM fixture size"))
+    .execute(store.pool())
+    .await
+    .expect("seed new Plugin ownership");
+    store.pool().close().await;
+    drop(store);
+
+    let archive = unique_target_path(workspace, archive_label);
+    BackupExporter::new(workspace.database_path())
+        .export_age(&archive, passphrase)
+        .await
+        .expect("export data source and Plugin archive");
+    archive
+}
+
+async fn seed_data_source_and_plugin_fixture(
+    store: &Store,
+    plugin_root: &Path,
+    data_source_name: &str,
+    plugin_identifier: &str,
+    artifact_key: &str,
+    wasm: &[u8],
+) {
+    store
+        .create(
+            data_source_name,
+            "127.0.0.1",
+            3307,
+            "old-user",
+            b"old-password",
+        )
+        .await
+        .expect("seed distinguishable current data source");
+    let artifact = plugin_root.join(artifact_key);
+    fs::create_dir_all(artifact.parent().expect("current Plugin artifact parent"))
+        .expect("create current Plugin artifact parent");
+    fs::write(&artifact, wasm).expect("write current Plugin artifact");
+    sqlx::query(
+        "INSERT INTO plugins \
+         (identifier,name,version,s3_key,sha256,size_bytes,runtime,created_at,updated_at) \
+         VALUES (?,?,'1.0.0',?,?,?,'wasm32','2026-08-27T00:00:00Z','2026-08-27T00:00:00Z')",
+    )
+    .bind(plugin_identifier)
+    .bind(format!("{plugin_identifier} fixture"))
+    .bind(artifact_key)
+    .bind(hex::encode(Sha256::digest(wasm)))
+    .bind(i64::try_from(wasm.len()).expect("current WASM fixture size"))
+    .execute(store.pool())
+    .await
+    .expect("seed current Plugin ownership");
 }
 
 async fn write_restore_current_database(root: &Path) -> std::path::PathBuf {
@@ -89,12 +223,1439 @@ async fn write_restore_current_database(root: &Path) -> std::path::PathBuf {
         )
         .await
         .expect("seed exact current restore database");
+    store.pool().close().await;
     drop(store);
     database
 }
 
 fn sha256_path(path: &Path) -> String {
     hex::encode(Sha256::digest(fs::read(path).expect("read hash input")))
+}
+
+async fn data_source_names_from_database(database: &Path) -> Vec<String> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(database)
+        .create_if_missing(false)
+        .read_only(true)
+        .immutable(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open database for raw state verification");
+    let names = sqlx::query_scalar::<_, String>("SELECT name FROM data_sources ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .expect("read raw data source names");
+    pool.close().await;
+    names
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn child_store_bound_restore_lock_probe() {
+    let Some(mode) = env::var_os(RESTORE_STORE_LOCK_CHILD_MODE) else {
+        return;
+    };
+    let root = PathBuf::from(
+        env::var_os(RESTORE_STORE_LOCK_CHILD_ROOT).expect("child restore root is configured"),
+    );
+    let result = Store::open_local(StoreOpenOptions::for_root(&root)).await;
+    match mode.to_string_lossy().as_ref() {
+        "expect-locked" => {
+            let error = match result {
+                Ok(_) => panic!("child opened a Store whose restore file lock must remain held"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), StoreOpenErrorKind::AlreadyLocked);
+        }
+        "expect-open" => {
+            let store = result.expect("child acquires the Store lock after startup recovery");
+            store
+                .list()
+                .await
+                .expect("child reads the recovered current Store");
+            store.pool().close().await;
+            drop(store);
+        }
+        other => panic!("unknown restore Store lock child mode: {other}"),
+    }
+}
+
+fn run_store_bound_restore_lock_child(root: &Path, mode: &str) -> Output {
+    Command::new(env::current_exe().expect("resolve backup_restore integration-test executable"))
+        .args([
+            "--exact",
+            "child_store_bound_restore_lock_probe",
+            "--nocapture",
+        ])
+        .env(RESTORE_STORE_LOCK_CHILD_MODE, mode)
+        .env(RESTORE_STORE_LOCK_CHILD_ROOT, root)
+        .output()
+        .expect("run isolated restore Store lock child process")
+}
+
+fn assert_store_bound_restore_lock_child(output: &Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct DataIoWatch {
+    descriptor: std::os::fd::RawFd,
+    _watch_descriptor: i32,
+}
+
+#[cfg(target_os = "linux")]
+impl DataIoWatch {
+    fn new(path: &Path) -> Self {
+        Self::with_mask(
+            path,
+            libc::IN_OPEN | libc::IN_ACCESS | libc::IN_MODIFY | libc::IN_CLOSE_WRITE,
+        )
+    }
+
+    fn new_directory_tree(path: &Path) -> Self {
+        Self::with_mask(
+            path,
+            libc::IN_OPEN
+                | libc::IN_ACCESS
+                | libc::IN_MODIFY
+                | libc::IN_CLOSE_WRITE
+                | libc::IN_CREATE
+                | libc::IN_DELETE
+                | libc::IN_DELETE_SELF,
+        )
+    }
+
+    fn with_mask(path: &Path, mask: u32) -> Self {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(
+            descriptor >= 0,
+            "create nonblocking inotify descriptor: {}",
+            std::io::Error::last_os_error()
+        );
+        let path = CString::new(path.as_os_str().as_bytes()).expect("inotify path has no NUL");
+        let watch_descriptor = unsafe { libc::inotify_add_watch(descriptor, path.as_ptr(), mask) };
+        if watch_descriptor < 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                libc::close(descriptor);
+            }
+            panic!("watch replacement database inode: {error}");
+        }
+        Self {
+            descriptor,
+            _watch_descriptor: watch_descriptor,
+        }
+    }
+
+    fn drain_masks(&self) -> Vec<u32> {
+        let mut masks = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read =
+                unsafe { libc::read(self.descriptor, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if read < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    break;
+                }
+                panic!("read replacement database inotify events: {error}");
+            }
+            if read == 0 {
+                break;
+            }
+            let read = read as usize;
+            let mut offset = 0_usize;
+            while offset + std::mem::size_of::<libc::inotify_event>() <= read {
+                let event = unsafe {
+                    std::ptr::read_unaligned(
+                        buffer.as_ptr().add(offset).cast::<libc::inotify_event>(),
+                    )
+                };
+                masks.push(event.mask);
+                offset += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+            }
+        }
+        masks
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DataIoWatch {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.descriptor);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn exchange_paths(left: &Path, right: &Path) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let left = CString::new(left.as_os_str().as_bytes()).expect("left path has no NUL");
+    let right = CString::new(right.as_os_str().as_bytes()).expect("right path has no NUL");
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    assert_eq!(
+        result,
+        0,
+        "atomically exchange database leaves: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct PathExchangeGuard {
+    left: std::path::PathBuf,
+    right: std::path::PathBuf,
+    restore_on_drop: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl PathExchangeGuard {
+    fn new(left: &Path, right: &Path) -> Self {
+        exchange_paths(left, right);
+        Self {
+            left: left.to_path_buf(),
+            right: right.to_path_buf(),
+            restore_on_drop: true,
+        }
+    }
+
+    fn restore(mut self) {
+        exchange_paths(&self.left, &self.right);
+        self.restore_on_drop = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for PathExchangeGuard {
+    fn drop(&mut self) {
+        if self.restore_on_drop {
+            exchange_paths(&self.left, &self.right);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct RestorableDirectoryExchangeGuard {
+    left: PathBuf,
+    right: PathBuf,
+    restore_on_drop: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl RestorableDirectoryExchangeGuard {
+    fn new(left: &Path, right: &Path) -> Self {
+        exchange_paths(left, right);
+        Self {
+            left: left.to_path_buf(),
+            right: right.to_path_buf(),
+            restore_on_drop: true,
+        }
+    }
+
+    fn restore_paths(left: &Path, right: &Path) -> std::io::Result<()> {
+        if left.exists() && right.exists() {
+            exchange_paths(left, right);
+            Ok(())
+        } else if left.exists() && !right.exists() {
+            fs::rename(left, right)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "foreign snapshot directory was removed",
+            ))
+        }
+    }
+
+    fn restore(mut self) {
+        Self::restore_paths(&self.left, &self.right)
+            .expect("restore exchanged foreign snapshot directory");
+        self.restore_on_drop = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for RestorableDirectoryExchangeGuard {
+    fn drop(&mut self) {
+        if self.restore_on_drop {
+            let _ = Self::restore_paths(&self.left, &self.right);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_fd_count_for_identity(expected: (u64, u64)) -> usize {
+    use std::os::unix::fs::MetadataExt as _;
+
+    fs::read_dir("/proc/self/fd")
+        .expect("read Linux process descriptor table")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            fs::metadata(entry.path())
+                .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == expected)
+        })
+        .count()
+}
+
+#[cfg(target_os = "linux")]
+async fn finish_with_snapshot_binding_interlocks(
+    confirmation: RestoreConfirmation,
+    barriers: [std::sync::Arc<tokio::sync::Barrier>; 4],
+) -> Result<(), ImportError> {
+    confirmation
+        .finish_with_snapshot_binding_interlocks_for_test(barriers)
+        .await
+        .map(|_| ())
+}
+
+fn regular_tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let mut entries = fs::read_dir(current)
+            .expect("read regular fixture tree")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect regular fixture tree");
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).expect("inspect regular fixture entry");
+            assert!(!metadata.file_type().is_symlink());
+            if metadata.is_dir() {
+                visit(root, &path, out);
+            } else {
+                assert!(metadata.is_file());
+                out.insert(
+                    path.strip_prefix(root)
+                        .expect("fixture entry remains beneath root")
+                        .to_path_buf(),
+                    fs::read(path).expect("read regular fixture bytes"),
+                );
+            }
+        }
+    }
+
+    let mut out = BTreeMap::new();
+    visit(root, root, &mut out);
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn watch_regular_tree(root: &Path) -> Vec<DataIoWatch> {
+    fn visit(current: &Path, out: &mut Vec<DataIoWatch>) {
+        out.push(DataIoWatch::new_directory_tree(current));
+        let mut entries = fs::read_dir(current)
+            .expect("read foreign watch tree")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect foreign watch tree");
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).expect("inspect foreign watch entry");
+            assert!(!metadata.file_type().is_symlink());
+            if metadata.is_dir() {
+                visit(&path, out);
+            } else {
+                assert!(metadata.is_file());
+                out.push(DataIoWatch::new(&path));
+            }
+        }
+    }
+
+    let mut watches = Vec::new();
+    visit(root, &mut watches);
+    for watch in &watches {
+        let _ = watch.drain_masks();
+    }
+    watches
+}
+
+#[cfg(target_os = "linux")]
+fn assert_current_snapshot_copy_seam_source_contract() {
+    fn item_body<'a>(normalized: &'a str, signature: &str) -> &'a str {
+        let start = normalized.find(signature).unwrap_or_else(|| {
+            panic!("missing production source item: {signature}");
+        });
+        let body_start = normalized[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("missing body for production source item: {signature}"));
+        let mut depth = 0_usize;
+        for (offset, character) in normalized[body_start..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &normalized[start..body_start + offset + character.len_utf8()];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unterminated production source item: {signature}");
+    }
+
+    fn assert_single_finish_tail_call(item: &str, label: &str) {
+        let body_start = item
+            .find('{')
+            .map(|offset| offset + 1)
+            .expect("finish wrapper body");
+        let call_start = item
+            .find("self.finish_internal(")
+            .expect("shared finish tail call");
+        assert!(
+            item[body_start..call_start].trim().is_empty(),
+            "{label} must do no work before its shared finish tail-call"
+        );
+        assert_eq!(
+            item.matches("self.finish_internal(").count(),
+            1,
+            "{label} must call the shared private finish exactly once: {item}"
+        );
+        assert_eq!(
+            item.matches(".await").count(),
+            1,
+            "{label} must contain only the shared finish await: {item}"
+        );
+        for forbidden_control_flow in [" if ", " if let ", " match ", " loop ", " while ", " for "]
+        {
+            assert!(
+                !item.contains(forbidden_control_flow),
+                "{label} must not select a test-only I/O path: {forbidden_control_flow} in {item}"
+            );
+        }
+        let await_end = item
+            .rfind(".await")
+            .map(|offset| offset + ".await".len())
+            .expect("single finish await");
+        assert_eq!(
+            item[await_end..].trim(),
+            "}",
+            "{label} must tail-call the shared private finish with no fallback work"
+        );
+    }
+
+    let source = include_str!("../src/datasource/backup.rs");
+    let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ordinary_start = normalized
+        .find("pub async fn finish(self)")
+        .expect("production RestoreConfirmation::finish");
+    let wrapper_start = normalized
+        .find("pub async fn finish_with_current_snapshot_copy_interlock_for_test(")
+        .expect("test-only current snapshot copy wrapper");
+    let supplemental_wrapper = normalized
+        .find("pub async fn finish_with_snapshot_binding_interlocks_for_test(")
+        .expect("supplemental snapshot binding test wrapper");
+    let private_start = normalized
+        .find("async fn finish_internal(")
+        .expect("shared private RestoreConfirmation finish implementation");
+    assert!(
+        ordinary_start < wrapper_start
+            && wrapper_start < supplemental_wrapper
+            && supplemental_wrapper < private_start,
+        "ordinary finish, both test wrappers, and shared private internal must remain adjacent and ordered"
+    );
+    let ordinary = item_body(&normalized, "pub async fn finish(self)");
+    let current_copy_wrapper = item_body(
+        &normalized,
+        "pub async fn finish_with_current_snapshot_copy_interlock_for_test(",
+    );
+    let snapshot_binding_wrapper = item_body(
+        &normalized,
+        "pub async fn finish_with_snapshot_binding_interlocks_for_test(",
+    );
+    assert_single_finish_tail_call(ordinary, "ordinary finish");
+    assert_single_finish_tail_call(current_copy_wrapper, "current-copy test wrapper");
+    assert_single_finish_tail_call(snapshot_binding_wrapper, "snapshot-binding test wrapper");
+    assert!(
+        current_copy_wrapper.contains("barriers") && snapshot_binding_wrapper.contains("barriers"),
+        "each test wrapper may only thread its thin synchronization barriers into the shared finish"
+    );
+
+    let private_end = normalized[private_start..]
+        .find("/// Execute one approved durability boundary")
+        .map(|offset| private_start + offset)
+        .expect("finish_internal must remain immediately before the crash harness");
+    let private_finish = &normalized[private_start..private_end];
+    assert!(
+        private_finish.contains("current_copy_interlock:")
+            && private_finish.contains("snapshot_binding_interlocks:"),
+        "the shared private finish must own both thin interlocks without selecting a second I/O implementation"
+    );
+    for forbidden_interlock_branch in [
+        "if current_copy_interlock.is_some()",
+        "if let Some(current_copy_interlock)",
+        "if snapshot_binding_interlocks.is_some()",
+        "if let Some(snapshot_binding_interlocks)",
+        "match current_copy_interlock",
+        "match snapshot_binding_interlocks",
+    ] {
+        assert!(
+            !private_finish.contains(forbidden_interlock_branch),
+            "interlock presence may only pause the production path, never select its I/O: {forbidden_interlock_branch}"
+        );
+    }
+    assert_eq!(
+        private_finish.matches("current_copy_interlock").count(),
+        2,
+        "the current-copy interlock may occur only in the shared signature and ordinary copy call"
+    );
+    assert_eq!(
+        private_finish
+            .matches("snapshot_binding_interlocks")
+            .count(),
+        3,
+        "the snapshot interlocks may occur only in the shared signature and two thin wait calls"
+    );
+    let checkpoint_complete = private_finish
+        .find(".prepare_restore_for_safety(")
+        .expect("shared finish must complete the normal checkpoint pre-safety phase");
+    let pin_current = private_finish
+        .find(".open_current_database_for_snapshot(")
+        .expect("shared finish must pin current through the root capability");
+    assert!(
+        pin_current < checkpoint_complete,
+        "the exact current leaf must be descriptor-pinned before SQLx checkpoint I/O begins"
+    );
+
+    let copy_call_start = private_finish
+        .find("copy_owned_open_file( &mut held_current,")
+        .expect("finish_internal must copy from its already-held current File");
+    let copy_call_end = private_finish[copy_call_start..]
+        .find(".await?")
+        .map(|offset| copy_call_start + offset + ".await?".len())
+        .expect("finish_internal must await the descriptor-bound copy helper");
+    let copy_call = &private_finish[copy_call_start..copy_call_end];
+    assert!(
+        copy_call.contains("&canonical_current_identity")
+            && copy_call.contains("snapshot_binding.directory()")
+            && copy_call.contains("Path::new(DATABASE_FILENAME)")
+            && copy_call.contains("current_copy_interlock"),
+        "finish_internal must pass the held source plus the held snapshot directory and relative database name to the ordinary copy helper: {copy_call}"
+    );
+    let after_copy = &private_finish[copy_call_end..];
+    for forbidden_reopen in [
+        ".open(&current_database)",
+        ".open(current_database)",
+        "File::open(&current_database)",
+        "File::open(current_database)",
+        "fs::read(&current_database)",
+        "fs::read(current_database)",
+        "fs::copy(&current_database",
+        "fs::copy(current_database",
+        "read_verified_regular_file(&current_database",
+        "copy_owned_regular_file( &current_database",
+        "copy_owned_regular_file(&current_database",
+    ] {
+        assert!(
+            !after_copy.contains(forbidden_reopen),
+            "finish_internal must not reopen/read the current source path after the held-File copy returns: {forbidden_reopen}"
+        );
+    }
+
+    let copy_start = normalized
+        .find("fn copy_owned_open_file(")
+        .expect("descriptor-bound safety database copy helper");
+    let copy_signature_end = normalized[copy_start..]
+        .find('{')
+        .map(|offset| copy_start + offset)
+        .expect("complete descriptor-bound copy helper signature");
+    let copy_signature = &normalized[copy_start..copy_signature_end];
+    assert!(
+        copy_signature.contains("source_file: &mut File")
+            && copy_signature.contains("expected_source_identity: &str")
+            && copy_signature.contains("target_directory: &cap_std::fs::Dir")
+            && copy_signature.contains("target_name: &Path")
+            && copy_signature.contains("current_copy_interlock:")
+            && !copy_signature.contains("snapshot_binding_interlocks:"),
+        "the safety database copy helper must receive held source/target descriptors, a relative target name, and only the current-copy interlock: {copy_signature}"
+    );
+    let parameters_start = copy_signature
+        .find('(')
+        .map(|offset| offset + 1)
+        .expect("copy helper parameters start");
+    let parameters_end = copy_signature
+        .rfind(')')
+        .expect("copy helper parameters end");
+    for parameter in copy_signature[parameters_start..parameters_end].split(',') {
+        let Some((name, _parameter_type)) = parameter.split_once(':') else {
+            continue;
+        };
+        if parameter.contains("Path") {
+            let name = name.trim();
+            assert!(
+                name == "target_name" || name == "manifest_path",
+                "copy_owned_open_file may receive relative target/manifest names, but no source, root, or absolute target path: {parameter}"
+            );
+        }
+    }
+
+    let copy_end = normalized[copy_start..]
+        .find("fn copy_plugin_tree_with_descriptors(")
+        .map(|offset| copy_start + offset)
+        .expect("descriptor-bound database helper must remain separate from Plugin tree copying");
+    let copy_helper = &normalized[copy_signature_end..copy_end];
+    let source_barrier_arrive = copy_helper
+        .find("current_copy_barriers[0].wait().await")
+        .expect("held-File copy interlock arrival wait");
+    let source_barrier_release = copy_helper
+        .find("current_copy_barriers[1].wait().await")
+        .expect("held-File copy interlock release wait");
+    assert!(
+        source_barrier_arrive < source_barrier_release,
+        "the copy interlock must arrive before it waits for test release"
+    );
+    let before_barrier = &copy_helper[..source_barrier_arrive];
+    let held_metadata = before_barrier
+        .rfind("source_file .metadata()")
+        .or_else(|| before_barrier.rfind("source_file.metadata()"))
+        .expect("copy helper must take final held-File metadata before the interlock");
+    let identity_match = before_barrier
+        .rfind("stable_file_identity(&before)? != expected_source_identity")
+        .expect("copy helper must compare final held-File metadata with canonical identity");
+    assert!(
+        held_metadata < identity_match,
+        "the canonical identity comparison must use the final held-File metadata"
+    );
+
+    let first_seek = copy_helper
+        .find("source_file .seek(")
+        .or_else(|| copy_helper.find("source_file.seek("))
+        .expect("descriptor-bound copy must explicitly seek its held File");
+    let first_read = copy_helper
+        .find("source_file .read(")
+        .or_else(|| copy_helper.find("source_file.read("))
+        .expect("descriptor-bound copy must read its held File");
+    assert!(
+        source_barrier_release < first_seek && source_barrier_release < first_read,
+        "both interlock waits must occur after the final fd/canonical identity match and before the first held-File seek/read"
+    );
+
+    let target_create = copy_helper
+        .find("target_directory .open_with(target_name")
+        .or_else(|| copy_helper.find("target_directory.open_with(target_name"))
+        .expect("database target must be created relative to the held snapshot directory");
+    assert!(
+        source_barrier_release < target_create,
+        "the ordinary copy helper must create its target through the held snapshot directory"
+    );
+
+    let directory_wait_helper = item_body(
+        &normalized,
+        "async fn wait_snapshot_directory_binding_interlock(",
+    );
+    let post_safety_wait_helper =
+        item_body(&normalized, "async fn wait_post_safety_binding_interlock(");
+    for (helper, first, second, label) in [
+        (directory_wait_helper, "[0]", "[1]", "snapshot directory"),
+        (post_safety_wait_helper, "[2]", "[3]", "post-safety"),
+    ] {
+        assert!(
+            helper.contains(first)
+                && helper.contains(second)
+                && helper.matches(".wait().await").count() == 2,
+            "{label} interlock must be a two-wait synchronization-only helper: {helper}"
+        );
+        for forbidden in [
+            "Path",
+            "File",
+            "cap_std::fs::Dir",
+            "ImportError",
+            "Result<",
+            "return Err",
+            "fs::",
+            "open(",
+            "read(",
+            "write(",
+        ] {
+            assert!(
+                !helper.contains(forbidden),
+                "{label} interlock must not select, inspect, or mutate I/O: {forbidden}"
+            );
+        }
+    }
+
+    let initial_snapshot_match = private_finish
+        .find("verify_snapshot_directory_binding(&snapshot_binding)")
+        .or_else(|| private_finish.find("verify_snapshot_directory_binding( &snapshot_binding, )"))
+        .expect("initial held snapshot-directory/canonical identity match");
+    let snapshot_binding_match_count = private_finish
+        .matches("verify_snapshot_directory_binding(&snapshot_binding)")
+        .count()
+        + private_finish
+            .matches("verify_snapshot_directory_binding( &snapshot_binding, )")
+            .count();
+    assert_eq!(
+        snapshot_binding_match_count, 2,
+        "the descriptor-bound finish may compare the canonical snapshot directory only initially and once after the full held-directory build"
+    );
+    let directory_wait = private_finish
+        .find("wait_snapshot_directory_binding_interlock( snapshot_binding_interlocks.as_ref(), ) .await")
+        .or_else(|| {
+            private_finish.find(
+                "wait_snapshot_directory_binding_interlock(snapshot_binding_interlocks.as_ref()).await",
+            )
+        })
+        .expect("thin snapshot-directory barrier 0/1 wait");
+    assert!(
+        initial_snapshot_match < directory_wait && directory_wait < copy_call_start,
+        "barriers 0/1 must follow the initial binding match and immediately precede the ordinary dirfd-relative database copy"
+    );
+    let directory_release_to_copy = &private_finish[directory_wait..copy_call_start];
+    for forbidden in [
+        "verify_snapshot_directory_binding",
+        "symlink_metadata",
+        "fs::",
+        "remove_tree_no_follow",
+        "return Err",
+    ] {
+        assert!(
+            !directory_release_to_copy.contains(forbidden),
+            "barrier 1 must flow directly to the ordinary dirfd-relative copy: {forbidden}"
+        );
+    }
+
+    let snapshot_finished = private_finish[copy_call_end..]
+        .find("finish_restore_safety_snapshot( &snapshot_binding,")
+        .or_else(|| {
+            private_finish[copy_call_end..]
+                .find("finish_restore_safety_snapshot(&snapshot_binding,")
+        })
+        .map(|offset| copy_call_end + offset)
+        .expect("Plugin/manifest/sync completion on the same held snapshot binding");
+    let snapshot_verified = private_finish[snapshot_finished..]
+        .find("verify_restore_safety_snapshot(&snapshot_binding)")
+        .or_else(|| {
+            private_finish[snapshot_finished..]
+                .find("verify_restore_safety_snapshot( &snapshot_binding, )")
+        })
+        .map(|offset| snapshot_finished + offset)
+        .expect("complete held-directory safety snapshot verification");
+    let final_current_match = private_finish[snapshot_verified..]
+        .find(".verify_current_database_for_snapshot(")
+        .map(|offset| snapshot_verified + offset)
+        .expect("final held-current/canonical identity match");
+    let owner_barrier_arrive = private_finish
+        .find("wait_post_safety_binding_interlock( snapshot_binding_interlocks.as_ref(), ) .await")
+        .or_else(|| {
+            private_finish.find(
+                "wait_post_safety_binding_interlock(snapshot_binding_interlocks.as_ref()).await",
+            )
+        })
+        .expect("thin post-safety barrier 2/3 wait");
+    let final_snapshot_match = private_finish[owner_barrier_arrive..]
+        .find("verify_snapshot_directory_binding(&snapshot_binding)")
+        .or_else(|| {
+            private_finish[owner_barrier_arrive..]
+                .find("verify_snapshot_directory_binding( &snapshot_binding, )")
+        })
+        .map(|offset| owner_barrier_arrive + offset)
+        .expect("single final canonical snapshot-directory identity match");
+    let apply_call = private_finish
+        .find(".apply_restore_after_safety(")
+        .expect("post-safety state-machine call");
+    assert!(
+        private_finish
+            .contains("finish_or_cleanup_restore_safety_snapshot(snapshot_binding, safety_result)",)
+            || private_finish.contains(
+                "finish_or_cleanup_restore_safety_snapshot( snapshot_binding, safety_result, )",
+            ),
+        "the shared finish must transfer the exact binding into success/error cleanup"
+    );
+    assert!(
+        copy_call_start < snapshot_finished
+            && snapshot_finished < snapshot_verified
+            && snapshot_verified < final_current_match
+            && final_current_match < owner_barrier_arrive
+            && owner_barrier_arrive < final_snapshot_match
+            && final_snapshot_match < apply_call,
+        "full DB+Plugin+manifest build and held verification must precede barriers 2/3; only then may the final canonical snapshot check precede apply"
+    );
+    let full_held_build = &private_finish[directory_wait..owner_barrier_arrive];
+    assert!(
+        !full_held_build.contains("verify_snapshot_directory_binding"),
+        "barrier 1 through the complete held-directory build must not recheck the canonical snapshot path"
+    );
+    let release_to_apply = &private_finish[owner_barrier_arrive..apply_call];
+    assert!(
+        !release_to_apply.contains("verify_current_database_for_snapshot")
+            && !release_to_apply.contains("symlink_metadata")
+            && !release_to_apply.contains("open_current_database_for_snapshot")
+            && (release_to_apply
+                .matches("verify_snapshot_directory_binding(&snapshot_binding)")
+                .count()
+                + release_to_apply
+                    .matches("verify_snapshot_directory_binding( &snapshot_binding, )")
+                    .count()
+                == 1),
+        "barrier 3 may perform exactly the final snapshot binding check, then must enter apply without another source-path check"
+    );
+    let post_wait_to_final_match = &private_finish[owner_barrier_arrive..final_snapshot_match];
+    for forbidden_short_circuit in ["?", "return ", "Err(", " if ", " if let ", " match "] {
+        assert!(
+            !post_wait_to_final_match.contains(forbidden_short_circuit),
+            "barrier 3 must flow directly into the unique final canonical snapshot match: {forbidden_short_circuit}"
+        );
+    }
+    let apply_invocation = &private_finish[apply_call..];
+    assert!(
+        apply_invocation.contains("RestoreOldDatabaseEvidence::Bound(bound_old_database)"),
+        "the exact held File/identity/evidence object must cross into apply_after_safety"
+    );
+
+    let snapshot_binding = item_body(&normalized, "struct RestoreSafetySnapshotBinding");
+    assert!(
+        snapshot_binding.contains("directory: cap_std::fs::Dir")
+            && snapshot_binding.contains("parent_directory: cap_std::fs::Dir")
+            && snapshot_binding.contains("canonical_identity: String"),
+        "one binding must retain the exact created snapshot directory, its parent, and canonical identity: {snapshot_binding}"
+    );
+    let finish_snapshot = item_body(&normalized, "fn finish_restore_safety_snapshot(");
+    assert!(
+        finish_snapshot.contains("snapshot_binding: &RestoreSafetySnapshotBinding")
+            && finish_snapshot.contains("copy_plugin_tree_with_descriptors(")
+            && finish_snapshot.contains("snapshot_binding.directory()")
+            && finish_snapshot.contains("Path::new(\"plugins\")")
+            && finish_snapshot.contains("write_staging_file_at(")
+            && finish_snapshot.contains("Path::new(\"manifest.json\")")
+            && (finish_snapshot.contains("sync_cap_directory(snapshot_binding.directory(),")
+                || finish_snapshot.contains("sync_cap_directory( snapshot_binding.directory(),")),
+        "Plugin copy, manifest publication, and sync must consume the same held snapshot binding and relative names: {finish_snapshot}"
+    );
+    let plugin_copy = item_body(&normalized, "fn copy_plugin_tree_with_descriptors(");
+    assert!(
+        plugin_copy.contains("target_directory: &cap_std::fs::Dir")
+            && plugin_copy.contains("target_name: &Path")
+            && !plugin_copy.contains("target: &Path"),
+        "Plugin targets must be resolved only beneath the held snapshot directory: {plugin_copy}"
+    );
+    let manifest_write = item_body(&normalized, "fn write_staging_file_at(");
+    assert!(
+        manifest_write.contains("directory: &cap_std::fs::Dir")
+            && manifest_write.contains("name: &Path")
+            && !manifest_write.contains("target: &Path"),
+        "manifest staging must be dirfd-relative: {manifest_write}"
+    );
+    let verify_snapshot = item_body(&normalized, "fn verify_restore_safety_snapshot(");
+    assert!(
+        verify_snapshot.contains("snapshot_binding: &RestoreSafetySnapshotBinding")
+            && verify_snapshot.contains("snapshot_binding.directory()"),
+        "snapshot verification must read the same held directory: {verify_snapshot}"
+    );
+    let cleanup = item_body(&normalized, "fn finish_or_cleanup_restore_safety_snapshot");
+    assert!(
+        cleanup.contains("snapshot_binding: RestoreSafetySnapshotBinding"),
+        "cleanup must own the exact held snapshot binding: {cleanup}"
+    );
+    for (stage, body) in [
+        ("finish", finish_snapshot),
+        ("verify", verify_snapshot),
+        ("cleanup", cleanup),
+    ] {
+        for forbidden_target_path in [
+            "snapshot: &Path",
+            "snapshot.join(",
+            "snapshot_binding.canonical_path",
+            "snapshot_binding.path()",
+            "sync_directory(snapshot",
+            "remove_tree_no_follow",
+            "fs::remove_dir_all",
+        ] {
+            assert!(
+                !body.contains(forbidden_target_path),
+                "held snapshot {stage} must not reopen/create/remove through its canonical Path: {forbidden_target_path}"
+            );
+        }
+    }
+
+    let bound_old_database = item_body(&normalized, "struct BoundOldDatabase");
+    assert!(
+        bound_old_database.contains("held_file: File")
+            && bound_old_database.contains("canonical_identity: String")
+            && bound_old_database.contains("evidence: ControlledFileEvidence"),
+        "the held File, final canonical identity, and copied evidence must cross arm/owner/apply as one by-value object: {bound_old_database}"
+    );
+    assert!(
+        private_finish.contains("BoundOldDatabase {")
+            && private_finish.contains("held_file: held_current")
+            && private_finish.contains("canonical_identity: canonical_current_identity")
+            && private_finish.contains("evidence: old_database_evidence")
+            && apply_invocation.contains("RestoreOldDatabaseEvidence::Bound(bound_old_database)"),
+        "finish_internal must transfer the exact held source object into apply instead of separating or reopening it"
+    );
+
+    let apply_start = normalized
+        .find("async fn apply_restore_after_safety(")
+        .expect("post-safety restore state machine");
+    let apply_end = normalized[apply_start..]
+        .find("/// Advance the real switch/retirement state machine")
+        .map(|offset| apply_start + offset)
+        .expect("post-safety state machine boundary");
+    let apply_after_safety = &normalized[apply_start..apply_end];
+    assert!(
+        apply_after_safety.contains("old_database_source: RestoreOldDatabaseEvidence")
+            && apply_after_safety.contains("RestoreOldDatabaseEvidence::Bound(bound_old_database)")
+            && apply_after_safety.contains("bound.evidence.clone()"),
+        "post-safety apply must retain the bound File/evidence object through owner publication"
+    );
+    let arm_assignment = apply_after_safety
+        .find("instance_manifest.ownership_state = \"armed\".into()")
+        .expect("manifest armed assignment");
+    let first_arm = apply_after_safety[arm_assignment..]
+        .find("publish_instance_manifest(")
+        .map(|offset| arm_assignment + offset)
+        .expect("first manifest arm publication");
+    let prepared_phase = apply_after_safety
+        .find("phase: \"prepared\".into()")
+        .expect("prepared owner construction");
+    let prepared_owner = apply_after_safety[prepared_phase..]
+        .find("publish_restore_owner(")
+        .map(|offset| prepared_phase + offset)
+        .expect("prepared owner publication");
+    let applying_phase = apply_after_safety
+        .find("owner.phase = \"applying\".into()")
+        .expect("owner applying transition");
+    let applying_owner = apply_after_safety[applying_phase..]
+        .find("publish_restore_owner(")
+        .map(|offset| applying_phase + offset)
+        .expect("durable applying owner publication");
+    let bound_move = apply_after_safety
+        .find("move_current_database_with_bound_identity(")
+        .expect("identity-bound current move");
+    assert!(
+        arm_assignment < first_arm
+            && first_arm < prepared_phase
+            && prepared_phase < prepared_owner
+            && prepared_owner < applying_phase
+            && applying_phase < applying_owner
+            && applying_owner < bound_move,
+        "backup-package.md 67-68 require armed -> prepared -> applying to be durable before the first database move"
+    );
+    let bound_move_call_end = apply_after_safety[bound_move..]
+        .find("?;")
+        .map(|offset| bound_move + offset)
+        .expect("complete identity-bound move call");
+    let bound_move_call = &apply_after_safety[bound_move..bound_move_call_end];
+    assert!(
+        bound_move_call.contains("root_dir")
+            && bound_move_call.contains("live_dir")
+            && bound_move_call.contains("&mut bound_old_database"),
+        "safe move must consume the opened root/live parents plus the same by-value held File/evidence object"
+    );
+    let owner_initializer =
+        &apply_after_safety[prepared_phase.saturating_sub(1500)..prepared_owner];
+    assert!(
+        owner_initializer.contains("old_database:")
+            && owner_initializer.contains("bound_old_database")
+            && owner_initializer.contains("evidence.clone()"),
+        "RestoreOwner.old_database must directly clone the same bound evidence"
+    );
+    let applying_publish_end = apply_after_safety[applying_owner..]
+        .find("?;")
+        .map(|offset| applying_owner + offset + 2)
+        .expect("durable applying owner call boundary");
+    let applying_to_move = &apply_after_safety[applying_publish_end..bound_move];
+    for forbidden_pre_move_check in [
+        "verify_current_database_for_snapshot",
+        "optional_controlled_file_evidence( &current_database",
+        "controlled_file_evidence( &current_database",
+        "symlink_metadata(&current_database)",
+        "File::open(&current_database)",
+        "current_database.exists()",
+    ] {
+        assert!(
+            !applying_to_move.contains(forbidden_pre_move_check),
+            "durable applying must flow directly to the first owner-protected move, never a path-only precheck: {forbidden_pre_move_check}"
+        );
+    }
+    assert!(
+        !apply_after_safety.contains("publish_no_replace(&current_database, &old_database)"),
+        "the post-safety state machine must not retain a second unbound current-path move"
+    );
+
+    let safe_move = item_body(&normalized, "fn move_current_database_with_bound_identity(");
+    assert!(
+        safe_move.contains("root_dir: &cap_std::fs::Dir")
+            && safe_move.contains("live_dir: &cap_std::fs::Dir")
+            && safe_move.contains("bound_old_database: &mut BoundOldDatabase")
+            && !safe_move.contains("current_database: &Path")
+            && !safe_move.contains("old_database: &Path"),
+        "safe move must accept only opened parents, fixed basenames, and the held evidence object: {safe_move}"
+    );
+    let first_move = safe_move
+        .find(
+            "publish_no_replace_at( root_dir, Path::new(DATABASE_FILENAME), live_dir, Path::new(\"old-datasources.db\"), )",
+        )
+        .expect("root-dirfd-relative first database move after durable applying owner");
+    let sync_root_after_move = safe_move[first_move..]
+        .find("sync_cap_directory( root_dir,")
+        .or_else(|| safe_move[first_move..].find("sync_cap_directory(root_dir,"))
+        .map(|offset| first_move + offset)
+        .expect("root parent sync after first move");
+    let sync_live_after_move = safe_move[sync_root_after_move..]
+        .find("sync_cap_directory( live_dir,")
+        .or_else(|| safe_move[sync_root_after_move..].find("sync_cap_directory(live_dir,"))
+        .map(|offset| sync_root_after_move + offset)
+        .expect("live parent sync after first move");
+    let moved_metadata = safe_move[sync_live_after_move..]
+        .find("live_dir.symlink_metadata(Path::new(\"old-datasources.db\"))")
+        .map(|offset| sync_live_after_move + offset)
+        .expect("live-dirfd-relative moved inode metadata");
+    let moved_identity = safe_move[moved_metadata..]
+        .find("stable_file_identity")
+        .map(|offset| moved_metadata + offset)
+        .expect("post-move stable identity inspection");
+    let mismatch = safe_move
+        .find("!= bound_old_database.evidence.identity")
+        .expect("moved inode versus bound evidence mismatch branch");
+    let rollback = safe_move[mismatch..]
+        .find(
+            "publish_no_replace_at( live_dir, Path::new(\"old-datasources.db\"), root_dir, Path::new(DATABASE_FILENAME), )",
+        )
+        .map(|offset| mismatch + offset)
+        .expect("dirfd-relative rollback of mismatched inode");
+    let sync_root_after_rollback = safe_move[rollback..]
+        .find("sync_cap_directory( root_dir,")
+        .or_else(|| safe_move[rollback..].find("sync_cap_directory(root_dir,"))
+        .map(|offset| rollback + offset)
+        .expect("root parent sync after rollback");
+    let sync_live_after_rollback = safe_move[sync_root_after_rollback..]
+        .find("sync_cap_directory( live_dir,")
+        .or_else(|| safe_move[sync_root_after_rollback..].find("sync_cap_directory(live_dir,"))
+        .map(|offset| sync_root_after_rollback + offset)
+        .expect("live parent sync after rollback");
+    let restored_metadata = safe_move[sync_live_after_rollback..]
+        .find("root_dir.symlink_metadata(Path::new(DATABASE_FILENAME))")
+        .map(|offset| sync_live_after_rollback + offset)
+        .expect("root-dirfd-relative rollback identity verification");
+    let restored_identity_match = safe_move[restored_metadata..]
+        .find("restored_identity != moved_identity")
+        .map(|offset| restored_metadata + offset)
+        .expect("rollback must verify the exact mismatched inode returned canonical");
+    let rejection = safe_move[restored_identity_match..]
+        .find("current_database_identity_changed()")
+        .map(|offset| restored_identity_match + offset)
+        .expect("exact current identity rejection after proven rollback");
+    assert!(
+        first_move < sync_root_after_move
+            && sync_root_after_move < sync_live_after_move
+            && sync_live_after_move < moved_metadata
+            && moved_metadata < moved_identity
+            && moved_identity < mismatch
+            && mismatch < rollback
+            && rollback < sync_root_after_rollback
+            && sync_root_after_rollback < sync_live_after_rollback
+            && sync_live_after_rollback < restored_metadata
+            && restored_metadata < restored_identity_match
+            && restored_identity_match < rejection,
+        "dirfd move/sync/post-move compare/dirfd rollback/sync/exact rollback verification must precede rejection"
+    );
+    assert!(
+        safe_move.contains("bound_old_database.held_file.metadata()")
+            && !safe_move.contains("publish_no_replace(")
+            && !safe_move.contains("libc::AT_FDCWD")
+            && !safe_move[first_move..mismatch].contains("File::open")
+            && !safe_move[first_move..mismatch].contains(".read(")
+            && !safe_move[first_move..mismatch].contains("controlled_file_evidence"),
+        "post-move mismatch detection must retain the held File and inspect moved metadata without ambient paths or competitor data I/O"
+    );
+    let publish_at = item_body(&normalized, "fn publish_no_replace_at(");
+    assert!(
+        publish_at.contains("from_dir: &cap_std::fs::Dir")
+            && publish_at.contains("to_dir: &cap_std::fs::Dir")
+            && publish_at.contains("from: &Path")
+            && publish_at.contains("to: &Path")
+            && publish_at.contains("libc::renameat2(")
+            && publish_at.contains("from_dir.as_raw_fd()")
+            && publish_at.contains("to_dir.as_raw_fd()")
+            && publish_at.contains("libc::RENAME_NOREPLACE")
+            && !publish_at.contains("libc::AT_FDCWD")
+            && !publish_at.contains("fs::rename")
+            && !publish_at.contains(".rename("),
+        "Linux no-replace publication must use both opened parent dirfds with renameat2(RENAME_NOREPLACE): {publish_at}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn assert_offline_apply_return_proof_source_contract() {
+    fn item_body<'a>(normalized: &'a str, signature: &str) -> &'a str {
+        let start = normalized
+            .find(signature)
+            .unwrap_or_else(|| panic!("missing production source item: {signature}"));
+        let body_start = normalized[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("missing body for production source item: {signature}"));
+        let mut depth = 0_usize;
+        for (offset, character) in normalized[body_start..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &normalized[start..body_start + offset + character.len_utf8()];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unterminated production source item: {signature}");
+    }
+
+    fn assert_apply_tail_call(item: &str, arguments: &str, label: &str) {
+        let body_start = item
+            .find('{')
+            .map(|offset| offset + 1)
+            .expect("offline apply wrapper body");
+        let call_start = item
+            .find("self.apply_restore_internal(")
+            .expect("shared offline apply tail call");
+        assert!(
+            item[body_start..call_start].trim().is_empty(),
+            "{label} must do no work before its shared offline apply tail-call: {item}"
+        );
+        assert_eq!(
+            item.matches("self.apply_restore_internal(").count(),
+            1,
+            "{label} must call the shared offline apply internal exactly once: {item}"
+        );
+        assert!(
+            item.contains(arguments),
+            "{label} must preserve the exact crash/interlock argument tuple: {item}"
+        );
+        assert_eq!(
+            item.matches(".await").count(),
+            1,
+            "{label} must contain only the shared offline apply await: {item}"
+        );
+        for forbidden in [" if ", " if let ", " match ", " loop ", " while ", " for "] {
+            assert!(
+                !item.contains(forbidden),
+                "{label} must not select a test-only apply/finalization path: {forbidden} in {item}"
+            );
+        }
+        let await_end = item
+            .rfind(".await")
+            .map(|offset| offset + ".await".len())
+            .expect("single offline apply await");
+        assert_eq!(
+            item[await_end..].trim(),
+            "}",
+            "{label} must tail-call the shared offline apply internal with no fallback work"
+        );
+    }
+
+    let source = include_str!("../src/datasource/backup.rs");
+    let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ordinary_start = normalized
+        .find("pub async fn apply_restore(&self, plan: &RestorePlan)")
+        .expect("ordinary offline apply entry");
+    let wrapper_start = normalized
+        .find("pub async fn apply_restore_with_safety_return_interlock_for_test(")
+        .expect("test-only offline return-proof wrapper");
+    let internal_start = normalized
+        .find("async fn apply_restore_internal(")
+        .expect("shared offline apply internal");
+    assert!(
+        ordinary_start < wrapper_start && wrapper_start < internal_start,
+        "ordinary apply and the synchronization-only wrapper must remain adjacent to one shared internal"
+    );
+    let ordinary = item_body(
+        &normalized,
+        "pub async fn apply_restore(&self, plan: &RestorePlan)",
+    );
+    let wrapper = item_body(
+        &normalized,
+        "pub async fn apply_restore_with_safety_return_interlock_for_test(",
+    );
+    assert_apply_tail_call(
+        ordinary,
+        "self.apply_restore_internal(plan, None, None)",
+        "ordinary offline apply",
+    );
+    assert_apply_tail_call(
+        wrapper,
+        "self.apply_restore_internal(plan, None, Some(barriers))",
+        "offline return-proof test wrapper",
+    );
+
+    let internal = item_body(&normalized, "async fn apply_restore_internal(");
+    assert!(
+        internal.contains("safety_return_interlock: Option<[Arc<tokio::sync::Barrier>; 2]>",)
+            && !internal.contains("keep_frozen:"),
+        "one shared internal must own only crash injection plus the thin return-proof interlock: {internal}"
+    );
+    assert_eq!(
+        internal.matches(".apply_restore_after_safety(").count(),
+        1,
+        "offline apply must execute the real restore state machine exactly once"
+    );
+    assert_eq!(
+        internal.matches("create_restore_safety_snapshot(").count(),
+        1,
+        "offline apply must create exactly one held safety proof"
+    );
+    assert!(
+        internal.contains("let verified_safety_snapshot = create_restore_safety_snapshot(",),
+        "the unique safety snapshot result must remain the proof object used through return"
+    );
+    for forbidden_interlock_branch in [
+        "if safety_return_interlock.is_some()",
+        "if let Some(safety_return_interlock)",
+        "match safety_return_interlock",
+    ] {
+        assert!(
+            !internal.contains(forbidden_interlock_branch),
+            "interlock presence may only pause the ordinary apply path: {forbidden_interlock_branch}"
+        );
+    }
+    assert_eq!(
+        internal
+            .matches("wait_restore_safety_return_interlock(")
+            .count(),
+        1,
+        "the shared internal must cross exactly one return-proof wait"
+    );
+
+    let saved_gate = internal
+        .find("let write_gate_database = prepared.write_gate_database.clone()")
+        .expect("save the exact frozen database key before moving prepared state");
+    let outcome_binding = internal
+        .find("let apply_outcome =")
+        .expect("save the unique real apply outcome");
+    let apply_call = internal
+        .find(".apply_restore_after_safety(")
+        .expect("unique real restore apply call");
+    let apply_end = internal[apply_call..]
+        .find(".await;")
+        .map(|offset| apply_call + offset + ".await;".len())
+        .expect("await and save the real apply outcome");
+    let apply_invocation = &internal[apply_call..apply_end];
+    let plan_argument = apply_invocation
+        .find("plan")
+        .expect("restore plan argument");
+    let crash_argument = apply_invocation
+        .find("crash_at")
+        .expect("restore crash argument");
+    let frozen_argument = apply_invocation[crash_argument..]
+        .find("true")
+        .map(|offset| crash_argument + offset)
+        .expect("offline state machine must retain the write gate");
+    let prepared_argument = apply_invocation
+        .find("prepared")
+        .expect("prepared restore state argument");
+    let proof_argument = apply_invocation
+        .find("&verified_safety_snapshot")
+        .expect("same held safety proof argument");
+    assert!(
+        saved_gate < outcome_binding
+            && outcome_binding < apply_call
+            && plan_argument < crash_argument
+            && crash_argument < frozen_argument
+            && frozen_argument < prepared_argument
+            && prepared_argument < proof_argument
+            && !apply_invocation.contains("false"),
+        "offline apply must run its one real outcome with keep_frozen=true and the held safety proof: {apply_invocation}"
+    );
+
+    let wait_start = internal[apply_end..]
+        .find("wait_restore_safety_return_interlock(")
+        .map(|offset| apply_end + offset)
+        .expect("post-outcome return-proof wait");
+    let wait_end = internal[wait_start..]
+        .find(".await;")
+        .map(|offset| wait_start + offset + ".await;".len())
+        .expect("complete return-proof wait");
+    let wait_call = &internal[wait_start..wait_end];
+    assert!(
+        wait_call.contains("safety_return_interlock.as_ref()"),
+        "the seam may only forward the thin optional barriers: {wait_call}"
+    );
+    let revalidate = internal[wait_end..]
+        .find("let safety_binding = verified_safety_snapshot.revalidate()")
+        .map(|offset| wait_end + offset)
+        .expect("return-time revalidation of the same held safety proof");
+    let classify = internal[revalidate..]
+        .find("match (apply_outcome, safety_binding)")
+        .map(|offset| revalidate + offset)
+        .expect("classify the saved apply outcome with its return-time proof");
+    assert!(
+        apply_end < wait_start
+            && wait_start < wait_end
+            && wait_end < revalidate
+            && revalidate < classify,
+        "the real outcome must finish frozen, then wait, revalidate the same held proof, and only then classify"
+    );
+    let wait_to_proof = &internal[wait_end..revalidate];
+    for forbidden_short_circuit in ["?", "return ", "Err(", " if ", " if let ", " match "] {
+        assert!(
+            !wait_to_proof.contains(forbidden_short_circuit),
+            "barrier release must flow directly into the held proof revalidation: {forbidden_short_circuit}"
+        );
+    }
+
+    let success_arm = internal[classify..]
+        .find("(Ok(mut recovery), Ok(())) => {")
+        .map(|offset| classify + offset)
+        .expect("only real-success plus valid-proof may finalize");
+    let invalid_success_arm = internal[success_arm..]
+        .find("(Ok(_), Err(error)) => Err(error)")
+        .map(|offset| success_arm + offset)
+        .expect("successful apply with invalid proof must fail closed");
+    let error_arm = internal[invalid_success_arm..]
+        .find("(Err(error), _) => Err(error)")
+        .map(|offset| invalid_success_arm + offset)
+        .expect("every real apply error, including InjectedCrash, must remain fail-closed");
+    let valid_success = &internal[success_arm..invalid_success_arm];
+    assert_eq!(
+        internal.matches(".remove(&write_gate_database)").count(),
+        1,
+        "one valid-success arm must be the only write-gate finalizer"
+    );
+    let gate_open = valid_success
+        .find(".remove(&write_gate_database)")
+        .expect("valid success removes the exact frozen gate key");
+    let may_open = valid_success
+        .find("recovery.store_may_open = true")
+        .expect("valid success marks Store reopen safe");
+    let write_open = valid_success
+        .find("recovery.write_gate_open = true")
+        .expect("valid success reports the gate open");
+    let success_return = valid_success
+        .rfind("Ok(recovery)")
+        .expect("valid success returns the finalized real outcome");
+    assert!(
+        may_open < write_open && write_open < gate_open && gate_open < success_return,
+        "valid proof must preconstruct its success result, then open the gate as the last action before return"
+    );
+    for forbidden_after_gate in [
+        "?",
+        ".await",
+        "fs::",
+        ".is_file()",
+        ".is_dir()",
+        ".revalidate()",
+        ".open(",
+        ".read(",
+    ] {
+        assert!(
+            !valid_success[gate_open..].contains(forbidden_after_gate),
+            "once the gate opens, success may perform no fallible/I/O/proof work: {forbidden_after_gate}"
+        );
+    }
+    let gate_open_absolute = success_arm + gate_open;
+    assert!(
+        success_arm < gate_open_absolute
+            && gate_open_absolute < invalid_success_arm
+            && invalid_success_arm < error_arm,
+        "invalid success and every Error/InjectedCrash path must remain outside the unique gate-opening arm"
+    );
+
+    let proof_revalidate = item_body(
+        &normalized,
+        "fn revalidate(&self) -> Result<(), ImportError>",
+    );
+    let first_binding_match = proof_revalidate
+        .find("verify_snapshot_directory_binding(&self.binding)")
+        .expect("initial held/canonical safety binding match");
+    let fresh_evidence = proof_revalidate
+        .find("controlled_tree_evidence_at(self.binding.directory()")
+        .expect("fresh evidence must be read through the held safety directory");
+    let evidence_match = proof_revalidate
+        .find("fresh_evidence != self.evidence")
+        .expect("fresh held-tree evidence must match the original proof");
+    let final_binding_match = proof_revalidate
+        .rfind("verify_snapshot_directory_binding(&self.binding)")
+        .expect("final held/canonical safety binding match");
+    assert_eq!(
+        proof_revalidate
+            .matches("verify_snapshot_directory_binding(&self.binding)")
+            .count(),
+        2,
+        "return proof must bracket held-tree evidence with exactly two binding checks"
+    );
+    assert!(
+        first_binding_match < fresh_evidence
+            && fresh_evidence < evidence_match
+            && evidence_match < final_binding_match,
+        "return proof must check binding, read/compare through the held directory, then check binding again"
+    );
+    for forbidden_path_reopen in [
+        "self.binding.canonical_path",
+        "open_restore_safety_snapshot_binding",
+        "verify_restore_safety_snapshot_path",
+        "fs::",
+        "File::open",
+    ] {
+        assert!(
+            !proof_revalidate.contains(forbidden_path_reopen),
+            "return proof must never rebuild itself from the ambient snapshot path: {forbidden_path_reopen}"
+        );
+    }
+
+    let wait_helper = item_body(
+        &normalized,
+        "async fn wait_restore_safety_return_interlock(",
+    );
+    assert!(
+        wait_helper.contains("[0]")
+            && wait_helper.contains("[1]")
+            && wait_helper.matches(".wait().await").count() == 2,
+        "return-proof interlock must be a two-wait synchronization-only helper: {wait_helper}"
+    );
+    for forbidden in [
+        "Path",
+        "File",
+        "ImportError",
+        "Result<",
+        "return Err",
+        "fs::",
+        "open(",
+        "read(",
+        "write(",
+    ] {
+        assert!(
+            !wait_helper.contains(forbidden),
+            "return-proof interlock must never select, inspect, or mutate production state: {forbidden}"
+        );
+    }
+
+    let crash_harness = item_body(
+        &normalized,
+        "pub async fn apply_with_crash( &self, plan: &RestorePlan, crash_point: BackupCrashPoint, )",
+    );
+    assert_eq!(
+        crash_harness.matches(".apply_restore_internal(").count(),
+        1,
+        "the crash harness must execute the same shared offline internal exactly once"
+    );
+    assert!(
+        crash_harness.contains("plan, Some(crash_point), None")
+            && crash_harness.contains(
+                "Err(ImportError::InjectedCrash(actual)) if actual == crash_point.as_str()",
+            ),
+        "the shared internal must preserve the exact InjectedCrash contract: {crash_harness}"
+    );
 }
 
 fn sidecar_file_identity(path: &Path) -> String {
@@ -1790,6 +3351,98 @@ async fn startup_replay_rejects_a_symlinked_restore_registry_without_external_io
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn production_startup_replays_restore_before_creating_or_opening_store() {
+    const UNKNOWN_ENTRY: &str = "unknown-startup-control";
+    const CANARY: &[u8] = b"T130-production-startup-unknown-registry-canary";
+
+    let workspace = TestWorkspace::new().expect("workspace");
+    let root = workspace.root().join("blocked-production-startup-root");
+    let registry = root.join(".hivegui-db-staging-v1");
+    fs::create_dir_all(&registry).expect("create controlled restore registry");
+    let unknown_entry = registry.join(UNKNOWN_ENTRY);
+    fs::write(&unknown_entry, CANARY).expect("write fixed unknown registry canary");
+    let registry_identity = sidecar_file_identity(&registry);
+    let unknown_entry_identity = sidecar_file_identity(&unknown_entry);
+
+    let error = open_store_after_restore_recovery(&root)
+        .await
+        .expect_err("ambiguous restore registry must block production Store startup");
+    let import_error = error
+        .downcast_ref::<ImportError>()
+        .expect("production startup must preserve the typed restore error");
+    match import_error {
+        ImportError::UnsafeArchiveEntry(detail) => assert_eq!(
+            detail.as_str(),
+            "unknown registry entry unknown-startup-control",
+            "production startup must expose the exact fail-closed registry detail"
+        ),
+        other => panic!("expected UnsafeArchiveEntry, got {other:?}"),
+    }
+
+    assert_eq!(
+        sidecar_file_identity(&registry),
+        registry_identity,
+        "blocked startup must preserve the restore registry identity"
+    );
+    assert_eq!(
+        sidecar_file_identity(&unknown_entry),
+        unknown_entry_identity,
+        "blocked startup must preserve the unknown entry identity"
+    );
+    assert_eq!(
+        fs::read(&unknown_entry).expect("read retained registry canary"),
+        CANARY,
+        "blocked startup must preserve the unknown entry bytes"
+    );
+    for relative in [
+        "datasources.db",
+        "datasources.db-wal",
+        "datasources.db-shm",
+        "datasources.db-journal",
+        "encryption.key",
+        "plugins",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "restore ambiguity must block before production creates {relative}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_startup_opens_a_clean_root_with_owner_aware_store() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let root = workspace.root().join("clean-production-startup-root");
+
+    let store = open_store_after_restore_recovery(&root)
+        .await
+        .expect("clean production root must recover and open");
+    let database = root.join("datasources.db");
+    let plugins = root.join("plugins");
+    assert_eq!(store.database_path(), database);
+    assert!(
+        database.is_file(),
+        "production startup must create the database"
+    );
+    assert!(
+        plugins.is_dir(),
+        "production startup must create the Plugin root"
+    );
+
+    let second_open = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect_err("the returned production Store must own its database path");
+    assert_eq!(
+        second_open.kind(),
+        StoreOpenErrorKind::AlreadyLocked,
+        "production startup must use the owner-aware Store boundary"
+    );
+
+    store.pool().close().await;
+    drop(store);
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn startup_replay_rejects_a_symlinked_live_instance_before_manifest_io() {
@@ -1996,6 +3649,1899 @@ async fn confirmation_freezes_after_the_last_legal_write_and_exports_that_write(
     assert!(confirmed.includes_entity("data_sources", "last-legal-write"));
     assert!(confirmed.current_checkpoint_complete());
     assert!(confirmed.sidecars_converged());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn write_gate_close_blocks_shared_pool_business_writes_before_checkpoint() {
+    let source = TestWorkspace::new().expect("source workspace");
+    let source_store = Store::open_local(StoreOpenOptions::new(
+        source.database_path(),
+        source.plugin_root(),
+    ))
+    .await
+    .expect("open source Store");
+    let agent_store = AgentStore::from_store(&source_store).expect("open production Agent Store");
+    let archive = unique_target_path(&source, "shared-pool-write-gate");
+    let coordinator = BackupCoordinator::from_store(source_store.clone())
+        .expect("single production backup coordinator");
+    let preview = coordinator
+        .preview_export(&archive)
+        .await
+        .expect("preview backup");
+    let write_gate_close = BACKUP_CONFIRMATION_CRASH_POINTS
+        .iter()
+        .copied()
+        .find(|point| point.as_str() == "write_gate_close")
+        .expect("write-gate crash point");
+
+    let interrupted = coordinator
+        .confirm_with_crash(
+            preview,
+            "T119-shared-pool-write-gate-passphrase",
+            write_gate_close,
+        )
+        .await
+        .expect_err("the exact write-gate boundary must interrupt");
+    assert!(interrupted.reached_requested_boundary());
+    let shared_pool_probe = sqlx::query_scalar::<_, i64>("SELECT 1")
+        .fetch_one(source_store.pool())
+        .await;
+    let shared_pool_probe_is_closed = matches!(&shared_pool_probe, Err(sqlx::Error::PoolClosed));
+    assert_eq!(
+        (source_store.pool().is_closed(), shared_pool_probe_is_closed,),
+        (true, true),
+        "the first write-gate crash boundary must close the shared SQLx Pool; probe={shared_pool_probe:?}"
+    );
+
+    let input = AgentInput::new_root(
+        "must_not_commit_after_backup_freeze",
+        "Must Not Commit After Backup Freeze",
+        "shared-pool write-gate contract",
+    )
+    .expect("valid Agent input");
+    agent_store
+        .create(input)
+        .await
+        .expect_err("every business writer sharing the production Pool must be closed at the gate");
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(source.database_path())
+        .create_if_missing(false)
+        .foreign_keys(true);
+    let read_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open frozen current for verification");
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM agents WHERE identifier = 'must_not_commit_after_backup_freeze'",
+    )
+    .fetch_one(&read_pool)
+    .await
+    .expect("read post-freeze Agent count");
+    read_pool.close().await;
+    assert_eq!(
+        count, 0,
+        "the write-gate boundary must be zero-modification"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn store_bound_restore_preview_confirmation_drains_pool_and_transfers_owner() {
+    const PASSPHRASE: &str = "T130-store-bound-success-passphrase";
+
+    let source = TestWorkspace::new().expect("source workspace");
+    let archive = export_single_data_source_archive(
+        &source,
+        "store-bound-success",
+        "restored-new-current",
+        PASSPHRASE,
+    )
+    .await;
+
+    let target = TestWorkspace::new().expect("target workspace");
+    let root = target.root().join("store-bound-success-root");
+    fs::create_dir_all(&root).expect("create target root");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware current Store");
+    current
+        .create(
+            "old-before-restore",
+            "127.0.0.1",
+            3307,
+            "old-user",
+            b"old-password",
+        )
+        .await
+        .expect("seed old current");
+    let stale = current.clone();
+    let agent_store = AgentStore::from_store(&stale).expect("share the production Store pool");
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind restore to the live Store owner");
+
+    let prepared: PreparedRestore = coordinator
+        .preview_restore(&archive, PASSPHRASE)
+        .await
+        .expect("fully authenticate and validate an unarmed preview");
+    let operation_id = prepared.db_instance_operation_id().to_owned();
+    let safety_snapshot = prepared.safety_backup_path().to_path_buf();
+    let expected_safety_snapshot = root
+        .join("backups")
+        .join(format!("restore-safety-{operation_id}"));
+    assert_eq!(safety_snapshot, expected_safety_snapshot);
+    assert!(
+        !safety_snapshot.exists(),
+        "preview must display the exact future path without claiming a safety backup exists"
+    );
+    assert!(
+        !prepared.owner_exists(),
+        "preview must not publish a restore owner"
+    );
+
+    let live = root
+        .join(".hivegui-db-staging-v1")
+        .join(format!("restore-{operation_id}"));
+    let instance_manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(live.join(".hivegui-db-instance-v1.json"))
+            .expect("preview must publish the unarmed instance manifest"),
+    )
+    .expect("parse preview instance manifest");
+    assert_eq!(instance_manifest["ownership_state"], "unarmed");
+    assert_eq!(instance_manifest["role"], "restore");
+    assert_eq!(instance_manifest["db_instance_operation_id"], operation_id);
+    assert!(!live.join(".hivegui-db-recovery-v1.json").exists());
+    assert!(!live.join(".hivegui-db-recovery-v1.json.staging").exists());
+    let preview_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &preview_locked,
+        "preview must retain the production Store process lock",
+    );
+
+    stale
+        .create(
+            "last-legal-write",
+            "127.0.0.1",
+            3308,
+            "last-user",
+            b"last-password",
+        )
+        .await
+        .expect("current remains writable between preview and final confirmation");
+    let held_connection = stale
+        .pool()
+        .acquire()
+        .await
+        .expect("hold one pre-confirmation pooled connection");
+
+    let confirmation = coordinator
+        .begin_confirmation(&prepared)
+        .expect("synchronous confirmation boundary");
+    assert!(
+        stale.pool().is_closed(),
+        "begin_confirmation must terminal-close the shared Pool before returning"
+    );
+    let drain_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &drain_locked,
+        "begin_confirmation must retain the process lock while a connection drains",
+    );
+    let duplicate_begin = match coordinator.begin_confirmation(&prepared) {
+        Ok(_) => panic!("one prepared restore must not start two confirmations"),
+        Err(error) => error,
+    };
+    assert_eq!(duplicate_begin.to_string(), PREPARED_RESTORE_NOT_ACTIVE);
+    let cancel_while_confirming = coordinator
+        .cancel_preview(&prepared)
+        .await
+        .expect_err("an in-flight confirmation must not be canceled through its preview handle");
+    assert_eq!(
+        cancel_while_confirming.to_string(),
+        PREPARED_RESTORE_NOT_ACTIVE
+    );
+    assert!(
+        live.is_dir(),
+        "rejected duplicate use must preserve the active live instance"
+    );
+    assert!(stale.pool().is_closed());
+    let blocked_data_source = stale
+        .create(
+            "must-not-write-after-confirmation",
+            "127.0.0.1",
+            3309,
+            "blocked-user",
+            b"blocked-password",
+        )
+        .await
+        .expect_err("DataSource writes must stop at the synchronous confirmation boundary");
+    assert!(
+        blocked_data_source
+            .to_string()
+            .contains("write_gate_closed")
+    );
+    let blocked_agent = AgentInput::new_root(
+        "must_not_write_after_restore_confirmation",
+        "Must Not Write After Restore Confirmation",
+        "shared Store pool must already be terminal closed",
+    )
+    .expect("valid blocked Agent input");
+    agent_store
+        .create(blocked_agent)
+        .await
+        .expect_err("Agent writes sharing the Store pool must stop at confirmation");
+
+    let mut finish = Box::pin(confirmation.finish());
+    tokio::select! {
+        result = &mut finish => {
+            let _ = result;
+            panic!("finish must drain the held pre-confirmation connection");
+        }
+        _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+    }
+    drop(held_connection);
+    let applied = tokio::time::timeout(Duration::from_secs(5), finish)
+        .await
+        .expect("finish must complete after the held connection drains")
+        .expect("finish complete replacement");
+    assert_eq!(applied.retirement_outcome(), RetirementOutcome::New);
+    assert!(applied.retirement_is_done());
+    assert!(applied.has_exactly_one_live_database());
+    assert!(applied.has_no_mixed_database_or_plugin_tree());
+    assert!(
+        !applied.store_may_open() && !applied.write_gate_is_open(),
+        "successful in-process restore stays terminal until startup recovery"
+    );
+    assert!(stale.pool().is_closed());
+    let terminal_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &terminal_locked,
+        "finish must retain the process lock until startup recovery",
+    );
+    let terminal_gate = stale
+        .create(
+            "must-not-write-after-finish",
+            "127.0.0.1",
+            3310,
+            "blocked-user",
+            b"blocked-password",
+        )
+        .await
+        .expect_err("finish must not reopen the old Store write gate");
+    assert!(terminal_gate.to_string().contains("write_gate_closed"));
+
+    assert_eq!(
+        data_source_names_from_database(&root.join("datasources.db")).await,
+        vec!["restored-new-current"]
+    );
+    assert!(safety_snapshot.join("manifest.json").is_file());
+    assert_eq!(
+        data_source_names_from_database(&safety_snapshot.join("datasources.db")).await,
+        vec!["last-legal-write", "old-before-restore"]
+    );
+    assert_eq!(
+        fs::read_dir(root.join(".hivegui-db-staging-v1"))
+            .expect("read retired restore registry")
+            .count(),
+        0,
+        "successful finish must durably retire its live instance"
+    );
+
+    drop(prepared);
+    let startup = coordinator
+        .recover_startup()
+        .await
+        .expect("startup recovery reopens the terminal gate");
+    assert!(startup.store_may_open());
+    assert!(startup.write_gate_is_open());
+    assert!(startup.retirement_is_done());
+    let recovery_open = run_store_bound_restore_lock_child(&root, "expect-open");
+    assert_store_bound_restore_lock_child(
+        &recovery_open,
+        "startup recovery must release the process lock for a fresh owner",
+    );
+    drop(coordinator);
+
+    let reopened = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("startup recovery must release the old owner and OS lock");
+    let reopened_names = reopened
+        .list()
+        .await
+        .expect("read reopened new current")
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<Vec<_>>();
+    assert_eq!(reopened_names, vec!["restored-new-current"]);
+
+    let new_owner_locked_before_stale_drop =
+        run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &new_owner_locked_before_stale_drop,
+        "the fresh parent owner must exclude child processes while a stale old clone remains",
+    );
+    drop(stale);
+    let new_owner_locked_after_stale_drop =
+        run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &new_owner_locked_after_stale_drop,
+        "dropping the stale old clone must not release the fresh parent's process lock",
+    );
+    let third_open = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect_err("dropping the stale old owner must not remove the new owner's registry entry");
+    assert_eq!(third_open.kind(), StoreOpenErrorKind::AlreadyLocked);
+    reopened.pool().close().await;
+    drop(reopened);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn closed_current_snapshot_copy_rejects_a_leaf_exchange_without_competitor_data_io() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    const PASSPHRASE: &str = "T130-current-snapshot-copy-binding-passphrase";
+
+    assert_current_snapshot_copy_seam_source_contract();
+
+    let source = TestWorkspace::new().expect("restore source workspace");
+    let archive = export_single_data_source_archive(
+        &source,
+        "current-snapshot-copy-binding",
+        "replacement-after-current-copy",
+        PASSPHRASE,
+    )
+    .await;
+
+    let competitor_source = TestWorkspace::new().expect("competitor source workspace");
+    let competitor_store = Store::open_local(StoreOpenOptions::new(
+        competitor_source.database_path(),
+        competitor_source.plugin_root(),
+    ))
+    .await
+    .expect("open valid competitor Store");
+    competitor_store
+        .create(
+            "competitor-must-never-be-copied",
+            "127.0.0.1",
+            3306,
+            "competitor-user",
+            b"competitor-password",
+        )
+        .await
+        .expect("seed distinguishable competitor database");
+    competitor_store.pool().close().await;
+    drop(competitor_store);
+
+    let target = TestWorkspace::new().expect("restore target workspace");
+    let root = target.root().join("current-snapshot-copy-binding-root");
+    fs::create_dir_all(&root).expect("create restore target root");
+    let current_database = root.join("datasources.db");
+    let current_plugins = root.join("plugins");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware current Store");
+    current
+        .create(
+            "old-current-must-survive-copy-exchange",
+            "127.0.0.1",
+            3307,
+            "old-user",
+            b"old-password",
+        )
+        .await
+        .expect("seed old current state");
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind restore to exact current Store");
+    let prepared = coordinator
+        .preview_restore(&archive, PASSPHRASE)
+        .await
+        .expect("prepare authenticated unarmed replacement");
+    let operation_id = prepared.db_instance_operation_id().to_owned();
+    let safety_snapshot = prepared.safety_backup_path().to_path_buf();
+    let live = root
+        .join(".hivegui-db-staging-v1")
+        .join(format!("restore-{operation_id}"));
+    let staging_database = live.join("datasources.db");
+    let staging_plugins = live.join("plugins");
+    let staging_database_metadata =
+        fs::metadata(&staging_database).expect("record staged database identity before finish");
+    let staging_database_identity = (
+        staging_database_metadata.dev(),
+        staging_database_metadata.ino(),
+    );
+    let current_plugins_metadata =
+        fs::metadata(&current_plugins).expect("record old Plugin root identity");
+    let current_plugins_identity = (
+        current_plugins_metadata.dev(),
+        current_plugins_metadata.ino(),
+    );
+    let staging_plugins_metadata =
+        fs::metadata(&staging_plugins).expect("record staged Plugin root identity");
+    let staging_plugins_identity = (
+        staging_plugins_metadata.dev(),
+        staging_plugins_metadata.ino(),
+    );
+
+    let competitor = root.join("current-copy-competitor.db");
+    fs::copy(competitor_source.database_path(), &competitor)
+        .expect("copy a valid sibling competitor database");
+    let competitor_sha256_before = sha256_path(&competitor);
+    let competitor_metadata = fs::metadata(&competitor).expect("record competitor inode identity");
+    let competitor_identity = (competitor_metadata.dev(), competitor_metadata.ino());
+
+    let confirmation = coordinator
+        .begin_confirmation(&prepared)
+        .expect("synchronously close the Store and transfer its owner");
+    assert!(
+        stale.pool().is_closed(),
+        "confirmation must terminal-close the shared Store before offline checkpoint/copy"
+    );
+
+    // This future test interlock owns two architecture-neutral, two-party
+    // barriers. Production and tests must share the same private finish
+    // implementation. The private hook may only wait at this exact boundary:
+    //
+    //   0 = the closed-current checkpoint completed and a held current-file
+    //       descriptor was identity-matched to the canonical leaf; the ordinary
+    //       safety-snapshot database copy has not started;
+    //   1 = the test releases that same production copy path after exchanging
+    //       the canonical current leaf with a pre-watched competitor.
+    //
+    // The hook must not receive a path, choose a file, perform validation, or
+    // bypass the normal safety-snapshot copy.
+    let copy_barriers: [std::sync::Arc<tokio::sync::Barrier>; 2] =
+        std::array::from_fn(|_| std::sync::Arc::new(tokio::sync::Barrier::new(2)));
+    let finish_barriers = copy_barriers.clone();
+    let mut finish_task = tokio::spawn(async move {
+        confirmation
+            .finish_with_current_snapshot_copy_interlock_for_test(finish_barriers)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(10), copy_barriers[0].wait())
+        .await
+        .expect("reach the post-checkpoint, post-identity, pre-copy boundary");
+    for suffix in ["-wal", "-shm", "-journal"] {
+        assert!(
+            !PathBuf::from(format!("{}{suffix}", current_database.display())).exists(),
+            "barrier 0 requires the closed current sidecars to be fully converged: {suffix}"
+        );
+    }
+    assert_eq!(
+        data_source_names_from_database(&current_database).await,
+        vec!["old-current-must-survive-copy-exchange"],
+        "barrier 0 requires the immutable checkpointed main file to contain the complete old state"
+    );
+    let current_metadata =
+        fs::metadata(&current_database).expect("record pinned old-current identity at boundary");
+    let current_identity = (current_metadata.dev(), current_metadata.ino());
+    assert!(
+        open_linux_fd_count_for_identity(current_identity) >= 1,
+        "barrier 0 requires production to retain an open descriptor for the exact current dev/inode"
+    );
+    let current_sha256_after_checkpoint = sha256_path(&current_database);
+    assert_ne!(
+        current_sha256_after_checkpoint, competitor_sha256_before,
+        "old current and competitor fixtures must remain distinguishable"
+    );
+
+    let competitor_watch = DataIoWatch::new(&competitor);
+    assert!(
+        competitor_watch.drain_masks().is_empty(),
+        "installing the competitor inode watch must perform no data I/O"
+    );
+    let exchange = PathExchangeGuard::new(&current_database, &competitor);
+    let exchanged_current =
+        fs::metadata(&current_database).expect("read exchanged canonical current identity");
+    assert_eq!(
+        (exchanged_current.dev(), exchanged_current.ino()),
+        competitor_identity,
+        "the canonical current path must resolve to the pre-watched competitor"
+    );
+    copy_barriers[1].wait().await;
+
+    let finish_outcome = tokio::time::timeout(Duration::from_secs(10), &mut finish_task)
+        .await
+        .expect("finish must fail closed after releasing the ordinary-copy boundary")
+        .expect("finish task must not panic");
+    let competitor_data_io_masks = competitor_watch.drain_masks();
+    drop(competitor_watch);
+    let competitor_sha256_after = fs::read(&current_database)
+        .ok()
+        .map(|bytes| hex::encode(Sha256::digest(bytes)));
+    let rejected_for_current_identity = matches!(
+        &finish_outcome,
+        Err(ImportError::UnsafeArchiveEntry(reason))
+            if reason == "current database identity changed"
+    );
+    let finish_diagnostic = finish_outcome
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "restore unexpectedly succeeded".into());
+
+    let instance_manifest_unarmed = fs::read(live.join(".hivegui-db-instance-v1.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|manifest| manifest["ownership_state"] == "unarmed");
+    let staging_database_unchanged = fs::metadata(&staging_database)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == staging_database_identity);
+    let current_plugins_unchanged = fs::metadata(&current_plugins)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == current_plugins_identity);
+    let staging_plugins_unchanged = fs::metadata(&staging_plugins)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == staging_plugins_identity);
+    let exchanged_leaf_pair_unchanged = fs::metadata(&current_database)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == competitor_identity)
+        && fs::metadata(&competitor)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == current_identity);
+    let owner_absent = !live.join(".hivegui-db-recovery-v1.json").exists()
+        && !live.join(".hivegui-db-recovery-v1.json.staging").exists();
+    let safety_database = safety_snapshot.join("datasources.db");
+    let safety_is_absent_or_exact_old = !safety_snapshot.exists()
+        || safety_snapshot.join("manifest.json").is_file()
+            && safety_database.is_file()
+            && sha256_path(&safety_database) == current_sha256_after_checkpoint;
+    let terminal_probe = sqlx::query_scalar::<_, i64>("SELECT 1")
+        .fetch_one(stale.pool())
+        .await;
+    let terminal_probe_is_closed = matches!(&terminal_probe, Err(sqlx::Error::PoolClosed));
+
+    assert_eq!(
+        (
+            rejected_for_current_identity,
+            competitor_data_io_masks.is_empty(),
+            competitor_sha256_after.as_deref() == Some(competitor_sha256_before.as_str()),
+            exchanged_leaf_pair_unchanged,
+            instance_manifest_unarmed,
+            owner_absent,
+            staging_database_unchanged,
+            current_plugins_unchanged,
+            staging_plugins_unchanged,
+            safety_is_absent_or_exact_old,
+            stale.pool().is_closed(),
+            terminal_probe_is_closed,
+        ),
+        (
+            true, true, true, true, true, true, true, true, true, true, true, true
+        ),
+        "post-checkpoint current-leaf exchange must reject before competitor data I/O, owner publication, or database/Plugin switch; finish={finish_diagnostic}; competitor_masks={competitor_data_io_masks:?}; terminal_probe={terminal_probe:?}"
+    );
+
+    let terminal_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &terminal_locked,
+        "fail-closed current-copy rejection must retain the Store process lock until startup replay",
+    );
+    exchange.restore();
+    assert_eq!(
+        sha256_path(&current_database),
+        current_sha256_after_checkpoint,
+        "swapping back must restore the exact checkpointed old current"
+    );
+    drop(prepared);
+    let recovered = coordinator
+        .recover_startup()
+        .await
+        .expect("startup replay retires the unarmed instance and releases the old owner");
+    assert_eq!(
+        recovered.retirement_outcome(),
+        RetirementOutcome::AbortedPreSwitch
+    );
+    assert!(recovered.store_may_open() && recovered.write_gate_is_open());
+    let recovery_open = run_store_bound_restore_lock_child(&root, "expect-open");
+    assert_store_bound_restore_lock_child(
+        &recovery_open,
+        "successful startup replay must release the current-copy failure process lock",
+    );
+    let reopened = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("reopen old current after fail-closed startup replay");
+    let reopened_names = reopened
+        .list()
+        .await
+        .expect("read preserved old current")
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reopened_names,
+        vec!["old-current-must-survive-copy-exchange"]
+    );
+    reopened.pool().close().await;
+    drop(reopened);
+    drop(stale);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn verified_safety_snapshot_current_exchange_is_owner_bound_before_rejection() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    const PASSPHRASE: &str = "T130-post-safety-current-binding-passphrase";
+    const OLD_ARTIFACT: &str = "post-safety-old/1.0.0/plugin.wasm";
+    const OLD_WASM: &[u8] = b"\0asmT130-post-safety-old-plugin";
+    const NEW_ARTIFACT: &str = "post-safety-new/1.0.0/plugin.wasm";
+    const NEW_WASM: &[u8] = b"\0asmT130-post-safety-new-plugin";
+
+    assert_current_snapshot_copy_seam_source_contract();
+
+    let source = TestWorkspace::new().expect("replacement source workspace");
+    let archive = export_data_source_and_plugin_archive(
+        &source,
+        "post-safety-current-binding",
+        "new-must-not-switch-after-post-safety-exchange",
+        "post-safety-new",
+        NEW_ARTIFACT,
+        NEW_WASM,
+        PASSPHRASE,
+    )
+    .await;
+
+    let competitor_source = TestWorkspace::new().expect("competitor source workspace");
+    let competitor_store = Store::open_local(StoreOpenOptions::new(
+        competitor_source.database_path(),
+        competitor_source.plugin_root(),
+    ))
+    .await
+    .expect("open competitor Store");
+    competitor_store
+        .create(
+            "competitor-must-not-be-read-post-safety",
+            "127.0.0.1",
+            3308,
+            "competitor-user",
+            b"competitor-password",
+        )
+        .await
+        .expect("seed competitor database");
+    competitor_store.pool().close().await;
+    drop(competitor_store);
+
+    let target = TestWorkspace::new().expect("restore target workspace");
+    let root = target.root().join("post-safety-current-binding-root");
+    fs::create_dir_all(&root).expect("create restore root");
+    let current_database = root.join("datasources.db");
+    let current_plugins = root.join("plugins");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware current Store");
+    seed_data_source_and_plugin_fixture(
+        &current,
+        &current_plugins,
+        "old-must-survive-post-safety-exchange",
+        "post-safety-old",
+        OLD_ARTIFACT,
+        OLD_WASM,
+    )
+    .await;
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind restore to exact current Store");
+    let prepared = coordinator
+        .preview_restore(&archive, PASSPHRASE)
+        .await
+        .expect("prepare authenticated unarmed replacement");
+    let operation_id = prepared.db_instance_operation_id().to_owned();
+    let safety_snapshot = prepared.safety_backup_path().to_path_buf();
+    let live = root
+        .join(".hivegui-db-staging-v1")
+        .join(format!("restore-{operation_id}"));
+    let staging_database = live.join("datasources.db");
+    let staging_metadata =
+        fs::metadata(&staging_database).expect("record staged replacement identity");
+    let staging_identity = (staging_metadata.dev(), staging_metadata.ino());
+    let staging_sha256_before = sha256_path(&staging_database);
+    let staging_identity_evidence = sidecar_file_identity(&staging_database);
+    let staging_size_bytes = staging_metadata.len();
+    let staging_plugins = live.join("plugins");
+    let staging_plugins_metadata =
+        fs::metadata(&staging_plugins).expect("record staged Plugin root identity");
+    let staging_plugins_identity = (
+        staging_plugins_metadata.dev(),
+        staging_plugins_metadata.ino(),
+    );
+    let staging_plugin_tree_before = regular_tree_bytes(&staging_plugins);
+    let instance_manifest_path = live.join(".hivegui-db-instance-v1.json");
+    let instance_manifest_before =
+        fs::read(&instance_manifest_path).expect("record exact unarmed instance manifest");
+    let current_plugins_metadata =
+        fs::metadata(&current_plugins).expect("record current Plugin root identity");
+    let current_plugins_identity = (
+        current_plugins_metadata.dev(),
+        current_plugins_metadata.ino(),
+    );
+
+    let competitor = root.join("post-safety-current-competitor.db");
+    fs::copy(competitor_source.database_path(), &competitor)
+        .expect("copy distinguishable sibling competitor");
+    let competitor_sha256_before = sha256_path(&competitor);
+    let competitor_metadata = fs::metadata(&competitor).expect("record competitor identity");
+    let competitor_identity = (competitor_metadata.dev(), competitor_metadata.ino());
+
+    let confirmation = coordinator
+        .begin_confirmation(&prepared)
+        .expect("freeze current and transfer exact Store owner");
+    assert!(stale.pool().is_closed());
+    let barriers: [std::sync::Arc<tokio::sync::Barrier>; 4] =
+        std::array::from_fn(|_| std::sync::Arc::new(tokio::sync::Barrier::new(2)));
+    let finish_barriers = barriers.clone();
+    let mut finish_task = tokio::spawn(async move {
+        finish_with_snapshot_binding_interlocks(confirmation, finish_barriers).await
+    });
+
+    // Barriers 0/1 are inside the ordinary safety-copy path after the newly
+    // created snapshot directory's final dirfd/identity match and before its
+    // first dirfd-relative database target create.
+    tokio::time::timeout(Duration::from_secs(10), barriers[0].wait())
+        .await
+        .expect("reach pinned fresh-snapshot-directory boundary");
+    assert!(safety_snapshot.is_dir());
+    assert!(!safety_snapshot.join("datasources.db").exists());
+    barriers[1].wait().await;
+
+    // Barriers 2/3 are after the complete DB+Plugin+manifest snapshot verify
+    // and the last held-current/canonical match, but before manifest arm.
+    // Releasing them must enter the normal armed -> prepared -> applying
+    // state machine; it may not use another path-only pre-move check.
+    tokio::time::timeout(Duration::from_secs(10), barriers[2].wait())
+        .await
+        .expect("reach final held-current match before durable arm/owner evidence");
+    let current_metadata =
+        fs::metadata(&current_database).expect("record verified old-current identity");
+    let current_identity = (current_metadata.dev(), current_metadata.ino());
+    assert!(
+        open_linux_fd_count_for_identity(current_identity) >= 1,
+        "the exact old current File must remain held through the pre-arm boundary"
+    );
+    let current_identity_evidence = sidecar_file_identity(&current_database);
+    let current_size_bytes = current_metadata.len();
+    let current_sha256 = sha256_path(&current_database);
+    assert_eq!(
+        data_source_names_from_database(&safety_snapshot.join("datasources.db")).await,
+        vec!["old-must-survive-post-safety-exchange"]
+    );
+    assert_eq!(
+        sha256_path(&safety_snapshot.join("datasources.db")),
+        current_sha256
+    );
+    assert_eq!(
+        fs::read(safety_snapshot.join("plugins").join(OLD_ARTIFACT))
+            .expect("read fully copied old Plugin artifact"),
+        OLD_WASM
+    );
+    assert!(safety_snapshot.join("manifest.json").is_file());
+    let safety_snapshot_identity = sidecar_file_identity(&safety_snapshot);
+    assert!(
+        !live.join(".hivegui-db-recovery-v1.json").exists(),
+        "the verified-safety seam must precede owner publication"
+    );
+    let instance_unarmed = fs::read(live.join(".hivegui-db-instance-v1.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|manifest| manifest["ownership_state"] == "unarmed");
+    assert!(instance_unarmed);
+
+    let exchange = PathExchangeGuard::new(&current_database, &competitor);
+    assert_eq!(
+        fs::metadata(&current_database)
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+            .expect("read exchanged canonical identity"),
+        competitor_identity
+    );
+    // Install the watch only after the test's exchange. A legitimate Green
+    // must really move B under durable owner=applying, observe its moved inode
+    // mismatch, and return that same inode to canonical current without data
+    // I/O. A path-only metadata recheck cannot synthesize IN_MOVE_SELF.
+    let competitor_watch = DataIoWatch::with_mask(
+        &current_database,
+        libc::IN_OPEN
+            | libc::IN_ACCESS
+            | libc::IN_MODIFY
+            | libc::IN_CLOSE_WRITE
+            | libc::IN_MOVE_SELF,
+    );
+    assert!(competitor_watch.drain_masks().is_empty());
+    barriers[3].wait().await;
+
+    let finish_outcome = tokio::time::timeout(Duration::from_secs(10), &mut finish_task)
+        .await
+        .expect("post-safety exchange must fail through owner-protected move/compare")
+        .expect("finish task must not panic");
+    let competitor_masks = competitor_watch.drain_masks();
+    drop(competitor_watch);
+    let competitor_sha256_after = sha256_path(&current_database);
+    let competitor_was_moved = competitor_masks
+        .iter()
+        .any(|mask| mask & libc::IN_MOVE_SELF != 0);
+    let competitor_data_io_absent = competitor_masks.iter().all(|mask| {
+        mask & (libc::IN_OPEN | libc::IN_ACCESS | libc::IN_MODIFY | libc::IN_CLOSE_WRITE) == 0
+    });
+    let exact_identity_rejection = matches!(
+        &finish_outcome,
+        Err(ImportError::UnsafeArchiveEntry(reason))
+            if reason == "current database identity changed"
+    );
+    let owner_path = live.join(".hivegui-db-recovery-v1.json");
+    let owner = fs::read(&owner_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let owner_staging_absent = !live.join(".hivegui-db-recovery-v1.json.staging").exists();
+    let mut expected_armed_manifest: serde_json::Value =
+        serde_json::from_slice(&instance_manifest_before).expect("parse unarmed instance manifest");
+    expected_armed_manifest["ownership_state"] = serde_json::Value::String("armed".into());
+    let instance_armed_exact = fs::read(&instance_manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|manifest| manifest == expected_armed_manifest);
+    let safety_manifest: serde_json::Value = fs::read(safety_snapshot.join("manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .expect("parse verified safety manifest");
+    let owner_uses_held_safety_evidence = owner.as_ref().is_some_and(|owner| {
+        owner["phase"] == "applying"
+            && owner["ownership_state"] == "armed"
+            && owner["old_database"]["relative_path"] == "datasources.db"
+            && owner["old_database"]["identity"] == current_identity_evidence
+            && owner["old_database"]["identity"] == safety_manifest["database"]["source_identity"]
+            && owner["old_database"]["size_bytes"].as_u64() == Some(current_size_bytes)
+            && owner["old_database"]["size_bytes"] == safety_manifest["database"]["size_bytes"]
+            && owner["old_database"]["sha256"] == current_sha256
+            && owner["old_database"]["sha256"] == safety_manifest["database"]["sha256"]
+            && owner["new_database"]["identity"] == staging_identity_evidence
+            && owner["new_database"]["size_bytes"].as_u64() == Some(staging_size_bytes)
+            && owner["new_database"]["sha256"] == staging_sha256_before
+            && owner["safety_snapshot"]["identity"] == safety_snapshot_identity
+            && owner["safety_snapshot"]["relative_path"]
+                == format!("backups/restore-safety-{operation_id}")
+            && owner["safety_snapshot"]["sha256"]
+                .as_str()
+                .is_some_and(|hash| !hash.is_empty())
+    });
+    let staged_unchanged = fs::metadata(&staging_database)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == staging_identity)
+        && sha256_path(&staging_database) == staging_sha256_before
+        && fs::metadata(&staging_plugins)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == staging_plugins_identity)
+        && regular_tree_bytes(&staging_plugins) == staging_plugin_tree_before;
+    let current_plugins_unchanged = fs::metadata(&current_plugins)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == current_plugins_identity)
+        && fs::read(current_plugins.join(OLD_ARTIFACT)).is_ok_and(|bytes| bytes == OLD_WASM);
+    let exchanged_pair_unchanged = fs::metadata(&current_database)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == competitor_identity)
+        && fs::metadata(&competitor)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == current_identity);
+    let owner_old_slot_absent = !live.join("old-datasources.db").exists();
+    let safety_still_complete = safety_snapshot.join("manifest.json").is_file()
+        && sha256_path(&safety_snapshot.join("datasources.db")) == current_sha256
+        && fs::read(safety_snapshot.join("plugins").join(OLD_ARTIFACT))
+            .is_ok_and(|bytes| bytes == OLD_WASM);
+    assert_eq!(
+        [
+            exact_identity_rejection,
+            competitor_was_moved,
+            competitor_data_io_absent,
+            competitor_sha256_after == competitor_sha256_before,
+            owner_uses_held_safety_evidence,
+            owner_staging_absent,
+            instance_armed_exact,
+            staged_unchanged,
+            current_plugins_unchanged,
+            exchanged_pair_unchanged,
+            owner_old_slot_absent,
+            safety_still_complete,
+            stale.pool().is_closed(),
+        ],
+        [true; 13],
+        "post-safety current exchange must be rejected only after durable owner applying and a real identity-bound move/rollback, with zero competitor data I/O; outcome={finish_outcome:?}; owner={owner:?}; competitor_masks={competitor_masks:?}"
+    );
+
+    let terminal_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &terminal_locked,
+        "post-safety identity failure must retain the Store OS lock",
+    );
+    exchange.restore();
+    assert_eq!(sha256_path(&current_database), current_sha256);
+    drop(prepared);
+    let recovered = coordinator
+        .recover_startup()
+        .await
+        .expect("startup owner replay restores and retires exact old current");
+    assert_eq!(recovered.retirement_outcome(), RetirementOutcome::Old);
+    assert!(recovered.retirement_is_done());
+    assert!(recovered.write_gate_is_open());
+    assert!(recovered.store_may_open());
+    assert!(
+        !live.exists(),
+        "old retirement must consume the live owner instance"
+    );
+    let recovery_open = run_store_bound_restore_lock_child(&root, "expect-open");
+    assert_store_bound_restore_lock_child(
+        &recovery_open,
+        "successful applying-owner replay must release the Store OS lock",
+    );
+    let reopened = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("reopen exact old current after startup replay");
+    assert_eq!(
+        reopened
+            .list()
+            .await
+            .expect("read recovered old current")
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>(),
+        vec!["old-must-survive-post-safety-exchange"]
+    );
+    reopened.pool().close().await;
+    drop(reopened);
+    drop(stale);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn snapshot_directory_exchange_never_touches_or_deletes_the_foreign_tree() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    const PASSPHRASE: &str = "T130-snapshot-directory-binding-passphrase";
+    const OLD_ARTIFACT: &str = "snapshot-dir-old/1.0.0/plugin.wasm";
+    const OLD_WASM: &[u8] = b"\0asmT130-snapshot-dir-old-plugin";
+
+    assert_current_snapshot_copy_seam_source_contract();
+
+    let source = TestWorkspace::new().expect("replacement source workspace");
+    let archive = export_single_data_source_archive(
+        &source,
+        "snapshot-directory-binding",
+        "new-must-not-enter-foreign-snapshot-tree",
+        PASSPHRASE,
+    )
+    .await;
+
+    let target = TestWorkspace::new().expect("restore target workspace");
+    let root = target.root().join("snapshot-directory-binding-root");
+    fs::create_dir_all(&root).expect("create restore root");
+    let current_database = root.join("datasources.db");
+    let current_plugins = root.join("plugins");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware current Store");
+    seed_data_source_and_plugin_fixture(
+        &current,
+        &current_plugins,
+        "old-must-survive-snapshot-directory-exchange",
+        "snapshot-dir-old",
+        OLD_ARTIFACT,
+        OLD_WASM,
+    )
+    .await;
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind restore to exact current Store");
+    let prepared = coordinator
+        .preview_restore(&archive, PASSPHRASE)
+        .await
+        .expect("prepare authenticated unarmed replacement");
+    let operation_id = prepared.db_instance_operation_id().to_owned();
+    let safety_snapshot = prepared.safety_backup_path().to_path_buf();
+    let snapshots = safety_snapshot
+        .parent()
+        .expect("safety snapshot parent")
+        .to_path_buf();
+    fs::create_dir_all(&snapshots).expect("create controlled backups directory");
+    let foreign = snapshots.join("foreign-regular-directory-tree");
+    let foreign_nested = foreign.join("nested");
+    fs::create_dir_all(&foreign_nested).expect("create foreign sibling directory tree");
+    fs::write(
+        foreign.join("root-canary.bin"),
+        b"T130-foreign-root-canary-must-not-change",
+    )
+    .expect("write foreign root canary");
+    let foreign_nested_canary = foreign_nested.join("nested-canary.bin");
+    fs::write(
+        &foreign_nested_canary,
+        b"T130-foreign-nested-canary-must-not-change",
+    )
+    .expect("write foreign nested canary");
+    let foreign_tree_before = regular_tree_bytes(&foreign);
+    let foreign_metadata = fs::metadata(&foreign).expect("record foreign directory identity");
+    let foreign_identity = (foreign_metadata.dev(), foreign_metadata.ino());
+
+    let live = root
+        .join(".hivegui-db-staging-v1")
+        .join(format!("restore-{operation_id}"));
+    let staging_database = live.join("datasources.db");
+    let staging_metadata =
+        fs::metadata(&staging_database).expect("record staged replacement identity");
+    let staging_identity = (staging_metadata.dev(), staging_metadata.ino());
+    let staging_sha256_before = sha256_path(&staging_database);
+    let staging_plugins = live.join("plugins");
+    let staging_plugins_metadata =
+        fs::metadata(&staging_plugins).expect("record staged Plugin root identity");
+    let staging_plugins_identity = (
+        staging_plugins_metadata.dev(),
+        staging_plugins_metadata.ino(),
+    );
+    let staging_plugin_tree_before = regular_tree_bytes(&staging_plugins);
+    let instance_manifest_path = live.join(".hivegui-db-instance-v1.json");
+    let instance_manifest_before =
+        fs::read(&instance_manifest_path).expect("record exact unarmed instance manifest");
+
+    let confirmation = coordinator
+        .begin_confirmation(&prepared)
+        .expect("freeze current and transfer exact Store owner");
+    assert!(stale.pool().is_closed());
+    let barriers: [std::sync::Arc<tokio::sync::Barrier>; 4] =
+        std::array::from_fn(|_| std::sync::Arc::new(tokio::sync::Barrier::new(2)));
+    let finish_barriers = barriers.clone();
+    let mut finish_task = tokio::spawn(async move {
+        finish_with_snapshot_binding_interlocks(confirmation, finish_barriers).await
+    });
+
+    // This seam is inside the ordinary full snapshot builder: after the final
+    // held-dirfd/canonical identity match, immediately before the first
+    // dirfd-relative database target create. After release, database, Plugin
+    // tree, manifest, sync, verification, and exact-object cleanup must all
+    // stay on that same held directory; only the final canonical identity
+    // check may observe the exchange.
+    tokio::time::timeout(Duration::from_secs(10), barriers[0].wait())
+        .await
+        .expect("reach fresh pinned snapshot directory before DB target creation");
+    let created_metadata =
+        fs::metadata(&safety_snapshot).expect("record exact created snapshot directory identity");
+    let created_identity = (created_metadata.dev(), created_metadata.ino());
+    assert!(created_metadata.is_dir());
+    assert!(!safety_snapshot.join("datasources.db").exists());
+    assert!(!safety_snapshot.join("manifest.json").exists());
+    assert!(!safety_snapshot.join("plugins").exists());
+    assert!(
+        open_linux_fd_count_for_identity(created_identity) >= 1,
+        "production must retain a descriptor for the exact newly-created snapshot directory"
+    );
+    let current_metadata =
+        fs::metadata(&current_database).expect("record post-checkpoint old current identity");
+    let current_identity = (current_metadata.dev(), current_metadata.ino());
+    let current_sha256 = sha256_path(&current_database);
+    assert!(
+        open_linux_fd_count_for_identity(current_identity) >= 1,
+        "the exact post-checkpoint old current must remain descriptor-pinned during the full safety build"
+    );
+    let current_plugins_metadata =
+        fs::metadata(&current_plugins).expect("record old current Plugin root identity");
+    let current_plugins_identity = (
+        current_plugins_metadata.dev(),
+        current_plugins_metadata.ino(),
+    );
+    let current_plugin_tree_before = regular_tree_bytes(&current_plugins);
+
+    let foreign_watches = watch_regular_tree(&foreign);
+    assert!(
+        foreign_watches
+            .iter()
+            .all(|watch| watch.drain_masks().is_empty()),
+        "setup enumeration events must be drained before the exchange"
+    );
+    let exchange = RestorableDirectoryExchangeGuard::new(&safety_snapshot, &foreign);
+    assert_eq!(
+        fs::metadata(&safety_snapshot)
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+            .expect("read exchanged canonical snapshot identity"),
+        foreign_identity
+    );
+    assert_eq!(
+        fs::metadata(&foreign)
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+            .expect("read moved created snapshot identity"),
+        created_identity
+    );
+    barriers[1].wait().await;
+
+    tokio::time::timeout(Duration::from_secs(10), barriers[2].wait())
+        .await
+        .expect("full held-directory snapshot build must finish before canonical recheck");
+    let held_snapshot_database = foreign.join("datasources.db");
+    let held_snapshot_manifest = foreign.join("manifest.json");
+    assert_eq!(
+        data_source_names_from_database(&held_snapshot_database).await,
+        vec!["old-must-survive-snapshot-directory-exchange"],
+        "the database copy must target the held created directory, not its exchanged canonical path"
+    );
+    assert_eq!(sha256_path(&held_snapshot_database), current_sha256);
+    assert_eq!(
+        fs::read(foreign.join("plugins").join(OLD_ARTIFACT))
+            .expect("read Plugin canary from held created snapshot directory"),
+        OLD_WASM
+    );
+    let held_manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&held_snapshot_manifest).expect("read held-directory safety manifest"),
+    )
+    .expect("parse held-directory safety manifest");
+    assert_eq!(held_manifest["database"]["sha256"], current_sha256);
+    assert_eq!(held_manifest["database"]["path"], "datasources.db");
+    assert_eq!(held_manifest["plugin_root"]["path"], "plugins");
+    assert!(
+        held_manifest["plugin_root"]["sha256"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty())
+    );
+    assert!(
+        held_manifest["plugin_files"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|file| {
+                file["path"] == format!("plugins/{OLD_ARTIFACT}")
+                    && file["sha256"] == hex::encode(Sha256::digest(OLD_WASM))
+            }))
+    );
+    barriers[3].wait().await;
+
+    let finish_outcome = tokio::time::timeout(Duration::from_secs(10), &mut finish_task)
+        .await
+        .expect("snapshot directory exchange must fail before the later owner seam")
+        .expect("finish task must not panic");
+    let foreign_masks = foreign_watches
+        .iter()
+        .flat_map(DataIoWatch::drain_masks)
+        .collect::<Vec<_>>();
+    drop(foreign_watches);
+    let foreign_tree_after = regular_tree_bytes(&safety_snapshot);
+    let exact_identity_rejection = matches!(
+        &finish_outcome,
+        Err(ImportError::UnsafeArchiveEntry(reason))
+            if reason == "restore safety snapshot identity changed"
+    );
+    let foreign_still_canonical = fs::metadata(&safety_snapshot)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == foreign_identity);
+    let created_exact_object_retained_or_removed = if foreign.exists() {
+        fs::metadata(&foreign).is_ok_and(|metadata| {
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && (metadata.dev(), metadata.ino()) == created_identity
+        })
+    } else {
+        true
+    };
+    let owner_absent = !live.join(".hivegui-db-recovery-v1.json").exists()
+        && !live.join(".hivegui-db-recovery-v1.json.staging").exists();
+    let instance_unarmed = fs::read(live.join(".hivegui-db-instance-v1.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|manifest| manifest["ownership_state"] == "unarmed");
+    let staging_unchanged = fs::metadata(&staging_database)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == staging_identity)
+        && sha256_path(&staging_database) == staging_sha256_before
+        && fs::metadata(&staging_plugins)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == staging_plugins_identity)
+        && regular_tree_bytes(&staging_plugins) == staging_plugin_tree_before;
+    let control_unchanged =
+        fs::read(&instance_manifest_path).is_ok_and(|bytes| bytes == instance_manifest_before);
+    let current_unchanged = fs::metadata(&current_database)
+        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == current_identity)
+        && sha256_path(&current_database) == current_sha256
+        && fs::metadata(&current_plugins)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == current_plugins_identity)
+        && regular_tree_bytes(&current_plugins) == current_plugin_tree_before;
+    assert_eq!(
+        (
+            exact_identity_rejection,
+            foreign_masks.is_empty(),
+            foreign_tree_after == foreign_tree_before,
+            foreign_still_canonical,
+            created_exact_object_retained_or_removed,
+            owner_absent,
+            instance_unarmed,
+            staging_unchanged,
+            control_unchanged,
+            current_unchanged,
+            stale.pool().is_closed(),
+        ),
+        (
+            true, true, true, true, true, true, true, true, true, true, true
+        ),
+        "foreign directory tree must receive zero I/O/deletion while the full builder remains on its held directory, and no owner/switch may begin; outcome={finish_outcome:?}; foreign_masks={foreign_masks:?}"
+    );
+
+    let terminal_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &terminal_locked,
+        "snapshot-directory binding failure must retain the Store OS lock",
+    );
+    exchange.restore();
+    assert_eq!(
+        fs::metadata(&foreign)
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+            .expect("foreign sibling restored"),
+        foreign_identity
+    );
+    assert_eq!(regular_tree_bytes(&foreign), foreign_tree_before);
+    if safety_snapshot.exists() {
+        assert_eq!(
+            fs::metadata(&safety_snapshot)
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+                .expect("retained exact created snapshot identity"),
+            created_identity
+        );
+    }
+    drop(prepared);
+    let recovered = coordinator
+        .recover_startup()
+        .await
+        .expect("startup replay retires the unarmed replacement");
+    assert_eq!(
+        recovered.retirement_outcome(),
+        RetirementOutcome::AbortedPreSwitch
+    );
+    let recovery_open = run_store_bound_restore_lock_child(&root, "expect-open");
+    assert_store_bound_restore_lock_child(
+        &recovery_open,
+        "successful snapshot-binding replay must release the Store OS lock",
+    );
+    let reopened = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("reopen exact old current after snapshot binding failure");
+    assert_eq!(
+        reopened
+            .list()
+            .await
+            .expect("read recovered old current")
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>(),
+        vec!["old-must-survive-snapshot-directory-exchange"]
+    );
+    reopened.pool().close().await;
+    drop(reopened);
+    drop(stale);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn store_bound_restore_rejects_archive_exchange_before_freeze_and_cancels_preview() {
+    const PASSPHRASE: &str = "T130-store-bound-archive-binding-passphrase";
+
+    let original_source = TestWorkspace::new().expect("original source workspace");
+    let original_archive = export_single_data_source_archive(
+        &original_source,
+        "archive-binding-original",
+        "original-archive-state",
+        PASSPHRASE,
+    )
+    .await;
+    let replacement_source = TestWorkspace::new().expect("replacement source workspace");
+    let replacement_archive = export_single_data_source_archive(
+        &replacement_source,
+        "archive-binding-replacement",
+        "replacement-archive-state",
+        PASSPHRASE,
+    )
+    .await;
+
+    let target = TestWorkspace::new().expect("target workspace");
+    let root = target.root().join("store-bound-archive-binding-root");
+    fs::create_dir_all(&root).expect("create target root");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open current Store");
+    current
+        .create(
+            "old-before-rejected-exchange",
+            "127.0.0.1",
+            3306,
+            "old-user",
+            b"old-password",
+        )
+        .await
+        .expect("seed current state");
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind restore to current Store");
+    let prepared: PreparedRestore = coordinator
+        .preview_restore(&original_archive, PASSPHRASE)
+        .await
+        .expect("prepare archive-bound preview");
+    let safety_snapshot = prepared.safety_backup_path().to_path_buf();
+    assert!(!safety_snapshot.exists());
+
+    let exchange = PathExchangeGuard::new(&original_archive, &replacement_archive);
+    let error = match coordinator.begin_confirmation(&prepared) {
+        Ok(_) => panic!("an exchanged archive leaf must not cross final confirmation"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, ImportError::UnsafeArchiveEntry(_)));
+    assert!(
+        !stale.pool().is_closed(),
+        "archive binding failure must occur before Store freeze"
+    );
+    stale
+        .create(
+            "write-after-rejected-exchange",
+            "127.0.0.1",
+            3307,
+            "still-open-user",
+            b"still-open-password",
+        )
+        .await
+        .expect("rejected archive exchange leaves current Store writable");
+    exchange.restore();
+
+    coordinator
+        .cancel_preview(&prepared)
+        .await
+        .expect("identity rejection must leave the Ready preview cancelable");
+    assert!(!safety_snapshot.exists());
+    assert_eq!(
+        fs::read_dir(root.join(".hivegui-db-staging-v1"))
+            .expect("read canceled restore registry")
+            .count(),
+        0,
+        "cancel must retire the complete preview instance"
+    );
+    let current_names = stale
+        .list()
+        .await
+        .expect("read unchanged current after preview cancellation")
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        current_names,
+        vec![
+            "old-before-rejected-exchange",
+            "write-after-rejected-exchange"
+        ]
+    );
+
+    drop(coordinator);
+    stale.pool().close().await;
+    drop(stale);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn preview_restore_pins_one_archive_descriptor_across_a_b_a_path_exchange() {
+    const PASSPHRASE: &str = "T130-preview-pinned-archive-passphrase";
+    const A_ARTIFACT_KEY: &str = "pinned-a/1.0.0/plugin.wasm";
+    const A_WASM: &[u8] = b"\0asmT130-preview-pinned-archive-A";
+    const B_ARTIFACT_KEY: &str = "pinned-b/1.0.0/plugin.wasm";
+    const B_WASM: &[u8] = b"\0asmT130-preview-pinned-archive-B";
+
+    let source_a = TestWorkspace::new().expect("archive A source workspace");
+    let archive_a = export_data_source_and_plugin_archive(
+        &source_a,
+        "preview-pinned-archive-a",
+        "pinned-archive-a",
+        "pinned-a",
+        A_ARTIFACT_KEY,
+        A_WASM,
+        PASSPHRASE,
+    )
+    .await;
+    let source_b = TestWorkspace::new().expect("archive B source workspace");
+    let archive_b = export_data_source_and_plugin_archive(
+        &source_b,
+        "preview-pinned-archive-b",
+        "pinned-archive-b",
+        "pinned-b",
+        B_ARTIFACT_KEY,
+        B_WASM,
+        PASSPHRASE,
+    )
+    .await;
+    let archive_a_sha256 = sha256_path(&archive_a);
+    let archive_b_sha256 = sha256_path(&archive_b);
+    assert_ne!(archive_a_sha256, archive_b_sha256);
+
+    let target = TestWorkspace::new().expect("target workspace");
+    let root = target.root().join("preview-pinned-archive-root");
+    fs::create_dir_all(&root).expect("create target root");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware target Store");
+    current
+        .create(
+            "current-before-pinned-preview",
+            "127.0.0.1",
+            3306,
+            "current-user",
+            b"current-password",
+        )
+        .await
+        .expect("seed unchanged current state");
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind preview to target Store");
+
+    // The future test interlock owns four two-party barriers:
+    //   0 = the initial A descriptor is pinned and identity-bound, before any
+    //       authenticated bytes are consumed;
+    //   1 = the test releases the complete real preview after exchanging A -> B;
+    //   2 = all authenticated bytes were consumed and the staging database/Plugin
+    //       tree were completely built and validated, but the final canonical-path
+    //       identity recheck and return have not run;
+    //   3 = the test releases that final recheck after exchanging B -> A.
+    // Production and tests must share the same private preview implementation. This
+    // thin hook only waits at those boundaries; it must not select a descriptor,
+    // decrypt bytes, materialize staging, or replace any production validation.
+    let archive_read_barriers: [std::sync::Arc<tokio::sync::Barrier>; 4] =
+        std::array::from_fn(|_| std::sync::Arc::new(tokio::sync::Barrier::new(2)));
+    let preview_coordinator = coordinator.clone();
+    let preview_archive = archive_a.clone();
+    let preview_barriers = archive_read_barriers.clone();
+    let mut preview_task = tokio::spawn(async move {
+        preview_coordinator
+            .preview_restore_with_archive_read_interlock_for_test(
+                &preview_archive,
+                PASSPHRASE,
+                preview_barriers,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(10), archive_read_barriers[0].wait())
+        .await
+        .expect("preview pins and binds archive A before authenticated consumption");
+    let exchange = PathExchangeGuard::new(&archive_a, &archive_b);
+    assert_eq!(sha256_path(&archive_a), archive_b_sha256);
+    archive_read_barriers[1].wait().await;
+
+    let mut early_preview_result = None;
+    let staging_complete_interlock_reached = tokio::select! {
+        _ = archive_read_barriers[2].wait() => true,
+        result = &mut preview_task => {
+            early_preview_result = Some(result.expect("preview task must not panic"));
+            false
+        }
+        _ = tokio::time::sleep(Duration::from_secs(10)) => {
+            panic!("preview neither completed authenticated staging nor failed closed")
+        }
+    };
+    exchange.restore();
+    assert_eq!(
+        sha256_path(&archive_a),
+        archive_a_sha256,
+        "the ambient archive path must be A again before preview completes"
+    );
+    let preview_result = if staging_complete_interlock_reached {
+        archive_read_barriers[3].wait().await;
+        tokio::time::timeout(Duration::from_secs(30), &mut preview_task)
+            .await
+            .expect("bounded preview completion after releasing both barriers")
+            .expect("preview task must not panic")
+    } else {
+        early_preview_result.expect("early fail-closed preview result")
+    };
+    match preview_result {
+        Ok(prepared) => {
+            let live = root
+                .join(".hivegui-db-staging-v1")
+                .join(format!("restore-{}", prepared.db_instance_operation_id()));
+            assert_eq!(
+                data_source_names_from_database(&live.join("datasources.db")).await,
+                vec!["pinned-archive-a"],
+                "preview must never stage archive B during an A -> B -> A path exchange"
+            );
+            assert_eq!(
+                fs::read(live.join("plugins").join(A_ARTIFACT_KEY))
+                    .expect("read staged archive A Plugin canary"),
+                A_WASM
+            );
+            assert!(
+                !live.join("plugins").join(B_ARTIFACT_KEY).exists(),
+                "preview must not mix archive B Plugin bytes into the pinned A staging tree"
+            );
+            coordinator
+                .cancel_preview(&prepared)
+                .await
+                .expect("retire successful unarmed A preview");
+        }
+        Err(error) => {
+            assert!(
+                matches!(error, ImportError::UnsafeArchiveEntry(_)),
+                "descriptor/path ambiguity must fail through the stable unsafe-entry boundary: {error}"
+            );
+        }
+    }
+
+    let registry = root.join(".hivegui-db-staging-v1");
+    assert!(
+        !registry.exists()
+            || fs::read_dir(&registry)
+                .expect("read preview registry")
+                .next()
+                .is_none(),
+        "successful cancellation or fail-closed preview must leave no live/tombstone residue"
+    );
+    assert!(
+        !root.join("backups").exists(),
+        "preview ambiguity must not claim a safety backup"
+    );
+    assert!(!stale.pool().is_closed());
+    assert_eq!(
+        stale
+            .list()
+            .await
+            .expect("read unchanged current after pinned preview")
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>(),
+        vec!["current-before-pinned-preview"]
+    );
+
+    drop(coordinator);
+    stale.pool().close().await;
+    drop(stale);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn store_bound_restore_owner_applying_crash_replays_old_and_releases_owner() {
+    const PASSPHRASE: &str = "T130-store-bound-applying-crash-passphrase";
+    const NEW_ARTIFACT_KEY: &str = "new-restore/1.0.0/plugin.wasm";
+    const NEW_WASM: &[u8] = b"\0asmT130-owned-new-current-wasm";
+    const OLD_ARTIFACT_KEY: &str = "old-restore/1.0.0/plugin.wasm";
+    const OLD_WASM: &[u8] = b"\0asmT130-owned-old-current-wasm";
+
+    let source = TestWorkspace::new().expect("source workspace");
+    let archive = export_data_source_and_plugin_archive(
+        &source,
+        "store-bound-applying-crash",
+        "new-that-must-not-publish",
+        "new-restore",
+        NEW_ARTIFACT_KEY,
+        NEW_WASM,
+        PASSPHRASE,
+    )
+    .await;
+
+    let target = TestWorkspace::new().expect("target workspace");
+    let root = target.root().join("store-bound-applying-crash-root");
+    fs::create_dir_all(&root).expect("create target root");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware old current");
+    current
+        .create(
+            "old-before-owner-applying",
+            "127.0.0.1",
+            3306,
+            "old-user",
+            b"old-password",
+        )
+        .await
+        .expect("seed old state");
+    let old_artifact = root.join("plugins").join(OLD_ARTIFACT_KEY);
+    fs::create_dir_all(old_artifact.parent().expect("old Plugin artifact parent"))
+        .expect("create old Plugin artifact parent");
+    fs::write(&old_artifact, OLD_WASM).expect("write old managed Plugin artifact");
+    sqlx::query(
+        "INSERT INTO plugins \
+         (identifier,name,version,s3_key,sha256,size_bytes,runtime,created_at,updated_at) \
+         VALUES ('old-restore','Old Restore Plugin','1.0.0',?,?,?,'wasm32',\
+                 '2026-08-27T00:00:00Z','2026-08-27T00:00:00Z')",
+    )
+    .bind(OLD_ARTIFACT_KEY)
+    .bind(hex::encode(Sha256::digest(OLD_WASM)))
+    .bind(i64::try_from(OLD_WASM.len()).expect("old WASM fixture size"))
+    .execute(current.pool())
+    .await
+    .expect("seed old Plugin ownership");
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind restore to current Store");
+    let prepared: PreparedRestore = coordinator
+        .preview_restore(&archive, PASSPHRASE)
+        .await
+        .expect("prepare applying-crash preview");
+    let operation_id = prepared.db_instance_operation_id().to_owned();
+    let safety_snapshot = prepared.safety_backup_path().to_path_buf();
+    let confirmation = coordinator
+        .begin_confirmation(&prepared)
+        .expect("freeze current before applying crash");
+    assert!(stale.pool().is_closed());
+    let terminal_gate = stale
+        .create(
+            "must-not-write-during-applying",
+            "127.0.0.1",
+            3307,
+            "blocked-user",
+            b"blocked-password",
+        )
+        .await
+        .expect_err("confirmation must close the write gate before owner publication");
+    assert!(terminal_gate.to_string().contains("write_gate_closed"));
+
+    let plugin_tree_switch = RESTORE_SWITCH_CRASH_POINTS
+        .iter()
+        .copied()
+        .find(|point| point.as_str() == "plugin_tree_switch")
+        .expect("Plugin tree switch crash point");
+    let interrupted = confirmation
+        .finish_with_crash(plugin_tree_switch)
+        .await
+        .expect_err("interrupt after database and Plugin current have switched");
+    assert!(interrupted.reached_requested_boundary());
+    assert!(stale.pool().is_closed());
+    let current_database = root.join("datasources.db");
+    let current_new_wasm = root.join("plugins").join(NEW_ARTIFACT_KEY);
+    let live = root
+        .join(".hivegui-db-staging-v1")
+        .join(format!("restore-{operation_id}"));
+    let live_old_database = live.join("old-datasources.db");
+    let live_old_wasm = live.join("old-plugins").join(OLD_ARTIFACT_KEY);
+    assert_eq!(
+        data_source_names_from_database(&current_database).await,
+        vec!["new-that-must-not-publish"],
+        "the injected boundary must execute the new database switch"
+    );
+    assert_eq!(
+        fs::read(&current_new_wasm).expect("read switched new Plugin artifact"),
+        NEW_WASM,
+        "the injected boundary must execute the new Plugin tree switch"
+    );
+    assert_eq!(
+        data_source_names_from_database(&live_old_database).await,
+        vec!["old-before-owner-applying"],
+        "the live owner must retain the complete old database"
+    );
+    assert_eq!(
+        fs::read(&live_old_wasm).expect("read retained old Plugin artifact"),
+        OLD_WASM,
+        "the live owner must retain the complete old Plugin tree"
+    );
+    assert!(safety_snapshot.join("manifest.json").is_file());
+    assert_eq!(
+        data_source_names_from_database(&safety_snapshot.join("datasources.db")).await,
+        vec!["old-before-owner-applying"]
+    );
+    let owner: serde_json::Value = serde_json::from_slice(
+        &fs::read(live.join(".hivegui-db-recovery-v1.json"))
+            .expect("applying owner must be durable at the crash boundary"),
+    )
+    .expect("parse applying owner");
+    assert_eq!(owner["phase"], "applying");
+    let applying_locked = run_store_bound_restore_lock_child(&root, "expect-locked");
+    assert_store_bound_restore_lock_child(
+        &applying_locked,
+        "an applying crash must retain the process lock before startup replay",
+    );
+
+    fs::write(
+        &current_database,
+        b"T130-deliberately-corrupted-owned-new-current-database",
+    )
+    .expect("destroy switched new current database");
+    fs::write(
+        &current_new_wasm,
+        b"T130-deliberately-corrupted-owned-new-current-wasm",
+    )
+    .expect("destroy switched new current Plugin artifact");
+    assert_ne!(
+        sha256_path(&current_database),
+        owner["new_database"]["sha256"]
+            .as_str()
+            .expect("owner binds new database hash")
+    );
+    assert_ne!(
+        fs::read(&current_new_wasm).expect("read corrupted new WASM"),
+        NEW_WASM
+    );
+    let post_corruption_gate = stale
+        .create(
+            "must-not-write-after-new-current-corruption",
+            "127.0.0.1",
+            3308,
+            "blocked-user",
+            b"blocked-password",
+        )
+        .await
+        .expect_err("the applying crash must retain the write gate after current corruption");
+    assert!(
+        post_corruption_gate
+            .to_string()
+            .contains("write_gate_closed")
+    );
+    assert!(stale.pool().is_closed());
+
+    let recovered = coordinator
+        .recover_startup()
+        .await
+        .expect("startup must restore and verify complete old state");
+    assert_eq!(recovered.retirement_outcome(), RetirementOutcome::Old);
+    assert!(recovered.retirement_is_done());
+    assert!(recovered.store_may_open());
+    assert!(recovered.write_gate_is_open());
+    assert!(recovered.has_exactly_one_live_database());
+    assert!(recovered.has_no_mixed_database_or_plugin_tree());
+    assert!(recovered.control_files_are_outside_live_tree());
+    assert_eq!(
+        fs::read_dir(root.join(".hivegui-db-staging-v1"))
+            .expect("read recovered registry")
+            .count(),
+        0,
+        "old retirement must be completely durable before Store open"
+    );
+    assert_eq!(
+        data_source_names_from_database(&current_database).await,
+        vec!["old-before-owner-applying"]
+    );
+    assert_eq!(
+        fs::read(root.join("plugins").join(OLD_ARTIFACT_KEY))
+            .expect("read startup-restored old Plugin artifact"),
+        OLD_WASM
+    );
+    assert!(
+        !root.join("plugins").join(NEW_ARTIFACT_KEY).exists(),
+        "startup must not expose a mixed old database/new Plugin tree"
+    );
+    let recovery_open = run_store_bound_restore_lock_child(&root, "expect-open");
+    assert_store_bound_restore_lock_child(
+        &recovery_open,
+        "startup replay must release the applying crash process lock",
+    );
+    drop(prepared);
+    drop(coordinator);
+
+    let reopened = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("startup recovery must release the crashed old owner");
+    let names = reopened
+        .list()
+        .await
+        .expect("read recovered old current")
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["old-before-owner-applying"]);
+    assert_eq!(
+        fs::read(root.join("plugins").join(OLD_ARTIFACT_KEY))
+            .expect("read old Plugin through the reopened parent state"),
+        OLD_WASM
+    );
+    drop(stale);
+    reopened.pool().close().await;
+    drop(reopened);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn store_open_leaf_exchange_before_backup_reopen_rejects_without_competitor_data_io() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let source = TestWorkspace::new().expect("source workspace");
+    let source_store = Store::open_local(StoreOpenOptions::new(
+        source.database_path(),
+        source.plugin_root(),
+    ))
+    .await
+    .expect("open source Store");
+    let initial_checkpoint: (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_one(source_store.pool())
+        .await
+        .expect("converge source before creating a valid sibling competitor");
+    assert_eq!(initial_checkpoint, (0, 0, 0));
+
+    let competitor = source
+        .database_path()
+        .with_file_name("hivegui-main-leaf-competitor.db");
+    fs::copy(source.database_path(), &competitor).expect("create valid sibling competitor");
+    let competitor_sha256_before = sha256_path(&competitor);
+    let competitor_metadata = fs::metadata(&competitor).expect("read competitor inode identity");
+    let competitor_identity = (competitor_metadata.dev(), competitor_metadata.ino());
+    let archive = unique_target_path(&source, "post-open-main-leaf-exchange");
+    let coordinator = BackupCoordinator::from_store(source_store.clone())
+        .expect("single production backup coordinator");
+    let preview = coordinator
+        .preview_export(&archive)
+        .await
+        .expect("preview before the last legal write");
+
+    let mut held_connection = source_store
+        .pool()
+        .acquire()
+        .await
+        .expect("hold one production Pool connection across close drain");
+    sqlx::query("PRAGMA wal_autocheckpoint=0")
+        .execute(&mut *held_connection)
+        .await
+        .expect("disable automatic checkpoint on the held connection");
+    sqlx::query(
+        "INSERT INTO data_sources \
+         (name,host,port,username,encrypted_password,created_at,updated_at) \
+         VALUES ('last-legal-main-leaf-write','127.0.0.1',3307,'wal-user',X'01',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+    )
+    .execute(&mut *held_connection)
+    .await
+    .expect("commit the last legal write into WAL");
+    let wal = std::path::PathBuf::from(format!("{}-wal", source.database_path().display()));
+    assert!(
+        fs::metadata(&wal).is_ok_and(|metadata| metadata.len() > 32),
+        "the last legal write must remain WAL-visible while the connection is held"
+    );
+
+    let competitor_watch = DataIoWatch::new(&competitor);
+    assert!(
+        competitor_watch.drain_masks().is_empty(),
+        "installing the inode watch must not itself perform competitor data I/O"
+    );
+    let mut confirmation =
+        Box::pin(coordinator.confirm_export(preview, "T119-main-leaf-exchange-passphrase"));
+    tokio::select! {
+        result = confirmation.as_mut() => {
+            panic!("confirmation must wait for the held Pool connection to drain: {result:?}");
+        }
+        closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !source_store.pool().is_closed() {
+                tokio::task::yield_now().await;
+            }
+        }) => {
+            closed.expect("confirmation must enter the closed-Pool drain boundary");
+        }
+    }
+
+    let exchange_guard = PathExchangeGuard::new(source.database_path(), &competitor);
+    let canonical_metadata =
+        fs::metadata(source.database_path()).expect("read exchanged canonical inode identity");
+    assert_eq!(
+        (canonical_metadata.dev(), canonical_metadata.ino()),
+        competitor_identity,
+        "the canonical source path must now resolve to the pre-watched competitor inode"
+    );
+    drop(held_connection);
+    let confirmation_outcome =
+        tokio::time::timeout(std::time::Duration::from_secs(10), confirmation.as_mut())
+            .await
+            .expect("confirmation must terminate after the held connection drains");
+    let competitor_data_io_masks = competitor_watch.drain_masks();
+    drop(competitor_watch);
+    let competitor_sha256_after = sha256_path(source.database_path());
+    let archive_absent = !archive.exists();
+    let confirmation_rejected_as_unsafe_source =
+        matches!(&confirmation_outcome, Err(ExportError::UnsafeSource(_)));
+    let confirmation_diagnostic = confirmation_outcome
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "confirmation unexpectedly succeeded".into());
+
+    exchange_guard.restore();
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(source.database_path())
+        .create_if_missing(false)
+        .foreign_keys(true);
+    let read_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("reopen the original main leaf after exchanging it back");
+    let last_legal_write_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM data_sources WHERE name = 'last-legal-main-leaf-write'",
+    )
+    .fetch_one(&read_pool)
+    .await
+    .expect("read the WAL-visible last legal write from the original main leaf");
+    read_pool.close().await;
+    let terminal_probe = sqlx::query_scalar::<_, i64>("SELECT 1")
+        .fetch_one(source_store.pool())
+        .await;
+    let terminal_probe_is_closed = matches!(&terminal_probe, Err(sqlx::Error::PoolClosed));
+
+    assert_eq!(
+        (
+            confirmation_rejected_as_unsafe_source,
+            archive_absent,
+            competitor_data_io_masks.is_empty(),
+            competitor_sha256_after == competitor_sha256_before,
+            last_legal_write_count,
+            source_store.pool().is_closed(),
+            terminal_probe_is_closed,
+        ),
+        (true, true, true, true, 1, true, true),
+        "Store-open leaf replacement before backup path reopen must be rejected as unsafe \
+         before competitor data I/O; \
+         confirmation={confirmation_diagnostic}; competitor_masks={competitor_data_io_masks:?}; \
+         terminal_probe={terminal_probe:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3031,6 +6577,275 @@ async fn startup_checks_current_cleanup_before_replaying_a_committed_live_owner(
     assert_eq!(sha256_path(&current_database), current_before);
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn offline_apply_revalidates_safety_binding_before_opening_the_return_gate() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    const PASSPHRASE: &str = "T130-offline-return-proof-passphrase";
+    const OLD_NAME: &str = "old-before-offline-return-proof";
+    const NEW_NAME: &str = "new-before-offline-return-proof";
+
+    async fn assert_real_store_write_gate_closed(root: &Path, name: &str) {
+        let database = root.join("datasources.db");
+        let database_sha256 = sha256_path(&database);
+        match Store::open_local(StoreOpenOptions::for_root(root)).await {
+            Err(error) => {
+                assert_eq!(error.kind(), StoreOpenErrorKind::Io);
+                assert_eq!(
+                    error.failure_class(),
+                    Some(DatabaseFailureClass::Persistent)
+                );
+                assert_eq!(
+                    error.retry_count(),
+                    0,
+                    "a closed process gate must reject before any Store-open retry"
+                );
+            }
+            Ok(store) => {
+                let write_succeeded = store
+                    .create(
+                        name,
+                        "127.0.0.1",
+                        3390,
+                        "return-proof-user",
+                        b"return-proof-password",
+                    )
+                    .await
+                    .is_ok();
+                store.pool().close().await;
+                drop(store);
+                panic!(
+                    "the closed process gate unexpectedly admitted a Store; production write succeeded={write_succeeded}"
+                );
+            }
+        }
+        assert_eq!(
+            sha256_path(&database),
+            database_sha256,
+            "the blocked production writer must not modify the selected new current"
+        );
+        for sidecar in [
+            root.join("datasources.db-wal"),
+            root.join("datasources.db-shm"),
+            root.join("datasources.db-journal"),
+        ] {
+            assert!(
+                !sidecar.exists(),
+                "the closed Store probe must leave no SQLite sidecar: {}",
+                sidecar.display()
+            );
+        }
+    }
+
+    assert_offline_apply_return_proof_source_contract();
+
+    let source = TestWorkspace::new().expect("replacement source workspace");
+    let archive =
+        export_single_data_source_archive(&source, "offline-return-proof", NEW_NAME, PASSPHRASE)
+            .await;
+
+    let target = TestWorkspace::new().expect("offline restore target workspace");
+    let root = target.root().join("offline-return-proof-root");
+    fs::create_dir_all(&root).expect("create offline restore root");
+    let current_database = root.join("datasources.db");
+    let old_store = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open old current Store");
+    old_store
+        .create(
+            OLD_NAME,
+            "127.0.0.1",
+            3307,
+            "old-return-proof-user",
+            b"old-return-proof-password",
+        )
+        .await
+        .expect("seed old current state");
+    old_store.pool().close().await;
+    drop(old_store);
+
+    let coordinator = RestoreCoordinator::new(&root).expect("offline restore coordinator");
+    let plan = coordinator
+        .prepare_restore(&archive, PASSPHRASE)
+        .await
+        .expect("prepare authenticated offline restore");
+    let operation_id = plan.db_instance_operation_id().to_owned();
+    let registry = root.join(".hivegui-db-staging-v1");
+    let live = registry.join(format!("restore-{operation_id}"));
+    let safety_snapshot = root
+        .join("backups")
+        .join(format!("restore-safety-{operation_id}"));
+
+    let backups = root.join("backups");
+    fs::create_dir_all(&backups).expect("create safety snapshot parent");
+    let foreign = backups.join("offline-return-foreign-tree");
+    let foreign_nested = foreign.join("nested");
+    fs::create_dir_all(&foreign_nested).expect("create foreign regular tree");
+    fs::write(
+        foreign.join("root-canary.bin"),
+        b"offline-return-foreign-root-must-not-change",
+    )
+    .expect("write foreign root canary");
+    fs::write(
+        foreign_nested.join("nested-canary.bin"),
+        b"offline-return-foreign-nested-must-not-change",
+    )
+    .expect("write foreign nested canary");
+    let foreign_tree_before = regular_tree_bytes(&foreign);
+    let foreign_metadata = fs::metadata(&foreign).expect("record foreign tree identity");
+    let foreign_identity = (foreign_metadata.dev(), foreign_metadata.ino());
+    let foreign_watches = watch_regular_tree(&foreign);
+    assert!(
+        foreign_watches
+            .iter()
+            .all(|watch| watch.drain_masks().is_empty()),
+        "foreign watch setup must establish an empty pre-exchange baseline"
+    );
+
+    let barriers: [std::sync::Arc<tokio::sync::Barrier>; 2] =
+        std::array::from_fn(|_| std::sync::Arc::new(tokio::sync::Barrier::new(2)));
+    let apply_coordinator = coordinator.clone();
+    let apply_plan = plan.clone();
+    let apply_barriers = barriers.clone();
+    let mut apply_task = tokio::spawn(async move {
+        apply_coordinator
+            .apply_restore_with_safety_return_interlock_for_test(&apply_plan, apply_barriers)
+            .await
+    });
+
+    // Barrier 0 is after the one real switch/health/retirement outcome has
+    // completed with keep_frozen=true, and immediately before the same held
+    // safety proof is revalidated for the public return. The return is not
+    // finalized and no writer may enter yet.
+    tokio::time::timeout(Duration::from_secs(30), barriers[0].wait())
+        .await
+        .expect("reach frozen offline return-proof boundary");
+    assert_eq!(
+        data_source_names_from_database(&current_database).await,
+        vec![NEW_NAME]
+    );
+    assert_eq!(
+        data_source_names_from_database(&safety_snapshot.join("datasources.db")).await,
+        vec![OLD_NAME]
+    );
+    assert!(safety_snapshot.join("manifest.json").is_file());
+    assert!(
+        !live.exists(),
+        "the real successful outcome must have retired its live instance before return proof"
+    );
+    assert_eq!(
+        fs::read_dir(&registry)
+            .expect("read fully retired offline registry")
+            .count(),
+        0,
+        "the interlock must follow the real successful retirement outcome"
+    );
+    assert_real_store_write_gate_closed(&root, "must-not-write-before-return-proof").await;
+    assert!(
+        foreign_watches
+            .iter()
+            .all(|watch| watch.drain_masks().is_empty()),
+        "discard only pre-exchange fixture activity before the monitored interval"
+    );
+
+    let exchange = RestorableDirectoryExchangeGuard::new(&safety_snapshot, &foreign);
+    assert_eq!(
+        fs::metadata(&safety_snapshot)
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+            .expect("inspect exchanged canonical safety entry"),
+        foreign_identity,
+        "the exact foreign directory must occupy the canonical safety path"
+    );
+    barriers[1].wait().await;
+
+    let apply_error = tokio::time::timeout(Duration::from_secs(10), &mut apply_task)
+        .await
+        .expect("return-time safety mismatch must resolve without reopening the gate")
+        .expect("offline apply task must not panic")
+        .expect_err("a successful switch with an invalid return proof must never report Ok");
+    assert!(
+        matches!(
+            &apply_error,
+            ImportError::UnsafeArchiveEntry(reason)
+                if reason == "restore safety snapshot identity changed"
+        ),
+        "return-time rejection must identify the exact invalid safety binding: {apply_error}"
+    );
+    assert_eq!(
+        data_source_names_from_database(&current_database).await,
+        vec![NEW_NAME],
+        "the completed real outcome remains selected while return is fail-closed"
+    );
+    assert_real_store_write_gate_closed(&root, "must-not-write-after-invalid-return-proof").await;
+
+    let foreign_masks = foreign_watches
+        .iter()
+        .flat_map(DataIoWatch::drain_masks)
+        .collect::<Vec<_>>();
+    let foreign_data_io_absent = foreign_masks.iter().all(|mask| {
+        mask & (libc::IN_OPEN
+            | libc::IN_ACCESS
+            | libc::IN_MODIFY
+            | libc::IN_CLOSE_WRITE
+            | libc::IN_CREATE
+            | libc::IN_DELETE
+            | libc::IN_DELETE_SELF)
+            == 0
+    });
+    drop(foreign_watches);
+    let foreign_tree_while_exchanged = regular_tree_bytes(&safety_snapshot);
+    assert!(
+        foreign_data_io_absent && foreign_tree_while_exchanged == foreign_tree_before,
+        "return proof may compare binding metadata but must perform zero foreign-tree data I/O or mutation; masks={foreign_masks:?}"
+    );
+
+    exchange.restore();
+    assert_eq!(regular_tree_bytes(&foreign), foreign_tree_before);
+    assert_eq!(
+        data_source_names_from_database(&safety_snapshot.join("datasources.db")).await,
+        vec![OLD_NAME],
+        "swapback must restore the verified old safety snapshot before startup recovery"
+    );
+
+    let recovered = RestoreCoordinator::new(&root)
+        .expect("fresh startup coordinator")
+        .recover_startup()
+        .await
+        .expect("startup replay conservatively releases the fail-closed return gate");
+    assert!(
+        recovered.retirement_is_done()
+            && recovered.store_may_open()
+            && recovered.write_gate_is_open(),
+        "only startup replay may reopen a gate after invalid return proof"
+    );
+    let reopened = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open selected new current after startup replay");
+    assert_eq!(
+        reopened
+            .list()
+            .await
+            .expect("read selected new current after startup replay")
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>(),
+        vec![NEW_NAME]
+    );
+    reopened
+        .create(
+            "write-after-return-proof-recovery",
+            "127.0.0.1",
+            3391,
+            "recovered-user",
+            b"recovered-password",
+        )
+        .await
+        .expect("startup replay is the first boundary allowed to reopen writes");
+    reopened.pool().close().await;
+    drop(reopened);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn confirmed_offline_restore_switches_complete_state_then_commits_and_retires() {
     let source = TestWorkspace::new().expect("source workspace");
@@ -3207,6 +7022,7 @@ async fn restore_safety_snapshot_hashes_complete_database_and_owned_plugin_tree(
     .execute(old_store.pool())
     .await
     .expect("seed old GC ledger");
+    old_store.pool().close().await;
     drop(old_store);
     let old_database_sha256 = sha256_path(&current_database);
 
@@ -3942,4 +7758,156 @@ async fn backup_media_canary_is_absent_after_success_error_crash_and_cross_devic
             scan.hits
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn checkpoint_uses_pinned_staging_and_current_leaves_during_a_b_a_exchange() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    const PASSPHRASE: &str = "T119-T130-pinned-checkpoint-leaf-passphrase";
+
+    assert_current_snapshot_copy_seam_source_contract();
+
+    let source = TestWorkspace::new().expect("checkpoint source workspace");
+    let archive = export_single_data_source_archive(
+        &source,
+        "pinned-checkpoint-leaf",
+        "checkpoint-source-row",
+        PASSPHRASE,
+    )
+    .await;
+
+    let target = TestWorkspace::new().expect("checkpoint target workspace");
+    let root = target.root().join("pinned-checkpoint-leaf-root");
+    fs::create_dir_all(&root).expect("create checkpoint target root");
+    let current_database = root.join("datasources.db");
+    let current = Store::open_local(StoreOpenOptions::for_root(&root))
+        .await
+        .expect("open owner-aware checkpoint target");
+    current
+        .create(
+            "checkpoint-current-row",
+            "127.0.0.1",
+            3306,
+            "checkpoint-user",
+            b"checkpoint-password",
+        )
+        .await
+        .expect("seed checkpoint current state");
+    let stale = current.clone();
+    let coordinator =
+        RestoreCoordinator::from_store(current).expect("bind checkpoint restore coordinator");
+    let prepared = coordinator
+        .preview_restore(&archive, PASSPHRASE)
+        .await
+        .expect("prepare authenticated checkpoint replacement");
+    let live = root
+        .join(".hivegui-db-staging-v1")
+        .join(format!("restore-{}", prepared.db_instance_operation_id()));
+    let staging_database = live.join("datasources.db");
+    let staging_competitor = live.join("staging-checkpoint-competitor.db");
+    let current_competitor = root.join("current-checkpoint-competitor.db");
+    fs::write(&staging_competitor, b"foreign staging checkpoint leaf")
+        .expect("write staging checkpoint competitor");
+    fs::write(&current_competitor, b"foreign current checkpoint leaf")
+        .expect("write current checkpoint competitor");
+
+    let staging_metadata =
+        fs::metadata(&staging_database).expect("record exact staging database identity");
+    let staging_identity = (staging_metadata.dev(), staging_metadata.ino());
+    let current_metadata =
+        fs::metadata(&current_database).expect("record exact current database identity");
+    let current_identity = (current_metadata.dev(), current_metadata.ino());
+    let staging_competitor_before = fs::read(&staging_competitor)
+        .expect("record staging checkpoint competitor bytes");
+    let current_competitor_before =
+        fs::read(&current_competitor).expect("record current checkpoint competitor bytes");
+
+    let confirmation = coordinator
+        .begin_confirmation(&prepared)
+        .expect("freeze exact Store for pinned checkpoint proof");
+    assert!(stale.pool().is_closed());
+
+    // Staging uses barriers 0..=3 and current uses 4..=7. For each leaf:
+    // pinned before SQLx I/O -> release with B at the canonical name ->
+    // checkpoint/health/close complete on A -> restore A before continuing.
+    let barriers: [std::sync::Arc<tokio::sync::Barrier>; 8] =
+        std::array::from_fn(|_| std::sync::Arc::new(tokio::sync::Barrier::new(2)));
+    let finish_barriers = barriers.clone();
+    let mut finish_task = tokio::spawn(async move {
+        confirmation
+            .finish_with_pinned_checkpoint_interlocks_for_test(finish_barriers)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(10), barriers[0].wait())
+        .await
+        .expect("staging leaf is pinned before SQLx checkpoint");
+    assert!(
+        open_linux_fd_count_for_identity(staging_identity) >= 1,
+        "production must retain the exact staging inode before checkpoint"
+    );
+    let staging_watch = DataIoWatch::new(&staging_competitor);
+    assert!(staging_watch.drain_masks().is_empty());
+    let staging_exchange = PathExchangeGuard::new(&staging_database, &staging_competitor);
+    barriers[1].wait().await;
+    tokio::time::timeout(Duration::from_secs(10), barriers[2].wait())
+        .await
+        .expect("staging checkpoint completes through its pinned leaf");
+    let staging_competitor_masks = staging_watch.drain_masks();
+    assert!(
+        staging_competitor_masks.is_empty(),
+        "SQLx staging checkpoint touched the competitor inode: {staging_competitor_masks:?}"
+    );
+    staging_exchange.restore();
+    assert_eq!(
+        fs::read(&staging_competitor).expect("read untouched staging competitor"),
+        staging_competitor_before
+    );
+    barriers[3].wait().await;
+
+    tokio::time::timeout(Duration::from_secs(10), barriers[4].wait())
+        .await
+        .expect("current leaf is pinned before SQLx checkpoint");
+    assert!(
+        open_linux_fd_count_for_identity(current_identity) >= 1,
+        "production must retain the exact current inode before checkpoint"
+    );
+    let current_watch = DataIoWatch::new(&current_competitor);
+    assert!(current_watch.drain_masks().is_empty());
+    let current_exchange = PathExchangeGuard::new(&current_database, &current_competitor);
+    barriers[5].wait().await;
+    tokio::time::timeout(Duration::from_secs(10), barriers[6].wait())
+        .await
+        .expect("current checkpoint completes through its pinned leaf");
+    let current_competitor_masks = current_watch.drain_masks();
+    assert!(
+        current_competitor_masks.is_empty(),
+        "SQLx current checkpoint touched the competitor inode: {current_competitor_masks:?}"
+    );
+    current_exchange.restore();
+    assert_eq!(
+        fs::read(&current_competitor).expect("read untouched current competitor"),
+        current_competitor_before
+    );
+    barriers[7].wait().await;
+
+    let recovery = tokio::time::timeout(Duration::from_secs(30), &mut finish_task)
+        .await
+        .expect("bounded pinned-leaf restore completion")
+        .expect("pinned-leaf restore task must not panic")
+        .expect("pinned staging/current checkpoint restore must succeed");
+    assert_eq!(recovery.retirement_outcome(), RetirementOutcome::New);
+    assert_eq!(
+        data_source_names_from_database(&current_database).await,
+        vec!["checkpoint-source-row"]
+    );
+
+    drop(prepared);
+    coordinator
+        .recover_startup()
+        .await
+        .expect("release terminal restore owner after pinned-leaf proof");
+    drop(stale);
 }

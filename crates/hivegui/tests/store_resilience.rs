@@ -28,12 +28,97 @@ use support::TestWorkspace;
 const OWNER_PHASE: &str = "Foundation";
 const APPROVAL_TASK: &str = "T012";
 const IMPLEMENTATION_TASKS: [&str; 2] = ["T022", "T028"];
+const EXPECTED_WAL_AUTOCHECKPOINT_PAGES: i64 = 128;
 const STORE_LOCK_CHILD_MODE: &str = "HIVEGUI_T012_STORE_LOCK_CHILD_MODE";
 const STORE_LOCK_CHILD_DATABASE: &str = "HIVEGUI_T012_STORE_LOCK_CHILD_DATABASE";
 const STORE_LOCK_CHILD_PLUGINS: &str = "HIVEGUI_T012_STORE_LOCK_CHILD_PLUGINS";
 
 fn options(workspace: &TestWorkspace) -> StoreOpenOptions {
     StoreOpenOptions::new(workspace.database_path(), workspace.plugin_root())
+}
+
+#[tokio::test]
+async fn business_store_configures_durable_bounded_wal_on_every_connection() {
+    assert_eq!(OWNER_PHASE, "Foundation");
+    assert_eq!(APPROVAL_TASK, "T012");
+    assert!(IMPLEMENTATION_TASKS.contains(&"T028"));
+
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    let store = Store::open_local(options(&workspace))
+        .await
+        .expect("open canonical business Store");
+    assert_business_connection_pragmas(&store).await;
+    drop(store);
+
+    let reopened = Store::open_existing(workspace.database_path())
+        .await
+        .expect("open existing business Store");
+    assert_business_connection_pragmas(&reopened).await;
+
+    let application_store_root = workspace.root().join("application-store");
+    let application_store = Store::new(&application_store_root)
+        .await
+        .expect("open application business Store");
+    assert_business_connection_pragmas(&application_store).await;
+}
+
+async fn assert_business_connection_pragmas(store: &Store) {
+    let pool = store.pool();
+    let connection_count =
+        usize::try_from(pool.options().get_max_connections()).expect("pool size fits usize");
+    let mut connections = Vec::with_capacity(connection_count);
+    for _ in 0..connection_count {
+        connections.push(
+            pool.acquire()
+                .await
+                .expect("acquire every pooled connection"),
+        );
+    }
+
+    for (index, connection) in connections.iter_mut().enumerate() {
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut **connection)
+            .await
+            .expect("read journal mode");
+        let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&mut **connection)
+            .await
+            .expect("read foreign-key enforcement");
+        let busy_timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&mut **connection)
+            .await
+            .expect("read busy timeout");
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&mut **connection)
+            .await
+            .expect("read synchronous durability");
+        let wal_autocheckpoint_pages: i64 = sqlx::query_scalar("PRAGMA wal_autocheckpoint")
+            .fetch_one(&mut **connection)
+            .await
+            .expect("read WAL auto-checkpoint bound");
+
+        assert_eq!(
+            journal_mode.to_ascii_lowercase(),
+            "wal",
+            "business connection {index} must use WAL"
+        );
+        assert_eq!(
+            foreign_keys, 1,
+            "business connection {index} must enforce foreign keys"
+        );
+        assert!(
+            busy_timeout_ms > 0,
+            "business connection {index} must fail through a bounded busy timeout"
+        );
+        assert_eq!(
+            synchronous, 2,
+            "business connection {index} must retain synchronous=FULL durability"
+        );
+        assert_eq!(
+            wal_autocheckpoint_pages, EXPECTED_WAL_AUTOCHECKPOINT_PAGES,
+            "business connection {index} must bound checkpoint work instead of accumulating SQLite's 1000-page default"
+        );
+    }
 }
 
 #[tokio::test]

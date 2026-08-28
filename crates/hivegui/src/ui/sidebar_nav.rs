@@ -15,11 +15,12 @@ use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
-    theme::{Theme, ThemeRegistry},
+    theme::ThemeRegistry,
     tooltip::Tooltip,
 };
 
 use crate::ui::app::{AccessKitLabelRegistry, AppRoute, HiveGuiAppState};
+use crate::ui::theme_contrast;
 
 actions!(hivegui_sidebar, [SidebarTab, SidebarTabPrev]);
 
@@ -315,7 +316,7 @@ fn theme_menu_options(
 fn switch_theme(name: &SharedString, cx: &mut App) {
     let registry = ThemeRegistry::global(cx);
     if let Some(config) = registry.themes().get(name).cloned() {
-        Theme::global_mut(cx).apply_config(&config);
+        theme_contrast::apply_config(&config, cx);
         cx.update_global::<HiveGuiAppState, _>(|app, _| {
             app.theme_name = name.clone();
         });
@@ -619,12 +620,14 @@ impl SidebarNav {
 #[cfg(test)]
 mod tests {
     use gpui::{
-        Context, IntoElement, Render, SharedString, TestAppContext, VisualTestContext, Window, div,
-        prelude::*, px, rgb, size,
+        Context, Hsla, IntoElement, Render, SharedString, TestAppContext, VisualTestContext,
+        Window, div, prelude::*, px, rgb, size,
     };
+    use gpui_component::theme::{Theme, ThemeRegistry};
 
-    use super::{SidebarNav, sidebar_layout, theme_menu_options};
+    use super::{SidebarNav, sidebar_layout, switch_theme, theme_menu_options};
     use crate::ui::app::{AppRoute, HiveGuiAppState};
+    use crate::ui::theme_contrast;
 
     struct SidebarLayoutTestView;
 
@@ -697,5 +700,371 @@ mod tests {
                 (SharedString::from("Default Dark"), true),
             ]
         );
+    }
+
+    #[gpui::test]
+    fn built_in_light_and_dark_themes_meet_wcag_contrast_contract(cx: &mut TestAppContext) {
+        let (light, dark) = cx.update(|cx| {
+            gpui_component::init(cx);
+            HiveGuiAppState::install_for_test(cx, AppRoute::Home);
+
+            switch_theme(&SharedString::from("Default Light"), cx);
+            let light = Theme::global(cx).clone();
+
+            switch_theme(&SharedString::from("Default Dark"), cx);
+            let dark = Theme::global(cx).clone();
+            (light, dark)
+        });
+
+        assert_theme_contrast("Default Light", &light);
+        assert_theme_contrast("Default Dark", &dark);
+    }
+
+    #[gpui::test]
+    fn startup_contrast_policy_hardens_the_active_theme(cx: &mut TestAppContext) {
+        let theme = cx.update(|cx| {
+            gpui_component::init(cx);
+            HiveGuiAppState::install_for_test(cx, AppRoute::Home);
+            theme_contrast::install(cx);
+            Theme::global(cx).clone()
+        });
+
+        assert_theme_contrast("active startup theme", &theme);
+    }
+
+    #[gpui::test]
+    fn registry_hot_reload_reapplies_contrast_policy(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            HiveGuiAppState::install_for_test(cx, AppRoute::Home);
+            theme_contrast::install(cx);
+
+            cx.update_global::<ThemeRegistry, _>(|registry, _| {
+                registry
+                    .load_themes_from_str(
+                        r##"{
+                            "name": "Observer fixture",
+                            "themes": [{
+                                "name": "Observer Red",
+                                "mode": "light",
+                                "colors": {
+                                    "background": "#ffffff",
+                                    "table.head.background": "#f5f5f5",
+                                    "table.head.foreground": "#a3a3a3"
+                                }
+                            }]
+                        }"##,
+                    )
+                    .expect("observer fixture is valid");
+            });
+
+            let config = ThemeRegistry::global(cx)
+                .themes()
+                .get("Observer Red")
+                .cloned()
+                .expect("observer fixture was registered");
+            let theme = Theme::global_mut(cx);
+            theme.light_theme = config.clone();
+            theme.apply_config(&config);
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            cx.update_global::<ThemeRegistry, _>(|_, _| {});
+        });
+        cx.run_until_parked();
+
+        let theme = cx.read(|cx| Theme::global(cx).clone());
+        assert_theme_contrast("Observer Red after registry reload", &theme);
+    }
+
+    fn assert_theme_contrast(name: &str, theme: &Theme) {
+        let mut failures = Vec::new();
+        let text_pairs = [
+            ("foreground/background", theme.foreground, theme.background),
+            (
+                "muted_foreground/background",
+                theme.muted_foreground,
+                theme.background,
+            ),
+            (
+                "muted_foreground/muted",
+                theme.muted_foreground,
+                theme.muted,
+            ),
+            (
+                "popover_foreground/popover",
+                theme.popover_foreground,
+                theme.popover,
+            ),
+            (
+                "sidebar_foreground/sidebar",
+                theme.sidebar_foreground,
+                theme.sidebar,
+            ),
+            (
+                "sidebar_accent_foreground/sidebar_accent",
+                theme.sidebar_accent_foreground,
+                theme.sidebar_accent,
+            ),
+            (
+                "primary_foreground/primary",
+                theme.primary_foreground,
+                theme.primary,
+            ),
+            (
+                "primary_foreground/primary_hover",
+                theme.primary_foreground,
+                theme.primary_hover,
+            ),
+            (
+                "primary_foreground/primary_active",
+                theme.primary_foreground,
+                theme.primary_active,
+            ),
+            (
+                "secondary_foreground/secondary",
+                theme.secondary_foreground,
+                theme.secondary,
+            ),
+            (
+                "secondary_foreground/secondary_hover",
+                theme.secondary_foreground,
+                theme.secondary_hover,
+            ),
+            (
+                "secondary_foreground/secondary_active",
+                theme.secondary_foreground,
+                theme.secondary_active,
+            ),
+            (
+                "accent_foreground/accent",
+                theme.accent_foreground,
+                theme.accent,
+            ),
+            (
+                "group_box_foreground/group_box",
+                theme.group_box_foreground,
+                theme.group_box,
+            ),
+            (
+                "description_list_label_foreground/description_list_label",
+                theme.description_list_label_foreground,
+                theme.description_list_label,
+            ),
+            (
+                "sidebar_primary_foreground/sidebar_primary",
+                theme.sidebar_primary_foreground,
+                theme.sidebar_primary,
+            ),
+            ("tab_foreground/tab", theme.tab_foreground, theme.tab),
+            (
+                "tab_active_foreground/tab_active",
+                theme.tab_active_foreground,
+                theme.tab_active,
+            ),
+            (
+                "table_head_foreground/table_head",
+                theme.table_head_foreground,
+                theme.table_head,
+            ),
+            (
+                "table_foot_foreground/table_foot",
+                theme.table_foot_foreground,
+                theme.table_foot,
+            ),
+            ("danger/background", theme.danger, theme.background),
+            (
+                "danger_foreground/danger",
+                theme.danger_foreground,
+                theme.danger,
+            ),
+            ("success/background", theme.success, theme.background),
+            (
+                "success_foreground/success",
+                theme.success_foreground,
+                theme.success,
+            ),
+            ("warning/background", theme.warning, theme.background),
+            (
+                "warning_foreground/warning",
+                theme.warning_foreground,
+                theme.warning,
+            ),
+            ("info/background", theme.info, theme.background),
+            ("info_foreground/info", theme.info_foreground, theme.info),
+            (
+                "button_foreground/button",
+                theme.button_foreground,
+                theme.button,
+            ),
+            (
+                "button_foreground/button_hover",
+                theme.button_foreground,
+                theme.button_hover,
+            ),
+            (
+                "button_foreground/button_active",
+                theme.button_foreground,
+                theme.button_active,
+            ),
+            (
+                "button_primary_foreground/button_primary",
+                theme.button_primary_foreground,
+                theme.button_primary,
+            ),
+            (
+                "button_primary_foreground/button_primary_hover",
+                theme.button_primary_foreground,
+                theme.button_primary_hover,
+            ),
+            (
+                "button_primary_foreground/button_primary_active",
+                theme.button_primary_foreground,
+                theme.button_primary_active,
+            ),
+            (
+                "button_secondary_foreground/button_secondary",
+                theme.button_secondary_foreground,
+                theme.button_secondary,
+            ),
+            (
+                "button_secondary_foreground/button_secondary_hover",
+                theme.button_secondary_foreground,
+                theme.button_secondary_hover,
+            ),
+            (
+                "button_secondary_foreground/button_secondary_active",
+                theme.button_secondary_foreground,
+                theme.button_secondary_active,
+            ),
+            (
+                "button_danger_foreground/button_danger",
+                theme.button_danger_foreground,
+                theme.button_danger,
+            ),
+            (
+                "button_danger_foreground/button_danger_hover",
+                theme.button_danger_foreground,
+                theme.button_danger_hover,
+            ),
+            (
+                "button_danger_foreground/button_danger_active",
+                theme.button_danger_foreground,
+                theme.button_danger_active,
+            ),
+            (
+                "button_success_foreground/button_success",
+                theme.button_success_foreground,
+                theme.button_success,
+            ),
+            (
+                "button_success_foreground/button_success_hover",
+                theme.button_success_foreground,
+                theme.button_success_hover,
+            ),
+            (
+                "button_success_foreground/button_success_active",
+                theme.button_success_foreground,
+                theme.button_success_active,
+            ),
+            (
+                "button_warning_foreground/button_warning",
+                theme.button_warning_foreground,
+                theme.button_warning,
+            ),
+            (
+                "button_warning_foreground/button_warning_hover",
+                theme.button_warning_foreground,
+                theme.button_warning_hover,
+            ),
+            (
+                "button_warning_foreground/button_warning_active",
+                theme.button_warning_foreground,
+                theme.button_warning_active,
+            ),
+            (
+                "button_info_foreground/button_info",
+                theme.button_info_foreground,
+                theme.button_info,
+            ),
+            (
+                "button_info_foreground/button_info_hover",
+                theme.button_info_foreground,
+                theme.button_info_hover,
+            ),
+            (
+                "button_info_foreground/button_info_active",
+                theme.button_info_foreground,
+                theme.button_info_active,
+            ),
+        ];
+        for (pair, foreground, background) in text_pairs {
+            record_contrast_failure(
+                &mut failures,
+                pair,
+                contrast_ratio(foreground, background, theme.background),
+                4.5,
+            );
+        }
+
+        let focus_pairs = [
+            ("ring/background", theme.ring, theme.background),
+            (
+                "list_active_border/list",
+                theme.list_active_border,
+                theme.colors.list,
+            ),
+            (
+                "table_active_border/table",
+                theme.table_active_border,
+                theme.table,
+            ),
+        ];
+        for (pair, foreground, background) in focus_pairs {
+            record_contrast_failure(
+                &mut failures,
+                pair,
+                contrast_ratio(foreground, background, theme.background),
+                3.0,
+            );
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{name} violates FR-043 WCAG contrast:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    fn record_contrast_failure(failures: &mut Vec<String>, pair: &str, actual: f32, minimum: f32) {
+        if actual + 0.001 < minimum {
+            failures.push(format!("{pair}: {actual:.3}:1 is below {minimum:.1}:1"));
+        }
+    }
+
+    fn contrast_ratio(foreground: Hsla, background: Hsla, canvas: Hsla) -> f32 {
+        let canvas = canvas.to_rgb();
+        let background = canvas.blend(background.to_rgb());
+        let foreground = background.blend(foreground.to_rgb());
+        let foreground = relative_luminance([foreground.r, foreground.g, foreground.b]);
+        let background = relative_luminance([background.r, background.g, background.b]);
+        let (lighter, darker) = if foreground >= background {
+            (foreground, background)
+        } else {
+            (background, foreground)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fn relative_luminance(color: [f32; 3]) -> f32 {
+        let [red, green, blue] = color.map(|channel| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
     }
 }

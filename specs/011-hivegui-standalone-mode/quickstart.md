@@ -232,10 +232,11 @@ cargo test -p hivegui --test cancellation -- --nocapture
 ## 13. Performance
 
 ```bash
-cargo bench -p hivegui --bench local_runtime
+cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --manifest
+cargo +1.97.1 bench --locked -p hivegui --bench local_runtime -- --run-matrix
 ```
 
-报告必须包含环境、样本量和 p50/p95/p99，并分别列出：
+无 `--run <id>` 或 `--run-matrix` 时 bench 默认只打印 manifest，不执行测量。`--run-matrix` 使用源码持有、经评审的干扰最小化顺序，为每个目标启动同一精确 bench 可执行文件的新子进程，并在全部 13 个目标执行后输出机器可读汇总。该顺序降低前序重负载干扰，但不控制主机 affinity，矩阵结果仍可证伪。报告必须包含环境、样本量和 p50/p95/p99，并分别列出：
 
 - LLM 决策解析到下一本地动作调度，p95≤200ms。
 - Tool 校验完成到执行器启动，p95≤50ms。
@@ -292,15 +293,15 @@ cargo test -p hivegui --test ci_security_contract -- --nocapture
 ## 16. Final quality gates
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy -p hive-runtime-core -p agent -p hive-builtins -p hivegui --all-targets -- -D warnings
-cargo test -p hive-runtime-core
-cargo test -p agent
-cargo test -p hive-builtins
-cargo test -p hivegui --lib
-cargo test -p hivegui --tests
-cargo check --workspace --all-targets --locked
-SQLX_OFFLINE=true cargo sqlx prepare --workspace --check
+cargo +1.97.1 fmt --all -- --check
+cargo +1.97.1 clippy --locked -p hive-runtime-core -p agent -p hive-builtins -p hivegui --all-targets -- -D warnings
+cargo +1.97.1 test --locked -p hive-runtime-core
+cargo +1.97.1 test --locked -p agent
+cargo +1.97.1 test --locked -p hive-builtins
+cargo +1.97.1 test --locked -p hivegui --lib
+cargo +1.97.1 test --locked -p hivegui --tests --no-fail-fast
+cargo +1.97.1 check --workspace --all-targets --locked
+DATABASE_URL=sqlite::memory: SQLX_OFFLINE=true cargo +1.97.1 sqlx prepare --workspace --check --no-dotenv
 cargo deny check advisories
 git diff --check
 ```

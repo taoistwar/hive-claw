@@ -1,0 +1,41 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "us13_combined_ui_feedback_round_v2",
+      "owner_task": "T121",
+      "timing_boundary": "one fixed keyboard character dispatched from a fixed one-character input after generation-matched 100-node Workflow and backup-prevalidation workers are ready, through that character's visible input feedback",
+      "excluded_time": [
+        "external local-LLM wait",
+        "Workflow user-node execution",
+        "backup archive construction before the combined-load window",
+        "fixed-length input reset and generation ready/start/done synchronization",
+        "baseline and exception I/O"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 100000000,
+      "workflow_node_count": 100
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "debug",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 13134009,
+      "p95": 14853274,
+      "p99": 17226704
+    }
+  },
+  "approval": {
+    "reviewer": "user",
+    "approved_at": "2026-08-27",
+    "source_revision": "git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:a220ec13deac9ddc5a95f75e15d80e41ce3bf15cf9ec21962dba0b0c38349a68"
+  }
+}

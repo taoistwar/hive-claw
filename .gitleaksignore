@@ -12,3 +12,22 @@ de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/quickstart.md:ge
 772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/quickstart.md:generic-api-key:152
 772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/contracts/api.md:jwt:118
 772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/contracts/api.md:jwt:119
+
+# Reviewed 2026-08-27: upstream aws-sdk-s3 endpoint fixtures use the fixed
+# synthetic account/access-point ARN `123456789012/.../mfzwi23gnjvgw.mrap`.
+# Bind every false positive to the vendored source commit, exact path, rule,
+# and line so later vendor changes and new findings still fail closed.
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:333
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:362
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:380
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:398
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:416
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:488
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:2058
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:473
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:509
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:545
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:581
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:617
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:728
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:1772

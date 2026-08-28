@@ -341,6 +341,13 @@ const CATALOG: &[QueryCountContract] = &[
         active: true,
     },
     QueryCountContract {
+        id: "agent.search_page",
+        owner_phase: "US13",
+        activation_task: "T115",
+        maximum_queries: 5,
+        active: true,
+    },
+    QueryCountContract {
         id: "conversation.session_bundle",
         owner_phase: "US13",
         activation_task: "T117",

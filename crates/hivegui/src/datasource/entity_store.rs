@@ -6573,45 +6573,13 @@ impl AgentStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(backend_error)?;
-        let Some((
-            id,
-            identifier,
-            name,
-            description,
-            system_prompt,
-            parent_agent_id,
-            depth,
-            is_default_i64,
-            model_preset,
-            category_id,
-            created_at,
-            updated_at,
-        )) = row
-        else {
+        let Some(row) = row else {
             return Ok(None);
         };
-        let tool_ids = load_tool_ids(&self.pool, id).await?;
-        let skill_ids = load_skill_ids(&self.pool, id).await?;
-        let always_skill_ids = load_always_skill_ids(&self.pool).await?;
-        let capability_names = load_capability_names(&self.pool, id).await?;
-        Ok(Some(AgentRecord {
-            id,
-            identifier,
-            name,
-            description,
-            system_prompt,
-            parent_agent_id,
-            depth,
-            is_default: is_default_i64 != 0,
-            model_preset,
-            category_id,
-            tool_ids,
-            skill_ids,
-            always_skill_ids,
-            capability_names,
-            created_at,
-            updated_at,
-        }))
+        Ok(hydrate_many(&self.pool, None, vec![row])
+            .await?
+            .into_iter()
+            .next())
     }
 
     /// Load up to an arbitrary caller-selected Agent id set using exactly four
@@ -6705,7 +6673,7 @@ impl AgentStore {
         let (rows, total) = self
             .fetch_agent_window(&route, filter.page_size, offset)
             .await?;
-        let records = hydrate_many(&self.pool, rows).await?;
+        let records = hydrate_many(&self.pool, self.observer.as_ref(), rows).await?;
         Ok(AgentPage {
             records,
             total,
@@ -6728,12 +6696,14 @@ impl AgentStore {
     ) -> Result<(Vec<AgentBaseRow>, i64), AgentStoreError> {
         match route {
             AgentSearchRoute::Unfiltered => {
+                self.record_query("t115.agent.search.window");
                 let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_UNFILTERED_LIST_SQL)
                     .bind(limit)
                     .bind(offset)
                     .fetch_all(&self.pool)
                     .await
                     .map_err(backend_error)?;
+                self.record_query("t115.agent.search.count");
                 let total = sqlx::query_scalar::<_, i64>(AGENT_UNFILTERED_COUNT_SQL)
                     .fetch_one(&self.pool)
                     .await
@@ -6741,6 +6711,7 @@ impl AgentStore {
                 Ok((rows, total))
             }
             AgentSearchRoute::FtsPhrase(phrase) => {
+                self.record_query("t115.agent.search.window");
                 let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_FTS_LIST_SQL)
                     .bind(phrase)
                     .bind(limit)
@@ -6748,6 +6719,7 @@ impl AgentStore {
                     .fetch_all(&self.pool)
                     .await
                     .map_err(backend_error)?;
+                self.record_query("t115.agent.search.count");
                 let total = sqlx::query_scalar::<_, i64>(AGENT_FTS_COUNT_SQL)
                     .bind(phrase)
                     .fetch_one(&self.pool)
@@ -6756,6 +6728,7 @@ impl AgentStore {
                 Ok((rows, total))
             }
             AgentSearchRoute::ShortGram { length, gram } => {
+                self.record_query("t115.agent.search.window");
                 let rows = sqlx::query_as::<_, AgentBaseRow>(AGENT_SHORT_GRAM_LIST_SQL)
                     .bind(length)
                     .bind(gram)
@@ -6764,6 +6737,7 @@ impl AgentStore {
                     .fetch_all(&self.pool)
                     .await
                     .map_err(backend_error)?;
+                self.record_query("t115.agent.search.count");
                 let total = sqlx::query_scalar::<_, i64>(AGENT_SHORT_GRAM_COUNT_SQL)
                     .bind(length)
                     .bind(gram)
@@ -6810,7 +6784,7 @@ impl AgentStore {
         .fetch_all(&self.pool)
         .await
         .map_err(backend_error)?;
-        hydrate_many(&self.pool, rows).await
+        hydrate_many(&self.pool, None, rows).await
     }
 
     /// EXPLAIN QUERY PLAN of the search query (used by the
@@ -7077,70 +7051,78 @@ fn dedup_string(values: &[String]) -> Vec<String> {
     out
 }
 
-async fn load_tool_ids(pool: &Pool<Sqlite>, agent_id: i64) -> Result<Vec<i64>, AgentStoreError> {
-    let rows: Vec<(i64,)> =
-        sqlx::query_as("SELECT tool_id FROM agent_tools WHERE agent_id = ? ORDER BY tool_id ASC")
-            .bind(agent_id)
-            .fetch_all(pool)
-            .await
-            .map_err(backend_error)?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
-async fn load_skill_ids(pool: &Pool<Sqlite>, agent_id: i64) -> Result<Vec<i64>, AgentStoreError> {
-    let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT skill_id FROM agent_skills WHERE agent_id = ? ORDER BY skill_id ASC",
-    )
-    .bind(agent_id)
-    .fetch_all(pool)
-    .await
-    .map_err(backend_error)?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
-async fn load_always_skill_ids(pool: &Pool<Sqlite>) -> Result<Vec<i64>, AgentStoreError> {
-    let rows: Vec<(i64,)> =
-        sqlx::query_as("SELECT id FROM skills WHERE is_always = 1 ORDER BY id ASC")
-            .fetch_all(pool)
-            .await
-            .map_err(backend_error)?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
-async fn load_capability_names(
-    pool: &Pool<Sqlite>,
-    agent_id: i64,
-) -> Result<Vec<String>, AgentStoreError> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT capability_name FROM agent_capabilities WHERE agent_id = ? ORDER BY capability_name ASC",
-    )
-    .bind(agent_id)
-    .fetch_all(pool)
-    .await
-    .map_err(backend_error)?;
-    Ok(rows.into_iter().map(|(name,)| name).collect())
-}
-
 async fn hydrate_many(
     pool: &Pool<Sqlite>,
+    observer: Option<&QueryCountObserver>,
     rows: Vec<AgentBaseRow>,
 ) -> Result<Vec<AgentRecord>, AgentStoreError> {
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let id = row.0;
-        let tool_ids = load_tool_ids(pool, id).await?;
-        let skill_ids = load_skill_ids(pool, id).await?;
-        let always_skill_ids = load_always_skill_ids(pool).await?;
-        let capability_names = load_capability_names(pool, id).await?;
-        out.push(agent_record_from_row(
-            row,
-            tool_ids,
-            skill_ids,
-            always_skill_ids,
-            capability_names,
-        ));
+    if rows.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    let ids = rows.iter().map(|row| row.0).collect::<Vec<_>>();
+    let ids_json = serde_json::to_string(&ids).map_err(|error| AgentStoreError {
+        kind: AgentStoreErrorKind::Backend(format!("agent hydration id batch: {error}")),
+    })?;
+
+    if let Some(observer) = observer {
+        observer.record_checked_query("t115.agent.search.tools");
+    }
+    let tool_rows = sqlx::query_as::<_, (i64, i64)>(AGENT_RESOURCE_TOOLS_SQL)
+        .bind(&ids_json)
+        .fetch_all(pool)
+        .await
+        .map_err(backend_error)?;
+
+    if let Some(observer) = observer {
+        observer.record_checked_query("t115.agent.search.skills");
+    }
+    let skill_rows = sqlx::query_as::<_, (i64, i64, i64)>(AGENT_RESOURCE_SKILLS_SQL)
+        .bind(&ids_json)
+        .bind(&ids_json)
+        .fetch_all(pool)
+        .await
+        .map_err(backend_error)?;
+
+    if let Some(observer) = observer {
+        observer.record_checked_query("t115.agent.search.capabilities");
+    }
+    let capability_rows = sqlx::query_as::<_, (i64, String)>(AGENT_RESOURCE_CAPABILITIES_SQL)
+        .bind(&ids_json)
+        .fetch_all(pool)
+        .await
+        .map_err(backend_error)?;
+
+    let mut tools = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+    for (agent_id, tool_id) in tool_rows {
+        tools.entry(agent_id).or_default().push(tool_id);
+    }
+    let mut skills = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+    let mut always_skills = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+    for (agent_id, skill_id, is_always) in skill_rows {
+        if is_always == 0 {
+            skills.entry(agent_id).or_default().push(skill_id);
+        } else {
+            always_skills.entry(agent_id).or_default().push(skill_id);
+        }
+    }
+    let mut capabilities = std::collections::BTreeMap::<i64, Vec<String>>::new();
+    for (agent_id, capability) in capability_rows {
+        capabilities.entry(agent_id).or_default().push(capability);
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let id = row.0;
+            agent_record_from_row(
+                row,
+                tools.remove(&id).unwrap_or_default(),
+                skills.remove(&id).unwrap_or_default(),
+                always_skills.remove(&id).unwrap_or_default(),
+                capabilities.remove(&id).unwrap_or_default(),
+            )
+        })
+        .collect())
 }
 
 fn agent_record_from_row(

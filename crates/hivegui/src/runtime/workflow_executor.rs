@@ -622,6 +622,8 @@ fn topological_levels(graph: &WorkflowGraph) -> Vec<Vec<WorkflowNode>> {
     let nodes = graph.nodes();
     let edges = graph.edges();
 
+    let nodes_by_key: HashMap<&str, &WorkflowNode> =
+        nodes.iter().map(|node| (node.key(), node)).collect();
     let mut in_degree: HashMap<&str, usize> = nodes.iter().map(|n| (n.key(), 0)).collect();
     let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
     for edge in edges {
@@ -644,9 +646,10 @@ fn topological_levels(graph: &WorkflowGraph) -> Vec<Vec<WorkflowNode>> {
         let level_keys: Vec<&str> = queue.drain(..).collect();
         let mut level_nodes: Vec<WorkflowNode> = Vec::new();
         for key in &level_keys {
-            if let Some(node) = nodes.iter().find(|n| n.key() == *key) {
-                level_nodes.push(node.clone());
-            }
+            let node = nodes_by_key
+                .get(*key)
+                .expect("validated topological key must resolve to a graph node");
+            level_nodes.push((*node).clone());
             if let Some(next) = adjacency.get(key) {
                 for to in next {
                     let deg = in_degree.get_mut(to).expect("edge target in degree map");

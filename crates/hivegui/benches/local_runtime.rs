@@ -1,7 +1,7 @@
 #[path = "../tests/support/performance.rs"]
 mod performance;
 
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{future::Future, path::Path, pin::Pin, process::Command, sync::Arc};
 
 use hivegui::datasource::workflow_store::{NodeType, WorkflowGraph, WorkflowNode};
 use hivegui::datasource::{
@@ -15,9 +15,11 @@ use hivegui::runtime::{CancelHandle, WorkflowExecutor, WorkflowNodeExecutor};
 use serde_json::Value;
 
 use performance::{
-    BenchmarkReport, ComparisonOutcome, EnvironmentFingerprint, TOOL_DISPATCH_ID, TargetSpec,
+    BenchmarkReport, BenchmarkRunError, ComparisonOutcome, EnvironmentFingerprint,
+    ReleaseMatrixReport, TOOL_DISPATCH_ID, TOOL_DISPATCH_OPERATIONS_PER_SAMPLE, TargetSpec,
     WORKFLOW_100_NODE_ID, baseline_path, evaluate_benchmark_gate, measure_local_async,
-    measure_local_async_batched, regression_exception_path, source_revision, target_specs,
+    measure_local_async_checked_batched, regression_exception_path, run_release_matrix_with,
+    source_revision, target_specs,
 };
 
 fn main() {
@@ -71,10 +73,34 @@ fn main() {
                 print_manifest();
                 return;
             }
+            "--run-matrix" => {
+                run_release_matrix();
+                return;
+            }
             "--run" => {
                 let _ = args.next();
                 let target_id = args.next();
-                run_benchmarks(target_id.as_deref());
+                let mut expected_source = None;
+                while let Some(option) = args.next() {
+                    match option.as_str() {
+                        "--expected-source" => {
+                            let Some(source) = args.next() else {
+                                eprintln!(
+                                    "--expected-source requires an argument: source revision"
+                                );
+                                print_usage();
+                                std::process::exit(2);
+                            };
+                            expected_source = Some(source);
+                        }
+                        _ => {
+                            eprintln!("Unknown --run argument: {option}");
+                            print_usage();
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                run_benchmarks(target_id.as_deref(), expected_source.as_deref());
                 return;
             }
             _ => {
@@ -90,7 +116,7 @@ fn main() {
 
 fn print_usage() {
     let message = concat!(
-        "Usage: cargo bench -p hivegui --bench local_runtime [--help|-h] [--manifest] [--targets] [--target <id>] [--baseline-path <id>] [--exception-path <id>] [--source-revision] [--run <id>]\n",
+        "Usage: cargo bench -p hivegui --bench local_runtime [--help|-h] [--manifest] [--targets] [--target <id>] [--baseline-path <id>] [--exception-path <id>] [--source-revision] [--run-matrix] [--run <id> [--expected-source <revision>]]\n",
         "\n",
         "  --help|-h         Show this help text\n",
         "  --manifest        Print the shared benchmark manifest (default)\n",
@@ -102,9 +128,52 @@ fn print_usage() {
         "                   Print the canonical regression-exception sidecar path\n",
         "  --source-revision\n",
         "                   Print the deterministic dirty-worktree source revision\n",
+        "  --run-matrix     Execute the source-owned 13-target release matrix\n",
         "  --run <id>       Execute one real target, print its JSON report, and compare its baseline\n"
     );
     println!("{}", message);
+}
+
+fn run_release_matrix() {
+    let report = match source_revision(repository_root()) {
+        Ok(expected_source) => match std::env::current_exe() {
+            Ok(executable) => run_release_matrix_with(
+                &executable,
+                &expected_source,
+                || match source_revision(repository_root()) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        eprintln!("cannot probe release matrix source revision: {error}");
+                        format!("source revision unavailable: {error}")
+                    }
+                },
+                |child_executable, args| {
+                    Command::new(child_executable)
+                        .args(args)
+                        .status()
+                        .map_err(|error| error.to_string())?
+                        .code()
+                        .ok_or_else(|| "child terminated without an exit code".to_owned())
+                },
+            ),
+            Err(error) => ReleaseMatrixReport::failed_setup(
+                &expected_source,
+                format!("cannot resolve current benchmark executable: {error}"),
+            ),
+        },
+        Err(error) => ReleaseMatrixReport::failed_setup(
+            "unavailable",
+            format!("cannot capture release matrix source revision: {error}"),
+        ),
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("serialize release matrix report")
+    );
+    if report.status == "failed" {
+        std::process::exit(1);
+    }
 }
 
 fn print_manifest() {
@@ -206,7 +275,7 @@ fn target_by_id(id: &str) -> Option<TargetSpec> {
 /// process exits non-zero if a target fails its absolute p95 budget, an
 /// existing baseline cannot be loaded, or comparison blocks. Baseline
 /// approval and file creation remain explicit review actions.
-fn run_benchmarks(target_id: Option<&str>) {
+fn run_benchmarks(target_id: Option<&str>, expected_source: Option<&str>) {
     let revision = match source_revision(repository_root()) {
         Ok(revision) => revision,
         Err(error) => {
@@ -214,6 +283,14 @@ fn run_benchmarks(target_id: Option<&str>) {
             std::process::exit(1);
         }
     };
+    if let Some(expected_source) = expected_source
+        && revision != expected_source
+    {
+        eprintln!(
+            "expected source revision mismatch: expected {expected_source}, actual {revision}"
+        );
+        std::process::exit(1);
+    }
     let as_of = chrono::Utc::now().date_naive();
     eprintln!("source revision: {revision}");
     eprintln!("performance gate date (UTC): {as_of}");
@@ -365,25 +442,32 @@ async fn run_target(
                     schema.to_string(),
                     schema.to_string(),
                     None,
-                    None,
+                    Some(r#"["log.emit"]"#.to_string()),
                 )?)
                 .await?;
             let executor =
                 PersistedToolExecutor::new(store.pool().clone(), Arc::new(NoopPersistedToolRunner));
             let tool_id = tool.id();
             let _fixture_lifetime = (store, temporary_root);
-            measure_local_async_batched(target.clone(), environment.clone(), 256, move || {
-                let executor = executor.clone();
-                async move {
-                    let _ = executor
-                        .execute(
-                            tool_id,
-                            serde_json::json!({}),
-                            ToolExecutionContext::new(Vec::new()),
-                        )
-                        .await;
-                }
-            })
+            measure_local_async_checked_batched(
+                target.clone(),
+                environment.clone(),
+                TOOL_DISPATCH_OPERATIONS_PER_SAMPLE,
+                move || {
+                    let executor = executor.clone();
+                    async move {
+                        executor
+                            .execute(
+                                tool_id,
+                                serde_json::json!({}),
+                                ToolExecutionContext::new(vec!["log.emit".to_string()]),
+                            )
+                            .await
+                            .map_err(|error| BenchmarkRunError::Operation(error.to_string()))?;
+                        Ok(())
+                    }
+                },
+            )
             .await
             .map(Some)
             .map_err(Into::into)

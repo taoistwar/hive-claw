@@ -20,6 +20,9 @@ jobs:
       SQLX_VERSION: "0.9.0"
       AWS_SDK_S3_VERSION: "1.141.0"
       VENDORED_WAYLAND_SCANNER_VERSION: "0.31.10"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
 
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
@@ -174,6 +177,9 @@ jobs:
       ASSISTANT_SECRET: ci-assistant-secret
       PLUGIN_SYSTEM_ENABLED: "true"
       RUST_BACKTRACE: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
 
     services:
       mysql:

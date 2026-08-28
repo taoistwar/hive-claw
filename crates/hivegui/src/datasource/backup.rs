@@ -1644,6 +1644,12 @@ fn read_verified_open_file(
             ));
         }
     }
+    #[cfg(not(unix))]
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err(ExportError::UnsafeSource(
+            display_path.display().to_string(),
+        ));
+    }
     let mut bytes = Vec::with_capacity(expected_size.min(16 * 1024 * 1024) as usize);
     file.read_to_end(&mut bytes)
         .map_err(|_| ExportError::UnsafeSource(display_path.display().to_string()))?;
@@ -2004,7 +2010,12 @@ impl VerifiedArchiveBinding {
             }
         }
         #[cfg(not(unix))]
-        if entry.modified().ok() != self.metadata.modified().ok() {
+        if entry
+            .modified()
+            .ok()
+            .map(cap_std::time::SystemTime::into_std)
+            != self.metadata.modified().ok()
+        {
             return Err(ImportError::UnsafeArchiveEntry(
                 self.archive.display().to_string(),
             ));
@@ -5694,12 +5705,12 @@ fn stable_file_identity_from_cap_metadata(
     stable_cap_file_identity(metadata)
 }
 
-fn owned_regular_file_link_count(metadata: &fs::Metadata) -> bool {
+fn owned_regular_file_link_count(_metadata: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
 
-        metadata.nlink() == 1
+        _metadata.nlink() == 1
     }
     #[cfg(not(unix))]
     {

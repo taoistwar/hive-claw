@@ -10,10 +10,12 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::Instant,
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

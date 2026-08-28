@@ -360,12 +360,11 @@ impl ProcessLock {
             if result == 0 {
                 Ok(Some(ProcessLock { _file: file }))
             } else {
-                let errno = unsafe { *libc_errno_location() };
-                // EWOULDBLOCK == EAGAIN == 11 on linux.
-                if errno == 11 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::WouldBlock {
                     Ok(None)
                 } else {
-                    Err(std::io::Error::from_raw_os_error(errno))
+                    Err(error)
                 }
             }
         }
@@ -379,17 +378,11 @@ impl ProcessLock {
 #[cfg(unix)]
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
-    fn __errno_location() -> *mut i32;
 }
 
 #[cfg(unix)]
 fn libc_flock(fd: i32, operation: i32) -> i32 {
     unsafe { flock(fd, operation) }
-}
-
-#[cfg(unix)]
-fn libc_errno_location() -> *mut i32 {
-    unsafe { __errno_location() }
 }
 
 /// In-process write-lock registry. Keyed by canonical database

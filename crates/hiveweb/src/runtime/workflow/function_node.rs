@@ -87,8 +87,8 @@ async fn execute_builtin_function(
         ext_pool: deps.ext_pool.as_ref(),
         redis: deps.redis.as_ref(),
         agent_ctx: Some(Arc::clone(agent_ctx)),
-        llm: Some(&deps.llm),
-        agent_id: Some(invoking_agent_id),
+        llm: Arc::clone(&deps.llm),
+        agent_id: None,
     };
     let out = (result.handler)(node_input, &ctx).map_err(|error| {
         tracing::error!(

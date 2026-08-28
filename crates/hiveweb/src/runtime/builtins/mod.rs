@@ -16,6 +16,7 @@ mod query_balance;
 mod support_card;
 mod text_regex_match;
 mod tools;
+mod rag_answer;
 
 use serde_json::Value;
 use sqlx::MySqlPool;
@@ -34,6 +35,7 @@ use game_list::game_list;
 use json_parse::json_parse;
 use json_stringify::json_stringify;
 use query_balance::query_balance;
+use rag_answer::rag_answer;
 use support_card::support_card;
 use text_regex_match::text_regex_match;
 
@@ -42,6 +44,7 @@ use chat_respond::{CHAT_RESPOND_INPUT_SCHEMA, CHAT_RESPOND_OUTPUT_SCHEMA};
 use format_template::{FORMAT_TEMPLATE_INPUT_SCHEMA, FORMAT_TEMPLATE_OUTPUT_SCHEMA};
 use game_info::{GAME_INFO_INPUT_SCHEMA, GAME_INFO_OUTPUT_SCHEMA};
 use game_list::{GAME_LIST_INPUT_SCHEMA, GAME_LIST_OUTPUT_SCHEMA};
+use rag_answer::{RAG_ANSWER_INPUT_SCHEMA, RAG_ANSWER_OUTPUT_SCHEMA};
 use json_parse::{JSON_PARSE_INPUT_SCHEMA, JSON_PARSE_OUTPUT_SCHEMA};
 use json_stringify::{JSON_STRINGIFY_INPUT_SCHEMA, JSON_STRINGIFY_OUTPUT_SCHEMA};
 use query_balance::{QUERY_BALANCE_INPUT_SCHEMA, QUERY_BALANCE_OUTPUT_SCHEMA};
@@ -73,8 +76,8 @@ pub struct BuiltinContext<'a> {
     /// `None` when called from contexts without AgentContext (e.g., workflow executor).
     pub agent_ctx: Option<Arc<AgentContext>>,
     /// LLM registry for builtins that need classification/summarization.
-    /// `None` when called from contexts without LLM access (e.g., workflow executor, test).
-    pub llm: Option<&'a Arc<LlmRegistry>>,
+    /// Always required; builtins are now invoked in contexts where LLM is available.
+    pub llm: Arc<LlmRegistry>,
     /// Current agent ID for resolving model preset when calling LLM from builtins.
     /// `None` when agent_id is unavailable.
     pub agent_id: Option<i64>,
@@ -165,6 +168,15 @@ pub const BUILTINS: &[BuiltinDef] = &[
         output_schema: QUERY_BALANCE_OUTPUT_SCHEMA,
         required_capabilities: &[],
         handler: query_balance,
+    },
+    BuiltinDef {
+        identifier: "rag_answer",
+        name: "RAG Answer",
+        description: "检索 RAGflow 知识库并结合 LLM 生成回复；无匹配时先说明无相关知识后再给出备选回答。",
+        input_schema: RAG_ANSWER_INPUT_SCHEMA,
+        output_schema: RAG_ANSWER_OUTPUT_SCHEMA,
+        required_capabilities: &[],
+        handler: rag_answer,
     },
     BuiltinDef {
         identifier: "support_card",
@@ -321,7 +333,7 @@ mod tests {
             ext_pool: None,
             redis: None,
             agent_ctx: None,
-            llm: None,
+            llm: Arc::new(LlmRegistry::new()),
             agent_id: None,
         }
     }

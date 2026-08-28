@@ -4,7 +4,9 @@ import md5 from 'blueimp-md5';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '/api';
 
 function getSecret(): string {
-  return import.meta.env.VITE_ASSISTANT_SECRET || '';
+  const secret= import.meta.env.VITE_ASSISTANT_SECRET || '';
+  console.log("secret", secret);
+  return secret;
 }
 
 /** 计算 MD5 签名 */

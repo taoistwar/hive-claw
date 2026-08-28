@@ -35,11 +35,9 @@ jobs:
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
 
-      - name: Install and verify Rust 1.97.1 toolchain
-        shell: bash
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
         run: |
           set -euo pipefail
-          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
           rustup show
 
           expected_release="release: 1.97.1"

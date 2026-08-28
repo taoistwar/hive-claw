@@ -160,7 +160,7 @@ async fn invoke_function(
             ext_pool: state.ext_pool.as_ref(),
             redis: Some(&state.redis),
             agent_ctx,
-            llm: None,
+            llm: Arc::clone(&state.runtime_state.llm),
             agent_id: None,
         };
         match (builtin.handler)(body.input, &bctx) {

@@ -33,9 +33,12 @@ static ASSISTANT_SECRET: OnceLock<String> = OnceLock::new();
 
 /// 懒加载 ASSISTANT_SECRET；返回 `&'static str`，未设置时为空串。
 pub fn get_assistant_secret() -> &'static str {
-    ASSISTANT_SECRET
+    let secret = ASSISTANT_SECRET
         .get_or_init(|| std::env::var("ASSISTANT_SECRET").unwrap_or_default())
-        .as_str()
+        .as_str();
+
+    tracing::debug!("secret={}", secret);
+    secret
 }
 
 // --- SSE Concurrency Control ---

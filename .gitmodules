@@ -1,6 +1,0 @@
-[submodule "nanobot"]
-	path = nanobot
-	url = https://github.com/taoistwar/nanobot.git
-[submodule "zed"]
-	path = zed
-	url = https://github.com/zed-industries/zed.git

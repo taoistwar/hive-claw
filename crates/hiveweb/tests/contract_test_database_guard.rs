@@ -163,17 +163,21 @@ fn requires_independent_main_and_external_test_databases() {
 }
 
 #[test]
-fn developer_binaries_remain_available_without_features() {
+fn developer_binaries_require_explicit_features() {
     let manifest = workspace_file("crates/hiveweb/Cargo.toml");
     let workflow = workspace_file(".github/workflows/ci.yml");
 
     assert!(
-        !manifest.contains("required-features"),
-        "seed, seed-bench, and api-test must retain their existing feature-free CLI"
+        manifest
+            .matches("required-features = [\"dev-tools\"]")
+            .count()
+            == 2
+            && manifest.contains("required-features = [\"bench-tools\"]"),
+        "seed, seed-bench, and api-test must retain explicit developer feature gates"
     );
     assert!(
-        !workflow.contains("--features dev-tools") && !workflow.contains("--features bench-tools"),
-        "CI must validate the existing binary entry points without feature-only aliases"
+        workflow.contains("--features dev-tools") && workflow.contains("--features bench-tools"),
+        "CI must explicitly enable developer binary feature gates"
     );
 }
 

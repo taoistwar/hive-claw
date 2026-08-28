@@ -161,10 +161,10 @@ jobs:
         run: cargo test --locked -p hiveweb --lib --bins
 
       - name: cargo test (HiveWeb developer tools)
-        run: cargo test --locked -p hiveweb --bin api-test --bin seed
+        run: cargo test --locked -p hiveweb --features dev-tools --bin api-test --bin seed
 
       - name: cargo test (HiveWeb benchmark tool)
-        run: cargo test --locked -p hiveweb --bin seed-bench
+        run: cargo test --locked -p hiveweb --features bench-tools --bin seed-bench
 
       - name: Clean HiveWeb test artifacts
         run: cargo clean

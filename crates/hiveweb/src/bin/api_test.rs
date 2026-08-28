@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let method_upper = method.to_uppercase();
 
     // Build sign body and request URL
-    let (sign_body, url) = match method_upper.as_str() {
+    let url = match method_upper.as_str() {
         "GET" => {
             // GET: parse JSON into flat key=value pairs, use as query string
             let params: HashMap<String, serde_json::Value> =
@@ -66,13 +66,13 @@ async fn main() -> anyhow::Result<()> {
 
             let sign = make_sign(&secret, &path, &sign_body);
             let url = format!("{base_url}{path}?{qs}&sign={sign}");
-            (sign_body, url)
+            url
         }
         "POST" => {
             serde_json::from_str::<serde_json::Value>(&body).context("invalid JSON body")?;
             let sign = make_sign(&secret, &path, &body);
             let url = format!("{base_url}{path}?sign={sign}");
-            (body.clone(), url)
+            url
         }
         _ => anyhow::bail!("unsupported method: {method}. Use GET or POST."),
     };

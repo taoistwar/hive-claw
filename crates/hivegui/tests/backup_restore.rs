@@ -2268,6 +2268,7 @@ async fn export_refuses_overwrite_of_existing_target() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn export_refuses_symlinked_source() {
     let workspace = TestWorkspace::new().expect("test workspace");

@@ -13,7 +13,7 @@ jobs:
 
     env:
       GITLEAKS_VERSION: "8.30.1"
-      GITLEAKS_SHA256: "f8a30ec64d4e7a0a3a8c5e0a4f6f3b1e7a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
       CARGO_DENY_VERSION: "0.20.2"
       SQLX_CLI_VERSION: "0.9.0"
       MYSQL_ASYNC_VERSION: "0.37.0"
@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            pkg-config build-essential \
+            pkg-config build-essential libfontconfig1-dev \
             libxkbcommon-dev libwayland-dev libvulkan-dev \
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
@@ -71,7 +71,7 @@ jobs:
           GITLEAKS_VERSION: "8.30.1"
         run: |
           set -euo pipefail
-          ARCH="linux-amd64"
+          ARCH="linux_x64"
           curl --fail --silent --show-error --location \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${ARCH}.tar.gz" \
             -o gitleaks.tar.gz
@@ -361,7 +361,11 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config build-essential libssl-dev
+          sudo apt-get install -y \
+            pkg-config build-essential libfontconfig1-dev \
+            libxkbcommon-dev libwayland-dev libvulkan-dev \
+            libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libssl-dev
 
       - name: Install and verify Rust 1.97.1 toolchain
         shell: bash

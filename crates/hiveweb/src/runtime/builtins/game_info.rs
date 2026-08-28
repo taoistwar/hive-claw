@@ -574,7 +574,7 @@ async fn classify_game_category(
         "content": prompt,
     })];
 
-    match llm.build_primary(None) {
+    match llm.build_chain(None) {
         Ok((provider, model)) => {
             let req = ChatRequest {
                 model: Some(model.clone()),

@@ -69,7 +69,7 @@ async fn execute_builtin_function(
     node_key: &str,
     identifier: &str,
     input: Value,
-    invoking_agent_id: i64,
+    _invoking_agent_id: i64,
     agent_ctx: &Arc<AgentContext>,
 ) -> Result<(String, Value), WorkflowError> {
     let result = builtins::lookup(identifier).ok_or_else(|| WorkflowError::NodeFailure {

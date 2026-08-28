@@ -239,7 +239,7 @@ pub async fn ask_llm_to_answer(
         "content": prompt,
     })];
 
-    match llm.build_primary(None) {
+    match llm.build_chain(None) {
         Ok((provider, model)) => {
             let req = ChatRequest {
                 model: Some(model.clone()),

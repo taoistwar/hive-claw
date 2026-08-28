@@ -46,8 +46,6 @@ struct RetrievalResponse {
 #[derive(Debug, Deserialize)]
 struct RetrievalData {
     chunks: Vec<RetrievalChunk>,
-    #[serde(default)]
-    total: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +94,7 @@ async fn rag_answer_async_impl(
         }));
     }
 
-    return Ok(json!({
+    Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
                 "content_type": "card",
@@ -109,14 +107,14 @@ async fn rag_answer_async_impl(
                 "agent_loop_reply": "抱歉，我无法回答您的问题。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
             }
         }
-    }));
+    }))
 }
 
 pub fn extract_question(
     agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>,
 ) -> String {
     agent_ctx
-        .and_then(|ctx| Some(ctx.user_input().raw_text.trim().to_string()))
+        .map(|ctx| ctx.user_input().raw_text.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_default()
 }

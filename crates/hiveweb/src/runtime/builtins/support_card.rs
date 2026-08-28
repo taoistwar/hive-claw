@@ -66,7 +66,7 @@ async fn support_card_async_impl(
         }));
     }
 
-    return Ok(json!({
+    Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
                 "content_type": "card",
@@ -79,7 +79,7 @@ async fn support_card_async_impl(
                 "agent_loop_reply": "抱歉，我无法回答您的问题。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
             }
         }
-    }));
+    }))
 }
 
 pub const SUPPORT_CARD_INPUT_SCHEMA: &str = r#"{

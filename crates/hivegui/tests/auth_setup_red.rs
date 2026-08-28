@@ -25,7 +25,10 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
+use std::{fs, path::PathBuf, time::Duration};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use hivegui::auth::{
     crypto::SlowClock,
@@ -125,9 +128,12 @@ fn accepted_password_persists_only_wrapped_device_key() {
                 "wrapped_device_key file must exist at {}",
                 path.display()
             );
-            let metadata = fs::metadata(&path).expect("stat wrapped_device_key");
-            let mode = metadata.permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "wrapped_device_key must be 0600");
+            #[cfg(unix)]
+            {
+                let metadata = fs::metadata(&path).expect("stat wrapped_device_key");
+                let mode = metadata.permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "wrapped_device_key must be 0600");
+            }
             let contents = fs::read(&path).expect("read wrapped_device_key");
             assert!(
                 contents.starts_with(b"AUTHV1"),

@@ -25,7 +25,10 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+use std::{fs, time::Duration};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use hivegui::auth::{
     keystore::{AuthError, UnlockOutcome, UnlockedKeystore},
@@ -202,6 +205,7 @@ fn wrong_passwords_must_not_modify_any_persistent_state() {
     let wrapped_mtime_before = fs::metadata(&wrapped_path)
         .and_then(|m| m.modified())
         .expect("mtime wrapped_device_key");
+    #[cfg(unix)]
     let wrapped_mode_before = fs::metadata(&wrapped_path)
         .expect("stat wrapped_device_key")
         .permissions()
@@ -220,6 +224,7 @@ fn wrong_passwords_must_not_modify_any_persistent_state() {
     let wrapped_mtime_after = fs::metadata(&wrapped_path)
         .and_then(|m| m.modified())
         .expect("mtime wrapped_device_key");
+    #[cfg(unix)]
     let wrapped_mode_after = fs::metadata(&wrapped_path)
         .expect("stat wrapped_device_key")
         .permissions()
@@ -234,6 +239,7 @@ fn wrong_passwords_must_not_modify_any_persistent_state() {
         wrapped_mtime_before, wrapped_mtime_after,
         "wrong passwords must not touch wrapped_device_key mtime"
     );
+    #[cfg(unix)]
     assert_eq!(
         wrapped_mode_before, wrapped_mode_after,
         "wrong passwords must not relax wrapped_device_key permissions"

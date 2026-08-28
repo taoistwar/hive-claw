@@ -141,8 +141,14 @@ jobs:
       - name: cargo clippy
         run: cargo +1.97.1 clippy --locked --workspace --all-targets -- -D warnings
 
+      - name: Clean Clippy build artifacts
+        run: cargo +1.97.1 clean
+
       - name: cargo test (workspace except HiveWeb)
         run: cargo +1.97.1 test --locked --workspace --exclude hiveweb
+
+      - name: Clean workspace test artifacts
+        run: cargo +1.97.1 clean
 
       - name: cargo test (HiveWeb lib + bins)
         run: cargo +1.97.1 test --locked -p hiveweb --lib --bins
@@ -152,6 +158,9 @@ jobs:
 
       - name: cargo test (HiveWeb benchmark tool)
         run: cargo +1.97.1 test --locked -p hiveweb --features bench-tools --bin seed-bench
+
+      - name: Clean HiveWeb test artifacts
+        run: cargo +1.97.1 clean
 
       - name: cargo test (HiveWeb docs)
         run: cargo +1.97.1 test --locked -p hiveweb --doc
@@ -334,7 +343,7 @@ jobs:
           )
 
       - name: cargo test (HiveWeb integration)
-        run: cargo +1.97.1 test --locked -p hiveweb --tests -- --test-threads=1
+        run: cargo +1.97.1 clean && cargo +1.97.1 test --locked -p hiveweb --tests -- --test-threads=1
 
   hivegui-mysql:
     name: hivegui mysql

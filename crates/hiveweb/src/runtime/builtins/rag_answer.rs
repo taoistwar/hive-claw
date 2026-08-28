@@ -68,7 +68,7 @@ pub fn rag_answer(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let llm = Arc::clone(&ctx.llm);
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current()
-        .block_on(async move { rag_answer_async_impl(question, llm.as_ref()).await })
+            .block_on(async move { rag_answer_async_impl(question, llm.as_ref()).await })
     })
 }
 
@@ -82,7 +82,6 @@ async fn rag_answer_async_impl(
     let rag_chunks = query_rag_chunks(question.clone(), dataset_ids, document_ids).await;
 
     let has_knowledge = !rag_chunks.is_empty();
-
 
     let llm_answer = ask_llm_to_answer(&question, &rag_chunks, has_knowledge, llm).await;
     if !llm_answer.trim().is_empty() {
@@ -111,10 +110,11 @@ async fn rag_answer_async_impl(
             }
         }
     }));
-
 }
 
-pub fn extract_question(agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>) -> String {
+pub fn extract_question(
+    agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>,
+) -> String {
     agent_ctx
         .and_then(|ctx| Some(ctx.user_input().raw_text.trim().to_string()))
         .filter(|s| !s.is_empty())
@@ -268,7 +268,9 @@ pub async fn ask_llm_to_answer(
 
 fn build_prompt_with_knowledge(question: &str, chunks: &[String]) -> String {
     let mut prompt = String::new();
-    prompt.push_str("你是客服助手，请严格基于以下知识库内容回答。回答要简洁、可执行。不要提示用户转人工。\n\n");
+    prompt.push_str(
+        "你是客服助手，请严格基于以下知识库内容回答。回答要简洁、可执行。不要提示用户转人工。\n\n",
+    );
     prompt.push_str(&format!("用户问题：{}\n\n", question));
     prompt.push_str("知识片段：\n");
     for (idx, chunk) in chunks.iter().take(6).enumerate() {

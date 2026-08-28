@@ -7932,8 +7932,8 @@ async fn checkpoint_uses_pinned_staging_and_current_leaves_during_a_b_a_exchange
     let current_metadata =
         fs::metadata(&current_database).expect("record exact current database identity");
     let current_identity = (current_metadata.dev(), current_metadata.ino());
-    let staging_competitor_before = fs::read(&staging_competitor)
-        .expect("record staging checkpoint competitor bytes");
+    let staging_competitor_before =
+        fs::read(&staging_competitor).expect("record staging checkpoint competitor bytes");
     let current_competitor_before =
         fs::read(&current_competitor).expect("record current checkpoint competitor bytes");
 

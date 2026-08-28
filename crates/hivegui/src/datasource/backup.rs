@@ -3957,11 +3957,7 @@ impl RestoreConfirmation {
             let held_current = self.coordinator.open_current_database_for_snapshot()?;
             let prepared = self
                 .coordinator
-                .prepare_restore_for_safety(
-                    &self.plan,
-                    None,
-                    pinned_checkpoint_interlocks.as_ref(),
-                )
+                .prepare_restore_for_safety(&self.plan, None, pinned_checkpoint_interlocks.as_ref())
                 .await?;
             let snapshot_binding = begin_restore_safety_snapshot(
                 &prepared.root_dir,
@@ -7511,12 +7507,7 @@ fn copy_plugin_tree_into_directory(
             let target_child = target_directory.open_dir(source_name).map_err(|_| {
                 ImportError::UnsafeArchiveEntry(relative_path.display().to_string())
             })?;
-            copy_plugin_tree_into_directory(
-                &source_child,
-                &target_child,
-                &relative_path,
-                out,
-            )?;
+            copy_plugin_tree_into_directory(&source_child, &target_child, &relative_path, out)?;
             sync_cap_directory(&target_child, "fsync safety Plugin child")?;
         } else if metadata.is_file() {
             out.push(copy_owned_regular_file_between_directories(
@@ -9512,9 +9503,8 @@ fn remove_tree_no_follow_path(root: &Path) -> Result<(), ImportError> {
         root.file_name()
             .ok_or_else(|| ImportError::UnsafeArchiveEntry(root.display().to_string()))?,
     );
-    let parent_directory =
-        cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
-            .map_err(|error| ImportError::Io(error.to_string()))?;
+    let parent_directory = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
+        .map_err(|error| ImportError::Io(error.to_string()))?;
     let metadata = parent_directory
         .symlink_metadata(name)
         .map_err(|error| ImportError::Io(error.to_string()))?;
@@ -9528,7 +9518,10 @@ fn remove_tree_no_follow_path(root: &Path) -> Result<(), ImportError> {
     parent_directory
         .remove_dir(name)
         .map_err(|error| ImportError::Io(error.to_string()))?;
-    sync_cap_directory(&parent_directory, "fsync removed descriptor-bound tree parent")
+    sync_cap_directory(
+        &parent_directory,
+        "fsync removed descriptor-bound tree parent",
+    )
 }
 
 fn remove_tree_no_follow(root_directory: &cap_std::fs::Dir) -> Result<(), ImportError> {
@@ -9550,9 +9543,9 @@ fn remove_tree_no_follow(root_directory: &cap_std::fs::Dir) -> Result<(), Import
             ));
         }
         if metadata.is_dir() {
-            let child = root_directory.open_dir(relative).map_err(|_| {
-                ImportError::UnsafeArchiveEntry(relative.display().to_string())
-            })?;
+            let child = root_directory
+                .open_dir(relative)
+                .map_err(|_| ImportError::UnsafeArchiveEntry(relative.display().to_string()))?;
             remove_tree_no_follow(&child)?;
             root_directory
                 .remove_dir(relative)

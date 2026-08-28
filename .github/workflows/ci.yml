@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config build-essential libfontconfig1-dev \
-            libxkbcommon-dev libwayland-dev libvulkan-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
 
@@ -274,6 +274,9 @@ jobs:
               mc mb --ignore-existing "ci/$S3_BUCKET"
             '
 
+      - name: Reclaim runner disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
       - name: Build migration binary
         run: cargo +1.97.1 build --locked -p hiveweb --bin migrate
 
@@ -363,7 +366,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config build-essential libfontconfig1-dev \
-            libxkbcommon-dev libwayland-dev libvulkan-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
 

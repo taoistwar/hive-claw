@@ -133,12 +133,10 @@ path = "src/bin/create_super_admin.rs"
 [[bin]]
 name = "seed"
 path = "src/bin/seed.rs"
-required-features = ["dev-tools"]
 
 [[bin]]
 name = "seed-bench"
 path = "src/bin/seed_bench.rs"
-required-features = ["bench-tools"]
 
 [[bin]]
 name = "chat-retention"
@@ -147,7 +145,6 @@ path = "src/bin/chat_retention.rs"
 [[bin]]
 name = "api-test"
 path = "src/bin/api_test.rs"
-required-features = ["dev-tools"]
 
 [features]
 standalone = []

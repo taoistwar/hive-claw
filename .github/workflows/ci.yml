@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   quality:
     name: fmt + clippy + test
@@ -20,9 +25,6 @@ jobs:
       SQLX_VERSION: "0.9.0"
       AWS_SDK_S3_VERSION: "1.141.0"
       VENDORED_WAYLAND_SCANNER_VERSION: "0.31.10"
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
 
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
@@ -33,10 +35,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            pkg-config build-essential libfontconfig1-dev \
+            pkg-config build-essential libfontconfig-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
+          pkg-config --exists fontconfig xkbcommon xkbcommon-x11
 
       - name: Install Rust toolchain (pinned by rust-toolchain.toml)
         run: |
@@ -60,14 +63,13 @@ jobs:
             exit 1
           fi
 
-      - name: Cache cargo registry & target
+      - name: Cache Cargo sources
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-cargo-sources-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
 
       - name: Gitleaks release download
         env:
@@ -135,35 +137,40 @@ jobs:
           DATABASE_URL: "sqlite::memory:"
         run: SQLX_OFFLINE=true cargo sqlx prepare --workspace --check --no-dotenv
 
+      - name: Reclaim runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force
+
       - name: cargo fmt
-        run: cargo +1.97.1 fmt --all -- --check
+        run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo +1.97.1 clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Clean Clippy build artifacts
-        run: cargo +1.97.1 clean
+        run: cargo clean
 
       - name: cargo test (workspace except HiveWeb)
-        run: cargo +1.97.1 test --locked --workspace --exclude hiveweb
+        run: cargo test --locked --workspace --exclude hiveweb
 
       - name: Clean workspace test artifacts
-        run: cargo +1.97.1 clean
+        run: cargo clean
 
       - name: cargo test (HiveWeb lib + bins)
-        run: cargo +1.97.1 test --locked -p hiveweb --lib --bins
+        run: cargo test --locked -p hiveweb --lib --bins
 
       - name: cargo test (HiveWeb developer tools)
-        run: cargo +1.97.1 test --locked -p hiveweb --features dev-tools --bin api-test --bin seed
+        run: cargo test --locked -p hiveweb --bin api-test --bin seed
 
       - name: cargo test (HiveWeb benchmark tool)
-        run: cargo +1.97.1 test --locked -p hiveweb --features bench-tools --bin seed-bench
+        run: cargo test --locked -p hiveweb --bin seed-bench
 
       - name: Clean HiveWeb test artifacts
-        run: cargo +1.97.1 clean
+        run: cargo clean
 
       - name: cargo test (HiveWeb docs)
-        run: cargo +1.97.1 test --locked -p hiveweb --doc
+        run: cargo test --locked -p hiveweb --doc
 
   hiveweb-integration:
     name: hiveweb integration
@@ -171,6 +178,7 @@ jobs:
 
     env:
       TEST_DATABASE_URL: mysql://hiveweb:hiveweb_test_password@127.0.0.1:3306/hiveweb_test
+      TEST_EXTERNAL_DATABASE_URL: mysql://hiveweb:hiveweb_test_password@127.0.0.1:3306/hiveweb_test_external
       REDIS_MODE: direct
       REDIS_URL: redis://127.0.0.1:6379
       REDIS_CONNECT_TIMEOUT_MS: "5000"
@@ -186,9 +194,6 @@ jobs:
       ASSISTANT_SECRET: ci-assistant-secret
       PLUGIN_SYSTEM_ENABLED: "true"
       RUST_BACKTRACE: "1"
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
 
     services:
       mysql:
@@ -248,16 +253,13 @@ jobs:
             exit 1
           fi
 
-      - name: Cache cargo registry & target
+      - name: Cache Cargo sources
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-hiveweb-integration-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-sources-hiveweb-integration-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
 
       - name: Start MinIO and create test bucket
         shell: bash
@@ -266,7 +268,7 @@ jobs:
             --publish 9000:9000 \
             --env MINIO_ROOT_USER="${AWS_ACCESS_KEY_ID}" \
             --env MINIO_ROOT_PASSWORD="${AWS_SECRET_ACCESS_KEY}" \
-            minio/minio:latest server /data
+            minio/minio:RELEASE.2025-07-18T21-56-31Z server /data
 
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
@@ -284,16 +286,29 @@ jobs:
             --env AWS_SECRET_ACCESS_KEY \
             --env S3_BUCKET \
             --entrypoint /bin/sh \
-            minio/mc:latest -c '
+            minio/mc:RELEASE.2025-08-13T08-35-41Z -c '
               mc alias set ci http://127.0.0.1:9000 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
               mc mb --ignore-existing "ci/$S3_BUCKET"
             '
 
+      - name: Provision independent external test database
+        shell: bash
+        run: |
+          mysql_container="$(docker ps --filter 'ancestor=mysql:8.0' --format '{{.ID}}' | head -n 1)"
+          test -n "${mysql_container}"
+          docker exec "${mysql_container}" mysql -uroot -phiveweb_test_root --execute="
+            CREATE DATABASE IF NOT EXISTS hiveweb_test_external;
+            GRANT ALL PRIVILEGES ON hiveweb_test_external.* TO 'hiveweb'@'%';
+            FLUSH PRIVILEGES;
+          "
+
       - name: Reclaim runner disk space
-        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force
 
       - name: Build migration binary
-        run: cargo +1.97.1 build --locked -p hiveweb --bin migrate
+        run: cargo build --locked -p hiveweb --bin migrate
 
       - name: Migrate disposable database from clean cwd
         shell: bash
@@ -343,7 +358,7 @@ jobs:
           )
 
       - name: cargo test (HiveWeb integration)
-        run: cargo +1.97.1 clean && cargo +1.97.1 test --locked -p hiveweb --tests -- --test-threads=1
+        run: cargo clean && cargo test --locked -p hiveweb --tests -- --test-threads=1
 
   hivegui-mysql:
     name: hivegui mysql
@@ -380,10 +395,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            pkg-config build-essential libfontconfig1-dev \
+            pkg-config build-essential libfontconfig-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libssl-dev
+          pkg-config --exists fontconfig xkbcommon xkbcommon-x11
 
       - name: Install and verify Rust 1.97.1 toolchain
         shell: bash
@@ -409,16 +425,13 @@ jobs:
             exit 1
           fi
 
-      - name: Cache cargo registry & target
+      - name: Cache Cargo sources
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-hivegui-mysql-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-sources-hivegui-mysql-rust-1.97.1-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
 
       - name: cargo test (HiveGUI MySQL)
-        run: cargo +1.97.1 test --locked -p hivegui --test datasource_connection -- --test-threads=1
+        run: cargo test --locked -p hivegui --test datasource_connection -- --test-threads=1

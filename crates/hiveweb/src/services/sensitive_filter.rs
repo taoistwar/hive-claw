@@ -146,11 +146,10 @@ impl SensitiveFilter {
                                 re,
                             });
                         }
-                        Err(e) => {
+                        Err(_error) => {
                             tracing::warn!(
                                 id = row.id,
-                                word = %row.word,
-                                error = %e,
+                                error_kind = "invalid_regex",
                                 "Failed to compile regex sensitive word, skipping"
                             );
                         }
@@ -304,8 +303,12 @@ pub async fn create_sensitive_word(
         Ok(r) => {
             let id = r.last_insert_id() as i64;
             // Refresh cache
-            if let Err(e) = filter.refresh_cache(pool).await {
-                tracing::warn!(error = %e, "Failed to refresh filter cache after create");
+            if let Err(_error) = filter.refresh_cache(pool).await {
+                tracing::warn!(
+                    error_kind = "cache_refresh_failed",
+                    operation = "create",
+                    "Failed to refresh filter cache"
+                );
             }
             let row: SensitiveWord = sqlx::query_as(
                 "SELECT id, word, match_mode, enabled, created_at, updated_at FROM sensitive_words WHERE id = ?",
@@ -378,8 +381,12 @@ pub async fn update_sensitive_word(
         })?;
 
     // Refresh cache
-    if let Err(e) = filter.refresh_cache(pool).await {
-        tracing::warn!(error = %e, "Failed to refresh filter cache after update");
+    if let Err(_error) = filter.refresh_cache(pool).await {
+        tracing::warn!(
+            error_kind = "cache_refresh_failed",
+            operation = "update",
+            "Failed to refresh filter cache"
+        );
     }
 
     let row: SensitiveWord = sqlx::query_as(
@@ -405,8 +412,12 @@ pub async fn delete_sensitive_word(
         .map_err(|e| AppError::Internal(format!("delete sensitive word: {e}")))?;
 
     let deleted = result.rows_affected() > 0;
-    if deleted && let Err(e) = filter.refresh_cache(pool).await {
-        tracing::warn!(error = %e, "Failed to refresh filter cache after delete");
+    if deleted && let Err(_error) = filter.refresh_cache(pool).await {
+        tracing::warn!(
+            error_kind = "cache_refresh_failed",
+            operation = "delete",
+            "Failed to refresh filter cache"
+        );
     }
     Ok(deleted)
 }

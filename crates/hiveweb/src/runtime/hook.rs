@@ -62,7 +62,7 @@ pub struct HookDeps {
 /// Blocking mode: first failure aborts the agent flow and returns `Err`.
 #[tracing::instrument(skip(pool, hooks, ctx, deps), fields(
     agent_id = %ctx.agent_id,
-    identifier = %ctx.identifier,
+    identifier_len = ctx.identifier.len(),
     trigger_point = %point,
     session_id = %ctx.session_id
 ))]
@@ -418,7 +418,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                         agent_id = ctx.agent_id,
                         agent_identifier = %ctx.identifier,
                         hook_id = hook.id,
-                        hook_name = %hook.name,
+                        hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -437,7 +437,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                         agent_id = ctx.agent_id,
                         agent_identifier = %ctx.identifier,
                         hook_id = hook.id,
-                        hook_name = %hook.name,
+                        hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -456,7 +456,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                         agent_id = ctx.agent_id,
                         agent_identifier = %ctx.identifier,
                         hook_id = hook.id,
-                        hook_name = %hook.name,
+                        hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -475,7 +475,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
             agent_id = ctx.agent_id,
             agent_identifier = %ctx.identifier,
             hook_id = hook.id,
-            hook_name = %hook.name,
+            hook_name_len = hook.name.len(),
             session_id = ctx.session_id,
             trigger_point = %ctx.trigger_point,
             action_type = %hook.action_type,
@@ -506,7 +506,7 @@ fn trace_hook_exec(
                 agent_id = ctx.agent_id,
                 agent_identifier = %ctx.identifier,
                 hook_id = hook.id,
-                hook_name = %hook.name,
+                hook_name_len = hook.name.len(),
                 session_id = ctx.session_id,
                 trigger_point,
                 action_type = %hook.action_type,
@@ -651,13 +651,15 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 "StateChanges" => Category::StateChanges,
                 "SubagentResults" => Category::SubagentResults,
                 _ => {
-                    tracing::warn!("Unknown category in _agent_context_updates: {category_str}");
+                    tracing::warn!("Unknown category in _agent_context_updates");
                     continue;
                 }
             };
 
-            if let Err(e) = agent_ctx.set_record(cat, key.to_string(), value, source, iteration) {
-                tracing::warn!("Failed to apply _agent_context_updates record: {e}");
+            if let Err(_error) =
+                agent_ctx.set_record(cat, key.to_string(), value, source, iteration)
+            {
+                tracing::warn!("Failed to apply _agent_context_updates record");
             }
         }
     }
@@ -703,8 +705,8 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 ext.get("reply").cloned(),
                 data,
             );
-            if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
-                tracing::warn!("Failed to apply _agent_context_updates extension: {e}");
+            if let Err(_error) = agent_ctx.add_extension(id.to_string(), content) {
+                tracing::warn!("Failed to apply _agent_context_updates extension");
             }
         }
     }
@@ -713,9 +715,9 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
     if let Some(metadata) = updates.get("metadata").and_then(|v| v.as_object()) {
         for (key, val) in metadata {
             if let Some(s) = val.as_str()
-                && let Err(e) = agent_ctx.set_metadata(key.clone(), s.to_string())
+                && let Err(_error) = agent_ctx.set_metadata(key.clone(), s.to_string())
             {
-                tracing::warn!("Failed to apply _agent_context_updates metadata: {e}");
+                tracing::warn!("Failed to apply _agent_context_updates metadata");
             }
         }
     }

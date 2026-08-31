@@ -101,7 +101,6 @@ impl DebugLogger {
         if let Ok(mut lines) = self.lines.lock() {
             lines.push(line.clone());
         }
-        println!("{}", line);
     }
 
     pub fn dump(&self) -> String {

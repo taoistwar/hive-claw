@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::cache::redis::RedisClient;
 use crate::runtime::llm::LlmRegistry;
-use providers::{ChatRequest, RetryMode};
+use providers::{ChatRequest, LlmCallOptions};
 
 use super::{BuiltinContext, BuiltinError, BuiltinResult};
 
@@ -587,7 +587,7 @@ async fn classify_game_category(
             };
             tracing::debug!(model = %model, "classify_game_category: calling LLM");
             let resp = provider
-                .chat_with_retry(req, RetryMode::Standard, None)
+                .chat_with_options(req, LlmCallOptions::default())
                 .await;
             let raw_content = resp.content.clone();
             tracing::debug!(

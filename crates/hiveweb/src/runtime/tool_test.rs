@@ -2,7 +2,7 @@
 //!
 //! 为单个 Tool 创建隔离测试环境：加载目标 Tool + Always Tools + Always Skills → 执行单轮对话 → 返回结果
 
-use providers::{ChatRequest, LLMProvider, LlmCallOptions};
+use providers::{ChatRequest, LlmCallOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;

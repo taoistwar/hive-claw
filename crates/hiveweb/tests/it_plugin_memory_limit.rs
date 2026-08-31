@@ -302,7 +302,10 @@ async fn t166_real_plugin_memory_limit_maps_5000_audits_and_discards_instance() 
         metrics.idle, 0,
         "failed instance must not return to idle pool"
     );
-    assert_eq!(metrics.created_total, 1);
+    assert_eq!(
+        metrics.created_total, 2,
+        "control and failing probes each create a fresh Store/Instance"
+    );
     assert_eq!(
         metrics.reset_failures, 0,
         "a trapped invocation is a discard, not a reset failure"

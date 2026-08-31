@@ -159,8 +159,10 @@ pub async fn run_tool_test(
         )));
     };
     logger.log(&format!(
-        "STEP1 OK: tool found id={} identifier={} kind={}",
-        tid, t_ident, t_kind
+        "STEP1 OK: tool found id={} identifier_len={} kind={}",
+        tid,
+        t_ident.len(),
+        t_kind
     ));
 
     let t_caps: Vec<String> = t_caps_raw
@@ -286,7 +288,10 @@ pub async fn run_tool_test(
                 LlmAdapterError::Unknown(name) => ToolTestError::ModelPresetUnknown(name),
                 _ => ToolTestError::Failed(format!("LLM provider: {e}")),
             })?;
-    logger.log(&format!("STEP5 OK: LLM provider built, model={}", model));
+    logger.log(&format!(
+        "STEP5 OK: LLM provider built, model_name_len={}",
+        model.len()
+    ));
 
     let tools_schema = build_tools_schema_simple(&ctx.tools);
 
@@ -384,17 +389,16 @@ pub async fn run_tool_test(
         let tool_name = tc.name.clone();
         let args = tc.arguments.clone();
         logger.log(&format!(
-            "STEP9.{}: executing tool '{}' with args={}",
+            "STEP9.{}: executing tool with args_count={}",
             idx,
-            tool_name,
-            serde_json::to_string(&args).unwrap_or_default()
+            args.len()
         ));
 
         let tool_ref = ctx.tools.iter().find(|t| t.identifier == tc.name);
         let Some(tool_ref) = tool_ref else {
             logger.log(&format!(
-                "STEP9.{}: FAIL: tool '{}' not found in context",
-                idx, tc.name
+                "STEP9.{}: FAIL: requested tool not found in context",
+                idx
             ));
             records.push(TestToolCallRecord {
                 tool_name,
@@ -402,7 +406,7 @@ pub async fn run_tool_test(
                 result: TestToolCallOutcome {
                     success: false,
                     content: Value::Null,
-                    error: Some(format!("tool '{}' not found in test context", tc.name)),
+                    error: Some("requested tool not found in test context".to_string()),
                 },
             });
             continue;

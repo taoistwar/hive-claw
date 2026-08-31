@@ -416,7 +416,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                     tracing::info!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
+                        agent_identifier_len = ctx.identifier.len(),
                         hook_id = hook.id,
                         hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
@@ -435,7 +435,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                     tracing::warn!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
+                        agent_identifier_len = ctx.identifier.len(),
                         hook_id = hook.id,
                         hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
@@ -454,7 +454,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                     tracing::warn!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
+                        agent_identifier_len = ctx.identifier.len(),
                         hook_id = hook.id,
                         hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
@@ -473,7 +473,7 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
         tracing::warn!(
             event = "hook_webhook_retry",
             agent_id = ctx.agent_id,
-            agent_identifier = %ctx.identifier,
+            agent_identifier_len = ctx.identifier.len(),
             hook_id = hook.id,
             hook_name_len = hook.name.len(),
             session_id = ctx.session_id,
@@ -504,7 +504,7 @@ fn trace_hook_exec(
             tracing::$level!(
                 event = "hook_execution",
                 agent_id = ctx.agent_id,
-                agent_identifier = %ctx.identifier,
+                agent_identifier_len = ctx.identifier.len(),
                 hook_id = hook.id,
                 hook_name_len = hook.name.len(),
                 session_id = ctx.session_id,

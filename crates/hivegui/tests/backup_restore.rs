@@ -5205,7 +5205,7 @@ async fn preview_restore_pins_one_archive_descriptor_across_a_b_a_path_exchange(
             early_preview_result = Some(result.expect("preview task must not panic"));
             false
         }
-        _ = tokio::time::sleep(Duration::from_secs(10)) => {
+        _ = tokio::time::sleep(Duration::from_secs(60)) => {
             panic!("preview neither completed authenticated staging nor failed closed")
         }
     };

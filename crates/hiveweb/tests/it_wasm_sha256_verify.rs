@@ -21,10 +21,8 @@ use hiveweb::runtime::pool::{InstancePool, PoolConfig, PoolError};
 use hiveweb::services::plugin::UploadMeta;
 use sha2::{Digest, Sha256};
 
-const MINIMAL_WASM: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, // magic: \0asm
-    0x01, 0x00, 0x00, 0x00, // version 1
-];
+const SHARED_SMOKE_WASM: &[u8] =
+    include_bytes!("../../hivegui/tests/fixtures/plugins/shared-smoke/plugin.wasm");
 
 #[tokio::test]
 async fn t167_tampered_wasm_is_rejected_by_real_invoker_without_pooling_instance()
@@ -33,7 +31,7 @@ async fn t167_tampered_wasm_is_rejected_by_real_invoker_without_pooling_instance
     let s3 = hiveweb::storage::s3::create_client().await?;
     let identifier = format!("t167-{}", uuid::Uuid::new_v4().simple());
     let s3_key = format!("plugins/{identifier}/1.0.0.wasm");
-    let expected_sha256 = format!("{:x}", Sha256::digest(MINIMAL_WASM));
+    let expected_sha256 = format!("{:x}", Sha256::digest(SHARED_SMOKE_WASM));
 
     let upload = hiveweb::services::plugin::upload(
         &db_pool,
@@ -50,7 +48,7 @@ async fn t167_tampered_wasm_is_rejected_by_real_invoker_without_pooling_instance
             category_id: None,
             tag_ids: Vec::new(),
         },
-        MINIMAL_WASM.to_vec(),
+        SHARED_SMOKE_WASM.to_vec(),
     )
     .await;
     let plugin = match upload {

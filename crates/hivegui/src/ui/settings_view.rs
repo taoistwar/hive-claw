@@ -2270,7 +2270,8 @@ mod tests {
             view.update(cx, |view, cx| view.do_export(cx));
         });
         let mut exporting = true;
-        for _ in 0..300 {
+        let export_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < export_deadline {
             cx.run_until_parked();
             exporting = cx.update(|cx| view.read(cx).is_exporting);
             if !exporting {

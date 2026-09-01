@@ -873,23 +873,77 @@ T025R 规格要求"被审 6 边界的所有 `pub fn` 必须完成 doc comment �
 - [x] CHK009 重加密过程中如果应用崩溃——是否需要定义部分重加密状态的数据一致性需求（事务性重加密 vs 逐条重加密）？[Gap, Spec §Edge Cases:加密密钥管理]
   > **评估**: T016c 定义了"如任一步骤失败，回滚到原始状态"。SQLite 事务机制支持原子性——重加密在单个事务中执行。崩溃后数据库回滚到操作前状态。数据一致性由 SQLite ACID 保证。
 
-- [ ] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（2026-08-26 冻结源码更正：backup owner 跨平台边界 Pending）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
+- [x] CHK010 FR-012/FR-046 定义的加密范围是否完整列出，并已逐项取得实现验证？（2026-08-26 冻结源码更正：backup owner 跨平台边界 Pending）[Coverage, Spec §FR-012/FR-046, Data Model §DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution]
   > **条件总结**: 范围为 DataSource `encrypted_password`、LlmProvider `token_encrypted`、ChatSession `title_encrypted`、ChatMessage `content_encrypted`/`tool_calls_encrypted`、AgentExecution `state_encrypted`，并包含备份跨设备重加密与敏感落盘隔离。T138 的 83 项逐字段 owner 复跑与 103 项全介质/错误/恢复复跑均 Green：
   > 1. `T038`/`T047`（DataSource/LlmProvider）与 `T127`/`T136`（会话/消息/执行）已通过 `T016F` 持续可用 canary 与所有错误路径
   > 2. `T119`/`T120`（备份/日志）与 `T129`/`T130`（restore/safe backup）按现有公开矩阵跑通
   > 3. CHK011 的介质扫描证明未出现明文回归
   > 4. security reviewer/source-true self-attestation、review date、精确命令与标准化输出已记录于本清单顶部 2026-08-26 T138 节
   > **冻结源码更正**: 上述 221 项历史结果未覆盖明文 leaf TOCTOU、跨平台 no-follow、生产 Linux fd-bound leaf VFS 与 Windows file-id/reparse；T119/T130 owner 闭合前本项不得重新勾选。
+  > **2026-09-01 重新闭合**: T119/T123A/T130/T136/T142 owner 链已全部标记 `[X]`；当前源码的主 CI 与 macOS/Windows 自动化证据均为 Green。维护者已明确批准 T138，并按 Constitution v1.5.0 单维护者条款作出以下自证：
+  >
+  > ```text
+  > T138 Security Review Self-Attestation
+  > Maintainer: @taoistwar
+  > Date: 2026-09-01
+  > Conclusion: PASS，no open findings.
+  >
+  > Evidence:
+  > - Main CI: https://github.com/taoistwar/hive-claw/actions/runs/33386650892
+  > - macOS/Windows automated evidence: https://github.com/taoistwar/hive-claw/actions/runs/33386650843
+  >
+  > Re-checked:
+  > - FR-012/FR-046 全部敏感字段加密范围
+  > - SQLite/WAL/SHM/journal、备份 staging、最终认证密文包和诊断介质零明文
+  > - 跨设备重加密、descriptor-bound SQLite leaf、ABA/TOCTOU 防护
+  > - Unix no-follow、Windows reparse-point 与 FILE_ID_INFO 文件身份绑定
+  > - root-relative Plugin/retirement traversal
+  > - Gitleaks canary 与全历史扫描
+  > - cargo-deny advisory gate
+  > - 脱敏结构化日志契约
+  >
+  > Acknowledgement:
+  > 本仓库只有一名 active maintainer；我依据 Constitution v1.5.0
+  > Single-developer repository clause，同时作为 implementer、security reviewer
+  > 和 approver。本声明不豁免任何安全控制或测试门禁。
+  > ```
 
 ## Sensitive Data at Rest
 
-- [ ] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（2026-08-26 冻结源码更正：backup leaf/跨平台介质 Pending）[Measurability, Spec §SC-004/FR-012/FR-046]
+- [x] CHK011 SC-004、FR-012 与 FR-046 要求敏感数据不得明文落盘——是否已对全部敏感字段和所有落盘介质取得可复核验证？（2026-08-26 冻结源码更正：backup leaf/跨平台介质 Pending）[Measurability, Spec §SC-004/FR-012/FR-046]
   > **评估**: 各 story owner 行已先行闭环；T138 在同一源码只复跑并取得以下可复核结果：
   > 1. 各字段公开 write/read roundtrip（DataSource/LlmProvider/ChatSession/ChatMessage/AgentExecution）
   > 2. 每个字段的全介质扫描（SQLite 主/WAL/SHM/journal、备份 staging、最终认证密文包、普通临时目录、脱敏错误、诊断包）
   > 3. 错误、崩溃恢复、跨设备恢复路径不落盘明文
   > 4. security reviewer 条件总结、命令/退出状态与 scanner 结果见顶部 2026-08-26 节；未发现任何明文落盘 finding
   > **冻结源码更正**: 既有介质扫描不含上述 leaf TOCTOU 与跨平台文件身份边界；在 owner Red→review→implementation→Green 完成前，不能以零命中倒推完整覆盖。
+  > **2026-09-01 重新闭合**: owner Red→review→implementation→Green 链已由 T119/T123A/T130/T136 闭合；主 CI 覆盖 Gitleaks canary/全历史扫描、cargo-deny 和工作区回归，跨平台作业覆盖 macOS 15 与 Windows 2022 自动化构建及安全契约。维护者已明确批准 T138，并作出以下自证：
+  >
+  > ```text
+  > T138 Security Review Self-Attestation
+  > Maintainer: @taoistwar
+  > Date: 2026-09-01
+  > Conclusion: PASS，no open findings.
+  >
+  > Evidence:
+  > - Main CI: https://github.com/taoistwar/hive-claw/actions/runs/33386650892
+  > - macOS/Windows automated evidence: https://github.com/taoistwar/hive-claw/actions/runs/33386650843
+  >
+  > Re-checked:
+  > - FR-012/FR-046 全部敏感字段加密范围
+  > - SQLite/WAL/SHM/journal、备份 staging、最终认证密文包和诊断介质零明文
+  > - 跨设备重加密、descriptor-bound SQLite leaf、ABA/TOCTOU 防护
+  > - Unix no-follow、Windows reparse-point 与 FILE_ID_INFO 文件身份绑定
+  > - root-relative Plugin/retirement traversal
+  > - Gitleaks canary 与全历史扫描
+  > - cargo-deny advisory gate
+  > - 脱敏结构化日志契约
+  >
+  > Acknowledgement:
+  > 本仓库只有一名 active maintainer；我依据 Constitution v1.5.0
+  > Single-developer repository clause，同时作为 implementer、security reviewer
+  > 和 approver。本声明不豁免任何安全控制或测试门禁。
+  > ```
 
 - [x] CHK012 SQLite 数据库文件本身是否需要加密（如 SQLCipher）？当前方案是应用层加密特定字段——数据库文件可能含非加密但敏感的结构信息（表名、列名）——此风险是否在需求中识别？[Gap, Spec §FR-001, Spec §FR-012]
   > **评估**: 应用层加密（字段级 chacha20poly1305）为当前设计选择。全数据库加密（SQLCipher）增加复杂度和依赖，且不影响功能正确性。表名/列名不包含敏感用户数据。此权衡已在 Complexity Tracking 中隐含——选择简单方案。

@@ -2284,6 +2284,41 @@ T033 闭环 partial Green。US1 整体进入 Green 状态（5/7 T030 子断言 +
 - The run covers the registered T016E native-scroll inventory, Home/Ai/Tools and CRUD surfaces, DAG keyboard operations, Agent/conversation/settings keyboard flow, backup/restore reachability, focus restoration, native wheel reachability, and responsive recovery/stop paths.
 - T142 introduced no surface, selector, fixture, assertion, baseline, or production UI change. Release checklist Pending items remain outside this Green regression summary.
 
+## T138 security review closure (2026-09-01)
+
+- The maintainer explicitly approved T138 on 2026-09-01 under the Constitution v1.5.0 single-developer repository clause.
+- T119, T123A, T130, T136, and T142 are closed; CHK010 and CHK011 are reactivated and closed against the current source rather than the superseded frozen-source evidence.
+- Main CI is Green at https://github.com/taoistwar/hive-claw/actions/runs/33386650892, including Gitleaks canary/history scanning, cargo-deny advisories, formatting, clippy, workspace/HiveWeb documentation, HiveGUI MySQL, and HiveWeb integration gates.
+- macOS 15 and Windows 2022 automated build, all-target compilation, and Home/Ai/Tools local-navigation evidence is Green at https://github.com/taoistwar/hive-claw/actions/runs/33386650843. This does not replace T139's manual VoiceOver/Narrator acceptance.
+- No new sensitive-field inventory, leak assertion, production change, baseline, advisory exception, or second-approval claim was introduced while closing T138.
+- T139 remains Pending; therefore T147 remains Pending and is now blocked only by T139.
+
+```text
+T138 Security Review Self-Attestation
+Maintainer: @taoistwar
+Date: 2026-09-01
+Conclusion: PASS，no open findings.
+
+Evidence:
+- Main CI: https://github.com/taoistwar/hive-claw/actions/runs/33386650892
+- macOS/Windows automated evidence: https://github.com/taoistwar/hive-claw/actions/runs/33386650843
+
+Re-checked:
+- FR-012/FR-046 全部敏感字段加密范围
+- SQLite/WAL/SHM/journal、备份 staging、最终认证密文包和诊断介质零明文
+- 跨设备重加密、descriptor-bound SQLite leaf、ABA/TOCTOU 防护
+- Unix no-follow、Windows reparse-point 与 FILE_ID_INFO 文件身份绑定
+- root-relative Plugin/retirement traversal
+- Gitleaks canary 与全历史扫描
+- cargo-deny advisory gate
+- 脱敏结构化日志契约
+
+Acknowledgement:
+本仓库只有一名 active maintainer；我依据 Constitution v1.5.0
+Single-developer repository clause，同时作为 implementer、security reviewer
+和 approver。本声明不豁免任何安全控制或测试门禁。
+```
+
 ## T139 and T147 remain Pending (2026-08-28)
 
 - The Linux source/VisualTestContext accessibility regression is Green under T142, including the 13-tab inventory contract and native-scroll keyboard/wheel rows.

@@ -21,8 +21,9 @@ pub mod responses;
 pub mod transcription;
 
 pub use base::{
-    ChatRequest, FinishReason, GenerationSettings, LLMProvider, LLMResponse, RetryMode,
-    RetryWaitCallback, StreamDeltaCallback, ToolCallRequest, ToolChoice, enforce_role_alternation,
+    ChatRequest, FallbackReason, FallbackTransition, FallbackTransitionCallback, FinishReason,
+    GenerationSettings, LLMProvider, LLMResponse, LlmCallOptions, RetryMode, RetryWaitCallback,
+    StreamDeltaCallback, ToolCallRequest, ToolChoice, enforce_role_alternation,
     extract_retry_after_from_text, is_transient_response, pick_delay, sanitize_empty_content,
     strip_image_content, strip_image_content_inplace,
 };
@@ -35,7 +36,7 @@ pub use factory::{
     ProviderBuildConfig, build_provider, detect_backend_and_build, env_api_base, env_api_key,
     env_region, make_provider, provider_config_for, resolve_spec,
 };
-pub use fallback_provider::{FallbackPreset, FallbackProvider, ProviderFactory};
+pub use fallback_provider::{FallbackProvider, FallbackTarget};
 pub use github_copilot_provider::{
     DeviceCodeInfo, DeviceFlow, GitHubCopilotProvider, get_github_copilot_login_status,
     login_github_copilot,

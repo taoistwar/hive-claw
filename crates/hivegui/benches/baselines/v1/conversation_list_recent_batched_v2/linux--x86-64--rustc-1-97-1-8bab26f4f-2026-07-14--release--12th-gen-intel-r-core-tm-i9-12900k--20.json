@@ -1,0 +1,38 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "conversation_list_recent_batched_v2",
+      "owner_task": "T117",
+      "timing_boundary": "one per-request normalized sample from a fixed batch of 16 recent Conversation requests against the same fixed 125-session fixture, each request using its own current UTC upper bound and accepted through one indexed 20-row encrypted-session page and exact newest-first total order materialized",
+      "excluded_time": [
+        "external I/O",
+        "Store open, migration, 125-row fixture loading, and baseline I/O"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 1000000000,
+      "workflow_node_count": null
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "release",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 121384,
+      "p95": 144267,
+      "p99": 156741
+    }
+  },
+  "approval": {
+    "reviewer": "user",
+    "approved_at": "2026-08-27",
+    "source_revision": "git:c98cfe22b63f87337455850319bec34346fb5beb+hivegui-source-v1:4a0cbc15e19a566d0e78ac7898449ffe7c91b63d1e27f6d758226e287c24a190"
+  }
+}

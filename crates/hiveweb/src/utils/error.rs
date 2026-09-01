@@ -52,6 +52,7 @@ pub mod codes {
     pub const RESOURCE_IN_USE: u16 = 4093;
     pub const OPTIMISTIC_LOCK_CONFLICT: u16 = 4094;
     pub const SSE_CONCURRENCY_EXCEEDED: u16 = 4291;
+    pub const CAPABILITY_RATE_LIMITED: u16 = 4292;
 
     /// AI 助手日访问次数超限
     pub const DAILY_LIMIT_REACHED: u16 = 4290;
@@ -148,13 +149,14 @@ pub fn http_status_for_code(code: u16) -> StatusCode {
         codes::GAME_NAME_ALREADY_EXISTS | codes::ALIAS_ALREADY_IN_USE => StatusCode::CONFLICT,
         // 004 — contracts/api.md §Errors HTTP 映射
         codes::CAPABILITY_DENIED_RUNTIME => StatusCode::FORBIDDEN,
+        codes::CAPABILITY_UNKNOWN => StatusCode::BAD_REQUEST,
         codes::TAG_IN_USE
         | codes::DAG_CYCLE
         | codes::RESOURCE_IN_USE
         | codes::OPTIMISTIC_LOCK_CONFLICT => StatusCode::CONFLICT,
-        codes::SSE_CONCURRENCY_EXCEEDED | codes::DAILY_LIMIT_REACHED => {
-            StatusCode::TOO_MANY_REQUESTS
-        }
+        codes::SSE_CONCURRENCY_EXCEEDED
+        | codes::CAPABILITY_RATE_LIMITED
+        | codes::DAILY_LIMIT_REACHED => StatusCode::TOO_MANY_REQUESTS,
         codes::CANNOT_DELETE_MAIN_AGENT
         | codes::CAPABILITY_DENIED_CHAT
         | codes::BUILTIN_SKILL_PROTECTED
@@ -215,6 +217,7 @@ pub enum AppError {
     // ----- 004 Agent Runtime（contracts/api.md §Errors） -----
     CapabilityDeniedRuntime(String),
     CapabilityUnknown(String),
+    CapabilityRateLimited(String),
     TagInUse(String),
     DagCycle(String),
     ResourceInUse(String),
@@ -273,6 +276,7 @@ impl AppError {
             // 004 Agent Runtime
             AppError::CapabilityDeniedRuntime(_) => codes::CAPABILITY_DENIED_RUNTIME,
             AppError::CapabilityUnknown(_) => codes::CAPABILITY_UNKNOWN,
+            AppError::CapabilityRateLimited(_) => codes::CAPABILITY_RATE_LIMITED,
             AppError::TagInUse(_) => codes::TAG_IN_USE,
             AppError::DagCycle(_) => codes::DAG_CYCLE,
             AppError::ResourceInUse(_) => codes::RESOURCE_IN_USE,
@@ -319,6 +323,7 @@ impl AppError {
             | AppError::Internal(m)
             | AppError::CapabilityDeniedRuntime(m)
             | AppError::CapabilityUnknown(m)
+            | AppError::CapabilityRateLimited(m)
             | AppError::TagInUse(m)
             | AppError::DagCycle(m)
             | AppError::ResourceInUse(m)
@@ -355,9 +360,21 @@ impl AppError {
         }
     }
 
+    /// Return only text that is safe to serialize into an HTTP response.
+    ///
+    /// Internal errors retain their private context in `message()` for
+    /// in-process control flow, but that context may contain database, storage,
+    /// provider, or filesystem details and must never cross the API boundary.
+    pub fn public_message(&self) -> &str {
+        match self {
+            AppError::Internal(_) => "Internal server error",
+            _ => self.message(),
+        }
+    }
+
     pub fn into_response<T: Serialize>(self) -> ApiResponse<T> {
         let code = self.code();
-        let msg = self.message().to_string();
+        let msg = self.public_message().to_string();
         ApiResponse::err(code, msg)
     }
 }
@@ -371,5 +388,35 @@ impl std::fmt::Display for AppError {
 impl From<AppError> for StatusCode {
     fn from(err: AppError) -> Self {
         http_status_for_code(err.code())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppError, codes, http_status_for_code};
+    use axum::http::StatusCode;
+
+    #[test]
+    fn internal_error_response_omits_private_context() {
+        let response = AppError::Internal(
+            "sql connection failed: mysql://user:SECRET_SENTINEL@private-db/app".to_string(),
+        )
+        .into_response::<serde_json::Value>();
+
+        assert_eq!(response.code, codes::INTERNAL);
+        assert_eq!(response.message, "Internal server error");
+        assert!(!response.message.contains("SECRET_SENTINEL"));
+    }
+
+    #[test]
+    fn capability_policy_codes_map_to_their_contract_http_statuses() {
+        assert_eq!(
+            http_status_for_code(codes::CAPABILITY_UNKNOWN),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            http_status_for_code(codes::CAPABILITY_RATE_LIMITED),
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 }

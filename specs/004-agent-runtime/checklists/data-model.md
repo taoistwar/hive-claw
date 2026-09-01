@@ -1,6 +1,6 @@
 # Data Model Quality Checklist: 004-agent-runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：** `RecommendedGame` 相关项已废弃；原 admin `chat_sessions` / `chat_messages`、admin snapshot/Super 所有权条目也已由 `81a84fe` 移除并 superseded。相关未勾选项已失效，不是现役缺口。
 
 **Purpose**: Validate that the data model (data-model.md) is complete, consistent, and unambiguous — cross-referenced against spec.md, contracts/api.md, SECURITY.md, perf-evidence.md, and tasks.md
 **Created**: 2026-05-29

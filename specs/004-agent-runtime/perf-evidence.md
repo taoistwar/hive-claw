@@ -1,6 +1,6 @@
 # Performance Evidence — Agent Runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：** `RecommendedGame` 相关项已废弃；原 admin Chat/SSE 的 SC-010、`chat_sessions` / `chat_messages` 索引和 T168 基准也已由 `81a84fe` 移除并 superseded。下文保留的是当时性能证据，不是现役验收或恢复依据；现行用户聊天性能属于外部 Assistant API。
 
 **Status**: Complete (T142 / Principle IV gate)
 **Updated**: 2026-05-29
@@ -89,29 +89,35 @@ Code path of `runtime::invoker::invoke`:
 | Step | Cost (estimated) | Notes |
 |---|---|---|
 | DB row fetch (plugins by id) | ~1 ms | indexed |
-| pool.try_acquire_idle | ~10 μs | Mutex<HashMap> lookup |
+| acquire permit + compiled-cache lookup | ~10 μs | per-Plugin/global capacity + cache lookup |
 | **(cold only)** S3 GET wasm | 10–100 ms | network-bound |
 | **(cold only)** sha256 verify | 1–10 ms | 1–16 MB blob |
 | **(cold only)** Extism compile | 100–500 ms | wasmtime cranelift JIT |
 | call_with_host_context (per host_call inside) | 1–5 ms host + plugin work |
-| reset() + release | < 1 ms | |
+| drop fresh Store/Instance + release permit | < 1 ms | runtime state is never cached |
 
 **Hit path**: ~10 ms total (DB + pool + 1–5 ms plugin work). Target 50 ms p95
 achievable.
 **Cold path**: 100–500 ms compile dominates. Spec target 300 ms is tight for
-larger plugins; first-call slowness mitigated by pool reuse from second
+larger plugins; first-call slowness is mitigated by compiled-cache reuse from the second
 invocation onward.
 
 Live `/api/runtime/pool/stats` already returns:
-- `cache_misses` — incremented on cold start (operator alert when growing)
-- `reset_failures` — incremented when reset() fails (drops instance — alert)
+- `cache_misses` — incremented only after a real successful compilation; failed compilation and fresh instantiation from an existing cache do not count
+- `created_total` — incremented only after a fresh Store/Instance is successfully created
+- `reset_failures` — deprecated response-compatibility field; fresh Store/Instance design expects it to remain 0
+
+Admission capacity is `in_use + reserved`. Idle `CompiledPlugin` cache entries
+do not consume per-Plugin/global permits and therefore cannot block an
+unrelated Plugin from using an available invocation slot.
 
 ## 6. Agent routing decision (SC-006 ≤ 1.5 s)
 
 `orchestrator::run_session` per hop:
 - DB context fetch (agent + skills + tools + perms + children) — ~10 ms total
   (4 sequential queries — could be parallelized later)
-- `llm.build_primary` — config-time provider construction; ~1 ms
+- `llm.build_chain` — clone startup-cached provider-chain `Arc`; no per-call
+  provider construction (lifecycle/identity contract tests Green under T259)
 - `provider.chat_stream` — **external; dominates**
   - With T156 mock provider returning 800 ms → routing decision = 810 ms
   - Real Anthropic/OpenAI p95 ≈ 1–3 s for short prompts → outside SC-006
@@ -205,8 +211,8 @@ in range form (efficient).
 **Benchmarks**:
 - `pool_acquire_release/acquire_release_cycle` — single acquire/release
 - `pool_concurrent_acquire/1/4/8/16` — concurrent acquire at different concurrency levels
-- `pool_cold_start/first_instance_creation` — cold start (includes WASM compile)
-- `pool_hit_rate/cached_instance_reuse` — cached instance reuse timing
+- `pool_cold_start/first_instance_creation` — cold start (includes WASM compile + fresh Store/Instance)
+- `pool_hit_rate/compiled_cache_reuse` — `CompiledPlugin` cache hit + fresh Store/Instance timing
 
 **Targets**:
 - Pool hit p95 ≤ 50 ms
@@ -262,7 +268,9 @@ in range form (efficient).
 
 **Benchmarks**:
 - `agent_routing_decision/direct_answer/route_to_coding/complex_routing` — routing decision with mock LLM
-- `llm_fallback_chain/primary_success/primary_failover` — fallback provider chain
+- `llm_fallback_chain/primary_success/primary_failover` — startup-cached
+  fallback provider chain; includes explicit-request parameter preservation and
+  25s/node / 45s/chain deadline cases
 - `hop_limit_enforcement/within_hop_limit/exceed_hop_limit` — AGENT_MAX_HOPS guard
 - `routing_end_to_end/single_hop_routing` — end-to-end session with mock 800ms LLM
 

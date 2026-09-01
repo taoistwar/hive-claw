@@ -1,6 +1,7 @@
 /// <reference types="vitest/globals" />
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import GameTable from '../GameTable';
 import type { Game } from '../../services/gameAlias';
 
@@ -69,11 +70,11 @@ describe('GameTable (T009e)', () => {
     expect(actionColumn.closest('tr')?.textContent).not.toContain('删除');
   });
 
-  it('calls onEdit when Edit button clicked', () => {
+  it('calls onEdit when Edit button clicked', async () => {
+    const user = userEvent.setup();
     userRef.current = { role: 3 };
     render(<GameTable {...baseProps} />);
-    const editButtons = screen.getAllByRole('button');
-    editButtons[0]?.click();
+    await user.click(screen.getByRole('button', { name: /edit/i }));
     expect(baseProps.onEdit).toHaveBeenCalledWith(sampleGame);
   });
 });
@@ -105,7 +106,8 @@ describe('GameAliasForm (T016c, T021c)', () => {
       />
     );
     expect(screen.getByPlaceholderText(/游戏名称/)).toBeTruthy();
-    expect(screen.getByPlaceholderText(/输入别名后按回车/)).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: '别名' })).toBeTruthy();
+    expect(screen.getByText('输入别名后按回车添加')).toBeTruthy();
   });
 
   it('pre-fills form in edit mode', async () => {
@@ -150,9 +152,17 @@ describe('GameAliasForm (T016c, T021c)', () => {
 });
 
 describe('GameTable delete confirmation (T025c)', () => {
-  it('shows Popconfirm with delete confirmation text', () => {
+  it('shows Popconfirm and calls onDelete after confirmation', async () => {
+    const user = userEvent.setup();
     userRef.current = { role: 3 };
     render(<GameTable {...baseProps} />);
-    expect(screen.getByText(/确认删除|删除后不可恢复/)).toBeTruthy();
+    expect(baseProps.onDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: /delete/i }));
+    expect(await screen.findByText('确认删除')).toBeTruthy();
+    expect(screen.getByText(/删除后不可恢复/)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /确\s*认/ }));
+    expect(baseProps.onDelete).toHaveBeenCalledWith(sampleGame.id);
   });
 });

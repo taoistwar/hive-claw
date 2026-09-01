@@ -1,0 +1,18 @@
+# Shared ignore patterns
+node_modules/
+.vscode/
+.idea/
+dist/
+dist-ssr/
+target/
+debug/
+release/
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*.swo
+*~

@@ -46,8 +46,6 @@ struct RetrievalResponse {
 #[derive(Debug, Deserialize)]
 struct RetrievalData {
     chunks: Vec<RetrievalChunk>,
-    #[serde(default)]
-    total: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +66,7 @@ pub fn rag_answer(_args: Value, ctx: &BuiltinContext) -> BuiltinResult {
     let llm = Arc::clone(&ctx.llm);
     tokio::task::block_in_place(move || {
         tokio::runtime::Handle::current()
-        .block_on(async move { rag_answer_async_impl(question, llm.as_ref()).await })
+            .block_on(async move { rag_answer_async_impl(question, llm.as_ref()).await })
     })
 }
 
@@ -83,7 +81,6 @@ async fn rag_answer_async_impl(
 
     let has_knowledge = !rag_chunks.is_empty();
 
-
     let llm_answer = ask_llm_to_answer(&question, &rag_chunks, has_knowledge, llm).await;
     if !llm_answer.trim().is_empty() {
         let answer = llm_answer.trim().to_string();
@@ -97,7 +94,7 @@ async fn rag_answer_async_impl(
         }));
     }
 
-    return Ok(json!({
+    Ok(json!({
         "_agent_context_updates": {
             "extensions": [{
                 "content_type": "card",
@@ -110,13 +107,14 @@ async fn rag_answer_async_impl(
                 "agent_loop_reply": "抱歉，我无法回答您的问题。你可以通过下方「联系客服」继续反馈，我们会尽力协助处理。"
             }
         }
-    }));
-
+    }))
 }
 
-pub fn extract_question(agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>) -> String {
+pub fn extract_question(
+    agent_ctx: Option<&std::sync::Arc<agent::context::AgentContext>>,
+) -> String {
     agent_ctx
-        .and_then(|ctx| Some(ctx.user_input().raw_text.trim().to_string()))
+        .map(|ctx| ctx.user_input().raw_text.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_default()
 }
@@ -239,7 +237,7 @@ pub async fn ask_llm_to_answer(
         "content": prompt,
     })];
 
-    match llm.build_primary(None) {
+    match llm.build_chain(None) {
         Ok((provider, model)) => {
             let req = ChatRequest {
                 model: Some(model.clone()),
@@ -268,7 +266,9 @@ pub async fn ask_llm_to_answer(
 
 fn build_prompt_with_knowledge(question: &str, chunks: &[String]) -> String {
     let mut prompt = String::new();
-    prompt.push_str("你是客服助手，请严格基于以下知识库内容回答。回答要简洁、可执行。不要提示用户转人工。\n\n");
+    prompt.push_str(
+        "你是客服助手，请严格基于以下知识库内容回答。回答要简洁、可执行。不要提示用户转人工。\n\n",
+    );
     prompt.push_str(&format!("用户问题：{}\n\n", question));
     prompt.push_str("知识片段：\n");
     for (idx, chunk) in chunks.iter().take(6).enumerate() {

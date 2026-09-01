@@ -18,15 +18,11 @@ use common::{delete_auth, get, post_json_auth, seed_admin};
 use serde_json::{Value, json};
 
 const T165_RACE_SCENARIOS: usize = 100;
+const SHARED_SMOKE_WASM: &[u8] =
+    include_bytes!("../../hivegui/tests/fixtures/plugins/shared-smoke/plugin.wasm");
 
-/// Helper: upload a minimal valid WASM plugin and return plugin id.
+/// Helper: upload the shared structurally valid WASM plugin and return plugin id.
 async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::Result<i64> {
-    // Create a minimal WASM binary (valid magic bytes + empty module)
-    let wasm_bytes: Vec<u8> = vec![
-        0x00, 0x61, 0x73, 0x6d, // magic \0asm
-        0x01, 0x00, 0x00, 0x00, // version 1
-    ];
-
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -54,7 +50,7 @@ async fn upload_plugin(app: &Router, token: &str, identifier: &str) -> anyhow::R
         b"Content-Disposition: form-data; name=\"file\"; filename=\"test.wasm\"\r\n",
     );
     body.extend_from_slice(b"Content-Type: application/wasm\r\n\r\n");
-    body.extend_from_slice(&wasm_bytes);
+    body.extend_from_slice(SHARED_SMOKE_WASM);
     body.extend_from_slice(b"\r\n");
     body.extend_from_slice(b"------WebKitFormBoundaryTest123--\r\n");
 

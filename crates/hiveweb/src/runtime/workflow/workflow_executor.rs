@@ -12,7 +12,9 @@ use tokio::time::timeout;
 
 use crate::cache::redis::RedisClient;
 use crate::runtime::capability::CapabilityRegistry;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::hook::apply_agent_context_updates;
+use crate::runtime::input_source::AGENT_CONTEXT_UPDATES_KEY;
 use crate::runtime::invoker::Invoker;
 use crate::runtime::llm::LlmRegistry;
 use crate::runtime::workflow::node_executor::execute_node;
@@ -33,6 +35,8 @@ pub enum WorkflowError {
     MissingFunction(String),
     #[error("workflow timeout after {0}ms")]
     Timeout(u64),
+    #[error("model preset {0:?} is unknown")]
+    ModelPresetUnknown(String),
     #[error("node {node_key} failed: {message}")]
     NodeFailure { node_key: String, message: String },
     #[error("mapping resolve failed at {node_key}.{field}: {message}")]
@@ -45,6 +49,7 @@ pub enum WorkflowError {
 
 /// Dependencies needed at execution time
 pub struct ExecutorDeps {
+    pub execution_context: RuntimeExecutionContext,
     pub pool: MySqlPool,
     /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
     pub s3: Option<S3Client>,
@@ -204,11 +209,13 @@ impl WorkflowExecutor {
 
 /// Build the end virtual node output from terminal nodes' results.
 ///
-/// Path A (output_schema present): extract fields declared in schema from nodes
-/// that have no downstream edges (they naturally connect to end).
+/// Path A (object output_schema present): extract fields declared in schema
+/// from nodes that have no downstream edges (they naturally connect to end).
 ///
-/// Path B (no output_schema): return the "end" key from outputs with
-/// `_agent_context_updates` stripped.
+/// Path B (no output_schema or an explicit scalar schema): return the sole
+/// terminal persisted node's output, or a stable `node_key → output` object
+/// when the graph has multiple terminal nodes. Internal
+/// `_agent_context_updates` are stripped from every public output.
 fn build_end_output(
     nodes: &[WorkflowNodeRow],
     succ: &HashMap<String, Vec<String>>,
@@ -216,10 +223,24 @@ fn build_end_output(
     output_schema: Option<&Value>,
 ) -> Value {
     if let Some(schema) = output_schema {
+        if schema
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|schema_type| schema_type != "object")
+        {
+            return build_terminal_output(nodes, succ, outputs);
+        }
+
         let schema_fields: Vec<String> = schema
             .get("properties")
             .and_then(|p| p.as_object())
-            .map(|props| props.keys().cloned().collect())
+            .map(|props| {
+                props
+                    .keys()
+                    .filter(|field| field.as_str() != AGENT_CONTEXT_UPDATES_KEY)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
 
         if !schema_fields.is_empty() {
@@ -242,18 +263,51 @@ fn build_end_output(
                 }
             }
             if !end_output.is_empty() {
+                end_output.remove(AGENT_CONTEXT_UPDATES_KEY);
                 return Value::Object(end_output);
             }
         }
-    } else if let Some(end_out) = outputs.get("end") {
-        let mut cleaned = end_out.clone();
-        if let Value::Object(ref mut map) = cleaned {
-            map.remove("_agent_context_updates");
-        }
-        return cleaned;
+    } else {
+        return build_terminal_output(nodes, succ, outputs);
     }
 
-    Value::Object(serde_json::Map::new())
+    Value::Object(Map::new())
+}
+
+fn build_terminal_output(
+    nodes: &[WorkflowNodeRow],
+    succ: &HashMap<String, Vec<String>>,
+    outputs: &HashMap<String, Value>,
+) -> Value {
+    let mut terminal_keys: Vec<&str> = nodes
+        .iter()
+        .filter(|(_, node_key, _, _, _)| !succ.contains_key(node_key.as_str()))
+        .map(|(_, node_key, _, _, _)| node_key.as_str())
+        .collect();
+    terminal_keys.sort_unstable();
+
+    if let [node_key] = terminal_keys.as_slice() {
+        return outputs
+            .get(*node_key)
+            .map(public_workflow_output)
+            .unwrap_or_else(|| Value::Object(Map::new()));
+    }
+
+    let mut combined = Map::new();
+    for node_key in terminal_keys {
+        if let Some(output) = outputs.get(node_key) {
+            combined.insert(node_key.to_string(), public_workflow_output(output));
+        }
+    }
+    Value::Object(combined)
+}
+
+fn public_workflow_output(output: &Value) -> Value {
+    let mut cleaned = output.clone();
+    if let Value::Object(ref mut map) = cleaned {
+        map.remove(AGENT_CONTEXT_UPDATES_KEY);
+    }
+    cleaned
 }
 
 #[expect(
@@ -368,7 +422,7 @@ pub(super) async fn run_layers(
                 Err(e) => {
                     tracing::error!(
                         workflow_id,
-                        error = %e,
+                        error_kind = "workflow_node_execution_failed",
                         "workflow node execution failed"
                     );
                     return Err(e);
@@ -601,5 +655,125 @@ fn resolve_from_agent_context(
                 )
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WorkflowNodeRow, build_end_output};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+
+    fn terminal_node() -> WorkflowNodeRow {
+        (
+            1,
+            "final".to_string(),
+            Some(7),
+            "function_node".to_string(),
+            None,
+        )
+    }
+
+    #[test]
+    fn explicit_output_schema_never_exposes_agent_context_updates() {
+        let nodes = vec![terminal_node()];
+        let outputs = HashMap::from([(
+            "final".to_string(),
+            json!({
+                "answer": "ok",
+                "_agent_context_updates": {
+                    "metadata": {"agent_loop_break": "true"}
+                }
+            }),
+        )]);
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "_agent_context_updates": {"type": "object"}
+            }
+        });
+
+        let output = build_end_output(&nodes, &HashMap::new(), &outputs, Some(&schema));
+
+        assert_eq!(output, json!({"answer": "ok"}));
+        assert_eq!(output.get("_agent_context_updates"), None);
+    }
+
+    #[test]
+    fn schema_less_end_output_never_exposes_agent_context_updates() {
+        let outputs = HashMap::from([(
+            "final".to_string(),
+            json!({
+                "answer": "ok",
+                "_agent_context_updates": {
+                    "metadata": {"agent_loop_break": "true"}
+                }
+            }),
+        )]);
+
+        let output = build_end_output(&[terminal_node()], &HashMap::new(), &outputs, None);
+
+        assert_eq!(output, json!({"answer": "ok"}));
+        assert_eq!(output.get("_agent_context_updates"), None);
+    }
+
+    #[test]
+    fn non_object_end_output_is_preserved_without_reserved_key() {
+        let outputs = HashMap::from([("final".to_string(), Value::String("ok".to_string()))]);
+
+        let output = build_end_output(&[terminal_node()], &HashMap::new(), &outputs, None);
+
+        assert_eq!(output, Value::String("ok".to_string()));
+    }
+
+    #[test]
+    fn explicit_scalar_output_schema_preserves_the_terminal_value() {
+        let outputs = HashMap::from([("final".to_string(), Value::String("ok".to_string()))]);
+        let schema = json!({"type": "string"});
+
+        let output = build_end_output(&[terminal_node()], &HashMap::new(), &outputs, Some(&schema));
+
+        assert_eq!(output, Value::String("ok".to_string()));
+    }
+
+    #[test]
+    fn schema_less_multiple_terminal_outputs_are_keyed_deterministically() {
+        let nodes = vec![
+            (
+                2,
+                "z-last".to_string(),
+                Some(8),
+                "function_node".to_string(),
+                None,
+            ),
+            terminal_node(),
+        ];
+        let outputs = HashMap::from([
+            (
+                "z-last".to_string(),
+                json!({
+                    "result": "z",
+                    "_agent_context_updates": {"metadata": {"hidden": "z"}}
+                }),
+            ),
+            (
+                "final".to_string(),
+                json!({
+                    "result": "a",
+                    "_agent_context_updates": {"metadata": {"hidden": "a"}}
+                }),
+            ),
+        ]);
+
+        let output = build_end_output(&nodes, &HashMap::new(), &outputs, None);
+
+        assert_eq!(
+            output,
+            json!({
+                "final": {"result": "a"},
+                "z-last": {"result": "z"}
+            })
+        );
     }
 }

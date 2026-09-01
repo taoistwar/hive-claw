@@ -20,6 +20,7 @@ pub mod newsession;
 pub mod plugin;
 pub mod recommended_game;
 pub mod runtime;
+pub mod runtime_audit_log;
 pub mod sensitive_word;
 pub mod skill;
 pub mod tag;
@@ -29,11 +30,15 @@ pub mod users;
 pub mod workflow;
 
 use aws_sdk_s3::Client;
-use axum::{Router, http::HeaderValue, http::StatusCode, middleware};
+use axum::{
+    Router,
+    http::{HeaderValue, Request, StatusCode},
+    middleware,
+};
 use sqlx::MySqlPool;
 use tower_http::{
     cors::CorsLayer,
-    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+    trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
 
@@ -49,6 +54,14 @@ use crate::runtime::{
 use crate::utils::error::{ApiResponse, AppError};
 use std::sync::Arc;
 use std::time::Duration;
+
+fn make_safe_http_span<B>(request: &Request<B>) -> tracing::Span {
+    tracing::info_span!(
+        "request",
+        method = %request.method(),
+        version = ?request.version(),
+    )
+}
 
 /// 插件系统已关闭时返回 `PluginSystemDisabled` 响应。
 /// 供 Plugin 上传/下载/调用等入口统一使用，避免散落 503 文案。
@@ -76,6 +89,45 @@ pub struct AppState {
     pub sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
 }
 
+/// Background tasks whose lifetime must be joined explicitly during service
+/// shutdown. Dropping a Tokio JoinHandle detaches the task, so shutdown uses
+/// abort + await instead.
+#[must_use]
+pub struct AppBackgroundTasks {
+    idle_reaper: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl AppBackgroundTasks {
+    fn new(idle_reaper: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            idle_reaper: Some(idle_reaper),
+        }
+    }
+
+    pub async fn shutdown(mut self) {
+        let Some(idle_reaper) = self.idle_reaper.take() else {
+            return;
+        };
+        idle_reaper.abort();
+        if let Err(error) = idle_reaper.await
+            && !error.is_cancelled()
+        {
+            tracing::warn!(
+                error_kind = "plugin_idle_reaper_join_failed",
+                "Plugin idle reaper shutdown failed"
+            );
+        }
+    }
+}
+
+impl Drop for AppBackgroundTasks {
+    fn drop(&mut self) {
+        if let Some(idle_reaper) = self.idle_reaper.take() {
+            idle_reaper.abort();
+        }
+    }
+}
+
 /// DB migration 是服务启动外的前置步骤：生产环境由部署流程预建表，开发/测试环境
 /// 必须先运行 `cargo run -p hiveweb --bin migrate`。主服务不会自动建表或迁移。
 ///
@@ -92,15 +144,47 @@ pub struct AppState {
 ///  10. 后台任务启动（retention cron / pool idle reaper）
 ///  11. HTTP server listen
 ///
-/// 当前 create_router 完成 8 + 9；2..7 + 10 在 main.rs 的 setup 阶段调用具体
-/// services（Phase 3..7 实现后接入）。
+/// `main.rs` 在调用本函数前完成第 5 步并注入已验证的 LLM registry；本函数
+/// 完成 8 + 9。2..4、6..7 + 10 在 main.rs 的 setup 阶段调用具体 services。
 pub fn create_router(
     pool: MySqlPool,
     redis: RedisClient,
     s3: Option<Client>,
     ext_pool: Option<MySqlPool>,
     sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
+    llm: Arc<LlmRegistry>,
 ) -> Router {
+    let (router, background_tasks) =
+        create_router_inner(pool, redis, s3, ext_pool, sensitive_filter, llm, false);
+    debug_assert!(background_tasks.is_none());
+    router
+}
+
+pub fn create_router_with_lifecycle(
+    pool: MySqlPool,
+    redis: RedisClient,
+    s3: Option<Client>,
+    ext_pool: Option<MySqlPool>,
+    sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
+    llm: Arc<LlmRegistry>,
+) -> (Router, AppBackgroundTasks) {
+    let (router, background_tasks) =
+        create_router_inner(pool, redis, s3, ext_pool, sensitive_filter, llm, true);
+    (
+        router,
+        background_tasks.expect("lifecycle router must start the idle reaper"),
+    )
+}
+
+fn create_router_inner(
+    pool: MySqlPool,
+    redis: RedisClient,
+    s3: Option<Client>,
+    ext_pool: Option<MySqlPool>,
+    sensitive_filter: crate::services::sensitive_filter::SensitiveFilter,
+    llm: Arc<LlmRegistry>,
+    start_idle_reaper: bool,
+) -> (Router, Option<AppBackgroundTasks>) {
     let health_routes = health::router(pool.clone(), redis.clone());
     let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
 
@@ -121,16 +205,9 @@ pub fn create_router(
 
     // ---- 004 Runtime state (steps 6+9; plan §Startup Initialization Order) ----
     let pool_inst = InstancePool::new(PoolConfig::from_env());
+    let background_tasks =
+        start_idle_reaper.then(|| AppBackgroundTasks::new(pool_inst.start_idle_reaper()));
     let invoker = Arc::new(Invoker::new(pool_inst.clone()));
-    let llm_path =
-        std::env::var("LLM_PRESETS_PATH").unwrap_or_else(|_| "./llm_presets.toml".to_string());
-    let llm = match LlmRegistry::load_from_path(&llm_path) {
-        Ok(reg) => reg,
-        Err(e) => {
-            tracing::warn!(error = %e, "LlmRegistry load failed; using empty registry");
-            Arc::new(LlmRegistry::new())
-        }
-    };
     let runtime_state = RuntimeState {
         capabilities: Arc::new(CapabilityRegistry::new()),
         pool: pool_inst,
@@ -161,7 +238,7 @@ pub fn create_router(
     let rate_limit_state = RateLimitState::new(rl_max, Duration::from_secs(rl_window));
 
     let tracing_layer = TraceLayer::new_for_http()
-        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+        .make_span_with(make_safe_http_span)
         .on_request(DefaultOnRequest::new().level(Level::INFO))
         .on_response(DefaultOnResponse::new().level(Level::INFO));
 
@@ -190,6 +267,7 @@ pub fn create_router(
         .merge(tag::router())
         .merge(capability::router())
         .merge(runtime::router())
+        .merge(runtime_audit_log::router())
         .merge(admin_audit_log::router())
         .merge(login_record::router())
         .merge(agent::router())
@@ -214,7 +292,7 @@ pub fn create_router(
         .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state);
 
-    Router::new()
+    let router = Router::new()
         .merge(health_routes)
         .nest("/api", api_routes)
         .layer(cors)
@@ -222,5 +300,124 @@ pub fn create_router(
         .layer(axum::middleware::from_fn(log_request_body_middleware))
         // request_id is the outermost layer so every other layer (cors,
         // tracing, rate-limit, auth, handlers) sees the same id.
-        .layer(axum::middleware::from_fn(request_id_middleware))
+        .layer(axum::middleware::from_fn(request_id_middleware));
+
+    (router, background_tasks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppBackgroundTasks, make_safe_http_span};
+    use axum::http::Request;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct TraceWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct TraceWriterGuard(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TraceWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("trace buffer poisoned").extend(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceWriter {
+        type Writer = TraceWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TraceWriterGuard(Arc::clone(&self.0))
+        }
+    }
+
+    #[test]
+    fn request_span_omits_uri_path_and_query() {
+        let writer = TraceWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/reset/PATH_SECRET_SENTINEL?token=QUERY_SECRET_SENTINEL")
+            .body(())
+            .unwrap();
+
+        let span = make_safe_http_span(&request);
+        let _entered = span.enter();
+        tracing::info!("request received");
+
+        let output =
+            String::from_utf8(writer.0.lock().expect("trace buffer poisoned").clone()).unwrap();
+        assert!(output.contains("method=POST"));
+        assert!(!output.contains("PATH_SECRET_SENTINEL"));
+        assert!(!output.contains("QUERY_SECRET_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn background_lifecycle_deterministically_stops_idle_reaper() {
+        struct StopProbe(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl Drop for StopProbe {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let idle_reaper = tokio::spawn(async move {
+            let _probe = StopProbe(Some(stopped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.expect("idle reaper task must start");
+        let lifecycle = AppBackgroundTasks::new(idle_reaper);
+
+        lifecycle.shutdown().await;
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), stopped_rx)
+            .await
+            .expect("idle reaper must stop without waiting for its next interval")
+            .expect("idle reaper stop probe must be delivered");
+    }
+
+    #[tokio::test]
+    async fn dropping_background_lifecycle_never_detaches_idle_reaper() {
+        struct StopProbe(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl Drop for StopProbe {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let idle_reaper = tokio::spawn(async move {
+            let _probe = StopProbe(Some(stopped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.expect("idle reaper task must start");
+
+        drop(AppBackgroundTasks::new(idle_reaper));
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), stopped_rx)
+            .await
+            .expect("dropping lifecycle must abort the idle reaper")
+            .expect("idle reaper stop probe must be delivered");
+    }
 }

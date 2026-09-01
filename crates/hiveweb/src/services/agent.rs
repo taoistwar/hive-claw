@@ -355,7 +355,13 @@ pub async fn update(
         _ => None,
     };
 
-    crate::services::optimistic_lock::check_and_bump(pool, "agents", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        crate::services::optimistic_lock::OptimisticLockTable::Agents,
+        id,
+        meta.updated_at,
+    )
+    .await?;
 
     let mut tx = pool
         .begin()
@@ -573,8 +579,14 @@ fn agent_content_key(agent_id: i64) -> String {
 
 pub async fn invalidate_content_cache(redis: &RedisClient, agent_id: i64) {
     let key = agent_content_key(agent_id);
-    if let Err(e) = cache_helper::cached_del(redis, &key).await {
-        tracing::warn!(error=%e, agent_id, "agent content cache invalidate failed");
+    if cache_helper::cached_del(redis, &key).await.is_err() {
+        tracing::warn!(
+            event = "agent_content_cache_invalidation",
+            agent_id,
+            outcome = "error",
+            error_kind = "redis_delete_failed",
+            "agent content cache invalidation failed; committed mutation remains successful"
+        );
     }
 }
 

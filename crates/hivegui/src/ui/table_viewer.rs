@@ -2,12 +2,66 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use gpui::{
-    Context, CursorStyle, Entity, MouseButton, ScrollHandle, SharedString, Window, div, prelude::*,
-    px, rgb,
+    ClipboardItem, Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString,
+    Window, div, prelude::*, px,
 };
+use gpui_component::ActiveTheme as _;
+use gpui_component::input::{Input, InputEvent, InputState};
 use tracing::info;
 
-use crate::datasource::{ColumnInfo, DataSource, MysqlClient, Store, TableData, TableDataRequest};
+use crate::datasource::mysql_client::{IdentifierKind, MysqlIdentifier};
+use crate::datasource::{
+    ColumnInfo, ConstraintInfo, DataSource, ForeignKeyInfo, IndexInfo, MysqlClient, ReferenceInfo,
+    Store, TableData, TableDataRequest, TriggerInfo,
+};
+
+#[derive(Clone, Copy)]
+struct ViewerPalette {
+    background: Hsla,
+    foreground: Hsla,
+    muted: Hsla,
+    muted_foreground: Hsla,
+    border: Hsla,
+    list_head: Hsla,
+    list_row: Hsla,
+    list_even: Hsla,
+    list_hover: Hsla,
+    list_active: Hsla,
+    overlay: Hsla,
+    popover: Hsla,
+    popover_foreground: Hsla,
+    danger: Hsla,
+    primary: Hsla,
+    primary_foreground: Hsla,
+    secondary: Hsla,
+    secondary_foreground: Hsla,
+}
+
+impl ViewerPalette {
+    fn current(cx: &gpui::App) -> Self {
+        let theme = cx.theme();
+        Self {
+            background: theme.background,
+            foreground: theme.foreground,
+            muted: theme.muted,
+            muted_foreground: theme.muted_foreground,
+            border: theme.border,
+            list_head: theme.list_head,
+            list_row: theme.colors.list,
+            list_even: theme.list_even,
+            list_hover: theme.list_hover,
+            list_active: theme.list_active,
+            overlay: theme.overlay,
+            popover: theme.popover,
+            popover_foreground: theme.popover_foreground,
+            danger: theme.danger,
+            primary: theme.button_info,
+            primary_foreground: theme.button_info_foreground,
+            secondary: theme.button_secondary,
+            secondary_foreground: theme.button_secondary_foreground,
+        }
+    }
+}
 
 struct ErrorModal {
     title: String,
@@ -19,6 +73,11 @@ pub enum TableTab {
     Columns,
     Ddl,
     Data,
+    Constraints,
+    Indexes,
+    ForeignKeys,
+    References,
+    Triggers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -69,13 +128,17 @@ struct OpenTable {
     context_menu_x: f32,
     context_menu_y: f32,
     hovered_row: Option<usize>,
-    #[expect(
-        dead_code,
-        reason = "retained for the pending per-cell hover interaction"
-    )]
     hovered_row_col: Option<usize>,
     context_menu_row: Option<usize>,
     context_menu_col: Option<usize>,
+    last_sql: String,
+    query_time_ms: u64,
+    // New tab data
+    indexes: Vec<IndexInfo>,
+    constraints: Vec<ConstraintInfo>,
+    foreign_keys: Vec<ForeignKeyInfo>,
+    references: Vec<ReferenceInfo>,
+    triggers: Vec<TriggerInfo>,
 }
 
 const DEFAULT_COLUMN_WIDTHS: [f32; 5] = [120.0, 100.0, 60.0, 60.0, 200.0];
@@ -111,6 +174,13 @@ impl OpenTable {
             hovered_row_col: None,
             context_menu_row: None,
             context_menu_col: None,
+            last_sql: String::new(),
+            query_time_ms: 0,
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            references: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 
@@ -139,6 +209,11 @@ impl OpenTable {
     fn dismiss_error(&mut self) {
         self.error_modal = None;
     }
+
+    /// Escape backticks in SQL identifiers to prevent injection.
+    fn escape_identifier(name: &str) -> String {
+        name.replace('`', "``")
+    }
 }
 
 pub struct TableViewer {
@@ -146,6 +221,8 @@ pub struct TableViewer {
     store: Option<Entity<Store>>,
     open_tables: Vec<OpenTable>,
     active_table_index: usize,
+    ddl_search_input: Option<Entity<InputState>>,
+    ddl_search_text: String,
 }
 
 impl TableViewer {
@@ -155,6 +232,8 @@ impl TableViewer {
             store: None,
             open_tables: Vec::new(),
             active_table_index: 0,
+            ddl_search_input: None,
+            ddl_search_text: String::new(),
         }
     }
 
@@ -191,6 +270,8 @@ impl TableViewer {
         self.open_tables[new_idx].loading = true;
         cx.notify();
 
+        let _this = cx.weak_entity();
+
         cx.spawn(async move |this, cx| {
             let password = match store_clone.decrypt_password(&ds_clone.encrypted_password) {
                 Ok(p) => p,
@@ -212,8 +293,8 @@ impl TableViewer {
                 ds_clone.port,
                 &ds_clone.username,
                 &password,
-                &database,
-                &table,
+                &MysqlIdentifier::new_trusted(database.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(table.clone(), IdentifierKind::Table),
             )
             .await;
             match result {
@@ -271,6 +352,7 @@ impl TableViewer {
             TableTab::Columns => t.load_columns_async(ds, &store_ref, idx, cx),
             TableTab::Ddl => t.load_ddl_async(ds, &store_ref, idx, cx),
             TableTab::Data => t.load_data_async(ds, &store_ref, idx, cx, false),
+            _ => {} // TODO: implement loading for Constraints, Indexes, ForeignKeys, References, Triggers
         }
     }
 
@@ -347,10 +429,6 @@ impl TableViewer {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "retained until inline row handlers are consolidated"
-    )]
     fn select_row(&mut self, row_idx: usize, cx: &mut Context<Self>) {
         if let Some(t) = self.open_tables.get_mut(self.active_table_index) {
             t.selected_row = Some(row_idx);
@@ -358,10 +436,6 @@ impl TableViewer {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "retained until inline row handlers are consolidated"
-    )]
     fn deselect_row(&mut self, cx: &mut Context<Self>) {
         if let Some(t) = self.open_tables.get_mut(self.active_table_index) {
             t.selected_row = None;
@@ -369,10 +443,6 @@ impl TableViewer {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "retained until inline context-menu handlers are consolidated"
-    )]
     fn dismiss_context_menu(&mut self, cx: &mut Context<Self>) {
         if let Some(t) = self.open_tables.get_mut(self.active_table_index) {
             t.context_menu_visible = false;
@@ -431,9 +501,15 @@ impl OpenTable {
                 }
             };
 
-            let result =
-                MysqlClient::query_columns(&ds.host, ds.port, &ds.username, &password, &db, &tbl)
-                    .await;
+            let result = MysqlClient::query_columns(
+                &ds.host,
+                ds.port,
+                &ds.username,
+                &password,
+                &MysqlIdentifier::new_trusted(db.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(tbl.clone(), IdentifierKind::Table),
+            )
+            .await;
             match result {
                 Ok(cols) => {
                     this.update(cx, |v, cx| {
@@ -497,8 +573,15 @@ impl OpenTable {
                 }
             };
 
-            let result =
-                MysqlClient::query_ddl(&ds.host, ds.port, &ds.username, &password, &db, &tbl).await;
+            let result = MysqlClient::query_ddl(
+                &ds.host,
+                ds.port,
+                &ds.username,
+                &password,
+                &MysqlIdentifier::new_trusted(db.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(tbl.clone(), IdentifierKind::Table),
+            )
+            .await;
             match result {
                 Ok(ddl) => {
                     this.update(cx, |v, cx| {
@@ -573,12 +656,12 @@ impl OpenTable {
             };
 
             let req = TableDataRequest {
-                where_clause: if where_clause.is_empty() {
+                where_fragment: if where_clause.is_empty() {
                     None
                 } else {
                     Some(where_clause)
                 },
-                order_by: if order_by.is_empty() {
+                order_fragment: if order_by.is_empty() {
                     None
                 } else {
                     Some(order_by)
@@ -587,16 +670,40 @@ impl OpenTable {
                 limit,
             };
 
+            // Build SQL for display
+            let escaped_db = Self::escape_identifier(&db);
+            let escaped_table = Self::escape_identifier(&tbl);
+            let sql = if let Some(ref wc) = req.where_fragment {
+                let mut s = format!(
+                    "SELECT * FROM `{}`.`{}` WHERE {}",
+                    escaped_db, escaped_table, wc
+                );
+                if let Some(ref ob) = req.order_fragment {
+                    s.push_str(&format!(" ORDER BY {}", ob));
+                }
+                s.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                s
+            } else {
+                let mut s = format!("SELECT * FROM `{}`.`{}`", escaped_db, escaped_table);
+                if let Some(ref ob) = req.order_fragment {
+                    s.push_str(&format!(" ORDER BY {}", ob));
+                }
+                s.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                s
+            };
+
+            let start = Instant::now();
             let result = MysqlClient::query_table_data(
                 &ds.host,
                 ds.port,
                 &ds.username,
                 &password,
-                &db,
-                &tbl,
+                &MysqlIdentifier::new_trusted(db.clone(), IdentifierKind::Database),
+                &MysqlIdentifier::new_trusted(tbl.clone(), IdentifierKind::Table),
                 &req,
             )
             .await;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
             match result {
                 Ok(data) => {
                     let total = data.total_count;
@@ -605,6 +712,8 @@ impl OpenTable {
                         if let Some(t) = v.open_tables.get_mut(table_idx) {
                             t.loading = false;
                             t.total_count = total;
+                            t.last_sql = sql;
+                            t.query_time_ms = elapsed_ms;
                             t.page_cache.insert(
                                 page,
                                 PageCache {
@@ -635,30 +744,37 @@ impl OpenTable {
 }
 
 impl Render for TableViewer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.weak_entity();
+        let palette = ViewerPalette::current(cx);
 
         if self.open_tables.is_empty() {
-            return div().flex().flex_col().size_full().bg(rgb(0xffffff)).child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .flex_grow()
-                    .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
-                    .child("请选择一个表"),
-            );
+            return div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .bg(palette.background)
+                .text_color(palette.foreground)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.0))
+                        .text_color(palette.muted_foreground)
+                        .child("请选择一个表"),
+                );
         }
 
         let mut col = div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0xffffff))
+            .bg(palette.background)
+            .text_color(palette.foreground)
             .relative();
 
-        col = col.child(self.render_table_tabs(cx));
+        col = col.child(self.render_table_tabs(cx, palette));
 
         let Some(t) = self.open_tables.get(self.active_table_index) else {
             return col.child(
@@ -666,16 +782,31 @@ impl Render for TableViewer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .flex_grow()
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("请选择一个表"),
             );
         };
 
         let active_tab = t.active_tab.clone();
 
-        col = col.child(self.render_sub_tabs(&active_tab, this.clone()));
+        col = col.child(self.render_sub_tabs(&active_tab, this.clone(), palette));
+
+        if let Some(error) = t.error.clone() {
+            col = col.child(
+                div()
+                    .debug_selector(|| "TABLE_VIEWER_QUERY_ERROR".to_owned())
+                    .mx(px(16.0))
+                    .mt(px(8.0))
+                    .p(px(10.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(palette.danger)
+                    .text_size(px(12.0))
+                    .text_color(palette.danger)
+                    .child(error),
+            );
+        }
 
         if t.loading {
             col = col.child(
@@ -685,20 +816,38 @@ impl Render for TableViewer {
                     .justify_center()
                     .h(px(60.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("加载中..."),
             );
         } else {
             match t.active_tab {
                 TableTab::Columns => {
-                    col = col.child(self.render_columns(t, this.clone(), cx));
+                    col = col.child(self.render_columns(t, this.clone(), palette));
                 }
                 TableTab::Ddl => {
-                    col = col.child(self.render_ddl(t));
+                    if self.ddl_search_input.is_none() {
+                        self.ddl_search_input = Some(
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索 DDL...")),
+                        );
+                        let search_input = self.ddl_search_input.clone().unwrap();
+                        cx.subscribe_in(
+                            &search_input,
+                            window,
+                            |this, state, event, _window, cx| {
+                                if let InputEvent::Change = event {
+                                    this.ddl_search_text = state.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        )
+                        .detach();
+                    }
+                    col = col.child(self.render_ddl(t, palette));
                 }
                 TableTab::Data => {
-                    col = col.child(self.render_data_tab(t, this.clone(), cx));
+                    col = col.child(self.render_data_tab(t, this.clone(), palette));
                 }
+                _ => {} // TODO: implement rendering for Constraints, Indexes, ForeignKeys, References, Triggers
             }
         }
 
@@ -727,20 +876,20 @@ impl Render for TableViewer {
                     .left(px(menu_x))
                     .top(px(menu_y))
                     .w(px(160.0))
-                    .bg(rgb(0xffffff))
+                    .bg(palette.popover)
                     .border_1()
-                    .border_color(rgb(0xcccccc))
+                    .border_color(palette.border)
                     .rounded(px(4.0))
                     .shadow_lg()
                     .cursor(CursorStyle::PointingHand)
                     .child(
                         div()
-                            .id("context-menu-item")
+                            .id("context-menu-item-view")
                             .px(px(12.0))
                             .py(px(6.0))
                             .text_size(px(12.0))
-                            .text_color(rgb(0x333333))
-                            .hover(|s| s.bg(rgb(0xe8f0fe)))
+                            .text_color(palette.popover_foreground)
+                            .hover(move |s| s.bg(palette.list_hover))
                             .cursor(CursorStyle::PointingHand)
                             .child("查看完整值")
                             .on_mouse_down(MouseButton::Left, {
@@ -748,6 +897,44 @@ impl Render for TableViewer {
                                 move |_, _, cx| {
                                     this.update(cx, |v, cx| {
                                         v.open_value_panel_from_context_menu(cx);
+                                    })
+                                    .ok();
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("context-menu-item-copy")
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(palette.popover_foreground)
+                            .hover(move |s| s.bg(palette.list_hover))
+                            .cursor(CursorStyle::PointingHand)
+                            .child("复制")
+                            .on_mouse_down(MouseButton::Left, {
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |v, cx| {
+                                        let idx = v.active_table_index;
+                                        let row_col = v.open_tables.get(idx).and_then(|t| {
+                                            match (t.context_menu_row, t.context_menu_col) {
+                                                (Some(r), Some(c)) => Some((r, c)),
+                                                _ => None,
+                                            }
+                                        });
+                                        if let Some((row, col)) = row_col
+                                            && let Some(table) = v.open_tables.get(idx)
+                                            && let Some(data) = &table.table_data
+                                            && row < data.rows.len()
+                                            && col < data.rows[row].len()
+                                            && let Some(text) = &data.rows[row][col]
+                                        {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                        }
+                                        v.dismiss_context_menu(cx);
                                     })
                                     .ok();
                                 }
@@ -769,8 +956,7 @@ impl Render for TableViewer {
                     .left(px(0.0))
                     .right(px(0.0))
                     .bottom(px(0.0))
-                    .bg(rgb(0x000000))
-                    .opacity(0.3)
+                    .bg(palette.overlay)
                     .cursor(CursorStyle::PointingHand)
                     .on_mouse_down(MouseButton::Left, {
                         let this_for_bg = this.clone();
@@ -792,11 +978,12 @@ impl Render for TableViewer {
                             .left(px(50.0))
                             .right(px(50.0))
                             .max_w(px(500.0))
-                            .bg(rgb(0xffffff))
+                            .bg(palette.popover)
+                            .text_color(palette.popover_foreground)
                             .rounded(px(12.0))
                             .shadow_lg()
                             .border_1()
-                            .border_color(rgb(0xdddddd))
+                            .border_color(palette.border)
                             .p(px(24.0))
                             .child(
                                 div()
@@ -806,13 +993,13 @@ impl Render for TableViewer {
                                     .child(
                                         div()
                                             .text_size(px(18.0))
-                                            .text_color(rgb(0xcc0000))
+                                            .text_color(palette.danger)
                                             .child(title),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(14.0))
-                                            .text_color(rgb(0x333333))
+                                            .text_color(palette.popover_foreground)
                                             .child(message),
                                     )
                                     .child(
@@ -822,8 +1009,8 @@ impl Render for TableViewer {
                                                 .px(px(16.0))
                                                 .py(px(8.0))
                                                 .rounded(px(6.0))
-                                                .bg(rgb(0x4a90d9))
-                                                .text_color(rgb(0xffffff))
+                                                .bg(palette.primary)
+                                                .text_color(palette.primary_foreground)
                                                 .text_size(px(13.0))
                                                 .cursor(CursorStyle::PointingHand)
                                                 .child("关闭")
@@ -854,7 +1041,11 @@ impl Render for TableViewer {
 }
 
 impl TableViewer {
-    fn render_table_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_table_tabs(
+        &self,
+        cx: &mut Context<Self>,
+        palette: ViewerPalette,
+    ) -> impl IntoElement {
         let mut row = div()
             .flex()
             .items_center()
@@ -862,7 +1053,7 @@ impl TableViewer {
             .px(px(12.0))
             .py(px(4.0))
             .border_b_1()
-            .border_color(rgb(0xe0e0e0));
+            .border_color(palette.border);
 
         for (idx, tab) in self.open_tables.iter().enumerate() {
             let active = self.active_table_index == idx;
@@ -877,11 +1068,23 @@ impl TableViewer {
                 .px(px(12.0))
                 .py(px(4.0))
                 .rounded_t(px(4.0))
-                .bg(if active { rgb(0xffffff) } else { rgb(0xf0f0f0) })
+                .bg(if active {
+                    palette.background
+                } else {
+                    palette.muted
+                })
                 .border_b_1()
-                .border_color(if active { rgb(0xffffff) } else { rgb(0xe0e0e0) })
+                .border_color(if active {
+                    palette.background
+                } else {
+                    palette.border
+                })
                 .text_size(px(12.0))
-                .text_color(if active { rgb(0x333333) } else { rgb(0x666666) })
+                .text_color(if active {
+                    palette.foreground
+                } else {
+                    palette.muted_foreground
+                })
                 .cursor(CursorStyle::PointingHand)
                 .on_mouse_down(MouseButton::Left, {
                     let this = this.clone();
@@ -904,8 +1107,8 @@ impl TableViewer {
                 .justify_center()
                 .rounded(px(2.0))
                 .text_size(px(10.0))
-                .text_color(rgb(0x999999))
-                .hover(|s| s.bg(rgb(0xe0e0e0)))
+                .text_color(palette.muted_foreground)
+                .hover(move |s| s.bg(palette.list_hover))
                 .cursor(CursorStyle::PointingHand)
                 .child("x")
                 .on_mouse_down(MouseButton::Left, {
@@ -927,6 +1130,7 @@ impl TableViewer {
         &self,
         active_tab: &TableTab,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         div()
             .flex()
@@ -934,13 +1138,14 @@ impl TableViewer {
             .px(px(16.0))
             .py(px(4.0))
             .border_b_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(palette.border)
             .child(self.render_sub_tab(
                 SharedString::from("columns-tab"),
                 SharedString::from("列"),
                 active_tab == &TableTab::Columns,
                 TableTab::Columns,
                 this.clone(),
+                palette,
             ))
             .child(self.render_sub_tab(
                 SharedString::from("ddl-tab"),
@@ -948,6 +1153,7 @@ impl TableViewer {
                 active_tab == &TableTab::Ddl,
                 TableTab::Ddl,
                 this.clone(),
+                palette,
             ))
             .child(self.render_sub_tab(
                 SharedString::from("data-tab"),
@@ -955,6 +1161,7 @@ impl TableViewer {
                 active_tab == &TableTab::Data,
                 TableTab::Data,
                 this,
+                palette,
             ))
     }
 
@@ -965,15 +1172,24 @@ impl TableViewer {
         active: bool,
         tab: TableTab,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         div()
             .id(id)
             .px(px(12.0))
             .py(px(4.0))
             .rounded(px(4.0))
-            .bg(if active { rgb(0x4a90d9) } else { rgb(0xf5f5f5) })
+            .bg(if active {
+                palette.primary
+            } else {
+                palette.secondary
+            })
             .text_size(px(12.0))
-            .text_color(if active { rgb(0xffffff) } else { rgb(0x666666) })
+            .text_color(if active {
+                palette.primary_foreground
+            } else {
+                palette.secondary_foreground
+            })
             .cursor(CursorStyle::PointingHand)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |v, cx| {
@@ -988,7 +1204,7 @@ impl TableViewer {
         &self,
         t: &OpenTable,
         this: gpui::WeakEntity<Self>,
-        _cx: &mut Context<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         let column_labels = ["列名", "类型", "可空", "主键", "注释"];
         let column_data: Vec<_> = t
@@ -1014,7 +1230,6 @@ impl TableViewer {
             .id("columns-scroll")
             .flex()
             .flex_col()
-            .flex_grow()
             .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&t.scroll_handle);
@@ -1027,16 +1242,17 @@ impl TableViewer {
                     .justify_center()
                     .h(px(60.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("该表暂无列信息"),
             );
         } else {
             let header = div()
                 .flex()
                 .border_b_1()
-                .border_color(rgb(0xe0e0e0))
+                .border_color(palette.border)
                 .text_size(px(12.0))
-                .text_color(rgb(0x333333));
+                .text_color(palette.foreground)
+                .bg(palette.list_head);
 
             let header = column_labels
                 .iter()
@@ -1063,7 +1279,8 @@ impl TableViewer {
                 let row = div()
                     .flex()
                     .border_b_1()
-                    .border_color(rgb(0xf5f5f5))
+                    .border_color(palette.border)
+                    .bg(palette.list_row)
                     .text_size(px(12.0));
 
                 let row = row_data
@@ -1071,14 +1288,45 @@ impl TableViewer {
                     .enumerate()
                     .fold(row, |acc, (i, text)| {
                         let w = widths.get(i).copied().unwrap_or(200.0);
-                        acc.child(
-                            div()
-                                .w(px(w))
-                                .flex_shrink_0()
-                                .px(px(12.0))
-                                .py(px(5.0))
-                                .child(text),
-                        )
+                        let text_str = text.to_string();
+                        let cell = div()
+                            .relative()
+                            .w(px(w))
+                            .flex_shrink_0()
+                            .px(px(12.0))
+                            .py(px(5.0))
+                            .child(text);
+
+                        // Add copy button for column name (i==0) and type (i==1)
+                        if i <= 1 && !text_str.is_empty() {
+                            let copy_text = text_str.clone();
+                            let cell = cell.child(
+                                div()
+                                    .id(format!("copy-col-{i}-{text_str}"))
+                                    .absolute()
+                                    .right(px(4.0))
+                                    .top(px(2.0))
+                                    .px(px(4.0))
+                                    .py(px(1.0))
+                                    .rounded(px(2.0))
+                                    .bg(palette.secondary)
+                                    .text_size(px(10.0))
+                                    .text_color(palette.secondary_foreground)
+                                    .cursor(CursorStyle::PointingHand)
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let copy_text = copy_text.clone();
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy_text.clone(),
+                                            ));
+                                        }
+                                    })
+                                    .child("复制"),
+                            );
+                            acc.child(cell)
+                        } else {
+                            acc.child(cell)
+                        }
                     });
 
                 scroll = scroll.child(row);
@@ -1088,22 +1336,86 @@ impl TableViewer {
         scroll
     }
 
-    fn render_ddl(&self, t: &OpenTable) -> impl IntoElement {
+    fn render_ddl(&self, t: &OpenTable, palette: ViewerPalette) -> impl IntoElement {
         let ddl = t.ddl.clone();
+        let search_text = self.ddl_search_text.clone();
+        let display_ddl = if search_text.is_empty() {
+            ddl.clone()
+        } else {
+            ddl.lines()
+                .filter(|line| line.to_lowercase().contains(&search_text.to_lowercase()))
+                .collect::<Vec<&str>>()
+                .join("\n")
+        };
+
         div()
             .id("ddl-scroll")
             .flex()
-            .flex_grow()
-            .overflow_y_scroll()
-            .track_scroll(&t.scroll_handle)
+            .flex_col()
+            .size_full()
             .child(
                 div()
-                    .p(px(16.0))
-                    .text_size(px(12.0))
-                    .font_family("monospace")
-                    .bg(rgb(0xf9f9f9))
-                    .text_color(rgb(0x333333))
-                    .child(ddl),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .p(px(8.0))
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(palette.muted_foreground)
+                                    .child("搜索:"),
+                            )
+                            .child(
+                                div()
+                                    .w(px(200.0))
+                                    .child(Input::new(self.ddl_search_input.as_ref().unwrap())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .bg(palette.primary)
+                            .text_size(px(12.0))
+                            .text_color(palette.primary_foreground)
+                            .cursor(CursorStyle::PointingHand)
+                            .on_mouse_down(MouseButton::Left, {
+                                let ddl_text = ddl.clone();
+                                move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        ddl_text.clone(),
+                                    ));
+                                }
+                            })
+                            .child("复制"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("ddl-scroll-content")
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .track_scroll(&t.scroll_handle)
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .p(px(16.0))
+                            .text_size(px(12.0))
+                            .font_family("monospace")
+                            .bg(palette.list_row)
+                            .text_color(palette.foreground)
+                            .child(display_ddl),
+                    ),
             )
     }
 
@@ -1111,7 +1423,7 @@ impl TableViewer {
         &self,
         t: &OpenTable,
         this: gpui::WeakEntity<Self>,
-        _cx: &mut Context<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         info!("[DataTab] render_data_tab called, table: {}", t.name);
 
@@ -1142,7 +1454,6 @@ impl TableViewer {
             .id("data-tab-container")
             .flex()
             .flex_col()
-            .flex_grow()
             .size_full()
             .overflow_hidden();
 
@@ -1158,7 +1469,7 @@ impl TableViewer {
                             .justify_center()
                             .h(px(60.0))
                             .text_size(px(13.0))
-                            .text_color(rgb(0x888888))
+                            .text_color(palette.muted_foreground)
                             .child("该表暂无数据"),
                     );
                 } else {
@@ -1167,25 +1478,23 @@ impl TableViewer {
                     let grid_div = div()
                         .flex()
                         .flex_col()
-                        .flex_grow()
                         .overflow_hidden()
-                        .child(self.render_data_grid(cols, row_data, t, this.clone()));
+                        .child(self.render_data_grid(cols, row_data, t, this.clone(), palette));
 
                     let data_area = div()
                         .id("data-area")
                         .relative()
                         .flex()
                         .flex_row()
-                        .flex_grow()
                         .size_full()
                         .overflow_hidden()
                         .child(grid_div)
                         .when(t.show_value_panel, |el| {
-                            el.child(self.render_value_viewer(t, this.clone()))
+                            el.child(self.render_value_viewer(t, this.clone(), palette))
                         });
 
                     container = container.child(data_area);
-                    container = container.child(self.render_pagination(t, this));
+                    container = container.child(self.render_pagination(t, this, palette));
 
                     info!("[DataTab] data_area and pagination added to container");
                 }
@@ -1197,7 +1506,7 @@ impl TableViewer {
                         .justify_center()
                         .h(px(60.0))
                         .text_size(px(13.0))
-                        .text_color(rgb(0x888888))
+                        .text_color(palette.muted_foreground)
                         .child("该表暂无数据"),
                 );
             }
@@ -1209,7 +1518,7 @@ impl TableViewer {
                     .justify_center()
                     .h(px(60.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_foreground)
                     .child("请选择一个表"),
             );
         }
@@ -1223,6 +1532,7 @@ impl TableViewer {
         row_data: &[Vec<Option<SharedString>>],
         t: &OpenTable,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         let num_cols = cols.len();
         let widths: Vec<f32> = (0..num_cols)
@@ -1245,7 +1555,6 @@ impl TableViewer {
             .relative()
             .flex()
             .flex_col()
-            .flex_grow()
             .size_full()
             .overflow_x_scroll()
             .overflow_y_scroll()
@@ -1261,9 +1570,10 @@ impl TableViewer {
             .flex()
             .flex_nowrap()
             .border_b_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(palette.border)
             .text_size(px(11.0))
-            .bg(rgb(0xf8f8f8));
+            .bg(palette.list_head)
+            .text_color(palette.foreground);
 
         header = header.child(
             div()
@@ -1303,14 +1613,18 @@ impl TableViewer {
                 .flex()
                 .flex_nowrap()
                 .border_b_1()
-                .border_color(rgb(0xf0f0f0))
+                .border_color(palette.border)
                 .text_size(px(11.0))
                 .bg(if is_selected {
-                    rgb(0xd0e0f0)
+                    palette.list_active
                 } else if is_hovered {
-                    rgb(0xf5f8fc)
+                    palette.list_hover
                 } else {
-                    rgb(0xffffff)
+                    if row_idx % 2 == 0 {
+                        palette.list_row
+                    } else {
+                        palette.list_even
+                    }
                 })
                 .cursor(CursorStyle::PointingHand)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -1356,7 +1670,7 @@ impl TableViewer {
                     .flex_shrink_0()
                     .px(px(6.0))
                     .py(px(2.0))
-                    .text_color(rgb(0x999999))
+                    .text_color(palette.muted_foreground)
                     .text_size(px(11.0))
                     .child(format!("{}", row_idx + 1)),
             );
@@ -1371,7 +1685,7 @@ impl TableViewer {
                         .flex_shrink_0()
                         .px(px(8.0))
                         .py(px(2.0))
-                        .text_color(rgb(0x333333))
+                        .text_color(palette.foreground)
                         .cursor(CursorStyle::IBeam)
                         .on_mouse_down(MouseButton::Left, {
                             let this_for_cell = this_for_cell.clone();
@@ -1426,7 +1740,12 @@ impl TableViewer {
         scroll
     }
 
-    fn render_value_viewer(&self, t: &OpenTable, this: gpui::WeakEntity<Self>) -> impl IntoElement {
+    fn render_value_viewer(
+        &self,
+        t: &OpenTable,
+        this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
+    ) -> impl IntoElement {
         let Some(ref data) = t.table_data else {
             return div();
         };
@@ -1463,8 +1782,8 @@ impl TableViewer {
             .flex()
             .flex_col()
             .border_l_1()
-            .border_color(rgb(0xe0e0e0))
-            .bg(rgb(0xfafafa))
+            .border_color(palette.border)
+            .bg(palette.list_row)
             .child(
                 div()
                     .flex()
@@ -1473,9 +1792,9 @@ impl TableViewer {
                     .px(px(12.0))
                     .py(px(6.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(palette.border)
                     .text_size(px(12.0))
-                    .text_color(rgb(0x333333))
+                    .text_color(palette.foreground)
                     .child("数值查看器")
                     .child(
                         div()
@@ -1486,8 +1805,8 @@ impl TableViewer {
                             .justify_center()
                             .rounded(px(2.0))
                             .text_size(px(10.0))
-                            .text_color(rgb(0x999999))
-                            .hover(|s| s.bg(rgb(0xe0e0e0)))
+                            .text_color(palette.muted_foreground)
+                            .hover(move |s| s.bg(palette.list_hover))
                             .cursor(CursorStyle::PointingHand)
                             .child("x")
                             .on_mouse_down(MouseButton::Left, {
@@ -1513,39 +1832,43 @@ impl TableViewer {
                     .px(px(12.0))
                     .py(px(6.0))
                     .border_b_1()
-                    .border_color(rgb(0xe0e0e0))
+                    .border_color(palette.border)
                     .text_size(px(11.0))
                     .child(
                         div()
                             .flex()
                             .gap(px(4.0))
-                            .child(div().text_color(rgb(0x999999)).child("字段:"))
-                            .child(div().text_color(rgb(0x333333)).child(col_name)),
+                            .child(div().text_color(palette.muted_foreground).child("字段:"))
+                            .child(div().text_color(palette.foreground).child(col_name)),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(px(4.0))
-                            .child(div().text_color(rgb(0x999999)).child("类型:"))
-                            .child(div().text_color(rgb(0x333333)).child(type_name)),
+                            .child(div().text_color(palette.muted_foreground).child("类型:"))
+                            .child(div().text_color(palette.foreground).child(type_name)),
                     ),
             )
             .child(
                 div()
                     .id("value-viewer-scroll")
                     .flex()
-                    .flex_grow()
                     .px(px(12.0))
                     .py(px(8.0))
                     .text_size(px(11.0))
                     .font_family("monospace")
-                    .text_color(rgb(0x333333))
+                    .text_color(palette.foreground)
                     .overflow_y_scroll()
                     .child(value),
             )
     }
 
-    fn render_pagination(&self, t: &OpenTable, this: gpui::WeakEntity<Self>) -> impl IntoElement {
+    fn render_pagination(
+        &self,
+        t: &OpenTable,
+        this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
+    ) -> impl IntoElement {
         let current_page = t.current_page();
         let total_pages = t.total_pages();
         let page_size = t.page_size;
@@ -1559,156 +1882,206 @@ impl TableViewer {
             visited_pages.sort();
         }
 
-        let mut pager = div()
+        let row_count = t.table_data.as_ref().map(|d| d.rows.len()).unwrap_or(0);
+
+        div()
             .flex()
             .items_center()
             .justify_between()
             .px(px(12.0))
             .py(px(6.0))
             .border_t_1()
-            .border_color(rgb(0xe0e0e0))
+            .border_color(palette.border)
             .text_size(px(11.0))
-            .text_color(rgb(0x666666));
-
-        pager = pager.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child("每页".to_string())
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(2.0))
-                        .child(self.render_page_size_option(50, page_size, this.clone()))
-                        .child(self.render_page_size_option(100, page_size, this.clone()))
-                        .child(self.render_page_size_option(200, page_size, this.clone()))
-                        .child(self.render_page_size_option(500, page_size, this.clone())),
-                ),
-        );
-
-        let mut btn_row = div().flex().items_center().gap(px(4.0));
-
-        btn_row = btn_row.child(
-            div()
-                .id("prev-page")
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .bg(if has_prev {
-                    rgb(0xe0e0e0)
-                } else {
-                    rgb(0xf5f5f5)
-                })
-                .text_size(px(11.0))
-                .cursor(if has_prev {
-                    CursorStyle::PointingHand
-                } else {
-                    CursorStyle::Arrow
-                })
-                .child("上一页")
-                .when(has_prev, |el| {
-                    let this = this.clone();
-                    el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        let page = current_page - 1;
-                        this.update(cx, |v, cx| {
-                            v.goto_page(page, cx);
-                        })
-                        .ok();
-                    })
-                }),
-        );
-
-        for &page_num in &visited_pages {
-            let is_current = page_num == current_page;
-            btn_row = btn_row.child(
+            .text_color(palette.muted_foreground)
+            // Left: row count + query time
+            .child(
                 div()
-                    .id(format!("page-{page_num}"))
-                    .px(px(6.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .bg(if is_current {
-                        rgb(0x4a90d9)
-                    } else {
-                        rgb(0xf0f0f0)
-                    })
-                    .text_color(if is_current {
-                        rgb(0xffffff)
-                    } else {
-                        rgb(0x333333)
-                    })
-                    .text_size(px(11.0))
-                    .cursor(if is_current {
-                        CursorStyle::Arrow
-                    } else {
-                        CursorStyle::PointingHand
-                    })
-                    .child(format!("{}", page_num + 1))
-                    .when(!is_current, |el| {
-                        let this = this.clone();
-                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |v, cx| {
-                                v.goto_page(page_num, cx);
-                            })
-                            .ok();
-                        })
-                    }),
-            );
-        }
-
-        btn_row = btn_row.child(
-            div()
-                .id("next-page")
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .bg(if has_next {
-                    rgb(0xe0e0e0)
-                } else {
-                    rgb(0xf5f5f5)
-                })
-                .text_size(px(11.0))
-                .cursor(if has_next {
-                    CursorStyle::PointingHand
-                } else {
-                    CursorStyle::Arrow
-                })
-                .child("下一页")
-                .when(has_next, |el| {
-                    let this = this.clone();
-                    el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        let page = current_page + 1;
-                        this.update(cx, |v, cx| {
-                            v.goto_page(page, cx);
-                        })
-                        .ok();
-                    })
-                }),
-        );
-
-        btn_row = btn_row.child(
-            div()
-                .id("force-refresh")
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .bg(rgb(0xe0e0e0))
-                .text_size(px(11.0))
-                .cursor(CursorStyle::PointingHand)
-                .child("刷新")
-                .on_mouse_down(MouseButton::Left, {
-                    let this = this.clone();
-                    move |_, _, cx| {
-                        this.update(cx, |v, cx| {
-                            v.force_refresh(cx);
-                        })
-                        .ok();
-                    }
-                }),
-        );
-
-        pager = pager.child(btn_row);
-        pager
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(format!("共 {} 行", t.total_count))
+                    .child(format!("({} 行)", row_count))
+                    .child(format!("{}ms", t.query_time_ms)),
+            )
+            // Center: SQL
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_1()
+                    .mx(px(16.0))
+                    .overflow_x_hidden()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted_foreground)
+                            .whitespace_nowrap()
+                            .child(t.last_sql.clone()),
+                    ),
+            )
+            // Right: page size + navigation
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(format!("{} 行/页", page_size))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            // First page
+                            .child(
+                                div()
+                                    .id("first-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if current_page > 0 {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if current_page > 0 {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("«")
+                                    .when(current_page > 0, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| v.goto_page(0, cx)).ok();
+                                        })
+                                    }),
+                            )
+                            // Previous page
+                            .child(
+                                div()
+                                    .id("prev-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if has_prev {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if has_prev {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("‹")
+                                    .when(has_prev, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| {
+                                                v.goto_page(current_page - 1, cx)
+                                            })
+                                            .ok();
+                                        })
+                                    }),
+                            )
+                            // Page numbers
+                            .children(visited_pages.iter().map(|&page_num| {
+                                let is_current = page_num == current_page;
+                                div()
+                                    .id(format!("page-{page_num}"))
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if is_current {
+                                        palette.primary
+                                    } else {
+                                        palette.secondary
+                                    })
+                                    .text_color(if is_current {
+                                        palette.primary_foreground
+                                    } else {
+                                        palette.secondary_foreground
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if is_current {
+                                        CursorStyle::Arrow
+                                    } else {
+                                        CursorStyle::PointingHand
+                                    })
+                                    .child(format!("{}", page_num + 1))
+                                    .when(!is_current, {
+                                        let this = this.clone();
+                                        move |el| {
+                                            el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                this.update(cx, |v, cx| v.goto_page(page_num, cx))
+                                                    .ok();
+                                            })
+                                        }
+                                    })
+                            }))
+                            // Next page
+                            .child(
+                                div()
+                                    .id("next-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if has_next {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if has_next {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("›")
+                                    .when(has_next, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| {
+                                                v.goto_page(current_page + 1, cx)
+                                            })
+                                            .ok();
+                                        })
+                                    }),
+                            )
+                            // Last page
+                            .child(
+                                div()
+                                    .id("last-page")
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(3.0))
+                                    .bg(if has_next {
+                                        palette.secondary
+                                    } else {
+                                        palette.muted
+                                    })
+                                    .text_size(px(11.0))
+                                    .cursor(if has_next {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .child("»")
+                                    .when(has_next, |el| {
+                                        let this = this.clone();
+                                        el.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |v, cx| {
+                                                v.goto_page(total_pages - 1, cx)
+                                            })
+                                            .ok();
+                                        })
+                                    }),
+                            ),
+                    ),
+            )
     }
 
     fn render_page_size_option(
@@ -1716,6 +2089,7 @@ impl TableViewer {
         size: i64,
         current_size: i64,
         this: gpui::WeakEntity<Self>,
+        palette: ViewerPalette,
     ) -> impl IntoElement {
         let is_selected = size == current_size;
         div()
@@ -1724,14 +2098,14 @@ impl TableViewer {
             .py(px(2.0))
             .rounded(px(3.0))
             .bg(if is_selected {
-                rgb(0x4a90d9)
+                palette.primary
             } else {
-                rgb(0xf0f0f0)
+                palette.secondary
             })
             .text_color(if is_selected {
-                rgb(0xffffff)
+                palette.primary_foreground
             } else {
-                rgb(0x333333)
+                palette.secondary_foreground
             })
             .text_size(px(11.0))
             .cursor(CursorStyle::PointingHand)
@@ -1805,5 +2179,37 @@ impl TableViewer {
                     cx.remove_global::<ColumnResize>();
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{SharedString, TestAppContext, VisualTestContext, px, size};
+
+    use super::{OpenTable, TableViewer};
+
+    #[gpui::test]
+    fn query_errors_are_visible_instead_of_leaving_an_empty_tab(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let window = cx.open_window(size(px(720.0), px(480.0)), |_, cx| {
+            let mut viewer = TableViewer::new(cx);
+            let mut table = OpenTable::new("AgentRuns".to_owned(), "FixtureDb".to_owned());
+            table.error = Some(SharedString::from(
+                "加载列失败: mysql transport error: fixture",
+            ));
+            viewer.open_tables.push(table);
+            viewer
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            visual.debug_bounds("TABLE_VIEWER_QUERY_ERROR").is_some(),
+            "a failed Columns/DDL/Data query must render an actionable error instead of a blank tab"
+        );
     }
 }

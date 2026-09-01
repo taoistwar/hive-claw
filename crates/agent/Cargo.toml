@@ -2,6 +2,7 @@
 name = "agent"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
@@ -24,7 +25,6 @@ sha2 = { workspace = true }
 walkdir = { workspace = true }
 globset = { workspace = true }
 reqwest = { workspace = true }
-sqlx = { workspace = true }
 rust_decimal = { workspace = true }
 
 # Internal dependencies
@@ -37,6 +37,8 @@ command = { path = "../command" }
 config = { path = "../config" }
 security = { path = "../security" }
 cron = { path = "../cron" }
+hive-runtime-core = { path = "../hive-runtime-core" }
+hive-json-schema = { path = "../hive-json-schema" }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -14,6 +14,15 @@ pub struct Crypto {
     key: Vec<u8>,
 }
 
+impl std::fmt::Debug for Crypto {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Crypto")
+            .field("key", &"<redacted>")
+            .finish()
+    }
+}
+
 impl Drop for Crypto {
     fn drop(&mut self) {
         self.key.zeroize();
@@ -23,6 +32,12 @@ impl Drop for Crypto {
 impl Crypto {
     pub fn new(key: &[u8; KEY_SIZE]) -> Self {
         Self { key: key.to_vec() }
+    }
+
+    /// Test-only placeholder handle. Calling `encrypt` or
+    /// `decrypt` on the returned handle is a logic error.
+    pub fn placeholder() -> Self {
+        Self { key: Vec::new() }
     }
 
     pub fn generate_key() -> [u8; KEY_SIZE] {

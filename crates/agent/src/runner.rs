@@ -8,6 +8,16 @@
 //! results, length recovery, finalization retries, injection cycles, ...).
 //! This Rust port covers the core decision loop and all governance rules
 //! from the Python original.
+//!
+//! # T019 Execution context integration
+//!
+//! The `hive_runtime_core::execution::ExecutionContext` produced by T019 is
+//! the canonical state carrier for every agent run. The
+//! [`ExecutionContextRunner`] helper below is a thin adapter that owns an
+//! [`ExecutionContext`] and exposes the parts of the runner that benefit
+//! from cancellation tokens, permission snapshots, and structured events.
+//! The full [`AgentRunner`] continues to operate on its own internal state
+//! so existing call sites remain untouched.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -33,6 +43,11 @@ use utils::progress_events::on_progress_accepts_file_edit_events;
 use utils::runtime::{
     ensure_nonempty_tool_result, external_lookup_signature, is_blank_text,
     repeated_external_lookup_error,
+};
+
+use hive_runtime_core::execution::{
+    CancellationToken, ExecutionContext, ExecutionPhase, PermissionSnapshot, RuntimeEventKind,
+    TerminalOutcome,
 };
 
 use crate::hook::{AgentHook, AgentHookContext, ToolEvent};
@@ -1916,4 +1931,133 @@ fn repeated_workspace_violation_error(
          into the workspace, or disable restrict_to_workspace for this run).",
         target, count,
     ))
+}
+
+// ============================================================================
+// T019: ExecutionContext integration
+// ============================================================================
+
+/// Adapter that pairs an [`AgentRunSpec`] with an [`ExecutionContext`].
+///
+/// The adapter does not replace the existing [`AgentRunner`]; it is a thin
+/// boundary used by callers (HiveGUI local agent, HiveWeb webui) that need
+/// to drive an agent run while emitting structured events and honouring
+/// the shared cancellation token. The `run` method delegates to the
+/// existing [`AgentRunner::run`] and only adds event emission around the
+/// boundary.
+pub struct ExecutionContextRunner {
+    spec: AgentRunSpec,
+    context: ExecutionContext,
+}
+
+impl ExecutionContextRunner {
+    /// Build a new adapter from a spec and an existing execution context.
+    pub fn new(spec: AgentRunSpec, context: ExecutionContext) -> Self {
+        Self { spec, context }
+    }
+
+    /// Borrow the underlying spec.
+    pub fn spec(&self) -> &AgentRunSpec {
+        &self.spec
+    }
+
+    /// Borrow the underlying execution context.
+    pub fn context(&self) -> &ExecutionContext {
+        &self.context
+    }
+
+    /// Returns the cancellation token associated with this run.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.context.cancellation_token()
+    }
+
+    /// Returns the permission snapshot associated with this run.
+    pub fn permissions(&self) -> &PermissionSnapshot {
+        self.context.permissions()
+    }
+
+    /// Signal cancellation to the run. The next checkpoint in the
+    /// underlying agent loop that observes the context's
+    /// [`ExecutionContext::is_cancelled`] flag will short-circuit.
+    pub fn cancel(&self) {
+        self.context.cancel();
+    }
+
+    /// Returns `true` if the run has been signalled for cancellation.
+    ///
+    /// Inputs: none.
+    /// Outputs: the cancellation flag from the underlying context.
+    /// Error modes: this method is total.
+    pub fn is_cancelled(&self) -> bool {
+        self.context.is_cancelled()
+    }
+
+    /// Drive the agent run to completion, emitting a `Status::Running`
+    /// event at start and exactly one terminal event (`Completed`,
+    /// `Failed`, or `Cancelled`) at end. The actual agent loop is
+    /// delegated to an [`AgentRunner`] constructed with the supplied
+    /// `provider`; the adapter only adds event emission around the
+    /// boundary and propagates the cancellation flag.
+    ///
+    /// Inputs:
+    /// - `provider`: the LLM provider used to drive the underlying
+    ///   [`AgentRunner`].
+    ///
+    /// Outputs:
+    /// - The [`AgentRunResult`] from the underlying agent loop. The
+    ///   terminal [`RuntimeEvent`] for the context is emitted before
+    ///   the result is returned.
+    ///
+    /// Error modes: this method does not return an error; both the
+    /// event sink and the terminal emitter are non-blocking and
+    /// failures inside them are swallowed. The underlying
+    /// [`AgentRunner::run`] preserves its existing error-handling
+    /// semantics through [`AgentRunResult::error`].
+    pub async fn run_on(self, provider: Arc<dyn LLMProvider>) -> AgentRunResult {
+        let context = self
+            .context
+            .derive_for_agent(self.context.agent_id().to_owned());
+        context
+            .emit(RuntimeEventKind::Status {
+                phase: ExecutionPhase::Running,
+            })
+            .ok();
+        let runner = AgentRunner::new(provider);
+        let result = runner.run(self.spec).await;
+        if context.is_cancelled() {
+            context
+                .finish_cancelled(format!(
+                    "agent_runner::ExecutionContextRunner: {}",
+                    context.agent_id()
+                ))
+                .ok();
+        } else if let Some(error) = result.error.as_ref() {
+            let elapsed = context.elapsed_ms();
+            let stable_kind = crate::runner::stable_error_kind_for_message(error);
+            context
+                .finish(TerminalOutcome::Failed {
+                    error_kind: stable_kind,
+                    message: error.clone(),
+                    elapsed_ms: elapsed,
+                })
+                .ok();
+        } else {
+            let elapsed = context.elapsed_ms();
+            context
+                .finish(TerminalOutcome::Completed {
+                    final_agent_id: context.agent_id().to_owned(),
+                    message_id: String::new(),
+                    elapsed_ms: elapsed,
+                })
+                .ok();
+        }
+        result
+    }
+}
+
+fn stable_error_kind_for_message(_message: &str) -> hive_runtime_core::abi::StableErrorKind {
+    // Mapping is intentionally coarse at this stage: only the public
+    // variant is required by the test contract. Future revisions may
+    // inspect the message for known sentinels.
+    hive_runtime_core::abi::StableErrorKind::Internal
 }

@@ -5,7 +5,8 @@
 
 ## Prerequisites
 
-- Rust 1.85+ (使用 `rustup install stable`)
+- Rust 1.97.1（精确版本；运行
+  `rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy`）
 - Node.js 18+ (使用 `nvm install 18`)
 - npm 或 yarn
 - Git
@@ -42,10 +43,17 @@ mysql -u root -p -e "CREATE DATABASE hiveweb CHARACTER SET utf8mb4 COLLATE utf8m
 cargo run --bin migrate
 
 # 创建初始超级管理员
-cargo run --bin create-super-admin -- \
-  --phone "18810154696" \
-  --password "admin123" \
-  --nickname "Super Admin"
+read -r -s -p "Bootstrap password: " HIVEWEB_BOOTSTRAP_PASSWORD
+printf '\n'
+printf '%s\n' "$HIVEWEB_BOOTSTRAP_PASSWORD" | \
+  cargo run --bin create-super-admin -- \
+    --phone "18810154696" \
+    --nickname "Super Admin" \
+    --password-stdin
+unset HIVEWEB_BOOTSTRAP_PASSWORD
+
+# 密码按 Unicode 字符计数，须为 6–20 字符并同时含 ASCII 字母和数字。
+# 重复手机号会非零失败；已有账户须通过认证后的修改密码流程轮换密码。
 
 # 启动后端服务器
 cargo run
@@ -76,7 +84,7 @@ npm run dev
 
 使用初始超级管理员账号登录：
 - 手机号：18810154696
-- 密码：admin123
+- 密码：刚才输入的 bootstrap 密码
 
 ## Project Structure
 
@@ -144,7 +152,7 @@ npm run build
 ```json
 {
   "phone": "18810154696",
-  "password": "admin123"
+  "password": "<刚才输入的 bootstrap 密码>"
 }
 ```
 

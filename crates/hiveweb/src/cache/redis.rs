@@ -383,10 +383,10 @@ impl SentinelRedisClient {
                 refresh.preferred_node = preferred_node;
                 refresh.next_refresh = Instant::now() + self.refresh_interval;
             }
-            Err(error) => {
+            Err(_) => {
                 refresh.next_refresh = Instant::now() + self.refresh_interval;
                 tracing::warn!(
-                    error = %error,
+                    error_kind = "redis_sentinel_master_refresh_failed",
                     retry_after_ms = self.refresh_interval.as_millis(),
                     "Redis Sentinel master refresh failed; using last known master"
                 );

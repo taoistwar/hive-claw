@@ -1,0 +1,38 @@
+{
+  "report": {
+    "schema_version": 1,
+    "fixture_version": "hivegui-local-runtime-v1",
+    "target": {
+      "id": "tool_dispatch",
+      "owner_task": "T103",
+      "timing_boundary": "Tool validation complete to local executor started",
+      "excluded_time": [
+        "network latency",
+        "user Function or Plugin execution"
+      ],
+      "warmup_iterations": 10,
+      "measured_samples": 100,
+      "p95_budget_ns": 50000000,
+      "workflow_node_count": null
+    },
+    "environment": {
+      "os": "linux",
+      "architecture": "x86_64",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_profile": "release",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "logical_cpus": 20
+    },
+    "sample_count": 100,
+    "percentiles_ns": {
+      "p50": 114583,
+      "p95": 125491,
+      "p99": 129398
+    }
+  },
+  "approval": {
+    "reviewer": "user",
+    "approved_at": "2026-08-25",
+    "source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:7fb80865b2b5d1c9cdda702fc1df3f2482cc3c65039ee6096258c17cfda283ae"
+  }
+}

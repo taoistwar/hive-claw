@@ -6,6 +6,7 @@
 //! 参数绑定：用 `:name` 占位符；运行时按 args 中的 key 顺序替换为 `?` 并 bind。
 //! 这保证最终 SQL 仍然走 sqlx parameterized query — 无字符串拼接、无注入面。
 
+use crate::db::sql_safety::audit_sql;
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -46,22 +47,28 @@ impl NamedQueryRegistry {
             .unwrap_or_else(|_| "./named_queries.toml".to_string());
         if !std::path::Path::new(&path).exists() {
             tracing::warn!(
-                path,
+                error_kind = "named_query_config_missing",
                 "named_queries.toml not found; db.query/db.execute will reject all calls"
             );
             return Self::default();
         }
         let content = match std::fs::read_to_string(&path) {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!(path, error = %e, "failed to read named_queries.toml");
+            Err(_) => {
+                tracing::error!(
+                    error_kind = "named_query_config_read_failed",
+                    "failed to read named_queries.toml"
+                );
                 return Self::default();
             }
         };
         let file: NamedQueriesFile = match toml::from_str(&content) {
             Ok(f) => f,
-            Err(e) => {
-                tracing::error!(error = %e, "named_queries.toml parse error");
+            Err(_) => {
+                tracing::error!(
+                    error_kind = "named_query_config_parse_failed",
+                    "named_queries.toml parse error"
+                );
                 return Self::default();
             }
         };
@@ -151,7 +158,7 @@ pub async fn db_query(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Strin
     }
     let (sql, ordered) = bind_params(q, &args.params)?;
 
-    let mut built = sqlx::query(&sql);
+    let mut built = sqlx::query(audit_sql(sql));
     for v in &ordered {
         built = bind_value(built, v);
     }
@@ -175,10 +182,6 @@ pub async fn db_query(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Strin
 }
 
 fn try_get_col(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<Value> {
-    use sqlx::Column;
-    let col = row.columns().get(idx)?;
-    let type_info = col.type_info();
-    let type_name = type_info.to_string();
     // 尝试常见类型
     if let Ok(v) = row.try_get::<Option<i64>, _>(idx) {
         return Some(v.map(|i| json!(i)).unwrap_or(Value::Null));
@@ -193,7 +196,10 @@ fn try_get_col(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<Value> {
         return Some(v.map(Value::Bool).unwrap_or(Value::Null));
     }
     // fallback：未识别类型，记日志
-    tracing::debug!(col = ?col.name(), type_name, "db.query unknown column type — returning null");
+    tracing::debug!(
+        error_kind = "unsupported_column_type",
+        "db.query unknown column type — returning null"
+    );
     Some(Value::Null)
 }
 
@@ -209,7 +215,7 @@ pub async fn db_execute(pool: &MySqlPool, args: DbCallArgs) -> Result<Value, Str
         ));
     }
     let (sql, ordered) = bind_params(q, &args.params)?;
-    let mut built = sqlx::query(&sql);
+    let mut built = sqlx::query(audit_sql(sql));
     for v in &ordered {
         built = bind_value(built, v);
     }

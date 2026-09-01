@@ -1,11 +1,14 @@
 # LLM Preset 配置示例（FR-025 / research §7）
 # 启动期由 hiveweb 加载 → 解析为 Map<LlmPresetName, Arc<FallbackProvider>>
-# 必须恰好有 1 个 default = true（否则启动 panic）
+# 必须恰好有 1 个有效的 default = true（否则 HiveWeb 在监听端口前启动失败）
 #
 # 复制为 llm_presets.toml 并按需修改，再设置 LLM_PRESETS_PATH 环境变量指向该文件。
 #
 # max_tokens — 单次 LLM 调用最大输出 token 数（默认 2048）
 # temperature — 生成温度 0.0-2.0（默认 0.7）
+# providers[].auth — 默认 api_key，必须用 api_key_env 引用非空环境变量；
+#   仅自托管且明确免认证的 provider 可设置 auth = "none"，此时必须显式提供
+#   合法的 http(s) base_url，且不得同时声明 api_key_env。
 
 [[preset]]
 name = "cheap-fast"

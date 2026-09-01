@@ -11,6 +11,7 @@
 //! Each migration is embedded at compile time via `include_str!` and applied
 //! exactly once; applied versions are recorded in `schema_migrations`.
 
+use hiveweb::db::sql_safety::audit_sql;
 use sqlx::MySqlPool;
 use std::env;
 
@@ -149,6 +150,14 @@ const MIGRATIONS: &[Migration] = &[
         version: "V031__game_image_text",
         sql: include_str!("../../migrations/V031__game_image_text.sql"),
     },
+    Migration {
+        version: "V032__runtime_audit_logs",
+        sql: include_str!("../../migrations/V032__runtime_audit_logs.sql"),
+    },
+    Migration {
+        version: "V033__normalize_workflow_timeout_default",
+        sql: include_str!("../../migrations/V033__normalize_workflow_timeout_default.sql"),
+    },
 ];
 
 #[tokio::main]
@@ -185,7 +194,8 @@ async fn main() -> anyhow::Result<()> {
 
         println!("  → Applying {}", migration.version);
         for stmt in split_sql_statements(migration.sql) {
-            sqlx::query(&stmt).execute(&pool).await?;
+            let audited_sql = audit_sql(stmt);
+            sqlx::query(audited_sql).execute(&pool).await?;
         }
         sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
             .bind(migration.version)
@@ -217,4 +227,24 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS;
+
+    #[test]
+    fn migration_chain_registers_runtime_audit_and_workflow_default() {
+        let versions: Vec<&str> = MIGRATIONS
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+
+        assert!(versions.contains(&"V032__runtime_audit_logs"));
+        assert!(versions.contains(&"V033__normalize_workflow_timeout_default"));
+        assert_eq!(
+            versions.last(),
+            Some(&"V033__normalize_workflow_timeout_default")
+        );
+    }
 }

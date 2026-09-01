@@ -68,6 +68,37 @@ fn default_finish_reason() -> String {
     "stop".into()
 }
 
+/// Stable, provider-neutral reason for moving to the next configured model.
+///
+/// Raw provider error text must never be used as an observability reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackReason {
+    RateLimited,
+    ServerError,
+    NetworkError,
+    TlsError,
+    ProviderTimeout,
+    NodeTimeout,
+    CircuitOpen,
+    RetryableError,
+}
+
+impl FallbackReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimited => "rate_limited",
+            Self::ServerError => "server_error",
+            Self::NetworkError => "network_error",
+            Self::TlsError => "tls_error",
+            Self::ProviderTimeout => "provider_timeout",
+            Self::NodeTimeout => "node_timeout",
+            Self::CircuitOpen => "circuit_open",
+            Self::RetryableError => "retryable_error",
+        }
+    }
+}
+
 /// Response from an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LLMResponse {
@@ -98,6 +129,16 @@ pub struct LLMResponse {
     pub error_retry_after_s: Option<f64>,
     #[serde(default)]
     pub error_should_retry: Option<bool>,
+    /// Model that produced the final response, or the last model actually
+    /// attempted when the chain failed.
+    #[serde(default)]
+    pub actual_model: Option<String>,
+    /// True only after at least one configured fallback provider was attempted.
+    #[serde(default)]
+    pub fallback_used: bool,
+    /// Static reason for entering the provider identified by `actual_model`.
+    #[serde(default)]
+    pub reason: Option<FallbackReason>,
 }
 
 impl LLMResponse {
@@ -128,6 +169,54 @@ impl LLMResponse {
     }
 }
 
+/// One real provider-to-provider transition in a configured fallback chain.
+///
+/// Provider index 0 is the primary. Fallback indices follow configuration
+/// ordinals (1..), so identity never depends on a potentially duplicated model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FallbackTransition {
+    pub from_provider_index: usize,
+    pub to_provider_index: usize,
+    pub from_model: String,
+    pub to_model: String,
+    pub reason: FallbackReason,
+}
+
+pub type FallbackTransitionCallback = std::sync::Arc<dyn Fn(FallbackTransition) + Send + Sync>;
+
+/// Per-invocation wall-clock budgets and optional fallback observer.
+///
+/// These options are intentionally separate from the serializable
+/// [`ChatRequest`]. A cached provider chain can therefore receive correlation
+/// state per invocation without retaining it across callers.
+#[derive(Clone)]
+pub struct LlmCallOptions {
+    pub node_timeout: Duration,
+    pub chain_timeout: Duration,
+    pub on_fallback: Option<FallbackTransitionCallback>,
+}
+
+impl LlmCallOptions {
+    pub fn with_timeouts(node_timeout: Duration, chain_timeout: Duration) -> Self {
+        Self {
+            node_timeout,
+            chain_timeout,
+            on_fallback: None,
+        }
+    }
+
+    pub fn with_fallback_callback(mut self, callback: FallbackTransitionCallback) -> Self {
+        self.on_fallback = Some(callback);
+        self
+    }
+}
+
+impl Default for LlmCallOptions {
+    fn default() -> Self {
+        Self::with_timeouts(Duration::from_secs(25), Duration::from_secs(45))
+    }
+}
+
 /// Generation defaults for a provider.
 #[derive(Debug, Clone)]
 pub struct GenerationSettings {
@@ -155,6 +244,23 @@ impl GenerationSettings {
             reasoning_effort: d.reasoning_effort.clone(),
         }
     }
+}
+
+pub(crate) fn prepare_chat_request(
+    mut req: ChatRequest,
+    defaults: &GenerationSettings,
+) -> ChatRequest {
+    if req.max_tokens == 0 {
+        req.max_tokens = defaults.max_tokens;
+    }
+    if !req.temperature.is_finite() {
+        req.temperature = defaults.temperature;
+    }
+    if req.reasoning_effort.is_none() {
+        req.reasoning_effort = defaults.reasoning_effort.clone();
+    }
+    req.messages = enforce_role_alternation(&req.messages);
+    req
 }
 
 /// Optional tool-selection strategy passed to `chat`.
@@ -827,6 +933,81 @@ pub trait LLMProvider: Send + Sync {
             cb(text);
         }
         response
+    }
+
+    /// Execute exactly one non-streaming provider call under the supplied
+    /// wall-clock budget. Unlike `chat_with_retry`, this method never retries.
+    async fn chat_with_options(&self, req: ChatRequest, options: LlmCallOptions) -> LLMResponse {
+        let req = prepare_chat_request(req, &self.generation());
+        let actual_model = req.model.clone().unwrap_or_else(|| self.default_model());
+        let chain_limited = options.chain_timeout <= options.node_timeout;
+        let budget = options.node_timeout.min(options.chain_timeout);
+        match tokio::time::timeout(budget, self.chat(req)).await {
+            Ok(mut response) => {
+                response.actual_model = Some(actual_model);
+                response.fallback_used = false;
+                response.reason = None;
+                response
+            }
+            Err(_) => LLMResponse {
+                content: Some("LLM invocation timed out".to_string()),
+                finish_reason: "error".to_string(),
+                error_kind: Some("timeout".to_string()),
+                error_code: Some(
+                    if chain_limited {
+                        "chain_timeout"
+                    } else {
+                        "node_timeout"
+                    }
+                    .to_string(),
+                ),
+                error_should_retry: Some(false),
+                actual_model: Some(actual_model),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Execute exactly one streaming provider call under the supplied
+    /// wall-clock budget. Unlike `chat_stream_with_retry`, this method never
+    /// retries.
+    async fn chat_stream_with_options(
+        &self,
+        req: ChatRequest,
+        on_delta: Option<StreamDeltaCallback>,
+        on_tool_call_delta: Option<ToolCallDeltaCallback>,
+        options: LlmCallOptions,
+    ) -> LLMResponse {
+        let req = prepare_chat_request(req, &self.generation());
+        let actual_model = req.model.clone().unwrap_or_else(|| self.default_model());
+        let chain_limited = options.chain_timeout <= options.node_timeout;
+        let budget = options.node_timeout.min(options.chain_timeout);
+        match tokio::time::timeout(budget, self.chat_stream(req, on_delta, on_tool_call_delta))
+            .await
+        {
+            Ok(mut response) => {
+                response.actual_model = Some(actual_model);
+                response.fallback_used = false;
+                response.reason = None;
+                response
+            }
+            Err(_) => LLMResponse {
+                content: Some("LLM invocation timed out".to_string()),
+                finish_reason: "error".to_string(),
+                error_kind: Some("timeout".to_string()),
+                error_code: Some(
+                    if chain_limited {
+                        "chain_timeout"
+                    } else {
+                        "node_timeout"
+                    }
+                    .to_string(),
+                ),
+                error_should_retry: Some(false),
+                actual_model: Some(actual_model),
+                ..Default::default()
+            },
+        }
     }
 
     /// Wrapper with retry policy on transient errors.

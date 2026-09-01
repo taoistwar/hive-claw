@@ -69,6 +69,55 @@ pub struct CreateDataSourceRequest {
 pub struct TableDataRequest {
     pub limit: i64,
     pub offset: i64,
-    pub where_clause: Option<String>,
-    pub order_by: Option<String>,
+    /// Reserved `WHERE` fragment. The MySQL client currently
+    /// rejects non-empty values until filtering has a typed query
+    /// model; prepared-statement values cannot represent SQL syntax.
+    pub where_fragment: Option<String>,
+    /// Reserved `ORDER BY` fragment, rejected while ordering lacks
+    /// a typed query model.
+    pub order_fragment: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub is_unique: bool,
+    pub is_primary: bool,
+    pub index_type: String,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstraintInfo {
+    pub name: String,
+    pub constraint_type: String,
+    pub columns: Vec<String>,
+    pub check_clause: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceInfo {
+    pub fk_name: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerInfo {
+    pub name: String,
+    pub event: String,
+    pub timing: String,
+    pub statement: String,
 }

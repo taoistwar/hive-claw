@@ -1,0 +1,33 @@
+# Exact historic fingerprints reviewed on 2026-08-25. These are inert test or
+# documentation examples, not credentials. Keep this list commit/path/rule/line
+# specific so new findings in the same files still block CI.
+fd95355bdc55a641621bb867a33838ff988a3f02:crates/hivegui/tests/logging_contract.rs:generic-api-key:156
+56355f117d83b079595fc819eb16cfad44d6cdb0:docs/prod/install.md:generic-api-key:120
+a0609cf50d49598e0ca2f42141e535b132b4d83f:docs/prod/install.md:generic-api-key:119
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/contracts/api.md:jwt:118
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/contracts/api.md:jwt:119
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/quickstart.md:generic-api-key:156
+de917c71aeb3356b31bf640db7ed50e35bc00b1e:specs/003-admin-center/quickstart.md:generic-api-key:157
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/quickstart.md:generic-api-key:151
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/quickstart.md:generic-api-key:152
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/contracts/api.md:jwt:118
+772dc6191aa5b341746b554087960e58b650efd1:specs/003-admin-center/contracts/api.md:jwt:119
+
+# Reviewed 2026-08-27: upstream aws-sdk-s3 endpoint fixtures use the fixed
+# synthetic account/access-point ARN `123456789012/.../mfzwi23gnjvgw.mrap`.
+# Bind every false positive to the vendored source commit, exact path, rule,
+# and line so later vendor changes and new findings still fail closed.
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:333
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:362
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:380
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:398
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:416
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:488
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/src/config/endpoint.rs:generic-api-key:2058
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:473
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:509
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:545
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:581
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:617
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:728
+c98cfe22b63f87337455850319bec34346fb5beb:third_party/aws-sdk-s3-1.141.0/tests/endpoint_tests.rs:generic-api-key:1772

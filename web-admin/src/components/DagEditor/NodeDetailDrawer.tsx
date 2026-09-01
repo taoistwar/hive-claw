@@ -46,10 +46,12 @@ interface NodeDetailDrawerProps {
   nodeKey: string;
   functionId?: number | null;
   inputSchema?: Record<string, unknown> | null;
+  startDescription?: string | null;
   outputSchema?: Record<string, unknown> | null;
+  endDescription?: string | null;
   answerConfig?: AnswerNodeConfig | null;
-  onUpdateStartNode?: (vars: Record<string, unknown>) => void;
-  onUpdateEndNode?: (vars: Record<string, unknown>) => void;
+  onUpdateStartNode?: (vars: Record<string, unknown>, startDescription: string) => void;
+  onUpdateEndNode?: (vars: Record<string, unknown>, endDescription: string) => void;
   onUpdateAnswerNode?: (config: AnswerNodeConfig) => void;
   onUpdateFunctionNode?: (nodeKey: string, inputMapping: InputSpec) => void;
   functionInputMapping?: InputSpec | null;
@@ -72,9 +74,11 @@ function parseInputVars(schema?: Record<string, unknown> | null): InputVar[] {
 
 function StartNodePanel(props: {
   inputSchema?: Record<string, unknown> | null;
-  onUpdate?: (vars: Record<string, unknown>) => void;
+  startDescription?: string | null;
+  onUpdate?: (vars: Record<string, unknown>, startDescription: string) => void;
 }) {
   const [vars, setVars] = useState<InputVar[]>(() => parseInputVars(props.inputSchema));
+  const [startDescription, setStartDescription] = useState(props.startDescription ?? '');
   const [addVarOpen, setAddVarOpen] = useState(false);
   const [newVarKey, setNewVarKey] = useState('');
   const [newVarType, setNewVarType] = useState('string');
@@ -119,7 +123,7 @@ function StartNodePanel(props: {
       if (v.required) required.push(v.key);
     }
     const schema: Record<string, unknown> = { type: 'object', properties, required };
-    props.onUpdate?.(schema);
+    props.onUpdate?.(schema, startDescription);
   };
 
   return (
@@ -127,8 +131,24 @@ function StartNodePanel(props: {
       <div>
         <Title level={5}>起始节点配置</Title>
         <Text type="secondary">
-          配置工作流的输入变量，这些变量将作为工作流的 input_schema。
+          配置工作流的输入变量与开始描述。
         </Text>
+      </div>
+
+      <div>
+        <label htmlFor="workflow-start-description">
+          <Text strong>开始描述</Text>
+        </label>
+        <Input.TextArea
+          id="workflow-start-description"
+          value={startDescription}
+          onChange={(e) => setStartDescription(e.target.value)}
+          placeholder="工作流开始前显示的说明（可选）"
+          rows={3}
+          maxLength={512}
+          showCount
+          style={{ marginTop: 8 }}
+        />
       </div>
 
       <div>
@@ -306,9 +326,11 @@ function EditableVarRow(props: {
 
 function EndNodePanel(props: {
   outputSchema?: Record<string, unknown> | null;
-  onUpdate?: (vars: Record<string, unknown>) => void;
+  endDescription?: string | null;
+  onUpdate?: (vars: Record<string, unknown>, endDescription: string) => void;
 }) {
   const [vars, setVars] = useState<InputVar[]>(() => parseInputVars(props.outputSchema));
+  const [endDescription, setEndDescription] = useState(props.endDescription ?? '');
   const [addVarOpen, setAddVarOpen] = useState(false);
   const [newVarKey, setNewVarKey] = useState('');
   const [newVarType, setNewVarType] = useState('string');
@@ -353,7 +375,7 @@ function EndNodePanel(props: {
       if (v.required) required.push(v.key);
     }
     const schema: Record<string, unknown> = { type: 'object', properties, required };
-    props.onUpdate?.(schema);
+    props.onUpdate?.(schema, endDescription);
   };
 
   return (
@@ -361,8 +383,24 @@ function EndNodePanel(props: {
       <div>
         <Title level={5}>结束节点配置</Title>
         <Text type="secondary">
-          配置工作流的输出变量，这些变量将作为工作流的 output_schema。
+          配置工作流的输出变量与结束描述。
         </Text>
+      </div>
+
+      <div>
+        <label htmlFor="workflow-end-description">
+          <Text strong>结束描述</Text>
+        </label>
+        <Input.TextArea
+          id="workflow-end-description"
+          value={endDescription}
+          onChange={(e) => setEndDescription(e.target.value)}
+          placeholder="工作流完成后显示的说明（可选）"
+          rows={3}
+          maxLength={512}
+          showCount
+          style={{ marginTop: 8 }}
+        />
       </div>
 
       <div>
@@ -1227,11 +1265,13 @@ export function NodeDetailDrawer(props: NodeDetailDrawerProps) {
       {props.nodeType === 'start' ? (
         <StartNodePanel
           inputSchema={props.inputSchema}
+          startDescription={props.startDescription}
           onUpdate={props.onUpdateStartNode}
         />
       ) : props.nodeType === 'end' ? (
         <EndNodePanel
           outputSchema={props.outputSchema}
+          endDescription={props.endDescription}
           onUpdate={props.onUpdateEndNode}
         />
       ) : isAnswer ? (

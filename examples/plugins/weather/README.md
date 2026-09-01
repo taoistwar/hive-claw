@@ -103,11 +103,11 @@ Also set:
 
 ```bash
 # In .env on the host:
-NETWORK_HTTP_ALLOWLIST=.wttr.in
+NETWORK_HTTP_ALLOWLIST=wttr.in
 ```
 
 Without an allowlist entry, every call returns
-`{"ok":false,"code":4030,"message":"hostname wttr.in 不在 allowlist 内"}`.
+`{"ok":false,"code":4001,"message":"Capability arguments were invalid"}`.
 
 ## AgentContext Integration
 

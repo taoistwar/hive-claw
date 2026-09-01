@@ -13,6 +13,7 @@ pub struct Workflow {
     pub input_schema: Option<serde_json::Value>,
     pub start_description: Option<String>,
     pub output_schema: Option<serde_json::Value>,
+    pub end_description: Option<String>,
     pub required_capabilities: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -31,7 +32,7 @@ pub enum NodeType {
 impl<'q> sqlx::Encode<'q, sqlx::MySql> for NodeType {
     fn encode_by_ref(
         &self,
-        buf: &mut <sqlx::MySql as sqlx::Database>::ArgumentBuffer<'q>,
+        buf: &mut <sqlx::MySql as sqlx::Database>::ArgumentBuffer,
     ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
         let s = match self {
             NodeType::FunctionNode => "function_node",

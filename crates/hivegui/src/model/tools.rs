@@ -1,19 +1,11 @@
 use std::any::Any;
 
-use crate::ui::strings_zh;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ToolSeriesKind {
-    DayPlusOne,
-    HourPlusOne,
-}
+pub enum ToolSeriesKind {}
 
 impl ToolSeriesKind {
     pub fn display_name_zh(self) -> &'static str {
-        match self {
-            ToolSeriesKind::DayPlusOne => strings_zh::DAY_PLUS_ONE_LABEL,
-            ToolSeriesKind::HourPlusOne => strings_zh::HOUR_PLUS_ONE_LABEL,
-        }
+        match self {}
     }
 }
 

@@ -107,7 +107,10 @@ fn test_external_database_url() -> Result<String> {
 
 async fn build_test_app(ext_pool: Option<MySqlPool>) -> Result<Router> {
     let database_url = test_database_url()?;
-    let pool = hiveweb::db::connection::create_pool(&database_url).await?;
+    // This disposable loopback fixture intentionally bypasses the production
+    // VERIFY_IDENTITY boundary. Product startup can only call the typed strict
+    // constructor in `hiveweb::db::connection`.
+    let pool = MySqlPool::connect(&database_url).await?;
     let redis = hiveweb::cache::redis::create_from_env().await?;
     let s3 = hiveweb::storage::s3::create_client().await?;
 
@@ -117,6 +120,7 @@ async fn build_test_app(ext_pool: Option<MySqlPool>) -> Result<Router> {
         Some(s3),
         ext_pool,
         hiveweb::services::sensitive_filter::SensitiveFilter::new(),
+        std::sync::Arc::new(hiveweb::runtime::LlmRegistry::new()),
     ))
 }
 

@@ -1,10 +1,13 @@
 # Data Model: Agent Runtime
 
-> **范围更新（2026-07-14）：** 本文中 `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。Agent Runtime 的其余能力仍为现役范围。
+> **范围更新（2026-07-23）：**
+> - `RecommendedGame`、`recommended_games*` 及 `/api/recommended-games*` 相关管理和公开接口已废弃，仅兼容保留；不得新增调用或扩展。
+> - 原 `chat_sessions` / `chat_messages` admin 表及管理端测试聊天已由 `81a84fe` 移除并 superseded；不得恢复这些表、`/api/admin-chat*` 或 `/api/chat/sessions*`。
+> - 现行普通用户聊天使用 `chat_sessions_user` / `chat_messages_user` 并按 `user_id` 隔离，属于外部 Assistant API 的数据面。
 
 **Created**: 2026-05-26
-**Last Updated**: 2026-05-29
-**Status**: Up-to-date with migrations V001–V038
+**Last Updated**: 2026-07-23
+**Status**: 004 runtime model current；聊天部分已同步后续用户表/legacy 删除边界
 
 ---
 
@@ -30,8 +33,8 @@
 | AgentSkill（多对多） | `agent_skills` | agent_id, skill_id |
 | AgentPermission | `agent_permissions` | agent_id, capability_name |
 | Taggable（通用 polymorphic） | `taggings` | tag_id + entity_type + entity_id |
-| ChatSession | `chat_sessions` | admin_id（操作者） |
-| ChatMessage | `chat_messages` | session_id |
+| ChatSessionUser（外部 Assistant API） | `chat_sessions_user` | user_id（普通用户） |
+| ChatMessageUser（外部 Assistant API） | `chat_messages_user` | session_id, user_id |
 | RuntimeAuditLog | `runtime_audit_logs` | session_id?, agent_id, plugin_id, capability |
 | RecommendedGame | `recommended_games` | — |
 
@@ -367,36 +370,40 @@ CREATE TABLE agent_permissions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-### V016 chat
+### 现行用户聊天兼容边界（V018 + V024；原 V016 admin chat 已 Superseded）
+
+原 V016 admin chat DDL 不再有效，相关表已删除。当前表结构由后续外部 Assistant API 迁移维护；这里仅镜像与 Agent Runtime 的衔接字段，避免误把 legacy admin 表当成现役模型。
 
 ```sql
-CREATE TABLE chat_sessions (
+CREATE TABLE chat_sessions_user (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    admin_id BIGINT NULL COMMENT '发起测试的管理员；admin 删除后 SET NULL',
-    admin_phone_snapshot VARCHAR(11) NOT NULL DEFAULT '' COMMENT '快照',
-    admin_nickname_snapshot VARCHAR(20) NOT NULL DEFAULT '' COMMENT '快照',
+    user_id BIGINT NOT NULL COMMENT '关联的普通用户',
+    user_phone_snapshot VARCHAR(100) NOT NULL DEFAULT '' COMMENT '用户快照',
+    user_nickname_snapshot VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户快照',
     title VARCHAR(128) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_chat_sessions_admin (admin_id),
-    INDEX idx_chat_sessions_updated_at (updated_at DESC),
-    CONSTRAINT fk_chat_sessions_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE SET NULL
+    INDEX idx_chat_sessions_user_id (user_id),
+    INDEX idx_chat_sessions_user_updated_at (updated_at DESC),
+    CONSTRAINT fk_chat_sessions_user_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE chat_messages (
+CREATE TABLE chat_messages_user (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     session_id BIGINT NOT NULL,
-    seq INT NOT NULL COMMENT '会话内单调序号',
+    user_id BIGINT NOT NULL COMMENT '关联的普通用户',
     role VARCHAR(16) NOT NULL COMMENT 'user|assistant|tool|system',
     content TEXT NULL,
-    tool_calls JSON NULL COMMENT '[{tool_call_id, name, args}]',
-    routed_to_agent_id BIGINT NULL COMMENT '如果该消息触发了路由',
-    elapsed_ms INT NULL,
+    elapsed_ms INT NULL COMMENT 'assistant 消息耗时（毫秒）',
+    extensions JSON NULL COMMENT 'AgentContext 扩展数据',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_chat_msg_session_seq (session_id, seq),
-    INDEX idx_chat_messages_session (session_id, created_at),
-    CONSTRAINT fk_chat_msg_session FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    CONSTRAINT fk_chat_msg_routed FOREIGN KEY (routed_to_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+    INDEX idx_chat_messages_user_session (session_id, created_at),
+    INDEX idx_chat_messages_user_user_id (user_id),
+    CONSTRAINT fk_chat_msg_user_session
+        FOREIGN KEY (session_id) REFERENCES chat_sessions_user(id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_msg_user_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
@@ -583,7 +590,7 @@ WHERE cat.slug IN ('network', 'fs', 's3', 'db', 'llm', 'secret', 'time', 'log', 
 ```
 Admin --< LoginRecord
 Admin --< AdminAuditLog
-Admin --< ChatSession --< ChatMessage → Agent
+User --< ChatSessionUser --< ChatMessageUser
 
 Category --< Plugin >--*-- Tag
 Category --< Function >--*-- Tag
@@ -606,8 +613,6 @@ Category --< Capability
                   +--*-- Skill
                   +--*-- Capability (permissions)
                   |
-              ChatSession --< ChatMessage (routes_to Agent)
-                  |
                   v
         RuntimeAuditLog
 
@@ -626,10 +631,10 @@ RecommendedGame (独立实体)
 6. `workflow_edges` 不能形成环（service 层 DFS 校验）
 7. `agent_permissions.capability` 必须属于 `capabilities.name`（service 层 lookup）
 8. 危险 capability（`is_dangerous = 1`）只能由 role=1 Super 授予
-9. `chat_messages.seq` 在 `session_id` 内单调（DB UNIQUE 已表达）
+9. （历史，已 superseded）原 admin `chat_messages.seq` 单调不变量已随表删除；现行 `chat_messages_user` 不定义 `seq`
 10. `agents.model_preset` 取值必须为启动期从 hiveweb `llm_presets.toml` 加载的命名 preset；service 层在保存时校验未知 preset → 5007 `ModelPresetUnknown`。子 Agent 不继承父的 preset；运行时解析顺序：当前 Agent.model_preset → 全局默认 preset
 11. `tools.kind=1`（function-wrap）时，`tools.input_schema` / `tools.output_schema` 必须**完全等于**其引用 function 的对应字段；service 层在 PUT/POST tools 时做深度 JSON 等值校验，不一致 → 5002 `Schema mismatch`。`tools.kind=2`（workflow-wrap）时，`tools.input_schema` 必须能赋值给 workflow 入口 function 的 input_schema（至少包含所有 required 字段且类型一致），output_schema 由编辑者声明（默认 = DAG 终点输出）
-12. `chat_sessions.admin_id IS NULL` 时（操作者已被删除），该 session 仅 Super 角色可读 / 可继续对话 / 可删除；普通管理员一律 403。snapshot 列用于审计追溯。service 层强制；DB 不加 CHECK
+12. `chat_sessions_user.user_id` 必须对应当前普通用户，API/service 同时校验 `session_id` 与 `user_id`；用户删除时会话/消息按 FK CASCADE 删除。不存在 admin/Super 跨用户读取例外
 13. `functions` 表**不支持软删除**（无 `deleted_at` 列）；任何 Function 的 DELETE 都是物理删除。前置检查：被 `workflow_nodes` / `tools` 引用时拒绝（4093）
 14. `skills` 不引用 Function/Workflow；删除前必须校验 `agent_skills` 引用计数 > 0 → 4093 拒绝
 15. `tools.source = 'builtin'` 的 Tool 不可编辑，只能包装 builtin Function (kind=1)
@@ -646,7 +651,7 @@ RecommendedGame (独立实体)
 - 高频路径：
   - `idx_plugins_category` + 标签经 `taggings (entity_type='plugin')` 关联
   - `idx_taggings_entity` 实现 "某 entity 的全部 tag" 反向查询
-  - `idx_chat_sessions_updated_at` 最近会话列表
+  - `idx_chat_sessions_user_updated_at` 普通用户最近会话列表（外部 Assistant API）
   - `idx_ral_occurred_at` + `idx_ral_capability` 用于 capability 鉴权审计的反查
   - `idx_workflows_category` / `idx_tools_category` / `idx_skills_category` / `idx_functions_category` 分类过滤
   - `idx_sort_value` 推荐游戏排序

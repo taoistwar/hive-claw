@@ -304,6 +304,6 @@ mod tests {
     fn contains_internal_detects_private_url() {
         let cmd = "curl http://169.254.169.254/latest/meta-data && echo done";
         assert!(contains_internal_url(cmd));
-        assert!(!contains_internal_url("curl https://example.com"));
+        assert!(!contains_internal_url("curl https://8.8.8.8"));
     }
 }

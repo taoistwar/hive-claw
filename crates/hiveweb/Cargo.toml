@@ -17,11 +17,13 @@ clap = { workspace = true }
 
 # Database — 004 加 json feature 以便序列化 JSON 列
 sqlx = { workspace = true, features = [
-  "runtime-tokio-rustls",
-  "mysql",
   "chrono",
   "json",
+  "macros",
+  "mysql",
+  "runtime-tokio",
   "rust_decimal",
+  "tls-rustls-ring-webpki",
 ] }
 rust_decimal = { workspace = true }
 syntect = { workspace = true }
@@ -37,6 +39,7 @@ jsonwebtoken = { workspace = true }
 bcrypt = { workspace = true }
 md5 = "0.7"
 rand = "0.8"
+libc = "0.2"
 
 # Object storage (S3 compatible)
 aws-sdk-s3 = { workspace = true }
@@ -62,9 +65,8 @@ tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 # HTTP body utilities
 http-body-util = "0.1"
 
-# Agent Runtime (004) — WASM plugin runtime + JSON schema validation
+# Agent Runtime (004) — WASM plugin runtime
 extism = "1"
-jsonschema = "0.17"
 regex = { workspace = true }
 aho-corasick = { workspace = true }
 once_cell = { workspace = true }
@@ -78,6 +80,9 @@ wasmparser = "0.221"
 
 # Internal workspace crates reused by Agent Runtime
 agent = { path = "../agent" }
+hive-builtins = { path = "../hive-builtins" }
+hive-json-schema = { path = "../hive-json-schema" }
+hive-runtime-core = { path = "../hive-runtime-core" }
 providers = { path = "../providers" }
 skills = { path = "../skills" }
 time = { workspace = true }
@@ -87,6 +92,7 @@ tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 mime = "0.3"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+wat = "1"
 
 [[bench]]
 name = "host_call"
@@ -127,10 +133,12 @@ path = "src/bin/create_super_admin.rs"
 [[bin]]
 name = "seed"
 path = "src/bin/seed.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "seed-bench"
 path = "src/bin/seed_bench.rs"
+required-features = ["bench-tools"]
 
 [[bin]]
 name = "chat-retention"
@@ -139,3 +147,9 @@ path = "src/bin/chat_retention.rs"
 [[bin]]
 name = "api-test"
 path = "src/bin/api_test.rs"
+required-features = ["dev-tools"]
+
+[features]
+standalone = []
+dev-tools = []
+bench-tools = []

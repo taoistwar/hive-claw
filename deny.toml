@@ -1,0 +1,56 @@
+# Parsed by cargo-deny 0.20.2. CI installation and execution are owned by T018.
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# No advisory exceptions are approved. Any future entry must carry the two
+# approvals and expiry recorded in the Feature 011 security checklist.
+unmaintained = "workspace"
+unsound = "all"
+
+[licenses]
+# Allowlist of permissive / weak-copyleft licenses used across the workspace.
+# Copyleft licenses (GPL/LGPL/AGPL families) are intentionally NOT listed, since
+# they would impose source-disclosure obligations on HiveGUI/HiveWeb. A crate is
+# accepted if ANY of its declared licenses is in this list.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    # Allowed per explicit approval (2026-08-15): pulled in transitively by
+    # gpui -> sum_tree (GPL-3.0-or-later). Copyleft obligation is scoped to that
+    # crate; HiveGUI/HiveWeb do not redistribute modified sum_tree sources.
+    "GPL-3.0-or-later",
+    # gpui build chain (ar_archive_writer) ships under Apache-2.0 with the LLVM
+    # exception clause.
+    "Apache-2.0 WITH LLVM-exception",
+    # Boost Software License 1.0 (clipboard-win, error-code, ...).
+    "BSL-1.0",
+    # Zero-clause BSD (permissive, no attribution required).
+    "0BSD",
+    # CDLA Permissive 2.0 (permissive data license).
+    "CDLA-Permissive-2.0",
+    # Non-SPDX license string for the vendored bzip2 implementation used by
+    # cap-time-ext / system-interface (wasi platform support).
+    "bzip2-1.0.6",
+]
+# Dual-licensed crates (e.g. "MIT OR Apache-2.0") pass if either option is allowed.
+confidence-threshold = 0.8
+# Do not fail the build on dev-only dependencies (test/bench harnesses are not
+# part of the shipped artifact's license surface).
+include-dev = false

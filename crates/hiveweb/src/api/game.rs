@@ -244,7 +244,6 @@ async fn get_external_games(
             return Err(AppError::Internal("External DB unavailable".to_string()).into_response());
         }
     };
-
     let options = cache_helper::cached_or_fetch(
         &state.redis,
         cache_helper::KEY_EXTERNAL_GAMES,

@@ -8,10 +8,12 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::AppState;
+use crate::middleware::request_id::RequestId;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::skill_test::{self as test_svc, TestSkillRequest};
 use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::skill::{self as svc, CreateMeta, ListFilter, UpdateMeta};
-use crate::utils::error::ApiResponse;
+use crate::utils::error::{ApiResponse, codes};
 use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {
@@ -96,7 +98,7 @@ async fn create_skill(
 ) -> Result<ApiResponse<crate::models::Skill>, ApiResponse<()>> {
     match svc::create(&state.pool, meta).await {
         Ok(skill) => {
-            if let Err(e) = audit_event(
+            if let Err(_error) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Create,
@@ -106,7 +108,10 @@ async fn create_skill(
             )
             .await
             {
-                tracing::error!("Failed to write audit log for skill create: {}", e);
+                tracing::error!(
+                    error_kind = "audit_write_failed",
+                    "Failed to write audit log for skill create"
+                );
             }
             Ok(ApiResponse::success(skill))
         }
@@ -122,7 +127,7 @@ async fn update_skill(
 ) -> Result<ApiResponse<crate::models::Skill>, ApiResponse<()>> {
     match svc::update(&state.pool, id, meta).await {
         Ok(skill) => {
-            if let Err(e) = audit_event(
+            if let Err(_error) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Update,
@@ -132,7 +137,10 @@ async fn update_skill(
             )
             .await
             {
-                tracing::error!("Failed to write audit log for skill update: {}", e);
+                tracing::error!(
+                    error_kind = "audit_write_failed",
+                    "Failed to write audit log for skill update"
+                );
             }
             Ok(ApiResponse::success(skill))
         }
@@ -151,7 +159,7 @@ async fn delete_skill(
 
     match svc::delete(&state.pool, id).await {
         Ok(()) => {
-            if let Err(e) = audit_event(
+            if let Err(_error) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Delete,
@@ -161,7 +169,10 @@ async fn delete_skill(
             )
             .await
             {
-                tracing::error!("Failed to write audit log for skill delete: {}", e);
+                tracing::error!(
+                    error_kind = "audit_write_failed",
+                    "Failed to write audit log for skill delete"
+                );
             }
             Ok(ApiResponse::success(()))
         }
@@ -171,10 +182,12 @@ async fn delete_skill(
 
 async fn test_skill(
     State(state): State<AppState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
     Path(id): Path<i64>,
     Json(req): Json<TestSkillRequest>,
 ) -> Result<ApiResponse<test_svc::TestSkillResult>, ApiResponse<()>> {
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
+        execution_context: RuntimeExecutionContext::best_effort(Some(request_id), None),
         pool: state.pool.clone(),
         redis: state.redis.clone(),
         s3: state.s3.clone(),
@@ -191,7 +204,13 @@ async fn test_skill(
     };
     match test_svc::run_skill_test(&state.pool, &deps, id, req).await {
         Ok(result) => Ok(ApiResponse::success(result)),
-        Err(e) => Err(ApiResponse::err(5000, e)),
+        Err(test_svc::SkillTestError::ModelPresetUnknown(name)) => Err(ApiResponse::err(
+            codes::MODEL_PRESET_UNKNOWN,
+            format!("模型 preset「{name}」不存在，请重新选择"),
+        )),
+        Err(test_svc::SkillTestError::Failed(_)) => {
+            Err(ApiResponse::err(codes::INTERNAL, "Skill test failed"))
+        }
     }
 }
 
@@ -221,7 +240,10 @@ async fn audit_event(
     )
     .await
     {
-        tracing::error!("Failed to write audit log: {}", e);
+        tracing::error!(
+            error_kind = "audit_write_failed",
+            "Failed to write audit log"
+        );
         return Err(e);
     }
     Ok(())

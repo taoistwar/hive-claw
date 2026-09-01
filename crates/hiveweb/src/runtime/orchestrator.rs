@@ -18,24 +18,28 @@
 use aws_sdk_s3::Client as S3Client;
 use axum::response::sse::Event;
 use chrono::Utc;
-use providers::{ChatRequest, RetryMode, ToolCallRequest};
+use providers::{ChatRequest, LLMProvider, LlmCallOptions, ToolCallRequest};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::cache::redis::RedisClient;
 use crate::models::ChatMessageUser;
 use crate::runtime::capability::{CapabilityRegistry, DispatchCtx};
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::hook::{
-    self, HookContext, HookDeps, apply_agent_context_updates, inject_agent_context_snapshot,
+    self, HookContext, HookDeps, HookError, apply_agent_context_updates,
+    inject_agent_context_snapshot,
 };
 use crate::runtime::invoker::Invoker;
-use crate::runtime::llm::LlmRegistry;
+use crate::runtime::llm::{LlmAdapterError, LlmRegistry};
+use crate::runtime::llm_audit::{LlmAuditGuard, LlmAuditSource};
 use crate::services::chat_user::append_assistant_message_user;
 use crate::services::runtime_audit::{self, AuditRecord};
+use crate::utils::error::codes;
 use agent::context::{
     AgentContext, Category, ContextConfig, ExtensionContent, LifecycleState, ResponsePayload,
     ToolCallStatus, UserInput,
@@ -44,8 +48,154 @@ use agent::context::{
 pub const ROUTE_TOOL_NAME: &str = "route_to_subagent";
 
 type SseEventSender = UnboundedSender<Result<Event, Infallible>>;
+type OrchestratorErrorSender = UnboundedSender<OrchestratorError>;
 type AgentHooksByTrigger =
     std::collections::HashMap<String, Vec<crate::models::agent_hook::AgentHook>>;
+const ON_AGENT_ERROR_TOTAL_BUDGET: Duration = Duration::from_secs(30);
+
+/// Strongly typed error transport from the orchestrator to synchronous API callers.
+///
+/// The orchestrator still emits internal SSE events for token/tool plumbing, but callers must use
+/// this channel for terminal errors instead of decoding `Event` debug output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrchestratorError {
+    pub(crate) code: u16,
+    pub(crate) message: String,
+}
+
+#[derive(Debug)]
+enum TerminalAgentError {
+    AgentContext(String),
+    ModelPreset(String),
+    Provider { code: u16, message: String },
+    BlockingHook(HookError),
+    RouteLoop(i64),
+    MaxHops(usize),
+}
+
+impl TerminalAgentError {
+    fn into_orchestrator_error(self) -> OrchestratorError {
+        match self {
+            Self::AgentContext(message) => OrchestratorError {
+                code: codes::INTERNAL,
+                message: format!("agent context: {message}"),
+            },
+            Self::ModelPreset(message) => OrchestratorError {
+                code: codes::MODEL_PRESET_UNKNOWN,
+                message: format!("preset error: {message}"),
+            },
+            Self::Provider { code, message } => OrchestratorError { code, message },
+            Self::BlockingHook(error) => OrchestratorError {
+                code: hook_error_code(&error),
+                message: error.to_string(),
+            },
+            Self::RouteLoop(agent_id) => OrchestratorError {
+                code: codes::AGENT_DEPTH_EXCEEDED,
+                message: format!("路由循环检测：agent_id={agent_id} 已访问过"),
+            },
+            Self::MaxHops(max_hops) => OrchestratorError {
+                code: codes::AGENT_DEPTH_EXCEEDED,
+                message: format!("已达最大 hop {max_hops}"),
+            },
+        }
+    }
+}
+
+struct ResolvedOrchestratorLlmTarget {
+    provider: Arc<dyn LLMProvider>,
+    model: String,
+    preset_name: String,
+    max_tokens: u32,
+    temperature: f32,
+}
+
+trait OrchestratorLlmRegistry {
+    fn resolve_preset(
+        &self,
+        requested_preset: Option<&str>,
+    ) -> Result<(String, u32, f32), LlmAdapterError>;
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError>;
+}
+
+impl OrchestratorLlmRegistry for LlmRegistry {
+    fn resolve_preset(
+        &self,
+        requested_preset: Option<&str>,
+    ) -> Result<(String, u32, f32), LlmAdapterError> {
+        let entry = self.resolve(requested_preset)?;
+        Ok((entry.name.clone(), entry.max_tokens, entry.temperature))
+    }
+
+    fn build_chain(
+        &self,
+        preset_name: Option<&str>,
+    ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+        LlmRegistry::build_chain(self, preset_name)
+    }
+}
+
+fn resolve_orchestrator_llm_target<R: OrchestratorLlmRegistry + ?Sized>(
+    registry: &R,
+    execution_context: &RuntimeExecutionContext,
+    agent_id: i64,
+    requested_preset: Option<&str>,
+) -> Result<ResolvedOrchestratorLlmTarget, TerminalAgentError> {
+    let (preset_name, max_tokens, temperature) = match registry.resolve_preset(requested_preset) {
+        Ok(preset) => preset,
+        Err(error) => {
+            let mut audit = LlmAuditGuard::new(
+                execution_context.clone(),
+                Some(agent_id),
+                requested_preset,
+                LlmAuditSource::Orchestrator,
+            );
+            audit.finish_model_preset_unknown();
+            return Err(TerminalAgentError::ModelPreset(error.to_string()));
+        }
+    };
+    let (provider, model) = match registry.build_chain(Some(&preset_name)) {
+        Ok(chain) => chain,
+        Err(error) => {
+            let mut audit = LlmAuditGuard::new(
+                execution_context.clone(),
+                Some(agent_id),
+                Some(&preset_name),
+                LlmAuditSource::Orchestrator,
+            );
+            audit.finish_model_preset_unknown();
+            return Err(TerminalAgentError::ModelPreset(error.to_string()));
+        }
+    };
+
+    Ok(ResolvedOrchestratorLlmTarget {
+        provider,
+        model,
+        preset_name,
+        max_tokens,
+        temperature,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct LoadedAgentHooks {
+    agent_id: i64,
+    identifier: String,
+    hooks: AgentHooksByTrigger,
+}
+
+impl From<&AgentContent> for LoadedAgentHooks {
+    fn from(agent: &AgentContent) -> Self {
+        Self {
+            agent_id: agent.agent_id,
+            identifier: agent.identifier.clone(),
+            hooks: agent.hooks.clone(),
+        }
+    }
+}
 
 fn max_hops() -> usize {
     std::env::var("AGENT_MAX_HOPS")
@@ -174,7 +324,6 @@ fn flatten_extension(e: &ExtensionContent) -> Value {
     if let Value::Object(data_obj) = &e.data {
         tracing::debug!(key_count = data_obj.len(), "flatten_extension: data keys");
         for (k, v) in data_obj {
-            tracing::debug!(key = %k, value = %v, "flatten_extension: inserting data key");
             flat.insert(k.clone(), v.clone());
         }
     } else {
@@ -239,6 +388,7 @@ fn rewrite_content_for_empty_extensions(
 
 /// 单次会话调用入口（spawned task）
 pub struct OrchestratorDeps {
+    pub execution_context: RuntimeExecutionContext,
     pub pool: MySqlPool,
     pub redis: RedisClient,
     /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
@@ -257,7 +407,11 @@ pub struct OrchestratorDeps {
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
-pub async fn run_session_user(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "session execution requires message, actor, event, and typed error channels"
+)]
+pub(crate) async fn run_session_user(
     deps: OrchestratorDeps,
     session_id: i64,
     starting_agent_id: i64,
@@ -265,6 +419,7 @@ pub async fn run_session_user(
     history: Vec<crate::models::ChatMessageUser>,
     user_content: String,
     tx: UnboundedSender<Result<Event, Infallible>>,
+    error_tx: UnboundedSender<OrchestratorError>,
 ) -> Option<ChatMessageUser> {
     run_session_internal_impl(
         deps,
@@ -274,6 +429,7 @@ pub async fn run_session_user(
         &history,
         &user_content,
         &tx,
+        &error_tx,
     )
     .await
 }
@@ -297,6 +453,10 @@ impl HasRoleContent for crate::models::ChatMessageUser {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "core orchestration requires the complete session and transport context"
+)]
 async fn run_session_internal_impl<T>(
     deps: OrchestratorDeps,
     session_id: i64,
@@ -305,6 +465,7 @@ async fn run_session_internal_impl<T>(
     history: &[T],
     user_content: &str,
     tx: &SseEventSender,
+    error_tx: &OrchestratorErrorSender,
 ) -> Option<ChatMessageUser>
 where
     T: HasRoleContent,
@@ -332,6 +493,7 @@ where
     ));
 
     let hook_deps = HookDeps {
+        execution_context: deps.execution_context.for_hook(),
         s3: deps.s3.clone(),
         llm: Arc::clone(&deps.llm),
         registry: Arc::clone(&deps.registry),
@@ -345,9 +507,10 @@ where
     let max_hops = max_hops();
     let mut final_content: Option<String> = None;
     let mut final_agent_id = starting_agent_id;
-    // 保存最后一次 hop 的 hooks/identifier，用于循环结束后触发 after_agent_end hook
-    let mut last_hooks: Option<AgentHooksByTrigger> = None;
-    let mut last_identifier: Option<String> = None;
+    // Retain the most recently loaded Hook scope. Initial Agent content failures
+    // explicitly have no scope; a later routed-Agent load failure uses the last
+    // successfully loaded scope for on_agent_error.
+    let mut last_loaded_hooks: Option<LoadedAgentHooks> = None;
 
     // 把 history 转成 LLM-side messages（OpenAI-style），跳过空内容消息；
     // 有 extensions 时合并 content + extensions 为一个 JSON 对象，空字段不显示。
@@ -374,14 +537,25 @@ where
             {
                 Ok(c) => c,
                 Err(e) => {
-                    emit_error(tx, 5000, format!("agent context: {e}"));
+                    terminate_agent_error(
+                        TerminalAgentError::AgentContext(e.to_string()),
+                        last_loaded_hooks.as_ref(),
+                        &deps,
+                        &hook_deps,
+                        session_id,
+                        actor_id,
+                        tx,
+                        error_tx,
+                    )
+                    .await;
                     break;
                 }
             };
 
-        // 缓存 hooks/identifier，让循环结束后 finalize_with_variant 可触发 after_agent_end
-        last_hooks = Some(agent_content.hooks.clone());
-        last_identifier = Some(agent_content.identifier.clone());
+        // Cache the current Hook scope for all subsequent terminal branches and
+        // for successful after_agent_end finalization.
+        let loaded_hooks = LoadedAgentHooks::from(&agent_content);
+        last_loaded_hooks = Some(loaded_hooks.clone());
 
         // ★ before_agent_start hook (blocking-capable)
         {
@@ -390,7 +564,11 @@ where
                 identifier: agent_content.identifier.clone(),
                 session_id,
                 actor_id,
-                request_id: String::new(),
+                request_id: deps
+                    .execution_context
+                    .request_id()
+                    .unwrap_or_default()
+                    .to_string(),
                 trigger_point: "before_agent_start".into(),
                 message: deps.message.clone(),
                 channel: deps.channel.clone(),
@@ -406,22 +584,53 @@ where
             )
             .await
             {
-                emit_error(tx, 6005, e.to_string());
-                break;
+                terminate_agent_error(
+                    TerminalAgentError::BlockingHook(e),
+                    Some(&loaded_hooks),
+                    &deps,
+                    &hook_deps,
+                    session_id,
+                    actor_id,
+                    tx,
+                    error_tx,
+                )
+                .await;
+                let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
+                return None;
             }
         }
 
-        // 2. 构造 provider
-        let (provider, model) = match deps
-            .llm
-            .build_primary(agent_content.model_preset.as_deref())
-        {
-            Ok(p) => p,
-            Err(e) => {
-                emit_error(tx, 5007, format!("preset error: {e}"));
+        // 2. Resolve preset defaults and clone the cached primary + fallback chain.
+        let requested_preset = agent_content.model_preset.as_deref();
+        let llm_target = match resolve_orchestrator_llm_target(
+            deps.llm.as_ref(),
+            &deps.execution_context,
+            current_agent_id,
+            requested_preset,
+        ) {
+            Ok(target) => target,
+            Err(error) => {
+                terminate_agent_error(
+                    error,
+                    Some(&loaded_hooks),
+                    &deps,
+                    &hook_deps,
+                    session_id,
+                    actor_id,
+                    tx,
+                    error_tx,
+                )
+                .await;
                 break;
             }
         };
+        let ResolvedOrchestratorLlmTarget {
+            provider,
+            model,
+            preset_name: resolved_preset,
+            max_tokens,
+            temperature,
+        } = llm_target;
 
         // 3. 准备 system + tools（追加当前客户端信息）
         let system_prompt = format!(
@@ -435,8 +644,8 @@ where
         let req = ChatRequest {
             model: Some(model.clone()),
             messages: hop_msgs,
-            max_tokens: 2048,
-            temperature: 0.7,
+            max_tokens,
+            temperature,
             tools: if tools_schema.is_empty() {
                 None
             } else {
@@ -461,7 +670,11 @@ where
                 identifier: agent_content.identifier.clone(),
                 session_id,
                 actor_id,
-                request_id: String::new(),
+                request_id: deps
+                    .execution_context
+                    .request_id()
+                    .unwrap_or_default()
+                    .to_string(),
                 trigger_point: "before_llm_call".into(),
                 message: deps.message.clone(),
                 channel: deps.channel.clone(),
@@ -477,14 +690,33 @@ where
             )
             .await
             {
-                emit_error(tx, 6005, e.to_string());
-                break;
+                terminate_agent_error(
+                    TerminalAgentError::BlockingHook(e),
+                    Some(&loaded_hooks),
+                    &deps,
+                    &hook_deps,
+                    session_id,
+                    actor_id,
+                    tx,
+                    error_tx,
+                )
+                .await;
+                let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
+                return None;
             }
         }
 
+        let mut llm_audit = LlmAuditGuard::new(
+            deps.execution_context.clone(),
+            Some(current_agent_id),
+            Some(&resolved_preset),
+            LlmAuditSource::Orchestrator,
+        );
+        let options = LlmCallOptions::default().with_fallback_callback(llm_audit.on_fallback());
         let resp = provider
-            .chat_stream_with_retry(req, Some(on_delta), None, RetryMode::Standard, None)
+            .chat_stream_with_options(req, Some(on_delta), None, options)
             .await;
+        llm_audit.finish_response(&resp);
 
         if resp.is_error() {
             let msg = resp
@@ -492,31 +724,18 @@ where
                 .clone()
                 .or(resp.error_kind.clone())
                 .unwrap_or_else(|| "LLM error".into());
-            emit_error(tx, resp.error_status_code.unwrap_or(5000) as u16, msg);
-            audit_llm(current_agent_id, "error", elapsed_start, &model).await;
-            // ★ on_agent_error hook (audit-only)
-            {
-                let hook_context = HookContext {
-                    agent_id: agent_content.agent_id,
-                    identifier: agent_content.identifier.clone(),
-                    session_id,
-                    actor_id,
-                    request_id: String::new(),
-                    trigger_point: "on_agent_error".into(),
-                    message: deps.message.clone(),
-                    channel: deps.channel.clone(),
-                    client_type: deps.client_type.clone(),
-                    client_version: deps.client_version.clone(),
-                };
-                let _ = hook::run_hooks(
-                    Arc::new(deps.pool.clone()),
-                    &agent_content.hooks,
-                    "on_agent_error",
-                    &hook_context,
-                    &hook_deps,
-                )
-                .await;
-            }
+            let code = resp.error_status_code.unwrap_or(codes::INTERNAL as i32) as u16;
+            terminate_agent_error(
+                TerminalAgentError::Provider { code, message: msg },
+                Some(&loaded_hooks),
+                &deps,
+                &hook_deps,
+                session_id,
+                actor_id,
+                tx,
+                error_tx,
+            )
+            .await;
             // ★ AgentContext: LLM error → terminate
             let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
             break;
@@ -529,7 +748,11 @@ where
                 identifier: agent_content.identifier.clone(),
                 session_id,
                 actor_id,
-                request_id: String::new(),
+                request_id: deps
+                    .execution_context
+                    .request_id()
+                    .unwrap_or_default()
+                    .to_string(),
                 trigger_point: "after_llm_call".into(),
                 message: deps.message.clone(),
                 channel: deps.channel.clone(),
@@ -569,8 +792,6 @@ where
             messages.push(json!({"role": "assistant", "content": assistant_content.clone()}));
         }
 
-        audit_llm(current_agent_id, "success", elapsed_start, &model).await;
-
         // 5. 无 tool_call → 这是最终回复
         if !resp.should_execute_tools() {
             // Output filter check (010-sensitive-word-filter)
@@ -597,7 +818,11 @@ where
                     identifier: agent_content.identifier.clone(),
                     session_id,
                     actor_id,
-                    request_id: String::new(),
+                    request_id: deps
+                        .execution_context
+                        .request_id()
+                        .unwrap_or_default()
+                        .to_string(),
                     trigger_point: "before_tool_call".into(),
                     message: deps.message.clone(),
                     channel: deps.channel.clone(),
@@ -613,30 +838,21 @@ where
                 )
                 .await
                 {
-                    emit_error(tx, 6005, e.to_string());
-                    // ★ AgentContext: hook abort → terminate
-                    let _ = agent_ctx.set_response_payload(ResponsePayload::new(
-                        "Hook blocked tool execution".to_string(),
-                    ));
-                    let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
-                    // On hook abort, finalize without processing this tool
-                    return finalize_with_variant(
-                        &deps.pool,
+                    terminate_agent_error(
+                        TerminalAgentError::BlockingHook(e),
+                        Some(&loaded_hooks),
+                        &deps,
+                        &hook_deps,
                         session_id,
                         actor_id,
                         tx,
-                        elapsed_start,
-                        Some("Hook blocked tool execution".into()),
-                        current_agent_id,
-                        Some(&agent_content.hooks),
-                        Some(&agent_content.identifier),
-                        deps.message.clone(),
-                        deps.channel.clone(),
-                        deps.client_type.clone(),
-                        deps.client_version.clone(),
-                        &hook_deps,
+                        error_tx,
                     )
                     .await;
+                    // ★ AgentContext: hook abort → terminate. Do not finalize or persist a
+                    // synthetic assistant placeholder for a failed request.
+                    let _ = agent_ctx.set_lifecycle_state(LifecycleState::Terminated);
+                    return None;
                 }
             }
 
@@ -684,7 +900,11 @@ where
                     identifier: agent_content.identifier.clone(),
                     session_id,
                     actor_id,
-                    request_id: String::new(),
+                    request_id: deps
+                        .execution_context
+                        .request_id()
+                        .unwrap_or_default()
+                        .to_string(),
                     trigger_point: "after_tool_call".into(),
                     message: deps.message.clone(),
                     channel: deps.channel.clone(),
@@ -735,11 +955,17 @@ where
 
             if let Some(next_agent) = result.route_to {
                 if visited.contains(&next_agent) {
-                    emit_error(
+                    terminate_agent_error(
+                        TerminalAgentError::RouteLoop(next_agent),
+                        Some(&loaded_hooks),
+                        &deps,
+                        &hook_deps,
+                        session_id,
+                        actor_id,
                         tx,
-                        5006,
-                        format!("路由循环检测：agent_id={} 已访问过", next_agent),
-                    );
+                        error_tx,
+                    )
+                    .await;
                     final_content = Some(assistant_content.clone());
                     final_agent_id = current_agent_id;
                     // ★ AgentContext: route loop detected → terminate
@@ -774,7 +1000,7 @@ where
                 let _ = tx.send(Ok(Event::default()
                     .event("routed")
                     .data(routed_payload.to_string())));
-                audit_route(current_agent_id, next_agent).await;
+                audit_route(&deps.execution_context, current_agent_id, next_agent).await;
 
                 // ★ AgentContext: record delegation
                 {
@@ -841,7 +1067,17 @@ where
 
         // 有 tool_calls 但没路由 → 下一轮 LLM 用 tool result 继续
         if hop + 1 == max_hops {
-            emit_error(tx, 5006, format!("已达最大 hop {max_hops}"));
+            terminate_agent_error(
+                TerminalAgentError::MaxHops(max_hops),
+                Some(&loaded_hooks),
+                &deps,
+                &hook_deps,
+                session_id,
+                actor_id,
+                tx,
+                error_tx,
+            )
+            .await;
             final_content = Some(assistant_content);
             final_agent_id = current_agent_id;
             // ★ AgentContext: max hops reached → terminate
@@ -868,8 +1104,10 @@ where
         elapsed_start,
         final_content,
         final_agent_id,
-        last_hooks.as_ref(),
-        last_identifier.as_deref(),
+        last_loaded_hooks.as_ref().map(|scope| &scope.hooks),
+        last_loaded_hooks
+            .as_ref()
+            .map(|scope| scope.identifier.as_str()),
         deps.message.clone(),
         deps.channel.clone(),
         deps.client_type.clone(),
@@ -878,6 +1116,125 @@ where
     )
     .await
 }
+
+fn hook_error_code(error: &HookError) -> u16 {
+    match error {
+        HookError::Timeout(_) => codes::HOOK_EXECUTION_TIMEOUT,
+        HookError::BlockingFailed(_) => codes::HOOK_BLOCKING_FAILED,
+    }
+}
+
+fn hook_error_kind(error: &HookError) -> &'static str {
+    match error {
+        HookError::Timeout(_) => "timeout",
+        HookError::BlockingFailed(_) => "blocking_failed",
+    }
+}
+
+async fn preserve_terminal_error_with_on_agent_error_budget<F>(
+    original_error: OrchestratorError,
+    agent_id: i64,
+    budget: Duration,
+    on_agent_error: F,
+) -> OrchestratorError
+where
+    F: std::future::Future<Output = Result<(), HookError>>,
+{
+    match tokio::time::timeout(budget, on_agent_error).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(
+                event = "on_agent_error_phase",
+                agent_id,
+                terminal_code = original_error.code,
+                outcome = "error",
+                error_kind = hook_error_kind(&error),
+                "on_agent_error hook failed; preserving the original agent error"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                event = "on_agent_error_phase",
+                agent_id,
+                terminal_code = original_error.code,
+                outcome = "timeout",
+                budget_ms = budget.as_millis() as u64,
+                "on_agent_error phase exhausted its total budget; preserving the original agent error"
+            );
+        }
+    }
+
+    original_error
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "terminal handling needs the original error and active request contexts"
+)]
+async fn terminate_agent_error(
+    error: TerminalAgentError,
+    loaded_hooks: Option<&LoadedAgentHooks>,
+    deps: &OrchestratorDeps,
+    hook_deps: &HookDeps,
+    session_id: i64,
+    actor_id: i64,
+    tx: &SseEventSender,
+    error_tx: &OrchestratorErrorSender,
+) {
+    let mut original_error = error.into_orchestrator_error();
+
+    if let Some(loaded_hooks) = loaded_hooks {
+        let has_error_hooks = loaded_hooks
+            .hooks
+            .get("on_agent_error")
+            .is_some_and(|hooks| !hooks.is_empty());
+        if has_error_hooks {
+            let hook_context = HookContext {
+                agent_id: loaded_hooks.agent_id,
+                identifier: loaded_hooks.identifier.clone(),
+                session_id,
+                actor_id,
+                request_id: deps
+                    .execution_context
+                    .request_id()
+                    .unwrap_or_default()
+                    .to_string(),
+                trigger_point: "on_agent_error".into(),
+                message: deps.message.clone(),
+                channel: deps.channel.clone(),
+                client_type: deps.client_type.clone(),
+                client_version: deps.client_version.clone(),
+            };
+            let on_agent_error = hook::run_hooks(
+                Arc::new(deps.pool.clone()),
+                &loaded_hooks.hooks,
+                "on_agent_error",
+                &hook_context,
+                hook_deps,
+            );
+            original_error = preserve_terminal_error_with_on_agent_error_budget(
+                original_error,
+                loaded_hooks.agent_id,
+                ON_AGENT_ERROR_TOTAL_BUDGET,
+                on_agent_error,
+            )
+            .await;
+        }
+    } else {
+        // Initial Agent content loading failed before a Hook snapshot existed.
+        // There is deliberately no on_agent_error callback to run.
+        tracing::debug!(
+            event = "on_agent_error_phase",
+            terminal_code = original_error.code,
+            outcome = "skipped",
+            reason = "hooks_not_loaded",
+            "on_agent_error skipped because Agent hooks were not loaded"
+        );
+    }
+
+    emit_error(tx, error_tx, original_error);
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "finalization requires the complete persisted message and hook execution context"
@@ -908,7 +1265,11 @@ async fn finalize_with_variant(
             identifier: ident.to_string(),
             session_id,
             actor_id,
-            request_id: String::new(),
+            request_id: hook_deps
+                .execution_context
+                .request_id()
+                .unwrap_or_default()
+                .to_string(),
             trigger_point: "after_agent_end".into(),
             message: message.clone(),
             channel: channel.clone(),
@@ -943,7 +1304,10 @@ async fn finalize_with_variant(
         .filter(|rc| !rc.is_empty())
     {
         Some(rc) => {
-            tracing::debug!(response_content = %rc, "using response_content from metadata");
+            tracing::debug!(
+                response_content_bytes = rc.len(),
+                "using response_content from metadata"
+            );
             Some(rc)
         }
         _ => rewrite_content_for_empty_extensions(content, &extensions_for_sse),
@@ -954,7 +1318,14 @@ async fn finalize_with_variant(
         None
     } else {
         let text = final_content.as_deref().unwrap_or("");
-        tracing::debug!("Saving assistant message: {:?}", text);
+        tracing::debug!(
+            assistant_content_bytes = text.len(),
+            extension_count = extensions_for_sse
+                .as_ref()
+                .and_then(|value| value.as_array())
+                .map_or(0, Vec::len),
+            "Saving assistant message metadata"
+        );
         append_assistant_message_user(
             pool,
             session_id,
@@ -984,10 +1355,11 @@ async fn finalize_with_variant(
     saved
 }
 
-fn emit_error(tx: &SseEventSender, code: u16, message: String) {
-    let _ = tx.send(Ok(Event::default()
-        .event("error")
-        .data(json!({"code": code, "message": message}).to_string())));
+fn emit_error(tx: &SseEventSender, error_tx: &OrchestratorErrorSender, error: OrchestratorError) {
+    let _ = error_tx.send(error.clone());
+    let _ = tx.send(Ok(Event::default().event("error").data(
+        json!({"code": error.code, "message": error.message}).to_string(),
+    )));
 }
 
 // ============================ Agent context ============================
@@ -1146,7 +1518,7 @@ async fn handle_meta_tool(
     ctx: &AgentContent,
     tool_ref: &ToolRef,
     tc: &ToolCallRequest,
-    session_id: i64,
+    _session_id: i64,
     agent_ctx: Arc<AgentContext>,
 ) -> ToolOutcome {
     match tool_ref.identifier.as_str() {
@@ -1220,6 +1592,7 @@ async fn handle_meta_tool(
                         ));
                     };
                     let bctx = super::builtins::BuiltinContext {
+                        execution_context: Some(deps.execution_context.clone()),
                         pool: &deps.pool,
                         ext_pool: deps.ext_pool.as_ref(),
                         redis: Some(&deps.redis),
@@ -1235,8 +1608,7 @@ async fn handle_meta_tool(
                         }
                         Err(e) => {
                             tracing::error!(
-                                func_ident = %func_ident,
-                                error = %e,
+                                error_kind = "builtin_function_failed",
                                 "builtin function 执行失败"
                             );
                             ToolOutcome::error(format!("builtin function 执行失败: {e}"))
@@ -1258,8 +1630,7 @@ async fn handle_meta_tool(
                         }
                     };
                     let dispatch_ctx = DispatchCtx {
-                        request_id: None,
-                        session_id: Some(session_id),
+                        execution_context: deps.execution_context.clone(),
                         agent_id: ctx.agent_id,
                         plugin_id: pid,
                         function_id: Some(func_id),
@@ -1288,8 +1659,7 @@ async fn handle_meta_tool(
                         }
                         Err(e) => {
                             tracing::error!(
-                                func_ident = %func_ident,
-                                error = %e,
+                                error_kind = "plugin_invocation_failed",
                                 "plugin invoke failed"
                             );
                             ToolOutcome::error(format!("plugin invoke failed: {e}"))
@@ -1336,6 +1706,7 @@ async fn handle_meta_tool(
                 ));
             };
             let executor_deps = crate::runtime::workflow::ExecutorDeps {
+                execution_context: deps.execution_context.clone(),
                 pool: deps.pool.clone(),
                 s3: deps.s3.clone(),
                 registry: Arc::clone(&deps.registry),
@@ -1364,8 +1735,7 @@ async fn handle_meta_tool(
                 Err(e) => {
                     tracing::error!(
                         workflow_id,
-                        wf_ident = %wf_ident,
-                        error = %e,
+                        error_kind = "workflow_execution_failed",
                         "invoke_workflow execution failed"
                     );
                     ToolOutcome::error(format!("workflow execute: {e}"))
@@ -1426,6 +1796,7 @@ pub(crate) async fn handle_workspace_tool(
                 // ★ Inject AgentContext snapshot for builtin function in tool path
                 inject_agent_context_snapshot(&mut args_value, &agent_ctx);
                 let bctx = super::builtins::BuiltinContext {
+                    execution_context: Some(deps.execution_context.clone()),
                     pool: &deps.pool,
                     ext_pool: deps.ext_pool.as_ref(),
                     redis: Some(&deps.redis),
@@ -1440,8 +1811,7 @@ pub(crate) async fn handle_workspace_tool(
                     }
                     Err(e) => {
                         tracing::error!(
-                            lookup_id = %lookup_id,
-                            error = %e,
+                            error_kind = "builtin_function_failed",
                             "builtin function 执行失败"
                         );
                         ToolOutcome::error(format!("builtin function 执行失败: {e}"))
@@ -1463,8 +1833,7 @@ pub(crate) async fn handle_workspace_tool(
                     }
                 };
                 let dispatch_ctx = DispatchCtx {
-                    request_id: None,
-                    session_id: Some(session_id),
+                    execution_context: deps.execution_context.clone(),
                     agent_id: ctx.agent_id,
                     plugin_id,
                     function_id: tool_ref.function_id,
@@ -1492,8 +1861,7 @@ pub(crate) async fn handle_workspace_tool(
                     }
                     Err(e) => {
                         tracing::error!(
-                            tool = %tool_ref.identifier,
-                            error = %e,
+                            error_kind = "plugin_invocation_failed",
                             "plugin invoke failed"
                         );
                         ToolOutcome::error(format!("plugin invoke failed: {e}"))
@@ -1510,6 +1878,7 @@ pub(crate) async fn handle_workspace_tool(
             // ★ Inject AgentContext snapshot — 与 invoke_workflow / hook 路径保持一致
             inject_agent_context_snapshot(&mut args_value, &agent_ctx);
             let executor_deps = crate::runtime::workflow::ExecutorDeps {
+                execution_context: deps.execution_context.clone(),
                 pool: deps.pool.clone(),
                 s3: deps.s3.clone(),
                 registry: Arc::clone(&deps.registry),
@@ -1539,8 +1908,7 @@ pub(crate) async fn handle_workspace_tool(
                 Err(e) => {
                     tracing::error!(
                         workflow_id,
-                        tool = %tool_ref.identifier,
-                        error = %e,
+                        error_kind = "workflow_execution_failed",
                         "handle_workspace_tool workflow execution failed"
                     );
                     ToolOutcome::error(format!("workflow execute: {e}"))
@@ -1561,48 +1929,217 @@ async fn filter_output(
     _pool: &MySqlPool,
     session_id: i64,
 ) -> String {
-    if let Some(hit) = filter.check(content) {
-        tracing::info!(
-            session_id,
-            triggered_word = %hit.word(),
-            "Agent output replaced by sensitive filter"
-        );
+    if filter.check(content).is_some() {
+        tracing::info!(session_id, "Agent output replaced by sensitive filter");
         return "内容安全警告：输出的文本数据可能包含不适当的内容！".to_string();
     }
     content.to_string()
 }
 
-// ============================ Audit ============================
-
-async fn audit_llm(agent_id: i64, outcome: &str, started: Instant, model: &str) {
-    let _ = model;
-    runtime_audit::record(AuditRecord {
-        request_id: None,
-        session_id: None,
-        agent_id: Some(agent_id),
-        plugin_id: None,
-        function_id: None,
-        capability: None,
-        event_type: "llm_invoke",
-        outcome,
-        elapsed_ms: Some(started.elapsed().as_millis() as i32),
-        error_message: None,
-        payload_summary: None,
-    });
+async fn audit_route(execution_context: &RuntimeExecutionContext, from: i64, to: i64) {
+    runtime_audit::record(
+        execution_context,
+        AuditRecord {
+            agent_id: Some(from),
+            plugin_id: None,
+            function_id: None,
+            capability: None,
+            event_type: "agent_route",
+            outcome: "success",
+            elapsed_ms: None,
+            error_message: None,
+            payload_summary: Some(json!({"to_agent_id": to})),
+        },
+    );
 }
 
-async fn audit_route(from: i64, to: i64) {
-    runtime_audit::record(AuditRecord {
-        request_id: None,
-        session_id: None,
-        agent_id: Some(from),
-        plugin_id: None,
-        function_id: None,
-        capability: None,
-        event_type: "agent_route",
-        outcome: "success",
-        elapsed_ms: None,
-        error_message: None,
-        payload_summary: Some(json!({"to_agent_id": to})),
-    });
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::llm::LlmAdapterError;
+    use async_trait::async_trait;
+    use providers::{LLMProvider, LLMResponse};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NeverCalledProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LLMProvider for NeverCalledProvider {
+        fn default_model(&self) -> String {
+            "global-default-must-not-run".to_string()
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> LLMResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            LLMResponse::default()
+        }
+    }
+
+    struct UnknownPresetRegistry {
+        provider: Arc<NeverCalledProvider>,
+        build_calls: AtomicUsize,
+    }
+
+    impl OrchestratorLlmRegistry for UnknownPresetRegistry {
+        fn resolve_preset(
+            &self,
+            requested_preset: Option<&str>,
+        ) -> Result<(String, u32, f32), LlmAdapterError> {
+            Err(LlmAdapterError::Unknown(
+                requested_preset.unwrap_or("global-default").to_string(),
+            ))
+        }
+
+        fn build_chain(
+            &self,
+            _preset_name: Option<&str>,
+        ) -> Result<(Arc<dyn LLMProvider>, String), LlmAdapterError> {
+            self.build_calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Arc::clone(&self.provider) as Arc<dyn LLMProvider>,
+                "global-default-model".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn explicit_empty_and_unknown_orchestrator_presets_return_5007_without_default_provider() {
+        let provider = Arc::new(NeverCalledProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let registry = UnknownPresetRegistry {
+            provider: Arc::clone(&provider),
+            build_calls: AtomicUsize::new(0),
+        };
+        let execution_context =
+            RuntimeExecutionContext::best_effort(Some("orchestrator-unknown".into()), None)
+                .for_hook();
+
+        for requested_preset in ["", "removed-preset"] {
+            let error = match resolve_orchestrator_llm_target(
+                &registry,
+                &execution_context,
+                41,
+                Some(requested_preset),
+            ) {
+                Ok(_) => panic!("explicit unknown preset must fail closed"),
+                Err(error) => error,
+            };
+            let transport = error.into_orchestrator_error();
+            assert_eq!(transport.code, codes::MODEL_PRESET_UNKNOWN);
+            assert!(
+                transport.message.contains(requested_preset),
+                "typed transport must retain the requested preset"
+            );
+        }
+
+        assert_eq!(registry.build_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn all_terminal_agent_error_variants_map_to_the_typed_transport() {
+        let cases = [
+            (
+                TerminalAgentError::AgentContext("database unavailable".into()),
+                codes::INTERNAL,
+                "agent context: database unavailable",
+            ),
+            (
+                TerminalAgentError::ModelPreset("missing preset".into()),
+                codes::MODEL_PRESET_UNKNOWN,
+                "preset error: missing preset",
+            ),
+            (
+                TerminalAgentError::Provider {
+                    code: codes::INTERNAL,
+                    message: "provider failed".into(),
+                },
+                codes::INTERNAL,
+                "provider failed",
+            ),
+            (
+                TerminalAgentError::BlockingHook(HookError::Timeout("hook timed out".into())),
+                codes::HOOK_EXECUTION_TIMEOUT,
+                "hook timed out",
+            ),
+            (
+                TerminalAgentError::BlockingHook(HookError::BlockingFailed("hook blocked".into())),
+                codes::HOOK_BLOCKING_FAILED,
+                "hook blocked",
+            ),
+            (
+                TerminalAgentError::RouteLoop(7),
+                codes::AGENT_DEPTH_EXCEEDED,
+                "路由循环检测：agent_id=7 已访问过",
+            ),
+            (
+                TerminalAgentError::MaxHops(5),
+                codes::AGENT_DEPTH_EXCEEDED,
+                "已达最大 hop 5",
+            ),
+        ];
+
+        for (terminal, expected_code, expected_message) in cases {
+            let transport = terminal.into_orchestrator_error();
+            assert_eq!(transport.code, expected_code);
+            assert_eq!(transport.message, expected_message);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_agent_error_uses_one_total_budget_and_preserves_the_original_error() {
+        let original = OrchestratorError {
+            code: codes::MODEL_PRESET_UNKNOWN,
+            message: "original preset error".into(),
+        };
+        let started = tokio::time::Instant::now();
+
+        let returned = preserve_terminal_error_with_on_agent_error_budget(
+            original.clone(),
+            42,
+            Duration::from_secs(30),
+            async {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+        assert_eq!(returned, original);
+    }
+
+    #[tokio::test]
+    async fn on_agent_error_failure_does_not_replace_or_recurse_the_original_error() {
+        let original = OrchestratorError {
+            code: codes::AGENT_DEPTH_EXCEEDED,
+            message: "original route error".into(),
+        };
+
+        let returned = preserve_terminal_error_with_on_agent_error_budget(
+            original.clone(),
+            42,
+            Duration::from_secs(30),
+            async { Err(HookError::BlockingFailed("secondary hook failure".into())) },
+        )
+        .await;
+
+        assert_eq!(returned, original);
+    }
+
+    #[test]
+    fn blocking_hook_timeout_maps_to_6004() {
+        let error = HookError::Timeout("timed out".into());
+        assert_eq!(hook_error_code(&error), codes::HOOK_EXECUTION_TIMEOUT);
+    }
+
+    #[test]
+    fn blocking_hook_failure_maps_to_6005() {
+        let error = HookError::BlockingFailed("failed".into());
+        assert_eq!(hook_error_code(&error), codes::HOOK_BLOCKING_FAILED);
+    }
 }

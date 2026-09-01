@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "target": {
+    "id": "tool_crud",
+    "owner_task": "T101",
+    "timing_boundary": "Tool CRUD lifecycle accepted through validation, create/get/update/delete transactions, and final absence materialized",
+    "excluded_time": [
+      "external I/O",
+      "Function, Workflow, Plugin, and Agent execution",
+      "Store open, migration, fixture loading, and baseline I/O"
+    ],
+    "warmup_iterations": 10,
+    "measured_samples": 100,
+    "p95_budget_ns": 1000000000,
+    "workflow_node_count": null
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "build_profile": "release",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "logical_cpus": 20
+  },
+  "current_source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:9616a182d2b978a6d5b4b71cb4a03ada77fa9d536c4b013b85ee8b3867b9ff11",
+  "baseline": {
+    "approval": {
+      "reviewer": "user",
+      "approved_at": "2026-08-25",
+      "source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:7e7388766763e3fa9d222292a2cfc517ba76282590b789ff6e25e5c1ed93e301"
+    },
+    "percentiles_ns": {
+      "p50": 43614196,
+      "p95": 47529155,
+      "p99": 50496557
+    }
+  },
+  "approved_regressions": [
+    {
+      "percentile": "p99",
+      "baseline_ns": 50496557,
+      "observed_current_ns": 75656015,
+      "approved_max_current_ns": 85000000
+    }
+  ],
+  "approval": {
+    "signer": "user",
+    "approved_at": "2026-08-25",
+    "reason": "One same-source full CRUD run observed an isolated p99 transaction tail while p50 and p95 remained within the approved baseline and the absolute p95 budget remained far below its limit.",
+    "impact_scope": "tool_crud p99 only; no p50, p95, tool_search_page, tool_dispatch, or absolute-budget waiver",
+    "review_due": "2026-09-25"
+  }
+}

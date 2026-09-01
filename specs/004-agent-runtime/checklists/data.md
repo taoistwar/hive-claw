@@ -1,5 +1,7 @@
 # Data Model Requirements Quality Checklist: Agent Runtime
 
+> **历史边界（2026-07-23）：** 涉及原 admin `chat_sessions` / `chat_messages`、admin snapshot、SSE `seq` 或 30 天 admin Chat 保留策略的条目已 superseded，仅保留历史。现行用户表是 `chat_sessions_user` / `chat_messages_user`。
+
 **Purpose**: 验证 `specs/004-agent-runtime/data-model.md` 中数据模型需求的**完整性 / 清晰度 / 一致性 / 可测量性**——表结构、外键策略、约束、不变量、索引、迁移顺序是否充分。
 **Created**: 2026-05-26
 **Feature**: [specs/004-agent-runtime/data-model.md](file:///home/developer/agent/hive-claw/specs/004-agent-runtime/data-model.md) + [spec.md](file:///home/developer/agent/hive-claw/specs/004-agent-runtime/spec.md) + [contracts/api.md](file:///home/developer/agent/hive-claw/specs/004-agent-runtime/contracts/api.md)

@@ -2,6 +2,7 @@
 name = "channels"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 bus = { path = "../bus" }

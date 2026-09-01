@@ -1,29 +1,40 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.2.0 → 1.3.0
-Rationale: MINOR bump. Expands Technology Stack section to specify canonical
-choices for database (MySQL), object storage (Rustfs/S3), and caching (Redis).
-This provides clearer guidance for v1 implementation.
+Version change: 1.4.0 → 1.5.0
+Rationale: MINOR bump. Adds a single-developer repository clause to clarify how
+the Security Requirements "second approver" rule and the Development Workflow
+"two approving reviews" rule are satisfied for repositories with a single
+active maintainer. No principle is removed or redefined; the new clause is
+explicitly called out so it cannot be conflated with a waiver of the security
+review itself.
 
-Modified principles: none.
+Modified sections:
+  - Security Requirements — adds the single-developer repository clause.
+  - Development Workflow & Quality Gates — adds the matching single-developer
+    rule for the two-approving-review requirement, mirroring the Security
+    clause so both review gates share one definition of "single-developer".
+  - Governance — amendment procedure is unchanged; the new clause is a
+    clarification of how existing review requirements apply, not a new
+    approval gate.
 
-Added sections:
-  - Database (MySQL 8.0+)
-  - Object Storage (Rustfs/S3)
-  - Cache (Redis)
+Added sections: none as standalone; the single-developer repository clause
+is appended to two existing sections.
 
-Removed sections:
-  - Embedded KV store (sled) - replaced by Redis for distributed caching
-  - Embedded relational store (SQLite) - replaced by MySQL for production
+Removed sections: none.
 
-Templates requiring updates:
-  - ✅ .specify/templates/plan-template.md — Technical Context placeholders
-        updated to reflect MySQL, Redis, Rustfs choices.
-  - ⚠ specs/003-admin-center/plan.md — already uses MySQL, should add Redis
-  - ⚠ specs/003-admin-center/research.md — should add Redis section
+Templates and runtime guidance updated:
+  - ✅ .specify/templates/plan-template.md — Constitution Check now references
+        the single-developer clause and the equivalent review/approver gate.
+  - ✅ .specify/templates/spec-template.md — explicit reference retained.
+  - ✅ .specify/templates/tasks-template.md — explicit reference retained.
+  - ✅ CLAUDE.md and AGENTS.md — must cite the new clause.
+  - ✅ docs/quickstart.md — quickstart inherits the same rule.
+  - ✅ specs/011-hivegui-standalone-mode/{plan,tasks,checklists/security.md,
+        checklists/implementation-review.md} — affected feature alignment and
+        implementation gates (T025R 6 boundaries).
 
-Prior version 1.2.0 history retained above.
+Deferred follow-ups: none for this amendment.
 -->
 
 # hive-claw Constitution
@@ -154,11 +165,43 @@ These standards apply to every feature and MUST be enforced at code review:
 - **Authentication & authorisation**: Any feature that adds, modifies, or
   touches authentication, authorisation, session handling, or access control
   MUST receive a dedicated security review (the `/security-review` workflow
-  or equivalent) before merge. A second approver with security context is
-  required on the PR.
+  or equivalent) before merge.
 - **Dependencies**: New third-party dependencies MUST be vetted for
   maintenance status and known CVEs. Vulnerable versions MUST be upgraded
   within the SLA defined by the project's security policy.
+
+**Single-developer repository clause (2026-07-30, v1.5.0)**: For repositories
+with a single active maintainer (i.e. no second human reviewer is available
+in the maintainer set, as recorded in the project's `CODEOWNERS` or
+equivalent), the dedicated security review and the second-approver
+requirements above are satisfied by the **single maintainer performing both
+roles** under the following non-waivable conditions:
+
+1. The dedicated `/security-review` (or equivalent) workflow MUST still run
+   to completion and the conclusion, evidence links, and any open findings
+   MUST be recorded in the PR description and in the relevant security
+   checklist (e.g. `checklists/security.md` for T025R boundaries).
+2. The single maintainer MUST record a self-attestation in the PR
+   description with: their handle, the date, the security-review
+   conclusion, the exact list of clauses that were re-checked, and an
+   explicit acknowledgement that they acted as both implementer and
+   approver because the repository has no other active maintainer.
+3. Every security-review conclusion and self-attestation MUST be
+   reproduced verbatim in the relevant checklist row. The row is not
+   "signed" until both the workflow output and the self-attestation are
+   present and dated.
+4. If a second maintainer joins the project later, the regular
+   "independent security reviewer + second approver" requirements
+   immediately resume for new PRs; historical self-attestations are not
+   retroactively invalidated but are explicitly marked as "single-developer
+   repository clause" so reviewers can see which sign-offs pre-date the
+   second maintainer joining.
+
+This clause does NOT waive: the dedicated security review, the
+implementation of the security controls, the doc hard gate, the dependency
+advisory ban, secret scanning, or any other constitutional article. It only
+removes the structural requirement that the second approver be a different
+human being.
 
 ## Performance Standards
 
@@ -218,19 +261,37 @@ explicit Complexity Tracking entry in the relevant plan.
   use `axum`'s extractors and response types directly; no parallel HTTP
   framework may be introduced.
 - **Database**: **MySQL 8.0+** (InnoDB engine) is the canonical relational
-  database for all production data. Schema changes MUST use versioned,
-  idempotent migrations; access MUST use SQLx (with compile-time SQL
-  verification) or a maintained Rust MySQL client. Connection pooling is
-  MANDATORY (recommended: SQLx pool, max_connections tuned per workload).
-- **Object Storage**: **Rustfs** (S3-compatible) is the canonical object
+  database for server production data and all products outside an explicitly
+  named runtime profile. Schema changes MUST use versioned, idempotent
+  migrations; access MUST use SQLx (with compile-time SQL verification) or a
+  maintained Rust MySQL client. Connection pooling is MANDATORY (recommended:
+  SQLx pool, max_connections tuned per workload).
+- **Object Storage**: **Rustfs** (S3-compatible) is the canonical server object
   storage for file uploads, backups, and static assets. The Rust `aws-sdk-s3`
   crate or `object_store` crate SHOULD be used for S3 interoperability.
   Direct filesystem storage is PROHIBITED for new features unless explicitly
-  justified for local development only.
-- **Cache**: **Redis 7+** is the canonical cache and session store for
+  authorized by the HiveGUI desktop-local runtime profile below or justified
+  for local development only.
+- **Cache**: **Redis 7+** is the canonical cache and session store for server
   production workloads. Use the `redis` or `bb8-redis` crate for connection
   pooling. Caching strategies (cache-aside, write-through, etc.) MUST be
   documented in the relevant plan. Session data MUST expire (TTL required).
+- **Desktop-local runtime profile (HiveGUI)**: HiveGUI is an independent local
+  Agent, not a client of the cloud-hosted HiveWeb Agent. HiveGUI MUST NOT call
+  HiveWeb APIs, read HiveWeb connection settings as a runtime prerequisite, or
+  fall back to HiveWeb when local execution fails. Compile-time code, models,
+  ABI contracts, and test fixtures MAY be shared between the products. Within
+  HiveGUI only, production data MAY use embedded SQLite instead of MySQL;
+  persistent sessions MAY use encrypted SQLite and bounded in-process caches
+  instead of Redis; and Plugin WASM, logs, and user-selected backups MAY use a
+  managed local filesystem instead of Rustfs/S3. This profile requires:
+  versioned transactional migrations; SQLite integrity and foreign-key checks;
+  owner-only secret material; path containment and symlink-escape prevention;
+  size and SHA-256 verification; staging, fsync, and atomic rename for managed
+  artifacts; explicit retention/expiry rules; and bounded caches with a
+  documented key, invalidation strategy, and capacity. These permissions do
+  not apply to HiveWeb, whose production profile remains MySQL, Redis, and
+  Rustfs/S3.
 - **Async runtime**: **Tokio** (implied by axum and the broader Rust
   async ecosystem). A second async runtime MUST NOT be introduced in v1.
 - **Testing (Rust)**: `cargo test` for unit and integration tests; crate-level
@@ -246,12 +307,15 @@ Complexity Tracking section with: (a) the specific need that the canonical
 stack cannot satisfy, (b) the alternative chosen, (c) the simpler approach
 considered and rejected, and (d) the maintenance / review-expertise impact.
 The amendment procedure under Governance applies if the deviation is
-intended to become permanent.
+intended to become permanent. A choice expressly authorized by a named
+Technology Stack profile is compliant use of that profile, not a deviation;
+the plan MUST still identify the profile and prove its mandatory safeguards.
 
 **Rationale**: A modern, production-ready stack: Rust+gpui for desktop,
-TypeScript+React for web, MySQL for relational data, Redis for caching,
-and Rustfs (S3) for object storage. Each choice balances performance,
-scalability, and maintainability while keeping the stack focused.
+TypeScript+React for web, MySQL/Redis/Rustfs for cloud services, and a bounded,
+secure local-storage profile for an independent desktop Agent. Each choice
+balances performance, deployment reality, and maintainability while keeping
+product boundaries explicit.
 
 ## Development Workflow & Quality Gates
 
@@ -264,6 +328,13 @@ scalability, and maintainability while keeping the stack focused.
     one from a code owner.
   - Auth, security, or cryptography changes additionally require the
     Security Requirements review described above.
+  - **Single-developer repository clause**: for repositories with a single
+    active maintainer, the "minimum of two approving reviews" requirement
+    is satisfied by the single maintainer self-approving under the same
+    non-waivable conditions defined in the Security Requirements
+    single-developer repository clause. The dedicated security review, the
+    implementation of all constitutional controls, secret scanning,
+    dependency advisory bans, and the doc hard gate are NOT waived.
 - **CI gates** (all MUST pass before merge):
   1. Linting and formatting (Rust and TypeScript).
   2. Type checking (where applicable).
@@ -302,7 +373,7 @@ scalability, and maintainability while keeping the stack focused.
   MUST be recorded in the plan's Complexity Tracking section with a simpler
   alternative considered.
 - **Runtime guidance**: agent and contributor runtime instructions live in
-  `CLAUDE.md` and any future `docs/quickstart.md`. Those files MUST cite,
-  not contradict, this constitution.
+  `AGENTS.md`, `CLAUDE.md`, `docs/quickstart.md`, and any future equivalent.
+  Those files MUST cite, not contradict, this constitution.
 
-**Version**: 1.3.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-25
+**Version**: 1.5.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-07-30

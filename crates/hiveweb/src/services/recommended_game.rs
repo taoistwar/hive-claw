@@ -11,7 +11,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::RecommendedGame;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[deprecated(note = "Legacy recommended-game service; retained for compatibility only")]
@@ -134,10 +136,13 @@ pub async fn list(
     if has_ch || has_ct {
         let mut strat_parts: Vec<String> = Vec::new();
         if has_ch {
-            strat_parts.push("JSON_CONTAINS(s.channel, ?)".into());
+            strat_parts
+                .push("(JSON_CONTAINS(s.channel, '\"*\"') OR JSON_CONTAINS(s.channel, ?))".into());
         }
         if has_ct {
-            strat_parts.push("JSON_CONTAINS(s.client_type, ?)".into());
+            strat_parts.push(
+                "(JSON_CONTAINS(s.client_type, '\"*\"') OR JSON_CONTAINS(s.client_type, ?))".into(),
+            );
         }
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM recommended_games_strategy s WHERE s.recommended_game_id = rg.id AND s.strategy = 'INCLUDE' AND {})",
@@ -153,7 +158,8 @@ pub async fn list(
 
     // Count query
     let count_sql = format!("SELECT COUNT(*) FROM recommended_games rg {where_clause}");
-    let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_query = sqlx::query_as::<_, (i64,)>(count_sql);
     if let Some(ref v) = like_q {
         count_query = count_query.bind(v).bind(v).bind(v);
     }
@@ -173,7 +179,8 @@ pub async fn list(
     let data_sql = format!(
         "SELECT rg.* FROM recommended_games rg {where_clause} ORDER BY rg.sort_value DESC, rg.created_at DESC LIMIT ? OFFSET ?"
     );
-    let mut data_query = sqlx::query_as::<_, RecommendedGame>(&data_sql);
+    let data_sql = audit_sql(data_sql);
+    let mut data_query = sqlx::query_as::<_, RecommendedGame>(data_sql);
     if let Some(ref v) = like_q {
         data_query = data_query.bind(v).bind(v).bind(v);
     }
@@ -199,8 +206,13 @@ pub async fn update(
     meta: UpdateMeta,
 ) -> Result<RecommendedGame, AppError> {
     if let Some(updated_at) = meta.updated_at {
-        crate::services::optimistic_lock::check_and_bump(pool, "recommended_games", id, updated_at)
-            .await?;
+        crate::services::optimistic_lock::check_and_bump(
+            pool,
+            OptimisticLockTable::RecommendedGames,
+            id,
+            updated_at,
+        )
+        .await?;
     }
     sqlx::query(
         "UPDATE recommended_games SET name = COALESCE(?, name), reply = COALESCE(?, reply), reason = COALESCE(?, reason), tag = COALESCE(?, tag), game_category = COALESCE(?, game_category), game_image = COALESCE(?, game_image), sort_value = COALESCE(?, sort_value), game_id = COALESCE(?, game_id), game_name = COALESCE(?, game_name) WHERE id = ?"

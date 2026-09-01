@@ -2,7 +2,7 @@
 
 **Purpose**: Validate that Hook REST API endpoint requirements are complete, clear, consistent, and implementable by both frontend and backend teams
 **Created**: 2026-06-02
-**Revalidated**: 2026-07-16（执行结果改为 tracing-only，执行历史 API 合同已撤销）
+**Revalidated**: 2026-07-24（执行结果 tracing-only；内部 AgentContext updates 合同已同步）
 **Feature**: [spec.md](../spec.md)
 
 **Note**: This checklist tests the quality of the API CONTRACT REQUIREMENTS — not whether the endpoints work correctly.
@@ -28,8 +28,10 @@
 
 - [ ] CHK010 — Are all 6 error codes (6001-6006) documented with their HTTP status codes, trigger conditions, and user-facing messages? [Completeness, Plan §Error Codes]
 - [ ] CHK011 — Is the optimistic lock conflict response (4094) for Hook updates specified with both the HTTP status and the body containing the server's current `updated_at`? [Clarity, Tasks T010]
-- [ ] CHK012 — Is the error response format consistent between validation errors (400-level, e.g., 6002/6003) and server errors (500-level, e.g., 6005)? [Consistency]
-- [ ] CHK013 — Are the HTTP status codes for Hook-specific errors (6001=422, 6003=400, 6004=408) correctly mapped and consistent with the existing `http_status_for_code()` convention? [Consistency, Plan §Error Codes]
+- [x] CHK012 — Is the error response format consistent between validation errors (400-level, e.g., 6002/6003) and server errors (500-level, e.g., 6005)? [Consistency] → **已解决**: 均使用 `{code,message}` JSON；运行时 message 为普通文本，不嵌套 JSON
+- [x] CHK013 — Are the HTTP status codes for Hook-specific errors (6001=422, 6003=400, 6004=408) correctly mapped and consistent with the existing `http_status_for_code()` convention? [Consistency, Plan §Error Codes] → **已验证**: 6004=408、6005=500，并由非 ignored 响应测试覆盖
+- [x] CHK025 — Does the synchronous Assistant error contract preserve the original terminal error when `on_agent_error` fails or exhausts its phase budget, without a second nested error response? [Consistency, Contract §Agent 执行错误] → **已解决**: Hook 快照加载后的终止错误共享 30 秒阶段总预算，失败或耗尽不覆盖原始 `{code,message}`
+- [x] CHK026 — Do successful Hook POST / PUT / DELETE operations invalidate the corresponding AgentContent cache while preserving the successful response if invalidation fails? [Consistency, Contract §Hook CRUD] → **已解决**: 三个 mutation 仅在 DB 成功后 best-effort 失效；失败输出固定 `redis_delete_failed` tracing
 
 ## Removed Execution-History Contract
 
@@ -48,6 +50,7 @@
 - [ ] CHK020 — Does the `AgentHook` response schema in the API contract include `blocking_mode` and `timeout_ms` fields, or are these documented separately? [Completeness, Spec §FR-010/FR-011 vs Tasks T007]
 - [ ] CHK021 — Is the `action_params` JSON structure documented for each action type in the API contract, or left as an opaque blob for the client to discover? [Clarity, Gap]
 - [x] CHK022 — Is the obsolete `HookExecution` response schema absent from the contract? [Completeness, Spec §FR-015] → **已验证**
+- [x] CHK027 — Is `_agent_context_updates` explicitly documented as an internal Function/Workflow result contract rather than a Hook CRUD request field, with no new persistence API or audit-mode override? [Boundary, Contract §Hook action AgentContext] → **已解决**
 
 ## API Change & Versioning
 
@@ -60,7 +63,7 @@
 
 - Items CHK001–CHK005 focus on endpoint specification completeness
 - Items CHK006–CHK009 focus on response format consistency with existing conventions
-- Items CHK010–CHK013 focus on error handling contract quality
+- Items CHK010–CHK013 and CHK025–CHK026 focus on error handling contract quality
 - Items CHK014–CHK016 verify removal of the execution-history query contract
 - Items CHK017–CHK019 focus on auth/RBAC contract clarity
-- Items CHK020–CHK024 focus on data model alignment and versioning
+- Items CHK020–CHK024 and CHK027 focus on data model alignment and versioning

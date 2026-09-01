@@ -95,31 +95,6 @@ function parseSchemaProperties(schema: unknown): Array<{ key: string; prop: Sche
   return Object.entries(properties).map(([key, prop]) => ({ key, prop }));
 }
 
-/**
- * 根据结束节点的 output_schema，从上游节点结果中提取匹配的字段
- * e.g. output_schema.properties = { answer: {...} }, upstream = { answer: "x", model: "y" }
- *   → 返回 { answer: "x" }
- */
-function extractOutputFields(
-  outputSchema: Record<string, unknown> | null | undefined,
-  upstreamResults: Record<string, unknown>,
-): Record<string, unknown> | null {
-  const schemaFields = outputSchema?.properties
-    ? Object.keys(outputSchema.properties as Record<string, unknown>)
-    : [];
-  if (schemaFields.length === 0) {
-    // 未配置 output_schema → 不显示结果
-    return null;
-  }
-  const extracted: Record<string, unknown> = {};
-  for (const key of schemaFields) {
-    if (key in upstreamResults) {
-      extracted[key] = (upstreamResults as Record<string, unknown>)[key];
-    }
-  }
-  return extracted;
-}
-
 /** 从 form values 中分离工作流输入参数和 UserInput 上下文（_ctx_ 前缀） */
 function splitRunValues(values: Record<string, unknown>): {
   input: Record<string, unknown>;
@@ -210,11 +185,21 @@ interface NodeData {
   node_type?: NodeType;
   function_name?: string;
   input_schema?: Record<string, unknown> | null;
+  start_description?: string | null;
   output_schema?: Record<string, unknown> | null;
+  end_description?: string | null;
   node_config?: AnswerNodeConfig | null;
   /** Structured input mapping (function_node & generate_answer_node). */
   input_mapping?: InputSpec;
   execution_result?: unknown;
+}
+
+interface DagEditorCache {
+  nodes: Node<NodeData>[];
+  edges: Edge[];
+  functions?: FunctionItem[];
+  executionResult?: WorkflowExecuteResult | null;
+  lastRunInput?: Record<string, unknown> | null;
 }
 
 export interface DagEditorProps {
@@ -325,7 +310,9 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     nodeKey: string;
     functionId?: number | null;
     inputSchema?: Record<string, unknown> | null;
+    startDescription?: string | null;
     outputSchema?: Record<string, unknown> | null;
+    endDescription?: string | null;
     answerConfig?: AnswerNodeConfig | null;
     inputMapping?: InputSpec | null;
   } | null>(null);
@@ -341,15 +328,27 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
   } | null>(null);
   /** 是否展开 UserInput 上下文配置 */
   const [showContext, setShowContext] = useState(false);
+  const cacheWriteEnabledRef = useRef(false);
 
-  const STORAGE_KEY = `dag_editor_v2_${workflowId}`;
+  const STORAGE_KEY = `dag_editor_v3_${workflowId}`;
+  const LEGACY_STORAGE_KEY = `dag_editor_v2_${workflowId}`;
 
   const fetchGraph = useCallback(async (skipCache = false) => {
+    // Do not let state from another workflow, or an unverified v2 draft, be
+    // auto-persisted under this workflow's v3 key while the refresh is pending.
+    cacheWriteEnabledRef.current = false;
+    let legacyCache: DagEditorCache | null = null;
     if (!skipCache) {
       try {
         const cached = localStorage.getItem(STORAGE_KEY);
         if (cached) {
-          const { nodes: cachedNodes, edges: cachedEdges, executionResult: cachedResult, lastRunInput: cachedInput } = JSON.parse(cached);
+          const {
+            nodes: cachedNodes,
+            edges: cachedEdges,
+            executionResult: cachedResult,
+            lastRunInput: cachedInput,
+          } = JSON.parse(cached) as DagEditorCache;
+          cacheWriteEnabledRef.current = true;
           setNodes(cachedNodes);
           setEdges(cachedEdges);
           if (cachedResult) setExecutionResult(cachedResult);
@@ -359,6 +358,11 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
             .then((fnList) => setFunctions(fnList.items))
             .catch(() => {});
           return;
+        }
+
+        const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+        if (legacy) {
+          legacyCache = JSON.parse(legacy) as DagEditorCache;
         }
       } catch { /* ignore parse error, fallback to API */ }
     }
@@ -370,7 +374,48 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       ]);
       setWorkflow(graph.workflow);
       setFunctions(fnList.items);
+
+      if (legacyCache) {
+        const startNode = graph.nodes.find(
+          (node) => node.node_type === 'start_node' || node.node_key === 'start',
+        );
+        const endNode = graph.nodes.find(
+          (node) => node.node_type === 'end_node' || node.node_key === 'end',
+        );
+        const migratedNodes = legacyCache.nodes.map((node) => {
+          const data = { ...node.data };
+          const isStart = data.node_type === 'start_node' || node.id === 'start';
+          const isEnd = data.node_type === 'end_node' || node.id === 'end';
+          if (isStart && data.start_description === undefined) {
+            data.start_description =
+              startNode?.position?.start_description ?? graph.workflow.start_description ?? null;
+          }
+          if (isEnd && data.end_description === undefined) {
+            data.end_description =
+              endNode?.position?.end_description ?? graph.workflow.end_description ?? null;
+          }
+          return { ...node, data };
+        });
+        const migratedCache: DagEditorCache = {
+          ...legacyCache,
+          nodes: migratedNodes,
+          edges: legacyCache.edges ?? [],
+          functions: fnList.items,
+        };
+
+        // Only retire the legacy draft after the enriched v3 copy is durable.
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migratedCache));
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+        cacheWriteEnabledRef.current = true;
+        setNodes(migratedNodes);
+        setEdges(migratedCache.edges);
+        if (legacyCache.executionResult) setExecutionResult(legacyCache.executionResult);
+        if (legacyCache.lastRunInput) setLastRunInput(legacyCache.lastRunInput);
+        return;
+      }
+
       const fnMap = new Map(fnList.items.map((f) => [f.id, f]));
+      cacheWriteEnabledRef.current = true;
       setNodes(
         graph.nodes.map((n: GraphNode, i: number) => {
           const isStart = n.node_type === 'start_node' || n.node_key === 'start';
@@ -393,7 +438,13 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
               node_type: isStart ? 'start_node' as NodeType : isEnd ? 'end_node' as NodeType : isAnswer ? 'generate_answer_node' as NodeType : 'function_node' as NodeType,
               function_name: isStart || isEnd || isAnswer ? undefined : (n.function_id ? fnMap.get(n.function_id)?.name : undefined),
               input_schema: isStart ? (graph.workflow.input_schema ?? null) : undefined,
+              start_description: isStart
+                ? (n.position?.start_description ?? graph.workflow.start_description ?? null)
+                : undefined,
               output_schema: isEnd ? (graph.workflow.output_schema ?? null) : undefined,
+              end_description: isEnd
+                ? (n.position?.end_description ?? graph.workflow.end_description ?? null)
+                : undefined,
               node_config: isAnswer ? ((n.node_config ?? null) as AnswerNodeConfig | null) : undefined,
               input_mapping: inputMapping,
             },
@@ -411,9 +462,15 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         })),
       );
     } catch (e) {
+      if (legacyCache) {
+        setNodes(legacyCache.nodes);
+        setEdges(legacyCache.edges ?? []);
+        if (legacyCache.executionResult) setExecutionResult(legacyCache.executionResult);
+        if (legacyCache.lastRunInput) setLastRunInput(legacyCache.lastRunInput);
+      }
       void message.error(`加载失败：${(e as Error).message}`);
     }
-  }, [workflowId, STORAGE_KEY]);
+  }, [workflowId, STORAGE_KEY, LEGACY_STORAGE_KEY]);
 
   useEffect(() => {
     void fetchGraph();
@@ -421,7 +478,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
 
   // 自动同步到 localStorage
   useEffect(() => {
-    if (nodes.length === 0) return;
+    if (!cacheWriteEnabledRef.current || nodes.length === 0) return;
     try {
       localStorage.setItem(
         STORAGE_KEY,
@@ -497,31 +554,57 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       nodeKey: node.data.node_key,
       functionId: node.data.function_id,
       inputSchema: isStart ? node.data.input_schema : undefined,
+      startDescription: isStart ? node.data.start_description : undefined,
       outputSchema: isEnd ? node.data.output_schema : undefined,
+      endDescription: isEnd ? node.data.end_description : undefined,
       answerConfig: isAnswer ? (node.data.node_config ?? null) : undefined,
       inputMapping: (isFunction || isAnswer) ? (node.data.input_mapping ?? null) : undefined,
     });
     setDetailDrawerOpen(true);
   }, []);
 
-  const onUpdateStartNode = useCallback((vars: Record<string, unknown>) => {
+  const onUpdateStartNode = useCallback((vars: Record<string, unknown>, startDescription: string) => {
     setNodes((nds) =>
       nds.map((n) =>
         n.id === 'start'
-          ? { ...n, data: { ...n.data, input_schema: vars } }
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                input_schema: vars,
+                start_description: startDescription,
+              },
+            }
           : n,
       ),
+    );
+    setSelectedNode((prev) =>
+      prev?.nodeType === 'start'
+        ? { ...prev, inputSchema: vars, startDescription }
+        : prev,
     );
     void message.success('起始节点配置已更新');
   }, []);
 
-  const onUpdateEndNode = useCallback((vars: Record<string, unknown>) => {
+  const onUpdateEndNode = useCallback((vars: Record<string, unknown>, endDescription: string) => {
     setNodes((nds) =>
       nds.map((n) =>
         n.id === 'end'
-          ? { ...n, data: { ...n.data, output_schema: vars } }
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                output_schema: vars,
+                end_description: endDescription,
+              },
+            }
           : n,
       ),
+    );
+    setSelectedNode((prev) =>
+      prev?.nodeType === 'end'
+        ? { ...prev, outputSchema: vars, endDescription }
+        : prev,
     );
     void message.success('结束节点配置已更新');
   }, []);
@@ -600,16 +683,6 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
     return startNode?.data.input_schema ?? null;
   }, [nodes]);
 
-  /** 找到 DAG 中连接到结束节点的上游节点 key（即最终输出节点） */
-  const finalOutputNodeKeys = useMemo(() => {
-    const endNode = nodes.find((n) => n.data.node_type === 'end_node' || n.id === 'end');
-    const endKey = endNode?.data.node_key ?? 'end';
-    // 找到所有指向 end 节点的边，收集上游 source
-    return edges
-      .filter((e) => e.target === endKey && e.source)
-      .map((e) => e.source!);
-  }, [nodes, edges]);
-
   /** 结束节点的 output_schema */
   const endOutputSchema = useMemo(() => {
     const endNode = nodes.find((n) => n.data.node_type === 'end_node' || n.id === 'end');
@@ -633,22 +706,12 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           node = { ...node, data: { ...node.data, execution_result: lastRunInput } };
         }
 
-        // 结束节点：根据 output_schema 提取上游输出字段
+        // 结束节点只展示服务端公开的工作流 outputs；node_results 是诊断信息。
         if (isEnd && executionResult) {
-          // 收集所有上游结果
-          const allUpstream: Record<string, unknown> = {};
-          for (const key of finalOutputNodeKeys) {
-            const r = executionResult.node_results[key];
-            if (r !== undefined && typeof r === 'object' && r !== null) {
-              Object.assign(allUpstream, r as Record<string, unknown>);
-            }
-          }
-          if (Object.keys(allUpstream).length > 0) {
-            const extracted = extractOutputFields(n.data.output_schema, allUpstream);
-            if (extracted !== null) {
-              node = { ...node, data: { ...node.data, execution_result: extracted } };
-            }
-          }
+          node = {
+            ...node,
+            data: { ...node.data, execution_result: executionResult.outputs },
+          };
         }
 
         // 普通节点：从 node_results 中查找
@@ -660,7 +723,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
         }
         return node;
       }),
-    [nodes, cycle, executionResult, lastRunInput, finalOutputNodeKeys],
+    [nodes, cycle, executionResult, lastRunInput],
   );
 
   // 监听节点组件发出的「查看结果」事件
@@ -677,21 +740,8 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
       }
 
       if (isEnd && executionResult) {
-        // 根据结束节点的 output_schema 提取上游输出字段
-        const allUpstream: Record<string, unknown> = {};
-        for (const key of finalOutputNodeKeys) {
-          const r = executionResult.node_results[key];
-          if (r !== undefined && typeof r === 'object' && r !== null) {
-            Object.assign(allUpstream, r as Record<string, unknown>);
-          }
-        }
-        if (Object.keys(allUpstream).length > 0) {
-          const extracted = extractOutputFields(endOutputSchema, allUpstream);
-          if (extracted !== null) {
-            setSelectedNodeResult({ nodeKey, result: extracted });
-            setResultModalOpen(true);
-          }
-        }
+        setSelectedNodeResult({ nodeKey, result: executionResult.outputs });
+        setResultModalOpen(true);
         return;
       }
 
@@ -707,7 +757,7 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
 
     window.addEventListener('node-view-result', handler);
     return () => window.removeEventListener('node-view-result', handler);
-  }, [executionResult, lastRunInput, finalOutputNodeKeys]);
+  }, [executionResult, lastRunInput]);
 
   const onAdd = () => {
     if (!pickedFn) {
@@ -823,7 +873,13 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
             x: n.position.x,
             y: n.position.y,
             ...(isStart && { input_schema: n.data.input_schema ?? { type: 'object', properties: {} } }),
+            ...(isStart && n.data.start_description !== undefined && {
+              start_description: n.data.start_description,
+            }),
             ...(isEnd && n.data.output_schema && { output_schema: n.data.output_schema }),
+            ...(isEnd && n.data.end_description !== undefined && {
+              end_description: n.data.end_description,
+            }),
           },
           ...(nodeConfig && { node_config: nodeConfig }),
         };
@@ -853,9 +909,10 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
 
   const onReset = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     void fetchGraph(true);
     void message.success('已重置为服务器保存的版本');
-  }, [STORAGE_KEY, fetchGraph]);
+  }, [STORAGE_KEY, LEGACY_STORAGE_KEY, fetchGraph]);
 
   const handleRunClick = useCallback(() => {
     setRunModalOpen(true);
@@ -1270,7 +1327,9 @@ export function DagEditor({ workflowId, readonly, onSaved }: DagEditorProps) {
           nodeKey={selectedNode.nodeKey}
           functionId={selectedNode.functionId}
           inputSchema={selectedNode.inputSchema}
+          startDescription={selectedNode.startDescription}
           outputSchema={selectedNode.outputSchema}
+          endDescription={selectedNode.endDescription}
           answerConfig={selectedNode.answerConfig}
           onUpdateStartNode={onUpdateStartNode}
           onUpdateEndNode={onUpdateEndNode}

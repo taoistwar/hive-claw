@@ -22,6 +22,7 @@ import {
   LockOutlined,
   SettingOutlined,
   SafetyCertificateOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../hooks/useTheme';
@@ -139,6 +140,15 @@ const AppLayout: React.FC = () => {
                   icon: <FileTextOutlined />,
                   label: '管理审计日志',
                 },
+                ...(admin?.role === 3
+                  ? [
+                      {
+                        key: '/runtime-audit-logs',
+                        icon: <FileSearchOutlined />,
+                        label: '运行时审计日志',
+                      },
+                    ]
+                  : []),
                 {
                   key: '/global-configs',
                   icon: <SettingOutlined />,

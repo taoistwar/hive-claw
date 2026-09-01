@@ -19,6 +19,7 @@ use crate::runtime::llm::LlmRegistry;
 use agent::context::{AgentContext, Category, ExtensionContent, ExtensionType};
 
 use crate::cache::redis::RedisClient;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 
 /// Context passed to each hook invocation.
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +45,7 @@ pub struct HookContext {
 pub struct HookDeps {
     /// 仅在 `PLUGIN_SYSTEM_ENABLED=true` 时为 `Some`。
     pub s3: Option<S3Client>,
+    pub execution_context: RuntimeExecutionContext,
     pub llm: Arc<LlmRegistry>,
     pub registry: Arc<CapabilityRegistry>,
     pub invoker: Arc<Invoker>,
@@ -60,7 +62,7 @@ pub struct HookDeps {
 /// Blocking mode: first failure aborts the agent flow and returns `Err`.
 #[tracing::instrument(skip(pool, hooks, ctx, deps), fields(
     agent_id = %ctx.agent_id,
-    identifier = %ctx.identifier,
+    identifier_len = ctx.identifier.len(),
     trigger_point = %point,
     session_id = %ctx.session_id
 ))]
@@ -186,6 +188,7 @@ async fn execute_call_function(
                 )));
             };
             let bctx = super::builtins::BuiltinContext {
+                execution_context: Some(deps.execution_context.for_hook()),
                 pool: &pool,
                 ext_pool: deps.ext_pool.as_ref(),
                 redis: deps.redis.as_ref(),
@@ -219,8 +222,7 @@ async fn execute_call_function(
                     .map(|rows: Vec<(String,)>| rows.into_iter().map(|(c,)| c).collect())
                     .unwrap_or_default();
             let dispatch_ctx = DispatchCtx {
-                request_id: None,
-                session_id: Some(ctx.session_id),
+                execution_context: deps.execution_context.for_hook(),
                 agent_id: ctx.agent_id,
                 plugin_id: pid,
                 function_id: Some(function_id),
@@ -283,6 +285,7 @@ async fn execute_call_workflow(
             .unwrap_or_default();
 
     let executor_deps = super::workflow::ExecutorDeps {
+        execution_context: deps.execution_context.for_hook(),
         pool: (*pool).clone(),
         s3: deps.s3.clone(),
         registry: Arc::clone(&deps.registry),
@@ -413,9 +416,9 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                     tracing::info!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
+                        agent_identifier_len = ctx.identifier.len(),
                         hook_id = hook.id,
-                        hook_name = %hook.name,
+                        hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -432,9 +435,9 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                     tracing::warn!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
+                        agent_identifier_len = ctx.identifier.len(),
                         hook_id = hook.id,
-                        hook_name = %hook.name,
+                        hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -451,9 +454,9 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
                     tracing::warn!(
                         event = "hook_webhook_retry",
                         agent_id = ctx.agent_id,
-                        agent_identifier = %ctx.identifier,
+                        agent_identifier_len = ctx.identifier.len(),
                         hook_id = hook.id,
-                        hook_name = %hook.name,
+                        hook_name_len = hook.name.len(),
                         session_id = ctx.session_id,
                         trigger_point = %ctx.trigger_point,
                         action_type = %hook.action_type,
@@ -470,9 +473,9 @@ fn spawn_webhook_retry(hook: &AgentHook, ctx: &HookContext, payload: &Value) {
         tracing::warn!(
             event = "hook_webhook_retry",
             agent_id = ctx.agent_id,
-            agent_identifier = %ctx.identifier,
+            agent_identifier_len = ctx.identifier.len(),
             hook_id = hook.id,
-            hook_name = %hook.name,
+            hook_name_len = hook.name.len(),
             session_id = ctx.session_id,
             trigger_point = %ctx.trigger_point,
             action_type = %hook.action_type,
@@ -501,9 +504,9 @@ fn trace_hook_exec(
             tracing::$level!(
                 event = "hook_execution",
                 agent_id = ctx.agent_id,
-                agent_identifier = %ctx.identifier,
+                agent_identifier_len = ctx.identifier.len(),
                 hook_id = hook.id,
-                hook_name = %hook.name,
+                hook_name_len = hook.name.len(),
                 session_id = ctx.session_id,
                 trigger_point,
                 action_type = %hook.action_type,
@@ -648,13 +651,15 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 "StateChanges" => Category::StateChanges,
                 "SubagentResults" => Category::SubagentResults,
                 _ => {
-                    tracing::warn!("Unknown category in _agent_context_updates: {category_str}");
+                    tracing::warn!("Unknown category in _agent_context_updates");
                     continue;
                 }
             };
 
-            if let Err(e) = agent_ctx.set_record(cat, key.to_string(), value, source, iteration) {
-                tracing::warn!("Failed to apply _agent_context_updates record: {e}");
+            if let Err(_error) =
+                agent_ctx.set_record(cat, key.to_string(), value, source, iteration)
+            {
+                tracing::warn!("Failed to apply _agent_context_updates record");
             }
         }
     }
@@ -700,8 +705,8 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
                 ext.get("reply").cloned(),
                 data,
             );
-            if let Err(e) = agent_ctx.add_extension(id.to_string(), content) {
-                tracing::warn!("Failed to apply _agent_context_updates extension: {e}");
+            if let Err(_error) = agent_ctx.add_extension(id.to_string(), content) {
+                tracing::warn!("Failed to apply _agent_context_updates extension");
             }
         }
     }
@@ -710,9 +715,9 @@ pub(crate) fn apply_agent_context_updates(agent_ctx: &AgentContext, output: &Val
     if let Some(metadata) = updates.get("metadata").and_then(|v| v.as_object()) {
         for (key, val) in metadata {
             if let Some(s) = val.as_str()
-                && let Err(e) = agent_ctx.set_metadata(key.clone(), s.to_string())
+                && let Err(_error) = agent_ctx.set_metadata(key.clone(), s.to_string())
             {
-                tracing::warn!("Failed to apply _agent_context_updates metadata: {e}");
+                tracing::warn!("Failed to apply _agent_context_updates metadata");
             }
         }
     }

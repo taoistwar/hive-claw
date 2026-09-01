@@ -13,16 +13,17 @@ mod game_list;
 mod json_parse;
 mod json_stringify;
 mod query_balance;
+mod rag_answer;
 mod support_card;
 mod text_regex_match;
 mod tools;
-mod rag_answer;
 
 use serde_json::Value;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 
 use crate::cache::redis::RedisClient;
+use crate::runtime::execution_context::RuntimeExecutionContext;
 use crate::runtime::llm::LlmRegistry;
 use agent::context::AgentContext;
 
@@ -43,10 +44,10 @@ use chat_respond::{CHAT_RESPOND_INPUT_SCHEMA, CHAT_RESPOND_OUTPUT_SCHEMA};
 use format_template::{FORMAT_TEMPLATE_INPUT_SCHEMA, FORMAT_TEMPLATE_OUTPUT_SCHEMA};
 use game_info::{GAME_INFO_INPUT_SCHEMA, GAME_INFO_OUTPUT_SCHEMA};
 use game_list::{GAME_LIST_INPUT_SCHEMA, GAME_LIST_OUTPUT_SCHEMA};
-use rag_answer::{RAG_ANSWER_INPUT_SCHEMA, RAG_ANSWER_OUTPUT_SCHEMA};
 use json_parse::{JSON_PARSE_INPUT_SCHEMA, JSON_PARSE_OUTPUT_SCHEMA};
 use json_stringify::{JSON_STRINGIFY_INPUT_SCHEMA, JSON_STRINGIFY_OUTPUT_SCHEMA};
 use query_balance::{QUERY_BALANCE_INPUT_SCHEMA, QUERY_BALANCE_OUTPUT_SCHEMA};
+use rag_answer::{RAG_ANSWER_INPUT_SCHEMA, RAG_ANSWER_OUTPUT_SCHEMA};
 use support_card::{SUPPORT_CARD_INPUT_SCHEMA, SUPPORT_CARD_OUTPUT_SCHEMA};
 use text_regex_match::{TEXT_REGEX_MATCH_INPUT_SCHEMA, TEXT_REGEX_MATCH_OUTPUT_SCHEMA};
 
@@ -54,6 +55,8 @@ use text_regex_match::{TEXT_REGEX_MATCH_INPUT_SCHEMA, TEXT_REGEX_MATCH_OUTPUT_SC
 pub enum BuiltinError {
     #[error("invalid arguments: {0}")]
     BadArgs(String),
+    #[error("model preset {0:?} is unknown")]
+    ModelPresetUnknown(String),
     #[error("execution failed: {0}")]
     Exec(String),
 }
@@ -62,6 +65,9 @@ pub type BuiltinResult = Result<Value, BuiltinError>;
 
 /// Context needed when executing a builtin function (DB connection pool + AgentContext)
 pub struct BuiltinContext<'a> {
+    /// Correlation/audit state for builtins that make nested runtime calls.
+    /// `None` only for entry points that do not grant nested LLM access.
+    pub execution_context: Option<RuntimeExecutionContext>,
     pub pool: &'a MySqlPool,
     pub ext_pool: Option<&'a MySqlPool>,
     /// Redis client for cache-aside operations. `None` when Redis is unavailable.
@@ -322,6 +328,7 @@ mod tests {
             sqlx::MySqlPool::connect_lazy(&test_url).expect("connect_lazy"),
         ));
         BuiltinContext {
+            execution_context: None,
             pool,
             ext_pool: None,
             redis: None,

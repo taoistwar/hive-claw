@@ -1,45 +1,52 @@
 // RuntimePoolCard — Plugin Pool 健康度卡片 (T147 / T162)
 
-import { useEffect, useState } from 'react';
-import { Card, Col, Row, Statistic, Table, Tag, Typography, Alert } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import { getPoolStats, type PerPluginMetrics, type PoolStats } from '../services/capability';
+import { useEffect, useState } from 'react'
+import { Card, Col, Row, Statistic, Table, Tag, Typography, Alert } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import { getPoolStats, type PerPluginMetrics, type PoolStats } from '../services/capability'
 
-const { Title } = Typography;
-const REFRESH_INTERVAL = 30_000;
+const { Title } = Typography
+const REFRESH_INTERVAL = 30_000
 
 export function RuntimePoolCard() {
-  const [stats, setStats] = useState<PoolStats | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<PoolStats | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    let alive = true;
+    let alive = true
     const fetchOnce = async () => {
       try {
-        const s = await getPoolStats();
+        const s = await getPoolStats()
         if (alive) {
-          setStats(s);
-          setError(null);
+          setStats(s)
+          setError(null)
         }
       } catch (e) {
-        if (alive) setError((e as Error).message);
+        if (alive) setError((e as Error).message)
       }
-    };
-    void fetchOnce();
-    const t = setInterval(fetchOnce, REFRESH_INTERVAL);
+    }
+    void fetchOnce()
+    const t = setInterval(fetchOnce, REFRESH_INTERVAL)
     return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+      alive = false
+      clearInterval(t)
+    }
+  }, [])
 
   if (error) {
-    return <Alert type="error" showIcon message={`Pool stats 加载失败：${error}`} />;
+    return <Alert type="error" showIcon message={`Pool stats 加载失败：${error}`} />
   }
 
-  const g = stats?.global;
-  const warn = (g?.reset_failures ?? 0) > 0;
-  const cacheMissAlert = (g?.cache_misses ?? 0) > 100;
+  const g = stats?.global
+  const audit = stats?.audit
+  const warn = (g?.reset_failures ?? 0) > 0
+  const cacheMissAlert = (g?.cache_misses ?? 0) > 100
+  const auditDropped =
+    (audit?.dropped_queue_full ?? 0) +
+    (audit?.dropped_writer_closed ?? 0) +
+    (audit?.dropped_no_writer ?? 0)
+  const auditPersistFailures = audit?.persist_failures ?? 0
+  const auditUnhealthy = auditDropped > 0 || auditPersistFailures > 0
 
   const cols: ColumnsType<PerPluginMetrics> = [
     { title: 'plugin', dataIndex: 'identifier' },
@@ -50,10 +57,9 @@ export function RuntimePoolCard() {
       title: 'cache_misses',
       dataIndex: 'cache_misses',
       width: 120,
-      render: (n: number) =>
-        n > 50 ? <Tag color="orange">{n}</Tag> : <span>{n}</span>,
+      render: (n: number) => (n > 50 ? <Tag color="orange">{n}</Tag> : <span>{n}</span>),
     },
-  ];
+  ]
 
   return (
     <Card style={{ marginTop: 24 }} aria-label="Plugin Pool 健康度卡片">
@@ -76,6 +82,15 @@ export function RuntimePoolCard() {
           style={{ marginBottom: 12 }}
         />
       ) : null}
+      {auditUnhealthy ? (
+        <Alert
+          type="error"
+          showIcon
+          message={`Runtime 审计持久化异常：dropped = ${auditDropped}，persist_failures = ${auditPersistFailures}`}
+          description={`queue_full = ${audit?.dropped_queue_full ?? 0}，writer_closed = ${audit?.dropped_writer_closed ?? 0}，no_writer = ${audit?.dropped_no_writer ?? 0}；请检查审计队列与数据库写入器`}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
       <Row gutter={16}>
         <Col span={6}>
           <Statistic title="in_use" value={g?.in_use ?? 0} />
@@ -90,6 +105,35 @@ export function RuntimePoolCard() {
           <Statistic title="cache_misses" value={g?.cache_misses ?? 0} />
         </Col>
       </Row>
+      <Title level={5} style={{ marginTop: 20 }}>
+        Runtime 审计持久化
+      </Title>
+      <Row gutter={[16, 12]}>
+        <Col xs={12} md={6}>
+          <Statistic title="audit.enqueued" value={audit?.enqueued ?? 0} />
+        </Col>
+        <Col xs={12} md={6}>
+          <Statistic title="audit.persisted" value={audit?.persisted ?? 0} />
+        </Col>
+        <Col xs={12} md={6}>
+          <Statistic title="audit.tracing_only" value={audit?.tracing_only ?? 0} />
+        </Col>
+        <Col xs={12} md={6}>
+          <Statistic title="audit.dropped_queue_full" value={audit?.dropped_queue_full ?? 0} />
+        </Col>
+        <Col xs={12} md={6}>
+          <Statistic
+            title="audit.dropped_writer_closed"
+            value={audit?.dropped_writer_closed ?? 0}
+          />
+        </Col>
+        <Col xs={12} md={6}>
+          <Statistic title="audit.dropped_no_writer" value={audit?.dropped_no_writer ?? 0} />
+        </Col>
+        <Col xs={12} md={6}>
+          <Statistic title="audit.persist_failures" value={audit?.persist_failures ?? 0} />
+        </Col>
+      </Row>
       <Table<PerPluginMetrics>
         size="small"
         style={{ marginTop: 16 }}
@@ -100,5 +144,5 @@ export function RuntimePoolCard() {
         locale={{ emptyText: '暂无 Plugin 实例（pool 未初始化）' }}
       />
     </Card>
-  );
+  )
 }

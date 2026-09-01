@@ -1,0 +1,18 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT value FROM meta WHERE key = 'schema_version'",
+  "hash": "d2de3a27b4a056955a0578de7f5179faf29cfb74976a7421586e01676b97a5e5",
+  "describe": {
+    "columns": [
+      {
+        "name": "value",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [false]
+  }
+}

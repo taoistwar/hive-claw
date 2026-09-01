@@ -1,0 +1,36 @@
+# Gitleaks configuration for the HiveClaw repository.
+#
+# This configuration is the reviewed source of truth for the secret-scan step
+# in `.github/workflows/ci.yml`. The step runs as
+#   gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+# against the full git history (the checkout step pins `fetch-depth: 0`).
+# Any change here must be reviewed against the Feature 011 security checklist.
+
+title = "hive-claw-gitleaks-v1"
+
+[extend]
+# Default rules cover high-entropy strings, AWS keys, GitHub tokens, etc.
+useDefault = true
+
+[[rules]]
+id = "hive-ci-gitleaks-canary"
+description = "Fail-closed CI proof that the pinned scanner executes reviewed rules"
+regex = '''HIVE_GITLEAKS_CI_CANARY_[A-Z0-9]{16}'''
+
+[allowlist]
+description = "Allow reviewable fixtures, generated artifacts, and docs"
+paths = [
+  '''(?:^|/)Cargo\.lock$''',
+  '''(?:^|/)target/''',
+  '''(?:^|/)\.sqlx/''',
+  '''(?:^|/)third_party/unicode-17\.0\.0/.*''',
+  '''(?:^|/)\.gitleaks\.toml$''',
+  '''(?:^|/)specs/.*/fixtures/''',
+]
+
+regexes = [
+  # Documentation placeholders that the security review explicitly
+  # accept as long as they are not real secrets.
+  '''PLACEHOLDER_TOKEN''',
+  '''placeholder_digest_for_test_purposes_only''',
+]

@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::Skill;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 const SKILL_CONTENT_MAX_BYTES: usize = 64 * 1024;
@@ -163,7 +165,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<SkillList, App
     let list_sql =
         format!("SELECT * FROM skills {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?");
 
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     if let Some(ref src) = filter.source {
         count_q = count_q.bind(src);
     }
@@ -208,7 +211,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<SkillList, App
         .map(|(c,)| c)
         .map_err(|e| AppError::Internal(format!("skill count: {e}")))?;
 
-    let mut list_q = sqlx::query_as::<_, Skill>(&list_sql);
+    let list_sql = audit_sql(list_sql);
+    let mut list_q = sqlx::query_as::<_, Skill>(list_sql);
     if let Some(ref src) = filter.source {
         list_q = list_q.bind(src);
     }
@@ -274,7 +278,13 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Skill
         validate_content(c)?;
     }
 
-    crate::services::optimistic_lock::check_and_bump(pool, "skills", id, meta.updated_at).await?;
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Skills,
+        id,
+        meta.updated_at,
+    )
+    .await?;
 
     sqlx::query(
         r#"UPDATE skills SET

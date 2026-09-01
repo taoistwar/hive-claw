@@ -1,11 +1,13 @@
 use gpui::{
-    AnyElement, Context, CursorStyle, Entity, MouseButton, ScrollHandle, SharedString, Window, div,
-    prelude::*, px, rgb,
+    AnyElement, Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString,
+    Window, div, prelude::*, px,
 };
+use gpui_component::ActiveTheme as _;
 
 use crate::datasource::{MysqlClient, Store, TableInfo};
+use crate::ui::management_style::{ActionRole, ActionSize, ManagementStyle, action_button};
 
-fn icon_caret_right() -> AnyElement {
+fn icon_caret_right(color: Hsla) -> AnyElement {
     div()
         .w(px(16.0))
         .h(px(16.0))
@@ -19,32 +21,14 @@ fn icon_caret_right() -> AnyElement {
                 .flex()
                 .flex_col()
                 .justify_between()
-                .child(
-                    div()
-                        .w(px(2.0))
-                        .h(px(1.5))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                )
-                .child(
-                    div()
-                        .w(px(4.0))
-                        .h(px(1.5))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                )
-                .child(
-                    div()
-                        .w(px(6.0))
-                        .h(px(1.5))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                ),
+                .child(div().w(px(2.0)).h(px(1.5)).bg(color).rounded(px(0.75)))
+                .child(div().w(px(4.0)).h(px(1.5)).bg(color).rounded(px(0.75)))
+                .child(div().w(px(6.0)).h(px(1.5)).bg(color).rounded(px(0.75))),
         )
         .into_any()
 }
 
-fn icon_caret_down() -> AnyElement {
+fn icon_caret_down(color: Hsla) -> AnyElement {
     div()
         .w(px(16.0))
         .h(px(16.0))
@@ -58,32 +42,14 @@ fn icon_caret_down() -> AnyElement {
                 .flex()
                 .flex_row()
                 .justify_between()
-                .child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(2.0))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                )
-                .child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(4.0))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                )
-                .child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(6.0))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                ),
+                .child(div().w(px(1.5)).h(px(2.0)).bg(color).rounded(px(0.75)))
+                .child(div().w(px(1.5)).h(px(4.0)).bg(color).rounded(px(0.75)))
+                .child(div().w(px(1.5)).h(px(6.0)).bg(color).rounded(px(0.75))),
         )
         .into_any()
 }
 
-fn icon_database() -> AnyElement {
+fn icon_database(color: Hsla) -> AnyElement {
     div()
         .w(px(16.0))
         .h(px(16.0))
@@ -96,38 +62,20 @@ fn icon_database() -> AnyElement {
                 .h(px(12.0))
                 .rounded(px(6.0))
                 .border_1()
-                .border_color(rgb(0x555555))
+                .border_color(color)
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_between()
                 .py(px(1.0))
-                .child(
-                    div()
-                        .w(px(10.0))
-                        .h(px(1.5))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                )
-                .child(
-                    div()
-                        .w(px(10.0))
-                        .h(px(1.5))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                )
-                .child(
-                    div()
-                        .w(px(10.0))
-                        .h(px(1.5))
-                        .bg(rgb(0x555555))
-                        .rounded(px(0.75)),
-                ),
+                .child(div().w(px(10.0)).h(px(1.5)).bg(color).rounded(px(0.75)))
+                .child(div().w(px(10.0)).h(px(1.5)).bg(color).rounded(px(0.75)))
+                .child(div().w(px(10.0)).h(px(1.5)).bg(color).rounded(px(0.75))),
         )
         .into_any()
 }
 
-fn icon_data_source() -> AnyElement {
+fn icon_data_source(background: Hsla, foreground: Hsla) -> AnyElement {
     div()
         .w(px(16.0))
         .h(px(16.0))
@@ -139,7 +87,7 @@ fn icon_data_source() -> AnyElement {
                 .w(px(12.0))
                 .h(px(12.0))
                 .rounded(px(2.0))
-                .bg(rgb(0x4a90d9))
+                .bg(background)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -149,23 +97,17 @@ fn icon_data_source() -> AnyElement {
                         .h(px(8.0))
                         .rounded(px(1.0))
                         .border_1()
-                        .border_color(rgb(0xffffff))
+                        .border_color(foreground)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(
-                            div()
-                                .w(px(4.0))
-                                .h(px(4.0))
-                                .rounded(px(2.0))
-                                .bg(rgb(0xffffff)),
-                        ),
+                        .child(div().w(px(4.0)).h(px(4.0)).rounded(px(2.0)).bg(foreground)),
                 ),
         )
         .into_any()
 }
 
-fn icon_table() -> AnyElement {
+fn icon_table(color: Hsla) -> AnyElement {
     div()
         .w(px(16.0))
         .h(px(16.0))
@@ -178,7 +120,7 @@ fn icon_table() -> AnyElement {
                 .h(px(12.0))
                 .rounded(px(2.0))
                 .border_1()
-                .border_color(rgb(0x555555))
+                .border_color(color)
                 .flex()
                 .flex_col()
                 .child(
@@ -186,39 +128,25 @@ fn icon_table() -> AnyElement {
                         .w_full()
                         .h(px(3.0))
                         .border_b_1()
-                        .border_color(rgb(0x555555))
+                        .border_color(color)
                         .flex()
-                        .child(
-                            div()
-                                .w(px(6.0))
-                                .h_full()
-                                .border_r_1()
-                                .border_color(rgb(0x555555)),
-                        ),
+                        .child(div().w(px(6.0)).h_full().border_r_1().border_color(color)),
                 )
                 .child(
                     div()
                         .w_full()
                         .h(px(3.0))
                         .border_b_1()
-                        .border_color(rgb(0x555555))
+                        .border_color(color)
                         .flex()
-                        .child(
-                            div()
-                                .w(px(6.0))
-                                .h_full()
-                                .border_r_1()
-                                .border_color(rgb(0x555555)),
-                        ),
+                        .child(div().w(px(6.0)).h_full().border_r_1().border_color(color)),
                 )
                 .child(
-                    div().w_full().h(px(3.0)).flex().child(
-                        div()
-                            .w(px(6.0))
-                            .h_full()
-                            .border_r_1()
-                            .border_color(rgb(0x555555)),
-                    ),
+                    div()
+                        .w_full()
+                        .h(px(3.0))
+                        .flex()
+                        .child(div().w(px(6.0)).h_full().border_r_1().border_color(color)),
                 ),
         )
         .into_any()
@@ -296,6 +224,7 @@ impl TreeNav {
 
     fn load_data_sources(&mut self, store: Entity<Store>, cx: &mut Context<Self>) {
         let store_clone = store.read(cx).clone();
+        let _this = cx.weak_entity();
 
         self.loading = true;
         self.nodes.clear();
@@ -370,6 +299,7 @@ impl TreeNav {
 
         let Some(ref store) = self.store else { return };
         let store = store.read(cx).clone();
+        let _this = cx.weak_entity();
 
         self.loading = true;
         cx.notify();
@@ -463,6 +393,7 @@ impl TreeNav {
 
         let Some(ref store) = self.store else { return };
         let store = store.read(cx).clone();
+        let _this = cx.weak_entity();
 
         self.loading = true;
         cx.notify();
@@ -480,8 +411,17 @@ impl TreeNav {
                 }
             };
 
-            let result =
-                MysqlClient::query_tables(&host, port, &username, &password, &db_node.name).await;
+            let result = MysqlClient::query_tables(
+                &host,
+                port,
+                &username,
+                &password,
+                &crate::datasource::mysql_client::MysqlIdentifier::new_trusted(
+                    db_node.name.clone(),
+                    crate::datasource::mysql_client::IdentifierKind::Database,
+                ),
+            )
+            .await;
 
             match result {
                 Ok(tables) => {
@@ -559,26 +499,40 @@ pub enum PendingAction {
 impl Render for TreeNav {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.weak_entity();
-        let mut col = div().flex().flex_col().size_full().bg(rgb(0xfafafa)).child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px(px(12.0))
-                .py(px(8.0))
-                .border_b_1()
-                .border_color(rgb(0xe0e0e0))
-                .child(div().text_size(px(14.0)).child("数据源"))
-                .child(
-                    div()
-                        .id("btn-add")
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(0x4a90d9))
-                        .text_size(px(12.0))
-                        .text_color(rgb(0xffffff))
-                        .cursor(CursorStyle::PointingHand)
+        let style = ManagementStyle::current(cx);
+        let theme = cx.theme();
+        let foreground = theme.foreground;
+        let muted_foreground = theme.muted_foreground;
+        let border = theme.border;
+        let list_background = theme.colors.list;
+        let list_hover = theme.list_hover;
+        let list_active = theme.list_active;
+        let main = style.action(ActionRole::Main);
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(list_background)
+            .text_color(foreground)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .border_b_1()
+                    .border_color(border)
+                    .child(div().text_size(px(14.0)).child("数据源"))
+                    .child(
+                        action_button(
+                            "btn-add",
+                            "+ 添加",
+                            ActionRole::Main,
+                            ActionSize::Compact,
+                            style,
+                        )
+                        .debug_selector(|| "DATASOURCE_ADD_BUTTON".to_owned())
                         .on_mouse_down(MouseButton::Left, {
                             let panel = this.clone();
                             move |_event, _window, cx| {
@@ -589,10 +543,9 @@ impl Render for TreeNav {
                                     })
                                     .ok();
                             }
-                        })
-                        .child("+ 添加"),
-                ),
-        );
+                        }),
+                    ),
+            );
 
         if self.loading && self.nodes.is_empty() {
             col = col.child(
@@ -602,7 +555,7 @@ impl Render for TreeNav {
                     .justify_center()
                     .h(px(40.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(muted_foreground)
                     .child("加载中..."),
             );
         } else if self.nodes.is_empty() {
@@ -613,7 +566,7 @@ impl Render for TreeNav {
                     .justify_center()
                     .h(px(40.0))
                     .text_size(px(13.0))
-                    .text_color(rgb(0x888888))
+                    .text_color(muted_foreground)
                     .child("暂无数据源"),
             );
         } else {
@@ -621,7 +574,6 @@ impl Render for TreeNav {
                 .id("tree-list")
                 .flex()
                 .flex_col()
-                .flex_grow()
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll_handle)
                 .gap(px(2.0));
@@ -643,54 +595,57 @@ impl Render for TreeNav {
                             Some(TreeSelection::DataSource(ref s)) if s == id
                         );
                         let bg = if is_selected {
-                            rgb(0xd0e0f0)
+                            list_active
                         } else {
-                            rgb(0xfafafa)
+                            list_background
                         };
 
-                        let ds_item = div()
-                            .id(format!("ds-{id}"))
-                            .flex()
-                            .items_center()
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .bg(bg)
-                            .cursor(CursorStyle::PointingHand)
-                            .child(div().w(px(16.0)).child(if *expanded {
-                                icon_caret_down()
-                            } else {
-                                icon_caret_right()
-                            }))
-                            .child(icon_data_source())
-                            .child(
-                                div()
-                                    .flex_grow()
-                                    .pl(px(6.0))
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().text_size(px(13.0)).child(name.clone()))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(rgb(0x888888))
-                                            .child(addr),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div()
-                                            .id(format!("ds-edit-{id}"))
-                                            .px(px(6.0))
-                                            .py(px(2.0))
-                                            .rounded(px(3.0))
-                                            .bg(rgb(0xffaa00))
-                                            .text_size(px(11.0))
-                                            .text_color(rgb(0xffffff))
-                                            .cursor(CursorStyle::PointingHand)
+                        let ds_item =
+                            div()
+                                .id(format!("ds-{id}"))
+                                .flex()
+                                .items_center()
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .bg(bg)
+                                .hover(move |item| item.bg(list_hover))
+                                .cursor(CursorStyle::PointingHand)
+                                .child(div().w(px(16.0)).child(if *expanded {
+                                    icon_caret_down(foreground)
+                                } else {
+                                    icon_caret_right(foreground)
+                                }))
+                                .child(icon_data_source(main.background, main.foreground))
+                                .child(
+                                    div()
+                                        .pl(px(6.0))
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().text_size(px(13.0)).child(name.clone()))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(muted_foreground)
+                                                .child(addr),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .child(
+                                            action_button(
+                                                format!("ds-edit-{id}"),
+                                                "编辑",
+                                                ActionRole::Edit,
+                                                ActionSize::Row,
+                                                style,
+                                            )
+                                            .debug_selector({
+                                                let id = *id;
+                                                move || format!("DATASOURCE_EDIT_BUTTON_{id}")
+                                            })
                                             .on_mouse_down(MouseButton::Left, {
                                                 let this_for_edit = this.clone();
                                                 let id = *id;
@@ -704,19 +659,16 @@ impl Render for TreeNav {
                                                         })
                                                         .ok();
                                                 }
-                                            })
-                                            .child("编辑"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(format!("ds-delete-{id}"))
-                                            .px(px(6.0))
-                                            .py(px(2.0))
-                                            .rounded(px(3.0))
-                                            .bg(rgb(0xdd4444))
-                                            .text_size(px(11.0))
-                                            .text_color(rgb(0xffffff))
-                                            .cursor(CursorStyle::PointingHand)
+                                            }),
+                                        )
+                                        .child(
+                                            action_button(
+                                                format!("ds-delete-{id}"),
+                                                "删除",
+                                                ActionRole::Delete,
+                                                ActionSize::Row,
+                                                style,
+                                            )
                                             .on_mouse_down(MouseButton::Left, {
                                                 let this_for_delete = this.clone();
                                                 let id = *id;
@@ -730,22 +682,21 @@ impl Render for TreeNav {
                                                         })
                                                         .ok();
                                                 }
+                                            }),
+                                        ),
+                                )
+                                .on_mouse_down(MouseButton::Left, {
+                                    let this_for_ds = this.clone();
+                                    let id = *id;
+                                    move |_, _, cx| {
+                                        this_for_ds
+                                            .update(cx, |tree, cx| {
+                                                tree.toggle_data_source(idx, cx);
+                                                tree.select_item(TreeSelection::DataSource(id), cx);
                                             })
-                                            .child("删除"),
-                                    ),
-                            )
-                            .on_mouse_down(MouseButton::Left, {
-                                let this_for_ds = this.clone();
-                                let id = *id;
-                                move |_, _, cx| {
-                                    this_for_ds
-                                        .update(cx, |tree, cx| {
-                                            tree.toggle_data_source(idx, cx);
-                                            tree.select_item(TreeSelection::DataSource(id), cx);
-                                        })
-                                        .ok();
-                                }
-                            });
+                                            .ok();
+                                    }
+                                });
 
                         list = list.child(ds_item);
 
@@ -758,13 +709,20 @@ impl Render for TreeNav {
                                         if s == id && d == &db.name
                                 );
                                 let db_bg = if is_db_selected {
-                                    rgb(0xd0e0f0)
+                                    list_active
                                 } else {
-                                    rgb(0xfafafa)
+                                    list_background
                                 };
 
                                 let db_item = div()
                                     .id(format!("db-{id}-{db_name_owned}"))
+                                    .debug_selector({
+                                        let source_id = *id;
+                                        let database = db.name.clone();
+                                        move || {
+                                            format!("DATASOURCE_DATABASE_{source_id}_{database}")
+                                        }
+                                    })
                                     .flex()
                                     .items_center()
                                     .pl(px(20.0))
@@ -772,17 +730,17 @@ impl Render for TreeNav {
                                     .py(px(5.0))
                                     .bg(db_bg)
                                     .border_t_1()
-                                    .border_color(rgb(0xf0f0f0))
+                                    .border_color(border)
+                                    .hover(move |item| item.bg(list_hover))
                                     .cursor(CursorStyle::PointingHand)
                                     .child(div().w(px(16.0)).child(if db.expanded {
-                                        icon_caret_down()
+                                        icon_caret_down(foreground)
                                     } else {
-                                        icon_caret_right()
+                                        icon_caret_right(foreground)
                                     }))
-                                    .child(icon_database())
+                                    .child(icon_database(foreground))
                                     .child(
                                         div()
-                                            .flex_grow()
                                             .pl(px(6.0))
                                             .text_size(px(13.0))
                                             .child(db_name_owned.clone()),
@@ -792,7 +750,10 @@ impl Render for TreeNav {
                                         let source_idx = idx;
                                         let source_id = *id;
                                         let db_name = db.name.clone();
-                                        move |_, _, cx| {
+                                        move |event, _, cx| {
+                                            if event.click_count > 1 {
+                                                return;
+                                            }
                                             this_for_db
                                                 .update(cx, |tree, cx| {
                                                     tree.toggle_database(source_idx, db_idx, cx);
@@ -819,15 +780,25 @@ impl Render for TreeNav {
                                                 if s == id && d == &db.name && t == &table.name
                                         );
                                         let tbl_bg = if is_tbl_selected {
-                                            rgb(0xd0e0f0)
+                                            list_active
                                         } else {
-                                            rgb(0xffffff)
+                                            list_background
                                         };
 
                                         let tbl_item = div()
                                             .id(format!(
                                                 "tbl-{id}-{db_name_owned}-{table_name_owned}"
                                             ))
+                                            .debug_selector({
+                                                let source_id = *id;
+                                                let database = db.name.clone();
+                                                let table = table.name.clone();
+                                                move || {
+                                                    format!(
+                                                        "DATASOURCE_TABLE_{source_id}_{database}_{table}"
+                                                    )
+                                                }
+                                            })
                                             .flex()
                                             .items_center()
                                             .pl(px(40.0))
@@ -835,12 +806,12 @@ impl Render for TreeNav {
                                             .py(px(5.0))
                                             .bg(tbl_bg)
                                             .border_t_1()
-                                            .border_color(rgb(0xf0f0f0))
+                                            .border_color(border)
+                                            .hover(move |item| item.bg(list_hover))
                                             .cursor(CursorStyle::PointingHand)
-                                            .child(icon_table())
+                                            .child(icon_table(foreground))
                                             .child(
                                                 div()
-                                                    .flex_grow()
                                                     .pl(px(6.0))
                                                     .text_size(px(12.0))
                                                     .child(table_name_owned),
@@ -879,5 +850,83 @@ impl Render for TreeNav {
         }
 
         col
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext, VisualTestContext,
+        px, size,
+    };
+
+    use super::{DatabaseNode, TableInfo, TreeNav, TreeNode};
+
+    #[gpui::test]
+    fn double_clicking_a_database_keeps_its_cached_tables_visible(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let window = cx.open_window(size(px(420.0), px(360.0)), |_, cx| {
+            let mut tree = TreeNav::new(cx);
+            tree.nodes = vec![TreeNode::DataSource {
+                id: 42,
+                name: "fixture".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: 3306,
+                username: "tester".to_owned(),
+                encrypted_password: Vec::new(),
+                expanded: true,
+                databases: vec![DatabaseNode {
+                    name: "FixtureDb".to_owned(),
+                    expanded: false,
+                    tables: vec![TableInfo {
+                        name: "AgentRuns".to_owned(),
+                        comment: None,
+                        engine: Some("InnoDB".to_owned()),
+                        row_count: Some(1),
+                    }],
+                }],
+            }];
+            tree
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let database = cx
+            .debug_bounds("DATASOURCE_DATABASE_42_FixtureDb")
+            .expect("database row bounds");
+
+        for click_count in [1, 2] {
+            cx.simulate_event(MouseDownEvent {
+                position: database.center(),
+                modifiers: Modifiers::default(),
+                button: MouseButton::Left,
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                position: database.center(),
+                modifiers: Modifiers::default(),
+                button: MouseButton::Left,
+                click_count,
+            });
+        }
+        cx.run_until_parked();
+
+        let expanded = typed_window
+            .update(&mut cx, |tree, _, _| match &tree.nodes[0] {
+                TreeNode::DataSource { databases, .. } => databases[0].expanded,
+            })
+            .expect("read database expansion state");
+        assert!(expanded, "a double click must leave the database expanded");
+        assert!(
+            cx.debug_bounds("DATASOURCE_TABLE_42_FixtureDb_AgentRuns")
+                .is_some(),
+            "the cached table row must remain visible after the double click"
+        );
     }
 }

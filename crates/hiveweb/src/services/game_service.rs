@@ -10,6 +10,7 @@ use sqlx::{MySqlPool, Row};
 use std::collections::HashSet;
 
 use crate::cache::redis::RedisClient;
+use crate::db::sql_safety::audit_sql;
 #[allow(deprecated)]
 use crate::models::game::{
     CreateGameRequest, DEFAULT_PAGE_SIZE, Game, GameListResponse, GameResponse, MAX_ALIAS_LENGTH,
@@ -56,8 +57,11 @@ pub async fn list_games(
             (String::new(), vec![], vec![])
         };
 
-    let count_sql = format!("SELECT COUNT(DISTINCT g.id) FROM games g {}", where_clause);
-    let mut count_query = sqlx::query(&count_sql);
+    let count_sql = audit_sql(format!(
+        "SELECT COUNT(DISTINCT g.id) FROM games g {}",
+        where_clause
+    ));
+    let mut count_query = sqlx::query(count_sql);
     for p in &count_params {
         count_query = count_query.bind(p);
     }
@@ -68,7 +72,7 @@ pub async fn list_games(
         .get(0);
 
     let offset = (page - 1) * page_size;
-    let data_sql = format!(
+    let data_sql = audit_sql(format!(
         "SELECT g.id, g.name, g.created_at, g.updated_at, COALESCE(JSON_ARRAYAGG(gae.alias), JSON_ARRAY()) AS aliases
          FROM games g
          LEFT JOIN game_alias_entries gae ON gae.game_id = g.id
@@ -77,8 +81,8 @@ pub async fn list_games(
          ORDER BY g.id DESC
          LIMIT ? OFFSET ?",
         where_clause
-    );
-    let mut data_query = sqlx::query(&data_sql);
+    ));
+    let mut data_query = sqlx::query(data_sql);
     for p in &data_params {
         data_query = data_query.bind(p);
     }
@@ -603,8 +607,11 @@ pub async fn get_single_external_game_info_cached(
     match cache_helper::cached_get::<Option<ExternalGameInfo>>(redis, &key).await {
         Ok(Some(cached)) => return Ok(cached),
         Ok(None) => {} // cache miss
-        Err(e) => {
-            tracing::debug!(%key, error = %e, "cache read failed, falling back to DB")
+        Err(_) => {
+            tracing::debug!(
+                error_kind = "cache_read_failed",
+                "cache read failed, falling back to DB"
+            )
         }
     }
 
@@ -621,8 +628,11 @@ pub async fn get_single_external_game_info_cached(
     } else {
         cache_helper::TTL_GAME_INFO_NOT_FOUND
     };
-    if let Err(e) = cache_helper::cached_set(redis, &key, &result, ttl).await {
-        tracing::debug!(%key, error = %e, "cache write failed");
+    if cache_helper::cached_set(redis, &key, &result, ttl)
+        .await
+        .is_err()
+    {
+        tracing::debug!(error_kind = "cache_write_failed", "cache write failed");
     }
 
     Ok(result)
@@ -676,7 +686,7 @@ pub async fn filter_available_games(
         "SELECT id FROM cc_logic_game WHERE id IN ({}) AND status = 1",
         placeholders.join(",")
     );
-    let mut query = sqlx::query_as(&sql);
+    let mut query = sqlx::query_as(audit_sql(sql));
     for id in game_ids {
         query = query.bind(id);
     }
@@ -696,15 +706,14 @@ pub async fn fetch_logic_game_ids_by_tag(
     channel: &str,
     limit: i32,
 ) -> Result<Vec<i64>, String> {
-    let sql = format!(
-        r#"SELECT
+    let sql = r#"SELECT
   distinct z2.id
 FROM (
   SELECT t1.logic_game_id
   FROM (
     select * from cc_logic_game_wide where client_type=?
     AND JSON_CONTAINS (game_tags, JSON_OBJECT ('type', 1))
-    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('name', '{}'))
+    AND JSON_CONTAINS (game_tags, JSON_OBJECT ('name', ?))
   ) t1
   LEFT JOIN (
     select * from cc_logic_game_exclude where client_type=? and channel=?
@@ -714,15 +723,14 @@ FROM (
   where t2.id is null AND t4.id is null
   group by t1.logic_game_id
 ) z1
-INNER JOIN (
+  INNER JOIN (
   select * from cc_logic_game where status = 1
-) z2 on z1.logic_game_id = z2.id
+    ) z2 on z1.logic_game_id = z2.id
 order by RAND()
-limit ?"#,
-        category_name
-    );
-    let rows: Vec<(i64,)> = sqlx::query_as(&sql)
+limit ?"#;
+    let rows: Vec<(i64,)> = sqlx::query_as(audit_sql(sql.to_string()))
         .bind(client_type)
+        .bind(category_name)
         .bind(client_type)
         .bind(channel)
         .bind(limit)
@@ -730,7 +738,10 @@ limit ?"#,
         .await
         .map_err(|e| format!("fetch_logic_game_ids_by_tag: {e}"))?;
     tracing::debug!(
-        %client_type, %channel, %category_name, %limit,
+        client_type_bytes = client_type.len(),
+        channel_bytes = channel.len(),
+        category_name_bytes = category_name.len(),
+        limit,
         result_count = rows.len(),
         "fetch_logic_game_ids_by_tag done"
     );

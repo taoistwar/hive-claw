@@ -12,10 +12,12 @@ pub mod agent;
 pub mod builtins;
 pub mod capabilities;
 pub mod capability;
+pub mod execution_context;
 pub mod hook;
 pub mod input_source;
 pub mod invoker;
 pub mod llm;
+pub mod llm_audit;
 pub mod orchestrator;
 pub mod pool;
 pub mod skill_test;
@@ -25,11 +27,12 @@ pub mod wasm_imports;
 pub mod workflow;
 
 pub use capability::CapabilityRegistry;
+pub use execution_context::RuntimeExecutionContext;
 pub use input_source::{InputSource, InputSpec};
 pub use invoker::Invoker;
 pub use llm::LlmRegistry;
 pub use pool::{InstancePool, PoolConfig};
-pub use wasm_imports::{registered_imports, scan_wasm_imports};
+pub use wasm_imports::scan_wasm_imports;
 pub use workflow::WorkflowExecutor;
 
 use std::sync::Arc;

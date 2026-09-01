@@ -108,7 +108,7 @@ Content-Type: application/json
 
 **Validation Rules**:
 - `phone`: 必填，11 位数字，中国大陆手机号格式
-- `password`: 必填，6-20 位
+- `password`: 必填，按 Unicode 字符计数 6-20，并至少包含一个 ASCII 字母和数字
 
 **Success Response** (200 OK):
 ```json
@@ -298,7 +298,7 @@ Content-Type: application/json
 **Validation Rules**:
 - `phone`: 必填，11 位数字，唯一
 - `nickname`: 必填，2-20 字符
-- `password`: 必填，6-20 位
+- `password`: 必填，按 Unicode 字符计数 6-20，并至少包含一个 ASCII 字母和数字
 - `role`: 必填，1=普通管理员，2=系统管理员，3=超级管理员
 
 **Success Response** (201 Created):

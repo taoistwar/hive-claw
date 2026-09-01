@@ -23,7 +23,6 @@ fn main() -> ExitCode {
     info!(
         message = "HiveGUI starting",
         version = version::version(),
-        hiveclaw_url = %cfg.hiveclaw_url,
         log_dir = %cfg.log_dir.display(),
     );
 

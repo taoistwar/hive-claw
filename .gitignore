@@ -21,6 +21,7 @@ release/
 Thumbs.db
 *.tmp
 /nanobot/
+/zed/
 
 llm_presets.toml
 
@@ -28,7 +29,6 @@ BUG_REPORT.md
 .vite
 *.tar.gz
 WEEK.md
-*.log
 logs/
 hiveweb.log.*
 TEST.md

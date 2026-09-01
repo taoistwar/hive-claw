@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE INDEX IF NOT EXISTS idx_agents_identifier_category_id ON agents (identifier, category_id)",
+  "hash": "f3afb3ae555337ed556c8fa03f5439c47ed80f90ac7a4ad46f9e3df1e584fbcb",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  }
+}

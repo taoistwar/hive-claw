@@ -8,10 +8,12 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::AppState;
-use crate::runtime::tool_test::{self as test_svc, TestToolRequest};
+use crate::middleware::request_id::RequestId;
+use crate::runtime::execution_context::RuntimeExecutionContext;
+use crate::runtime::tool_test::{self as test_svc, TestToolRequest, generate_tool_test_trace_id};
 use crate::services::audit::{self as audit_svc, Operation};
 use crate::services::tool::{self as svc, CreateMeta, ListFilter, UpdateMeta};
-use crate::utils::error::ApiResponse;
+use crate::utils::error::{ApiResponse, codes};
 use crate::utils::jwt::Claims;
 
 pub fn router() -> Router<AppState> {
@@ -93,7 +95,7 @@ async fn create_tool(
 ) -> Result<ApiResponse<crate::services::tool::ToolListItem>, ApiResponse<()>> {
     match svc::create(&state.pool, meta).await {
         Ok(tool_item) => {
-            if let Err(e) = audit_event(
+            if let Err(_error) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Create,
@@ -103,7 +105,10 @@ async fn create_tool(
             )
             .await
             {
-                tracing::error!("Failed to write audit log for tool create: {}", e);
+                tracing::error!(
+                    error_kind = "audit_write_failed",
+                    "Failed to write audit log for tool create"
+                );
             }
             Ok(ApiResponse::success(tool_item))
         }
@@ -119,7 +124,7 @@ async fn update_tool(
 ) -> Result<ApiResponse<crate::services::tool::ToolListItem>, ApiResponse<()>> {
     match svc::update(&state.pool, id, meta).await {
         Ok(tool_item) => {
-            if let Err(e) = audit_event(
+            if let Err(_error) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Update,
@@ -129,7 +134,10 @@ async fn update_tool(
             )
             .await
             {
-                tracing::error!("Failed to write audit log for tool update: {}", e);
+                tracing::error!(
+                    error_kind = "audit_write_failed",
+                    "Failed to write audit log for tool update"
+                );
             }
             Ok(ApiResponse::success(tool_item))
         }
@@ -152,7 +160,7 @@ async fn delete_tool(
 
     match svc::delete(&state.pool, id).await {
         Ok(()) => {
-            if let Err(e) = audit_event(
+            if let Err(_error) = audit_event(
                 &state.pool,
                 &claims,
                 Operation::Delete,
@@ -162,7 +170,10 @@ async fn delete_tool(
             )
             .await
             {
-                tracing::error!("Failed to write audit log for tool delete: {}", e);
+                tracing::error!(
+                    error_kind = "audit_write_failed",
+                    "Failed to write audit log for tool delete"
+                );
             }
             Ok(ApiResponse::success(()))
         }
@@ -172,18 +183,13 @@ async fn delete_tool(
 
 async fn test_tool(
     State(state): State<AppState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
     Path(id): Path<i64>,
-    Json(mut req): Json<TestToolRequest>,
+    Json(req): Json<TestToolRequest>,
 ) -> Result<ApiResponse<test_svc::TestToolResult>, ApiResponse<()>> {
-    let trace_id = req.trace_id.take().unwrap_or_else(|| {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        format!("tool_test_{}", ts)
-    });
+    let trace_id = generate_tool_test_trace_id();
     let deps = crate::runtime::orchestrator::OrchestratorDeps {
+        execution_context: RuntimeExecutionContext::best_effort(Some(request_id), None),
         pool: state.pool.clone(),
         redis: state.redis.clone(),
         s3: state.s3.clone(),
@@ -205,12 +211,12 @@ async fn test_tool(
     };
     match test_svc::run_tool_test(&state.pool, &deps, id, req_with_trace).await {
         Ok(result) => Ok(ApiResponse::success(result)),
-        Err(e) => {
-            let log_path = format!("/tmp/tool_test_logs/{}.log", trace_id);
-            Err(ApiResponse::err(
-                5000,
-                format!("{} (debug: {})", e, log_path),
-            ))
+        Err(test_svc::ToolTestError::ModelPresetUnknown(name)) => Err(ApiResponse::err(
+            codes::MODEL_PRESET_UNKNOWN,
+            format!("模型 preset「{name}」不存在，请重新选择"),
+        )),
+        Err(test_svc::ToolTestError::Failed(_)) => {
+            Err(ApiResponse::err(codes::INTERNAL, "Tool test failed"))
         }
     }
 }
@@ -241,7 +247,10 @@ async fn audit_event(
     )
     .await
     {
-        tracing::error!("Failed to write audit log: {}", e);
+        tracing::error!(
+            error_kind = "audit_write_failed",
+            "Failed to write audit log"
+        );
         return Err(e);
     }
     Ok(())

@@ -1,8 +1,10 @@
 # Security Model — Agent Runtime
 
-**Status**: Updated post V038 (all tasks implemented)
+> **范围更新（2026-07-23）：** 原管理端测试聊天、admin session/SSE 所有权模型及 `/api/admin-chat*`、`/api/chat/sessions*` 已由 `81a84fe` 移除并 superseded。第 6 节仅保留历史边界，不得据此恢复管理端 Chat。
+
+**Status**: Current for Agent Runtime；admin Chat security model superseded
 **Audience**: Operators / Reviewers / Plugin authors
-**Last Updated**: 2026-05-29
+**Last Updated**: 2026-07-23
 
 ## 1. Threat model summary
 
@@ -98,16 +100,15 @@ POST /api/plugins (multipart)
   9. On DB failure: spawn fire-and-forget S3 delete to avoid orphan blobs
 ```
 
-## 6. SSE chat ownership (FR-027)
+## 6. Legacy admin SSE chat ownership（已 Superseded）
 
-Three-tier ownership check in `services/chat::check_ownership`:
-- `actor_role == Super (3)` → bypass
-- `session.admin_id IS NULL` (creator deleted) → only Super
-- `session.admin_id != actor_admin_id` → 403 with 2001
+原 `services/chat::check_ownership` 的 admin/Super ownership bypass、per-admin SSE counter 和错误码 4291 都随管理端 Chat 删除，不是现行安全控制。不得恢复以下任一行为：
 
-Per-admin concurrency limit `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` (default 2)
-enforced via process-local Mutex<HashMap> counter with RAII guard. Exceed →
-4291 SseConcurrencyExceeded + HTTP 429.
+- `/api/admin-chat*` 或 `/api/chat/sessions*`
+- Super 读取其他管理员测试会话
+- `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` 驱动的 admin SSE 流限制
+
+现行普通用户聊天由 `/api/assistant`、`/api/newsession`、`/api/messages` 提供，会话/消息按 `user_id` 隔离并使用 `chat_sessions_user` / `chat_messages_user`；其签名、鉴权与限流由外部 Assistant API 特性负责。
 
 ## 7. Audit retention (FR-022)
 
@@ -116,9 +117,17 @@ Background cron: `cargo run --bin audit-retention` (deploy as systemd unit /
 kubernetes cronjob). Each pass deletes rows where `occurred_at < NOW() -
 INTERVAL N DAY`.
 
-`chat_messages` indirectly retained via parent `chat_sessions` cascade —
-`chat-retention` cron deletes sessions older than `CHAT_RETENTION_DAYS`
-(default 30).
+生产库与归档库应采用独立账号，并至少执行：
+
+```sql
+GRANT INSERT, SELECT ON hiveweb.runtime_audit_logs TO 'hiveweb_audit_writer'@'%';
+REVOKE UPDATE, DELETE ON hiveweb.runtime_audit_logs FROM 'hiveweb_audit_writer'@'%';
+GRANT DELETE ON hiveweb.runtime_audit_logs TO 'hiveweb_audit_retention'@'%';
+```
+
+`audit-retention` worker 应使用 `AUDIT_RETENTION_DATABASE_URL` 访问 `DELETE` 专用账号。
+
+现行 `chat_messages_user` 由父表 `chat_sessions_user` 级联删除；`chat-retention` 的具体保留期属于外部 Assistant API 运行配置，不继承已 superseded 的 admin Chat 所有权契约。
 
 ## 8. Environment variable surface (security-relevant subset)
 
@@ -130,7 +139,8 @@ INTERVAL N DAY`.
 | `PLUGIN_MAX_BYTES` | 16777216 | Cap per-Plugin upload bytes |
 | `PLUGIN_CALL_TIMEOUT_MS` | 33000 | Hard kill switch for plugin invocation |
 | `PLUGIN_CALL_MAX_MEMORY_MB` | 128 | WASM linear memory cap |
-| `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` | 2 | Per-admin SSE stream cap |
+
+> `CHAT_SSE_MAX_CONCURRENT_PER_ADMIN` 是已 superseded 的 admin SSE 配置，不属于 004 现役安全变量面。
 
 ## 9. V019–V038 Security additions
 

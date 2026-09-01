@@ -7,15 +7,15 @@ import PermissionGuard from '../PermissionGuard';
 // Asserts the "no permission = not rendered / redirect message" convention
 // added in the 2026-05-26 spec revision (spec §US3 AS-1..4, FR-005).
 
-const userRef: { current: { role: number } | null } = { current: null };
+const adminRef: { current: { role: number } | null } = { current: null };
 
 vi.mock('../../hooks/useAuth', () => ({
-  useAuth: () => ({ user: userRef.current }),
+  useAuth: () => ({ admin: adminRef.current }),
 }));
 
 describe('PermissionGuard', () => {
   it('renders nothing/403 when user is unauthenticated', () => {
-    userRef.current = null;
+    adminRef.current = null;
     render(
       <PermissionGuard requiredRole={1}>
         <div>secret</div>
@@ -26,7 +26,7 @@ describe('PermissionGuard', () => {
   });
 
   it('renders nothing when user role is below requirement (spec §US3 AS-1)', () => {
-    userRef.current = { role: 1 }; // Normal admin
+    adminRef.current = { role: 1 }; // Normal admin
     render(
       <PermissionGuard requiredRole={3}>
         <div>delete-admin-button</div>
@@ -37,7 +37,7 @@ describe('PermissionGuard', () => {
   });
 
   it('renders children when user role meets or exceeds requirement (spec §US3 AS-3)', () => {
-    userRef.current = { role: 3 }; // Super admin
+    adminRef.current = { role: 3 }; // Super admin
     render(
       <PermissionGuard requiredRole={3}>
         <div>delete-admin-button</div>
@@ -47,7 +47,7 @@ describe('PermissionGuard', () => {
   });
 
   it('treats role boundary exactly at requiredRole as permitted', () => {
-    userRef.current = { role: 2 }; // System admin meeting requiredRole=2
+    adminRef.current = { role: 2 }; // System admin meeting requiredRole=2
     render(
       <PermissionGuard requiredRole={2}>
         <div>edit-admin-button</div>

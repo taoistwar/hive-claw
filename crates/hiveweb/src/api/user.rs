@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::api::AppState;
+use crate::db::sql_safety::audit_sql;
 use crate::models::User;
 use crate::utils::error::{ApiResponse, AppError};
 use crate::utils::jwt::Claims;
@@ -120,7 +121,7 @@ async fn list_users(
     );
 
     let total: (i64,) = {
-        let mut qc = sqlx::query_as(&count_sql);
+        let mut qc = sqlx::query_as(audit_sql(count_sql.clone()));
         if let Some(id) = q.id {
             qc = qc.bind(id);
         }
@@ -141,15 +142,15 @@ async fn list_users(
         }
         match qc.fetch_one(&state.pool).await {
             Ok(t) => t,
-            Err(e) => {
-                tracing::error!(error=%e, "count users failed");
+            Err(_) => {
+                tracing::error!(error_kind = "user_count_query_failed", "count users failed");
                 return AppError::Internal("Service unavailable".into()).into_response();
             }
         }
     };
 
     let users: Vec<User> = {
-        let mut qr = sqlx::query_as(&list_sql);
+        let mut qr = sqlx::query_as(audit_sql(list_sql.clone()));
         if let Some(id) = q.id {
             qr = qr.bind(id);
         }
@@ -173,8 +174,8 @@ async fn list_users(
             .bind(((q.page - 1) * q.page_size) as i64);
         match qr.fetch_all(&state.pool).await {
             Ok(u) => u,
-            Err(e) => {
-                tracing::error!(error=%e, "list users failed");
+            Err(_) => {
+                tracing::error!(error_kind = "user_list_query_failed", "list users failed");
                 return AppError::Internal("Service unavailable".into()).into_response();
             }
         }
@@ -222,8 +223,8 @@ async fn create_user(
         .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error=%e, "create user failed");
+        Err(_) => {
+            tracing::error!(error_kind = "user_create_failed", "create user failed");
             return AppError::Internal("Failed to create user".into()).into_response();
         }
     };
@@ -236,8 +237,11 @@ async fn create_user(
     .await
     {
         Ok(u) => ApiResponse::success(u.into()),
-        Err(e) => {
-            tracing::error!(error=%e, "fetch created user failed");
+        Err(_) => {
+            tracing::error!(
+                error_kind = "created_user_query_failed",
+                "fetch created user failed"
+            );
             AppError::Internal("Failed to fetch created user".into()).into_response()
         }
     }

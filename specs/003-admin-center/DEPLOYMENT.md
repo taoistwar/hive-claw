@@ -9,7 +9,7 @@
 
 | Component   | Version    | Notes                                                |
 | ----------- | ---------- | ---------------------------------------------------- |
-| Rust        | 1.85+      | `rustup install stable`                              |
+| Rust        | 1.97.1     | exact version; `rustup toolchain install 1.97.1`     |
 | Node.js     | 18+        | needed only for frontend build (`npm run build`)     |
 | MySQL       | 8.0+       | InnoDB, utf8mb4                                      |
 | Redis       | 7+         | used for login-failure tracking and rate limiting    |
@@ -108,15 +108,23 @@ To roll back, restore the prior database snapshot — migrations are forward-onl
 After migrating, create the initial super admin (role = 3):
 
 ```bash
-cargo run --bin create-super-admin -- \
-  --phone 18810154696 \
-  --password 'change-me-now' \
-  --nickname 'Super Admin'
+read -r -s -p 'Bootstrap password: ' HIVEWEB_BOOTSTRAP_PASSWORD
+printf '\n'
+printf '%s\n' "$HIVEWEB_BOOTSTRAP_PASSWORD" | \
+  cargo run --bin create-super-admin -- \
+    --phone 18810154696 \
+    --nickname 'Super Admin' \
+    --password-stdin
+unset HIVEWEB_BOOTSTRAP_PASSWORD
 ```
 
 > 提示：二进制名使用连字符 `create-super-admin`（与文件名 `create_super_admin.rs` 不同；后者是 Rust 标识符风格，前者是 `[[bin]] name` 字段）。
 
-Re-running with the same phone is rejected (uniqueness). To seed test data, use `cargo run --bin seed`.
+The password must contain 6–20 Unicode characters, including an ASCII letter
+and digit. Re-running with the same phone exits non-zero and never changes the
+existing nickname or password. Rotate credentials through the authenticated
+password-change flow. To seed test data, use the feature-gated `seed` binary
+with its documented private password file.
 
 ---
 

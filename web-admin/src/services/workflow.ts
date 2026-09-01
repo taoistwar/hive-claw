@@ -37,6 +37,7 @@ export interface WorkflowMeta {
   input_schema: Record<string, unknown> | null;
   start_description: string | null;
   output_schema: Record<string, unknown> | null;
+  end_description: string | null;
   required_capabilities: string[] | null;
   tags?: { id: number; name: string }[];
   created_at: string;
@@ -49,14 +50,22 @@ export interface WorkflowList {
 }
 
 export interface GraphNode {
-  id?: number;
+  id?: number | null;
   node_key: string;
   node_type?: NodeType;
   function_id?: number | null;
-  position?: { x: number; y: number } | null;
+  position?: {
+    x: number;
+    y: number;
+    input_schema?: Record<string, unknown> | null;
+    start_description?: string | null;
+    output_schema?: Record<string, unknown> | null;
+    end_description?: string | null;
+  } | null;
   input_schema?: Record<string, unknown> | null;
   start_description?: string | null;
   output_schema?: Record<string, unknown> | null;
+  end_description?: string | null;
   node_config?: AnswerNodeConfig | FunctionNodeConfig | Record<string, unknown> | null;
 }
 
@@ -76,7 +85,7 @@ export interface AnswerNodeConfig {
 }
 
 export interface GraphEdge {
-  id?: number;
+  id?: number | null;
   src_node_key: string;
   dst_node_key: string;
   /** Deprecated — use the dst node's `node_config.input_mapping` (function_node
@@ -131,6 +140,7 @@ export async function createWorkflow(meta: {
   identifier: string;
   name: string;
   description?: string;
+  end_description?: string;
   timeout_ms?: number;
   category_id?: number;
   required_capabilities?: string[];
@@ -162,6 +172,7 @@ export async function updateWorkflow(
   meta: {
     name?: string;
     description?: string;
+    end_description?: string;
     timeout_ms?: number;
     category_id?: number;
     required_capabilities?: string[];
@@ -189,6 +200,7 @@ export interface WorkflowExecuteRequest {
 
 export interface WorkflowExecuteResult {
   workflow_id: number;
+  outputs: unknown;
   node_results: Record<string, unknown>;
   node_inputs: Record<string, unknown>;
   node_agent_contexts: Record<string, unknown>;

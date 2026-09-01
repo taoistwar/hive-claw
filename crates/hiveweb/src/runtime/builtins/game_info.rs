@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::cache::redis::RedisClient;
 use crate::runtime::llm::LlmRegistry;
-use providers::{ChatRequest, RetryMode};
+use providers::{ChatRequest, LlmCallOptions};
 
 use super::{BuiltinContext, BuiltinError, BuiltinResult};
 
@@ -352,8 +352,11 @@ async fn handle_classify_and_list(
                 "data": "未找到相关游戏"
             }));
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "fetch_categories failed, game_info classify aborted");
+        Err(_error) => {
+            tracing::warn!(
+                error_kind = "category_fetch_failed",
+                "fetch_categories failed, game_info classify aborted"
+            );
             return Ok(serde_json::json!({
                 "found": false,
                 "data": "未找到相关游戏"
@@ -363,7 +366,10 @@ async fn handle_classify_and_list(
     let category_id = match classify_game_category(&context, &categories, llm).await {
         Some(id) => id,
         None => {
-            tracing::warn!(user_input = %user_input, "game_info classify returned None");
+            tracing::warn!(
+                user_input_len = user_input.len(),
+                "game_info classify returned None"
+            );
             return Ok(serde_json::json!({
                 "found": false,
                 "data": "未找到相关游戏"
@@ -379,7 +385,7 @@ async fn handle_classify_and_list(
         .unwrap_or_default();
 
     tracing::info!(
-        user_input = %user_input,
+        user_input_len = user_input.len(),
         category_id = %category_id,
         category_name = %category_name,
         "game_info: LLM classified user input"
@@ -399,7 +405,7 @@ async fn handle_classify_and_list(
             tracing::debug!(
                 category_name = %category_name,
                 count = ids.len(),
-                game_ids = ?ids,
+                game_count = ids.len(),
                 "game_info: fetched logic_game_ids"
             );
             if ids.is_empty() {
@@ -411,8 +417,12 @@ async fn handle_classify_and_list(
             }
             ids
         }
-        Err(e) => {
-            tracing::error!(category_id = %category_id, error = %e, "fetch logic_game_ids failed");
+        Err(_error) => {
+            tracing::error!(
+                category_id = %category_id,
+                error_kind = "game_id_fetch_failed",
+                "fetch logic_game_ids failed"
+            );
             return Ok(serde_json::json!({
                 "found": false,
                 "data": "未找到相关游戏"
@@ -457,7 +467,11 @@ async fn handle_classify_and_list(
     }
 
     if games.is_empty() {
-        tracing::warn!(category_id = %category_id, game_ids = ?game_ids, "game_info: all game lookups failed, no games to return");
+        tracing::warn!(
+            category_id = %category_id,
+            candidate_count = game_ids.len(),
+            "game_info: all game lookups failed, no games to return"
+        );
         return Ok(serde_json::json!({
             "found": false,
             "data": "未找到相关游戏"
@@ -556,7 +570,7 @@ async fn classify_game_category(
     llm: &LlmRegistry,
 ) -> Option<i64> {
     tracing::debug!(
-        user_input = %user_input,
+        user_input_len = user_input.len(),
         category_count = categories.len(),
         has_llm = true,
         "classify_game_category: start"
@@ -574,7 +588,7 @@ async fn classify_game_category(
         "content": prompt,
     })];
 
-    match llm.build_primary(None) {
+    match llm.build_chain(None) {
         Ok((provider, model)) => {
             let req = ChatRequest {
                 model: Some(model.clone()),
@@ -587,11 +601,11 @@ async fn classify_game_category(
             };
             tracing::debug!(model = %model, "classify_game_category: calling LLM");
             let resp = provider
-                .chat_with_retry(req, RetryMode::Standard, None)
+                .chat_with_options(req, LlmCallOptions::default())
                 .await;
             let raw_content = resp.content.clone();
             tracing::debug!(
-                llm_response = ?raw_content,
+                has_content = raw_content.is_some(),
                 finish_reason = %resp.finish_reason,
                 "classify_game_category: LLM response"
             );
@@ -614,22 +628,22 @@ async fn classify_game_category(
                         tracing::debug!(category_id = %id, category_name = %name, "classify_game_category: matched by name");
                         return Some(*id);
                     }
-                    tracing::debug!(llm_output = %trimmed, "classify_game_category: could not match LLM output to any category");
+                    tracing::debug!(
+                        output_len = trimmed.len(),
+                        "classify_game_category: could not match LLM output to any category"
+                    );
                 } else {
                     tracing::debug!("classify_game_category: LLM returned empty string");
                 }
             }
             tracing::warn!(
-                user_input = %user_input,
-                llm_response = ?resp.content,
+                user_input_len = user_input.len(),
+                has_content = resp.content.is_some(),
                 "LLM 分类失败或返回无效 ID"
             );
         }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "build_primary 失败"
-            );
+        Err(_error) => {
+            tracing::warn!(error_kind = "chain_build_failed", "build_primary 失败");
         }
     }
 

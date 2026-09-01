@@ -4,11 +4,14 @@
 //! Custom (`kind=2`) — 必须绑定已存在且未软删的 Plugin + plugin_export。
 
 use chrono::{DateTime, Utc};
+use hive_json_schema::CompiledJsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 
+use crate::db::sql_safety::audit_sql;
 use crate::models::Function;
+use crate::services::optimistic_lock::OptimisticLockTable;
 use crate::utils::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -82,41 +85,9 @@ pub struct ListFilter {
 }
 
 fn validate_schema(schema: &Value, label: &str) -> Result<(), AppError> {
-    // 前置检查：常见 JSON Schema 错误，提供更友好的中文提示
-    if let Some(required) = schema.get("required") {
-        if required.is_boolean() {
-            return Err(AppError::BadRequest(format!(
-                "{label} 中 required 字段格式错误：required 应为字符串数组（例如 [\"field1\", \"field2\"]），不能是布尔值 true/false。若 schema 的顶层 type 为 string / number / boolean 等基础类型，请移除 required 字段。"
-            )));
-        }
-        if !required.is_array() {
-            return Err(AppError::BadRequest(format!(
-                "{label} 中 required 字段格式错误：required 应为字符串数组，例如 [\"field1\", \"field2\"]。"
-            )));
-        }
-    }
-
-    if !schema.is_object() {
-        return Err(AppError::BadRequest(format!(
-            "{label} 必须是 JSON 对象，不能是 {}。",
-            if schema.is_array() {
-                "数组"
-            } else if schema.is_string() {
-                "字符串"
-            } else if schema.is_number() {
-                "数字"
-            } else {
-                "布尔值或其他类型"
-            }
-        )));
-    }
-
-    // 无 type 的空 schema {} 是合法的，表示接受任意值，交由 jsonschema 校验
-
-    // 轻量 JSON Schema 校验：仅尝试编译，编译通过即认为格式合法
-    jsonschema::JSONSchema::compile(schema)
-        .map_err(|e| AppError::BadRequest(format!("{label} 不是合法 JSON Schema: {e}")))?;
-    Ok(())
+    CompiledJsonSchema::compile(schema)
+        .map(|_| ())
+        .map_err(|error| AppError::BadRequest(format!("{label}: {error}")))
 }
 
 pub async fn create_custom(pool: &MySqlPool, meta: CreateMeta) -> Result<Function, AppError> {
@@ -261,7 +232,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
          {where_sql} ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
     );
 
-    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+    let count_sql = audit_sql(count_sql);
+    let mut count_q = sqlx::query_as::<_, (i64,)>(count_sql);
     if let Some(k) = filter.kind {
         count_q = count_q.bind(k);
     }
@@ -315,7 +287,8 @@ pub async fn list(pool: &MySqlPool, filter: ListFilter) -> Result<FunctionList, 
         plugin_identifier: Option<String>,
     }
 
-    let mut list_q = sqlx::query_as::<_, Row>(&list_sql);
+    let list_sql = audit_sql(list_sql);
+    let mut list_q = sqlx::query_as::<_, Row>(list_sql);
     if let Some(k) = filter.kind {
         list_q = list_q.bind(k);
     }
@@ -424,9 +397,6 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Funct
         ));
     }
 
-    crate::services::optimistic_lock::check_and_bump(pool, "functions", id, meta.updated_at)
-        .await?;
-
     if !is_builtin {
         if let Some(ref s) = meta.input_schema {
             validate_schema(s, "input_schema")?;
@@ -434,7 +404,17 @@ pub async fn update(pool: &MySqlPool, id: i64, meta: UpdateMeta) -> Result<Funct
         if let Some(ref s) = meta.output_schema {
             validate_schema(s, "output_schema")?;
         }
+    }
 
+    crate::services::optimistic_lock::check_and_bump(
+        pool,
+        OptimisticLockTable::Functions,
+        id,
+        meta.updated_at,
+    )
+    .await?;
+
+    if !is_builtin {
         sqlx::query(
             r#"UPDATE functions SET
                   name = COALESCE(?, name),
@@ -570,4 +550,45 @@ pub async fn fetch_runtime_meta(
             },
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn bad_request_message(error: AppError) -> String {
+        match error {
+            AppError::BadRequest(message) => message,
+            other => panic!("expected bad request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accepts_valid_draft_7_schema() {
+        assert!(validate_schema(&json!({"type": "object"}), "input_schema").is_ok());
+    }
+
+    #[test]
+    fn maps_non_object_to_stable_category() {
+        let error = validate_schema(&json!([]), "input_schema").unwrap_err();
+        assert_eq!(bad_request_message(error), "input_schema: object_required");
+    }
+
+    #[test]
+    fn maps_invalid_schema_to_stable_category() {
+        let error = validate_schema(&json!({"required": true}), "output_schema").unwrap_err();
+        assert_eq!(bad_request_message(error), "output_schema: invalid_schema");
+    }
+
+    #[test]
+    fn external_reference_error_does_not_leak_reference() {
+        let secret_reference = "https://schema-secret.invalid/private.json";
+        let error = validate_schema(&json!({"$ref": secret_reference}), "input_schema")
+            .expect_err("external reference must be rejected");
+        let message = bad_request_message(error);
+
+        assert_eq!(message, "input_schema: external_reference_forbidden");
+        assert!(!message.contains(secret_reference));
+    }
 }

@@ -136,6 +136,12 @@ CREATE TABLE hook_executions (
 }
 ```
 
+`args` 仅作为调用输入对象使用；省略或不是 JSON object 时运行时按空对象处理。
+`call_function` / `call_workflow` 都先以可信 HookContext 顶层字段覆盖同名
+`args`，再最后注入 `_agent_context` 快照并覆盖 `args._agent_context`。因此
+固定优先级为 `args < runtime HookContext < _agent_context`，持久化配置不能
+伪造 Agent/session/request/trigger 或上下文快照。
+
 ### `http_webhook`
 
 ```json
@@ -145,6 +151,10 @@ CREATE TABLE hook_executions (
     "timeout_ms": "int (optional, default 10000)"
 }
 ```
+
+Webhook URL/headers 在创建和有效动作更新时验证；运行和每次重试再次执行
+同一 URL/DNS 策略并 pin 全部已验证地址。不得持久化解析 IP；DNS 结果只属于
+单次请求，且 3xx 响应不跟随。`headers` 不允许覆盖 `Host`。
 
 ---
 
@@ -163,6 +173,18 @@ CREATE TABLE hook_executions (
 - 失败事件仅输出白名单 `error_kind`，不输出任意下游错误文本、完整用户消息、Webhook URL、payload 或响应体
 - Hook 执行不会新增数据库记录，因此不存在应用侧执行历史保留或清理任务
 - 遗留表中的已有数据不在本次变更范围内，由运维另行决定归档或删除
+
+## Runtime-only `AgentContext`（非持久化实体）
+
+Hook Function/Workflow 输入中的 `_agent_context` 是当前运行时状态的序列化快照；输出中的顶层 `_agent_context_updates` 是受控更新请求。两者都不是 MySQL entity，不新增 migration，也不写入 `hook_executions` 或 `runtime_audit_logs`。`_agent_context_updates` 同时是内部保留输出键：应用更新后不得出现在 Workflow 公共 end-output 中，也不得由 Workflow `output_schema.properties` 声明。
+
+| Update field | Runtime mapping | Boundary |
+|---|---|---|
+| `records[]` | `AgentContext::set_record` | 仅已有 category；未知 category 跳过 |
+| `extensions[]` | `AgentContext::add_extension` | 构造已有 `ExtensionContent` 类型 |
+| `metadata{}` | `AgentContext::set_metadata` | 仅字符串值 |
+
+updates 只影响当前 Agent 执行的内存上下文。持久化 Agent 配置、system prompt、数据库业务副作用和 audit persistence mode 不属于该数据结构；业务副作用仍受被选 Function/Workflow 的既有合同约束，Plugin/Capability 路径继续执行 Agent permission 与 Capability 鉴权。
 
 ---
 

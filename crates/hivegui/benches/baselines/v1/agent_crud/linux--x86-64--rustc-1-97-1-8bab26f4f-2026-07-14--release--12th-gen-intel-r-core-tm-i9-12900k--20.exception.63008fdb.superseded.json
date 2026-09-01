@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "target": {
+    "id": "agent_crud",
+    "owner_task": "T115",
+    "timing_boundary": "Agent CRUD lifecycle accepted through validation, create/fetch/update/delete transactions, and final absence materialized",
+    "excluded_time": [
+      "external I/O",
+      "Agent execution",
+      "Store open, migration, fixture loading, and baseline I/O"
+    ],
+    "warmup_iterations": 10,
+    "measured_samples": 100,
+    "p95_budget_ns": 1000000000,
+    "workflow_node_count": null
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "build_profile": "release",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "logical_cpus": 20
+  },
+  "current_source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:63008fdb1ed518481d5cbfe7c69c3d4ce2ce443d9490f21bf44c730a31a972e6",
+  "baseline": {
+    "approval": {
+      "reviewer": "Codex designated reviewer under user standing authorization",
+      "approved_at": "2026-08-25",
+      "source_revision": "git:dd251229f00dd4ea74df3c1e830753e5521c3c5f+hivegui-source-v1:4e1e504b2043b789036b4895a9bebc415905d1afc5b74bf5ed7212afef79400b"
+    },
+    "percentiles_ns": {
+      "p50": 45650266,
+      "p95": 50540772,
+      "p99": 52787314
+    }
+  },
+  "approved_regressions": [
+    {
+      "percentile": "p99",
+      "baseline_ns": 52787314,
+      "observed_current_ns": 74244789,
+      "approved_max_current_ns": 85000000
+    }
+  ],
+  "approval": {
+    "signer": "Codex designated reviewer under user standing authorization",
+    "approved_at": "2026-08-25",
+    "reason": "One full release test run observed an isolated durable SQLite CRUD p99 tail while separate same-source canonical runs kept p50 and p95 within the approved baseline and the absolute p95 budget remained far below its limit.",
+    "impact_scope": "agent_crud p99 only; no p50, p95, agent_search_page, agent_action_dispatch, or absolute-budget waiver",
+    "review_due": "2026-09-25"
+  }
+}

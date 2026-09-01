@@ -28,7 +28,7 @@ async fn create_hook(
     Path(agent_id): Path<i64>,
     Json(meta): Json<CreateHookRequest>,
 ) -> Result<ApiResponse<impl Serialize>, ApiResponse<()>> {
-    svc::create_hook(&state.pool, agent_id, claims.role, meta)
+    svc::create_hook(&state.pool, &state.redis, agent_id, claims.role, meta)
         .await
         .map(ApiResponse::success)
         .map_err(|e| e.into_response())
@@ -50,10 +50,17 @@ async fn update_hook(
     Path((agent_id, hook_id)): Path<(i64, i64)>,
     Json(meta): Json<UpdateHookRequest>,
 ) -> Result<ApiResponse<impl Serialize>, ApiResponse<()>> {
-    svc::update_hook(&state.pool, agent_id, hook_id, claims.role, meta)
-        .await
-        .map(ApiResponse::success)
-        .map_err(|e| e.into_response())
+    svc::update_hook(
+        &state.pool,
+        &state.redis,
+        agent_id,
+        hook_id,
+        claims.role,
+        meta,
+    )
+    .await
+    .map(ApiResponse::success)
+    .map_err(|e| e.into_response())
 }
 
 async fn delete_hook(
@@ -61,7 +68,7 @@ async fn delete_hook(
     Extension(claims): Extension<Claims>,
     Path((agent_id, hook_id)): Path<(i64, i64)>,
 ) -> Result<ApiResponse<impl Serialize>, ApiResponse<()>> {
-    svc::delete_hook(&state.pool, agent_id, hook_id, claims.role)
+    svc::delete_hook(&state.pool, &state.redis, agent_id, hook_id, claims.role)
         .await
         .map(|_| ApiResponse::success(()))
         .map_err(|e| e.into_response())

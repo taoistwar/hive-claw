@@ -19,6 +19,7 @@ use crate::ui::{
 
 fn ai_management_tab_labels() -> [&'static str; 13] {
     [
+        "会话",
         "Agent",
         "工具",
         "技能",
@@ -29,7 +30,6 @@ fn ai_management_tab_labels() -> [&'static str; 13] {
         "Capabilities",
         "分类",
         "标签",
-        "会话",
         "数据管理",
         "全局配置",
     ]
@@ -138,17 +138,17 @@ impl Render for AiView {
                     .min_h_0()
                     .overflow_hidden()
                     .child(match self.active_tab {
-                        0 => self.agent_view.clone().into_any_element(),
-                        1 => self.tool_view.clone().into_any_element(),
-                        2 => self.skill_view.clone().into_any_element(),
-                        3 => self.function_view.clone().into_any_element(),
-                        4 => self.workflow_view.clone().into_any_element(),
-                        5 => self.plugin_view.clone().into_any_element(),
-                        6 => self.llm_config.clone().into_any_element(),
-                        7 => self.capability_view.clone().into_any_element(),
-                        8 => self.category_view.clone().into_any_element(),
-                        9 => self.tag_view.clone().into_any_element(),
-                        10 => self.conversation_view.clone().into_any_element(),
+                        0 => self.conversation_view.clone().into_any_element(),
+                        1 => self.agent_view.clone().into_any_element(),
+                        2 => self.tool_view.clone().into_any_element(),
+                        3 => self.skill_view.clone().into_any_element(),
+                        4 => self.function_view.clone().into_any_element(),
+                        5 => self.workflow_view.clone().into_any_element(),
+                        6 => self.plugin_view.clone().into_any_element(),
+                        7 => self.llm_config.clone().into_any_element(),
+                        8 => self.capability_view.clone().into_any_element(),
+                        9 => self.category_view.clone().into_any_element(),
+                        10 => self.tag_view.clone().into_any_element(),
                         11 => self.settings_view.clone().into_any_element(),
                         12 => self.global_config.clone().into_any_element(),
                         _ => div().into_any_element(),
@@ -166,6 +166,7 @@ mod tests {
         assert_eq!(
             ai_management_tab_labels(),
             [
+                "会话",
                 "Agent",
                 "工具",
                 "技能",
@@ -176,7 +177,6 @@ mod tests {
                 "Capabilities",
                 "分类",
                 "标签",
-                "会话",
                 "数据管理",
                 "全局配置",
             ]

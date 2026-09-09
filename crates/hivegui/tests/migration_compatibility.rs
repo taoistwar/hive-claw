@@ -530,6 +530,139 @@ async fn current_v4_missing_a_required_search_table_fails_closed_without_partial
 }
 
 #[tokio::test]
+async fn legacy_v4_search_schema_upgrades_without_losing_primary_data() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    migrate_to_current(migration_options(&workspace))
+        .await
+        .expect("create initial v4 database");
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite://{}", workspace.database_path().display()))
+        .await
+        .expect("open v4 database to install the legacy search schema");
+    sqlx::query(
+        "INSERT INTO categories (name, slug, description, created_at, updated_at) \
+         VALUES ('Legacy Search Data', 'legacy-search-data', 'must survive upgrade', \
+                 '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed primary data before the compatibility upgrade");
+    for statement in [
+        "DROP TABLE search_documents_fts",
+        "DROP TABLE search_short_grams",
+        "DROP TABLE search_documents",
+        "DROP TABLE schema_metadata",
+        "CREATE VIRTUAL TABLE search_index USING fts5(\
+             identifier, display_name, payload, tokenize = \"trigram\"\
+         )",
+        "CREATE TABLE short_gram_index (\
+             gram TEXT NOT NULL, entity TEXT NOT NULL, primary_key INTEGER NOT NULL, \
+             UNIQUE(gram, entity, primary_key)\
+         )",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("install legacy search DDL {statement:?}: {error}"));
+    }
+    pool.close().await;
+
+    let before = capture_artifact_snapshot(workspace.database_path(), workspace.plugin_root())
+        .await
+        .expect("capture recognizable legacy-v4 snapshot");
+    let report = migrate_to_current(migration_options(&workspace))
+        .await
+        .expect("recognizable legacy v4 search schema must upgrade at startup");
+
+    assert_eq!(report.status, MigrationStatus::Migrated);
+    assert_eq!(report.from_version, Some(CURRENT_SCHEMA_VERSION));
+    assert_eq!(report.to_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(report.pre_migration_snapshot.as_ref(), Some(&before));
+    assert!(report.validation.integrity_ok);
+    assert!(report.validation.foreign_keys_ok);
+    assert_v4_search_and_reference_schema(workspace.database_path()).await;
+    assert_eq!(
+        query_strings(
+            workspace.database_path(),
+            "SELECT slug FROM categories WHERE slug = 'legacy-search-data'",
+        )
+        .await,
+        ["legacy-search-data"],
+        "the compatibility upgrade must preserve primary entity rows"
+    );
+}
+
+#[tokio::test]
+async fn legacy_v4_empty_plugin_ledger_upgrades_with_the_legacy_search_schema() {
+    let workspace = TestWorkspace::new().expect("isolated workspace");
+    migrate_to_current(migration_options(&workspace))
+        .await
+        .expect("create initial v4 database");
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite://{}", workspace.database_path().display()))
+        .await
+        .expect("open v4 database to install historical v4 schemas");
+    for statement in [
+        "DROP TABLE plugin_artifact_gc",
+        "DROP TABLE plugin_artifact_operations",
+        "CREATE TABLE plugin_artifact_operations (\
+             expected_old_identifier TEXT, expected_old_resource_limits TEXT, \
+             expected_old_row_revision INTEGER, expected_old_s3_key TEXT, \
+             expected_old_sha256 TEXT, expected_old_size INTEGER, \
+             expected_old_version TEXT, \
+             kind TEXT NOT NULL CHECK(kind IN ('create','replace')), \
+             new_identity TEXT, new_resource_limits TEXT, new_s3_key TEXT UNIQUE, \
+             new_sha256 TEXT, new_size INTEGER, operation_id TEXT PRIMARY KEY, \
+             plugin_id TEXT, staging_identity TEXT, staging_name TEXT NOT NULL UNIQUE, \
+             state TEXT NOT NULL CHECK(state IN \
+                 ('prepared','staged','published','referenced','done','conflict'))\
+         )",
+        "CREATE TABLE plugin_artifact_gc (\
+             artifact_key TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, \
+             reason TEXT NOT NULL, \
+             state TEXT NOT NULL CHECK(state IN ('pending','blocked'))\
+         )",
+        "DROP TABLE search_documents_fts",
+        "DROP TABLE search_short_grams",
+        "DROP TABLE search_documents",
+        "DROP TABLE schema_metadata",
+        "CREATE VIRTUAL TABLE search_index USING fts5(\
+             identifier, display_name, payload, tokenize = \"trigram\"\
+         )",
+        "CREATE TABLE short_gram_index (\
+             gram TEXT NOT NULL, entity TEXT NOT NULL, primary_key INTEGER NOT NULL, \
+             UNIQUE(gram, entity, primary_key)\
+         )",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("install historical v4 DDL {statement:?}: {error}"));
+    }
+    pool.close().await;
+
+    let before = capture_artifact_snapshot(workspace.database_path(), workspace.plugin_root())
+        .await
+        .expect("capture historical v4 snapshot");
+    let report = migrate_to_current(migration_options(&workspace))
+        .await
+        .expect("exact empty historical Plugin ledger must upgrade at startup");
+
+    assert_eq!(report.status, MigrationStatus::Migrated);
+    assert_eq!(report.from_version, Some(CURRENT_SCHEMA_VERSION));
+    assert_eq!(report.to_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(report.pre_migration_snapshot.as_ref(), Some(&before));
+    assert!(report.validation.integrity_ok);
+    assert!(report.validation.foreign_keys_ok);
+    assert!(report.validation.managed_plugins_ok);
+    assert_v4_search_and_reference_schema(workspace.database_path()).await;
+}
+
+#[tokio::test]
 async fn v2_and_v3_fault_after_v4_ddl_rolls_back_the_exact_sqlite_schema() {
     for fixture in ["v2-valid.sqlite", "v3-valid.sqlite"] {
         let workspace = TestWorkspace::new().expect("isolated workspace");

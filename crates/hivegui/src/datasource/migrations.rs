@@ -2137,12 +2137,32 @@ pub async fn migrate_to_current(
         });
     }
 
-    // v4 is the destination: no migration is required and the
-    // contract pins `pre_migration_snapshot` to `None` for a
-    // no-op reopen. Returning early keeps the on-disk state
-    // untouched and avoids writing a snapshot directory.
+    let legacy_v4_search_schema = if from_version == Some(SCHEMA_VERSION_V4) {
+        match has_exact_legacy_v4_search_schema(&mut tx).await {
+            Ok(is_legacy) => is_legacy,
+            Err(error) => {
+                return Err(MigrationError {
+                    kind: MigrationErrorKind::InjectedFault,
+                    fault_point: None,
+                    snapshot_location: None,
+                    message: format!("inspect legacy v4 search schema: {error}"),
+                });
+            }
+        }
+    } else {
+        false
+    };
+
+    // A canonical v4 database is already at the destination: no migration is
+    // required and the contract pins `pre_migration_snapshot` to `None` for a
+    // no-op reopen. The one exception is the exact historical v4 search
+    // layout shipped before the canonical external-content schema. It is
+    // derived state, so the normal snapshot + transactional v4 path below can
+    // replace and rebuild it without weakening fail-closed handling for any
+    // other schema drift.
     if let Some(version) = from_version
         && version == SCHEMA_VERSION_V4
+        && !legacy_v4_search_schema
     {
         if let Err(error) = tx.commit().await {
             return Err(MigrationError {
@@ -2685,6 +2705,34 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .await
     .context("create tags table")?;
 
+    // Back-fill the v4 tags columns for any pre-existing `tags` table
+    // that was created by an earlier v4 migration (the older DDL omitted
+    // `normalized_name`). The `CREATE TABLE IF NOT EXISTS` above is a
+    // no-op when the table already exists, so the upgrade path mirrors
+    // the `categories` handling and adds the missing column before the
+    // back-fill below runs — otherwise the UPDATE fails with "no such
+    // column: normalized_name" and the migration (and the app) crashes.
+    let tags_columns = sqlx::query("SELECT name FROM pragma_table_info('tags')")
+        .fetch_all(&mut **executor)
+        .await
+        .context("pragma_table_info(tags)")?;
+    let tags_column_names: std::collections::HashSet<String> = tags_columns
+        .iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
+        .collect();
+    if !tags_column_names.contains("normalized_name") {
+        sqlx::query("ALTER TABLE tags ADD COLUMN normalized_name TEXT NOT NULL DEFAULT ''")
+            .execute(&mut **executor)
+            .await
+            .context("add tags.normalized_name")?;
+    }
+    if !tags_column_names.contains("updated_at") {
+        sqlx::query("ALTER TABLE tags ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+            .execute(&mut **executor)
+            .await
+            .context("add tags.updated_at")?;
+    }
+
     // T058 contract — T055 Red test asserts the `tags_normalized_name_idx`
     // index is used by EXPLAIN QUERY PLAN. Back-fill the column for
     // pre-existing rows so the index can be built and the LIKE filter
@@ -2723,6 +2771,28 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .execute(&mut **executor)
     .await
     .context("create capabilities table")?;
+
+    // Back-fill the v4 `normalized_name` column for any pre-existing
+    // `capabilities` table created by an earlier v4 migration (the
+    // older DDL omitted it). The `CREATE TABLE IF NOT EXISTS` above is
+    // a no-op when the table already exists, so — like the `plugins`
+    // `row_revision` handling — add the column here before the
+    // back-fill below runs. Without this the UPDATE fails with "no such
+    // column: normalized_name" on an upgraded database.
+    let capabilities_columns = sqlx::query("SELECT name FROM pragma_table_info('capabilities')")
+        .fetch_all(&mut **executor)
+        .await
+        .context("pragma_table_info(capabilities)")?;
+    let capabilities_column_names: std::collections::HashSet<String> = capabilities_columns
+        .iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
+        .collect();
+    if !capabilities_column_names.contains("normalized_name") {
+        sqlx::query("ALTER TABLE capabilities ADD COLUMN normalized_name TEXT NOT NULL DEFAULT ''")
+            .execute(&mut **executor)
+            .await
+            .context("add capabilities.normalized_name")?;
+    }
 
     // Back-fill `normalized_name` for any pre-existing capabilities
     // row created by an earlier v4 migration (the older DDL did
@@ -2952,6 +3022,46 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .execute(&mut **executor)
     .await
     .context("create agents table")?;
+
+    // Back-fill the v4 agent columns for any pre-existing `agents`
+    // table created by an earlier v4 migration (the older DDL omitted
+    // `is_default`, `category_id`, and `name_normalized`). The
+    // `CREATE TABLE IF NOT EXISTS` above is a no-op when the table
+    // already exists, so — like the `plugins` `row_revision` and
+    // `capabilities`/`tags` `normalized_name` handling — add the
+    // columns here before the partial unique index below references
+    // `is_default`. Without this the index creation fails with "no such
+    // column: is_default" on an upgraded database. `entity_store` runs
+    // the same reconciliation afterwards, so this keeps the two paths
+    // consistent.
+    let agents_columns = sqlx::query("SELECT name FROM pragma_table_info('agents')")
+        .fetch_all(&mut **executor)
+        .await
+        .context("pragma_table_info(agents)")?;
+    let agents_column_names: std::collections::HashSet<String> = agents_columns
+        .iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
+        .collect();
+    if !agents_column_names.contains("is_default") {
+        sqlx::query("ALTER TABLE agents ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0")
+            .execute(&mut **executor)
+            .await
+            .context("add agents.is_default")?;
+    }
+    if !agents_column_names.contains("category_id") {
+        sqlx::query(
+            "ALTER TABLE agents ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL",
+        )
+        .execute(&mut **executor)
+        .await
+        .context("add agents.category_id")?;
+    }
+    if !agents_column_names.contains("name_normalized") {
+        sqlx::query("ALTER TABLE agents ADD COLUMN name_normalized TEXT NOT NULL DEFAULT ''")
+            .execute(&mut **executor)
+            .await
+            .context("add agents.name_normalized")?;
+    }
 
     // US13 T124: at most one default root Agent at any time. The
     // partial unique index enforces the constraint at the database
@@ -3207,6 +3317,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
 
     // Plugin artifact ledger — column order MUST match the public
     // contract asserted by `plugin_artifact_schema_contract.rs`.
+    replace_exact_empty_legacy_plugin_ledger(executor).await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plugin_artifact_operations (\
             expected_old_identifier TEXT, \
@@ -3411,19 +3522,19 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
 
     // These indexes are intentionally created after the legacy
     // table rebuilds so a rename/drop cannot discard them.
-    sqlx::query("CREATE INDEX idx_tools_function_id ON tools (function_id)")
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tools_function_id ON tools (function_id)")
         .execute(&mut **executor)
         .await
         .context("create idx_tools_function_id")?;
     sqlx::query(
-        "CREATE INDEX idx_tools_workflow_id \
+        "CREATE INDEX IF NOT EXISTS idx_tools_workflow_id \
          ON tools (workflow_id, identifier, id)",
     )
     .execute(&mut **executor)
     .await
     .context("create idx_tools_workflow_id")?;
     sqlx::query(
-        "CREATE INDEX idx_workflow_nodes_function_id \
+        "CREATE INDEX IF NOT EXISTS idx_workflow_nodes_function_id \
          ON workflow_nodes (function_id)",
     )
     .execute(&mut **executor)
@@ -4038,6 +4149,144 @@ async fn migrate_legacy_workflow_nodes(executor: &mut sqlx::Transaction<'_, Sqli
         .execute(&mut **executor)
         .await
         .context("drop legacy workflow_nodes")?;
+    Ok(())
+}
+
+async fn has_exact_legacy_v4_search_schema(
+    executor: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<bool> {
+    let rows = sqlx::query(
+        "SELECT name, sql FROM sqlite_schema \
+         WHERE name IN (\
+             'schema_metadata', 'search_documents', 'search_documents_fts', \
+             'search_short_grams', 'search_index', 'short_gram_index'\
+         ) ORDER BY name",
+    )
+    .fetch_all(&mut **executor)
+    .await
+    .context("read legacy v4 search sqlite_schema")?;
+    if rows.len() != 2 {
+        return Ok(false);
+    }
+
+    let schema_sql = |name: &str| {
+        rows.iter().find_map(|row| {
+            (row.try_get::<String, _>("name").ok().as_deref() == Some(name))
+                .then(|| row.try_get::<Option<String>, _>("sql").ok().flatten())
+                .flatten()
+        })
+    };
+    let Some(search_index_sql) = schema_sql("search_index") else {
+        return Ok(false);
+    };
+    let Some(short_gram_sql) = schema_sql("short_gram_index") else {
+        return Ok(false);
+    };
+
+    Ok(compact_schema_sql(&search_index_sql)
+        == "createvirtualtablesearch_indexusingfts5(identifier,display_name,payload,tokenize='trigram')"
+        && compact_schema_sql(&short_gram_sql)
+            == "createtableshort_gram_index(gramtextnotnull,entitytextnotnull,primary_keyintegernotnull,unique(gram,entity,primary_key))")
+}
+
+async fn replace_exact_empty_legacy_plugin_ledger(
+    executor: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<()> {
+    let operation_columns = sqlx::query(
+        "SELECT name, type FROM pragma_table_info('plugin_artifact_operations') ORDER BY cid",
+    )
+    .fetch_all(&mut **executor)
+    .await
+    .context("inspect historical plugin_artifact_operations columns")?
+    .into_iter()
+    .map(|row| {
+        Ok((
+            row.try_get::<String, _>("name")?,
+            row.try_get::<String, _>("type")?,
+        ))
+    })
+    .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+    let gc_columns =
+        sqlx::query("SELECT name, type FROM pragma_table_info('plugin_artifact_gc') ORDER BY cid")
+            .fetch_all(&mut **executor)
+            .await
+            .context("inspect historical plugin_artifact_gc columns")?
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<String, _>("name")?,
+                    row.try_get::<String, _>("type")?,
+                ))
+            })
+            .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+    let expected_operation_columns = [
+        ("expected_old_identifier", "TEXT"),
+        ("expected_old_resource_limits", "TEXT"),
+        ("expected_old_row_revision", "INTEGER"),
+        ("expected_old_s3_key", "TEXT"),
+        ("expected_old_sha256", "TEXT"),
+        ("expected_old_size", "INTEGER"),
+        ("expected_old_version", "TEXT"),
+        ("kind", "TEXT"),
+        ("new_identity", "TEXT"),
+        ("new_resource_limits", "TEXT"),
+        ("new_s3_key", "TEXT"),
+        ("new_sha256", "TEXT"),
+        ("new_size", "INTEGER"),
+        ("operation_id", "TEXT"),
+        ("plugin_id", "TEXT"),
+        ("staging_identity", "TEXT"),
+        ("staging_name", "TEXT"),
+        ("state", "TEXT"),
+    ];
+    let expected_gc_columns = [
+        ("artifact_key", "TEXT"),
+        ("last_attempt_at", "INTEGER"),
+        ("reason", "TEXT"),
+        ("state", "TEXT"),
+    ];
+    let columns_match = |actual: &[(String, String)], expected: &[(&str, &str)]| {
+        actual.len() == expected.len()
+            && actual.iter().zip(expected).all(
+                |((actual_name, actual_type), (expected_name, expected_type))| {
+                    actual_name == expected_name && actual_type.eq_ignore_ascii_case(expected_type)
+                },
+            )
+    };
+    if !columns_match(&operation_columns, &expected_operation_columns)
+        || !columns_match(&gc_columns, &expected_gc_columns)
+    {
+        return Ok(());
+    }
+
+    let operation_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_artifact_operations")
+        .fetch_one(&mut **executor)
+        .await
+        .context("count historical plugin_artifact_operations rows")?;
+    let gc_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_artifact_gc")
+        .fetch_one(&mut **executor)
+        .await
+        .context("count historical plugin_artifact_gc rows")?;
+    let extra_schema: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_schema \
+         WHERE tbl_name IN ('plugin_artifact_operations', 'plugin_artifact_gc') \
+           AND type IN ('index', 'trigger') AND sql IS NOT NULL",
+    )
+    .fetch_one(&mut **executor)
+    .await
+    .context("inspect historical Plugin ledger indexes and triggers")?;
+    if operation_rows != 0 || gc_rows != 0 || extra_schema != 0 {
+        return Ok(());
+    }
+
+    sqlx::query("DROP TABLE plugin_artifact_gc")
+        .execute(&mut **executor)
+        .await
+        .context("drop exact empty historical plugin_artifact_gc")?;
+    sqlx::query("DROP TABLE plugin_artifact_operations")
+        .execute(&mut **executor)
+        .await
+        .context("drop exact empty historical plugin_artifact_operations")?;
     Ok(())
 }
 

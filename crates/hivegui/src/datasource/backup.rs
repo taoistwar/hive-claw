@@ -5490,7 +5490,17 @@ impl RestoreCoordinator {
         } else {
             let current_database = io_root.join(DATABASE_FILENAME);
             if current_database.exists() {
-                replay_sidecar_cleanup_for_database(&current_database, "current")?;
+                match replay_sidecar_cleanup_for_database(&current_database, "current") {
+                    Ok(()) => {}
+                    Err(ImportError::StorageRecoveryBlocked {
+                        reason: "sidecar_hot",
+                        artifact: "wal",
+                    }) => {
+                        checkpoint_closed_database(&current_database, "current", None, None)
+                            .await?;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             RetirementOutcome::AbortedPreSwitch
         };

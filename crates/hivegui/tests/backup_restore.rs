@@ -8024,3 +8024,27 @@ async fn checkpoint_uses_pinned_staging_and_current_leaves_during_a_b_a_exchange
         .expect("release terminal restore owner after pinned-leaf proof");
     drop(stale);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_checkpoints_empty_wal_and_stale_shm_before_opening_store() {
+    let workspace = TestWorkspace::new().expect("startup sidecar workspace");
+    let initial = Store::open_local(StoreOpenOptions::for_root(workspace.root()))
+        .await
+        .expect("create healthy current Store");
+    initial.pool().close().await;
+    drop(initial);
+
+    let wal = workspace.root().join("datasources.db-wal");
+    let shm = workspace.root().join("datasources.db-shm");
+    fs::write(&wal, []).expect("seed empty WAL left by a failed open");
+    fs::write(&shm, vec![0_u8; 32 * 1024]).expect("seed stale SHM left by a failed open");
+
+    let reopened = open_store_after_restore_recovery(workspace.root())
+        .await
+        .expect("startup must checkpoint and durably converge cold SQLite sidecars");
+    reopened
+        .list()
+        .await
+        .expect("recovered Store remains readable");
+    reopened.pool().close().await;
+}

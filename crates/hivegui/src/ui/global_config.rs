@@ -13,6 +13,7 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputState, NumberInput, Textarea, TextareaState};
@@ -21,6 +22,20 @@ use gpui_component::select::{SearchableVec, Select, SelectState};
 
 const PAGE_SIZE: i64 = 20;
 const CONFIG_TYPES: &[&str] = &["text", "number", "json", "boolean"];
+
+/// Build the user-visible message that the GlobalConfig form surfaces
+/// when a save fails. Operators see this in the modal; the matching
+/// structured tracing event in `save_config` carries the full error
+/// chain into `hivegui.log` so the message stays short while the log
+/// keeps everything searchable.
+fn format_save_error(outcome: &str, is_update: bool) -> String {
+    let op = if is_update { "更新" } else { "添加" };
+    let detail = match outcome {
+        "ok" => return "保存成功".to_string(),
+        _ => "请查看 hivegui.log 获取错误详情（目标 hivegui::ui::global_config）",
+    };
+    format!("{op}配置失败：{detail}")
+}
 
 /// Stable selector for the GlobalConfig modal layer used by the
 /// keyboard focus trap (T042 / T045). The accessibility tests in
@@ -92,7 +107,9 @@ pub struct GlobalConfigView {
     form_key: SharedString,
     form_type_idx: usize,
     form_data: SharedString,
+    form_deletable: bool,
     error: Option<SharedString>,
+    confirm_delete_id: Option<i64>,
     search_input: Option<Entity<InputState>>,
     name_input: Option<Entity<InputState>>,
     key_input: Option<Entity<InputState>>,
@@ -125,7 +142,9 @@ impl GlobalConfigView {
             form_key: "".into(),
             form_type_idx: 0,
             form_data: "".into(),
+            form_deletable: false,
             error: None,
+            confirm_delete_id: None,
             search_input: None,
             name_input: None,
             key_input: None,
@@ -196,6 +215,7 @@ impl GlobalConfigView {
         self.form_key = "".into();
         self.form_type_idx = 0;
         self.form_data = "".into();
+        self.form_deletable = false;
         self.name_input = None;
         self.key_input = None;
         self.data_input = None;
@@ -214,6 +234,7 @@ impl GlobalConfigView {
             .position(|t| t == &item.config_type)
             .unwrap_or(0);
         self.form_data = item.data.clone().into();
+        self.form_deletable = item.deletable;
         self.name_input = None;
         self.key_input = None;
         self.data_input = None;
@@ -232,7 +253,17 @@ impl GlobalConfigView {
         let key = self.form_key.to_string();
         let config_type = CONFIG_TYPES[self.form_type_idx].to_string();
         let data = self.form_data.to_string();
+        let deletable = self.form_deletable;
         if name.is_empty() || key.is_empty() {
+            tracing::info!(
+                target: "hivegui::ui::global_config",
+                operation = "validate",
+                outcome = "rejected",
+                reason = "empty_name_or_key",
+                name = %name,
+                key = %key,
+                "拒绝保存：名称或 Key 为空"
+            );
             self.error = Some("名称和 Key 不能为空".into());
             cx.notify();
             return;
@@ -241,21 +272,56 @@ impl GlobalConfigView {
             let s = s.clone();
             let edit_id = self.edit_id;
             let entity = cx.entity();
+            tracing::info!(
+                target: "hivegui::ui::global_config",
+                operation = if edit_id.is_some() { "update" } else { "create" },
+                outcome = "started",
+                edit_id = ?edit_id,
+                name = %name,
+                key = %key,
+                config_type = %config_type,
+                "开始保存全局配置"
+            );
             cx.spawn(async move |_this, cx| {
                 let result = if let Some(id) = edit_id {
-                    s.update_global_config(id, &name, &key, &config_type, &data)
-                        .await
-                } else {
-                    s.create_global_config(&name, &key, &config_type, &data)
+                    s.update_global_config(id, &name, &key, &config_type, &data, deletable)
                         .await
                         .map(|_| true)
+                } else {
+                    s.create_global_config(&name, &key, &config_type, &data, deletable)
+                        .await
+                        .map(|_| true)
+                };
+                let is_update = edit_id.is_some();
+                match &result {
+                    Ok(_) => tracing::info!(
+                        target: "hivegui::ui::global_config",
+                        operation = if is_update { "update" } else { "create" },
+                        outcome = "ok",
+                        edit_id = ?edit_id,
+                        name = %name,
+                        key = %key,
+                        "全局配置保存成功"
+                    ),
+                    Err(err) => tracing::error!(
+                        target: "hivegui::ui::global_config",
+                        operation = if is_update { "update" } else { "create" },
+                        outcome = "error",
+                        edit_id = ?edit_id,
+                        name = %name,
+                        key = %key,
+                        error = %err,
+                        error_debug = ?err,
+                        "全局配置保存失败"
+                    ),
                 };
                 entity.update(cx, |this, cx| {
                     if result.is_ok() {
                         this.show_form = false;
+                        this.error = None;
                         this.reload(cx);
                     } else {
-                        this.error = Some("保存失败".into());
+                        this.error = Some(format_save_error("error", is_update).into());
                         cx.notify();
                     }
                 });
@@ -457,88 +523,121 @@ impl GlobalConfigView {
             .items_center()
             .justify_center()
             .child(
-                div()
-                    .id(GLOBAL_CONFIG_MODAL)
-                    .track_focus(&self.modal_focus)
-                    .flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        management_modal_panel(
-                            management_modal_layer(px(460.0)),
-                            style.list.row,
-                            style.list.foreground,
-                            style.list.border,
+                management_modal_panel(
+                    management_modal_layer(px(460.0), window.bounds().size.height - px(48.0))
+                        .track_focus(&self.modal_focus)
+                        .debug_selector(|| GLOBAL_CONFIG_MODAL.to_owned()),
+                    style.list.row,
+                    style.list.foreground,
+                    style.list.border,
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    management_modal_scroll("global-config-form-scroll", &self.form_scroll)
+                        .id(GLOBAL_CONFIG_FORM)
+                        .track_focus(&self.form_focus)
+                        .debug_selector(|| GLOBAL_CONFIG_FORM.to_owned())
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(style.list.foreground)
+                                .child(if editing {
+                                    "编辑配置"
+                                } else {
+                                    "添加配置"
+                                }),
+                        )
+                        .child(field_with_input("名称", name, style))
+                        .child(field_with_input("Key", key, style))
+                        .child(type_sel)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(style.list.muted_foreground)
+                                        .child("数据值"),
+                                )
+                                .child(data_field),
                         )
                         .child(
-                            management_modal_scroll("global-config-form-scroll", &self.form_scroll)
-                                .id(GLOBAL_CONFIG_FORM)
-                                .track_focus(&self.form_focus)
-                                .gap(px(12.0))
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
                                 .child(
                                     div()
-                                        .text_size(px(18.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(style.list.foreground)
-                                        .child(if editing {
-                                            "编辑配置"
-                                        } else {
-                                            "添加配置"
-                                        }),
+                                        .text_size(px(12.0))
+                                        .text_color(style.list.muted_foreground)
+                                        .child("是否可被删除"),
                                 )
-                                .child(field_with_input("名称", name, style))
-                                .child(field_with_input("Key", key, style))
-                                .child(type_sel)
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .text_color(style.list.muted_foreground)
-                                                .child("数据值"),
-                                        )
-                                        .child(data_field),
-                                )
-                                .child(error)
                                 .child(
                                     div()
                                         .flex()
                                         .flex_row()
                                         .gap(px(8.0))
-                                        .justify_end()
-                                        .child(
-                                            action_button(
-                                                "cancel-btn",
-                                                "取消",
-                                                ActionRole::Neutral,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| this.close_form(cx)),
-                                            ),
-                                        )
-                                        .child(
-                                            action_button(
-                                                "save-btn",
-                                                if editing { "更新" } else { "保存" },
-                                                ActionRole::Main,
-                                                ActionSize::Dialog,
-                                                style,
-                                            )
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| this.save_config(cx)),
-                                            ),
-                                        ),
+                                        .child(deletable_radio(
+                                            "是",
+                                            self.form_deletable,
+                                            cx.entity(),
+                                            style,
+                                        ))
+                                        .child(deletable_radio(
+                                            "否",
+                                            !self.form_deletable,
+                                            cx.entity(),
+                                            style,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(style.list.muted_foreground)
+                                        .child("默认不可删除，避免误删。需手动开启后才能删除该配置。"),
+                                ),
+                        )
+                        .child(error)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .justify_end()
+                                .child(
+                                    action_button(
+                                        "cancel-btn",
+                                        "取消",
+                                        ActionRole::Neutral,
+                                        ActionSize::Dialog,
+                                        style,
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| this.close_form(cx)),
+                                    ),
+                                )
+                                .child(
+                                    action_button(
+                                        "save-btn",
+                                        if editing { "更新" } else { "保存" },
+                                        ActionRole::Main,
+                                        ActionSize::Dialog,
+                                        style,
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| this.save_config(cx)),
+                                    ),
                                 ),
                         ),
-                    ),
+                ),
             )
             .into_any_element()
     }
@@ -626,9 +725,9 @@ impl GlobalConfigView {
     ) -> AnyElement {
         let id = item.id;
         let item_to_edit = item.clone();
-        let store = self.store.clone();
         let entity = cx.entity();
         let style = ManagementStyle::current(cx);
+        let deletable = item.deletable;
 
         list_row(style)
             .debug_selector(move || format!("GLOBAL_CONFIG_ROW_{}", id))
@@ -681,22 +780,60 @@ impl GlobalConfigView {
                             ActionSize::Row,
                             style,
                         )
-                        .on_mouse_down(
-                            MouseButton::Left,
+                        .when(!item.deletable, |btn| btn.opacity(0.5))
+                        .on_mouse_down(MouseButton::Left, {
+                            let entity = entity.clone();
                             move |_, _, cx| {
-                                if let Some(store) = store.clone() {
-                                    let entity = entity.clone();
-                                    cx.spawn(async move |cx| {
-                                        _ = store.delete_global_config(id).await;
-                                        entity.update(cx, |this, cx| this.reload(cx));
-                                    })
-                                    .detach();
+                                // 仅当该项可被删除时才弹出确认框，避免误删
+                                if deletable {
+                                    entity.update(cx, |this, cx| {
+                                        this.confirm_delete_id = Some(id);
+                                        cx.notify();
+                                    });
                                 }
-                            },
-                        ),
+                            }
+                        }),
                     ),
             )
             .into_any_element()
+    }
+
+    fn delete_config(&mut self, id: i64, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| match store.delete_global_config(id).await {
+            Ok(true) => {
+                this.update(cx, |view, cx| {
+                    view.reload(cx);
+                })
+                .ok();
+            }
+            Ok(false) => {
+                this.update(cx, |view, cx| {
+                    view.error = Some("删除全局配置失败：目标项不存在".into());
+                    cx.notify();
+                })
+                .ok();
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: "hivegui::ui::global_config",
+                    operation = "delete",
+                    outcome = "error",
+                    id = id,
+                    error = %err,
+                    error_debug = ?err,
+                    "删除全局配置失败"
+                );
+                this.update(cx, |view, cx| {
+                    view.error = Some("删除全局配置失败，详情见 hivegui.log".into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     fn render_config_list(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -804,17 +941,144 @@ impl Render for GlobalConfigView {
         let list_area = self.render_list_area(cx);
         let pagination = self.render_pagination(cx);
 
+        let theme = cx.theme();
+        let (overlay, popover, popover_foreground, foreground, muted_foreground, border) = (
+            theme.overlay,
+            theme.popover,
+            theme.popover_foreground,
+            theme.foreground,
+            theme.muted_foreground,
+            theme.border,
+        );
+
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(theme.background)
+            .text_color(theme.foreground)
             .child(header)
             .child(search_bar)
             .child(list_area)
             .child(pagination)
             .child(form_overlay)
+            .when_some(self.confirm_delete_id, |this, _delete_id| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(0.0))
+                        .bg(overlay)
+                        .on_mouse_down(MouseButton::Left, {
+                            let this = cx.weak_entity();
+                            move |_, _, cx| {
+                                this.update(cx, |view, cx| {
+                                    view.confirm_delete_id = None;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                        }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(0.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(px(400.0))
+                                .bg(popover)
+                                .text_color(popover_foreground)
+                                .rounded(px(8.0))
+                                .shadow_lg()
+                                .border_1()
+                                .border_color(border)
+                                .p(px(24.0))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(16.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(18.0))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(foreground)
+                                                .child("确认删除"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .text_color(muted_foreground)
+                                                .child(
+                                                    "确定要删除这个全局配置吗？此操作不可恢复。",
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .justify_end()
+                                                .gap(px(8.0))
+                                                .child(
+                                                    action_button(
+                                                        "cancel-delete",
+                                                        "取消",
+                                                        ActionRole::Neutral,
+                                                        ActionSize::Dialog,
+                                                        ManagementStyle::current(cx),
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                view.confirm_delete_id = None;
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                                )
+                                                .child(
+                                                    action_button(
+                                                        "confirm-delete",
+                                                        "确认删除",
+                                                        ActionRole::Delete,
+                                                        ActionSize::Dialog,
+                                                        ManagementStyle::current(cx),
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let this = cx.weak_entity();
+                                                        move |_, _, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                if let Some(id) =
+                                                                    view.confirm_delete_id
+                                                                {
+                                                                    view.delete_config(
+                                                                        id, cx,
+                                                                    );
+                                                                    view.confirm_delete_id = None;
+                                                                }
+                                                            })
+                                                            .ok();
+                                                        }
+                                                    }),
+                                                ),
+                                        ),
+                                ),
+                        ),
+                )
+            })
     }
 }
 
@@ -946,9 +1210,166 @@ fn bool_radio(
         })
 }
 
+/// 与 `bool_radio` 类似的单选控件，但回写到 `form_deletable` 字段，
+/// 用于「是否可被删除」开关。label 为「是」表示开启可删除。
+fn deletable_radio(
+    label: &'static str,
+    active: bool,
+    entity: Entity<GlobalConfigView>,
+    style: ManagementStyle,
+) -> impl IntoElement {
+    let main_colors = style.action(ActionRole::Main);
+    let neutral_colors = style.action(ActionRole::Neutral);
+    let dot_color = if active {
+        main_colors.background
+    } else {
+        style.list.row
+    };
+    let border = if active {
+        main_colors.background
+    } else {
+        neutral_colors.background
+    };
+    div()
+        .flex()
+        .flex_row()
+        .gap(px(6.0))
+        .items_center()
+        .cursor(CursorStyle::PointingHand)
+        .child(
+            div()
+                .w(px(16.0))
+                .h(px(16.0))
+                .rounded_full()
+                .border_2()
+                .border_color(border)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(dot_color)),
+        )
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(style.list.foreground)
+                .child(label),
+        )
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            entity.update(cx, |this, cx| {
+                this.form_deletable = label == "是";
+                cx.notify();
+            });
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{convert_config_value, single_line_preview};
+
+    /// In-memory tracing layer used by the `save_config` regression
+    /// tests. It records every event so tests can assert that the
+    /// failure paths are observable from `hivegui.log` — the whole
+    /// point of the 2026-09-09 "保存失败 with no backend log" fix.
+    pub(super) struct TestEventCapture {
+        events: std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub(super) struct CapturedEvent {
+        pub(super) target: String,
+        pub(super) level: String,
+        pub(super) fields: Vec<(String, String)>,
+    }
+
+    impl CapturedEvent {
+        pub(super) fn field(&self, name: &str) -> Option<&str> {
+            self.fields
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
+    impl TestEventCapture {
+        /// Installs the capture as the thread's default subscriber for
+        /// the remainder of the calling scope and returns a handle.
+        pub(super) fn install() -> CaptureHandle {
+            use std::sync::{Arc, Mutex};
+            use tracing::field::{Field, Visit};
+            use tracing_subscriber::Registry;
+            use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+            use tracing_subscriber::registry::LookupSpan;
+
+            #[derive(Default)]
+            struct Visitor {
+                fields: Vec<(String, String)>,
+            }
+
+            impl Visitor {
+                fn push(&mut self, name: &str, value: String) {
+                    self.fields.push((name.to_string(), value));
+                }
+            }
+
+            impl Visit for Visitor {
+                fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                    self.push(field.name(), format!("{value:?}"));
+                }
+                fn record_str(&mut self, field: &Field, value: &str) {
+                    self.push(field.name(), value.to_string());
+                }
+                fn record_i64(&mut self, field: &Field, value: i64) {
+                    self.push(field.name(), value.to_string());
+                }
+                fn record_u64(&mut self, field: &Field, value: u64) {
+                    self.push(field.name(), value.to_string());
+                }
+                fn record_bool(&mut self, field: &Field, value: bool) {
+                    self.push(field.name(), value.to_string());
+                }
+            }
+
+            struct Layer2 {
+                events: Arc<Mutex<Vec<CapturedEvent>>>,
+            }
+
+            impl<S> Layer<S> for Layer2
+            where
+                S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+            {
+                fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                    let mut visitor = Visitor::default();
+                    event.record(&mut visitor);
+                    self.events.lock().unwrap().push(CapturedEvent {
+                        target: event.metadata().target().to_string(),
+                        level: event.metadata().level().to_string(),
+                        fields: visitor.fields,
+                    });
+                }
+            }
+
+            let events: Arc<Mutex<Vec<CapturedEvent>>> = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = Registry::default()
+                .with(Layer2 {
+                    events: events.clone(),
+                })
+                .with(tracing::level_filters::LevelFilter::TRACE);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            CaptureHandle { events, _guard }
+        }
+    }
+
+    /// RAII handle keeping the scoped tracing subscriber alive.
+    pub(super) struct CaptureHandle {
+        events: std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
+        _guard: tracing::subscriber::DefaultGuard,
+    }
+
+    impl CaptureHandle {
+        pub(super) fn snapshot(&self) -> Vec<CapturedEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
 
     #[test]
     fn multiline_config_data_is_safe_for_single_line_cells() {
@@ -989,6 +1410,139 @@ mod tests {
         assert_eq!(convert_config_value("001", "number", "number"), "001");
     }
 
+    /// Regression guard: the edit modal must lay its body out inside
+    /// the modal panel. Mounting the panel behind a zero-height
+    /// wrapper collapsed the panel to its padding (50px) and clipped
+    /// every field, so the dialog rendered as an empty box.
+    #[gpui::test]
+    fn global_config_edit_form_body_is_laid_out_inside_the_modal(cx: &mut gpui::TestAppContext) {
+        use crate::datasource::GlobalConfig;
+        use gpui::{VisualTestContext, px, size};
+
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+        let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
+            let mut view = super::GlobalConfigView::new(cx);
+            view.loaded = true;
+            view.total = 1;
+            view.items = vec![GlobalConfig {
+                id: 1,
+                name: "默认保留天数".to_string(),
+                key: "conversation_retention_days".to_string(),
+                config_type: "number".to_string(),
+                data: "36500".to_string(),
+                deletable: false,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }];
+            view
+        });
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _window, cx| {
+                let item = view.items[0].clone();
+                view.open_edit(&item, cx);
+            })
+            .expect("open edit form");
+        cx.run_until_parked();
+
+        let (name, key, data) = window
+            .update(cx, |view, _window, _cx| {
+                (
+                    view.form_name.to_string(),
+                    view.form_key.to_string(),
+                    view.form_data.to_string(),
+                )
+            })
+            .expect("read form state");
+        assert_eq!(name, "默认保留天数");
+        assert_eq!(key, "conversation_retention_days");
+        assert_eq!(data, "36500");
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let panel = cx
+            .debug_bounds(super::GLOBAL_CONFIG_MODAL)
+            .expect("modal panel bounds");
+        let body = cx
+            .debug_bounds(super::GLOBAL_CONFIG_FORM)
+            .expect("form body bounds");
+
+        assert!(
+            body.size.height > px(0.0),
+            "form body must have a laid out height, got {body:?}"
+        );
+        assert!(
+            body.origin.y >= panel.origin.y && body.bottom() <= panel.bottom(),
+            "form body must be laid out inside the modal panel: body {body:?} panel {panel:?}"
+        );
+    }
+
+    /// Regression guard: `save_config` must emit a tracing event for
+    /// every rejected save so the operator can grep `hivegui.log`
+    /// (target `hivegui::ui::global_config`) instead of only seeing a
+    /// generic "保存失败" in the dialog.
+    #[gpui::test]
+    fn save_config_emits_tracing_event_for_validation_failure(cx: &mut gpui::TestAppContext) {
+        use crate::datasource::GlobalConfig;
+        use gpui::size;
+
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+        let window = cx.open_window(size(gpui::px(1000.0), gpui::px(600.0)), |_, cx| {
+            let mut view = super::GlobalConfigView::new(cx);
+            view.loaded = true;
+            view.total = 0;
+            view.items = Vec::<GlobalConfig>::new();
+            view.show_form = true;
+            view.form_name = "".into();
+            view.form_key = "shared.key".into();
+            view
+        });
+        cx.run_until_parked();
+
+        let events = TestEventCapture::install();
+
+        window
+            .update(cx, |view, _window, cx| {
+                view.save_config(cx);
+            })
+            .expect("save_config validate path");
+        cx.run_until_parked();
+
+        let captured = events.snapshot();
+        assert!(
+            !captured.is_empty(),
+            "save_config must emit at least one tracing event"
+        );
+        let rejected = captured
+            .iter()
+            .find(|e| e.field("outcome") == Some("rejected"))
+            .unwrap_or_else(|| panic!("expected a rejected event, got {captured:?}"));
+        assert_eq!(rejected.target, "hivegui::ui::global_config");
+        assert_eq!(rejected.field("operation"), Some("validate"));
+        assert_eq!(rejected.field("reason"), Some("empty_name_or_key"));
+        assert_eq!(rejected.field("key"), Some("shared.key"));
+
+        let (has_error, msg) = window
+            .update(cx, |view, _window, _cx| {
+                (
+                    view.error.is_some(),
+                    view.error.as_ref().map(|s| s.to_string()),
+                )
+            })
+            .expect("read error");
+        assert!(has_error, "validation must set view.error");
+        assert!(
+            msg.as_deref().unwrap_or_default().contains("不能为空"),
+            "expected Chinese validation message, got {msg:?}"
+        );
+    }
+
     #[gpui::test]
     fn global_config_list_matches_reference_geometry(cx: &mut gpui::TestAppContext) {
         use crate::datasource::GlobalConfig;
@@ -1008,6 +1562,7 @@ mod tests {
                 key: "test.key".to_string(),
                 config_type: "text".to_string(),
                 data: "value".to_string(),
+                deletable: false,
                 created_at: String::new(),
                 updated_at: String::new(),
             }];

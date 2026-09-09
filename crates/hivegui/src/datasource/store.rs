@@ -2072,6 +2072,7 @@ pub struct GlobalConfig {
     #[sqlx(rename = "type")]
     pub config_type: String,
     pub data: String,
+    pub deletable: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2126,15 +2127,25 @@ impl Store {
         key: &str,
         config_type: &str,
         data: &str,
+        deletable: bool,
     ) -> Result<GlobalConfig> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("INSERT INTO global_configs (name, key, type, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-            .bind(name).bind(key).bind(config_type).bind(data).bind(&now).bind(&now).execute(&self.inner.pool).await?;
+        // INSERT and the follow-up SELECT must run on the same SQLite
+        // connection: `last_insert_rowid()` is per-connection and the
+        // pool used by `Store::new` may pick a different connection
+        // for the second statement. The legacy implementation
+        // occasionally returned `RowNotFound`, which the GlobalConfig
+        // view surfaced as a generic "保存失败" with no backend log
+        // entry. Acquiring a single connection keeps the two
+        // statements on one handle.
+        let mut conn = self.inner.pool.acquire().await?;
+        sqlx::query("INSERT INTO global_configs (name, key, type, data, deletable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(name).bind(key).bind(config_type).bind(data).bind(deletable).bind(&now).bind(&now).execute(&mut *conn).await?;
         // query-plan: id=t012.global_configs.by_id_inserted; owner_phase=US1; activation_task=T019
         Ok(sqlx::query_as::<_, GlobalConfig>(
             "SELECT * FROM global_configs WHERE id = last_insert_rowid()",
         )
-        .fetch_one(&self.inner.pool)
+        .fetch_one(&mut *conn)
         .await?)
     }
     pub async fn list_global_configs(
@@ -2224,17 +2235,19 @@ impl Store {
         key: &str,
         config_type: &str,
         data: &str,
+        deletable: bool,
     ) -> Result<bool> {
         let now = Utc::now();
         Ok({
             // query-plan: id=t012.global_configs.update; owner_phase=US1; activation_task=T020
             sqlx::query(
-                "UPDATE global_configs SET name=?, key=?, type=?, data=?, updated_at=? WHERE id=?",
+                "UPDATE global_configs SET name=?, key=?, type=?, data=?, deletable=?, updated_at=? WHERE id=?",
             )
             .bind(name)
             .bind(key)
             .bind(config_type)
             .bind(data)
+            .bind(deletable)
             .bind(now)
             .bind(id)
             .execute(&self.inner.pool)
@@ -2245,7 +2258,10 @@ impl Store {
     }
     pub async fn delete_global_config(&self, id: i64) -> Result<bool> {
         // query-plan: id=t012.global_configs.delete; owner_phase=US1; activation_task=T021
-        Ok(sqlx::query("DELETE FROM global_configs WHERE id=?")
+        // 防御性约束：只有 deletable=1 的行才可被删除。UI 已对
+        // deletable=false 的项禁用删除按钮，这里作为第二道防线，
+        // 防止绕过 UI 直接调用时误删。
+        Ok(sqlx::query("DELETE FROM global_configs WHERE id=? AND deletable=1")
             .bind(id)
             .execute(&self.inner.pool)
             .await?

@@ -1,13 +1,79 @@
-use std::process::ExitCode;
+use std::{env, process, process::ExitCode};
 
 use hivegui::{config::Config, logging, ui, version};
 use tracing::info;
 
+fn log_startup_details(cfg: &Config) {
+    let executable = env::current_exe()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| "<unavailable>".to_string());
+    let current_dir = env::current_dir()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| "<unavailable>".to_string());
+    info!(
+        message = "HiveGUI starting",
+        version = version::version(),
+        pid = process::id(),
+        executable = %executable,
+        current_dir = %current_dir,
+        headless = cfg.headless,
+        log_level = %cfg.log_level,
+        log_dir = %cfg.log_dir.display(),
+        app_mode = "desktop",
+    );
+}
+
+fn log_startup_error<E>(stage: &str, error: &E, cfg: Option<&Config>)
+where
+    E: std::fmt::Display + std::fmt::Debug,
+{
+    let executable = env::current_exe()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| "<unavailable>".to_string());
+    let current_dir = env::current_dir()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| "<unavailable>".to_string());
+
+    eprintln!("hivegui startup failed: {stage}");
+    eprintln!("  pid: {}", process::id());
+    eprintln!("  executable: {executable}");
+    eprintln!("  current_dir: {current_dir}");
+    eprintln!(
+        "  RUST_LOG: {}",
+        env::var("RUST_LOG").unwrap_or_else(|_| "<unset>".to_string())
+    );
+    eprintln!(
+        "  HIVEGUI_LOG_LEVEL set: {}",
+        env::var("HIVEGUI_LOG_LEVEL").is_ok()
+    );
+    eprintln!(
+        "  HIVEGUI_HEADLESS set: {}",
+        env::var("HIVEGUI_HEADLESS").is_ok()
+    );
+    eprintln!("  error: {error}");
+    eprintln!("  error(debug): {error:#?}");
+
+    if let Some(cfg) = cfg {
+        eprintln!("  config:");
+        eprintln!("    headless: {}", cfg.headless);
+        eprintln!("    log_level: {}", cfg.log_level);
+        eprintln!("    log_dir: {}", cfg.log_dir.display());
+    }
+
+    eprintln!("  hint: set RUST_BACKTRACE=1 and re-run for full backtrace.");
+}
+
 fn main() -> ExitCode {
+    use std::process::ExitCode;
+
     let cfg = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("hivegui: invalid configuration: {e}");
+            log_startup_error("invalid configuration", &e, None);
             return ExitCode::from(2);
         }
     };
@@ -15,16 +81,12 @@ fn main() -> ExitCode {
     let _guard = match logging::init(cfg.log_level, &cfg.log_dir) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("hivegui: could not initialise logging: {e}");
+            log_startup_error("init logging", &e, Some(&cfg));
             return ExitCode::from(1);
         }
     };
 
-    info!(
-        message = "HiveGUI starting",
-        version = version::version(),
-        log_dir = %cfg.log_dir.display(),
-    );
+    log_startup_details(&cfg);
 
     if cfg.headless {
         // Test-only short-circuit: exit cleanly before opening the gpui
@@ -48,14 +110,14 @@ fn main() -> ExitCode {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("hivegui: could not start Tokio runtime: {e}");
+            log_startup_error("create tokio runtime", &e, Some(&cfg));
             return ExitCode::from(1);
         }
     };
     let _guard_rt = rt.enter();
 
     if let Err(e) = ui::app::run(cfg) {
-        eprintln!("hivegui: ui crashed: {e:#}");
+        log_startup_error("ui run", &e, None);
         return ExitCode::from(1);
     }
 

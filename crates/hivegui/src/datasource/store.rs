@@ -452,9 +452,10 @@ fn acquire_restore_store_owner(
 ) -> Result<RestoreStoreOwnerGuard, StoreOpenError> {
     let registry_key = store_owner_registry_key(database_path);
     let registry = STORE_OWNERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut owners = registry.lock().map_err(|_poisoned| {
+    let mut owners = registry.lock().map_err(|poisoned| {
         StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path.to_path_buf()))
             .with_failure_class(DatabaseFailureClass::Persistent)
+            .with_cause(format!("ownership registry lock poisoned: {poisoned}"))
     })?;
 
     if owners.contains_key(&registry_key) {
@@ -472,12 +473,13 @@ fn acquire_restore_store_owner(
                 Some(database_path.to_path_buf()),
             ));
         }
-        Err(_error) => {
+        Err(error) => {
             return Err(StoreOpenError::new(
                 StoreOpenErrorKind::Io,
                 Some(database_path.to_path_buf()),
             )
-            .with_failure_class(DatabaseFailureClass::Persistent));
+            .with_failure_class(DatabaseFailureClass::Persistent)
+            .with_cause(format!("could not acquire process lock sidecar: {error}")));
         }
     };
 
@@ -636,6 +638,10 @@ pub struct StoreOpenError {
     database_path: Option<PathBuf>,
     failure_class: Option<DatabaseFailureClass>,
     retry_count: usize,
+    /// Underlying cause (e.g. the `std::io::Error` or `sqlx::Error`
+    /// message). Captured so a crash surfaces the real reason instead
+    /// of the opaque `Io` discriminant.
+    cause: Option<String>,
 }
 
 impl StoreOpenError {
@@ -646,7 +652,14 @@ impl StoreOpenError {
             database_path,
             failure_class: None,
             retry_count: 0,
+            cause: None,
         }
+    }
+
+    /// Attach the underlying cause message.
+    pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
+        self.cause = Some(cause.into());
+        self
     }
 
     /// Attach a failure class describing the underlying cause.
@@ -695,13 +708,21 @@ impl std::fmt::Display for StoreOpenError {
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .unwrap_or("<redacted>");
-        match &self.database_path {
-            Some(_) => write!(
+        match (&self.database_path, &self.cause) {
+            (Some(_), Some(cause)) => write!(
+                formatter,
+                "store open error: {:?} (file: {}): {}",
+                self.kind, path_label, cause
+            ),
+            (Some(_), None) => write!(
                 formatter,
                 "store open error: {:?} (file: {})",
                 self.kind, path_label
             ),
-            None => write!(formatter, "store open error: {:?}", self.kind),
+            (None, Some(cause)) => {
+                write!(formatter, "store open error: {:?}: {}", self.kind, cause)
+            }
+            (None, None) => write!(formatter, "store open error: {:?}", self.kind),
         }
     }
 }
@@ -886,14 +907,16 @@ async fn quarantine_corrupt_database(database_path: &Path) -> Result<PathBuf, St
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let quarantine_dir = parent.join("quarantine");
-    std::fs::create_dir_all(&quarantine_dir).map_err(|_error| {
+    std::fs::create_dir_all(&quarantine_dir).map_err(|error| {
         StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path.to_path_buf()))
             .with_failure_class(DatabaseFailureClass::Persistent)
+            .with_cause(error.to_string())
     })?;
     let destination = quarantine_dir.join(format!("{file_name}.corrupt-{counter}"));
-    std::fs::copy(database_path, &destination).map_err(|_error| {
+    std::fs::copy(database_path, &destination).map_err(|error| {
         StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path.to_path_buf()))
             .with_failure_class(DatabaseFailureClass::Persistent)
+            .with_cause(error.to_string())
     })?;
     Ok(destination)
 }
@@ -1527,14 +1550,16 @@ impl Store {
             retry_sleeper.unwrap_or_else(|| Arc::new(TokioRetrySleeper));
 
         if let Some(parent) = database_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_error| {
+            std::fs::create_dir_all(parent).map_err(|error| {
                 StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                     .with_failure_class(DatabaseFailureClass::Persistent)
+                    .with_cause(error.to_string())
             })?;
         }
-        std::fs::create_dir_all(&plugin_root).map_err(|_error| {
+        std::fs::create_dir_all(&plugin_root).map_err(|error| {
             StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                 .with_failure_class(DatabaseFailureClass::Persistent)
+                .with_cause(error.to_string())
         })?;
 
         // Reject corruption before running migrations: a corrupt
@@ -1570,7 +1595,8 @@ impl Store {
                         Some(database_path_buf.clone()),
                     )
                     .with_failure_class(class)
-                    .with_retry_count(attempt));
+                    .with_retry_count(attempt)
+                    .with_cause(format!("fault injector rejected open attempt {attempt}")));
                 }
                 if let Some(delay) = delays.get(attempt).copied() {
                     sleeper.sleep(delay).await;
@@ -1578,7 +1604,8 @@ impl Store {
                 last_error = Some(
                     StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                         .with_failure_class(class)
-                        .with_retry_count(attempt),
+                        .with_retry_count(attempt)
+                        .with_cause(format!("fault injector rejected open attempt {attempt}")),
                 );
                 continue;
             }
@@ -1621,16 +1648,18 @@ impl Store {
         plugin_root: &Path,
     ) -> Result<StoreInner, StoreOpenError> {
         let database_path_buf = database_path.to_path_buf();
-        if super::backup::ensure_store_write_open(database_path).is_err() {
+        if let Err(write_gate_error) = super::backup::ensure_store_write_open(database_path) {
             return Err(
                 StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf))
-                    .with_failure_class(DatabaseFailureClass::Persistent),
+                    .with_failure_class(DatabaseFailureClass::Persistent)
+                    .with_cause(write_gate_error.to_string()),
             );
         }
         let conn_opts = SqliteConnectOptions::from_str(&database_path.to_string_lossy())
-            .map_err(|_error| {
+            .map_err(|error| {
                 StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                     .with_failure_class(DatabaseFailureClass::InvalidInput)
+                    .with_cause(error.to_string())
             })?
             .create_if_missing(true)
             .foreign_keys(true)
@@ -1657,49 +1686,52 @@ impl Store {
                 } else {
                     StoreOpenErrorKind::Io
                 };
-                StoreOpenError::new(kind, Some(database_path_buf.clone())).with_failure_class(class)
+                StoreOpenError::new(kind, Some(database_path_buf.clone()))
+                    .with_failure_class(class)
+                    .with_cause(message)
             })?;
 
         // Run v4 migration (idempotent) against the chosen path.
         let migration_options =
             super::migrations::MigrationOptions::new(database_path, plugin_root);
-        if let Err(_migration_error) =
-            super::migrations::migrate_to_current(migration_options).await
+        if let Err(migration_error) = super::migrations::migrate_to_current(migration_options).await
         {
             return Err(
                 StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf))
-                    .with_failure_class(DatabaseFailureClass::Corrupt),
+                    .with_failure_class(DatabaseFailureClass::Corrupt)
+                    .with_cause(migration_error.to_string()),
             );
         }
 
-        if let Err(_entity_error) = super::entity_store::run_migrations(&pool).await {
-            return Err(StoreOpenError::new(
-                StoreOpenErrorKind::Io,
-                Some(database_path_buf),
-            ));
+        if let Err(entity_error) = super::entity_store::run_migrations(&pool).await {
+            return Err(
+                StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf))
+                    .with_cause(entity_error.to_string()),
+            );
         }
-        if let Err(_register_error) =
-            super::entity_store::register_runtime_capabilities(&pool).await
+        if let Err(register_error) = super::entity_store::register_runtime_capabilities(&pool).await
         {
-            return Err(StoreOpenError::new(
-                StoreOpenErrorKind::Io,
-                Some(database_path_buf),
-            ));
+            return Err(
+                StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf))
+                    .with_cause(register_error.to_string()),
+            );
         }
-        if let Err(_synchronize_error) =
+        if let Err(synchronize_error) =
             super::function_store::FunctionStore::synchronize_builtins(&pool).await
         {
             return Err(StoreOpenError::new(
                 StoreOpenErrorKind::Io,
                 Some(database_path_buf.clone()),
             )
-            .with_failure_class(DatabaseFailureClass::Persistent));
+            .with_failure_class(DatabaseFailureClass::Persistent)
+            .with_cause(synchronize_error.to_string()));
         }
 
         let key_dir = database_path.parent().unwrap_or(Path::new("."));
-        let key = Self::load_or_generate_key(key_dir).map_err(|_error| {
+        let key = Self::load_or_generate_key(key_dir).map_err(|error| {
             StoreOpenError::new(StoreOpenErrorKind::Io, Some(database_path_buf.clone()))
                 .with_failure_class(DatabaseFailureClass::Persistent)
+                .with_cause(error.to_string())
         })?;
         let crypto = Crypto::new(&key);
 

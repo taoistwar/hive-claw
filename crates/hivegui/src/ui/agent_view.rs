@@ -951,149 +951,157 @@ impl Render for AgentView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, window, cx| {
                                 t.update(cx, |v, cx| v.hide_form(window, cx)).ok();
                             }
-                        }),
-                )
-                .child(
-                    management_modal_panel(
-                        management_modal_layer(px(620.0), window.bounds().size.height - px(48.0)),
-                        theme.popover,
-                        theme.foreground,
-                        theme.border,
-                    )
-                    .debug_selector(|| "AGENT_MODAL".to_string())
-                    .track_focus(&self.form_focus)
-                    .focus_trap("agent-form-focus-trap", &self.form_focus)
-                    .key_context("HiveguiAgentForm")
-                    .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
-                        view.on_form_key_down(event, window, cx);
-                    }))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child(if self.editing_id.is_some() {
-                                "编辑 Agent"
-                            } else {
-                                "添加 Agent"
-                            }),
-                    )
-                    .child(form_field(
-                        "Identifier *",
-                        identifier_input,
-                        "AGENT_IDENTIFIER_INPUT",
-                        Some(format!("AGENT_IDENTIFIER_VALUE-{}", self.form_identifier)),
-                        theme,
-                    ))
-                    .child(form_field(
-                        "名称 *",
-                        name_input,
-                        "AGENT_NAME_INPUT",
-                        Some(format!("AGENT_NAME_VALUE-{}", self.form_name)),
-                        theme,
-                    ))
-                    .child(
-                        management_modal_scroll("agent-form-scroll", &self.form_scroll)
-                            .debug_selector(|| "AGENT_FORM_SCROLL".to_string())
-                            .gap(px(10.0))
+                        })
+                        .child(
+                            management_modal_panel(
+                                management_modal_layer(
+                                    px(620.0),
+                                    window.bounds().size.height - px(160.0),
+                                ),
+                                theme.popover,
+                                theme.foreground,
+                                theme.border,
+                            )
+                            .debug_selector(|| "AGENT_MODAL".to_string())
+                            .track_focus(&self.form_focus)
+                            .focus_trap("agent-form-focus-trap", &self.form_focus)
+                            .key_context("HiveguiAgentForm")
+                            .capture_key_down(cx.listener(
+                                |view, event: &KeyDownEvent, window, cx| {
+                                    view.on_form_key_down(event, window, cx);
+                                },
+                            ))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if self.editing_id.is_some() {
+                                        "编辑 Agent"
+                                    } else {
+                                        "添加 Agent"
+                                    }),
+                            )
                             .child(form_field(
-                                "描述",
-                                description_input,
-                                "AGENT_DESCRIPTION_INPUT",
-                                None,
+                                "Identifier *",
+                                identifier_input,
+                                "AGENT_IDENTIFIER_INPUT",
+                                Some(format!("AGENT_IDENTIFIER_VALUE-{}", self.form_identifier)),
                                 theme,
                             ))
                             .child(form_field(
-                                "System Prompt",
-                                system_prompt_input,
-                                "AGENT_SYSTEM_PROMPT_INPUT",
-                                None,
-                                theme,
-                            ))
-                            .child(form_field(
-                                "Model Preset",
-                                model_preset_input,
-                                "AGENT_MODEL_PRESET_INPUT",
-                                None,
+                                "名称 *",
+                                name_input,
+                                "AGENT_NAME_INPUT",
+                                Some(format!("AGENT_NAME_VALUE-{}", self.form_name)),
                                 theme,
                             ))
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(div().text_size(px(13.0)).child("上级 Agent"))
-                                    .child(div().flex().flex_col().gap(px(4.0)).child({
-                                        let t = cx.weak_entity();
-                                        action_button(
-                                            ("parent", 0_u64),
-                                            if selected_parent.is_none() {
-                                                "☑ 无父 Agent"
-                                            } else {
-                                                "□ 无父 Agent"
-                                            },
-                                            if selected_parent.is_none() {
-                                                ActionRole::Edit
-                                            } else {
-                                                ActionRole::Neutral
-                                            },
-                                            ActionSize::Compact,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            move |_, _, _cx| {
-                                                let _ = t.update(_cx, |v, _| {
-                                                    v.form_parent_agent_id = None;
-                                                });
-                                            },
-                                        )
-                                    }))
-                                    .children(
-                                        parent_candidates
-                                            .into_iter()
-                                            .filter(|(pid, _)| Some(*pid) != self.editing_id)
-                                            .map(|(pid, label)| {
-                                                let active = selected_parent == Some(pid);
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(6.0))
-                                                    .child(
+                                management_modal_scroll("agent-form-scroll", &self.form_scroll)
+                                    .debug_selector(|| "AGENT_FORM_SCROLL".to_string())
+                                    .gap(px(10.0))
+                                    .child(form_field(
+                                        "描述",
+                                        description_input,
+                                        "AGENT_DESCRIPTION_INPUT",
+                                        None,
+                                        theme,
+                                    ))
+                                    .child(form_field(
+                                        "System Prompt",
+                                        system_prompt_input,
+                                        "AGENT_SYSTEM_PROMPT_INPUT",
+                                        None,
+                                        theme,
+                                    ))
+                                    .child(form_field(
+                                        "Model Preset",
+                                        model_preset_input,
+                                        "AGENT_MODEL_PRESET_INPUT",
+                                        None,
+                                        theme,
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(div().text_size(px(13.0)).child("上级 Agent"))
+                                            .child(div().flex().flex_col().gap(px(4.0)).child({
+                                                let t = cx.weak_entity();
+                                                action_button(
+                                                    ("parent", 0_u64),
+                                                    if selected_parent.is_none() {
+                                                        "☑ 无父 Agent"
+                                                    } else {
+                                                        "□ 无父 Agent"
+                                                    },
+                                                    if selected_parent.is_none() {
+                                                        ActionRole::Edit
+                                                    } else {
+                                                        ActionRole::Neutral
+                                                    },
+                                                    ActionSize::Compact,
+                                                    style,
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, _cx| {
+                                                        let _ = t.update(_cx, |v, _| {
+                                                            v.form_parent_agent_id = None;
+                                                        });
+                                                    },
+                                                )
+                                            }))
+                                            .children(
+                                                parent_candidates
+                                                    .into_iter()
+                                                    .filter(|(pid, _)| {
+                                                        Some(*pid) != self.editing_id
+                                                    })
+                                                    .map(|(pid, label)| {
+                                                        let active = selected_parent == Some(pid);
                                                         div()
-                                                            .text_size(px(13.0))
-                                                            .text_color(theme.foreground)
-                                                            .child(label.clone()),
-                                                    )
-                                                    .child(
-                                                        action_button(
-                                                            ("set-parent", pid as u64),
-                                                            if active {
-                                                                "取消"
-                                                            } else {
-                                                                "选择"
-                                                            },
-                                                            if active {
-                                                                ActionRole::Edit
-                                                            } else {
-                                                                ActionRole::Neutral
-                                                            },
-                                                            ActionSize::Compact,
-                                                            style,
-                                                        )
-                                                        .on_mouse_down(MouseButton::Left, {
-                                                            let t = cx.weak_entity();
-                                                            move |_, _, cx| {
-                                                                t.update(cx, |v, _| {
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(6.0))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(theme.foreground)
+                                                                    .child(label.clone()),
+                                                            )
+                                                            .child(
+                                                                action_button(
+                                                                    ("set-parent", pid as u64),
+                                                                    if active {
+                                                                        "取消"
+                                                                    } else {
+                                                                        "选择"
+                                                                    },
+                                                                    if active {
+                                                                        ActionRole::Edit
+                                                                    } else {
+                                                                        ActionRole::Neutral
+                                                                    },
+                                                                    ActionSize::Compact,
+                                                                    style,
+                                                                )
+                                                                .on_mouse_down(MouseButton::Left, {
+                                                                    let t = cx.weak_entity();
+                                                                    move |_, _, cx| {
+                                                                        t.update(cx, |v, _| {
                                                                     v.form_parent_agent_id = if v
                                                                         .form_parent_agent_id
                                                                         == Some(pid)
@@ -1104,163 +1112,204 @@ impl Render for AgentView {
                                                                     };
                                                                 })
                                                                 .ok();
-                                                            }
-                                                        }),
-                                                    )
-                                            }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(div().text_size(px(13.0)).child("Tool 关联（可多选）"))
-                                    .children(tools.into_iter().map(|(tool_id, label)| {
-                                        let active = form_tool_ids.contains(&tool_id);
-                                        let t = cx.weak_entity();
-                                        let id = tool_id;
-                                        let tool_label = label.clone();
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .text_color(theme.foreground)
-                                                    .child(if active { "☑" } else { "□" }),
-                                            )
-                                            .child(div().text_size(px(13.0)).child(tool_label))
-                                            .child(
-                                                action_button(
-                                                    ("toggle-tool", id as u64),
-                                                    if active { "移除" } else { "添加" },
-                                                    if active {
-                                                        ActionRole::Edit
-                                                    } else {
-                                                        ActionRole::Neutral
-                                                    },
-                                                    ActionSize::Compact,
-                                                    style,
-                                                )
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, _| {
-                                                            v.toggle_tool(id);
-                                                        })
-                                                        .ok();
-                                                    },
-                                                ),
-                                            )
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(div().text_size(px(13.0)).child("Skill 关联（可多选）"))
-                                    .children(skills.into_iter().map(|(skill_id, label)| {
-                                        let active = form_skill_ids.contains(&skill_id);
-                                        let t = cx.weak_entity();
-                                        let id = skill_id;
-                                        let skill_label = label.clone();
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .text_color(theme.foreground)
-                                                    .child(if active { "☑" } else { "□" }),
-                                            )
-                                            .child(div().text_size(px(13.0)).child(skill_label))
-                                            .child(
-                                                action_button(
-                                                    ("toggle-skill", id as u64),
-                                                    if active { "移除" } else { "添加" },
-                                                    if active {
-                                                        ActionRole::Edit
-                                                    } else {
-                                                        ActionRole::Neutral
-                                                    },
-                                                    ActionSize::Compact,
-                                                    style,
-                                                )
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    move |_, _, cx| {
-                                                        t.update(cx, |v, _| {
-                                                            v.toggle_skill(id);
-                                                        })
-                                                        .ok();
-                                                    },
-                                                ),
-                                            )
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
+                                                                    }
+                                                                }),
+                                                            )
+                                                    }),
+                                            ),
+                                    )
                                     .child(
                                         div()
-                                            .text_size(px(13.0))
-                                            .child("Capability 关联（可多选）"),
-                                    )
-                                    .children(capabilities.into_iter().enumerate().map(
-                                        |(idx, name)| {
-                                            let cap_name = name.clone();
-                                            let active = form_capabilities.contains(&cap_name);
-                                            let t = cx.weak_entity();
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(6.0))
-                                                .child(
-                                                    div()
-                                                        .text_size(px(13.0))
-                                                        .text_color(theme.foreground)
-                                                        .child(if active { "☑" } else { "□" }),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(13.0))
-                                                        .child(cap_name.clone()),
-                                                )
-                                                .child(
-                                                    action_button(
-                                                        ("toggle-capability", idx as u64),
-                                                        if active { "移除" } else { "添加" },
-                                                        if active {
-                                                            ActionRole::Edit
-                                                        } else {
-                                                            ActionRole::Neutral
-                                                        },
-                                                        ActionSize::Compact,
-                                                        style,
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .child("Tool 关联（可多选）"),
+                                            )
+                                            .children(tools.into_iter().map(|(tool_id, label)| {
+                                                let active = form_tool_ids.contains(&tool_id);
+                                                let t = cx.weak_entity();
+                                                let id = tool_id;
+                                                let tool_label = label.clone();
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(6.0))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.0))
+                                                            .text_color(theme.foreground)
+                                                            .child(if active {
+                                                                "☑"
+                                                            } else {
+                                                                "□"
+                                                            }),
                                                     )
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        move |_, _, cx| {
-                                                            t.update(cx, |v, _| {
-                                                                v.toggle_capability(
-                                                                    cap_name.clone(),
-                                                                );
-                                                            })
-                                                            .ok();
-                                                        },
-                                                    ),
-                                                )
-                                        },
-                                    )),
-                            )
-                            .when_some(self.error_message.as_ref(), |this, err| {
-                                this.child(
+                                                    .child(
+                                                        div().text_size(px(13.0)).child(tool_label),
+                                                    )
+                                                    .child(
+                                                        action_button(
+                                                            ("toggle-tool", id as u64),
+                                                            if active {
+                                                                "移除"
+                                                            } else {
+                                                                "添加"
+                                                            },
+                                                            if active {
+                                                                ActionRole::Edit
+                                                            } else {
+                                                                ActionRole::Neutral
+                                                            },
+                                                            ActionSize::Compact,
+                                                            style,
+                                                        )
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            move |_, _, cx| {
+                                                                t.update(cx, |v, _| {
+                                                                    v.toggle_tool(id);
+                                                                })
+                                                                .ok();
+                                                            },
+                                                        ),
+                                                    )
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .child("Skill 关联（可多选）"),
+                                            )
+                                            .children(skills.into_iter().map(
+                                                |(skill_id, label)| {
+                                                    let active = form_skill_ids.contains(&skill_id);
+                                                    let t = cx.weak_entity();
+                                                    let id = skill_id;
+                                                    let skill_label = label.clone();
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(theme.foreground)
+                                                                .child(if active {
+                                                                    "☑"
+                                                                } else {
+                                                                    "□"
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .child(skill_label),
+                                                        )
+                                                        .child(
+                                                            action_button(
+                                                                ("toggle-skill", id as u64),
+                                                                if active {
+                                                                    "移除"
+                                                                } else {
+                                                                    "添加"
+                                                                },
+                                                                if active {
+                                                                    ActionRole::Edit
+                                                                } else {
+                                                                    ActionRole::Neutral
+                                                                },
+                                                                ActionSize::Compact,
+                                                                style,
+                                                            )
+                                                            .on_mouse_down(
+                                                                MouseButton::Left,
+                                                                move |_, _, cx| {
+                                                                    t.update(cx, |v, _| {
+                                                                        v.toggle_skill(id);
+                                                                    })
+                                                                    .ok();
+                                                                },
+                                                            ),
+                                                        )
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .child("Capability 关联（可多选）"),
+                                            )
+                                            .children(capabilities.into_iter().enumerate().map(
+                                                |(idx, name)| {
+                                                    let cap_name = name.clone();
+                                                    let active =
+                                                        form_capabilities.contains(&cap_name);
+                                                    let t = cx.weak_entity();
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(theme.foreground)
+                                                                .child(if active {
+                                                                    "☑"
+                                                                } else {
+                                                                    "□"
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .child(cap_name.clone()),
+                                                        )
+                                                        .child(
+                                                            action_button(
+                                                                ("toggle-capability", idx as u64),
+                                                                if active {
+                                                                    "移除"
+                                                                } else {
+                                                                    "添加"
+                                                                },
+                                                                if active {
+                                                                    ActionRole::Edit
+                                                                } else {
+                                                                    ActionRole::Neutral
+                                                                },
+                                                                ActionSize::Compact,
+                                                                style,
+                                                            )
+                                                            .on_mouse_down(
+                                                                MouseButton::Left,
+                                                                move |_, _, cx| {
+                                                                    t.update(cx, |v, _| {
+                                                                        v.toggle_capability(
+                                                                            cap_name.clone(),
+                                                                        );
+                                                                    })
+                                                                    .ok();
+                                                                },
+                                                            ),
+                                                        )
+                                                },
+                                            )),
+                                    )
+                                    .when_some(self.error_message.as_ref(), |this, err| {
+                                        this.child(
                                     div()
                                         .id("agent-form-error-a11y")
                                         .debug_selector(|| {
@@ -1289,56 +1338,54 @@ impl Render for AgentView {
                                             error.child(focus_marker("AGENT_ERROR_FOCUSED"))
                                         }),
                                 )
-                            })
-                            .child(
-                                div()
-                                    .debug_selector(|| "AGENT_FORM_ACTIONS".to_string())
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.0))
+                                    })
                                     .child(
-                                        action_button(
-                                            "cancel",
-                                            "取消",
-                                            ActionRole::Neutral,
-                                            ActionSize::Page,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
-                                                let t = cx.weak_entity();
-                                                move |_, window, cx| {
-                                                    t.update(cx, |v, cx| v.hide_form(window, cx))
+                                        div()
+                                            .debug_selector(|| "AGENT_FORM_ACTIONS".to_string())
+                                            .flex()
+                                            .justify_end()
+                                            .gap(px(8.0))
+                                            .child(
+                                                action_button(
+                                                    "cancel",
+                                                    "取消",
+                                                    ActionRole::Neutral,
+                                                    ActionSize::Page,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.hide_form(window, cx)
+                                                        })
                                                         .ok();
-                                                }
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        action_button(
-                                            "save",
-                                            "保存",
-                                            ActionRole::Main,
-                                            ActionSize::Page,
-                                            style,
-                                        )
-                                        .track_focus(&self.save_focus)
-                                        .tab_index(0)
-                                        .role(Role::Button)
-                                        .aria_label("保存 Agent")
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
-                                                let t = cx.weak_entity();
-                                                move |_, window, cx| {
-                                                    t.update(cx, |v, cx| v.save(window, cx)).ok();
-                                                }
-                                            },
-                                        ),
+                                                    }
+                                                }),
+                                            )
+                                            .child(
+                                                action_button(
+                                                    "save",
+                                                    "保存",
+                                                    ActionRole::Main,
+                                                    ActionSize::Page,
+                                                    style,
+                                                )
+                                                .track_focus(&self.save_focus)
+                                                .tab_index(0)
+                                                .role(Role::Button)
+                                                .aria_label("保存 Agent")
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| v.save(window, cx))
+                                                            .ok();
+                                                    }
+                                                }),
+                                            ),
                                     ),
                             ),
-                    ),
+                        ),
                 )
             })
             .when_some(self.confirm_delete_id, |this, _id| {
@@ -1350,7 +1397,6 @@ impl Render for AgentView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {

@@ -1144,18 +1144,19 @@ impl Render for WorkflowView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, window, cx| {
                                 t.update(cx, |v, cx| v.hide_form(window, cx)).ok();
                             }
-                        }),
-                )
-                .child(
-                    management_modal_panel(
-                        management_modal_layer(px(500.0), window.bounds().size.height - px(48.0)),
+                        })
+                        .child(
+                            management_modal_panel(
+                        management_modal_layer(px(500.0), window.bounds().size.height - px(160.0)),
                         theme.popover,
                         theme.foreground,
                         theme.border,
@@ -1325,6 +1326,7 @@ impl Render for WorkflowView {
                             ),
                     ),
                 )
+                )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
                 let id = self.confirm_delete_id.unwrap();
@@ -1337,7 +1339,6 @@ impl Render for WorkflowView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {
@@ -1476,7 +1477,6 @@ impl Render for WorkflowView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {
@@ -1557,7 +1557,6 @@ impl Render for WorkflowView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = run_overlay_weak;
                             move |_, _, cx| {

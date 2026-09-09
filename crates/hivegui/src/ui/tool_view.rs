@@ -982,310 +982,343 @@ impl Render for ToolView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .on_mouse_down(MouseButton::Left, {
                             let t = view_handle.clone();
                             move |_, window, cx| {
                                 t.update(cx, |v, cx| v.hide_form(window, cx)).ok();
                             }
-                        }),
-                )
-                .child(
-                    management_modal_panel(
-                        management_modal_layer(px(550.0), window.bounds().size.height - px(48.0)),
-                        theme.popover,
-                        theme.foreground,
-                        theme.border,
-                    )
-                    .debug_selector(|| "TOOL_MODAL".to_string())
-                    .track_focus(&self.form_focus)
-                    .focus_trap("tool-form-focus-trap", &self.form_focus)
-                    .key_context("HiveguiToolForm")
-                    .on_action(cx.listener(|view, _: &ToolFormTab, window, cx| {
-                        view.focus_form_next(window, cx);
-                    }))
-                    .on_action(cx.listener(|view, _: &ToolFormTabPrev, window, cx| {
-                        view.focus_form_prev(window, cx);
-                    }))
-                    .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
-                        view.on_key_down(event, window, cx);
-                    }))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        management_modal_scroll("tool-form-scroll", &self.form_scroll)
-                            .debug_selector(|| "TOOL_FORM_SCROLL".to_string())
-                            .gap(px(10.0))
-                            .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(if self.editing_id.is_some() {
-                                        "编辑工具"
-                                    } else {
-                                        "添加工具"
-                                    }),
-                            )
-                            .child(form_field(
-                                "Identifier *",
-                                identifier_input,
-                                "TOOL_IDENTIFIER_INPUT",
-                                theme,
-                            ))
-                            .when(identifier_focused, |form| {
-                                form.child(focus_marker("TOOL_IDENTIFIER_FOCUSED"))
-                            })
-                            .child(focus_marker(format!(
-                                "TOOL_IDENTIFIER_VALUE-{current_identifier}"
-                            )))
-                            .child(form_field("名称 *", name_input, "TOOL_NAME_INPUT", theme))
-                            .child(textarea_field(
-                                "描述 *",
-                                description_input,
-                                "TOOL_DESCRIPTION_INPUT",
-                                theme,
-                            ))
-                            .child(
-                                selector_field(
-                                    "类型 *",
-                                    kind_label,
-                                    "tool-kind-toggle",
-                                    "TOOL_KIND_SELECT",
-                                    theme,
-                                    {
-                                        let view = view_handle.clone();
-                                        move |_, _, cx| {
-                                            view.update(cx, |v, cx| v.toggle_kind(cx)).ok();
-                                        }
-                                    },
-                                )
-                                .when(kind_select_open, |field| {
-                                    let kind_view = view_handle.clone();
-                                    field.child(
-                                        selector_menu(theme).children(
-                                            [
-                                                ("function-wrap", "函数"),
-                                                ("workflow-wrap", "工作流"),
-                                            ]
-                                            .into_iter()
-                                            .map(
-                                                move |(k, l)| {
-                                                    let label = l.to_string();
-                                                    let selected = k == form_kind;
-                                                    let option_id = format!("tool-kind-option-{k}");
-                                                    let view = kind_view.clone();
-                                                    selector_option(
-                                                        option_id,
-                                                        label,
-                                                        selected,
-                                                        theme,
-                                                        move |_, _, cx| {
-                                                            view.update(cx, |view, cx| {
-                                                                if view.form_kind != k {
-                                                                    view.form_function_id.clear();
-                                                                    view.form_workflow_id.clear();
-                                                                }
-                                                                view.form_kind = k.to_string();
-                                                                view.kind_select_open = false;
-                                                                cx.notify();
-                                                            })
-                                                            .ok();
-                                                        },
-                                                    )
-                                                },
-                                            ),
-                                        ),
-                                    )
-                                }),
-                            )
-                            .child(
-                                selector_field(
-                                    "Source",
-                                    source_label,
-                                    "tool-source-toggle",
-                                    "TOOL_SOURCE_SELECT",
-                                    theme,
-                                    {
-                                        let view = view_handle.clone();
-                                        move |_, _, cx| {
-                                            view.update(cx, |v, cx| v.toggle_source(cx)).ok();
-                                        }
-                                    },
-                                )
-                                .when(
-                                    source_select_open,
-                                    |field| {
-                                        let source_view = view_handle.clone();
-                                        field.child(
-                                            selector_menu(theme).children(
-                                                [
-                                                    ("workspace", "workspace"),
-                                                    ("builtin", "builtin"),
-                                                ]
-                                                .into_iter()
-                                                .map(move |(v, l)| {
-                                                    let label = l.to_string();
-                                                    let value = v.to_string();
-                                                    let selected = v == form_source;
-                                                    let option_id =
-                                                        format!("tool-source-option-{v}");
-                                                    let view = source_view.clone();
-                                                    selector_option(
-                                                        option_id,
-                                                        label,
-                                                        selected,
-                                                        theme,
-                                                        move |_, _, cx| {
-                                                            view.update(cx, |view, cx| {
-                                                                view.form_source = value.clone();
-                                                                view.source_select_open = false;
-                                                                cx.notify();
-                                                            })
-                                                            .ok();
-                                                        },
-                                                    )
-                                                }),
-                                            ),
-                                        )
-                                    },
+                        })
+                        .child(
+                            management_modal_panel(
+                                management_modal_layer(
+                                    px(550.0),
+                                    window.bounds().size.height - px(160.0),
                                 ),
+                                theme.popover,
+                                theme.foreground,
+                                theme.border,
                             )
-                            .child(
-                                div()
-                                    .id("tool-is-always")
-                                    .debug_selector(|| "TOOL_IS_ALWAYS".to_string())
-                                    .role(Role::CheckBox)
-                                    .aria_label("始终启用")
-                                    .cursor(CursorStyle::PointingHand)
-                                    .child(if self.form_is_always {
-                                        "☑ 始终启用"
-                                    } else {
-                                        "☐ 始终启用"
-                                    })
-                                    .on_click({
-                                        let view = view_handle.clone();
-                                        move |_, _, cx| {
-                                            view.update(cx, |view, cx| {
-                                                view.form_is_always = !view.form_is_always;
-                                                cx.notify();
-                                            })
-                                            .ok();
-                                        }
-                                    }),
-                            )
-                            .when(self.form_kind == "function-wrap", |this| {
-                                this.child(form_field(
-                                    "Function ID *",
-                                    function_id_input,
-                                    "TOOL_FUNCTION_TARGET",
-                                    theme,
-                                ))
-                            })
-                            .when(self.form_kind == "workflow-wrap", |this| {
-                                this.child(form_field(
-                                    "Workflow ID *",
-                                    workflow_id_input,
-                                    "TOOL_WORKFLOW_TARGET",
-                                    theme,
-                                ))
-                            })
-                            .child(textarea_field(
-                                "Input Schema (JSON)",
-                                input_schema_textarea,
-                                "TOOL_INPUT_SCHEMA_TEXTAREA",
-                                theme,
+                            .debug_selector(|| "TOOL_MODAL".to_string())
+                            .track_focus(&self.form_focus)
+                            .focus_trap("tool-form-focus-trap", &self.form_focus)
+                            .key_context("HiveguiToolForm")
+                            .on_action(cx.listener(|view, _: &ToolFormTab, window, cx| {
+                                view.focus_form_next(window, cx);
+                            }))
+                            .on_action(cx.listener(|view, _: &ToolFormTabPrev, window, cx| {
+                                view.focus_form_prev(window, cx);
+                            }))
+                            .capture_key_down(cx.listener(
+                                |view, event: &KeyDownEvent, window, cx| {
+                                    view.on_key_down(event, window, cx);
+                                },
                             ))
-                            .child(textarea_field(
-                                "Output Schema (JSON)",
-                                output_schema_textarea,
-                                "TOOL_OUTPUT_SCHEMA_TEXTAREA",
-                                theme,
-                            ))
-                            .child(form_field(
-                                "Category ID",
-                                category_input,
-                                "TOOL_CATEGORY_SELECT",
-                                theme,
-                            ))
-                            .child(textarea_field(
-                                "Required Capabilities (JSON)",
-                                required_capabilities_textarea,
-                                "TOOL_REQUIRED_CAPABILITIES_TEXTAREA",
-                                theme,
-                            ))
-                            .when_some(self.error_message.as_ref(), |this, err| {
-                                this.child(
-                                    div()
-                                        .id("tool-form-error")
-                                        .track_focus(&self.error_focus)
-                                        .when(self.identifier_conflict, |error| {
-                                            error
-                                                .debug_selector(|| {
-                                                    "TOOL_CONFLICT_IDENTIFIER".to_string()
-                                                })
-                                                .role(Role::Alert)
-                                                .aria_label("field=identifier reason=duplicate")
-                                        })
-                                        .when(self.error_focus.is_focused(window), |error| {
-                                            error.child(focus_marker("TOOL_ERROR_FOCUSED"))
-                                        })
-                                        .p(px(8.0))
-                                        .bg(theme.warning.opacity(0.1))
-                                        .rounded(px(4.0))
-                                        .text_size(px(12.0))
-                                        .text_color(theme.warning)
-                                        .child(err.clone()),
-                                )
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
                             })
                             .child(
-                                div()
-                                    .debug_selector(|| "TOOL_FORM_ACTIONS".to_string())
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.0))
+                                management_modal_scroll("tool-form-scroll", &self.form_scroll)
+                                    .debug_selector(|| "TOOL_FORM_SCROLL".to_string())
+                                    .gap(px(10.0))
                                     .child(
-                                        action_button(
-                                            "cancel",
-                                            "取消",
-                                            ActionRole::Neutral,
-                                            ActionSize::Page,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
+                                        div()
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(if self.editing_id.is_some() {
+                                                "编辑工具"
+                                            } else {
+                                                "添加工具"
+                                            }),
+                                    )
+                                    .child(form_field(
+                                        "Identifier *",
+                                        identifier_input,
+                                        "TOOL_IDENTIFIER_INPUT",
+                                        theme,
+                                    ))
+                                    .when(identifier_focused, |form| {
+                                        form.child(focus_marker("TOOL_IDENTIFIER_FOCUSED"))
+                                    })
+                                    .child(focus_marker(format!(
+                                        "TOOL_IDENTIFIER_VALUE-{current_identifier}"
+                                    )))
+                                    .child(form_field(
+                                        "名称 *",
+                                        name_input,
+                                        "TOOL_NAME_INPUT",
+                                        theme,
+                                    ))
+                                    .child(textarea_field(
+                                        "描述 *",
+                                        description_input,
+                                        "TOOL_DESCRIPTION_INPUT",
+                                        theme,
+                                    ))
+                                    .child(
+                                        selector_field(
+                                            "类型 *",
+                                            kind_label,
+                                            "tool-kind-toggle",
+                                            "TOOL_KIND_SELECT",
+                                            theme,
                                             {
-                                                let t = cx.weak_entity();
-                                                move |_, window, cx| {
-                                                    t.update(cx, |v, cx| v.hide_form(window, cx))
-                                                        .ok();
+                                                let view = view_handle.clone();
+                                                move |_, _, cx| {
+                                                    view.update(cx, |v, cx| v.toggle_kind(cx)).ok();
                                                 }
+                                            },
+                                        )
+                                        .when(
+                                            kind_select_open,
+                                            |field| {
+                                                let kind_view = view_handle.clone();
+                                                field.child(
+                                                    selector_menu(theme).children(
+                                                        [
+                                                            ("function-wrap", "函数"),
+                                                            ("workflow-wrap", "工作流"),
+                                                        ]
+                                                        .into_iter()
+                                                        .map(move |(k, l)| {
+                                                            let label = l.to_string();
+                                                            let selected = k == form_kind;
+                                                            let option_id =
+                                                                format!("tool-kind-option-{k}");
+                                                            let view = kind_view.clone();
+                                                            selector_option(
+                                                                option_id,
+                                                                label,
+                                                                selected,
+                                                                theme,
+                                                                move |_, _, cx| {
+                                                                    view.update(cx, |view, cx| {
+                                                                        if view.form_kind != k {
+                                                                            view.form_function_id
+                                                                                .clear();
+                                                                            view.form_workflow_id
+                                                                                .clear();
+                                                                        }
+                                                                        view.form_kind =
+                                                                            k.to_string();
+                                                                        view.kind_select_open =
+                                                                            false;
+                                                                        cx.notify();
+                                                                    })
+                                                                    .ok();
+                                                                },
+                                                            )
+                                                        }),
+                                                    ),
+                                                )
                                             },
                                         ),
                                     )
                                     .child(
-                                        action_button(
-                                            "save",
-                                            "保存",
-                                            ActionRole::Main,
-                                            ActionSize::Page,
-                                            style,
+                                        selector_field(
+                                            "Source",
+                                            source_label,
+                                            "tool-source-toggle",
+                                            "TOOL_SOURCE_SELECT",
+                                            theme,
+                                            {
+                                                let view = view_handle.clone();
+                                                move |_, _, cx| {
+                                                    view.update(cx, |v, cx| v.toggle_source(cx))
+                                                        .ok();
+                                                }
+                                            },
                                         )
-                                        .track_focus(&self.save_focus)
-                                        .tab_index(0)
-                                        .when(self.save_focus.is_focused(window), |button| {
-                                            button.child(focus_marker("TOOL_FORM_SAVE_FOCUSED"))
-                                        })
-                                        .on_click({
-                                            let t = cx.weak_entity();
-                                            move |_, window, cx| {
-                                                t.update(cx, |v, cx| v.save(window, cx)).ok();
-                                            }
-                                        }),
+                                        .when(
+                                            source_select_open,
+                                            |field| {
+                                                let source_view = view_handle.clone();
+                                                field.child(
+                                                    selector_menu(theme).children(
+                                                        [
+                                                            ("workspace", "workspace"),
+                                                            ("builtin", "builtin"),
+                                                        ]
+                                                        .into_iter()
+                                                        .map(move |(v, l)| {
+                                                            let label = l.to_string();
+                                                            let value = v.to_string();
+                                                            let selected = v == form_source;
+                                                            let option_id =
+                                                                format!("tool-source-option-{v}");
+                                                            let view = source_view.clone();
+                                                            selector_option(
+                                                                option_id,
+                                                                label,
+                                                                selected,
+                                                                theme,
+                                                                move |_, _, cx| {
+                                                                    view.update(cx, |view, cx| {
+                                                                        view.form_source =
+                                                                            value.clone();
+                                                                        view.source_select_open =
+                                                                            false;
+                                                                        cx.notify();
+                                                                    })
+                                                                    .ok();
+                                                                },
+                                                            )
+                                                        }),
+                                                    ),
+                                                )
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("tool-is-always")
+                                            .debug_selector(|| "TOOL_IS_ALWAYS".to_string())
+                                            .role(Role::CheckBox)
+                                            .aria_label("始终启用")
+                                            .cursor(CursorStyle::PointingHand)
+                                            .child(if self.form_is_always {
+                                                "☑ 始终启用"
+                                            } else {
+                                                "☐ 始终启用"
+                                            })
+                                            .on_click({
+                                                let view = view_handle.clone();
+                                                move |_, _, cx| {
+                                                    view.update(cx, |view, cx| {
+                                                        view.form_is_always = !view.form_is_always;
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            }),
+                                    )
+                                    .when(self.form_kind == "function-wrap", |this| {
+                                        this.child(form_field(
+                                            "Function ID *",
+                                            function_id_input,
+                                            "TOOL_FUNCTION_TARGET",
+                                            theme,
+                                        ))
+                                    })
+                                    .when(self.form_kind == "workflow-wrap", |this| {
+                                        this.child(form_field(
+                                            "Workflow ID *",
+                                            workflow_id_input,
+                                            "TOOL_WORKFLOW_TARGET",
+                                            theme,
+                                        ))
+                                    })
+                                    .child(textarea_field(
+                                        "Input Schema (JSON)",
+                                        input_schema_textarea,
+                                        "TOOL_INPUT_SCHEMA_TEXTAREA",
+                                        theme,
+                                    ))
+                                    .child(textarea_field(
+                                        "Output Schema (JSON)",
+                                        output_schema_textarea,
+                                        "TOOL_OUTPUT_SCHEMA_TEXTAREA",
+                                        theme,
+                                    ))
+                                    .child(form_field(
+                                        "Category ID",
+                                        category_input,
+                                        "TOOL_CATEGORY_SELECT",
+                                        theme,
+                                    ))
+                                    .child(textarea_field(
+                                        "Required Capabilities (JSON)",
+                                        required_capabilities_textarea,
+                                        "TOOL_REQUIRED_CAPABILITIES_TEXTAREA",
+                                        theme,
+                                    ))
+                                    .when_some(self.error_message.as_ref(), |this, err| {
+                                        this.child(
+                                            div()
+                                                .id("tool-form-error")
+                                                .track_focus(&self.error_focus)
+                                                .when(self.identifier_conflict, |error| {
+                                                    error
+                                                        .debug_selector(|| {
+                                                            "TOOL_CONFLICT_IDENTIFIER".to_string()
+                                                        })
+                                                        .role(Role::Alert)
+                                                        .aria_label(
+                                                            "field=identifier reason=duplicate",
+                                                        )
+                                                })
+                                                .when(
+                                                    self.error_focus.is_focused(window),
+                                                    |error| {
+                                                        error.child(focus_marker(
+                                                            "TOOL_ERROR_FOCUSED",
+                                                        ))
+                                                    },
+                                                )
+                                                .p(px(8.0))
+                                                .bg(theme.warning.opacity(0.1))
+                                                .rounded(px(4.0))
+                                                .text_size(px(12.0))
+                                                .text_color(theme.warning)
+                                                .child(err.clone()),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "TOOL_FORM_ACTIONS".to_string())
+                                            .flex()
+                                            .justify_end()
+                                            .gap(px(8.0))
+                                            .child(
+                                                action_button(
+                                                    "cancel",
+                                                    "取消",
+                                                    ActionRole::Neutral,
+                                                    ActionSize::Page,
+                                                    style,
+                                                )
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let t = cx.weak_entity();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.hide_form(window, cx)
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
+                                            )
+                                            .child(
+                                                action_button(
+                                                    "save",
+                                                    "保存",
+                                                    ActionRole::Main,
+                                                    ActionSize::Page,
+                                                    style,
+                                                )
+                                                .track_focus(&self.save_focus)
+                                                .tab_index(0)
+                                                .when(
+                                                    self.save_focus.is_focused(window),
+                                                    |button| {
+                                                        button.child(focus_marker(
+                                                            "TOOL_FORM_SAVE_FOCUSED",
+                                                        ))
+                                                    },
+                                                )
+                                                .on_click({
+                                                    let t = cx.weak_entity();
+                                                    move |_, window, cx| {
+                                                        t.update(cx, |v, cx| v.save(window, cx))
+                                                            .ok();
+                                                    }
+                                                }),
+                                            ),
                                     ),
                             ),
-                    ),
+                        ),
                 )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
@@ -1298,7 +1331,6 @@ impl Render for ToolView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {

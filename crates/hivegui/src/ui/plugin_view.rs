@@ -937,18 +937,19 @@ impl Render for PluginView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .cursor(CursorStyle::PointingHand)
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {
                                 t.update(cx, |v, cx| v.hide_form(cx)).ok();
                             }
-                        }),
-                )
-                .child(
-                    management_modal_panel(
-                        management_modal_layer(px(550.0), window.bounds().size.height - px(48.0)),
+                        })
+                        .child(
+                            management_modal_panel(
+                        management_modal_layer(px(550.0), window.bounds().size.height - px(160.0)),
                         theme.popover,
                         theme.foreground,
                         theme.border,
@@ -1451,6 +1452,7 @@ impl Render for PluginView {
                             .vertical_scrollbar(&self.form_scroll),
                     ),
                 )
+                )
             })
             .when(self.confirm_delete_id.is_some(), |this| {
                 let _id = self.confirm_delete_id.unwrap();
@@ -1462,7 +1464,6 @@ impl Render for PluginView {
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .bg(theme.overlay)
-                        .opacity(0.3)
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {

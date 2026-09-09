@@ -230,6 +230,8 @@ pub struct PromptDebugger {
     show_view_modal: bool,
     view_records: Vec<ExecutionRecord>,
     view_scroll: ScrollHandle,
+    // 弹窗内容 Tab：格式化 / JSON
+    view_modal_tab: ViewModalTab,
     show_only_diff: bool,
 }
 
@@ -311,6 +313,7 @@ impl PromptDebugger {
             show_view_modal: false,
             view_records: vec![],
             view_scroll: ScrollHandle::default(),
+            view_modal_tab: ViewModalTab::Formatted,
             show_only_diff: false,
         }
     }
@@ -798,6 +801,7 @@ impl PromptDebugger {
         self.show_view_modal = false;
         self.view_records.clear();
         self.show_only_diff = false;
+        self.view_modal_tab = ViewModalTab::Formatted;
     }
 
     /// 切换仅看差异
@@ -2578,6 +2582,7 @@ fn format_records_for_copy(records: &[ExecutionRecord]) -> String {
 fn view_modal(
     records: &[ExecutionRecord],
     style: &ManagementStyle,
+    tab: ViewModalTab,
     show_only_diff: bool,
     view_scroll: &ScrollHandle,
     entity: Entity<PromptDebugger>,
@@ -2590,7 +2595,11 @@ fn view_modal(
     };
 
     // 预先拼接用于"复制"按钮的文本（避免在 click handler 内再次构造）。
-    let copy_text = format_records_for_copy(records);
+    // 复制按钮跟随当前 Tab：格式化 → 文本摘要；JSON → 输入/输出/Metadata 分节。
+    let copy_text = match tab {
+        ViewModalTab::Formatted => format_records_for_copy(records),
+        ViewModalTab::Json => format_records_for_json_copy(records),
+    };
     let modal_width = if is_comparison {
         let cols = records.len().min(20);
         px(200.0 + cols as f32 * 300.0)
@@ -2718,8 +2727,9 @@ fn view_modal(
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
+                                .child(view_modal_tabs(tab, entity.clone(), style))
                                 .child(
-                                    // 复制按钮：把整组记录的格式化文本写入剪贴板，
+                                    // 复制按钮：把整组记录的文本写入剪贴板，
                                     // 弥补 GPUI 0.2 暂不支持 div 内文本拖选的限制。
                                     div()
                                         .debug_selector(|| "PROMPT_HISTORY_VIEW_COPY".to_owned())
@@ -2781,13 +2791,295 @@ fn view_modal(
                         .vertical_scrollbar(view_scroll)
                         .px(px(16.0))
                         .py(px(12.0))
-                        .child(if is_comparison {
-                            comparison_table(records, style, show_only_diff).into_any_element()
-                        } else {
-                            single_record_card(&records[0], style).into_any_element()
+                        .child(match tab {
+                            ViewModalTab::Formatted => {
+                                if is_comparison {
+                                    comparison_table(records, style, show_only_diff)
+                                        .into_any_element()
+                                } else {
+                                    single_record_card(&records[0], style).into_any_element()
+                                }
+                            }
+                            ViewModalTab::Json => json_tab_view(records, style).into_any_element(),
                         }),
                 ),
         )
+}
+
+/// 查看弹窗内容 Tab
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewModalTab {
+    /// 格式化文本卡片（现有视图）
+    Formatted,
+    /// 输入 / 输出 / Metadata 的 JSON 分节视图
+    Json,
+}
+
+impl ViewModalTab {
+    fn label(self) -> &'static str {
+        match self {
+            ViewModalTab::Formatted => "格式化",
+            ViewModalTab::Json => "JSON",
+        }
+    }
+}
+
+/// 标题栏右侧的「格式化 | JSON」分段切换。
+fn view_modal_tabs(
+    active: ViewModalTab,
+    entity: Entity<PromptDebugger>,
+    style: &ManagementStyle,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(style.list.border)
+        .overflow_hidden()
+        .children(
+            [ViewModalTab::Formatted, ViewModalTab::Json]
+                .into_iter()
+                .map(move |tab| {
+                    let is_active = tab == active;
+                    let entity = entity.clone();
+                    let id = match tab {
+                        ViewModalTab::Formatted => "prompt-view-tab-formatted",
+                        ViewModalTab::Json => "prompt-view-tab-json",
+                    };
+                    div()
+                        .id(SharedString::from(id))
+                        .debug_selector(move || {
+                            format!(
+                                "PROMPT_VIEW_TAB_{}",
+                                if tab == ViewModalTab::Formatted {
+                                    "FORMATTED"
+                                } else {
+                                    "JSON"
+                                }
+                            )
+                        })
+                        .px(px(10.0))
+                        .py(px(3.0))
+                        .text_size(px(12.0))
+                        .cursor(CursorStyle::PointingHand)
+                        .bg(if is_active {
+                            style.list.hover
+                        } else {
+                            style.list.row
+                        })
+                        .text_color(if is_active {
+                            style.list.foreground
+                        } else {
+                            style.list.muted_foreground
+                        })
+                        .hover(|s| s.text_color(style.list.foreground))
+                        .child(tab.label())
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            entity.update(cx, |view, cx| {
+                                if view.view_modal_tab != tab {
+                                    view.view_modal_tab = tab;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                }),
+        )
+}
+
+/// JSON Tab：每条记录一组「输入 / 输出 / Metadata」分节。
+fn json_tab_view(records: &[ExecutionRecord], style: &ManagementStyle) -> Div {
+    div().flex().flex_col().gap(px(16.0)).children(
+        records
+            .iter()
+            .enumerate()
+            .map(|(idx, record)| json_record_group(idx, records.len(), record, style)),
+    )
+}
+
+/// 单条记录的 JSON 分节组（多条记录对比时先标注序号与模型名）。
+fn json_record_group(
+    idx: usize,
+    total: usize,
+    record: &ExecutionRecord,
+    style: &ManagementStyle,
+) -> Div {
+    let (input, output, metadata) = record_json_sections(record);
+    let base = idx + 1;
+    let group = div().flex().flex_col().gap(px(12.0));
+    let group = if total > 1 {
+        group.child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(format!("#{} {}", base, record.model_name)),
+        )
+    } else {
+        group
+    };
+    group
+        .child(json_section(
+            "输入",
+            &input,
+            format!("PROMPT_VIEW_JSON_INPUT_{base}"),
+            style,
+        ))
+        .child(json_section(
+            "输出",
+            &output,
+            format!("PROMPT_VIEW_JSON_OUTPUT_{base}"),
+            style,
+        ))
+        .child(json_section(
+            "Metadata",
+            &metadata,
+            format!("PROMPT_VIEW_JSON_METADATA_{base}"),
+            style,
+        ))
+}
+
+/// 单个 JSON 分节：节标题 + 独立复制按钮 + 等宽文本面板。
+fn json_section(label: &str, text: &str, base: String, style: &ManagementStyle) -> Div {
+    let copy_text = text.to_string();
+    let copy_id = format!("{base}_COPY");
+    let panel_selector = format!("{base}_PANEL");
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(label.to_string()),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(copy_id.as_str()))
+                        .debug_selector(move || copy_id.clone())
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.opacity(0.7))
+                        .text_color(style.list.muted_foreground)
+                        .child(Icon::new(IconName::Copy).small())
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                            cx.stop_propagation();
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .debug_selector(move || panel_selector.clone())
+                .bg(style.list.muted)
+                .border_1()
+                .border_color(style.list.border)
+                .rounded(px(6.0))
+                .p(px(12.0))
+                .child(
+                    div()
+                        .font_family("monospace")
+                        .text_size(px(12.0))
+                        .whitespace_normal()
+                        .text_color(style.list.foreground)
+                        .child(text.to_string()),
+                ),
+        )
+}
+
+/// 把一条执行记录还原为 输入 / 输出 / Metadata 三段 pretty JSON。
+/// 输入按 `execute_call` 的请求体字段还原；输出能解析为 JSON 则直接
+/// pretty 打印，否则包一层 `{"text": ...}`。
+fn record_json_sections(record: &ExecutionRecord) -> (String, String, String) {
+    let pretty = |value: &serde_json::Value| {
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| String::new())
+    };
+
+    let messages: Vec<serde_json::Value> = record
+        .messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role.api_role(),
+                "content": m.content,
+            })
+        })
+        .collect();
+    let mut input = serde_json::json!({
+        "model": record.model_name,
+        "messages": messages,
+        "max_tokens": record.max_tokens,
+        "temperature": record.temperature,
+        "top_p": record.top_p,
+    });
+    if !record.tools.is_empty() {
+        let tools_json: Vec<serde_json::Value> = record
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": serde_json::from_str::<serde_json::Value>(
+                            &t.parameters_json,
+                        )
+                        .unwrap_or(serde_json::Value::Null),
+                    },
+                })
+            })
+            .collect();
+        input["tools"] = serde_json::json!(tools_json);
+    }
+    if record.thinking_enabled {
+        input["thinking_budget"] = serde_json::json!(record.thinking_budget);
+    }
+
+    let output = match &record.result {
+        CallState::Success(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) => pretty(&value),
+            Err(_) => pretty(&serde_json::json!({ "text": text })),
+        },
+        CallState::Error(err) => pretty(&serde_json::json!({ "error": { "message": err } })),
+        _ => pretty(&serde_json::json!({ "text": "" })),
+    };
+
+    let metadata = pretty(&serde_json::json!({
+        "model": record.model_name,
+        "temperature": record.temperature,
+        "max_tokens": record.max_tokens,
+        "top_p": record.top_p,
+        "thinking_enabled": record.thinking_enabled,
+        "thinking_budget": record.thinking_budget,
+        "timestamp": record.timestamp,
+    }));
+
+    (pretty(&input), output, metadata)
+}
+
+/// 把整组记录拼成 JSON Tab 的「复制」文本。
+fn format_records_for_json_copy(records: &[ExecutionRecord]) -> String {
+    let mut out = String::new();
+    for (idx, record) in records.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+            out.push_str(&"─".repeat(40));
+            out.push('\n');
+        }
+        if records.len() > 1 {
+            out.push_str(&format!("[{}] {}\n", idx + 1, record.model_name));
+        }
+        let (input, output, metadata) = record_json_sections(record);
+        out.push_str(&format!("输入:\n{input}\n\n"));
+        out.push_str(&format!("输出:\n{output}\n\n"));
+        out.push_str(&format!("Metadata:\n{metadata}\n"));
+    }
+    out
 }
 
 // ──────────────────────────────────────────────
@@ -3160,6 +3452,7 @@ impl Render for PromptDebugger {
                 view_modal(
                     &self.view_records,
                     &style,
+                    self.view_modal_tab,
                     self.show_only_diff,
                     &self.view_scroll,
                     cx.entity(),
@@ -3909,6 +4202,103 @@ mod geometry_tests {
         assert!(
             clipboard.contains("historical result"),
             "clipboard should contain the result, got {clipboard:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn history_view_modal_json_tab_shows_sections_and_copies_input(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.view_records = vec![ExecutionRecord {
+                id: 7,
+                timestamp: 1,
+                model_name: "history-model".to_string(),
+                temperature: 0.7,
+                max_tokens: 2048,
+                top_p: 1.0,
+                thinking_enabled: false,
+                thinking_budget: 1024,
+                messages: vec![DebugMessage {
+                    id: 1,
+                    role: MessageRole::User,
+                    content: "history prompt".to_string(),
+                }],
+                tools: vec![],
+                result: CallState::Success("historical result".to_string()),
+            }];
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 切到 JSON Tab
+        let json_tab = cx
+            .debug_bounds("PROMPT_VIEW_TAB_JSON")
+            .expect("json tab bounds");
+        cx.simulate_click(json_tab.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let input = cx
+            .debug_bounds("PROMPT_VIEW_JSON_INPUT_1_PANEL")
+            .expect("input panel bounds");
+        let output = cx
+            .debug_bounds("PROMPT_VIEW_JSON_OUTPUT_1_PANEL")
+            .expect("output panel bounds");
+        let metadata = cx
+            .debug_bounds("PROMPT_VIEW_JSON_METADATA_1_PANEL")
+            .expect("metadata panel bounds");
+
+        assert!(input.size.height > px(0.0), "input panel collapsed");
+        assert!(output.size.height > px(0.0), "output panel collapsed");
+        assert!(metadata.size.height > px(0.0), "metadata panel collapsed");
+        assert!(input.bottom() <= output.top(), "input must precede output");
+        assert!(
+            output.bottom() <= metadata.top(),
+            "output must precede metadata"
+        );
+
+        // 分节复制按钮：复制的是该节的 pretty JSON
+        let copy_input = cx
+            .debug_bounds("PROMPT_VIEW_JSON_INPUT_1_COPY")
+            .expect("input copy button bounds");
+        cx.simulate_click(copy_input.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let clipboard = typed_window
+            .update(&mut cx, |_, _, cx| {
+                cx.read_from_clipboard().and_then(|item| item.text())
+            })
+            .expect("read clipboard after section copy click")
+            .unwrap_or_default();
+        assert!(
+            clipboard.contains("\"model\": \"history-model\""),
+            "input section clipboard should contain the request model, got {clipboard:?}"
+        );
+        assert!(
+            clipboard.contains("\"content\": \"history prompt\""),
+            "input section clipboard should contain the message, got {clipboard:?}"
+        );
+        assert!(
+            !clipboard.contains("historical result"),
+            "input section copy must not include the output, got {clipboard:?}"
         );
     }
 }

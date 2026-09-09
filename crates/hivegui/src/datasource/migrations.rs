@@ -2560,10 +2560,11 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     // does not support `ADD COLUMN IF NOT EXISTS`, so we read the current
     // schema to decide whether the column already exists.
     // query-plan: id=t012.global_configs.deletable_probe; owner_phase=US12; activation_task=T012
-    let global_configs_columns = sqlx::query("SELECT name FROM pragma_table_info('global_configs')")
-        .fetch_all(&mut **executor)
-        .await
-        .context("pragma_table_info(global_configs)")?;
+    let global_configs_columns =
+        sqlx::query("SELECT name FROM pragma_table_info('global_configs')")
+            .fetch_all(&mut **executor)
+            .await
+            .context("pragma_table_info(global_configs)")?;
     let global_configs_column_names: std::collections::HashSet<String> = global_configs_columns
         .iter()
         .map(|row| row.try_get::<String, _>("name").unwrap_or_default())

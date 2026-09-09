@@ -600,7 +600,9 @@ impl GlobalConfigView {
                                     div()
                                         .text_size(px(11.0))
                                         .text_color(style.list.muted_foreground)
-                                        .child("默认不可删除，避免误删。需手动开启后才能删除该配置。"),
+                                        .child(
+                                            "默认不可删除，避免误删。需手动开启后才能删除该配置。",
+                                        ),
                                 ),
                         )
                         .child(error)
@@ -802,37 +804,39 @@ impl GlobalConfigView {
         let Some(store) = self.store.clone() else {
             return;
         };
-        cx.spawn(async move |this, cx| match store.delete_global_config(id).await {
-            Ok(true) => {
-                this.update(cx, |view, cx| {
-                    view.reload(cx);
-                })
-                .ok();
-            }
-            Ok(false) => {
-                this.update(cx, |view, cx| {
-                    view.error = Some("删除全局配置失败：目标项不存在".into());
-                    cx.notify();
-                })
-                .ok();
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: "hivegui::ui::global_config",
-                    operation = "delete",
-                    outcome = "error",
-                    id = id,
-                    error = %err,
-                    error_debug = ?err,
-                    "删除全局配置失败"
-                );
-                this.update(cx, |view, cx| {
-                    view.error = Some("删除全局配置失败，详情见 hivegui.log".into());
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
+        cx.spawn(
+            async move |this, cx| match store.delete_global_config(id).await {
+                Ok(true) => {
+                    this.update(cx, |view, cx| {
+                        view.reload(cx);
+                    })
+                    .ok();
+                }
+                Ok(false) => {
+                    this.update(cx, |view, cx| {
+                        view.error = Some("删除全局配置失败：目标项不存在".into());
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "hivegui::ui::global_config",
+                        operation = "delete",
+                        outcome = "error",
+                        id = id,
+                        error = %err,
+                        error_debug = ?err,
+                        "删除全局配置失败"
+                    );
+                    this.update(cx, |view, cx| {
+                        view.error = Some("删除全局配置失败，详情见 hivegui.log".into());
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            },
+        )
         .detach();
     }
 
@@ -1064,9 +1068,7 @@ impl Render for GlobalConfigView {
                                                                 if let Some(id) =
                                                                     view.confirm_delete_id
                                                                 {
-                                                                    view.delete_config(
-                                                                        id, cx,
-                                                                    );
+                                                                    view.delete_config(id, cx);
                                                                     view.confirm_delete_id = None;
                                                                 }
                                                             })

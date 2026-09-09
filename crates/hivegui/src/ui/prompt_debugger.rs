@@ -3773,8 +3773,16 @@ mod geometry_tests {
             "view modal collapsed to title bar: {:?}",
             panel.size
         );
-        assert!(body.size.height > px(60.0), "body collapsed: {:?}", body.size);
-        assert!(card.size.height > px(0.0), "card collapsed: {:?}", card.size);
+        assert!(
+            body.size.height > px(60.0),
+            "body collapsed: {:?}",
+            body.size
+        );
+        assert!(
+            card.size.height > px(0.0),
+            "card collapsed: {:?}",
+            card.size
+        );
         assert!(body.top() >= panel.top());
         assert!(body.bottom() <= panel.bottom());
         assert!(card.bottom() <= body.bottom());

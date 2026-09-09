@@ -754,11 +754,15 @@ impl Render for TagView {
                                             .flex_col()
                                             .gap(px(8.0))
                                             .child(
-                                                div().text_size(px(13.0)).child("颜色 (HEX，如 #FF5733)"),
+                                                div()
+                                                    .text_size(px(13.0))
+                                                    .child("颜色 (HEX，如 #FF5733)"),
                                             )
                                             .child(
-                                                ColorPicker::new(self.color_picker.as_ref().unwrap())
-                                                    .small(),
+                                                ColorPicker::new(
+                                                    self.color_picker.as_ref().unwrap(),
+                                                )
+                                                .small(),
                                             )
                                             .child(
                                                 div()
@@ -939,18 +943,15 @@ impl Render for TagView {
                                                     ActionSize::Dialog,
                                                     style,
                                                 )
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    {
-                                                        let this = cx.weak_entity();
-                                                        move |_, _, cx| {
-                                                            this.update(cx, |view, cx| {
-                                                                view.hide_form(cx);
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    },
-                                                ),
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let this = cx.weak_entity();
+                                                    move |_, _, cx| {
+                                                        this.update(cx, |view, cx| {
+                                                            view.hide_form(cx);
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             )
                                             .child(
                                                 action_button(
@@ -960,19 +961,16 @@ impl Render for TagView {
                                                     ActionSize::Dialog,
                                                     style,
                                                 )
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    {
-                                                        let this = cx.weak_entity();
-                                                        move |_, _, cx| {
-                                                            this.update(cx, |view, cx| {
-                                                                view.save_tag(cx);
-                                                            })
-                                                            .ok();
-                                                        }
-                                                    },
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let this = cx.weak_entity();
+                                                    move |_, _, cx| {
+                                                        this.update(cx, |view, cx| {
+                                                            view.save_tag(cx);
+                                                        })
+                                                        .ok();
+                                                    }
+                                                }),
                                             ),
-                                        ),
                                     ),
                             ),
                         ),

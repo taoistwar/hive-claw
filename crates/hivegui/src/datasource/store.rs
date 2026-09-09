@@ -2261,11 +2261,13 @@ impl Store {
         // 防御性约束：只有 deletable=1 的行才可被删除。UI 已对
         // deletable=false 的项禁用删除按钮，这里作为第二道防线，
         // 防止绕过 UI 直接调用时误删。
-        Ok(sqlx::query("DELETE FROM global_configs WHERE id=? AND deletable=1")
-            .bind(id)
-            .execute(&self.inner.pool)
-            .await?
-            .rows_affected()
-            > 0)
+        Ok(
+            sqlx::query("DELETE FROM global_configs WHERE id=? AND deletable=1")
+                .bind(id)
+                .execute(&self.inner.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
     }
 }

@@ -778,13 +778,10 @@ impl Render for CategoryView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
-                        .track_focus(
-                            &cx.weak_entity()
-                                .clone()
-                                .upgrade()
-                                .map(|e| e.read(cx).modal_focus.clone())
-                                .unwrap_or_else(|| cx.focus_handle()),
-                        )
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .track_focus(&self.modal_focus)
                         .bg(overlay)
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, {
@@ -795,26 +792,22 @@ impl Render for CategoryView {
                                 })
                                 .ok();
                             }
-                        }),
-                )
-                .child(
-                    management_modal_panel(
-                        management_modal_layer(px(500.0), window.bounds().size.height - px(48.0))
-                            .track_focus(
-                                &cx.weak_entity()
-                                    .clone()
-                                    .upgrade()
-                                    .map(|e| e.read(cx).form_focus.clone())
-                                    .unwrap_or_else(|| cx.focus_handle()),
-                            )
-                            .debug_selector(|| CATEGORY_MODAL.to_owned()),
-                        popover,
-                        popover_foreground,
-                        border,
-                    )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
                         })
+                        .child(
+                            management_modal_panel(
+                                management_modal_layer(
+                                    px(500.0),
+                                    window.bounds().size.height - px(48.0),
+                                )
+                                .track_focus(&self.form_focus)
+                                .debug_selector(|| CATEGORY_MODAL.to_owned()),
+                                popover,
+                                popover_foreground,
+                                border,
+                            )
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                         .child(
                             management_modal_scroll("category-form-scroll", &self.form_scroll)
                                 .gap(px(16.0))
@@ -1070,6 +1063,7 @@ impl Render for CategoryView {
                                         ),
                                 ),
                         ),
+                )
                 )
             })
             // Delete confirmation

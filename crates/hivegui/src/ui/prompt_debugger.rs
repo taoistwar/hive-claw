@@ -2259,6 +2259,7 @@ fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl
     };
 
     div()
+        .debug_selector(|| "PROMPT_HISTORY_VIEW_CARD".to_owned())
         .p(px(12.0))
         .border_1()
         .border_color(style.list.border)
@@ -2578,6 +2579,7 @@ fn view_modal(
     records: &[ExecutionRecord],
     style: &ManagementStyle,
     show_only_diff: bool,
+    view_scroll: &ScrollHandle,
     entity: Entity<PromptDebugger>,
 ) -> impl IntoElement {
     let is_comparison = records.len() > 1;
@@ -2620,6 +2622,7 @@ fn view_modal(
             div()
                 .w(modal_width)
                 .max_h(px(600.0))
+                .debug_selector(|| "PROMPT_HISTORY_VIEW_PANEL".to_owned())
                 .bg(style.list.row)
                 .rounded(px(12.0))
                 .shadow_lg()
@@ -2756,11 +2759,21 @@ fn view_modal(
                         ),
                 )
                 .child(
-                    // 内容区域
+                    // 内容区域。不能用 `overflow_y_scrollbar()`：其 Scrollable
+                    // 包装器把高度全部换成百分比（size_full/min_h_full），在
+                    // 这种自动高度（仅 max_h）的面板里内容贡献为 0，会把弹窗
+                    // 塌缩成只剩标题栏的空白窗口。原生 `overflow_y_scroll()`
+                    // 让内容高度正常传导给面板（同 llm_config 弹窗模式）。
                     div()
+                        .id("prompt-view-modal-scroll")
+                        .debug_selector(|| "PROMPT_HISTORY_VIEW_SCROLL".to_owned())
+                        .flex()
+                        .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scrollbar()
+                        .overflow_y_scroll()
+                        .track_scroll(view_scroll)
+                        .vertical_scrollbar(view_scroll)
                         .px(px(16.0))
                         .py(px(12.0))
                         .child(if is_comparison {
@@ -3139,8 +3152,14 @@ impl Render for PromptDebugger {
                     )),
             )
             .child(if self.show_view_modal {
-                view_modal(&self.view_records, &style, self.show_only_diff, cx.entity())
-                    .into_any_element()
+                view_modal(
+                    &self.view_records,
+                    &style,
+                    self.show_only_diff,
+                    &self.view_scroll,
+                    cx.entity(),
+                )
+                .into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -3220,9 +3239,15 @@ impl Render for PromptDebugger {
                             )
                             .child(
                                 div()
+                                    .id("prompt-tool-picker-scroll")
+                                    .debug_selector(|| "PROMPT_TOOL_PICKER_SCROLL".to_owned())
+                                    .flex()
+                                    .flex_col()
                                     .flex_1()
                                     .min_h_0()
-                                    .overflow_y_scrollbar()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.tool_picker_scroll)
+                                    .vertical_scrollbar(&self.tool_picker_scroll)
                                     .px(px(16.0))
                                     .py(px(8.0))
                                     .child(
@@ -3674,5 +3699,77 @@ mod geometry_tests {
         assert_eq!(viewed_record_id, Some(42));
         assert_eq!(viewed_result.as_deref(), Some("historical result"));
         assert!(cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_some());
+    }
+
+    #[gpui::test]
+    fn history_view_modal_body_expands_with_content(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.view_records = vec![ExecutionRecord {
+                id: 7,
+                timestamp: 1,
+                model_name: "history-model".to_string(),
+                temperature: 0.7,
+                max_tokens: 2048,
+                top_p: 1.0,
+                thinking_enabled: false,
+                thinking_budget: 1024,
+                messages: vec![DebugMessage {
+                    id: 1,
+                    role: MessageRole::User,
+                    content: "history prompt".to_string(),
+                }],
+                tools: vec![],
+                result: CallState::Success("historical result".to_string()),
+            }];
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let overlay = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_MODAL")
+            .expect("view modal overlay bounds");
+        let panel = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_PANEL")
+            .expect("view modal panel bounds");
+        let body = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_SCROLL")
+            .expect("view modal body bounds");
+        let card = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_CARD")
+            .expect("record card bounds");
+
+        // 回归：内容区此前用 overflow_y_scrollbar()（Scrollable 包装器把高度
+        // 换成百分比链条），在自动高度（仅 max_h）面板里内容贡献为 0，弹窗
+        // 塌缩成只剩标题栏的空白窗口。
+        assert!(
+            panel.size.height > px(150.0),
+            "view modal collapsed to title bar: {:?}",
+            panel.size
+        );
+        assert!(body.size.height > px(60.0), "body collapsed: {:?}", body.size);
+        assert!(card.size.height > px(0.0), "card collapsed: {:?}", card.size);
+        assert!(body.top() >= panel.top());
+        assert!(body.bottom() <= panel.bottom());
+        assert!(card.bottom() <= body.bottom());
+        assert!(panel.size.height <= px(600.0), "panel must respect max_h");
+        assert!(panel.top() >= overlay.top());
     }
 }

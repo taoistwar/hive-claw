@@ -248,17 +248,16 @@ pub fn list_actions(width: Option<Pixels>, style: ManagementStyle) -> Div {
     list_cell(width, style).flex().items_center().gap(px(4.0))
 }
 
-/// Builds a viewport-constrained, horizontally centered modal layer.
-pub fn management_modal_layer(max_width: Pixels) -> Div {
+/// Builds a modal layer that sizes to its content but never exceeds the
+/// viewport. `max_height` should be the available viewport height (e.g.
+/// `window.bounds().size.height - px(48.0)`); the layer is centered both
+/// axes by its parent overlay and only grows to `max_height` when the body
+/// is taller, at which point the inner scroll area takes over.
+pub fn management_modal_layer(max_width: Pixels, max_height: Pixels) -> Div {
     div()
-        .absolute()
-        .top(px(24.0))
-        .bottom(px(24.0))
-        .left(px(0.0))
-        .right(px(0.0))
-        .mx_auto()
         .w_full()
         .max_w(max_width)
+        .max_h(max_height)
         .flex()
         .flex_col()
         .overflow_hidden()

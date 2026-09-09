@@ -962,7 +962,7 @@ impl Render for AgentView {
                 )
                 .child(
                     management_modal_panel(
-                        management_modal_layer(px(620.0)),
+                        management_modal_layer(px(620.0), window.bounds().size.height - px(48.0)),
                         theme.popover,
                         theme.foreground,
                         theme.border,

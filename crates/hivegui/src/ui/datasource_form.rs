@@ -437,7 +437,7 @@ impl Focusable for DataSourceForm {
 }
 
 impl Render for DataSourceForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.scroll_tag = SCROLL_TAG;
         let style = ManagementStyle::current(cx);
         let theme = cx.theme();
@@ -491,7 +491,7 @@ impl Render for DataSourceForm {
             .bg(overlay)
             .child(
                 management_modal_panel(
-                    management_modal_layer(px(520.0)),
+                    management_modal_layer(px(520.0), window.bounds().size.height - px(48.0)),
                     background,
                     foreground,
                     border,

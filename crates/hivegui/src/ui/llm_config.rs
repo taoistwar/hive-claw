@@ -653,7 +653,10 @@ impl Render for LLMConfigView {
                     .justify_center()
                     .child(
                         management_modal_panel(
-                            management_modal_layer(px(420.0)),
+                            management_modal_layer(
+                                px(420.0),
+                                window.bounds().size.height - px(48.0),
+                            ),
                             style.list.row,
                             style.list.foreground,
                             style.list.border,

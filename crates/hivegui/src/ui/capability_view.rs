@@ -716,7 +716,7 @@ impl Render for CapabilityView {
                     // keyboard hook (Esc/Enter) can trap focus and
                     // restore it to the originating row on close.
                     management_modal_panel(
-                        management_modal_layer(px(500.0)),
+                        management_modal_layer(px(500.0), window.bounds().size.height - px(48.0)),
                         popover,
                         popover_foreground,
                         border,

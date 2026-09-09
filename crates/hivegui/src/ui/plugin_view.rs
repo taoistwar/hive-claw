@@ -948,7 +948,7 @@ impl Render for PluginView {
                 )
                 .child(
                     management_modal_panel(
-                        management_modal_layer(px(550.0)),
+                        management_modal_layer(px(550.0), window.bounds().size.height - px(48.0)),
                         theme.popover,
                         theme.foreground,
                         theme.border,

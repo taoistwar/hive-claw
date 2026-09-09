@@ -696,140 +696,152 @@ impl Render for CapabilityView {
             )
             .when(self.show_form, |this| {
                 this.child(
+                    // T067A: track_focus on the modal layer so the
+                    // keyboard hook (Esc/Enter) can trap focus and
+                    // restore it to the originating row on close.
                     div()
                         .absolute()
                         .top(px(0.0))
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(0.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .track_focus(&self.modal_focus)
                         .bg(overlay)
                         .cursor(CursorStyle::PointingHand)
+                        .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
+                            v.on_key_down(event, window, cx);
+                        }))
                         .on_mouse_down(MouseButton::Left, {
                             let t = cx.weak_entity();
                             move |_, _, cx| {
                                 t.update(cx, |v, cx| v.hide_form(cx)).ok();
                             }
-                        }),
-                )
-                .child(
-                    // T067A: track_focus on the modal layer so the
-                    // keyboard hook (Esc/Enter) can trap focus and
-                    // restore it to the originating row on close.
-                    management_modal_panel(
-                        management_modal_layer(px(500.0), window.bounds().size.height - px(48.0)),
-                        popover,
-                        popover_foreground,
-                        border,
-                    )
-                    .track_focus(&self.modal_focus)
-                    .on_key_down(cx.listener(|v, event: &KeyDownEvent, window, cx| {
-                        v.on_key_down(event, window, cx);
-                    }))
-                    .id(CAPABILITY_MODAL)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        management_modal_scroll("capability-form-scroll", &self.form_scroll)
-                            .id(CAPABILITY_FORM)
-                            .gap(px(16.0))
-                            .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(if self.editing_name.is_some() {
-                                        "编辑能力"
-                                    } else {
-                                        "添加能力"
-                                    }),
+                        })
+                        .child(
+                            management_modal_panel(
+                                management_modal_layer(
+                                    px(500.0),
+                                    window.bounds().size.height - px(48.0),
+                                ),
+                                popover,
+                                popover_foreground,
+                                border,
                             )
+                            .id(CAPABILITY_MODAL)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.0))
-                                    .child(div().text_size(px(13.0)).child("名称 *"))
-                                    .child(
-                                        Input::new(self.name_input.as_ref().unwrap())
-                                            .w_full()
-                                            .h(px(32.0))
-                                            .px(px(8.0))
-                                            .border_1()
-                                            .border_color(input)
-                                            .rounded(px(4.0)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.0))
-                                    .child(div().text_size(px(13.0)).child("描述 *"))
-                                    .child(
-                                        Input::new(self.description_input.as_ref().unwrap())
-                                            .w_full()
-                                            .h(px(60.0))
-                                            .px(px(8.0))
-                                            .py(px(4.0))
-                                            .border_1()
-                                            .border_color(input)
-                                            .rounded(px(4.0)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.0))
-                                    .child(div().text_size(px(13.0)).child("分类 (可选)"))
-                                    .child(div().flex().flex_wrap().gap(px(4.0)).children(
-                                        self.categories.iter().map(|(cid, cname)| {
-                                            let selected = self.form_category_id == Some(*cid);
-                                            let cid_val = *cid;
-                                            let t = cx.weak_entity();
+                                management_modal_scroll(
+                                    "capability-form-scroll",
+                                    &self.form_scroll,
+                                )
+                                .id(CAPABILITY_FORM)
+                                .gap(px(16.0))
+                                .child(
+                                    div()
+                                        .text_size(px(18.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(if self.editing_name.is_some() {
+                                            "编辑能力"
+                                        } else {
+                                            "添加能力"
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(8.0))
+                                        .child(div().text_size(px(13.0)).child("名称 *"))
+                                        .child(
+                                            Input::new(self.name_input.as_ref().unwrap())
+                                                .w_full()
+                                                .h(px(32.0))
+                                                .px(px(8.0))
+                                                .border_1()
+                                                .border_color(input)
+                                                .rounded(px(4.0)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(8.0))
+                                        .child(div().text_size(px(13.0)).child("描述 *"))
+                                        .child(
+                                            Input::new(self.description_input.as_ref().unwrap())
+                                                .w_full()
+                                                .h(px(60.0))
+                                                .px(px(8.0))
+                                                .py(px(4.0))
+                                                .border_1()
+                                                .border_color(input)
+                                                .rounded(px(4.0)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(8.0))
+                                        .child(div().text_size(px(13.0)).child("分类 (可选)"))
+                                        .child(div().flex().flex_wrap().gap(px(4.0)).children(
+                                            self.categories.iter().map(|(cid, cname)| {
+                                                let selected = self.form_category_id == Some(*cid);
+                                                let cid_val = *cid;
+                                                let t = cx.weak_entity();
+                                                action_button(
+                                                    format!("cat-{}", cid_val),
+                                                    cname.as_str(),
+                                                    if selected {
+                                                        ActionRole::Main
+                                                    } else {
+                                                        ActionRole::Neutral
+                                                    },
+                                                    ActionSize::Dialog,
+                                                    style,
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    move |_, _, cx| {
+                                                        t.update(cx, |v, cx| {
+                                                            v.form_category_id = if selected {
+                                                                None
+                                                            } else {
+                                                                Some(cid_val)
+                                                            };
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                    },
+                                                )
+                                            }),
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .child(format!("危险能力 {DANGER_GLYPH}")),
+                                        )
+                                        .child(if self.form_is_dangerous {
                                             action_button(
-                                                format!("cat-{}", cid_val),
-                                                cname.as_str(),
-                                                if selected {
-                                                    ActionRole::Main
-                                                } else {
-                                                    ActionRole::Neutral
-                                                },
+                                                "toggle-danger",
+                                                format!("{DANGER_GLYPH}是"),
+                                                delete_role,
                                                 ActionSize::Dialog,
                                                 style,
                                             )
-                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                                t.update(cx, |v, cx| {
-                                                    v.form_category_id =
-                                                        if selected { None } else { Some(cid_val) };
-                                                    cx.notify();
-                                                })
-                                                .ok();
-                                            })
-                                        }),
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.0))
-                                            .child(format!("危险能力 {DANGER_GLYPH}")),
-                                    )
-                                    .child(if self.form_is_dangerous {
-                                        action_button(
-                                            "toggle-danger",
-                                            format!("{DANGER_GLYPH}是"),
-                                            delete_role,
-                                            ActionSize::Dialog,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
+                                            .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| {
@@ -838,19 +850,16 @@ impl Render for CapabilityView {
                                                     })
                                                     .ok();
                                                 }
-                                            },
-                                        )
-                                    } else {
-                                        action_button(
-                                            "toggle-danger",
-                                            "否",
-                                            cancel_role,
-                                            ActionSize::Dialog,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
+                                            })
+                                        } else {
+                                            action_button(
+                                                "toggle-danger",
+                                                "否",
+                                                cancel_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| {
@@ -859,73 +868,67 @@ impl Render for CapabilityView {
                                                     })
                                                     .ok();
                                                 }
-                                            },
-                                        )
-                                    }),
-                            )
-                            .when_some(self.error_message.as_ref(), |this, err| {
-                                // T067A: error region rendered as a
-                                // bold ⚠ block so the failure is
-                                // not color-only and the form
-                                // focus is moved to the form body
-                                // (the parent .id(CAPABILITY_FORM)
-                                // selector handles the AccessKit
-                                // first-focus on next refresh).
-                                this.child(
-                                    div()
-                                        .p(px(8.0))
-                                        .bg(danger.opacity(0.15))
-                                        .border_1()
-                                        .border_color(danger)
-                                        .rounded(px(4.0))
-                                        .text_size(px(12.0))
-                                        .text_color(danger_foreground)
-                                        .child(format!("{DANGER_GLYPH} {err}")),
+                                            })
+                                        }),
                                 )
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.0))
-                                    .child(
-                                        action_button(
-                                            "cancel",
-                                            "取消",
-                                            cancel_role,
-                                            ActionSize::Dialog,
-                                            style,
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
+                                .when_some(self.error_message.as_ref(), |this, err| {
+                                    // T067A: error region rendered as a
+                                    // bold ⚠ block so the failure is
+                                    // not color-only and the form
+                                    // focus is moved to the form body
+                                    // (the parent .id(CAPABILITY_FORM)
+                                    // selector handles the AccessKit
+                                    // first-focus on next refresh).
+                                    this.child(
+                                        div()
+                                            .p(px(8.0))
+                                            .bg(danger.opacity(0.15))
+                                            .border_1()
+                                            .border_color(danger)
+                                            .rounded(px(4.0))
+                                            .text_size(px(12.0))
+                                            .text_color(danger_foreground)
+                                            .child(format!("{DANGER_GLYPH} {err}")),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .justify_end()
+                                        .gap(px(8.0))
+                                        .child(
+                                            action_button(
+                                                "cancel",
+                                                "取消",
+                                                cancel_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
                                                 move |_, _, cx| {
                                                     t.update(cx, |v, cx| v.hide_form(cx)).ok();
                                                 }
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        action_button(
-                                            "save",
-                                            "保存",
-                                            save_role,
-                                            ActionSize::Dialog,
-                                            style,
+                                            }),
                                         )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            {
+                                        .child(
+                                            action_button(
+                                                "save",
+                                                "保存",
+                                                save_role,
+                                                ActionSize::Dialog,
+                                                style,
+                                            )
+                                            .on_mouse_down(MouseButton::Left, {
                                                 let t = cx.weak_entity();
                                                 move |_, window, cx| {
                                                     t.update(cx, |v, cx| v.save(window, cx)).ok();
                                                 }
-                                            },
+                                            }),
                                         ),
-                                    ),
+                                ),
                             ),
-                    ),
+                        ),
                 )
             })
             .when(self.confirm_delete_name.is_some(), |this| {

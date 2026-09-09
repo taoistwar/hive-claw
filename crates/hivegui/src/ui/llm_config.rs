@@ -677,35 +677,19 @@ impl Render for LLMConfigView {
                             )
                             .child(field(ni))
                             .child(model_relations)
-                            .child(if is_preset {
-                                field(di).into_any_element()
-                            } else {
-                                div().into_any_element()
+                            .when(is_preset, |d| d.child(field(di)))
+                            .when(is_preset, |d| d.child(field(mi)))
+                            .when(is_preset, |d| d.child(field(ti)))
+                            .when(is_preset, |d| {
+                                d.child(toggle("默认", self.form_is_default, cx.entity(), style))
                             })
-                            .child(if is_preset {
-                                field(mi).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            })
-                            .child(if is_preset {
-                                field(ti).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            })
-                            .child(if is_preset {
-                                toggle("默认", self.form_is_default, cx.entity(), style)
-                                    .into_any_element()
-                            } else {
-                                div().into_any_element()
-                            })
-                            .child(if let Some(ref e) = self.error {
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(style.action(ActionRole::Delete).background)
-                                    .child(e.clone())
-                                    .into_any_element()
-                            } else {
-                                div().into_any_element()
+                            .when_some(self.error.as_ref(), |d, e| {
+                                d.child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .text_color(style.action(ActionRole::Delete).background)
+                                        .child(e.clone()),
+                                )
                             })
                             .child(
                                 div()

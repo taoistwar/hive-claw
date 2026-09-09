@@ -2631,10 +2631,13 @@ fn view_modal(
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                // 在 capture 阶段拦截所有鼠标按下事件，阻止冒泡到外层
-                // overlay (其 on_mouse_down 会关闭弹窗)。否则点击弹窗
-                // 内容时会把整个模态框关掉。
-                .capture_any_mouse_down(|_, _, cx| {
+                // 阻止面板内的点击冒泡到外层 overlay（其 on_mouse_down 会关闭
+                // 弹窗）。必须在冒泡阶段拦截：capture_any_mouse_down 在 capture
+                // 阶段（由外向内）stop_propagation，会连带吞掉子元素（复制/
+                // 关闭按钮、仅看差异、滚动条）的点击处理器，导致全部无响应。
+                // on_any_mouse_down 在冒泡阶段执行：子元素先处理自己的点击，
+                // 随后面板拦下，点击面板外遮罩仍可关闭弹窗。
+                .on_any_mouse_down(|_, _, cx| {
                     cx.stop_propagation();
                 })
                 .child(
@@ -2719,6 +2722,7 @@ fn view_modal(
                                     // 复制按钮：把整组记录的格式化文本写入剪贴板，
                                     // 弥补 GPUI 0.2 暂不支持 div 内文本拖选的限制。
                                     div()
+                                        .debug_selector(|| "PROMPT_HISTORY_VIEW_COPY".to_owned())
                                         .flex()
                                         .items_center()
                                         .gap(px(4.0))
@@ -2743,6 +2747,7 @@ fn view_modal(
                                 )
                                 .child(
                                     div()
+                                        .debug_selector(|| "PROMPT_HISTORY_VIEW_CLOSE".to_owned())
                                         .cursor(CursorStyle::PointingHand)
                                         .hover(|s| s.opacity(0.7))
                                         .child(Icon::new(IconName::Close).small())
@@ -3195,7 +3200,11 @@ impl Render for PromptDebugger {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                            // 与查看弹窗同理：冒泡阶段拦下面板内点击，
+                            // 避免误触遮罩层把整个选择器关掉。
+                            .on_any_mouse_down(|_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -3771,5 +3780,127 @@ mod geometry_tests {
         assert!(card.bottom() <= body.bottom());
         assert!(panel.size.height <= px(600.0), "panel must respect max_h");
         assert!(panel.top() >= overlay.top());
+    }
+
+    #[gpui::test]
+    fn history_view_modal_close_button_closes_the_modal(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.view_records = vec![ExecutionRecord {
+                id: 7,
+                timestamp: 1,
+                model_name: "history-model".to_string(),
+                temperature: 0.7,
+                max_tokens: 2048,
+                top_p: 1.0,
+                thinking_enabled: false,
+                thinking_budget: 1024,
+                messages: vec![DebugMessage {
+                    id: 1,
+                    role: MessageRole::User,
+                    content: "history prompt".to_string(),
+                }],
+                tools: vec![],
+                result: CallState::Success("historical result".to_string()),
+            }];
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let close = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_CLOSE")
+            .expect("close button bounds");
+
+        cx.simulate_click(close.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let show_view_modal = typed_window
+            .update(&mut cx, |view, _, _| view.show_view_modal)
+            .expect("read state after close click");
+        assert!(!show_view_modal, "close button must close the modal");
+    }
+
+    #[gpui::test]
+    fn history_view_modal_copy_button_writes_clipboard(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.view_records = vec![ExecutionRecord {
+                id: 7,
+                timestamp: 1,
+                model_name: "history-model".to_string(),
+                temperature: 0.7,
+                max_tokens: 2048,
+                top_p: 1.0,
+                thinking_enabled: false,
+                thinking_budget: 1024,
+                messages: vec![DebugMessage {
+                    id: 1,
+                    role: MessageRole::User,
+                    content: "history prompt".to_string(),
+                }],
+                tools: vec![],
+                result: CallState::Success("historical result".to_string()),
+            }];
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let copy = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_COPY")
+            .expect("copy button bounds");
+
+        cx.simulate_click(copy.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let clipboard = typed_window
+            .update(&mut cx, |_, _, cx| {
+                cx.read_from_clipboard().and_then(|item| item.text())
+            })
+            .expect("read clipboard after copy click")
+            .unwrap_or_default();
+        assert!(
+            clipboard.contains("history-model"),
+            "clipboard should contain the model name, got {clipboard:?}"
+        );
+        assert!(
+            clipboard.contains("historical result"),
+            "clipboard should contain the result, got {clipboard:?}"
+        );
     }
 }

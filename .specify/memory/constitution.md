@@ -60,10 +60,8 @@ codebases unmaintainable.
 Strict TDD is mandatory for all feature work and bug fixes:
 
 1. Tests MUST be written before implementation.
-2. Tests MUST be reviewed and approved by the user (or the designated
-   reviewer) before any production code is written.
-3. Tests MUST be observed to fail (Red) before implementation begins.
-4. Implementation MUST be the minimum code required to make tests pass
+2. Tests MUST be observed to fail (Red) before implementation begins.
+3. Implementation MUST be the minimum code required to make tests pass
    (Green), followed by Refactor.
 
 Contract tests MUST exist for every external interface (HTTP endpoint, CLI

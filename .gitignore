@@ -33,3 +33,11 @@ logs/
 hiveweb.log.*
 TEST.md
 tmp/
+
+# Local runtime artifacts (hivegui standalone mode)
+datasources.db
+datasources.db.lock
+datasources.snapshots/
+hivegui.db
+encryption.key
+/plugins/[0-9]*/

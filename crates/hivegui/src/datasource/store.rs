@@ -1415,10 +1415,16 @@ impl Store {
              id INTEGER PRIMARY KEY AUTOINCREMENT, \
              name TEXT NOT NULL, key TEXT NOT NULL UNIQUE, \
              type TEXT NOT NULL DEFAULT 'text', data TEXT NOT NULL, \
+             deletable INTEGER NOT NULL DEFAULT 0, \
              created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')",
         )
         .execute(&pool)
         .await?;
+
+        // 兼容旧库：global_configs 早期版本不含 deletable 列，
+        // 否则 upsert/select 解码 GlobalConfig 时会报
+        // "no column found for name: deletable"。
+        Self::ensure_global_configs_deletable(&pool).await?;
 
         // FR-027: 运行数据库迁移（包括初始化实体表）
         super::entity_store::run_migrations(&pool).await?;
@@ -1467,6 +1473,10 @@ impl Store {
             .busy_timeout(SQLITE_BUSY_TIMEOUT);
         let pool = SqlitePoolOptions::new().connect_with(conn_opts).await?;
         super::function_store::FunctionStore::synchronize_builtins(&pool).await?;
+        // 兼容旧库：global_configs 早期版本不含 deletable 列，
+        // 否则 upsert/select 解码 GlobalConfig 时会报
+        // "no column found for name: deletable"。
+        Self::ensure_global_configs_deletable(&pool).await?;
         let key = Self::load_or_generate_key(db_path.parent().unwrap_or(Path::new(".")))?;
         let crypto = Crypto::new(&key);
         Ok(Self {
@@ -1482,6 +1492,31 @@ impl Store {
                 observer: None,
             }),
         })
+    }
+
+    /// 为 `global_configs` 表补齐 `deletable` 列。
+    ///
+    /// 旧版本数据库在创建该表时尚未包含 `deletable` 列，而 `GlobalConfig`
+    /// 结构体与其读写语句（如 `upsert_global_config`、`create_global_config`）
+    /// 均已引用该列。若缺失，`SELECT *` 解码 `GlobalConfig` 会报
+    /// "no column found for name: deletable"。本函数在库已存在但缺列时补列，
+    /// 对新建库（CREATE TABLE 已含该列）则是空操作。
+    async fn ensure_global_configs_deletable(pool: &sqlx::SqlitePool) -> sqlx::Result<()> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+            > 0;
+        if !exists {
+            sqlx::query(
+                "ALTER TABLE global_configs ADD COLUMN deletable INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
+        Ok(())
     }
 
     /// Whether this Store still owns the exact local-open guard shared by all
@@ -2268,6 +2303,57 @@ impl Store {
                 .await?
                 .rows_affected()
                 > 0,
-        )
-    }
-}
+                )
+                }
+                }
+
+                #[cfg(test)]
+                mod deletable_column_migration_tests {
+                use super::*;
+
+                #[tokio::test(flavor = "current_thread")]
+                async fn open_existing_adds_missing_deletable_column() {
+                let dir = tempfile::tempdir().expect("temp dir");
+                let db_dir = dir.path();
+
+                // 1) 新建库默认含 deletable 列
+                let store = Store::new(db_dir).await.expect("new store");
+
+                // 2) 模拟旧库：移除 deletable 列
+                sqlx::query("ALTER TABLE global_configs DROP COLUMN deletable")
+                .execute(store.pool())
+                .await
+                .expect("drop deletable to simulate legacy schema");
+
+                // 3) 此时走 save_settings 的 upsert 会因缺列失败
+                let before = store
+                .upsert_global_config("legacy", "legacy", "json", "{}")
+                .await;
+                assert!(
+                before.is_err(),
+                "旧库缺 deletable 列时 upsert 必须失败，实际成功"
+                );
+                drop(store);
+
+                // 4) 以既有库方式重新打开（生产路径）应补齐列
+                let db_path = db_dir.join(DB_FILENAME);
+                let reopened = Store::open_existing(&db_path)
+                .await
+                .expect("reopen existing store");
+
+                // 5) 现在 upsert（save_settings 路径）成功
+                reopened
+                .upsert_global_config("legacy", "legacy", "json", "{}")
+                .await
+                .expect("upsert succeeds after deletable migration");
+
+                // 6) 列确实存在
+                let exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
+                )
+                .fetch_one(reopened.pool())
+                .await
+                .expect("pragma query");
+                assert_eq!(exists, 1, "deletable 列应已被迁移补齐");
+                }
+                }

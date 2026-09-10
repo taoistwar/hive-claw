@@ -5,10 +5,12 @@ use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_component::notification::Notification;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable,
+    ActiveTheme as _, Icon, IconName, Root, Sizable, WindowExt,
     select::{SearchableVec, Select, SelectState},
 };
 use std::collections::{HashMap, HashSet};
@@ -160,6 +162,26 @@ enum RightPanelTab {
     History,
 }
 
+/// 持久化到 `global_configs` 的键名，用于记住左侧 LLM 设定表单。
+const PROMPT_DEBUGGER_SETTINGS_KEY: &str = "prompt_debugger_state";
+
+/// 左侧表单的持久化快照。
+///
+/// 仅记录「配置类」字段（Preset/Model 选择 + 数值参数 + 思考模式），
+/// 不包含 Messages / Tools 这类会话内容，避免下次打开时误带入旧对话。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct SavedDebuggerSettings {
+    selected_preset_id: Option<i64>,
+    selected_model_id: Option<i64>,
+    temperature: f64,
+    max_tokens: u32,
+    top_p: f64,
+    presence_penalty: f64,
+    frequency_penalty: f64,
+    thinking_enabled: bool,
+    thinking_budget_tokens: u32,
+}
+
 pub struct PromptDebugger {
     store: Entity<Store>,
     llm_store: LlmStore,
@@ -233,12 +255,15 @@ pub struct PromptDebugger {
     // 弹窗内容 Tab：格式化 / JSON
     view_modal_tab: ViewModalTab,
     show_only_diff: bool,
+    // 左侧表单校验提示（点击执行但左侧未设置时显示）
+    form_error: Option<String>,
 }
 
 impl PromptDebugger {
     pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
         let mut this = Self::new_unloaded(cx, store, llm_store);
-        this.load_data(cx);
+        // 先尝试回填上次保存的左侧 LLM 设定，再加载 Preset/Model 列表。
+        this.load_settings(cx);
         this.load_history();
         this
     }
@@ -315,12 +340,90 @@ impl PromptDebugger {
             view_scroll: ScrollHandle::default(),
             view_modal_tab: ViewModalTab::Formatted,
             show_only_diff: false,
+            form_error: None,
         }
     }
 
     fn load_data(&mut self, cx: &mut Context<Self>) {
         self.load_available_tools(cx);
         self.reload_presets_and_models(cx);
+    }
+
+    /// 异步加载上一次保存的左侧 LLM 设定并回填表单。
+    ///
+    /// 读取到快照后先写回各字段，再触发 `load_data` 重新拉取
+    /// Preset/Model 列表（列表加载完成后会根据回填的选中 ID 重建下拉）。
+    fn load_settings(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx).clone();
+        let key = PROMPT_DEBUGGER_SETTINGS_KEY.to_string();
+        cx.spawn(async move |this, cx| {
+            let saved = store.get_global_config(&key).await.ok().flatten();
+            if let Some(json) = saved
+                && let Ok(settings) = serde_json::from_str::<SavedDebuggerSettings>(&json)
+            {
+                _ = this.update(cx, |this, cx| {
+                    this.apply_saved_settings(settings);
+                    this.load_data(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// 把持久化快照写回视图字段。数值输入框会在下次渲染时按字段值重建，
+    /// 因此这里把它们置 `None` 以强制重建并显示回填值。
+    fn apply_saved_settings(&mut self, settings: SavedDebuggerSettings) {
+        self.selected_preset_id = settings.selected_preset_id;
+        self.selected_model_id = settings.selected_model_id;
+        self.temperature = settings.temperature;
+        self.max_tokens = settings.max_tokens;
+        self.top_p = settings.top_p;
+        self.presence_penalty = settings.presence_penalty;
+        self.frequency_penalty = settings.frequency_penalty;
+        self.thinking_enabled = settings.thinking_enabled;
+        self.thinking_budget_tokens = settings.thinking_budget_tokens;
+
+        self.temp_input = None;
+        self.max_tokens_input = None;
+        self.top_p_input = None;
+        self.presence_penalty_input = None;
+        self.frequency_penalty_input = None;
+        self.thinking_budget_input = None;
+    }
+
+    /// 把当前左侧 LLM 设定持久化，供下次打开时回填。
+    fn save_settings(&self, cx: &mut Context<Self>) {
+        let settings = SavedDebuggerSettings {
+            selected_preset_id: self.selected_preset_id,
+            selected_model_id: self.selected_model_id,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            top_p: self.top_p,
+            presence_penalty: self.presence_penalty,
+            frequency_penalty: self.frequency_penalty,
+            thinking_enabled: self.thinking_enabled,
+            thinking_budget_tokens: self.thinking_budget_tokens,
+        };
+        let Ok(json) = serde_json::to_string(&settings) else {
+            return;
+        };
+        let store = self.store.read(cx).clone();
+        let key = PROMPT_DEBUGGER_SETTINGS_KEY.to_string();
+        cx.spawn(async move |_, _| {
+            if let Err(err) = store
+                .upsert_global_config(&key, &key, "json", &json)
+                .await
+            {
+                tracing::error!(
+                    target: "hivegui::ui::prompt_debugger",
+                    operation = "save_settings",
+                    outcome = "error",
+                    error = %err,
+                );
+            }
+        })
+        .detach();
     }
 
     /// 刷新 Preset/Model/Provider 列表。
@@ -464,6 +567,7 @@ impl PromptDebugger {
             self.selected_model_id = None;
             self.model_select_state = None;
         }
+        self.form_error = None;
         cx.notify();
     }
 
@@ -478,6 +582,7 @@ impl PromptDebugger {
         let gpui_component::select::SelectEvent::Confirm(model_id) = event;
         self.selected_model_id =
             valid_model_selection(&self.models, self.selected_preset_id, *model_id);
+        self.form_error = None;
         cx.notify();
     }
 
@@ -1017,7 +1122,14 @@ fn settings_panel(
     thinking_enabled: bool,
     entity: Entity<PromptDebugger>,
     style: &ManagementStyle,
+    form_error: Option<&str>,
 ) -> impl IntoElement {
+    let title = div()
+        .text_size(px(14.0))
+        .font_weight(FontWeight::BOLD)
+        .mb(px(12.0))
+        .child("LLM 设定");
+
     let mut panel = div()
         .w(px(220.0))
         .flex_shrink_0()
@@ -1026,13 +1138,23 @@ fn settings_panel(
         .border_r_1()
         .border_color(style.list.border)
         .overflow_y_scrollbar()
-        .child(
-            div()
-                .text_size(px(14.0))
-                .font_weight(FontWeight::BOLD)
-                .mb(px(12.0))
-                .child("LLM 设定"),
-        )
+        .child(title)
+        .when_some(form_error, |panel, msg| {
+            panel.child(
+                div()
+                    .id("prompt-debugger-form-error")
+                    .debug_selector(|| "PROMPT_DEBUGGER_FORM_ERROR".to_owned())
+                    .mt(px(8.0))
+                    .mb(px(4.0))
+                    .p(px(8.0))
+                    .border_1()
+                    .border_color(style.action(ActionRole::Delete).foreground)
+                    .rounded(px(6.0))
+                    .text_color(style.action(ActionRole::Delete).foreground)
+                    .text_size(px(12.0))
+                    .child(msg.to_string()),
+            )
+        })
         .child(preset_selector(preset_select_state, style))
         .child(div().mt(px(12.0)))
         .child(model_selector(model_select_state, preset_selected, style))
@@ -1777,6 +1899,7 @@ fn execute_button(
     div().mt(px(12.0)).child(
         div()
             .id("execute-btn")
+            .debug_selector(|| "PROMPT_DEBUGGER_EXECUTE_BTN".to_owned())
             .px(px(16.0))
             .py(px(8.0))
             .bg(if is_loading {
@@ -1806,10 +1929,10 @@ fn execute_button(
                         "执行"
                     })),
             )
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 if !is_loading {
                     entity.update(cx, |view, cx| {
-                        view.execute_call(cx);
+                        view.execute_call(window, cx);
                     });
                 }
             }),
@@ -3087,7 +3210,10 @@ fn format_records_for_json_copy(records: &[ExecutionRecord]) -> String {
 // ──────────────────────────────────────────────
 
 impl PromptDebugger {
-    fn execute_call(&mut self, cx: &mut Context<Self>) {
+    fn execute_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 每次执行前清掉上一次的校验提示
+        self.form_error = None;
+
         // 从 InputState 读取最新参数值
         if let Some(ref input) = self.temp_input
             && let Ok(v) = input.read(cx).value().to_string().parse::<f64>()
@@ -3126,7 +3252,13 @@ impl PromptDebugger {
         {
             Some(id) => id,
             None => {
+                let message = "左侧「LLM 设定」未设置：请先选择 Preset".to_string();
+                self.form_error = Some(message.clone());
                 self.call_state = CallState::Error("请先选择 Preset".into());
+                window.push_notification(
+                    Notification::error(message).placement(Anchor::BottomRight),
+                    cx,
+                );
                 cx.notify();
                 return;
             }
@@ -3139,7 +3271,13 @@ impl PromptDebugger {
         }) {
             Some(m) => m.clone(),
             None => {
+                let message = "左侧「LLM 设定」未设置：请选择当前 Preset 下的模型".to_string();
+                self.form_error = Some(message.clone());
                 self.call_state = CallState::Error("请选择当前 Preset 下的模型".into());
+                window.push_notification(
+                    Notification::error(message).placement(Anchor::BottomRight),
+                    cx,
+                );
                 cx.notify();
                 return;
             }
@@ -3167,6 +3305,9 @@ impl PromptDebugger {
             cx.notify();
             return;
         }
+
+        // 左侧设定校验通过：把这次使用的配置持久化，供下次打开时回填。
+        self.save_settings(cx);
 
         // 构建消息体
         let messages: Vec<serde_json::Value> = self
@@ -3319,21 +3460,30 @@ impl PromptDebugger {
             };
 
             _ = this.update(cx, |view, cx| {
-                let is_success = response_text.is_ok();
-                view.call_state = match response_text {
-                    Ok(text) => CallState::Success(text),
-                    Err(err) => CallState::Error(err),
-                };
-                view.save_execution_record();
-                // 执行成功时自动弹出查看窗口
-                if is_success && let Some(last_record) = view.execution_history.last() {
-                    view.view_records = vec![last_record.clone()];
-                    view.show_view_modal = true;
-                }
-                cx.notify();
+                view.finish_execution(response_text, cx);
             });
         })
         .detach();
+    }
+
+    /// 执行结束的统一收尾：写入 call_state、落库执行记录，并直接打开查看执行记录窗口。
+    /// 无论成功或失败都打开，便于查看执行结果。
+    fn finish_execution(
+        &mut self,
+        response_text: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.call_state = match response_text {
+            Ok(text) => CallState::Success(text),
+            Err(err) => CallState::Error(err),
+        };
+        self.save_execution_record();
+        // 执行完成（无论成功或失败）后，直接打开查看执行记录窗口，便于查看执行结果
+        if let Some(last_record) = self.execution_history.last() {
+            self.view_records = vec![last_record.clone()];
+            self.show_view_modal = true;
+        }
+        cx.notify();
     }
 }
 
@@ -3345,48 +3495,50 @@ impl Render for PromptDebugger {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = ManagementStyle::from_theme(cx.theme());
         self.style = style;
+        // 通知层：校验失败等提示以右下角 toast 形式弹出
+        let notification_layer = Root::render_notification_layer(window, cx);
 
-        // 懒初始化 InputState
+        // 懒初始化 InputState（默认值取自视图字段，已回填的持久化设置会在此体现）
         if self.temp_input.is_none() {
             self.temp_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("0.70")
-                    .default_value("0.70")
+                    .default_value(self.temperature.to_string())
             }));
         }
         if self.max_tokens_input.is_none() {
             self.max_tokens_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("2048")
-                    .default_value("2048")
+                    .default_value(self.max_tokens.to_string())
             }));
         }
         if self.top_p_input.is_none() {
             self.top_p_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("1.00")
-                    .default_value("1.00")
+                    .default_value(self.top_p.to_string())
             }));
         }
         if self.presence_penalty_input.is_none() {
             self.presence_penalty_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("0.0")
-                    .default_value("0.0")
+                    .default_value(self.presence_penalty.to_string())
             }));
         }
         if self.frequency_penalty_input.is_none() {
             self.frequency_penalty_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("0.0")
-                    .default_value("0.0")
+                    .default_value(self.frequency_penalty.to_string())
             }));
         }
         if self.thinking_budget_input.is_none() {
             self.thinking_budget_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("1024")
-                    .default_value("1024")
+                    .default_value(self.thinking_budget_tokens.to_string())
             }));
         }
 
@@ -3428,6 +3580,7 @@ impl Render for PromptDebugger {
                         self.thinking_enabled,
                         cx.entity(),
                         &style,
+                        self.form_error.as_deref(),
                     ))
                     .child(
                         div()
@@ -3650,6 +3803,7 @@ impl Render for PromptDebugger {
             } else {
                 div().into_any_element()
             })
+            .children(notification_layer)
     }
 }
 
@@ -3782,7 +3936,7 @@ mod geometry_tests {
         px, size,
     };
     use gpui_component::{
-        ActiveTheme,
+        ActiveTheme, Root,
         select::{SearchableVec, SelectState},
     };
 
@@ -4001,6 +4155,110 @@ mod geometry_tests {
         assert_eq!(viewed_record_id, Some(42));
         assert_eq!(viewed_result.as_deref(), Some("historical result"));
         assert!(cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_some());
+    }
+
+    #[gpui::test]
+    fn completion_opens_result_view_on_success(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone())
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 模拟执行成功收尾
+        typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.finish_execution(Ok("模型返回内容".to_string()), cx);
+            })
+            .expect("invoke finish_execution");
+        cx.run_until_parked();
+
+        let (show_modal, count, is_success) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (
+                    view.show_view_modal,
+                    view.view_records.len(),
+                    view.view_records
+                        .first()
+                        .map(|r| matches!(r.result, CallState::Success(_)))
+                        .unwrap_or(false),
+                )
+            })
+            .expect("read completion state");
+        assert!(show_modal, "执行成功后应自动弹出结果查看窗口");
+        assert_eq!(count, 1);
+        assert!(is_success);
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_some(),
+            "结果查看窗口应渲染在界面上"
+        );
+    }
+
+    #[gpui::test]
+    fn completion_opens_result_view_on_error(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone())
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 模拟执行失败收尾：失败时也应弹出以便查看错误结果
+        typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.finish_execution(Err("HTTP 500: 服务异常".to_string()), cx);
+            })
+            .expect("invoke finish_execution");
+        cx.run_until_parked();
+
+        let (show_modal, is_error) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (
+                    view.show_view_modal,
+                    view.view_records
+                        .first()
+                        .map(|r| matches!(r.result, CallState::Error(_)))
+                        .unwrap_or(false),
+                )
+            })
+            .expect("read completion state");
+        assert!(show_modal, "执行失败后也应自动弹出结果查看窗口");
+        assert!(is_error, "查看窗口应展示错误结果");
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_some(),
+            "结果查看窗口应渲染在界面上"
+        );
     }
 
     #[gpui::test]
@@ -4299,6 +4557,117 @@ mod geometry_tests {
         assert!(
             !clipboard.contains("historical result"),
             "input section copy must not include the output, got {clipboard:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn execute_without_preset_shows_left_form_error(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let prompt = cx.new(|cx| PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone()));
+        let window = cx.open_window(size(px(1200.0), px(700.0)), {
+            let prompt = prompt.clone();
+            // 通知系统依赖窗口根为 Root（生产中即如此），测试中显式包裹
+            move |window, cx| Root::new(prompt, window, cx)
+        });
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 模拟点击「执行」按钮（无 Preset/模型），触发校验失败路径
+        let execute_btn = cx
+            .debug_bounds("PROMPT_DEBUGGER_EXECUTE_BTN")
+            .expect("execute button rendered");
+        cx.simulate_click(execute_btn.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let form_error = prompt
+            .read_with(&cx, |view, _| view.form_error.clone());
+        assert_eq!(
+            form_error.as_deref(),
+            Some("左侧「LLM 设定」未设置：请先选择 Preset")
+        );
+        // 提示横幅应渲染在左侧面板中
+        assert!(
+            cx.debug_bounds("PROMPT_DEBUGGER_FORM_ERROR").is_some(),
+            "form error banner should be visible"
+        );
+
+        // 右下角应弹出一条自动消失（-notification 默认 5 秒）的 toast 通知
+        let notification_count = cx.update(|window, cx| match window.root::<Root>() {
+            Some(Some(root)) => root
+                .read(cx)
+                .notification
+                .read(cx)
+                .notifications()
+                .len(),
+            _ => 0,
+        });
+        assert!(
+            notification_count >= 1,
+            "a bottom-right notification toast should be shown"
+        );
+    }
+
+    #[gpui::test]
+    fn selecting_preset_or_model_clears_left_form_error(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            // 模拟此前已因未选择而弹出的提示
+            view.form_error = Some("左侧「LLM 设定」未设置：请先选择 Preset".to_string());
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 选择 Preset 后提示应被清除
+        typed_window
+            .update(&mut cx, |view, window, cx| {
+                let state = view.preset_select_state.clone().unwrap();
+                view.on_preset_select(
+                    &state,
+                    &gpui_component::select::SelectEvent::Confirm(Some(1)),
+                    window,
+                    cx,
+                );
+            })
+            .expect("invoke on_preset_select");
+        cx.run_until_parked();
+
+        let form_error = typed_window
+            .update(&mut cx, |view, _, _| view.form_error.clone())
+            .expect("read form_error after preset select");
+        assert!(
+            form_error.is_none(),
+            "selecting a preset should clear the form error"
         );
     }
 }

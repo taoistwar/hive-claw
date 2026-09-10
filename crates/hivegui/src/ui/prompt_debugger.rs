@@ -165,6 +165,9 @@ enum RightPanelTab {
 /// 持久化到 `global_configs` 的键名，用于记住左侧 LLM 设定表单。
 const PROMPT_DEBUGGER_SETTINGS_KEY: &str = "prompt_debugger_state";
 
+/// 历史记录列表每页显示的条数。
+const HISTORY_PAGE_SIZE: usize = 10;
+
 /// 左侧表单的持久化快照。
 ///
 /// 仅记录「配置类」字段（Preset/Model 选择 + 数值参数 + 思考模式），
@@ -246,6 +249,8 @@ pub struct PromptDebugger {
     selected_record_ids: HashSet<u64>,
     comparing_records: Vec<ExecutionRecord>,
     history_scroll: ScrollHandle,
+    /// 历史记录列表当前页码（从 0 开始）。
+    history_page: usize,
     // 右键菜单（记录 ID + 窗口坐标）
     context_menu: Option<(u64, Point<Pixels>)>,
     // 查看/对比弹出窗口
@@ -255,6 +260,13 @@ pub struct PromptDebugger {
     // 弹窗内容 Tab：格式化 / JSON
     view_modal_tab: ViewModalTab,
     show_only_diff: bool,
+    /// 查看/对比弹窗内「只读可选中文本」的状态缓存（key → TextareaState）。
+    ///
+    /// GPUI 0.2 的 `div` 文本不支持鼠标拖选（只有输入类组件可选中），
+    /// 弹窗正文因此改用只读 `Textarea` 承载：外观仍是纯文本，但可以拖选、
+    /// Ctrl/Cmd+C 复制、右键「复制 / 全选」。状态按 key 复用，避免每次重绘
+    /// 都新建实体。
+    view_text_states: HashMap<String, Entity<TextareaState>>,
     // 左侧表单校验提示（点击执行但左侧未设置时显示）
     form_error: Option<String>,
 }
@@ -334,12 +346,14 @@ impl PromptDebugger {
             selected_record_ids: HashSet::new(),
             comparing_records: vec![],
             history_scroll: ScrollHandle::default(),
+            history_page: 0,
             context_menu: None,
             show_view_modal: false,
             view_records: vec![],
             view_scroll: ScrollHandle::default(),
             view_modal_tab: ViewModalTab::Formatted,
             show_only_diff: false,
+            view_text_states: HashMap::new(),
             form_error: None,
         }
     }
@@ -785,7 +799,12 @@ impl PromptDebugger {
     }
 
     /// 获取历史文件路径
+    ///
+    /// 单元测试下改写到临时目录，避免测试覆盖真实的历史记录文件。
     fn history_file_path() -> PathBuf {
+        if cfg!(test) {
+            return std::env::temp_dir().join("hivegui-prompt-debug-history-test.json");
+        }
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(home)
             .join(".hiveclaw")
@@ -805,6 +824,7 @@ impl PromptDebugger {
                 .map(|r| r.id + 1)
                 .max()
                 .unwrap_or(1);
+            self.history_page = 0;
         }
     }
 
@@ -851,7 +871,32 @@ impl PromptDebugger {
             self.execution_history =
                 self.execution_history[self.execution_history.len() - 50..].to_vec();
         }
+        // 新记录展示在最前，回到第一页确保可见。
+        self.history_page = 0;
         self.save_history();
+    }
+
+    /// 历史记录总页数（至少 1 页）。
+    fn history_total_pages(&self) -> usize {
+        self.execution_history
+            .len()
+            .div_ceil(HISTORY_PAGE_SIZE)
+            .max(1)
+    }
+
+    /// 当前页码（已按总页数收敛，避免删除记录后停在空页）。
+    fn current_history_page(&self) -> usize {
+        self.history_page.min(self.history_total_pages() - 1)
+    }
+
+    fn prev_history_page(&mut self) {
+        let current = self.current_history_page();
+        self.history_page = current.saturating_sub(1);
+    }
+
+    fn next_history_page(&mut self) {
+        let current = self.current_history_page();
+        self.history_page = (current + 1).min(self.history_total_pages() - 1);
     }
 
     /// 切换记录选中状态
@@ -863,21 +908,58 @@ impl PromptDebugger {
         }
     }
 
-    /// 全选/取消全选
-    fn toggle_select_all(&mut self) {
-        if self.selected_record_ids.len() == self.execution_history.len() {
-            self.selected_record_ids.clear();
-        } else {
-            self.selected_record_ids = self.execution_history.iter().map(|r| r.id).collect();
+    /// 全选全部历史记录
+    fn select_all_records(&mut self) {
+        self.selected_record_ids = self.execution_history.iter().map(|r| r.id).collect();
+    }
+
+    /// 取消全选
+    fn deselect_all_records(&mut self) {
+        self.selected_record_ids.clear();
+    }
+
+    /// 反选：已选中的取消，未选中的选中
+    fn invert_record_selection(&mut self) {
+        for record in &self.execution_history {
+            if self.selected_record_ids.contains(&record.id) {
+                self.selected_record_ids.remove(&record.id);
+            } else {
+                self.selected_record_ids.insert(record.id);
+            }
         }
     }
 
-    /// 清除历史
-    fn clear_history(&mut self) {
-        self.execution_history.clear();
-        self.selected_record_ids.clear();
-        self.comparing_records.clear();
+    /// 删除单条历史记录
+    fn delete_record(&mut self, record_id: u64) {
+        self.execution_history.retain(|r| r.id != record_id);
+        self.selected_record_ids.remove(&record_id);
+        self.comparing_records.retain(|r| r.id != record_id);
+        self.view_records.retain(|r| r.id != record_id);
+        if self.view_records.is_empty() {
+            self.show_view_modal = false;
+        }
         self.context_menu = None;
+        self.history_page = self.current_history_page();
+        self.save_history();
+    }
+
+    /// 删除选中的历史记录（未选中任何记录时不做任何事）
+    fn delete_selected_records(&mut self) {
+        if self.selected_record_ids.is_empty() {
+            return;
+        }
+        self.execution_history
+            .retain(|r| !self.selected_record_ids.contains(&r.id));
+        self.comparing_records
+            .retain(|r| !self.selected_record_ids.contains(&r.id));
+        self.view_records
+            .retain(|r| !self.selected_record_ids.contains(&r.id));
+        if self.view_records.is_empty() {
+            self.show_view_modal = false;
+        }
+        self.selected_record_ids.clear();
+        self.context_menu = None;
+        self.history_page = self.current_history_page();
         self.save_history();
     }
 
@@ -910,6 +992,8 @@ impl PromptDebugger {
         self.view_records.clear();
         self.show_only_diff = false;
         self.view_modal_tab = ViewModalTab::Formatted;
+        // 正文用的只读 TextareaState 随弹窗一起释放，避免长期驻留。
+        self.view_text_states.clear();
     }
 
     /// 切换仅看差异
@@ -1942,11 +2026,53 @@ fn execute_button(
     )
 }
 
+/// 历史面板里的小型操作按钮。
+///
+/// `enabled = false` 时按钮变灰且不触发回调（例如未选中任何记录时的「清除」）。
+fn history_action_button(
+    label: SharedString,
+    role: ActionRole,
+    enabled: bool,
+    selector: &'static str,
+    style: &ManagementStyle,
+    entity: &Entity<PromptDebugger>,
+    action: impl Fn(&mut PromptDebugger, &mut Context<PromptDebugger>) + 'static,
+) -> Div {
+    div()
+        .px(px(8.0))
+        .py(px(4.0))
+        .bg(style.action(role).background)
+        .rounded(px(4.0))
+        .cursor(if enabled {
+            CursorStyle::PointingHand
+        } else {
+            CursorStyle::Arrow
+        })
+        .text_size(px(11.0))
+        .text_color(style.action(role).foreground)
+        .opacity(if enabled { 1.0 } else { 0.45 })
+        .debug_selector(move || selector.to_owned())
+        .child(label)
+        .on_mouse_down(MouseButton::Left, {
+            let entity = entity.clone();
+            move |_, _, cx| {
+                if !enabled {
+                    return;
+                }
+                entity.update(cx, |view, cx| {
+                    action(view, cx);
+                    cx.notify();
+                });
+            }
+        })
+}
+
 /// 右侧面板（历史 + 当前结果合并）
 fn right_panel(
-    call_state: &CallState,
+    _call_state: &CallState,
     selected_count: usize,
     history_count: usize,
+    history_page: usize,
     history: &[ExecutionRecord],
     selected_ids: &HashSet<u64>,
     style: &ManagementStyle,
@@ -1964,49 +2090,8 @@ fn right_panel(
         .flex_col()
         .gap(px(8.0));
 
-    // 当前结果区域
-    let result_section = match call_state {
-        CallState::Idle => div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .h(px(80.0))
-            .text_color(style.list.muted_foreground)
-            .text_size(px(12.0))
-            .child("点击「执行」按钮查看响应"),
-        CallState::Loading => div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .h(px(80.0))
-            .text_color(style.list.muted_foreground)
-            .text_size(px(12.0))
-            .child("加载中..."),
-        CallState::Success(text) => {
-            let display = if text.chars().count() > 500 {
-                format!("{}...", text.chars().take(500).collect::<String>())
-            } else {
-                text.clone()
-            };
-            div()
-                .p(px(8.0))
-                .border_1()
-                .border_color(style.action(ActionRole::Edit).background)
-                .rounded(px(6.0))
-                .text_size(px(12.0))
-                .whitespace_normal()
-                .child(SharedString::from(display.as_str()))
-        }
-        CallState::Error(err) => div()
-            .p(px(8.0))
-            .border_1()
-            .border_color(style.action(ActionRole::Delete).foreground)
-            .rounded(px(6.0))
-            .text_size(px(12.0))
-            .text_color(style.action(ActionRole::Delete).foreground)
-            .child(err.clone()),
-    };
+    // 当前结果预览已移除：执行结果统一在「查看执行记录」弹窗中展示。
+    // 历史列表见下方。
 
     panel = panel.child(
         div()
@@ -2028,83 +2113,78 @@ fn right_panel(
             ),
     );
 
-    panel = panel.child(result_section);
-
-    // 操作栏
-    let toolbar = div()
+    // 操作栏：全选 / 反选 / 清除选中
+    let all_selected = history_count > 0 && selected_count == history_count;
+    let mut toolbar = div()
         .flex()
         .items_center()
+        .flex_wrap()
         .gap(px(6.0))
-        .child(
-            div()
-                .px(px(8.0))
-                .py(px(4.0))
-                .bg(style.action(ActionRole::Neutral).background)
-                .rounded(px(4.0))
-                .cursor(CursorStyle::PointingHand)
-                .text_size(px(11.0))
-                .text_color(style.action(ActionRole::Neutral).foreground)
-                .child("全选")
-                .on_mouse_down(MouseButton::Left, {
-                    let entity = entity.clone();
-                    move |_, _, cx| {
-                        entity.update(cx, |view, cx| {
-                            view.toggle_select_all();
-                            cx.notify();
-                        });
-                    }
-                }),
-        )
-        .child(
-            div()
-                .px(px(8.0))
-                .py(px(4.0))
-                .bg(style.action(ActionRole::Delete).background)
-                .rounded(px(4.0))
-                .cursor(CursorStyle::PointingHand)
-                .text_size(px(11.0))
-                .text_color(style.action(ActionRole::Delete).foreground)
-                .child("清除")
-                .on_mouse_down(MouseButton::Left, {
-                    let entity = entity.clone();
-                    move |_, _, cx| {
-                        entity.update(cx, |view, cx| {
-                            view.clear_history();
-                            cx.notify();
-                        });
-                    }
-                }),
-        );
+        .child(history_action_button(
+            SharedString::from(if all_selected {
+                "取消全选"
+            } else {
+                "全选"
+            }),
+            ActionRole::Neutral,
+            history_count > 0,
+            "PROMPT_HISTORY_SELECT_ALL",
+            style,
+            &entity,
+            |view, _cx| {
+                if view.selected_record_ids.len() == view.execution_history.len() {
+                    view.deselect_all_records();
+                } else {
+                    view.select_all_records();
+                }
+            },
+        ))
+        .child(history_action_button(
+            SharedString::from("反选"),
+            ActionRole::Neutral,
+            history_count > 0,
+            "PROMPT_HISTORY_INVERT_SELECTION",
+            style,
+            &entity,
+            |view, _cx| view.invert_record_selection(),
+        ))
+        .child(history_action_button(
+            SharedString::from(if selected_count > 0 {
+                format!("清除({selected_count})")
+            } else {
+                "清除".to_string()
+            }),
+            ActionRole::Delete,
+            selected_count > 0,
+            "PROMPT_HISTORY_CLEAR_SELECTED",
+            style,
+            &entity,
+            |view, _cx| view.delete_selected_records(),
+        ));
 
-    let toolbar = if selected_count >= 2 {
-        toolbar.child(
-            div()
-                .ml(px(4.0))
-                .px(px(8.0))
-                .py(px(4.0))
-                .bg(style.action(ActionRole::Main).background)
-                .rounded(px(4.0))
-                .cursor(CursorStyle::PointingHand)
-                .text_size(px(11.0))
-                .text_color(style.action(ActionRole::Main).foreground)
-                .child(format!("对比({})", selected_count))
-                .on_mouse_down(MouseButton::Left, {
-                    let entity = entity.clone();
-                    move |_, _, cx| {
-                        entity.update(cx, |view, cx| {
-                            view.start_comparison();
-                            cx.notify();
-                        });
-                    }
-                }),
-        )
-    } else {
-        toolbar
-    };
+    if selected_count >= 2 {
+        toolbar = toolbar.child(history_action_button(
+            SharedString::from(format!("对比({selected_count})")),
+            ActionRole::Main,
+            true,
+            "PROMPT_HISTORY_COMPARE",
+            style,
+            &entity,
+            |view, _cx| view.start_comparison(),
+        ));
+    }
 
     panel = panel.child(toolbar);
 
-    // 历史列表
+    // 分页：每页 HISTORY_PAGE_SIZE 条，页码从 0 开始。
+    let total_pages = history.len().div_ceil(HISTORY_PAGE_SIZE).max(1);
+    let page = history_page.min(total_pages - 1);
+    // 记录按「由旧到新」存放，展示为「由新到旧」分页：第 0 页是最新的 HISTORY_PAGE_SIZE 条。
+    let page_end = history.len().saturating_sub(page * HISTORY_PAGE_SIZE);
+    let page_start = page_end.saturating_sub(HISTORY_PAGE_SIZE);
+    let page_records = &history[page_start..page_end];
+
+    // 历史列表（当前页，最新的排在最前）
     if history.is_empty() {
         panel = panel.child(
             div()
@@ -2117,7 +2197,7 @@ fn right_panel(
                 .child("暂无历史记录"),
         );
     } else {
-        for record in history.iter().rev() {
+        for record in page_records.iter().rev() {
             let is_selected = selected_ids.contains(&record.id);
             let status_icon = match &record.result {
                 CallState::Success(_) => "✓",
@@ -2248,6 +2328,52 @@ fn right_panel(
         }
     }
 
+    // 分页条：仅在多页时显示
+    if total_pages > 1 {
+        let can_prev = page > 0;
+        let can_next = page + 1 < total_pages;
+        panel = panel.child(
+            div()
+                .mt_auto()
+                .pt(px(8.0))
+                .border_t_1()
+                .border_color(style.list.border)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .child(history_action_button(
+                    SharedString::from("上一页"),
+                    ActionRole::Neutral,
+                    can_prev,
+                    "PROMPT_HISTORY_PREV_PAGE",
+                    style,
+                    &entity,
+                    |view, _cx| view.prev_history_page(),
+                ))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(style.list.muted_foreground)
+                        .debug_selector(|| "PROMPT_HISTORY_PAGE_INFO".to_owned())
+                        .child(SharedString::from(format!(
+                            "{}/{} 页",
+                            page + 1,
+                            total_pages
+                        ))),
+                )
+                .child(history_action_button(
+                    SharedString::from("下一页"),
+                    ActionRole::Neutral,
+                    can_next,
+                    "PROMPT_HISTORY_NEXT_PAGE",
+                    style,
+                    &entity,
+                    |view, _cx| view.next_history_page(),
+                )),
+        );
+    }
+
     panel
 }
 
@@ -2266,8 +2392,10 @@ fn history_context_menu(
     let dismiss_on_right = entity.downgrade();
     let entity_for_view = entity.downgrade();
     let entity_for_apply = entity.downgrade();
+    let entity_for_delete = entity.downgrade();
     let view_selector = format!("PROMPT_HISTORY_VIEW_{record_id}");
     let apply_selector = format!("PROMPT_HISTORY_APPLY_{record_id}");
+    let delete_selector = format!("PROMPT_HISTORY_DELETE_{record_id}");
 
     deferred(
         anchored().child(
@@ -2356,6 +2484,27 @@ fn history_context_menu(
                                                 cx.notify();
                                             });
                                         }),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .px(px(8.0))
+                                        .py(px(6.0))
+                                        .rounded(px(4.0))
+                                        .cursor(CursorStyle::PointingHand)
+                                        .hover(|this| {
+                                            this.bg(style.action(ActionRole::Delete).hover)
+                                        })
+                                        .text_size(px(12.0))
+                                        .text_color(style.action(ActionRole::Delete).foreground)
+                                        .debug_selector(move || delete_selector.clone())
+                                        .child("删除")
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            _ = entity_for_delete.update(cx, |view, cx| {
+                                                view.delete_record(record_id);
+                                                cx.notify();
+                                            });
+                                        }),
                                 ),
                         ),
                 ),
@@ -2365,7 +2514,13 @@ fn history_context_menu(
 }
 
 /// 单条记录卡片（查看模式）
-fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl IntoElement {
+fn single_record_card(
+    record: &ExecutionRecord,
+    style: &ManagementStyle,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
+) -> impl IntoElement {
     let status_text = match &record.result {
         CallState::Success(text) => text.clone(),
         CallState::Error(err) => err.clone(),
@@ -2387,6 +2542,10 @@ fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let params_summary = format!(
+        "T={:.2} Max={} TopP={:.2}",
+        record.temperature, record.max_tokens, record.top_p
+    );
 
     div()
         .debug_selector(|| "PROMPT_HISTORY_VIEW_CARD".to_owned())
@@ -2405,19 +2564,27 @@ fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl
                         .items_center()
                         .gap(px(8.0))
                         .child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(SharedString::from(record.model_name.as_str())),
+                            view_selectable_text(
+                                states,
+                                format!("card:{}:model", record.id),
+                                &record.model_name,
+                                style,
+                                window,
+                                cx,
+                            )
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(style.list.muted_foreground)
-                                .child(format!(
-                                    "T={:.2} Max={} TopP={:.2}",
-                                    record.temperature, record.max_tokens, record.top_p
-                                )),
+                            view_selectable_text(
+                                states,
+                                format!("card:{}:params", record.id),
+                                &params_summary,
+                                style,
+                                window,
+                                cx,
+                            )
+                            .text_color(style.list.muted_foreground),
                         ),
                 )
                 .child(
@@ -2426,19 +2593,25 @@ fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl
                         .flex_col()
                         .gap(px(4.0))
                         .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(style.list.muted_foreground)
-                                .child("消息:"),
+                            view_selectable_text(
+                                states,
+                                format!("card:{}:label-messages", record.id),
+                                "消息:",
+                                style,
+                                window,
+                                cx,
+                            )
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(style.list.muted_foreground),
                         )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(style.list.foreground)
-                                .whitespace_normal()
-                                .child(SharedString::from(msg_summary.as_str())),
-                        ),
+                        .child(view_selectable_text(
+                            states,
+                            format!("card:{}:messages", record.id),
+                            &msg_summary,
+                            style,
+                            window,
+                            cx,
+                        )),
                 )
                 .child(
                     div()
@@ -2446,19 +2619,25 @@ fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl
                         .flex_col()
                         .gap(px(4.0))
                         .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(style.list.muted_foreground)
-                                .child("工具:"),
+                            view_selectable_text(
+                                states,
+                                format!("card:{}:label-tools", record.id),
+                                "工具:",
+                                style,
+                                window,
+                                cx,
+                            )
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(style.list.muted_foreground),
                         )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(style.list.foreground)
-                                .whitespace_normal()
-                                .child(SharedString::from(tools_summary.as_str())),
-                        ),
+                        .child(view_selectable_text(
+                            states,
+                            format!("card:{}:tools", record.id),
+                            &tools_summary,
+                            style,
+                            window,
+                            cx,
+                        )),
                 )
                 .child(
                     div()
@@ -2466,19 +2645,25 @@ fn single_record_card(record: &ExecutionRecord, style: &ManagementStyle) -> impl
                         .flex_col()
                         .gap(px(4.0))
                         .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(style.list.muted_foreground)
-                                .child("结果:"),
+                            view_selectable_text(
+                                states,
+                                format!("card:{}:label-result", record.id),
+                                "结果:",
+                                style,
+                                window,
+                                cx,
+                            )
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(style.list.muted_foreground),
                         )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(style.list.foreground)
-                                .whitespace_normal()
-                                .child(SharedString::from(status_text.as_str())),
-                        ),
+                        .child(view_selectable_text(
+                            states,
+                            format!("card:{}:result", record.id),
+                            &status_text,
+                            style,
+                            window,
+                            cx,
+                        )),
                 ),
         )
 }
@@ -2530,22 +2715,129 @@ fn all_same(records: &[ExecutionRecord], dim: &str) -> bool {
         .all(|r| get_dimension_value(r, dim) == first)
 }
 
+/// 弹窗正文只读文本的最大行数（`auto_grow` 上限）。
+///
+/// 输入框内部没有滚轮处理器，内容一旦超过 `max_rows` 就会被裁掉且无法滚动，
+/// 所以这里取一个足够大的值让文本一直长高，纵向滚动交给弹窗自己的滚动容器。
+const VIEW_TEXT_MAX_ROWS: usize = 2000;
+
+/// 弹窗正文里一段「可选中 / 可复制」的只读文本。
+///
+/// GPUI 0.2 的 `div` 文本不支持鼠标拖选（只有输入类组件可以），所以弹窗正文
+/// 一律改用只读 `Textarea` 承载：关掉 appearance / border 后外观与纯文本一致，
+/// 但可以鼠标拖选、Ctrl/Cmd+C 复制，也能用右键菜单的「复制 / 全选」。
+///
+/// `key` 用于在 `states` 中复用同一个 `TextareaState`——每次重绘都新建实体的
+/// 话，选中状态会被重置；内容变化时同步一次即可。
+///
+/// 返回具体类型 `Textarea` 而不是 `impl IntoElement`：后者在 2024 edition 会
+/// 捕获 `states` 的可变借用，导致同一个 `states` 无法连续构造多个文本块。
+fn view_selectable_text(
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    key: String,
+    text: &str,
+    style: &ManagementStyle,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
+) -> Textarea {
+    let state = match states.get(&key) {
+        Some(state) => {
+            if state.read(cx).value().as_str() != text {
+                state.update(cx, |state, cx| {
+                    state.set_value(text.to_string(), window, cx);
+                });
+            }
+            state.clone()
+        }
+        None => {
+            let state = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .default_value(text.to_string())
+                    .auto_grow(1, VIEW_TEXT_MAX_ROWS)
+            });
+            states.insert(key, state.clone());
+            state
+        }
+    };
+
+    Textarea::new(&state)
+        .appearance(false)
+        .bordered(false)
+        .readonly(true)
+        .text_size(px(12.0))
+        .text_color(style.list.foreground)
+        .w_full()
+}
+
 /// 对比表格（2+ 条记录）
 /// 第 1 列：对比维度，后续列：每条记录的数据，最多 20 列
 fn comparison_table(
     records: &[ExecutionRecord],
     style: &ManagementStyle,
     show_only_diff: bool,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
 ) -> impl IntoElement {
     let col_count = records.len().min(20) + 1; // +1 为维度列
     let col_width = px(300.0);
     let label_col_width = px(100.0);
     let table_width = label_col_width + col_width * (col_count - 1) as f32;
 
-    // 维度标签
-    let dimensions: Vec<&str> = vec!["模型", "参数", "消息", "工具", "结果"];
+    // 维度标签。「模型」不放这里：表头行已经按列标注了各条记录的模型名，
+    // 再列一行会导致表头与「模型」行内容完全重复。
+    let dimensions: Vec<&str> = vec!["参数", "消息", "工具", "结果"];
 
-    // 表头行
+    // 序号行（表头之上）：标注每条记录是第几条
+    let index_row = div()
+        .flex()
+        .border_b_1()
+        .border_color(style.list.border)
+        .child(
+            div()
+                .w(label_col_width)
+                .flex_shrink_0()
+                .px(px(8.0))
+                .py(px(6.0))
+                .child(
+                    view_selectable_text(
+                        states,
+                        "cmp:index:label".to_string(),
+                        "序号",
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(style.list.muted_foreground),
+                ),
+        );
+    let index_row = records
+        .iter()
+        .take(20)
+        .enumerate()
+        .fold(index_row, |acc, (idx, record)| {
+            acc.child(
+                div()
+                    .w(col_width)
+                    .flex_shrink_0()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .child(
+                        view_selectable_text(
+                            states,
+                            format!("cmp:index:{}", record.id),
+                            &format!("#{}", idx + 1),
+                            style,
+                            window,
+                            cx,
+                        )
+                        .font_weight(FontWeight::BOLD),
+                    ),
+            )
+        });
+
+    // 表头行：每列标注该条记录的模型名
     let header_row = div()
         .flex()
         .border_b_1()
@@ -2556,10 +2848,17 @@ fn comparison_table(
                 .flex_shrink_0()
                 .px(px(8.0))
                 .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(style.list.foreground)
-                .child("维度"),
+                .child(
+                    view_selectable_text(
+                        states,
+                        "cmp:header:label".to_string(),
+                        "维度",
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_weight(FontWeight::BOLD),
+                ),
         );
     let header_row = records.iter().take(20).fold(header_row, |acc, record| {
         acc.child(
@@ -2568,16 +2867,27 @@ fn comparison_table(
                 .flex_shrink_0()
                 .px(px(8.0))
                 .py(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(style.list.foreground)
-                .truncate()
-                .child(SharedString::from(record.model_name.as_str())),
+                .child(
+                    view_selectable_text(
+                        states,
+                        format!("cmp:header:{}", record.id),
+                        &record.model_name,
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_weight(FontWeight::BOLD),
+                ),
         )
     });
 
     // 数据行
-    let mut table = div().w(table_width).flex().flex_col().child(header_row);
+    let mut table = div()
+        .w(table_width)
+        .flex()
+        .flex_col()
+        .child(index_row)
+        .child(header_row);
 
     for dim in &dimensions {
         // 仅看差异模式：跳过所有记录值相同的维度
@@ -2595,24 +2905,33 @@ fn comparison_table(
                     .flex_shrink_0()
                     .px(px(8.0))
                     .py(px(8.0))
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(style.list.muted_foreground)
-                    .child(*dim),
+                    .child(
+                        view_selectable_text(
+                            states,
+                            format!("cmp:dim:{dim}"),
+                            dim,
+                            style,
+                            window,
+                            cx,
+                        )
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(style.list.muted_foreground),
+                    ),
             );
 
         let row = records.iter().take(20).fold(row, |acc, record| {
-            let cell_text = SharedString::from(get_dimension_value(record, dim));
+            // 单元格正文用只读输入框渲染，保证可以拖选 / 复制。
+            let cell_text = get_dimension_value(record, dim);
+            let key = format!("cmp:{}:{}", record.id, dim);
             acc.child(
                 div()
                     .w(col_width)
                     .flex_shrink_0()
                     .px(px(8.0))
                     .py(px(8.0))
-                    .text_size(px(12.0))
-                    .text_color(style.list.foreground)
-                    .whitespace_normal()
-                    .child(cell_text),
+                    .child(view_selectable_text(
+                        states, key, &cell_text, style, window, cx,
+                    )),
             )
         });
 
@@ -2624,9 +2943,8 @@ fn comparison_table(
 
 /// 拼接记录为可拷贝到剪贴板的纯文本。
 ///
-/// 用途：用户查看执行记录时，当前 GPUI 0.2 还没有原生支持
-/// `div` 内文本拖选（仅 `TextInput` 可选），所以提供「复制」按
-/// 钮以满足"选中文字"的需求。
+/// 正文已经用只读输入框渲染、可以逐段拖选复制，这个「复制」按钮提供的是
+/// 一键带走整组记录（含维度标题与分节分隔）的快捷方式。
 fn format_records_for_copy(records: &[ExecutionRecord]) -> String {
     if records.len() > 1 {
         let mut out = String::new();
@@ -2705,6 +3023,7 @@ fn format_records_for_copy(records: &[ExecutionRecord]) -> String {
 }
 
 /// 查看/对比模态框
+#[allow(clippy::too_many_arguments)]
 fn view_modal(
     records: &[ExecutionRecord],
     style: &ManagementStyle,
@@ -2712,6 +3031,10 @@ fn view_modal(
     show_only_diff: bool,
     view_scroll: &ScrollHandle,
     entity: Entity<PromptDebugger>,
+    max_panel_width: Pixels,
+    text_states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
 ) -> impl IntoElement {
     let is_comparison = records.len() > 1;
     let title = if is_comparison {
@@ -2726,11 +3049,14 @@ fn view_modal(
         ViewModalTab::Formatted => format_records_for_copy(records),
         ViewModalTab::Json => format_records_for_json_copy(records),
     };
+    // 对比时表格宽度 = 维度列 100 + 每条记录 300（另加左右内边距 32）。
+    // 弹窗宽度按此计算，但不超过窗口可视宽度的 92%，超宽部分由内容区的
+    // 横向滚动条承载，避免选择多条记录时弹窗被挤出屏幕。
     let modal_width = if is_comparison {
         let cols = records.len().min(20);
-        px(200.0 + cols as f32 * 300.0)
+        px(132.0 + cols as f32 * 300.0).min(max_panel_width)
     } else {
-        px(800.0)
+        px(800.0).min(max_panel_width)
     };
 
     div()
@@ -2740,6 +3066,12 @@ fn view_modal(
         .left_0()
         .right_0()
         .debug_selector(|| "PROMPT_HISTORY_VIEW_MODAL".to_owned())
+        // 必须遮挡后面的主界面：gpui 的滚轮事件会沿冒泡链继续传给祖先的滚动
+        // 容器，弹窗内容滚到尽头后（甚至滚动弹窗空白处）会把后面的提示词主
+        // 界面一起滚走。`occlude()` 让遮罩下层所有 hitbox 的
+        // `should_handle_scroll()` 返回 false，从而只滚动弹窗自己。
+        // 面板本身是遮罩的子元素（在其之后绘制），不受影响。
+        .occlude()
         .bg(gpui::rgba(0x00000080))
         .flex()
         .items_center()
@@ -2913,20 +3245,33 @@ fn view_modal(
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .overflow_x_scroll()
                         .track_scroll(view_scroll)
                         .vertical_scrollbar(view_scroll)
+                        .horizontal_scrollbar(view_scroll)
                         .px(px(16.0))
                         .py(px(12.0))
                         .child(match tab {
                             ViewModalTab::Formatted => {
                                 if is_comparison {
-                                    comparison_table(records, style, show_only_diff)
-                                        .into_any_element()
+                                    comparison_table(
+                                        records,
+                                        style,
+                                        show_only_diff,
+                                        text_states,
+                                        window,
+                                        cx,
+                                    )
+                                    .into_any_element()
                                 } else {
-                                    single_record_card(&records[0], style).into_any_element()
+                                    single_record_card(&records[0], style, text_states, window, cx)
+                                        .into_any_element()
                                 }
                             }
-                            ViewModalTab::Json => json_tab_view(records, style).into_any_element(),
+                            ViewModalTab::Json => {
+                                json_tab_view(records, style, text_states, window, cx)
+                                    .into_any_element()
+                            }
                         }),
                 ),
         )
@@ -3014,13 +3359,20 @@ fn view_modal_tabs(
 }
 
 /// JSON Tab：每条记录一组「输入 / 输出 / Metadata」分节。
-fn json_tab_view(records: &[ExecutionRecord], style: &ManagementStyle) -> Div {
-    div().flex().flex_col().gap(px(16.0)).children(
-        records
-            .iter()
-            .enumerate()
-            .map(|(idx, record)| json_record_group(idx, records.len(), record, style)),
-    )
+fn json_tab_view(
+    records: &[ExecutionRecord],
+    style: &ManagementStyle,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.0))
+        .children(records.iter().enumerate().map(|(idx, record)| {
+            json_record_group(idx, records.len(), record, style, states, window, cx)
+        }))
 }
 
 /// 单条记录的 JSON 分节组（多条记录对比时先标注序号与模型名）。
@@ -3029,16 +3381,26 @@ fn json_record_group(
     total: usize,
     record: &ExecutionRecord,
     style: &ManagementStyle,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
 ) -> Div {
     let (input, output, metadata) = record_json_sections(record);
     let base = idx + 1;
     let group = div().flex().flex_col().gap(px(12.0));
     let group = if total > 1 {
+        let title = format!("#{} {}", base, record.model_name);
         group.child(
-            div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("#{} {}", base, record.model_name)),
+            view_selectable_text(
+                states,
+                format!("json:{}:title", record.id),
+                &title,
+                style,
+                window,
+                cx,
+            )
+            .text_size(px(13.0))
+            .font_weight(FontWeight::SEMIBOLD),
         )
     } else {
         group
@@ -3048,24 +3410,46 @@ fn json_record_group(
             "输入",
             &input,
             format!("PROMPT_VIEW_JSON_INPUT_{base}"),
+            record.id,
             style,
+            states,
+            window,
+            cx,
         ))
         .child(json_section(
             "输出",
             &output,
             format!("PROMPT_VIEW_JSON_OUTPUT_{base}"),
+            record.id,
             style,
+            states,
+            window,
+            cx,
         ))
         .child(json_section(
             "Metadata",
             &metadata,
             format!("PROMPT_VIEW_JSON_METADATA_{base}"),
+            record.id,
             style,
+            states,
+            window,
+            cx,
         ))
 }
 
 /// 单个 JSON 分节：节标题 + 独立复制按钮 + 等宽文本面板。
-fn json_section(label: &str, text: &str, base: String, style: &ManagementStyle) -> Div {
+#[allow(clippy::too_many_arguments)]
+fn json_section(
+    label: &str,
+    text: &str,
+    base: String,
+    record_id: u64,
+    style: &ManagementStyle,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
+) -> Div {
     let copy_text = text.to_string();
     let copy_id = format!("{base}_COPY");
     let panel_selector = format!("{base}_PANEL");
@@ -3079,10 +3463,16 @@ fn json_section(label: &str, text: &str, base: String, style: &ManagementStyle) 
                 .items_center()
                 .justify_between()
                 .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(label.to_string()),
+                    view_selectable_text(
+                        states,
+                        format!("json:{record_id}:label:{label}"),
+                        label,
+                        style,
+                        window,
+                        cx,
+                    )
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD),
                 )
                 .child(
                     div()
@@ -3106,13 +3496,17 @@ fn json_section(label: &str, text: &str, base: String, style: &ManagementStyle) 
                 .border_color(style.list.border)
                 .rounded(px(6.0))
                 .p(px(12.0))
+                // 正文用只读输入框渲染：等宽字体 + 可选中可复制。
                 .child(
-                    div()
-                        .font_family("monospace")
-                        .text_size(px(12.0))
-                        .whitespace_normal()
-                        .text_color(style.list.foreground)
-                        .child(text.to_string()),
+                    view_selectable_text(
+                        states,
+                        format!("json:{record_id}:{label}"),
+                        text,
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_family("monospace"),
                 ),
         )
 }
@@ -3634,6 +4028,9 @@ impl Render for PromptDebugger {
         let preset_select_state = self.preset_select_state.clone().unwrap();
         let model_select_state = self.model_select_state.clone().unwrap();
 
+        // 弹窗最大宽度：留出左右各 4% 的遮罩区域，最小 640px。
+        let max_panel_width = (window.viewport_size().width * 0.92).max(px(640.0));
+
         div()
             .flex()
             .flex_col()
@@ -3674,6 +4071,7 @@ impl Render for PromptDebugger {
                         &self.call_state,
                         self.selected_record_ids.len(),
                         self.execution_history.len(),
+                        self.history_page,
                         &self.execution_history,
                         &self.selected_record_ids,
                         &style,
@@ -3681,13 +4079,18 @@ impl Render for PromptDebugger {
                     )),
             )
             .child(if self.show_view_modal {
+                let entity = cx.entity();
                 view_modal(
                     &self.view_records,
                     &style,
                     self.view_modal_tab,
                     self.show_only_diff,
                     &self.view_scroll,
-                    cx.entity(),
+                    entity,
+                    max_panel_width,
+                    &mut self.view_text_states,
+                    window,
+                    cx,
                 )
                 .into_any_element()
             } else {
@@ -4640,6 +5043,128 @@ mod geometry_tests {
     }
 
     #[gpui::test]
+    fn history_comparison_modal_renders_selectable_text(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.view_records = vec![
+                ExecutionRecord {
+                    id: 7,
+                    timestamp: 1,
+                    model_name: "first-model".to_string(),
+                    temperature: 0.7,
+                    max_tokens: 2048,
+                    top_p: 1.0,
+                    thinking_enabled: false,
+                    thinking_budget: 1024,
+                    messages: vec![DebugMessage {
+                        id: 1,
+                        role: MessageRole::User,
+                        content: "first prompt".to_string(),
+                    }],
+                    tools: vec![],
+                    result: CallState::Success("first result".to_string()),
+                },
+                ExecutionRecord {
+                    id: 8,
+                    timestamp: 2,
+                    model_name: "second-model".to_string(),
+                    temperature: 0.7,
+                    max_tokens: 2048,
+                    top_p: 1.0,
+                    thinking_enabled: false,
+                    thinking_budget: 1024,
+                    messages: vec![DebugMessage {
+                        id: 1,
+                        role: MessageRole::User,
+                        content: "second prompt".to_string(),
+                    }],
+                    tools: vec![],
+                    result: CallState::Success("second result".to_string()),
+                },
+            ];
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let body = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_SCROLL")
+            .expect("comparison body bounds");
+        assert!(
+            body.size.height > px(60.0),
+            "comparison body collapsed: {:?}",
+            body.size
+        );
+
+        // 回归：对比表格此前用纯 `div` 渲染文本，鼠标拖选和复制都不可用；
+        // 现在每个单元格都由一个只读 TextareaState 承载。
+        let cells = typed_window
+            .update(&mut cx, |view, _window, cx| {
+                view.view_text_states
+                    .iter()
+                    .map(|(key, state)| (key.clone(), state.read(cx).value().to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .expect("read comparison text states");
+
+        let first = cells
+            .iter()
+            .find(|(key, _)| key == "cmp:7:结果")
+            .unwrap_or_else(|| panic!("record 7 result cell missing, got {cells:?}"));
+        assert_eq!(first.1, "first result");
+        let second = cells
+            .iter()
+            .find(|(key, _)| key == "cmp:8:结果")
+            .unwrap_or_else(|| panic!("record 8 result cell missing, got {cells:?}"));
+        assert_eq!(second.1, "second result");
+
+        // 序号行 / 表头行 / 维度标签此前也是纯 `div`，同样要能选中复制。
+        for (key, expected) in [
+            ("cmp:index:label", "序号"),
+            ("cmp:index:7", "#1"),
+            ("cmp:index:8", "#2"),
+            ("cmp:header:label", "维度"),
+            ("cmp:header:7", "first-model"),
+            ("cmp:header:8", "second-model"),
+            ("cmp:dim:结果", "结果"),
+        ] {
+            let (_, value) = cells
+                .iter()
+                .find(|(cell_key, _)| cell_key == key)
+                .unwrap_or_else(|| panic!("{key} missing, got {cells:?}"));
+            assert_eq!(value, expected, "unexpected text for {key}");
+        }
+
+        // 正文必须只读：允许选中复制，但不能把历史记录改掉。
+        let all_readonly = typed_window
+            .update(&mut cx, |view, _window, cx| {
+                view.view_text_states
+                    .values()
+                    .all(|state| !state.read(cx).base_state().read(cx).is_editable())
+            })
+            .expect("read comparison text readonly flags");
+        assert!(all_readonly, "comparison text must be read-only");
+    }
+
+    #[gpui::test]
     fn execute_without_preset_shows_left_form_error(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::theme::init(cx);
@@ -4742,6 +5267,207 @@ mod geometry_tests {
         assert!(
             form_error.is_none(),
             "selecting a preset should clear the form error"
+        );
+    }
+
+    fn history_record(id: u64) -> ExecutionRecord {
+        ExecutionRecord {
+            id,
+            timestamp: id,
+            model_name: format!("model-{id}"),
+            temperature: 0.7,
+            max_tokens: 2048,
+            top_p: 1.0,
+            thinking_enabled: false,
+            thinking_budget: 1024,
+            messages: vec![DebugMessage {
+                id: 1,
+                role: MessageRole::User,
+                content: format!("prompt-{id}"),
+            }],
+            tools: vec![],
+            result: CallState::Success(format!("result-{id}")),
+        }
+    }
+
+    /// 打开一个带 `count` 条历史记录的调试页。
+    ///
+    /// 返回的 `TempDir` / `Runtime` 必须由调用方持有到用例结束，
+    /// 否则数据库文件会在用例执行期间被提前清理。
+    #[allow(clippy::type_complexity)]
+    fn open_debugger_with_history(
+        cx: &mut TestAppContext,
+        count: u64,
+    ) -> (
+        gpui::WindowHandle<PromptDebugger>,
+        tempfile::TempDir,
+        &'static tokio::runtime::Runtime,
+    ) {
+        cx.update(|cx| {
+            gpui_component::theme::init(cx);
+            gpui_component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        // 泄漏 Runtime：sqlx 的后台任务需要 tokio 上下文在用例期间一直有效。
+        let runtime: &'static tokio::runtime::Runtime = Box::leak(Box::new(
+            tokio::runtime::Runtime::new().expect("create Tokio runtime"),
+        ));
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        std::mem::forget(runtime.enter());
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.execution_history = (1..=count).map(history_record).collect();
+            view
+        });
+        (window, temp_dir, runtime)
+    }
+
+    #[gpui::test]
+    fn history_panel_pagination_selection_and_deletion(cx: &mut TestAppContext) {
+        let (window, _temp_dir, _runtime) = open_debugger_with_history(cx, 12);
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // ── 分页：每页 10 条，最新的排在最前 ──
+        assert!(cx.debug_bounds("PROMPT_HISTORY_RECORD_12").is_some());
+        assert!(cx.debug_bounds("PROMPT_HISTORY_RECORD_3").is_some());
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_RECORD_2").is_none(),
+            "第二页的记录不应出现在第一页"
+        );
+
+        let next_page = cx
+            .debug_bounds("PROMPT_HISTORY_NEXT_PAGE")
+            .expect("next page button");
+        cx.simulate_click(next_page.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert_eq!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.current_history_page())
+                .expect("read current page"),
+            1
+        );
+        assert!(cx.debug_bounds("PROMPT_HISTORY_RECORD_2").is_some());
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_RECORD_12").is_none(),
+            "翻页后第一页的记录不应再渲染"
+        );
+
+        let prev_page = cx
+            .debug_bounds("PROMPT_HISTORY_PREV_PAGE")
+            .expect("prev page button");
+        cx.simulate_click(prev_page.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_RECORD_12").is_some(),
+            "返回上一页后应重新看到最新记录"
+        );
+
+        // ── 全选 / 反选 ──
+        let select_all = cx
+            .debug_bounds("PROMPT_HISTORY_SELECT_ALL")
+            .expect("select all button");
+        cx.simulate_click(select_all.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.selected_record_ids.len())
+                .expect("read selected count"),
+            12
+        );
+
+        let invert = cx
+            .debug_bounds("PROMPT_HISTORY_INVERT_SELECTION")
+            .expect("invert selection button");
+        cx.simulate_click(invert.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.selected_record_ids.len())
+                .expect("read selected count after invert"),
+            0
+        );
+
+        cx.simulate_click(invert.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.selected_record_ids.len())
+                .expect("read selected count after second invert"),
+            12
+        );
+
+        // ── 清除按钮只删除选中的记录 ──
+        typed_window
+            .update(&mut cx, |view, _, _| {
+                view.deselect_all_records();
+                view.toggle_record_selection(1);
+                view.toggle_record_selection(2);
+            })
+            .expect("select records 1 and 2");
+        cx.run_until_parked();
+
+        let clear = cx
+            .debug_bounds("PROMPT_HISTORY_CLEAR_SELECTED")
+            .expect("clear selected button");
+        cx.simulate_click(clear.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let remaining = typed_window
+            .update(&mut cx, |view, _, _| {
+                view.execution_history
+                    .iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>()
+            })
+            .expect("read remaining ids");
+        assert_eq!(remaining, (3..=12).collect::<Vec<u64>>());
+        assert_eq!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.selected_record_ids.len())
+                .expect("read selected count after clear"),
+            0
+        );
+        // 记录减少后总页数回到 1，分页条应消失
+        assert!(cx.debug_bounds("PROMPT_HISTORY_NEXT_PAGE").is_none());
+
+        // ── 右键菜单删除当前记录 ──
+        let row = cx
+            .debug_bounds("PROMPT_HISTORY_RECORD_12")
+            .expect("history row for record 12");
+        cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+
+        let delete_item = cx
+            .debug_bounds("PROMPT_HISTORY_DELETE_12")
+            .expect("context menu delete item");
+        cx.simulate_click(delete_item.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let remaining = typed_window
+            .update(&mut cx, |view, _, _| {
+                view.execution_history
+                    .iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>()
+            })
+            .expect("read remaining ids after delete");
+        assert_eq!(remaining, (3..=11).collect::<Vec<u64>>());
+        assert!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.context_menu.is_none())
+                .expect("read context menu state"),
+            "删除后右键菜单应关闭"
         );
     }
 }

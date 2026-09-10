@@ -4,8 +4,8 @@ use crate::datasource::entity_store::Tool as DbTool;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
-use gpui::*;
 use gpui::prelude::FluentBuilder;
+use gpui::*;
 use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::notification::Notification;
 use gpui_component::scroll::ScrollableElement;
@@ -409,16 +409,19 @@ impl PromptDebugger {
             return;
         };
         let store = self.store.read(cx).clone();
+        // 记录本次写入命中的数据库文件，便于在报错时定位到具体库
+        // （例如 `global_configs` 缺列导致的
+        // "no column found for name: deletable"）。
+        let database_path = store.database_path().to_path_buf();
         let key = PROMPT_DEBUGGER_SETTINGS_KEY.to_string();
         cx.spawn(async move |_, _| {
-            if let Err(err) = store
-                .upsert_global_config(&key, &key, "json", &json)
-                .await
-            {
+            if let Err(err) = store.upsert_global_config(&key, &key, "json", &json).await {
                 tracing::error!(
                     target: "hivegui::ui::prompt_debugger",
                     operation = "save_settings",
                     outcome = "error",
+                    config_key = %key,
+                    database = %database_path.display(),
                     error = %err,
                 );
             }
@@ -3185,6 +3188,50 @@ fn record_json_sections(record: &ExecutionRecord) -> (String, String, String) {
     (pretty(&input), output, metadata)
 }
 
+/// 截断日志中的响应文本，避免把超长内容写入日志。
+///
+/// 按字符（而非字节）截断，保证多字节字符不会被切成非法 UTF-8。
+fn truncate_for_log(text: &str) -> String {
+    const LIMIT: usize = 300;
+    if text.chars().count() <= LIMIT {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(LIMIT).collect();
+    out.push('…');
+    out
+}
+
+/// 把 `Error::source()` 链拼成一行，供日志使用。
+///
+/// 很多库（如 `reqwest`）的 `Display` 只有最外层描述，
+/// "error sending request for url (...)" 并不包含真正的原因；
+/// 展开 source 链才能看到 "Connection refused (os error 111)"、
+/// "timed out" 之类的根因。
+fn error_chain_for_log(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut current = error.source();
+    while let Some(cause) = current {
+        let text = cause.to_string();
+        // 相邻重复会放大日志噪音，去掉。
+        if parts.last().map(String::as_str) != Some(text.as_str()) {
+            parts.push(text);
+        }
+        current = cause.source();
+    }
+    parts.join(" <- ")
+}
+
+/// 取错误链最深层的原因；没有 `source()` 时退化为顶层消息。
+fn root_cause_for_log(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut root = error.to_string();
+    let mut current = error.source();
+    while let Some(cause) = current {
+        root = cause.to_string();
+        current = cause.source();
+    }
+    root
+}
+
 /// 把整组记录拼成 JSON Tab 的「复制」文本。
 fn format_records_for_json_copy(records: &[ExecutionRecord]) -> String {
     let mut out = String::new();
@@ -3308,6 +3355,9 @@ impl PromptDebugger {
 
         // 左侧设定校验通过：把这次使用的配置持久化，供下次打开时回填。
         self.save_settings(cx);
+
+        // 仅用于失败日志的模型名（不包含任何凭据）。
+        let log_model_name = model.name.clone();
 
         // 构建消息体
         let messages: Vec<serde_json::Value> = self
@@ -3453,10 +3503,43 @@ impl PromptDebugger {
                             Ok(text)
                         }
                     } else {
+                        // Provider 返回非 2xx：此前只把错误展示在结果窗口里，
+                        // 后台没有任何日志。这里补一条结构化日志，便于定位
+                        // 鉴权/模型名/额度等失败原因（不记录请求体与凭据）。
+                        tracing::error!(
+                            target: "hivegui::ui::prompt_debugger",
+                            operation = "execute_call",
+                            outcome = "http_status_error",
+                            url = %url,
+                            model = %log_model_name,
+                            status = %status,
+                            response = %truncate_for_log(&text),
+                        );
                         Err(format!("HTTP {}: {}", status, text))
                     }
                 }
-                Err(e) => Err(format!("请求失败: {}", e)),
+                Err(e) => {
+                    // 传输层失败（连接/超时/TLS 等）：UI 会显示
+                    // 「请求失败: ...」，这里同步写一条后端日志。
+                    //
+                    // `reqwest::Error` 的 `Display` 只有最外层的一句
+                    // "error sending request for url (...)"，真正的原因
+                    // （Connection refused / timed out / 证书错误）在
+                    // `source()` 链里，必须展开才能定位。
+                    let chain = error_chain_for_log(&e);
+                    let root_cause = root_cause_for_log(&e);
+                    tracing::error!(
+                        target: "hivegui::ui::prompt_debugger",
+                        operation = "execute_call",
+                        outcome = "request_failed",
+                        url = %url,
+                        model = %log_model_name,
+                        has_token = token.is_some(),
+                        root_cause = %root_cause,
+                        error = %chain,
+                    );
+                    Err(format!("请求失败: {root_cause}（{url}）"))
+                }
             };
 
             _ = this.update(cx, |view, cx| {
@@ -3468,11 +3551,7 @@ impl PromptDebugger {
 
     /// 执行结束的统一收尾：写入 call_state、落库执行记录，并直接打开查看执行记录窗口。
     /// 无论成功或失败都打开，便于查看执行结果。
-    fn finish_execution(
-        &mut self,
-        response_text: Result<String, String>,
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_execution(&mut self, response_text: Result<String, String>, cx: &mut Context<Self>) {
         self.call_state = match response_text {
             Ok(text) => CallState::Success(text),
             Err(err) => CallState::Error(err),
@@ -4576,7 +4655,8 @@ mod geometry_tests {
         let _runtime_guard = runtime.enter();
         let store = cx.new(|_| store);
 
-        let prompt = cx.new(|cx| PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone()));
+        let prompt =
+            cx.new(|cx| PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone()));
         let window = cx.open_window(size(px(1200.0), px(700.0)), {
             let prompt = prompt.clone();
             // 通知系统依赖窗口根为 Root（生产中即如此），测试中显式包裹
@@ -4593,8 +4673,7 @@ mod geometry_tests {
         cx.simulate_click(execute_btn.center(), Modifiers::default());
         cx.run_until_parked();
 
-        let form_error = prompt
-            .read_with(&cx, |view, _| view.form_error.clone());
+        let form_error = prompt.read_with(&cx, |view, _| view.form_error.clone());
         assert_eq!(
             form_error.as_deref(),
             Some("左侧「LLM 设定」未设置：请先选择 Preset")
@@ -4607,12 +4686,7 @@ mod geometry_tests {
 
         // 右下角应弹出一条自动消失（-notification 默认 5 秒）的 toast 通知
         let notification_count = cx.update(|window, cx| match window.root::<Root>() {
-            Some(Some(root)) => root
-                .read(cx)
-                .notification
-                .read(cx)
-                .notifications()
-                .len(),
+            Some(Some(root)) => root.read(cx).notification.read(cx).notifications().len(),
             _ => 0,
         });
         assert!(
@@ -4669,5 +4743,66 @@ mod geometry_tests {
             form_error.is_none(),
             "selecting a preset should clear the form error"
         );
+    }
+}
+
+#[cfg(test)]
+mod error_chain_tests {
+    use super::{error_chain_for_log, root_cause_for_log};
+
+    #[derive(Debug)]
+    struct Chain {
+        msg: &'static str,
+        source: Option<Box<Chain>>,
+    }
+
+    impl std::fmt::Display for Chain {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.msg)
+        }
+    }
+
+    impl std::error::Error for Chain {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_ref()
+                .map(|s| s.as_ref() as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn transport_error_chain_exposes_the_root_cause() {
+        // 模拟 reqwest 的连接失败：Display 只有最外层一句话，
+        // 根因藏在 source 链里。
+        let error = Chain {
+            msg: "error sending request for url (http://127.0.0.1:11434/v1/chat/completions)",
+            source: Some(Box::new(Chain {
+                msg: "client error (Connect)",
+                source: Some(Box::new(Chain {
+                    msg: "Connection refused (os error 111)",
+                    source: None,
+                })),
+            })),
+        };
+
+        assert_eq!(
+            error_chain_for_log(&error),
+            "error sending request for url (http://127.0.0.1:11434/v1/chat/completions) \
+             <- client error (Connect) <- Connection refused (os error 111)"
+        );
+        assert_eq!(
+            root_cause_for_log(&error),
+            "Connection refused (os error 111)"
+        );
+    }
+
+    #[test]
+    fn error_without_source_falls_back_to_its_own_message() {
+        let error = Chain {
+            msg: "boom",
+            source: None,
+        };
+        assert_eq!(error_chain_for_log(&error), "boom");
+        assert_eq!(root_cause_for_log(&error), "boom");
     }
 }

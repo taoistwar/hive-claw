@@ -1494,14 +1494,28 @@ impl Store {
         })
     }
 
-    /// 为 `global_configs` 表补齐 `deletable` 列。
+    /// 确保 `global_configs` 表存在且包含 `deletable` 列。
     ///
     /// 旧版本数据库在创建该表时尚未包含 `deletable` 列，而 `GlobalConfig`
     /// 结构体与其读写语句（如 `upsert_global_config`、`create_global_config`）
     /// 均已引用该列。若缺失，`SELECT *` 解码 `GlobalConfig` 会报
     /// "no column found for name: deletable"。本函数在库已存在但缺列时补列，
     /// 对新建库（CREATE TABLE 已含该列）则是空操作。
+    ///
+    /// 表本身缺失时也在此创建，避免调用方（如 `try_open_once`）
+    /// 在极旧的库上触发 "no such table: global_configs"。
     async fn ensure_global_configs_deletable(pool: &sqlx::SqlitePool) -> sqlx::Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS global_configs (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             name TEXT NOT NULL, key TEXT NOT NULL UNIQUE, \
+             type TEXT NOT NULL DEFAULT 'text', data TEXT NOT NULL, \
+             deletable INTEGER NOT NULL DEFAULT 0, \
+             created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')",
+        )
+        .execute(pool)
+        .await?;
+
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
         )
@@ -1736,6 +1750,23 @@ impl Store {
                     .with_failure_class(DatabaseFailureClass::Corrupt)
                     .with_cause(migration_error.to_string()),
             );
+        }
+
+        // 兼容旧库：由引入 `deletable` 之前的旧版 HiveGUI 写出的数据库
+        // 已被标记为 v4，`migrate_to_current` 对这类库判定为 "Unchanged"
+        // 并提前返回，因此 `create_or_upgrade_to_v4` 中的补列语句不会执行。
+        // 应用启动只经过本函数（`Store::new` / `open_existing` 均不在启动
+        // 路径上），所以必须在此补齐，否则 `upsert_global_config` 的
+        // `SELECT *` 解码 `GlobalConfig` 会报
+        // "no column found for name: deletable"，表现为提示词调试
+        // 「保存设置/执行」失败。
+        if let Err(column_error) = Self::ensure_global_configs_deletable(&pool).await {
+            return Err(StoreOpenError::new(
+                StoreOpenErrorKind::Io,
+                Some(database_path_buf.clone()),
+            )
+            .with_failure_class(DatabaseFailureClass::Persistent)
+            .with_cause(format!("ensure global_configs.deletable: {column_error}")));
         }
 
         if let Err(entity_error) = super::entity_store::run_migrations(&pool).await {
@@ -2303,57 +2334,105 @@ impl Store {
                 .await?
                 .rows_affected()
                 > 0,
-                )
-                }
-                }
+        )
+    }
+}
 
-                #[cfg(test)]
-                mod deletable_column_migration_tests {
-                use super::*;
+#[cfg(test)]
+mod deletable_column_migration_tests {
+    use super::*;
 
-                #[tokio::test(flavor = "current_thread")]
-                async fn open_existing_adds_missing_deletable_column() {
-                let dir = tempfile::tempdir().expect("temp dir");
-                let db_dir = dir.path();
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_existing_adds_missing_deletable_column() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_dir = dir.path();
 
-                // 1) 新建库默认含 deletable 列
-                let store = Store::new(db_dir).await.expect("new store");
+        // 1) 新建库默认含 deletable 列
+        let store = Store::new(db_dir).await.expect("new store");
 
-                // 2) 模拟旧库：移除 deletable 列
-                sqlx::query("ALTER TABLE global_configs DROP COLUMN deletable")
-                .execute(store.pool())
-                .await
-                .expect("drop deletable to simulate legacy schema");
+        // 2) 模拟旧库：移除 deletable 列
+        sqlx::query("ALTER TABLE global_configs DROP COLUMN deletable")
+            .execute(store.pool())
+            .await
+            .expect("drop deletable to simulate legacy schema");
 
-                // 3) 此时走 save_settings 的 upsert 会因缺列失败
-                let before = store
-                .upsert_global_config("legacy", "legacy", "json", "{}")
-                .await;
-                assert!(
-                before.is_err(),
-                "旧库缺 deletable 列时 upsert 必须失败，实际成功"
-                );
-                drop(store);
+        // 3) 此时走 save_settings 的 upsert 会因缺列失败
+        let before = store
+            .upsert_global_config("legacy", "legacy", "json", "{}")
+            .await;
+        assert!(
+            before.is_err(),
+            "旧库缺 deletable 列时 upsert 必须失败，实际成功"
+        );
+        drop(store);
 
-                // 4) 以既有库方式重新打开（生产路径）应补齐列
-                let db_path = db_dir.join(DB_FILENAME);
-                let reopened = Store::open_existing(&db_path)
-                .await
-                .expect("reopen existing store");
+        // 4) 以既有库方式重新打开（生产路径）应补齐列
+        let db_path = db_dir.join(DB_FILENAME);
+        let reopened = Store::open_existing(&db_path)
+            .await
+            .expect("reopen existing store");
 
-                // 5) 现在 upsert（save_settings 路径）成功
-                reopened
-                .upsert_global_config("legacy", "legacy", "json", "{}")
-                .await
-                .expect("upsert succeeds after deletable migration");
+        // 5) 现在 upsert（save_settings 路径）成功
+        reopened
+            .upsert_global_config("legacy", "legacy", "json", "{}")
+            .await
+            .expect("upsert succeeds after deletable migration");
 
-                // 6) 列确实存在
-                let exists: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
-                )
-                .fetch_one(reopened.pool())
-                .await
-                .expect("pragma query");
-                assert_eq!(exists, 1, "deletable 列应已被迁移补齐");
-                }
-                }
+        // 6) 列确实存在
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .expect("pragma query");
+        assert_eq!(exists, 1, "deletable 列应已被迁移补齐");
+    }
+
+    /// 生产启动路径（`Store::open_local`）也必须补齐 `deletable`。
+    ///
+    /// 旧版 HiveGUI 写出的库已带 `schema_version = 4`，
+    /// `migrate_to_current` 对这类库判定为 "Unchanged" 并提前返回，
+    /// 因此 `create_or_upgrade_to_v4` 里的补列语句不会执行。应用启动只走
+    /// `open_local`（不经 `Store::new` / `open_existing`），若不在此补齐，
+    /// `save_settings`（`upsert_global_config`）会稳定报
+    /// "no column found for name: deletable"。
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_local_adds_missing_deletable_column() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+
+        // 1) 新建库（schema_version 已写为 v4）后移除 deletable 列，
+        //    模拟「已标记 v4 但缺列」的旧库。
+        let store = Store::new(root).await.expect("new store");
+        sqlx::query("ALTER TABLE global_configs DROP COLUMN deletable")
+            .execute(store.pool())
+            .await
+            .expect("drop deletable to simulate legacy schema");
+        drop(store);
+
+        // 2) 走生产启动路径打开：必须补齐列而不是报错。
+        let store = Store::open_local(StoreOpenOptions::for_root(root))
+            .await
+            .expect("open_local on stamped-v4 legacy database");
+
+        // 3) save_settings 的写入路径（upsert + SELECT * 解码）必须成功。
+        store
+            .upsert_global_config(
+                "prompt_debugger_state",
+                "prompt_debugger_state",
+                "json",
+                "{}",
+            )
+            .await
+            .expect("upsert succeeds after open_local deletable migration");
+
+        // 4) 列确实存在。
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("pragma query");
+        assert_eq!(exists, 1, "deletable 列应已被 open_local 补齐");
+    }
+}

@@ -2784,60 +2784,11 @@ fn comparison_table(
     let label_col_width = px(100.0);
     let table_width = label_col_width + col_width * (col_count - 1) as f32;
 
-    // 维度标签。「模型」不放这里：表头行已经按列标注了各条记录的模型名，
-    // 再列一行会导致表头与「模型」行内容完全重复。
-    let dimensions: Vec<&str> = vec!["参数", "消息", "工具", "结果"];
+    // 维度标签。表头行改放各记录的 ID，模型名作为独立维度行呈现，
+    // 这样「模型」也能和其他维度一样参与「仅有差异」过滤。
+    let dimensions: Vec<&str> = vec!["模型", "参数", "消息", "工具", "结果"];
 
-    // 序号行（表头之上）：标注每条记录是第几条
-    let index_row = div()
-        .flex()
-        .border_b_1()
-        .border_color(style.list.border)
-        .child(
-            div()
-                .w(label_col_width)
-                .flex_shrink_0()
-                .px(px(8.0))
-                .py(px(6.0))
-                .child(
-                    view_selectable_text(
-                        states,
-                        "cmp:index:label".to_string(),
-                        "序号",
-                        style,
-                        window,
-                        cx,
-                    )
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(style.list.muted_foreground),
-                ),
-        );
-    let index_row = records
-        .iter()
-        .take(20)
-        .enumerate()
-        .fold(index_row, |acc, (idx, record)| {
-            acc.child(
-                div()
-                    .w(col_width)
-                    .flex_shrink_0()
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .child(
-                        view_selectable_text(
-                            states,
-                            format!("cmp:index:{}", record.id),
-                            &format!("#{}", idx + 1),
-                            style,
-                            window,
-                            cx,
-                        )
-                        .font_weight(FontWeight::BOLD),
-                    ),
-            )
-        });
-
-    // 表头行：每列标注该条记录的模型名
+    // 表头行：每列标注该条记录的 ID（列身份由 ID 承载）。
     let header_row = div()
         .flex()
         .border_b_1()
@@ -2852,7 +2803,7 @@ fn comparison_table(
                     view_selectable_text(
                         states,
                         "cmp:header:label".to_string(),
-                        "维度",
+                        "ID",
                         style,
                         window,
                         cx,
@@ -2871,7 +2822,7 @@ fn comparison_table(
                     view_selectable_text(
                         states,
                         format!("cmp:header:{}", record.id),
-                        &record.model_name,
+                        &record.id.to_string(),
                         style,
                         window,
                         cx,
@@ -2886,7 +2837,6 @@ fn comparison_table(
         .w(table_width)
         .flex()
         .flex_col()
-        .child(index_row)
         .child(header_row);
 
     for dim in &dimensions {
@@ -5136,14 +5086,12 @@ mod geometry_tests {
             .unwrap_or_else(|| panic!("record 8 result cell missing, got {cells:?}"));
         assert_eq!(second.1, "second result");
 
-        // 序号行 / 表头行 / 维度标签此前也是纯 `div`，同样要能选中复制。
+        // 表头行 / 维度标签此前也是纯 `div`，同样要能选中复制。
         for (key, expected) in [
-            ("cmp:index:label", "序号"),
-            ("cmp:index:7", "#1"),
-            ("cmp:index:8", "#2"),
-            ("cmp:header:label", "维度"),
-            ("cmp:header:7", "first-model"),
-            ("cmp:header:8", "second-model"),
+            ("cmp:header:label", "ID"),
+            ("cmp:header:7", "7"),
+            ("cmp:header:8", "8"),
+            ("cmp:dim:模型", "模型"),
             ("cmp:dim:结果", "结果"),
         ] {
             let (_, value) = cells

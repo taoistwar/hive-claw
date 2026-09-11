@@ -313,17 +313,58 @@ impl FunctionView {
 
     fn load_options(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
+
+        // 插件、能力、分类分别独立加载：任意一组查询失败都不应拖累其它组，
+        // 否则某一组（如 plugins/capabilities）出错会让分类下拉只剩「无」。
+        let plugin_store = store.clone();
         cx.spawn(async move |this, cx| {
-            let plugins = Plugin::list(store.pool(), None, 1_000, 0).await?;
-            let capabilities = Capability::list(store.pool(), None, 1_000, 0).await?;
-            let categories = Category::list_all(store.pool()).await?;
-            this.update(cx, |view, cx| {
-                view.plugins = plugins;
-                view.capabilities = capabilities;
-                view.categories = categories;
-                view.refresh_plugin_exports();
-                cx.notify();
-            })
+            match Plugin::list(plugin_store.pool(), None, 1_000, 0).await {
+                Ok(plugins) => {
+                    this.update(cx, |view, cx| {
+                        view.plugins = plugins;
+                        view.refresh_plugin_exports();
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "加载插件列表失败");
+                }
+            }
+        })
+        .detach();
+
+        let capability_store = store.clone();
+        cx.spawn(async move |this, cx| {
+            match Capability::list(capability_store.pool(), None, 1_000, 0).await {
+                Ok(capabilities) => {
+                    this.update(cx, |view, cx| {
+                        view.capabilities = capabilities;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "加载能力列表失败");
+                }
+            }
+        })
+        .detach();
+
+        let category_store = store.clone();
+        cx.spawn(async move |this, cx| {
+            match Category::list_all(category_store.pool()).await {
+                Ok(categories) => {
+                    this.update(cx, |view, cx| {
+                        view.categories = categories;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "加载分类列表失败");
+                }
+            }
         })
         .detach();
     }

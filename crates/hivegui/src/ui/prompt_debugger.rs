@@ -172,6 +172,14 @@ const PROMPT_DEBUGGER_DETACHED_COMPARISON_KEY: &str = "prompt_debugger_detached_
 /// 全局配置（boolean）：查看单条执行记录时是否直接开独立窗口，而不是弹窗。
 const PROMPT_DEBUGGER_DETACHED_RECORD_KEY: &str = "prompt_debugger_detached_record_view";
 
+/// 解析上面两个开关在 `global_configs` 里的取值。
+///
+/// 「全局配置」页对 `boolean` 类型渲染 true/false 单选，所以正常取值就是
+/// `"true"` / `"false"`；行缺失时按 `false` 处理（`load_*` 会补种默认行）。
+fn detached_flag_value(stored: Option<&str>) -> bool {
+    stored.map(|value| value.trim() == "true").unwrap_or(false)
+}
+
 /// 上面两项配置在「全局配置」页里显示的名字。
 const DETACHED_COMPARISON_CONFIG_NAME: &str = "提示词调试：对比使用独立窗口";
 const DETACHED_RECORD_CONFIG_NAME: &str = "提示词调试：查看执行记录使用独立窗口";
@@ -328,7 +336,7 @@ impl PromptDebugger {
         }));
         // 先尝试回填上次保存的左侧 LLM 设定，再加载 Preset/Model 列表。
         this.load_settings(cx);
-        this.load_detached_window_settings(cx);
+        this.reload_detached_window_settings(cx);
         this.load_history();
         this
     }
@@ -450,7 +458,13 @@ impl PromptDebugger {
     /// 两个键缺失时按 `false` 处理，并补写一条默认值，这样用户在
     /// 「全局配置」页能直接看到这两项（该页对 `boolean` 类型渲染 true/false
     /// 单选）并切换。
-    fn load_detached_window_settings(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// **构造之后必须能被再次调用**：本视图在两个入口里都是随应用启动一次性
+    /// 构造的长生命周期视图，而两个开关是用户在「全局配置」页里随时改的。
+    /// 只在 `new` 里读一次会让运行期的修改一直不生效（要重启应用），因此
+    /// 每次重新进入本页时（桌面版 `UtilityView`、Prompt Studio 分区切换）
+    /// 都要再调一次本函数刷新缓存值。
+    pub fn reload_detached_window_settings(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
         let comparison_key = PROMPT_DEBUGGER_DETACHED_COMPARISON_KEY.to_string();
         let record_key = PROMPT_DEBUGGER_DETACHED_RECORD_KEY.to_string();
@@ -462,14 +476,8 @@ impl PromptDebugger {
                 .flatten();
             let stored_record = store.get_global_config(&record_key).await.ok().flatten();
 
-            let comparison = stored_comparison
-                .as_deref()
-                .map(|value| value.trim() == "true")
-                .unwrap_or(false);
-            let record = stored_record
-                .as_deref()
-                .map(|value| value.trim() == "true")
-                .unwrap_or(false);
+            let comparison = detached_flag_value(stored_comparison.as_deref());
+            let record = detached_flag_value(stored_record.as_deref());
 
             if stored_comparison.is_none() {
                 Self::seed_detached_config(
@@ -1186,16 +1194,23 @@ impl PromptDebugger {
     fn open_view_record(&mut self, record_id: u64, cx: &mut Context<Self>) {
         if let Some(record) = self.execution_history.iter().find(|r| r.id == record_id) {
             let record = record.clone();
-            // 全局配置打开时直接进独立窗口，不再弹窗。
-            if self.detached_record_view {
-                self.open_detached_window(vec![record], ViewModalTab::Formatted, false, cx);
-                cx.notify();
-            } else {
-                self.view_records = vec![record];
-                self.show_view_modal = true;
-            }
+            self.show_single_record(record, cx);
         }
         self.context_menu = None;
+    }
+
+    /// 展示单条执行记录：按「提示词调试：查看执行记录使用独立窗口」决定是
+    /// 开独立窗口还是弹窗。
+    ///
+    /// 执行完成后的自动展示（`finish_execution`）与历史列表里的「查看」走
+    /// 同一条路径，配置对两处都生效。
+    fn show_single_record(&mut self, record: ExecutionRecord, cx: &mut Context<Self>) {
+        if self.detached_record_view {
+            self.open_detached_window(vec![record], ViewModalTab::Formatted, false, cx);
+        } else {
+            self.view_records = vec![record];
+            self.show_view_modal = true;
+        }
     }
 
     /// 独立窗口的标识键。
@@ -5132,18 +5147,17 @@ impl PromptDebugger {
         .detach();
     }
 
-    /// 执行结束的统一收尾：写入 call_state、落库执行记录，并直接打开查看执行记录窗口。
-    /// 无论成功或失败都打开，便于查看执行结果。
+    /// 执行结束的统一收尾：写入 call_state、落库执行记录，并直接展示执行结果。
+    /// 无论成功或失败都展示，便于查看执行结果；展示形式跟随
+    /// 「提示词调试：查看执行记录使用独立窗口」全局配置（独立窗口或弹窗）。
     fn finish_execution(&mut self, response_text: Result<String, String>, cx: &mut Context<Self>) {
         self.call_state = match response_text {
             Ok(text) => CallState::Success(text),
             Err(err) => CallState::Error(err),
         };
         self.save_execution_record();
-        // 执行完成（无论成功或失败）后，直接打开查看执行记录窗口，便于查看执行结果
-        if let Some(last_record) = self.execution_history.last() {
-            self.view_records = vec![last_record.clone()];
-            self.show_view_modal = true;
+        if let Some(last_record) = self.execution_history.last().cloned() {
+            self.show_single_record(last_record, cx);
         }
         cx.notify();
     }
@@ -5480,7 +5494,9 @@ impl Render for PromptDebugger {
 
 #[cfg(test)]
 mod tests {
-    use super::{DebugMessage, MessageRole, models_for_preset, valid_model_selection};
+    use super::{
+        DebugMessage, MessageRole, detached_flag_value, models_for_preset, valid_model_selection,
+    };
     use crate::datasource::llm_store::LlmModel;
 
     fn model(id: i64, preset_id: i64, priority: i32) -> LlmModel {
@@ -5590,6 +5606,19 @@ mod tests {
         assert_eq!(valid_model_selection(&models, Some(1), Some(11)), Some(11));
         assert_eq!(valid_model_selection(&models, Some(2), Some(11)), None);
         assert_eq!(valid_model_selection(&models, None, Some(11)), None);
+    }
+
+    /// 「全局配置」页对 `boolean` 类型渲染 true/false 单选，所以只有 `"true"`
+    /// 算开启；行缺失、空值、其它文本都按关闭处理，避免脏数据把「查看执行记录」
+    /// 意外切到独立窗口。
+    #[test]
+    fn detached_flag_value_reads_only_boolean_true_as_enabled() {
+        assert!(detached_flag_value(Some("true")));
+        assert!(detached_flag_value(Some(" true ")));
+        assert!(!detached_flag_value(Some("false")));
+        assert!(!detached_flag_value(Some("")));
+        assert!(!detached_flag_value(Some("TRUE")));
+        assert!(!detached_flag_value(None));
     }
 }
 
@@ -7010,6 +7039,52 @@ mod geometry_tests {
             .expect("read state after view record");
         assert!(!modal_open, "配置开启时查看记录不应弹窗");
         assert_eq!(detached, 2, "不同的记录组各自一个独立窗口");
+    }
+
+    /// 回归：全局配置「查看执行记录使用独立窗口」打开时，**执行完成后自动
+    /// 展示结果**也必须进独立窗口（`finish_execution` 曾硬编码弹窗，导致该
+    /// 配置对「执行完自动打开结果」这条最常见的路径完全失效）。
+    #[gpui_kit::test]
+    fn finish_execution_uses_detached_window_when_config_enabled(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.detached_record_view = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.finish_execution(Ok("模型返回内容".to_string()), cx);
+            })
+            .expect("finish execution");
+        cx.run_until_parked();
+
+        let (modal_open, detached) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (view.show_view_modal, view.detached_windows.len())
+            })
+            .expect("read state after execution");
+        assert!(!modal_open, "配置开启时执行完成不应弹窗");
+        assert_eq!(detached, 1, "配置开启时执行完成应打开独立窗口");
     }
 }
 

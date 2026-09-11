@@ -559,7 +559,15 @@ fn prompt_studio_nav_button(
         .role(gpui_kit::accesskit::Role::Button)
         .aria_label(label_for_a11y)
         .on_click(cx.listener(move |this, _, _, cx| {
+            let changed = this.active != index;
             this.active = index;
+            // 重新进入「提示词调试」分区时重新读取运行期开关：用户可能刚在
+            // 「全局配置」里改过「查看/对比是否使用独立窗口」，不重读就要重启
+            // 本应用才生效。
+            if changed && section.id == "prompt" {
+                this.prompt_debugger
+                    .update(cx, |view, cx| view.reload_detached_window_settings(cx));
+            }
             cx.notify();
         }))
         .child(

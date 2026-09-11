@@ -38,18 +38,20 @@ impl UtilityView {
         let previous = self.active_tab;
         self.active_tab = index;
         if index == TAB_PROMPT_DEBUGGER && previous != TAB_PROMPT_DEBUGGER {
-            self.prompt_debugger
-                .update(cx, |view, cx| view.reload_presets_and_models(cx));
+            self.refresh_prompt_debugger(cx);
         }
         cx.notify();
     }
 
     /// 通过侧边栏/菜单等外部导航进入本视图时，强制刷新 LLM 提示词
-    /// 调试中的 Preset / Model / Provider 列表。用户在 AI 管理或其他
-    /// 入口调整过它们后，再导航回本视图应看到最新数据。
+    /// 调试的 Preset / Model / Provider 列表与运行期开关（查看/对比是否使用
+    /// 独立窗口）。用户在 AI 管理（含「全局配置」页）或其他入口调整过它们后，
+    /// 再导航回本视图应看到最新行为，而不是重启后才知道改错了。
     pub fn refresh_prompt_debugger(&mut self, cx: &mut Context<Self>) {
-        self.prompt_debugger
-            .update(cx, |view, cx| view.reload_presets_and_models(cx));
+        self.prompt_debugger.update(cx, |view, cx| {
+            view.reload_presets_and_models(cx);
+            view.reload_detached_window_settings(cx);
+        });
     }
 }
 

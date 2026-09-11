@@ -1584,9 +1584,9 @@ fn settings_panel(
                     .mb(px(4.0))
                     .p(px(8.0))
                     .border_1()
-                    .border_color(style.action(ActionRole::Delete).foreground)
+                    .border_color(style.action(ActionRole::Delete).background)
                     .rounded(px(6.0))
-                    .text_color(style.action(ActionRole::Delete).foreground)
+                    .text_color(style.action(ActionRole::Delete).background)
                     .text_size(px(12.0))
                     .child(msg.to_string()),
             )
@@ -2377,7 +2377,7 @@ fn execute_button(
 
 /// 历史面板里的小型操作按钮。
 ///
-/// `enabled = false` 时按钮变灰且不触发回调（例如未选中任何记录时的「清除」）。
+/// `enabled = false` 时按钮变灰且不触发回调（例如未选中任何记录时的「删除」）。
 fn history_action_button(
     label: SharedString,
     role: ActionRole,
@@ -2462,7 +2462,7 @@ fn right_panel(
             ),
     );
 
-    // 操作栏：全选 / 反选 / 清除选中
+    // 操作栏：全选 / 反选 / 删除选中
     let all_selected = history_count > 0 && selected_count == history_count;
     let mut toolbar = div()
         .flex()
@@ -2499,9 +2499,9 @@ fn right_panel(
         ))
         .child(history_action_button(
             SharedString::from(if selected_count > 0 {
-                format!("清除({selected_count})")
+                format!("删除({selected_count})")
             } else {
-                "清除".to_string()
+                "删除".to_string()
             }),
             ActionRole::Delete,
             selected_count > 0,
@@ -2550,12 +2550,12 @@ fn right_panel(
             let is_selected = selected_ids.contains(&record.id);
             let status_icon = match &record.result {
                 CallState::Success(_) => "✓",
-                CallState::Error(_) => "",
+                CallState::Error(_) => "✗",
                 _ => "○",
             };
             let status_color = match &record.result {
                 CallState::Success(_) => style.action(ActionRole::Edit).background,
-                CallState::Error(_) => style.action(ActionRole::Delete).foreground,
+                CallState::Error(_) => style.action(ActionRole::Delete).background,
                 _ => style.list.muted_foreground,
             };
 
@@ -2739,6 +2739,18 @@ fn right_panel(
 ///
 /// `MouseDownEvent::position` 是窗口坐标，因此菜单必须挂在窗口级浮层中；如果把它作为
 /// 右侧滚动面板的绝对子元素，坐标会被右栏原点再次偏移并被滚动区域裁剪。
+/// 右键菜单项的前导图标槽。
+///
+/// 槽宽固定，保证不同图标下标签的起点一致（图标居中在固定槽位）。
+fn context_menu_icon(icon: IconName) -> Div {
+    div()
+        .flex()
+        .w(px(16.0))
+        .flex_shrink_0()
+        .justify_center()
+        .child(Icon::new(icon).xsmall())
+}
+
 fn history_context_menu(
     record_id: u64,
     position: Point<Pixels>,
@@ -2804,8 +2816,12 @@ fn history_context_menu(
                                         .hover(|this| {
                                             this.bg(style.action(ActionRole::Neutral).hover)
                                         })
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.0))
                                         .text_size(px(12.0))
                                         .debug_selector(move || view_selector.clone())
+                                        .child(context_menu_icon(IconName::Eye))
                                         .child("查看")
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             _ = entity_for_view.update(cx, |view, cx| {
@@ -2824,8 +2840,12 @@ fn history_context_menu(
                                         .hover(|this| {
                                             this.bg(style.action(ActionRole::Neutral).hover)
                                         })
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.0))
                                         .text_size(px(12.0))
                                         .debug_selector(move || apply_selector.clone())
+                                        .child(context_menu_icon(IconName::Undo2))
                                         .child("回填")
                                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                                             _ = entity_for_apply.update(cx, |view, cx| {
@@ -2850,12 +2870,14 @@ fn history_context_menu(
                                         .py(px(6.0))
                                         .rounded(px(4.0))
                                         .cursor(CursorStyle::PointingHand)
-                                        .hover(|this| {
-                                            this.bg(style.action(ActionRole::Delete).hover)
-                                        })
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.0))
+                                        .hover(|this| this.bg(style.list.hover))
                                         .text_size(px(12.0))
-                                        .text_color(style.action(ActionRole::Delete).foreground)
+                                        .text_color(style.action(ActionRole::Delete).background)
                                         .debug_selector(move || delete_selector.clone())
+                                        .child(context_menu_icon(IconName::Delete))
                                         .child("删除")
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             _ = entity_for_delete.update(cx, |view, cx| {

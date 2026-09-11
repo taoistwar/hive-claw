@@ -404,14 +404,15 @@ const PROMPT_STUDIO_SECTIONS: &[PromptStudioSection] = &[
         icon: IconName::BrainCircuit,
     },
     PromptStudioSection {
-        id: "global",
-        label: "全局配置",
-        icon: IconName::Cog,
-    },
-    PromptStudioSection {
         id: "category",
         label: "分类管理",
         icon: IconName::FolderTree,
+    },
+    // 全局配置是低频的设置类入口，放在导航最下边。
+    PromptStudioSection {
+        id: "global",
+        label: "全局配置",
+        icon: IconName::Cog,
     },
 ];
 
@@ -523,16 +524,63 @@ impl PromptStudioRoot {
     }
 }
 
+/// 左侧导航栏的一个图标按钮。
+///
+/// `index` 是分区在 [`PROMPT_STUDIO_SECTIONS`] 中的位置，点击后写入
+/// [`PromptStudioRoot::active`]。配色沿用 `SidebarNav` 的侧栏语义色。
+fn prompt_studio_nav_button(
+    index: usize,
+    section: &'static PromptStudioSection,
+    selected: bool,
+    cx: &mut Context<PromptStudioRoot>,
+) -> impl IntoElement {
+    let sidebar_background = cx.theme().sidebar;
+    let sidebar_accent = cx.theme().sidebar_accent;
+    let sidebar_foreground = cx.theme().sidebar_foreground;
+    let label = SharedString::from(section.label);
+    let label_for_a11y = label.clone();
+
+    div()
+        .id(SharedString::from(format!("ps-nav-{}", section.id)))
+        .w(px(40.0))
+        .h(px(40.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(8.0))
+        .cursor(CursorStyle::PointingHand)
+        .bg(if selected {
+            sidebar_accent
+        } else {
+            sidebar_background
+        })
+        .hover(move |style| style.bg(sidebar_accent))
+        .role(gpui_kit::accesskit::Role::Button)
+        .aria_label(label_for_a11y)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.active = index;
+            cx.notify();
+        }))
+        .child(
+            div().flex().items_center().justify_center().child(
+                Icon::new(section.icon)
+                    .large()
+                    .text_color(sidebar_foreground),
+            ),
+        )
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+}
+
 impl Render for PromptStudioRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = shell_theme_colors(cx.theme());
         let sidebar_background = cx.theme().sidebar;
-        let sidebar_accent = cx.theme().sidebar_accent;
         let sidebar_foreground = cx.theme().sidebar_foreground;
 
         // Icon-only navigation rail: 48px wide, 40x40 icon buttons with hover
         // tooltips. Mirrors `SidebarNav` so the two apps read the same way.
-        let sidebar = div()
+        let mut sidebar = div()
             .id("ps-sidebar")
             .w(px(48.0))
             .h_full()
@@ -543,56 +591,29 @@ impl Render for PromptStudioRoot {
             .gap(px(8.0))
             .bg(sidebar_background)
             .text_color(sidebar_foreground)
-            .py(px(12.0))
-            .children(PROMPT_STUDIO_SECTIONS.iter().enumerate().map(
-                |(index, section)| {
-                    let selected = self.active == index;
-                    let label = SharedString::from(section.label);
-                    let label_for_a11y = label.clone();
-                    div()
-                        .id(SharedString::from(format!("ps-nav-{}", section.id)))
-                        .w(px(40.0))
-                        .h(px(40.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(8.0))
-                        .cursor(CursorStyle::PointingHand)
-                        .bg(if selected {
-                            sidebar_accent
-                        } else {
-                            sidebar_background
-                        })
-                        .hover(move |style| style.bg(sidebar_accent))
-                        .role(gpui_kit::accesskit::Role::Button)
-                        .aria_label(label_for_a11y)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.active = index;
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    Icon::new(section.icon)
-                                        .large()
-                                        .text_color(sidebar_foreground),
-                                ),
-                        )
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(label.clone()).build(window, cx)
-                        })
-                },
-            ));
+            .py(px(12.0));
 
-        let body = match self.active {
-            0 => self.prompt_debugger.clone().into_any_element(),
-            1 => self.llm_config.clone().into_any_element(),
-            2 => self.global_config.clone().into_any_element(),
-            3 => self.category_view.clone().into_any_element(),
+        for (index, section) in PROMPT_STUDIO_SECTIONS.iter().enumerate() {
+            // 设置类入口（全局配置）贴到面板最底部：在它前面插一段弹性空隙，
+            // 窗口变高时由空隙把设置项推到下边缘，与上面的功能导航分开。
+            if section.id == "global" {
+                sidebar = sidebar.child(div().flex_1());
+            }
+            sidebar = sidebar.child(prompt_studio_nav_button(
+                index,
+                section,
+                self.active == index,
+                cx,
+            ));
+        }
+
+        // 按 section id 分派而不是按索引：调整 `PROMPT_STUDIO_SECTIONS` 的
+        // 顺序时，正文不会和左侧导航错位。
+        let body = match PROMPT_STUDIO_SECTIONS[self.active].id {
+            "prompt" => self.prompt_debugger.clone().into_any_element(),
+            "llm" => self.llm_config.clone().into_any_element(),
+            "global" => self.global_config.clone().into_any_element(),
+            "category" => self.category_view.clone().into_any_element(),
             _ => div().into_any_element(),
         };
 
